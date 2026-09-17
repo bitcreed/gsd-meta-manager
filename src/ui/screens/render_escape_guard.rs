@@ -1313,11 +1313,16 @@ fn hostile_gsd_config(identity: &str) -> crate::state_reader::config_json::GsdCo
 
 /// One `git log` row whose every field carries `identity`.
 ///
-/// All four fields, not just `message`: `%h`, `%ad`, `%an` and `%s` are four
-/// `splitn` slices of one line of a third-party repository's `git log` output,
-/// and the render draws all four into the same `ListItem`. A fixture that put
-/// the identity in only one of them would leave the other three's render
-/// unasserted while looking like coverage.
+/// All FIVE fields, not just `message`: `%h`, `%ad`, `%an`, the
+/// `Co-authored-by` trailer and `%s` are five `splitn` slices of one line of a
+/// third-party repository's `git log` output, and the render draws all five
+/// into the same `ListItem`. A fixture that put the identity in only one of
+/// them would leave the others' render unasserted while looking like coverage.
+///
+/// `co_authors` was added by 260916-vr1 for exactly that reason: the field
+/// arrived with a new render site, and a fixture that did not carry it would
+/// have left that site in the LIMIT-1 fixture-hole class this module's own doc
+/// names — a render the probe never reaches, passing by silence.
 fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntry {
     use crate::state_reader::git_ops::GitLogEntry;
     use crate::text::Untrusted;
@@ -1326,6 +1331,7 @@ fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntr
         hash: field(),
         date: field(),
         author: field(),
+        co_authors: Some(field()),
         message: field(),
     }
 }

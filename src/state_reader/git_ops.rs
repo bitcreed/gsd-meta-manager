@@ -548,6 +548,51 @@ pub struct GitLogEntry {
     pub date: crate::text::Untrusted,
     pub author: crate::text::Untrusted,
     pub message: crate::text::Untrusted,
+    /// Every `Co-authored-by` trailer value on this commit, names only, joined
+    /// `", "` — or `None` when the commit carries no such trailer.
+    ///
+    /// **The case-insensitive match is GIT's, not ours** (QD-02). The format
+    /// string asks for `%(trailers:key=Co-authored-by,...)`, and git's own
+    /// trailer matcher is case-insensitive on the key, so `Co-Authored-By:`,
+    /// `co-authored-by:` and every other spelling in the wild arrive here
+    /// already matched. There is deliberately no hand-rolled key matcher; a
+    /// second matcher would be a second thing to keep in agreement with git.
+    ///
+    /// **No known-model filter, and that is a decision** (QD-03). Every
+    /// co-author is shown, model or human. A name list ("show it only if it
+    /// looks like a model") is a closed list that is correct the day it lands
+    /// and silent on the seventh name — the exact shape phase 19 DELETED
+    /// rather than extended (D-08/19-11).
+    ///
+    /// `None` rather than an empty `Untrusted` on purpose: the render site
+    /// branches on presence to decide whether to emit the column AND its
+    /// separator, and an empty string would draw a dangling `"  ()"`.
+    pub co_authors: Option<crate::text::Untrusted>,
+}
+
+/// One commit's full message plus its touched-file stat, loaded together.
+///
+/// One value rather than two actions, because the Enter arm wants both halves
+/// of the same commit and two independent loads can land in either order under
+/// two different selections (QD-07).
+///
+/// `hash` is [`crate::text::Untrusted`] even though it is only ever COMPARED.
+/// Storing it as a bare `String` would leave a raw carrier in a struct whose
+/// other fields are typed, and a later reader could render it without the
+/// compiler asking — the same reasoning [`GitLogEntry`] records.
+#[derive(Debug, Clone)]
+pub struct GitCommitDetail {
+    pub hash: crate::text::Untrusted,
+    /// The commit message, ONE CARRIER PER LINE (QD-08).
+    ///
+    /// Not one `Untrusted` holding the whole body: measured,
+    /// `crate::text::strip_terminal_controls` replaces every character below
+    /// `0x20` — newline included — with the control replacement glyph, so a
+    /// whole multi-line body in one carrier renders as a single glyph-joined
+    /// line. Splitting at the producer is also what stops a body from
+    /// smuggling a fake row into the pane (T-vr1-03).
+    pub body: Vec<crate::text::Untrusted>,
+    pub stat: GitDiffStat,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -570,7 +615,14 @@ pub async fn load_git_log(
     cmd.args([
         "log",
         &format!("--max-count={}", limit),
-        "--format=%h\x1f%ad\x1f%an\x1f%s",
+        // The trailer field sits BEFORE `%s`, not after (QD-11, T-vr1-02).
+        // Keeping the subject LAST means `splitn(5, ..)` hands it every
+        // remaining byte, so a crafted `\x1f` inside a third-party subject
+        // cannot shift the hash, date, author or trailer slices along by one.
+        //
+        // Trailer values are joined by RECORD separator `\x1e`, so the UNIT
+        // separator keeps its one job of splitting the five fields.
+        "--format=%h\x1f%ad\x1f%an\x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)\x1f%s",
         "--date=short",
     ]);
 
@@ -588,25 +640,133 @@ pub async fn load_git_log(
     let entries = stdout
         .lines()
         .filter(|line| !line.is_empty())
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(4, '\x1f').collect();
-            if parts.len() == 4 {
-                // THE one producer. Wrapping here rather than at each consumer
-                // is what makes the carrier's guarantee structural: there is no
-                // other route from `git log` stdout into a `GitLogEntry`.
-                Some(GitLogEntry {
-                    hash: Untrusted::from_untrusted_source(parts[0].to_string()),
-                    date: Untrusted::from_untrusted_source(parts[1].to_string()),
-                    author: Untrusted::from_untrusted_source(parts[2].to_string()),
-                    message: Untrusted::from_untrusted_source(parts[3].to_string()),
-                })
-            } else {
-                None
-            }
-        })
+        .filter_map(parse_git_log_line)
         .collect();
 
     Ok(entries)
+}
+
+/// Parse ONE `git log` line in this module's format into an entry.
+///
+/// A free function rather than the closure it used to be so the parse is
+/// testable without spawning git — the arity branch below is the whole point
+/// and it needs to be exercised for a shape this build's own format string no
+/// longer produces.
+///
+/// **Two arities, deliberately** (QD-11). The guard here was `parts.len() == 4`
+/// and nothing else, so raising the format to five fields without this branch
+/// would have dropped EVERY line and emptied the whole tab — silently, since a
+/// log with no rows is indistinguishable from a repository with no commits. Five
+/// parts is today's shape; four is the pre-trailer shape (an older git, or a
+/// half-rolled-out build) and yields `co_authors: None`; anything else is still
+/// dropped.
+///
+/// This stays THE one producer. Wrapping here rather than at each consumer is
+/// what makes the carrier's guarantee structural: there is no other route from
+/// `git log` stdout into a [`GitLogEntry`].
+fn parse_git_log_line(line: &str) -> Option<GitLogEntry> {
+    let parts: Vec<&str> = line.splitn(5, '\x1f').collect();
+    match parts.len() {
+        5 => Some(GitLogEntry {
+            hash: Untrusted::from_untrusted_source(parts[0].to_string()),
+            date: Untrusted::from_untrusted_source(parts[1].to_string()),
+            author: Untrusted::from_untrusted_source(parts[2].to_string()),
+            co_authors: parse_co_authors(parts[3]),
+            message: Untrusted::from_untrusted_source(parts[4].to_string()),
+        }),
+        4 => Some(GitLogEntry {
+            hash: Untrusted::from_untrusted_source(parts[0].to_string()),
+            date: Untrusted::from_untrusted_source(parts[1].to_string()),
+            author: Untrusted::from_untrusted_source(parts[2].to_string()),
+            co_authors: None,
+            message: Untrusted::from_untrusted_source(parts[3].to_string()),
+        }),
+        _ => None,
+    }
+}
+
+/// The `Co-authored-by` trailer field as a single displayable value.
+///
+/// Input is git's `valueonly` rendering of every matched trailer, joined by
+/// `\x1e`. Each value is conventionally `Name <address>`; the address is
+/// dropped because a row has no width to spend on it and the name is what
+/// answers "who wrote this". A value with no `<` is taken whole, since a
+/// trailer whose author left the address off is still an author.
+///
+/// Deduplicated on the LOWERCASED form while preserving first-seen order
+/// (QD-01): the same collaborator spelled two ways is one collaborator, and
+/// order is the order git recorded rather than an order this function invents.
+fn parse_co_authors(field: &str) -> Option<Untrusted> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+
+    for value in field.split('\x1e') {
+        let name = match value.find('<') {
+            Some(idx) => &value[..idx],
+            None => value,
+        }
+        .trim();
+
+        if name.is_empty() {
+            continue;
+        }
+        let key = name.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        names.push(name.to_string());
+    }
+
+    if names.is_empty() {
+        None
+    } else {
+        Some(Untrusted::from_untrusted_source(names.join(", ")))
+    }
+}
+
+/// Load one commit's full message AND its diff stat, in one value.
+///
+/// Two subprocesses, one action (QD-07): `git show -s --format=%B` for the
+/// message and the existing [`load_diff_stat`] for the files. A failed
+/// `git show` yields an empty body rather than an error, so the pane still
+/// opens and reads "no message body" instead of hanging on the loading state.
+///
+/// `hash` arrives RAW and goes out as an argv element — a lookup, not something
+/// a human reads. An escaped hash would name no commit.
+pub async fn load_commit_detail(
+    project_path: &Path,
+    hash: &str,
+) -> anyhow::Result<GitCommitDetail> {
+    let output = tokio::process::Command::new("git")
+        .current_dir(project_path)
+        .args(["show", "-s", "--format=%B", hash])
+        .output()
+        .await?;
+
+    let body = if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut lines: Vec<&str> = stdout.lines().collect();
+        // `%B` ends with the message's own trailing newline, so `lines()`
+        // would otherwise hand the pane a blank tail row per newline.
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+        lines
+            .into_iter()
+            .map(|line| Untrusted::from_untrusted_source(line.to_string()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let stat = load_diff_stat(project_path, hash).await?;
+
+    Ok(GitCommitDetail {
+        hash: Untrusted::from_untrusted_source(hash.to_string()),
+        body,
+        stat,
+    })
 }
 
 /// Load diff stat for a specific commit hash.
@@ -1090,5 +1250,182 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ========================================================================
+    // The co-author trailer and the commit body (260916-vr1)
+    //
+    // The pure-parser arms take a hand-built log line, so they need no repo and
+    // run everywhere. The two real-repo arms exist for the one claim a
+    // hand-built line CANNOT make: that git's own `%(trailers:key=...)`
+    // matching is what supplies the case-insensitivity (QD-02), not a matcher
+    // of ours. Those skip gracefully where the sandbox forbids `git commit`.
+    // ========================================================================
+
+    /// Initialize a repo in `dir` with one commit carrying `message` verbatim.
+    ///
+    /// `try_init_repo_with_commit`'s message is fixed, and these tests turn on
+    /// what is IN the message — a trailer block, a multi-line body — so the
+    /// message has to be the parameter.
+    fn try_init_repo_with_message(dir: &Path, message: &str) -> bool {
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .ok()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+
+        if !git(&["init"]) {
+            return false;
+        }
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test User"]);
+
+        if std::fs::write(dir.join("file.txt"), "hello").is_err() {
+            return false;
+        }
+        if !git(&["add", "file.txt"]) {
+            return false;
+        }
+        git(&["commit", "-m", message])
+    }
+
+    /// A repository whose single commit carries `message`, or `None` when the
+    /// sandbox forbids git.
+    fn repo_with_message(message: &str) -> Option<tempfile::TempDir> {
+        let dir = tempfile::TempDir::new().ok()?;
+        if !try_init_repo_with_message(dir.path(), message) {
+            return None;
+        }
+        Some(dir)
+    }
+
+    #[tokio::test]
+    async fn a_co_authored_by_trailer_is_parsed_case_insensitively_from_a_real_repo() {
+        // The SPELLING here is the point: `Co-Authored-By`, not the lowercase
+        // `Co-authored-by` the format string asks for. Nothing in this codebase
+        // lowercases it — git's trailer matcher does (QD-02). If that ever
+        // stopped being true this arm goes red and the fix is the format
+        // string, not a matcher of ours.
+        let Some(repo) = repo_with_message(
+            "subject line\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n",
+        ) else {
+            return;
+        };
+
+        let entries = load_git_log(repo.path(), false, 10)
+            .await
+            .expect("git log in a real repo");
+        let entry = entries.first().expect("one commit");
+
+        let shown = entry
+            .co_authors
+            .as_ref()
+            .map(|c| c.shown().to_string())
+            .unwrap_or_default();
+        assert_eq!(
+            shown, "Claude Opus 5",
+            "the trailer value's name survives and its address is discarded"
+        );
+        assert_eq!(
+            entry.message.shown().to_string(),
+            "subject line",
+            "the subject stays LAST in the format, so it is unaffected by the new field"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commit_with_no_trailer_parses_to_no_co_authors() {
+        let Some(repo) = repo_with_message("a commit nobody co-authored") else {
+            return;
+        };
+
+        let entries = load_git_log(repo.path(), false, 10)
+            .await
+            .expect("git log in a real repo");
+        let entry = entries.first().expect("one commit");
+
+        assert!(
+            entry.co_authors.is_none(),
+            "an absent trailer is None, never an empty string that would render \
+             a dangling separator"
+        );
+    }
+
+    #[test]
+    fn two_co_authored_by_trailers_are_deduped_and_joined() {
+        let line = format!(
+            "abc1234\x1f2026-09-17\x1fHuman\x1f{}\x1fthe subject",
+            "Claude Opus 5 <a@example.com>\x1eGPT Five <b@example.com>\x1eclaude opus 5 <c@example.com>"
+        );
+        let entry = parse_git_log_line(&line).expect("a five-field line parses");
+
+        assert_eq!(
+            entry
+                .co_authors
+                .as_ref()
+                .map(|c| c.shown().to_string())
+                .unwrap_or_default(),
+            "Claude Opus 5, GPT Five",
+            "both names, first-seen order, and the case-differing repeat folded away"
+        );
+    }
+
+    #[test]
+    fn a_four_field_log_line_still_parses() {
+        // The arity guard used to be `parts.len() == 4` and nothing else.
+        // Bumping the format to five fields without this branch would have
+        // emptied the WHOLE log on any git that did not emit the trailer field
+        // (QD-11) — the failure mode being guarded here is silence, not an
+        // error message.
+        let line = "abc1234\x1f2026-09-17\x1fHuman\x1fthe subject";
+        let entry = parse_git_log_line(line).expect("a four-field line still parses");
+
+        assert_eq!(entry.message.shown().to_string(), "the subject");
+        assert!(entry.co_authors.is_none());
+
+        assert!(
+            parse_git_log_line("abc1234\x1f2026-09-17\x1fHuman").is_none(),
+            "three fields is still dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commit_body_is_carried_one_untrusted_per_line() {
+        let Some(repo) = repo_with_message("subject\n\nfirst body line\nsecond body line") else {
+            return;
+        };
+
+        let head = head_sha(repo.path()).expect("a repo with one commit has a HEAD");
+        let detail = load_commit_detail(repo.path(), &head)
+            .await
+            .expect("git show in a real repo");
+
+        let shown: Vec<String> = detail.body.iter().map(|l| l.shown().to_string()).collect();
+        assert_eq!(
+            shown,
+            vec![
+                "subject".to_string(),
+                String::new(),
+                "first body line".to_string(),
+                "second body line".to_string(),
+            ],
+            "four lines, one carrier each — and no trailing blank from %B's newline"
+        );
+
+        // The reason the split happens at the PRODUCER: `strip_terminal_controls`
+        // replaces every char below 0x20, newline included, so a whole body in
+        // one carrier renders as a single glyph-joined line (QD-08).
+        for line in &shown {
+            assert!(
+                !line.contains(crate::text::CONTROL_REPLACEMENT),
+                "a line that still held a newline would show the control \
+                 replacement glyph instead: {line:?}"
+            );
+        }
     }
 }
