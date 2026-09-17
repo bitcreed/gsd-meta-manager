@@ -11,6 +11,46 @@
 // `#![cfg(unix)]` because the generated hook stub is `#!/bin/sh` with mode 0755.
 // The policy it enforces is portable and is unit-tested in `src/envelope/`; only
 // the delivery mechanism proved here is Unix-shaped.
+//
+// ----------------------------------------------------------------------------
+// ETXTBSY: why `run_stub` waits, and what would have been the wrong fix.
+//
+// `a_relocated_copy_of_the_stub_refuses_instead_of_acting` flaked intermittently
+// under contention with `Text file busy` at the `spawn()` inside `run_stub`. The
+// obvious suspect is the `std::fs::copy` immediately before the second exec —
+// write a file, exec it, lose the race. **That suspect is exonerated by
+// measurement, not by argument.** `strace -f -e trace=execve` caught the failing
+// syscall, and every time it was the SANCTIONED stub, in the envelope's own hooks
+// directory. The relocated copy's path never appeared in a failing `execve` at
+// all. What flaked is the CONTROL leg, and the copy is a bystander.
+//
+// The writer is not ours and is not at this call site. `src/envelope/hooks.rs`'s
+// `write_stub` builds the stub through a `NamedTempFile` — write, chmod, persist —
+// and while that descriptor is open, any `fork` anywhere in the process gives the
+// child a copy of it. This binary runs six `#[test]` fns on six libtest threads
+// that spawn subprocesses constantly, so a SIBLING thread's forked child routinely
+// inherits it. `O_CLOEXEC` closes it at that child's own `execve`, but not one
+// instruction before — and in that window the child is a writer.
+//
+// ETXTBSY is a per-INODE condition (`i_writecount`), which is what rules out the
+// tidy-looking fix. Closing or syncing the `File` before the rename in `write_stub`
+// would change nothing: `rename(2)` does not change the inode, and the inode was
+// already exposed to a `fork` during the pre-rename write and chmod. The hazard is
+// never "the final path had a writer"; it is "this inode had a writer while a
+// sibling thread forked". By exec time the offending descriptor lives in a
+// short-lived child of another thread and clears on its own in microseconds, so
+// the only correct handle on it at the exec site is to wait it out.
+//
+// The wait is therefore ETXTBSY-only and bounded, and **expiry FAILS rather than
+// skips**. This test exists to prove that a relocated stub refuses instead of
+// acting; an exec that never happened proves nothing about refusal, so a busy
+// inode may never stand in for the refusal being asserted.
+//
+// The measurements behind all of the above — the contended baseline, the strace
+// captures, and the two other eliminations that were considered and rejected —
+// are recorded in
+// `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/deferred-items.md`
+// under `# QUICK 260917-lkg`, and are deliberately not duplicated here.
 // ============================================================================
 #![cfg(unix)]
 
