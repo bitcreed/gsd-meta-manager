@@ -33,11 +33,13 @@ pub const EXPERIMENTAL_FEATURES_ENV: &str = "GSDMM_EXPERIMENTAL_FEATURES";
 /// Unrecognised values are off rather than on for the same reason — a typo
 /// (`GSDMM_EXPERIMENTAL_FEATURES=ture`) must not enable anything.
 pub fn experimental_features_enabled_from(raw: Option<&str>) -> bool {
-    // RED: the parse is not written yet. The falsey tests pass vacuously here;
-    // the three truthy tests are the ones that must fail, and must fail because
-    // no spelling is recognised rather than because the module does not build.
-    let _ = raw;
-    false
+    let Some(value) = raw else {
+        return false;
+    };
+    let value = value.trim();
+    ["1", "true", "yes", "on"]
+        .iter()
+        .any(|truthy| value.eq_ignore_ascii_case(truthy))
 }
 
 /// Read [`EXPERIMENTAL_FEATURES_ENV`] from the process environment.

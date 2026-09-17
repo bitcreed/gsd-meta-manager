@@ -5798,7 +5798,7 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
         Span::raw("  "),
         Span::styled("[Esc]", b),
         Span::raw("back  "),
-        Span::styled("[1-0/D]", b),
+        Span::styled(if experimental { "[1-0/D]" } else { "[1-0]" }, b),
         Span::raw("tabs  "),
         Span::styled("[j/k]", b),
         Span::raw("scroll  "),
