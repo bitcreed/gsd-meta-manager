@@ -265,9 +265,65 @@ pub struct WorkflowConfig {
     pub code_review_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_chunked: Option<bool>,
-    // --- gsd-core 1.14 (quick task 260916-vqw) ---
+    // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+    // Every key below was documented by gsd-core and modelled NOWHERE by this
+    // build; `docs/GSD-CORE-SYNC.md` records the per-key introduction version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_content: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_hint_routing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_prune_state: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_command: Option<String>,
+    /// Shape varies (a list of `{ paths, depth }` rules) — surfaced read-only,
+    /// the `security_block_on` precedent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_review_depth_overrides: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_review_point: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_coverage_gate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_drift_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_drift_precheck: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_ai_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_ai_execution: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_ai_timeout: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_threshold: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_verify_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_plan_threshold: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_dom_uat: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_discuss_passes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_bounce: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_bounce_passes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_bounce_script: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_review_convergence: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_planning_gaps: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_enforcement: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart_zone_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_skip_hooks: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -680,6 +736,117 @@ mod tests {
         );
         let reparsed = parse_gsd_config(&serialize_gsd_config(&config).unwrap()).unwrap();
         assert_eq!(reparsed.workflow.as_ref().unwrap().compact_content, Some(true));
+    }
+
+    /// Every `workflow.*` key the gsd-core 1.14.0 re-sync added, parsed from
+    /// GSD's own spelling and round-tripped.
+    ///
+    /// The round trip is the load-bearing half: a field that parses and then
+    /// serialises under a different name, or not at all, is a key the Defaults
+    /// tab can read and cannot save — which is the failure mode the whole quick
+    /// task exists to remove.
+    #[test]
+    fn the_resynced_workflow_keys_parse_and_round_trip() {
+        let content = r#"{
+            "workflow": {
+                "agent_hint_routing": false,
+                "auto_prune_state": true,
+                "build_command": "cargo build",
+                "code_review_depth_overrides": [{ "paths": ["src/auth"], "depth": "deep" }],
+                "code_review_point": "execute:wave:post",
+                "compact_content": true,
+                "context_coverage_gate": false,
+                "context_drift_action": "block",
+                "context_drift_precheck": false,
+                "cross_ai_command": "codex exec -",
+                "cross_ai_execution": true,
+                "cross_ai_timeout": 600,
+                "drift_action": "auto-remap",
+                "drift_threshold": 5,
+                "human_verify_mode": "mid-flight",
+                "inline_plan_threshold": 4,
+                "live_dom_uat": true,
+                "max_discuss_passes": 2,
+                "plan_bounce": true,
+                "plan_bounce_passes": 3,
+                "plan_bounce_script": "./scripts/bounce.sh",
+                "plan_review_convergence": true,
+                "post_planning_gaps": false,
+                "security_enforcement": false,
+                "smart_zone_tokens": 125000,
+                "test_command": "cargo test --no-fail-fast",
+                "worktree_skip_hooks": true
+            }
+        }"#;
+        let config = parse_gsd_config(content).expect("the re-synced workflow fixture parses");
+        let wf = config.workflow.as_ref().expect("the workflow block parsed");
+
+        assert!(
+            wf.extra.is_empty(),
+            "these keys are supposed to be MODELLED, but {:?} fell through to the \
+             pass-through map",
+            wf.extra.keys().collect::<Vec<_>>()
+        );
+
+        assert_eq!(wf.agent_hint_routing, Some(false));
+        assert_eq!(wf.auto_prune_state, Some(true));
+        assert_eq!(wf.build_command.as_deref(), Some("cargo build"));
+        assert!(wf.code_review_depth_overrides.as_ref().unwrap().is_array());
+        assert_eq!(wf.code_review_point.as_deref(), Some("execute:wave:post"));
+        assert_eq!(wf.compact_content, Some(true));
+        assert_eq!(wf.context_coverage_gate, Some(false));
+        assert_eq!(wf.context_drift_action.as_deref(), Some("block"));
+        assert_eq!(wf.context_drift_precheck, Some(false));
+        assert_eq!(wf.cross_ai_command.as_deref(), Some("codex exec -"));
+        assert_eq!(wf.cross_ai_execution, Some(true));
+        assert_eq!(wf.cross_ai_timeout, Some(600));
+        assert_eq!(wf.drift_action.as_deref(), Some("auto-remap"));
+        assert_eq!(wf.drift_threshold, Some(5));
+        assert_eq!(wf.human_verify_mode.as_deref(), Some("mid-flight"));
+        assert_eq!(wf.inline_plan_threshold, Some(4));
+        assert_eq!(wf.live_dom_uat, Some(true));
+        assert_eq!(wf.max_discuss_passes, Some(2));
+        assert_eq!(wf.plan_bounce, Some(true));
+        assert_eq!(wf.plan_bounce_passes, Some(3));
+        assert_eq!(wf.plan_bounce_script.as_deref(), Some("./scripts/bounce.sh"));
+        assert_eq!(wf.plan_review_convergence, Some(true));
+        assert_eq!(wf.post_planning_gaps, Some(false));
+        assert_eq!(wf.security_enforcement, Some(false));
+        assert_eq!(wf.smart_zone_tokens, Some(125000));
+        assert_eq!(wf.test_command.as_deref(), Some("cargo test --no-fail-fast"));
+        assert_eq!(wf.worktree_skip_hooks, Some(true));
+
+        let serialized = serialize_gsd_config(&config).expect("serialises");
+        let reparsed = parse_gsd_config(&serialized).expect("re-parses");
+        let rwf = reparsed.workflow.as_ref().unwrap();
+        assert_eq!(rwf.agent_hint_routing, Some(false));
+        assert_eq!(rwf.smart_zone_tokens, Some(125000));
+        assert_eq!(rwf.human_verify_mode.as_deref(), Some("mid-flight"));
+        assert_eq!(rwf.test_command.as_deref(), Some("cargo test --no-fail-fast"));
+        assert!(rwf.code_review_depth_overrides.as_ref().unwrap().is_array());
+        assert_eq!(
+            serialized,
+            serialize_gsd_config(&reparsed).unwrap(),
+            "the save path is not a fixed point over the re-synced keys"
+        );
+    }
+
+    /// A `workflow` block that names none of the new keys leaves every one of
+    /// them unset, so an untouched project's config is not rewritten with
+    /// defaults this build invented.
+    #[test]
+    fn the_resynced_workflow_keys_default_to_unset() {
+        let config = parse_gsd_config(r#"{"workflow": {"research": true}}"#).unwrap();
+        let wf = config.workflow.as_ref().unwrap();
+        assert!(wf.agent_hint_routing.is_none());
+        assert!(wf.build_command.is_none());
+        assert!(wf.code_review_point.is_none());
+        assert!(wf.compact_content.is_none());
+        assert!(wf.smart_zone_tokens.is_none());
+        assert!(wf.worktree_skip_hooks.is_none());
+        let serialized = serialize_gsd_config(&config).unwrap();
+        assert!(!serialized.contains("agent_hint_routing"));
+        assert!(!serialized.contains("smart_zone_tokens"));
     }
 
     /// ID-1: the baseline a future sync diffs from has to be measured, and a
