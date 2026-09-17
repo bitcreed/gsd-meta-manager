@@ -6757,6 +6757,29 @@ fn append_passthrough_entries(
         if let Some(block) = config.capabilities.as_ref() {
             take("capabilities.", &block.extra);
         }
+        // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+        //
+        // These four blocks were ADDED by the same re-sync that wrote this
+        // walk, and the walk was not extended to cover them: their `extra` maps
+        // captured unmodelled keys (so the save path stayed lossless) but no
+        // row was ever emitted, so the key was invisible in the Defaults tab —
+        // the exact "silently missing" failure this function exists to prevent,
+        // relocated from the write path to the display path. A block added to
+        // `GsdConfig` MUST get a `take` here; the census in
+        // `an_unmodelled_key_in_every_nested_block_becomes_a_visible_pass_through_row`
+        // is what makes forgetting it a test failure instead of a quiet gap.
+        if let Some(block) = config.features.as_ref() {
+            take("features.", &block.extra);
+        }
+        if let Some(block) = config.gates.as_ref() {
+            take("gates.", &block.extra);
+        }
+        if let Some(block) = config.planning.as_ref() {
+            take("planning.", &block.extra);
+        }
+        if let Some(block) = config.plan_review.as_ref() {
+            take("plan_review.", &block.extra);
+        }
     }
 
     // `(value, from_defaults)`, defaults first so the project overwrites them.
@@ -7891,13 +7914,29 @@ mod tests {
     /// certifies the empty branch, which is why every caller below first
     /// asserts that a known option KEY reached a cell.
     fn render_defaults_to_text(width: u16, height: u16, selected: usize) -> String {
+        render_defaults_config_to_text(populated_gsd_config(), width, height, selected)
+    }
+
+    /// [`render_defaults_to_text`] over a CALLER-SUPPLIED config.
+    ///
+    /// The pass-through rows cannot be probed through the populated fixture:
+    /// that fixture is deliberately free of unmodelled keys so
+    /// `DEFAULTS_OPTION_COUNT` keeps counting static rows only (the plan's Task
+    /// 1 step 7). A pass-through row only exists for a config that carries a
+    /// key this build has no typed field for, so the probe has to bring its own.
+    fn render_defaults_config_to_text(
+        config: crate::state_reader::config_json::GsdConfig,
+        width: u16,
+        height: u16,
+        selected: usize,
+    ) -> String {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
         let mut ctx = test_ctx();
         {
             let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.defaults_config = Some(populated_gsd_config());
+            cache.defaults_config = Some(config);
             cache.defaults_selected = selected;
         }
         let screen = DetailScreen::new(TEST_ALIAS.to_string());
@@ -8101,6 +8140,127 @@ mod tests {
             !modelled.is_empty() && !keys.contains(&"research"),
             "a MODELLED key leaked into the pass-through rows"
         );
+    }
+
+    /// EVERY nested block `GsdConfig` carries an `Option<…Config>` field for.
+    ///
+    /// **This list is the fix for the bug it pins.** The original 260916-vqw
+    /// pass-through walk enumerated eleven blocks by hand and then Task 3 of the
+    /// same item added four more (`features`, `gates`, `planning`,
+    /// `plan_review`) without extending the walk — so an unmodelled key under
+    /// any of those four was preserved on save but drawn nowhere, breaking the
+    /// item's own must-have that every key in a project's config.json is
+    /// visible somewhere in the Defaults tab. Spelled as data and asserted over
+    /// exhaustively so the next block added to `GsdConfig` fails HERE rather
+    /// than becoming invisible in the same way.
+    const NESTED_CONFIG_BLOCKS: &[&str] = &[
+        "capabilities",
+        "claude_orchestration",
+        "dynamic_routing",
+        "external_job",
+        "features",
+        "gates",
+        "git",
+        "graphify",
+        "hooks",
+        "intel",
+        "plan_review",
+        "planning",
+        "review",
+        "statusline",
+        "workflow",
+    ];
+
+    /// The four blocks the gap report named — a subset of
+    /// [`NESTED_CONFIG_BLOCKS`], called out so a failure says which regression
+    /// came back rather than only that the census shrank.
+    const BLOCKS_THE_PASSTHROUGH_WALK_ONCE_OMITTED: &[&str] =
+        &["features", "gates", "plan_review", "planning"];
+
+    /// A config carrying one unmodelled key at the top level and one inside
+    /// every nested block, so the walk is probed at each of its sources.
+    fn config_with_an_unmodelled_key_in_every_block(
+    ) -> crate::state_reader::config_json::GsdConfig {
+        let mut json = serde_json::Map::new();
+        json.insert("zz_top_level_probe".to_string(), serde_json::json!(1));
+        for block in NESTED_CONFIG_BLOCKS {
+            json.insert(
+                (*block).to_string(),
+                serde_json::json!({ "zz_block_probe": block }),
+            );
+        }
+        crate::state_reader::config_json::parse_gsd_config(
+            &serde_json::Value::Object(json).to_string(),
+        )
+        .expect("the per-block pass-through fixture parses")
+    }
+
+    #[test]
+    fn an_unmodelled_key_in_every_nested_block_becomes_a_visible_pass_through_row() {
+        let config = config_with_an_unmodelled_key_in_every_block();
+        let entries = build_defaults_entries(&config, None);
+        let rows = passthrough_rows(&entries);
+        let keys: Vec<&str> = rows.iter().map(|entry| entry.key.as_ref()).collect();
+
+        // The NON-VACUITY floor: the fixture really does carry an unmodelled
+        // key per block, so a walk that reached none would fail loudly here
+        // rather than pass on an empty expectation.
+        assert_eq!(
+            keys.len(),
+            NESTED_CONFIG_BLOCKS.len() + 1,
+            "expected one pass-through row per nested block plus the top level; got {keys:?}"
+        );
+
+        for block in NESTED_CONFIG_BLOCKS {
+            let dotted = format!("{block}.zz_block_probe");
+            assert!(
+                keys.contains(&dotted.as_str()),
+                "`{dotted}` is captured by `{block}`'s `extra` map and survives a \
+                 save, but `append_passthrough_entries` never emits a row for it — \
+                 the operator cannot see the key exists. Add `take(\"{block}.\", \
+                 &block.extra)` to `collect()`. Rows present: {keys:?}"
+            );
+        }
+        assert!(keys.contains(&"zz_top_level_probe"));
+
+        // Pass-through rows stay READ-ONLY: visible is not editable.
+        for entry in &rows {
+            assert!(
+                matches!(entry.kind, ConfigValueKind::ReadOnly),
+                "`{}` is a pass-through row but its kind is {:?}",
+                entry.key,
+                entry.kind
+            );
+        }
+        let mut editable = config.clone();
+        for block in BLOCKS_THE_PASSTHROUGH_WALK_ONCE_OMITTED {
+            let dotted = format!("{block}.zz_block_probe");
+            assert!(
+                !set_config_value(&mut editable, &dotted, "false"),
+                "`{dotted}` is a key this build does not model — no set arm may claim it"
+            );
+            assert!(
+                !clear_config_value(&mut editable, &dotted),
+                "`{dotted}` must have no clear arm"
+            );
+            assert!(
+                !mutate_config_entry(&mut editable, &dotted, &ConfigValueKind::ReadOnly),
+                "`{dotted}` must have no toggle arm"
+            );
+        }
+
+        // And the rows REACH THE TERMINAL, not just the entry vector. The
+        // pass-through category is last, so selecting the final row scrolls the
+        // whole block into view.
+        let last = entries.len() - 1;
+        let rendered = render_defaults_config_to_text(config, 140, 48, last);
+        for block in BLOCKS_THE_PASSTHROUGH_WALK_ONCE_OMITTED {
+            let dotted = format!("{block}.zz_block_probe");
+            assert!(
+                rendered.contains(&dotted),
+                "`{dotted}` never reached a terminal cell:\n{rendered}"
+            );
+        }
     }
 
     /// The tracer's negative half: the one key the todo named by hand must be a
