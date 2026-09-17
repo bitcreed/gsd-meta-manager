@@ -501,6 +501,10 @@ impl App {
             needs_redraw: true,
             active_sessions: Vec::new(),
             archive_cache: HashMap::new(),
+            // The ONE production read of `GSDMM_EXPERIMENTAL_FEATURES`, at
+            // startup, resolved into the one field every gate point reads
+            // (260917-fko D1, threat T-fko-02).
+            experimental: crate::experimental::experimental_features_enabled(),
         };
         ctx.filtered_aliases = ctx.sorted_aliases();
 
@@ -4442,8 +4446,12 @@ mod tests {
             // Not alias-keyed at all. `session_spawned_runs` is a set of run
             // ids that grows by one per run this session starts, with
             // `driver_max_concurrent` defaulting to one; the rest are scalars,
-            // handles and single values.
+            // handles and single values. `experimental` is the startup-resolved
+            // experimental-features flag (260917-fko D1): one scalar bool, not
+            // alias-keyed, never mutated after `from_config`, and therefore
+            // nothing for the prune to reach.
             session_spawned_runs: _,
+            experimental: _,
             config: _,
             config_path: _,
             table_state: _,

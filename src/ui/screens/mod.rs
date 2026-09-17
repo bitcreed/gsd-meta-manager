@@ -1384,6 +1384,22 @@ pub struct AppContext {
     pub needs_redraw: bool,
     pub active_sessions: Vec<crate::session_detector::ClaudeSession>,
     pub archive_cache: HashMap<String, crate::archive::MilestoneArchive>,
+    /// Whether the experimental surfaces — today, every driver surface — exist
+    /// at all in this TUI session (quick task 260917-fko, D1/D2).
+    ///
+    /// **Resolved exactly once, at startup**, in `App::from_config` from
+    /// [`crate::experimental::experimental_features_enabled`], and read from
+    /// here by every gate point thereafter. One field rather than a call at
+    /// each site, because two sites re-reading the environment could disagree
+    /// mid-session and leave a tab that cannot be navigated to or a key that
+    /// acts on a surface the user cannot see (threat T-fko-02).
+    ///
+    /// `false` is the default and that is load-bearing: the driver spawns a
+    /// real agent against a real repository, and a user who never asked for
+    /// that must not be able to discover it by pressing a key. It is a
+    /// **discovery** gate, not an authorisation boundary — `driver_opt_in`
+    /// remains the consent gate and is untouched by it (D4).
+    pub experimental: bool,
 }
 
 /// How the dashboard orders its rows (D-25, OBS-07).
@@ -1484,6 +1500,20 @@ pub fn attention_rank(needs_human: bool, driven_and_live: bool) -> u8 {
 }
 
 impl AppContext {
+    /// The same context with [`AppContext::experimental`] set to `on`.
+    ///
+    /// Every test fixture in the tree builds its context with the flag ON, so
+    /// the roughly thirty driver tests written before quick task 260917-fko
+    /// keep asserting exactly what they always asserted. The flag-off tests
+    /// flip this one field rather than growing a second full-field `AppContext`
+    /// literal beside each fixture.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_experimental(mut self, on: bool) -> Self {
+        self.experimental = on;
+        self
+    }
+
     /// Get sorted project aliases for consistent ordering in the table.
     ///
     /// Alphabetical order is computed first in **both** modes, which is what
@@ -2256,6 +2286,10 @@ mod tests {
             needs_redraw: false,
             active_sessions: Vec::new(),
             archive_cache: HashMap::new(),
+            // Fixtures default the experimental flag ON so every driver test
+            // written before 260917-fko keeps asserting what it always did;
+            // the flag-off tests call `with_experimental(false)`.
+            experimental: true,
         };
         ctx.recompute_filtered_aliases();
         ctx

@@ -3272,7 +3272,7 @@ impl Screen for DetailScreen {
         }
 
         // Render footer with tab-appropriate hints
-        let footer = build_footer(&sub_view, footer_area.width);
+        let footer = build_footer(&sub_view, footer_area.width, ctx.experimental);
         frame.render_widget(footer, footer_area);
     }
 
@@ -5782,7 +5782,13 @@ fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
 /// other ten keep their single shipped form, with the shared prefix's tabs hint
 /// changed once, for every tab, so `Shift+D` is discoverable from anywhere in
 /// the detail view.
-fn footer_spans(sub_view: &DetailSubView, width: u16) -> Vec<Span<'static>> {
+///
+/// `experimental` decides that shared hint. **It is the one string that would
+/// otherwise leak the Driver tab onto all ten other tabs** (260917-fko D2): a
+/// user with the flag off who read `[1-0/D]` would have been told about a tab
+/// that does not exist and a key that does nothing, which is the discovery this
+/// gate exists to prevent.
+fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec<Span<'static>> {
     if matches!(sub_view, DetailSubView::Driver) {
         return driver_footer_spans(width);
     }
@@ -5876,8 +5882,8 @@ fn footer_spans(sub_view: &DetailSubView, width: u16) -> Vec<Span<'static>> {
 }
 
 /// Build the footer line with tab-appropriate key hints.
-fn build_footer(sub_view: &DetailSubView, width: u16) -> Paragraph<'static> {
-    Paragraph::new(Line::from(footer_spans(sub_view, width)))
+fn build_footer(sub_view: &DetailSubView, width: u16, experimental: bool) -> Paragraph<'static> {
+    Paragraph::new(Line::from(footer_spans(sub_view, width, experimental)))
 }
 
 // --- Defaults tab helpers ---
@@ -9255,11 +9261,11 @@ mod tests {
     /// The footer's hint set as one string, at a width where every tab except
     /// the Driver tab renders its single shipped form.
     fn footer_text(sub_view: &DetailSubView) -> String {
-        footer_text_at(sub_view, 120)
+        footer_text_at(sub_view, 120, true)
     }
 
-    fn footer_text_at(sub_view: &DetailSubView, width: u16) -> String {
-        footer_spans(sub_view, width)
+    fn footer_text_at(sub_view: &DetailSubView, width: u16, experimental: bool) -> String {
+        footer_spans(sub_view, width, experimental)
             .iter()
             .map(|s| s.content.as_ref())
             .collect()
@@ -9322,19 +9328,53 @@ mod tests {
         }
     }
 
+    /// The flag-off half of the same shared prefix (260917-fko D2).
+    ///
+    /// Asserted as the **exact prefix string**, not as "the letter `D` is
+    /// absent": eight of the ten non-driver footers legitimately contain a `D`
+    /// (`[Enter]done`, `[d]el`, `[d] defaults`, `[PgUp/PgDn]`), so a
+    /// letter-level negative check would be either falsely red or, restricted
+    /// enough to pass, vacuous.
+    #[test]
+    fn the_tabs_hint_drops_shift_d_on_every_tab_when_experimental_is_off() {
+        for sub_view in [
+            DetailSubView::PhaseList,
+            DetailSubView::RoadmapViz,
+            DetailSubView::Backlog,
+            DetailSubView::GitHistory,
+            DetailSubView::Pipeline,
+            DetailSubView::Queue,
+            DetailSubView::Sessions,
+            DetailSubView::Archive,
+            DetailSubView::Defaults,
+            DetailSubView::Browse,
+        ] {
+            let text = footer_text_at(&sub_view, 120, false);
+            assert!(
+                text.starts_with("  [Esc]back  [1-0]tabs  "),
+                "{sub_view:?} must not advertise a Driver tab the user cannot \
+                 reach: {text}"
+            );
+            assert!(
+                !text.contains("[1-0/D]"),
+                "{sub_view:?} still leaks the Driver tab into its tabs hint: {text}"
+            );
+        }
+    }
+
     #[test]
     fn the_driver_footer_has_three_measured_width_forms() {
         assert_eq!(
-            footer_text_at(&DetailSubView::Driver, 120),
+            footer_text_at(&DetailSubView::Driver, 120, true),
             "  [Esc]back  [1-0/D]tabs  [j/k]runs  [PgUp/PgDn]output  [f]ollow  [i]nject  \
              [s]tart  [x]stop  [?]help"
         );
         assert_eq!(
-            footer_text_at(&DetailSubView::Driver, 80),
+            footer_text_at(&DetailSubView::Driver, 80, true),
             "  [Esc]back  [j/k]runs  [f]ollow  [i]nject  [s]tart  [x]stop  [?]help"
         );
         assert_eq!(
-            footer_text_at(&DetailSubView::Driver, 50),
+            footer_text_at(&DetailSubView::Driver, 50, true),
             "  [j/k]runs  [i]nject  [s]tart  [x]stop  [?]help"
         );
     }
@@ -9351,7 +9391,7 @@ mod tests {
     #[test]
     fn each_driver_footer_form_fits_the_width_that_selects_it() {
         for width in [DRIVER_FOOTER_FULL_CELLS, DRIVER_FOOTER_MEDIUM_CELLS, 48] {
-            let text = footer_text_at(&DetailSubView::Driver, width);
+            let text = footer_text_at(&DetailSubView::Driver, width, true);
             assert!(
                 text.chars().count() <= usize::from(width),
                 "the driver footer at width {width} is {} cells: {text}",
@@ -9676,6 +9716,10 @@ mod tests {
             needs_redraw: false,
             active_sessions: Vec::new(),
             archive_cache: HashMap::new(),
+            // Fixtures default the experimental flag ON, so every driver test
+            // written before 260917-fko keeps asserting what it always did;
+            // the flag-off tests call `with_experimental(false)`.
+            experimental: true,
         }
     }
 
