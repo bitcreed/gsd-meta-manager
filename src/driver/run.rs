@@ -4469,6 +4469,65 @@ mod tests {
         );
     }
 
+    /// Read `getpgrp()` and the `/proc/<pid>/stat` pgrp field so that the pair
+    /// returned provably straddles no `setpgid`, giving up after `limit`.
+    ///
+    /// A STRADDLE is the one thing this excludes. A sibling libtest thread's
+    /// `setpgid(0, 0)` landing between the two reads leaves the syscall on the
+    /// old inherited group and the `/proc` parse on this process's own pid, and
+    /// the pair then disagrees for a reason that has nothing to do with either
+    /// reader being wrong. The body is a seqlock read — `current_group()`, the
+    /// parse, `current_group()` again — and a window whose leading and trailing
+    /// reads agree cannot have contained a move, because the parse happened
+    /// strictly between them.
+    ///
+    /// `setpgid(0, 0)` always sets the group to the caller's own pid, so it is
+    /// one-way and idempotent: the group cannot move away and back inside one
+    /// window. That is what makes `leading == trailing` sufficient rather than
+    /// merely suggestive. A second, DIFFERENT `setpgid` target in this binary
+    /// would invalidate that reasoning, and it would have to be re-derived.
+    ///
+    /// An unreadable `/proc/<pid>/stat` is **not** a retry condition. It fires
+    /// the `.expect` on the spot, because an unreadable stat file is the parse
+    /// failing rather than the group moving — and retrying it would turn this
+    /// helper into a swallow-all that hides exactly the D-04 defect the caller's
+    /// equality exists to catch. The ONLY retry condition is "the group moved
+    /// inside the observation window".
+    ///
+    /// The mechanism, the evidence that established it and the measured rates
+    /// are in this module's header section on the cross-test `setpgid` hazard,
+    /// and are deliberately not repeated here.
+    fn group_observations_without_a_move_within(limit: Duration) -> (u32, u32) {
+        let deadline = std::time::Instant::now() + limit;
+        let mut attempts: u32 = 0;
+        while std::time::Instant::now() < deadline {
+            attempts += 1;
+            let leading = current_group();
+            let from_proc = kernel_process_group(std::process::id())
+                .expect("this process's own /proc/<pid>/stat is readable");
+            let trailing = current_group();
+            if leading == trailing {
+                return (leading, from_proc);
+            }
+            // Countable, not merely absent: a branch that never fires is
+            // indistinguishable from a branch that was never needed, so each
+            // discarded observation says so on stderr (visible under
+            // `--nocapture`). This is `tests/envelope_tracer.rs`'s convention
+            // for its own bounded retry.
+            eprintln!(
+                "group_observations_without_a_move_within: attempt {attempts} straddled a \
+                 setpgid ({leading} -> {trailing}); the observation is discarded, not asserted on"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!(
+            "the process group kept moving across every observation window: {attempts} \
+             attempts in {limit:?}, and not one of them was free of a setpgid. No pair is \
+             returned, because a fabricated pair would make the caller's equality assert an \
+             agreement this process never observed"
+        );
+    }
+
     #[test]
     fn the_current_group_agrees_with_the_proc_parse() {
         // Two independent sources of one fact: the `getpgrp` syscall and the
@@ -4479,10 +4538,17 @@ mod tests {
         //
         // Deliberately NOT `establish_own_group()`: `setpgid` in a shared test
         // binary would move the harness's own process group, and with it every
-        // other test in this process.
-        let from_syscall = current_group();
-        let from_proc = kernel_process_group(std::process::id())
-            .expect("this process's own /proc/<pid>/stat is readable");
+        // other test in this process. That decision stands, and its premise has
+        // STRENGTHENED — the hazard is not hypothetical, it is ACTUAL and it is
+        // caused by a different test in this same binary. `src/driver/mod.rs`'s
+        // look-alike test reaches `establish_own_group()` transitively through
+        // `drive` -> `execute_run`, once per `LOOK_ALIKE_PAIRS` entry, and on
+        // Linux `setpgid(0, 0)` resolves against the THREAD-GROUP LEADER, so
+        // that worker thread moves this whole binary's group. See this module's
+        // header section on the cross-test `setpgid` hazard. The two reads are
+        // therefore taken through a helper that proves they straddled no move.
+        let (from_syscall, from_proc) =
+            group_observations_without_a_move_within(Duration::from_secs(30));
 
         assert_eq!(
             from_syscall, from_proc,
