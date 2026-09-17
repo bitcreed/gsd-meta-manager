@@ -9,7 +9,7 @@
       "quick_id": "260916-vqw",
       "client_id": null,
       "description": "Sync gsd-core config and expose new options (area: config, severity: major) — todo: .planning/todos/pending/2026-09-15-sync-gsd-core-config-and-expose-new-options.md",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [],
       "planned_files": [
         "src/state_reader/config_json.rs",
@@ -23,14 +23,14 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 0,
-      "commit": null,
+      "commit": "26cbef715bdb3c0982a09a7bbe4e3a884355e6c1",
       "failure_reason": null
     },
     {
       "quick_id": "260916-vqx",
       "client_id": null,
       "description": "Show plan token estimate and actual counts (area: ui, severity: major) — todo: .planning/todos/pending/2026-09-11-show-plan-token-estimate-and-actual-counts.md",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [],
       "planned_files": [
         "src/state_reader/disk_status.rs",
@@ -43,7 +43,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 1,
-      "commit": null,
+      "commit": "f330b9a",
       "failure_reason": null
     },
     {
@@ -95,7 +95,7 @@
       "quick_id": "260916-vr0",
       "client_id": null,
       "description": "Backlog tab shows empty despite non-zero count on overview (area: ui, severity: major) — todo: .planning/todos/pending/2026-09-15-backlog-tab-shows-empty-despite-non-zero-count-on-overview.md",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [],
       "planned_files": [
         "src/state_reader/backlog.rs",
@@ -108,14 +108,14 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 0,
-      "commit": null,
+      "commit": "f1cd6e9",
       "failure_reason": null
     },
     {
       "quick_id": "260916-vr1",
       "client_id": null,
       "description": "Git view - show co-author model and full commit message on Enter (area: ui, severity: minor) — todo: .planning/todos/pending/2026-08-18-git-view-show-co-author-model-and-full-commit-message-on-ent.md",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [],
       "planned_files": [
         "src/state_reader/git_ops.rs",
@@ -132,7 +132,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 2,
-      "commit": null,
+      "commit": "4a8094e",
       "failure_reason": null
     }
   ]
