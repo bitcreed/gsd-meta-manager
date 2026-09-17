@@ -1063,6 +1063,15 @@ fn probe_ctx(identity: &str) -> AppContext {
     // config is `None` the tab paints "No config loaded" and nothing else,
     // which is the empty branch.
     cache.defaults_config = Some(hostile_gsd_config(identity));
+    // The cursor is moved onto the first PASS-THROUGH row (260916-vqw). Those
+    // rows sit after every authored category, so at this probe's 60-row
+    // terminal a 130-row list would never draw one with the cursor at zero —
+    // the fixture above would be populated, unrendered, and counted as
+    // coverage. The index is DERIVED from the config the fixture built, never
+    // spelled; `chrome_ctx` has no config, so the baseline keeps its zero.
+    if let Some(idx) = super::detail::first_passthrough_entry(cache) {
+        cache.defaults_selected = idx;
+    }
 
     // The Driver tab's run list. A `RunSummary` is read back out of a run's
     // committed `run.json`, so its `run_id`, `goal` and `gsd_command` are all
@@ -1223,19 +1232,35 @@ fn hostile_milestone_archive(identity: &str) -> crate::archive::MilestoneArchive
     }
 }
 
-/// A parsed `.planning/config.json` whose string-valued keys carry `identity`.
+/// A parsed `.planning/config.json` whose string-valued keys carry `identity`
+/// — and, since 260916-vqw, whose unmodelled KEY carries it too.
 ///
 /// The Defaults tab draws `entry.value` for every key it knows about. Most of
 /// those values are booleans and numbers, which a fixture cannot make hostile;
 /// the three below are the free-form strings a project's own config supplies,
 /// and they are what makes the tab render identity at all.
+///
+/// **The `extra` entry is a different SITE, not more of the same one.** Before
+/// quick task 260916-vqw every `ConfigEntry::key` was a `&'static str` this
+/// build authored, and the tab's own comment said so. Pass-through rows put a
+/// key read out of the project's config.json on screen, so the KEY became
+/// attacker-influenced text for the first time. Putting the identity in the key
+/// AND the value means the probe goes red for whichever of the two a future
+/// edit forgets to escape.
 fn hostile_gsd_config(identity: &str) -> crate::state_reader::config_json::GsdConfig {
-    use crate::state_reader::config_json::GsdConfig;
+    use crate::state_reader::config_json::{ExtraKeys, GsdConfig};
+
+    let mut extra = ExtraKeys::new();
+    extra.insert(
+        format!("unmodelled_{identity}"),
+        serde_json::Value::String(identity.to_string()),
+    );
 
     GsdConfig {
         mode: identity.to_string(),
         granularity: identity.to_string(),
         project_code: Some(identity.to_string()),
+        extra,
         ..Default::default()
     }
 }

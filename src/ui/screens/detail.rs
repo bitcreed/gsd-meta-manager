@@ -2299,7 +2299,7 @@ impl Screen for DetailScreen {
                                 let dropdown_idx = cache.defaults_dropdown_selected.min(options.len().saturating_sub(1));
                                 if let Some(value) = options.get(dropdown_idx).cloned() {
                                     if let Some(active) = active_config_mut(cache) {
-                                        if set_config_value(active, entry.key, &value) {
+                                        if set_config_value(active, entry.key.as_ref(), &value) {
                                             persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
@@ -2334,7 +2334,7 @@ impl Screen for DetailScreen {
                                         };
                                 } else if matches!(entry.kind, ConfigValueKind::Integer) {
                                     if let Some(active) = active_config_mut(cache) {
-                                        if mutate_config_entry(active, entry.key, &entry.kind) {
+                                        if mutate_config_entry(active, entry.key.as_ref(), &entry.kind) {
                                             persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
@@ -2421,8 +2421,16 @@ impl Screen for DetailScreen {
                     let selected = cache.defaults_selected;
                     if let Some(entry) = entries.get(selected).cloned() {
                         let key = entry.key;
+                        // The status message interleaves the key with a
+                        // sentence this build wrote, so there is no field to
+                        // give a carrier and the escape happens at the
+                        // `format!` (the WR-03 shape). A pass-through key
+                        // reaches the `cannot be cleared` arm by construction,
+                        // which is exactly the arm an unescaped key would leak
+                        // through.
+                        let key_shown = shown(key.as_ref());
                         if let Some(active) = active_config_mut(cache) {
-                            let cleared = clear_config_value(active, key);
+                            let cleared = clear_config_value(active, key.as_ref());
                             if cleared {
                                 persist_active_config(
                                     target,
@@ -2431,12 +2439,12 @@ impl Screen for DetailScreen {
                                     &mut ctx.status_message,
                                 );
                                 ctx.status_message = Some((
-                                    format!("Cleared {}", key),
+                                    format!("Cleared {}", key_shown),
                                     std::time::Instant::now(),
                                 ));
                             } else {
                                 ctx.status_message = Some((
-                                    format!("{} cannot be cleared", key),
+                                    format!("{} cannot be cleared", key_shown),
                                     std::time::Instant::now(),
                                 ));
                             }
@@ -3157,9 +3165,9 @@ impl DetailScreen {
                     let key = entry.key;
                     if let Some(active) = active_config_mut(cache) {
                         let applied = if buffer.is_empty() {
-                            clear_config_value(active, key)
+                            clear_config_value(active, key.as_ref())
                         } else {
-                            set_string_value(active, key, &buffer)
+                            set_string_value(active, key.as_ref(), &buffer)
                         };
                         if applied {
                             persist_active_config(
@@ -4547,8 +4555,18 @@ impl DetailScreen {
                 } else {
                     Span::raw("                  ")
                 };
+                // READ BY A HUMAN, through a `ListItem`, and untrusted since
+                // quick task 260916-vqw (T-VQW-01). The comment that used to
+                // sit at `val_span` said "`category` and `key` beside it are
+                // `&'static str` literals from `build_defaults_entries` and
+                // need nothing" — true while every row was authored here, and
+                // FALSE the moment `append_passthrough_entries` started
+                // emitting rows whose key is a dotted path built out of the
+                // project's own `.planning/config.json`. Escaped BEFORE the
+                // padding, so the column width counts what the terminal will
+                // draw rather than what the file contained.
                 let key_span = Span::styled(
-                    format!("{:<30}", entry.key),
+                    format!("{:<30}", shown(entry.key.as_ref())),
                     Style::default().fg(Color::White),
                 );
                 let val_style = match entry.kind {
@@ -4572,8 +4590,9 @@ impl DetailScreen {
                 // `.planning/config.json`, and its string-valued keys (`mode`,
                 // `granularity`, `project_code`, `phase_naming`,
                 // `response_language`) are free-form text this build did not
-                // author. `category` and `key` beside it are `&'static str`
-                // literals from `build_defaults_entries` and need nothing.
+                // author. `category` beside it is a `&'static str` literal
+                // from `build_defaults_entries` and needs nothing; `key` is
+                // NO LONGER in that class and is escaped at its own span.
                 //
                 // Found by POPULATING the fixture, not by reading (21-25 T2):
                 // `defaults_config` was `None` under probe, so this tab painted
@@ -4645,8 +4664,13 @@ impl DetailScreen {
             if let Some(editing_idx) = cache.defaults_editing {
                 if let Some(entry) = entries.get(editing_idx) {
                     if matches!(entry.kind, ConfigValueKind::String) {
-                        let title =
-                            format!(" {} {DEFAULTS_EDIT_BRANCH_TOKEN} ", entry.key);
+                        // `Block::title` PRESERVES the invisible class (the
+                        // per-widget-family table in `render_escape_guard.rs`),
+                        // so the key is escaped here as well as in the list.
+                        let title = format!(
+                            " {} {DEFAULTS_EDIT_BRANCH_TOKEN} ",
+                            shown(entry.key.as_ref())
+                        );
                         // READ BY A HUMAN, and the whole point of `EditBuffer`:
                         // there is no other route from the buffer to a cell.
                         // `Span::styled(buffer.clone(), ..)` does not compile.
@@ -4696,7 +4720,7 @@ impl DetailScreen {
                     if !options.is_empty() {
                         let dropdown_idx =
                             cache.defaults_dropdown_selected.min(options.len() - 1);
-                        let title = format!(" {} ", entry.key);
+                        let title = format!(" {} ", shown(entry.key.as_ref()));
                         let popup_w =
                             dropdown_popup_width(&options, &entry.help, &title, area.width);
                         let popup_h = (options.len() as u16 + 2).min(area.height.saturating_sub(2));
@@ -5359,11 +5383,16 @@ enum ConfigValueKind {
 /// What one Defaults-tab option MEANS, authored at the option's definition site.
 ///
 /// **Why a field and not a lookup table** (ID-01, quick task 260909-s0n). The
-/// Defaults tab lists 73 raw GSD config keys — `nyquist_validation`,
+/// Defaults tab lists 130 raw GSD config keys — `nyquist_validation`,
 /// `workflow.specless_probe_fallback`, `granularity` — as bare identifiers next
 /// to a value, and there is no second place in this TUI that says what any of
 /// them does. A `HashMap<&str, &str>` keyed by config key would compile fine on
-/// the day a 74th option is added and silently render a blank line at runtime.
+/// the day a 131st option is added and silently render a blank line at runtime.
+///
+/// **The mechanism was measured doing its job.** The gsd-core 1.14.0 re-sync
+/// (quick task 260916-vqw) added 57 options in one pass; every one of them was
+/// a compile error until its `ConfigHelp` was written, which is exactly the
+/// breakage a side table would have replaced with 57 blank lines.
 /// Carrying the help as a REQUIRED field, supplied through
 /// [`build_defaults_entries`]'s `push` closure, makes a new option with no help
 /// a COMPILE ERROR instead. That breakage is the coverage mechanism.
@@ -5388,12 +5417,30 @@ struct ConfigHelp {
     /// `every_choice_bearing_entry_documents_exactly_its_dropdown_options`, so
     /// the list a human READS is the list the editor OFFERS.
     choices: &'static [(&'static str, &'static str)],
+    /// The gsd-core release that introduced this key, as a tag name
+    /// (`"v1.14.0"`), or `""` for a key whose introduction predates the sync
+    /// record (quick task 260916-vqw).
+    ///
+    /// **MEASURED from gsd-core's history, never recalled** (ID-4). The
+    /// command is recorded in `docs/GSD-CORE-SYNC.md` so the next sync
+    /// reproduces it rather than guessing:
+    ///
+    /// ```text
+    /// C=$(git -C ~/projects/node/gsd-core log --reverse --format=%H \
+    ///       -S"<dotted.key>" -- docs/CONFIGURATION.md src/ | head -1)
+    /// git -C ~/projects/node/gsd-core tag --contains "$C" --sort=v:refname | head -1
+    /// ```
+    ///
+    /// It is a `&'static str` this build authored, exactly like `summary` and
+    /// `choices`, so rendering it keeps the help pane outside the file's
+    /// `shown()` rule by construction (T-S0N-01).
+    since: &'static str,
 }
 
 impl ConfigHelp {
     /// Help for an option with no discrete choice set.
     const fn new(summary: &'static str) -> Self {
-        Self { summary, choices: &[] }
+        Self { summary, choices: &[], since: "" }
     }
 
     /// Help for an option whose values are enumerable, each with its own
@@ -5402,7 +5449,20 @@ impl ConfigHelp {
         summary: &'static str,
         choices: &'static [(&'static str, &'static str)],
     ) -> Self {
-        Self { summary, choices }
+        Self { summary, choices, since: "" }
+    }
+
+    /// Record the gsd-core release this key arrived in.
+    ///
+    /// A builder rather than a fourth constructor parameter so the 73 call
+    /// sites that predate the sync record are untouched, and so the two
+    /// constructors do not have to be doubled.
+    const fn since(self, version: &'static str) -> Self {
+        Self {
+            summary: self.summary,
+            choices: self.choices,
+            since: version,
+        }
     }
 
     /// The recorded explanation for one value, or `None` when the value has
@@ -5441,6 +5501,14 @@ const CHOICE_SEPARATOR: &str = " — ";
 
 /// Between two choices on the help pane's choice row.
 const CHOICE_DELIMITER: &str = "  ·  ";
+
+/// Introduces the help pane's `since` marker.
+///
+/// Spelled once because the assertion that `workflow.compact_content`'s help
+/// NAMES the gsd-core version that introduced it looks for this token rather
+/// than respelling the separator — a test that spells its own separator passes
+/// on a render that drew a different one.
+const SINCE_PREFIX: &str = "  · since gsd-core ";
 
 /// Width of the dropdown's current-value marker column (`"● "` / `"  "`).
 const DROPDOWN_MARKER_WIDTH: usize = 2;
@@ -5494,10 +5562,20 @@ fn dropdown_popup_width(
 /// string reaches this function it needs `crate::text::render_for_terminal`,
 /// and the guarantee stops being structural.
 fn build_config_help_pane(help: &ConfigHelp) -> Paragraph<'static> {
-    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+    let mut summary_spans: Vec<Span<'static>> = vec![Span::styled(
         help.summary,
         Style::default().fg(Color::Gray),
-    ))];
+    )];
+    if !help.since.is_empty() {
+        // A dim trailing marker rather than a line of its own: the pane has
+        // four rows total and a whole row spent on a version string is a row
+        // the choice list needs. Still a `&'static str` — see `ConfigHelp`.
+        summary_spans.push(Span::styled(
+            format!("{SINCE_PREFIX}{} ", help.since),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let mut lines: Vec<Line<'static>> = vec![Line::from(summary_spans)];
 
     if !help.choices.is_empty() {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -5531,7 +5609,18 @@ fn build_config_help_pane(help: &ConfigHelp) -> Paragraph<'static> {
 #[derive(Clone)]
 struct ConfigEntry {
     category: &'static str,
-    key: &'static str,
+    /// **`Cow`, and the `Owned` half is UNTRUSTED TEXT** (T-VQW-01, quick task
+    /// 260916-vqw).
+    ///
+    /// Every row this build authors passes a `&'static str` and arrives here as
+    /// `Borrowed`, exactly as before. The pass-through rows at the end of
+    /// [`build_defaults_entries`] carry `Owned` dotted paths built from keys
+    /// read out of the project's `.planning/config.json`, which is
+    /// attacker-influenced content in precisely the way `value` beside it
+    /// already was. Every site that draws this field therefore goes through
+    /// [`shown`], and `category` stays `&'static str` because nothing
+    /// project-supplied can reach it.
+    key: std::borrow::Cow<'static, str>,
     value: String,
     kind: ConfigValueKind,
     show_category: bool,
@@ -5616,7 +5705,7 @@ fn build_defaults_entries(
     use crate::state_reader::config_json::GsdConfig;
 
     let mut entries = Vec::new();
-    // `help` is REQUIRED and last (ID-01). A 74th option added below without a
+    // `help` is REQUIRED and last (ID-01). A 131st option added below without a
     // `ConfigHelp` does not compile, which is the whole reason the help lives
     // here rather than in a key-indexed side table.
     let mut push = |cat: &'static str,
@@ -5628,7 +5717,7 @@ fn build_defaults_entries(
                     help: ConfigHelp| {
         entries.push(ConfigEntry {
             category: cat,
-            key,
+            key: std::borrow::Cow::Borrowed(key),
             value,
             kind,
             show_category: first,
@@ -5707,6 +5796,118 @@ fn build_defaults_entries(
     push(cat, "workflow.context_guard_mode", v, k, false, fd, ConfigHelp::new(
         "How execute-phase reacts to context pressure at a wave boundary: warn (default), auto to pause, or off.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw). `since` is MEASURED per
+    // key from gsd-core's own history — see docs/GSD-CORE-SYNC.md for the
+    // command, and never edit one of these from memory.
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.context_coverage_gate), dwf.and_then(|w| w.context_coverage_gate));
+    push(cat, "workflow.context_coverage_gate", v, k, false, fd, ConfigHelp::new(
+        "Requires each recorded decision to be traceable into a plan and then into built work; off skips both gates silently.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.context_drift_precheck), dwf.and_then(|w| w.context_drift_precheck));
+    push(cat, "workflow.context_drift_precheck", v, k, false, fd, ConfigHelp::new(
+        "Before reusing RESEARCH.md or SPEC.md, compares each one's age against CONTEXT.md's newest decision and says what is stale.",
+    ).since("v1.13.0"));
+    let (v, k, fd) = enum_l(
+        pwf.and_then(|w| w.context_drift_action.as_deref()),
+        dwf.and_then(|w| w.context_drift_action.as_deref()),
+        &["warn", "block"],
+    );
+    push(cat, "workflow.context_drift_action", v, k, false, fd, ConfigHelp::with_choices(
+        "What happens when that pre-check finds an artifact older than the decision it was derived from.",
+        &[
+            ("warn", "names the stale artifacts and how to regenerate them"),
+            ("block", "halts planning until they are regenerated"),
+        ],
+    ).since("v1.13.0"));
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.drift_threshold), dwf.and_then(|w| w.drift_threshold));
+    push(cat, "workflow.drift_threshold", v, k, false, fd, ConfigHelp::new(
+        "How many new directories, migrations or route modules must appear before the codebase-drift gate reacts; default 3.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = enum_l(
+        pwf.and_then(|w| w.drift_action.as_deref()),
+        dwf.and_then(|w| w.drift_action.as_deref()),
+        &["warn", "auto-remap"],
+    );
+    push(cat, "workflow.drift_action", v, k, false, fd, ConfigHelp::with_choices(
+        "What happens after a wave when the codebase has grown more new structure than that threshold allows.",
+        &[
+            ("warn", "suggests re-mapping the affected paths by hand"),
+            ("auto-remap", "spawns the codebase mapper over those paths"),
+        ],
+    ).since("v1.01.0"));
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.inline_plan_threshold), dwf.and_then(|w| w.inline_plan_threshold));
+    push(cat, "workflow.inline_plan_threshold", v, k, false, fd, ConfigHelp::new(
+        "Task count above which a phase gets its own file rather than having its tasks written into the prompt; default 3.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.max_discuss_passes), dwf.and_then(|w| w.max_discuss_passes));
+    push(cat, "workflow.max_discuss_passes", v, k, false, fd, ConfigHelp::new(
+        "How many question rounds the discussion may take before it stops asking — the guard against a loop in auto mode.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.smart_zone_tokens), dwf.and_then(|w| w.smart_zone_tokens));
+    push(cat, "workflow.smart_zone_tokens", v, k, false, fd, ConfigHelp::new(
+        "Estimated budget above which a phase is flagged as worth splitting — advisory only, never a block; default 100000.",
+    ).since("v1.9.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.post_planning_gaps), dwf.and_then(|w| w.post_planning_gaps));
+    push(cat, "workflow.post_planning_gaps", v, k, false, fd, ConfigHelp::new(
+        "Once every plan is committed, reports which requirements and recorded decisions no plan in the phase covers.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.plan_bounce), dwf.and_then(|w| w.plan_bounce));
+    push(cat, "workflow.plan_bounce", v, k, false, fd, ConfigHelp::new(
+        "Pipes every finished PLAN.md through an external validator script and stops the phase when it exits non-zero.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.plan_bounce_passes), dwf.and_then(|w| w.plan_bounce_passes));
+    push(cat, "workflow.plan_bounce_passes", v, k, false, fd, ConfigHelp::new(
+        "How many times that validator re-reads its own output before a plan is accepted; more rigor, more latency.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = str_l(pwf.and_then(|w| w.plan_bounce_script.as_deref()), dwf.and_then(|w| w.plan_bounce_script.as_deref()));
+    push(cat, "workflow.plan_bounce_script", v, k, false, fd, ConfigHelp::new(
+        "Path to that validator, invoked with the generated file's path as its first argument; required once bouncing is on.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.plan_review_convergence), dwf.and_then(|w| w.plan_review_convergence));
+    push(cat, "workflow.plan_review_convergence", v, k, false, fd, ConfigHelp::new(
+        "Unlocks the replan-until-the-reviewers-agree loop; while off, that command exits telling you which key to set.",
+    ).since("v1.01.0"));
+    let ppl = config.planning.as_ref();
+    let dpl = defaults.and_then(|d: &GsdConfig| d.planning.as_ref());
+    let (v, k, fd) = bool_l(ppl.and_then(|p| p.chunked_parallel), dpl.and_then(|p| p.chunked_parallel));
+    push(cat, "planning.chunked_parallel", v, k, false, fd, ConfigHelp::new(
+        "In chunked mode, writes the per-plan files concurrently instead of one after another; opt-in.",
+    ).since("v1.13.0"));
+    let (v, k, fd) = bool_l(ppl.and_then(|p| p.pr_strict), dpl.and_then(|p| p.pr_strict));
+    push(cat, "planning.pr_strict", v, k, false, fd, ConfigHelp::new(
+        "Drops every .planning path from a generated PR branch, structural files included, rather than just the transient ones.",
+    ).since("v1.12.0"));
+    let prv = config.plan_review.as_ref();
+    let dprv = defaults.and_then(|d: &GsdConfig| d.plan_review.as_ref());
+    let (v, k, fd) = bool_l(prv.and_then(|p| p.source_grounding), dprv.and_then(|p| p.source_grounding));
+    push(cat, "plan_review.source_grounding", v, k, false, fd, ConfigHelp::new(
+        "Resolves every symbol a plan cites against the live tree, so a plan naming a function nobody wrote is flagged.",
+    ).since("v1.2.0"));
+    let (v, k, fd) = enum_l(
+        prv.and_then(|p| p.source_grounding_authority.as_deref()),
+        dprv.and_then(|p| p.source_grounding_authority.as_deref()),
+        &["grep", "intel", "treesitter", "lsp", "scip"],
+    );
+    push(cat, "plan_review.source_grounding_authority", v, k, false, fd, ConfigHelp::with_choices(
+        "Which resolver decides whether a cited symbol exists, trading setup cost against precision.",
+        &[
+            ("grep", "a ripgrep search; needs no extra tooling anywhere"),
+            ("intel", "the api-map index; needs intel_enabled on"),
+            ("treesitter", "reserved for a future tree-sitter adapter"),
+            ("lsp", "reserved for a future language-server adapter"),
+            ("scip", "reserved for a future SCIP index adapter"),
+        ],
+    ).since("v1.2.0"));
+    let pfe = config.features.as_ref();
+    let dfe = defaults.and_then(|d: &GsdConfig| d.features.as_ref());
+    let (v, k, fd) = bool_l(pfe.and_then(|f| f.global_learnings), dfe.and_then(|f| f.global_learnings));
+    push(cat, "features.global_learnings", v, k, false, fd, ConfigHelp::new(
+        "Copies what one project learned into a shared store at phase end and feeds it back to later planners.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pfe.and_then(|f| f.thinking_partner), dfe.and_then(|f| f.thinking_partner));
+    push(cat, "features.thinking_partner", v, k, false, fd, ConfigHelp::new(
+        "Adds a second opinion at each decision point in the workflow, arguing the case before a choice is made.",
+    ).since("v1.01.0"));
 
     // ── Execution ──────────────────────────────────────────────
     let cat = "Execution";
@@ -5783,6 +5984,74 @@ fn build_defaults_entries(
     push(cat, "workflow.security_block_on", v, k, false, fd, ConfigHelp::new(
         "Lowest threat severity that blocks a phase — critical, high, medium, low or none; edited in the file.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.security_enforcement), dwf.and_then(|w| w.security_enforcement));
+    push(cat, "workflow.security_enforcement", v, k, false, fd, ConfigHelp::new(
+        "Runs the threat-model-anchored audit over a phase once it is built; off skips those checks entirely.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.agent_hint_routing), dwf.and_then(|w| w.agent_hint_routing));
+    push(cat, "workflow.agent_hint_routing", v, k, false, fd, ConfigHelp::new(
+        "Sends a plan whose frontmatter names a specialist subagent to that one instead of the generic executor.",
+    ).since("v1.11.0"));
+    let (v, k, fd) = enum_l(
+        pwf.and_then(|w| w.code_review_point.as_deref()),
+        dwf.and_then(|w| w.code_review_point.as_deref()),
+        &["execute:post", "execute:wave:post"],
+    );
+    push(cat, "workflow.code_review_point", v, k, false, fd, ConfigHelp::with_choices(
+        "When the reviewing step runs relative to a phase's waves, and how much of the diff it is handed.",
+        &[
+            ("execute:post", "once, after every wave in the phase has landed"),
+            ("execute:wave:post", "once per wave, over that wave's own diff"),
+        ],
+    ).since("v1.13.0"));
+    let (v, k, fd) = opt_json_readonly(
+        pwf.and_then(|w| w.code_review_depth_overrides.as_ref()),
+        dwf.and_then(|w| w.code_review_depth_overrides.as_ref()),
+    );
+    push(cat, "workflow.code_review_depth_overrides", v, k, false, fd, ConfigHelp::new(
+        "Path rules raising how hard chosen directories are read, e.g. src/auth to deep; a list, so edited in the file.",
+    ).since("v1.12.0"));
+    let (v, k, fd) = enum_l(
+        pwf.and_then(|w| w.human_verify_mode.as_deref()),
+        dwf.and_then(|w| w.human_verify_mode.as_deref()),
+        &["end-of-phase", "mid-flight"],
+    );
+    push(cat, "workflow.human_verify_mode", v, k, false, fd, ConfigHelp::with_choices(
+        "Whether a run stops at each checkpoint you must look at, or collects them for one review at the end.",
+        &[
+            ("end-of-phase", "collects the checks for one review at the end"),
+            ("mid-flight", "stops the run at each blocking checkpoint"),
+        ],
+    ).since("v1.01.0"));
+    let (v, k, fd) = str_l(pwf.and_then(|w| w.build_command.as_deref()), dwf.and_then(|w| w.build_command.as_deref()));
+    push(cat, "workflow.build_command", v, k, false, fd, ConfigHelp::new(
+        "Shell line the post-merge gate runs; unset auto-detects cargo, npm, make, go or Xcode from what is in the repo.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = str_l(pwf.and_then(|w| w.test_command.as_deref()), dwf.and_then(|w| w.test_command.as_deref()));
+    push(cat, "workflow.test_command", v, k, false, fd, ConfigHelp::new(
+        "Shell line the post-merge and regression gates run; unset auto-detects cargo, npm, go, pytest or Xcode.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.worktree_skip_hooks), dwf.and_then(|w| w.worktree_skip_hooks));
+    push(cat, "workflow.worktree_skip_hooks", v, k, false, fd, ConfigHelp::new(
+        "Lets agents commit with --no-verify and moves the check to the merged result; for projects whose hooks cannot run there.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.live_dom_uat), dwf.and_then(|w| w.live_dom_uat));
+    push(cat, "workflow.live_dom_uat", v, k, false, fd, ConfigHelp::new(
+        "Runs a browser-driven verifier after each wave and writes its report; while off no browser tooling is ever driven.",
+    ).since("v1.12.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.cross_ai_execution), dwf.and_then(|w| w.cross_ai_execution));
+    push(cat, "workflow.cross_ai_execution", v, k, false, fd, ConfigHelp::new(
+        "Hands a whole phase to an external CLI model instead of spawning local executor agents; needs the command below.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = str_l(pwf.and_then(|w| w.cross_ai_command.as_deref()), dwf.and_then(|w| w.cross_ai_command.as_deref()));
+    push(cat, "workflow.cross_ai_command", v, k, false, fd, ConfigHelp::new(
+        "Shell template fed the phase prompt on stdin when execution is delegated out; it must print SUMMARY-shaped text.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.cross_ai_timeout), dwf.and_then(|w| w.cross_ai_timeout));
+    push(cat, "workflow.cross_ai_timeout", v, k, false, fd, ConfigHelp::new(
+        "Seconds that delegated command may run before it is killed, so a runaway process cannot hold a phase open; default 300.",
+    ).since("v1.01.0"));
 
     // ── Docs & Output ─────────────────────────────────────────
     let cat = "Docs & Output";
@@ -5790,6 +6059,15 @@ fn build_defaults_entries(
     push(cat, "commit_docs", v, k, true, fd, ConfigHelp::new(
         "Commits .planning/ artifacts such as PLAN.md and SUMMARY.md; off keeps them out of git history.",
     ));
+    // gsd-core's NAMESPACED spelling of the same switch. Both are modelled
+    // because they are different JSON paths and a project may carry either.
+    let (v, k, fd) = bool_l(
+        config.planning.as_ref().and_then(|p| p.commit_docs),
+        defaults.and_then(|d| d.planning.as_ref().and_then(|p| p.commit_docs)),
+    );
+    push(cat, "planning.commit_docs", v, k, false, fd, ConfigHelp::new(
+        "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(pwf.and_then(|w| w.skip_discuss), dwf.and_then(|w| w.skip_discuss));
     push(cat, "skip_discuss", v, k, false, fd, ConfigHelp::new(
         "Skips the discussion round entirely and plans each phase straight from its roadmap entry.",
@@ -5802,6 +6080,14 @@ fn build_defaults_entries(
     push(cat, "text_mode", v, k, false, fd, ConfigHelp::new(
         "Asks questions as plain numbered lists instead of interactive menus, for terminals that lack them.",
     ));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.compact_content), dwf.and_then(|w| w.compact_content));
+    push(cat, "workflow.compact_content", v, k, false, fd, ConfigHelp::with_choices(
+        "Serves GSD's own shipped workflows, templates and agent personas in their terser form to spend less of the window.",
+        &[
+            ("true", "skips the deferred elaborations, reads .compact.md siblings"),
+            ("false", "the full instruction set, byte-identical to before"),
+        ],
+    ).since("v1.14.0"));
     let (v, k, fd) = str_l(
         config.response_language.as_deref(),
         defaults.and_then(|d| d.response_language.as_deref()),
@@ -5840,6 +6126,13 @@ fn build_defaults_entries(
     push(cat, "graphify.graph_path", v, k, false, fd, ConfigHelp::new(
         "Where graph.json lives, letting several projects share one umbrella graph instead of each building its own.",
     ));
+    let (v, k, fd) = bool_l(
+        config.graphify.as_ref().and_then(|g| g.auto_update),
+        defaults.and_then(|d| d.graphify.as_ref().and_then(|g| g.auto_update)),
+    );
+    push(cat, "graphify.auto_update", v, k, false, fd, ConfigHelp::new(
+        "Rebuilds that graph in the background after a commit or merge on the default branch, instead of on request.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(config.brave_search, defaults.and_then(|d| d.brave_search));
     push(cat, "brave_search", v, k, false, fd, ConfigHelp::new(
         "Lets the research agent query Brave web search; without BRAVE_API_KEY in the environment it does nothing.",
@@ -5942,6 +6235,29 @@ fn build_defaults_entries(
     push(cat, "quick_branch_template", qbt_val, qbt_kind, false, qbt_fd, ConfigHelp::new(
         "Optional name pattern, with {slug} substituted, for a quick task's branch; unset keeps quick work here.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let (v, k, fd) = bool_l(pgit.and_then(|g| g.create_tag), dgit.and_then(|g| g.create_tag));
+    push(cat, "git.create_tag", v, k, false, fd, ConfigHelp::new(
+        "Tags the repository when a milestone closes; turn it off for a project with its own release flow.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(
+        pgit.and_then(|g| g.allow_default_branch_commits),
+        dgit.and_then(|g| g.allow_default_branch_commits),
+    );
+    push(cat, "git.allow_default_branch_commits", v, k, false, fd, ConfigHelp::with_choices(
+        "Escape hatch letting an executor commit straight onto the repository's own trunk instead of refusing.",
+        &[
+            ("true", "the pre-commit guard stops refusing on trunk"),
+            ("false", "the guard refuses, which is what you want"),
+        ],
+    ).since("v1.13.0"));
+    let (v, k, fd) = opt_json_readonly(
+        pgit.and_then(|g| g.protected_branches.as_ref()),
+        dgit.and_then(|g| g.protected_branches.as_ref()),
+    );
+    push(cat, "git.protected_branches", v, k, false, fd, ConfigHelp::new(
+        "Extra shared branch names that raise the same warning the base one does; a list, so edited in the file.",
+    ).since("v1.12.0"));
 
     // ── Misc ──────────────────────────────────────────────────
     let cat = "Misc";
@@ -5952,6 +6268,31 @@ fn build_defaults_entries(
     push(cat, "context_warnings", v, k, true, fd, ConfigHelp::new(
         "Warns in the statusline as a session's context budget runs out, before a compaction loses what was said.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let phk = config.hooks.as_ref();
+    let dhk = defaults.and_then(|d: &GsdConfig| d.hooks.as_ref());
+    let (v, k, fd) = u32_l(
+        phk.and_then(|h| h.context_warning_threshold),
+        dhk.and_then(|h| h.context_warning_threshold),
+    );
+    push(cat, "hooks.context_warning_threshold", v, k, false, fd, ConfigHelp::new(
+        "Percent of the window still FREE at which that warning first appears; default 35, and it must sit above the next row.",
+    ).since("v1.14.0"));
+    let (v, k, fd) = u32_l(
+        phk.and_then(|h| h.context_critical_threshold),
+        dhk.and_then(|h| h.context_critical_threshold),
+    );
+    push(cat, "hooks.context_critical_threshold", v, k, false, fd, ConfigHelp::new(
+        "Percent still FREE at which the warning escalates; default 25, and it must stay strictly below the row above.",
+    ).since("v1.14.0"));
+    let (v, k, fd) = bool_l(phk.and_then(|h| h.workflow_guard), dhk.and_then(|h| h.workflow_guard));
+    push(cat, "hooks.workflow_guard", v, k, false, fd, ConfigHelp::new(
+        "Warns when a file is edited outside any GSD command, and hard-blocks force-adding files on an agent branch.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = u32_l(config.context_window, defaults.and_then(|d| d.context_window));
+    push(cat, "context_window", v, k, false, fd, ConfigHelp::new(
+        "Tokens the model you run can hold; 200000 by default, and at 500000 or more GSD reads prior summaries in full.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(pwf.and_then(|w| w.research_before_questions), dwf.and_then(|w| w.research_before_questions));
     push(cat, "research_before_questions", v, k, false, fd, ConfigHelp::new(
         "Researches the topic before the discussion round, so the questions you are asked are already informed.",
@@ -5972,6 +6313,13 @@ fn build_defaults_entries(
     push(cat, "search_gitignored", v, k, false, fd, ConfigHelp::new(
         "Includes gitignored paths in broad ripgrep searches, so build output and vendored code are searched too.",
     ));
+    let (v, k, fd) = bool_l(
+        config.planning.as_ref().and_then(|p| p.search_gitignored),
+        defaults.and_then(|d| d.planning.as_ref().and_then(|p| p.search_gitignored)),
+    );
+    push(cat, "planning.search_gitignored", v, k, false, fd, ConfigHelp::new(
+        "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
+    ).since("v1.01.0"));
     let (v, k, fd) = str_l(config.project_code.as_deref(), defaults.and_then(|d| d.project_code.as_deref()));
     push(cat, "project_code", v, k, false, fd, ConfigHelp::new(
         "Short prefix for phase directories and requirement ids — CK gives CK-01-foundation and CK-01.",
@@ -5992,6 +6340,17 @@ fn build_defaults_entries(
     push(cat, "sub_repos", v, k, false, fd, ConfigHelp::new(
         "Child directories with their own .git, auto-detected so commits route correctly; edited in the file.",
     ));
+    let (v, k, fd) = opt_json_readonly(
+        config.planning.as_ref().and_then(|p| p.sub_repos.as_ref()),
+        defaults.and_then(|d| d.planning.as_ref().and_then(|p| p.sub_repos.as_ref())),
+    );
+    push(cat, "planning.sub_repos", v, k, false, fd, ConfigHelp::new(
+        "The namespaced form of the list above — gsd-core reads this path; a list either way, so edited in the file.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.auto_prune_state), dwf.and_then(|w| w.auto_prune_state));
+    push(cat, "workflow.auto_prune_state", v, k, false, fd, ConfigHelp::new(
+        "Drops entries from STATE.md that have gone stale at each phase boundary, rather than stopping to ask you.",
+    ).since("v1.01.0"));
 
     // ── Orchestration ─────────────────────────────────────────
     let cat = "Orchestration";
@@ -6026,6 +6385,27 @@ fn build_defaults_entries(
     push(cat, "statusline.show_git", v, k, false, fd, ConfigHelp::new(
         "Shows the current git branch and its dirty-tree marker in the statusline.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let (v, k, fd) = enum_l(
+        psl.and_then(|s| s.context_position.as_deref()),
+        dsl.and_then(|s| s.context_position.as_deref()),
+        &["end", "front"],
+    );
+    push(cat, "statusline.context_position", v, k, false, fd, ConfigHelp::with_choices(
+        "Where the window meter sits on the line, which decides whether a narrow terminal cuts it off.",
+        &[
+            ("end", "at the tail of the line, the default"),
+            ("front", "right after the model name, so it survives a cut"),
+        ],
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(psl.and_then(|s| s.show_last_command), dsl.and_then(|s| s.show_last_command));
+    push(cat, "statusline.show_last_command", v, k, false, fd, ConfigHelp::new(
+        "Appends the slash command most recently invoked, read out of the running session's transcript.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(psl.and_then(|s| s.show_state_freshness), dsl.and_then(|s| s.show_state_freshness));
+    push(cat, "statusline.show_state_freshness", v, k, false, fd, ConfigHelp::new(
+        "Says how many commits the tree has moved since STATE.md was stamped, once that gap passes twenty.",
+    ).since("v1.12.0"));
 
     // ── Routing ───────────────────────────────────────────────
     let cat = "Routing";
@@ -6039,6 +6419,15 @@ fn build_defaults_entries(
     push(cat, "dynamic_routing.max_escalations", v, k, false, fd, ConfigHelp::new(
         "How many escalation hops one step may take before the resolver gives up and names every model it tried.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let (v, k, fd) = bool_l(pdr.and_then(|r| r.enabled), ddr.and_then(|r| r.enabled));
+    push(cat, "dynamic_routing.enabled", v, k, false, fd, ConfigHelp::new(
+        "Master switch: agents pick their model from the work's difficulty tier rather than from a fixed profile.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pdr.and_then(|r| r.escalate_on_failure), ddr.and_then(|r| r.escalate_on_failure));
+    push(cat, "dynamic_routing.escalate_on_failure", v, k, false, fd, ConfigHelp::new(
+        "Moves a retried step up one tier after a soft failure; off, every attempt stays on the tier it started at.",
+    ).since("v1.01.0"));
 
     // ── External Job ──────────────────────────────────────────
     let cat = "External Job";
@@ -6080,7 +6469,165 @@ fn build_defaults_entries(
         "Named cross-AI reviewer instances that /gsd-review dispatches to; shown here, edited in the config file.",
     ));
 
+    // ── Gates ─────────────────────────────────────────────────
+    // gsd-core's `gates.*` block: eight stop-and-ask points, all defaulting to
+    // on. Its own category because turning the set off is how a project goes
+    // unattended, and a reader scanning for that should find them together.
+    let cat = "Gates";
+    let pga = config.gates.as_ref();
+    let dga = defaults.and_then(|d: &GsdConfig| d.gates.as_ref());
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_project), dga.and_then(|g| g.confirm_project));
+    push(cat, "gates.confirm_project", v, k, true, fd, ConfigHelp::new(
+        "Shows you the gathered project details and waits for a yes before writing PROJECT.md.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_roadmap), dga.and_then(|g| g.confirm_roadmap));
+    push(cat, "gates.confirm_roadmap", v, k, false, fd, ConfigHelp::new(
+        "Shows you the drafted milestone plan and waits for a yes before any phase is written.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_phases), dga.and_then(|g| g.confirm_phases));
+    push(cat, "gates.confirm_phases", v, k, false, fd, ConfigHelp::new(
+        "Shows you how the milestone was cut into phases and waits for a yes before planning any of them.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_breakdown), dga.and_then(|g| g.confirm_breakdown));
+    push(cat, "gates.confirm_breakdown", v, k, false, fd, ConfigHelp::new(
+        "Shows you how a phase was cut into tasks and waits for a yes before the plan is finalised.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_plan), dga.and_then(|g| g.confirm_plan));
+    push(cat, "gates.confirm_plan", v, k, false, fd, ConfigHelp::new(
+        "Waits for a yes on each finished PLAN.md before its tasks are executed.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.execute_next_plan), dga.and_then(|g| g.execute_next_plan));
+    push(cat, "gates.execute_next_plan", v, k, false, fd, ConfigHelp::new(
+        "Stops between two plans of the same phase and asks before starting the following one.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_transition), dga.and_then(|g| g.confirm_transition));
+    push(cat, "gates.confirm_transition", v, k, false, fd, ConfigHelp::new(
+        "Stops at a phase boundary and asks before moving on to the one after it.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.issues_review), dga.and_then(|g| g.issues_review));
+    push(cat, "gates.issues_review", v, k, false, fd, ConfigHelp::new(
+        "Shows you the open issues and waits for a yes before any fix plan is written from them.",
+    ).since("v1.01.0"));
+
+    append_passthrough_entries(&mut entries, config, defaults);
+
     entries
+}
+
+/// The category every unmodelled key lands under.
+///
+/// Last, and its own category, so the list a reader scans top-down is
+/// "everything this build understands" followed by "everything it does not".
+const PASSTHROUGH_CATEGORY: &str = "Not modelled";
+
+/// The one help summary every pass-through row shares.
+///
+/// **A static literal on purpose** (T-VQW-01). Interpolating the key into it
+/// would put project-supplied text inside a [`ConfigHelp`], and
+/// [`build_config_help_pane`]'s structural "nothing out of config.json reaches
+/// here" property would stop being structural.
+const PASSTHROUGH_HELP: ConfigHelp = ConfigHelp::new(
+    "Present in this project's config.json but not modelled by this build — shown read-only, and preserved when you save.",
+);
+
+/// Rows for every key the project's (or the global defaults') config carries
+/// that this build has no typed field for.
+///
+/// **This is what makes "not silently missing" true for the keys ID-3 does not
+/// promote to typed rows** — gsd-core's nested and templated families
+/// (`review.models.<cli>`, `model_policy.*`, `effort.*`, `agent_tools.<selector>`,
+/// …), plus anything a release adds after [`GSD_CORE_SYNCED_COMMIT`]. A key
+/// here is visible, is preserved by the writer, and cannot be edited from the
+/// TUI; `docs/GSD-CORE-SYNC.md` records which families are deliberately in this
+/// state rather than merely unnoticed.
+///
+/// Rows are emitted in SORTED key order (a `BTreeMap`), so the list does not
+/// reshuffle between frames as a `serde_json::Map`'s iteration order would
+/// allow under the `preserve_order` feature.
+///
+/// Layering matches the `opt_*_layered` helpers: the global defaults are laid
+/// down first and the project's own keys overwrite them, so a key present in
+/// both is attributed to the project and only a defaults-only key carries the
+/// inherited marker.
+fn append_passthrough_entries(
+    entries: &mut Vec<ConfigEntry>,
+    config: &crate::state_reader::config_json::GsdConfig,
+    defaults: Option<&crate::state_reader::config_json::GsdConfig>,
+) {
+    use crate::state_reader::config_json::{ExtraKeys, GsdConfig};
+    use std::collections::BTreeMap;
+
+    /// Every `(dotted path, value)` pair one config contributes.
+    fn collect(config: &GsdConfig, out: &mut Vec<(String, serde_json::Value)>) {
+        let mut take = |prefix: &str, extra: &ExtraKeys| {
+            for (key, value) in extra {
+                out.push((format!("{prefix}{key}"), value.clone()));
+            }
+        };
+        take("", &config.extra);
+        if let Some(block) = config.git.as_ref() {
+            take("git.", &block.extra);
+        }
+        if let Some(block) = config.workflow.as_ref() {
+            take("workflow.", &block.extra);
+        }
+        if let Some(block) = config.hooks.as_ref() {
+            take("hooks.", &block.extra);
+        }
+        if let Some(block) = config.intel.as_ref() {
+            take("intel.", &block.extra);
+        }
+        if let Some(block) = config.graphify.as_ref() {
+            take("graphify.", &block.extra);
+        }
+        if let Some(block) = config.claude_orchestration.as_ref() {
+            take("claude_orchestration.", &block.extra);
+        }
+        if let Some(block) = config.statusline.as_ref() {
+            take("statusline.", &block.extra);
+        }
+        if let Some(block) = config.dynamic_routing.as_ref() {
+            take("dynamic_routing.", &block.extra);
+        }
+        if let Some(block) = config.review.as_ref() {
+            take("review.", &block.extra);
+        }
+        if let Some(block) = config.external_job.as_ref() {
+            take("external_job.", &block.extra);
+        }
+        if let Some(block) = config.capabilities.as_ref() {
+            take("capabilities.", &block.extra);
+        }
+    }
+
+    // `(value, from_defaults)`, defaults first so the project overwrites them.
+    let mut rows: BTreeMap<String, (serde_json::Value, bool)> = BTreeMap::new();
+    if let Some(defaults) = defaults {
+        let mut found = Vec::new();
+        collect(defaults, &mut found);
+        for (key, value) in found {
+            rows.insert(key, (value, true));
+        }
+    }
+    let mut found = Vec::new();
+    collect(config, &mut found);
+    for (key, value) in found {
+        rows.insert(key, (value, false));
+    }
+
+    let mut first = true;
+    for (key, (value, from_defaults)) in rows {
+        entries.push(ConfigEntry {
+            category: PASSTHROUGH_CATEGORY,
+            key: std::borrow::Cow::Owned(key),
+            value: json_display(&value),
+            kind: ConfigValueKind::ReadOnly,
+            show_category: first,
+            from_defaults,
+            help: PASSTHROUGH_HELP,
+        });
+        first = false;
+    }
 }
 
 /// Build defaults entries respecting the cache's edit target.
@@ -6133,6 +6680,25 @@ pub(super) fn first_string_entry(cache: &super::ProjectViewCache) -> Option<(usi
         .enumerate()
         .find(|(_, entry)| matches!(entry.kind, ConfigValueKind::String))
         .map(|(idx, entry)| (idx, entry.value))
+}
+
+/// The index of the first PASS-THROUGH row of a cache's Defaults list — for the
+/// render-escape probe, and DERIVED for the same reason [`first_string_entry`]
+/// is (quick task 260916-vqw).
+///
+/// Pass-through rows are appended AFTER every authored category, so at a
+/// 60-row probe terminal a 130-row list never draws one with the cursor at
+/// zero. `probe_ctx` moves the cursor here so the row scrolls into the
+/// viewport; without that the fixture's hostile key would be populated,
+/// unrendered, and counted as coverage.
+///
+/// Returns `None` for a cache with no config — which is what `chrome_ctx` is —
+/// so the baseline keeps its cursor at zero.
+#[cfg(test)]
+pub(super) fn first_passthrough_entry(cache: &super::ProjectViewCache) -> Option<usize> {
+    entries_for_cache(cache)
+        .into_iter()
+        .position(|entry| entry.category == PASSTHROUGH_CATEGORY)
 }
 
 /// Get a mutable reference to whichever config the user is currently
@@ -6236,6 +6802,42 @@ fn set_config_value(
             "workflow.api_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).api_coverage_gate = Some(b); return true; }
             "workflow.windows_enforce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).windows_enforce = Some(b); return true; }
             "workflow.mvp_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).mvp_mode = Some(b); return true; }
+            // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
+            "workflow.compact_content" => { config.workflow.get_or_insert_with(WorkflowConfig::default).compact_content = Some(b); return true; }
+            "workflow.agent_hint_routing" => { config.workflow.get_or_insert_with(WorkflowConfig::default).agent_hint_routing = Some(b); return true; }
+            "workflow.auto_prune_state" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_prune_state = Some(b); return true; }
+            "workflow.context_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_coverage_gate = Some(b); return true; }
+            "workflow.context_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_precheck = Some(b); return true; }
+            "workflow.cross_ai_execution" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_execution = Some(b); return true; }
+            "workflow.live_dom_uat" => { config.workflow.get_or_insert_with(WorkflowConfig::default).live_dom_uat = Some(b); return true; }
+            "workflow.plan_bounce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce = Some(b); return true; }
+            "workflow.plan_review_convergence" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_review_convergence = Some(b); return true; }
+            "workflow.post_planning_gaps" => { config.workflow.get_or_insert_with(WorkflowConfig::default).post_planning_gaps = Some(b); return true; }
+            "workflow.security_enforcement" => { config.workflow.get_or_insert_with(WorkflowConfig::default).security_enforcement = Some(b); return true; }
+            "workflow.worktree_skip_hooks" => { config.workflow.get_or_insert_with(WorkflowConfig::default).worktree_skip_hooks = Some(b); return true; }
+            "features.global_learnings" => { config.features.get_or_insert_with(FeaturesConfig::default).global_learnings = Some(b); return true; }
+            "features.thinking_partner" => { config.features.get_or_insert_with(FeaturesConfig::default).thinking_partner = Some(b); return true; }
+            "gates.confirm_breakdown" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_breakdown = Some(b); return true; }
+            "gates.confirm_phases" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_phases = Some(b); return true; }
+            "gates.confirm_plan" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_plan = Some(b); return true; }
+            "gates.confirm_project" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_project = Some(b); return true; }
+            "gates.confirm_roadmap" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_roadmap = Some(b); return true; }
+            "gates.confirm_transition" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_transition = Some(b); return true; }
+            "gates.execute_next_plan" => { config.gates.get_or_insert_with(GatesConfig::default).execute_next_plan = Some(b); return true; }
+            "gates.issues_review" => { config.gates.get_or_insert_with(GatesConfig::default).issues_review = Some(b); return true; }
+            "planning.chunked_parallel" => { config.planning.get_or_insert_with(PlanningConfig::default).chunked_parallel = Some(b); return true; }
+            "planning.commit_docs" => { config.planning.get_or_insert_with(PlanningConfig::default).commit_docs = Some(b); return true; }
+            "planning.pr_strict" => { config.planning.get_or_insert_with(PlanningConfig::default).pr_strict = Some(b); return true; }
+            "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = Some(b); return true; }
+            "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = Some(b); return true; }
+            "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = Some(b); return true; }
+            "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = Some(b); return true; }
+            "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = Some(b); return true; }
+            "graphify.auto_update" => { config.graphify.get_or_insert_with(GraphifyConfig::default).auto_update = Some(b); return true; }
+            "statusline.show_last_command" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_last_command = Some(b); return true; }
+            "statusline.show_state_freshness" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_state_freshness = Some(b); return true; }
+            "dynamic_routing.enabled" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).enabled = Some(b); return true; }
+            "dynamic_routing.escalate_on_failure" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).escalate_on_failure = Some(b); return true; }
             // GSD 1.8 top-level blocks
             "claude_orchestration.enabled" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).enabled = Some(b); return true; }
             "statusline.show_context_tokens" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_context_tokens = Some(b); return true; }
@@ -6262,6 +6864,31 @@ fn set_config_value(
         }
         "code_review_depth" => {
             config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_depth = Some(value.to_string());
+            true
+        }
+        // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
+        "workflow.code_review_point" => {
+            config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_point = Some(value.to_string());
+            true
+        }
+        "workflow.context_drift_action" => {
+            config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_action = Some(value.to_string());
+            true
+        }
+        "workflow.drift_action" => {
+            config.workflow.get_or_insert_with(WorkflowConfig::default).drift_action = Some(value.to_string());
+            true
+        }
+        "workflow.human_verify_mode" => {
+            config.workflow.get_or_insert_with(WorkflowConfig::default).human_verify_mode = Some(value.to_string());
+            true
+        }
+        "plan_review.source_grounding_authority" => {
+            config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding_authority = Some(value.to_string());
+            true
+        }
+        "statusline.context_position" => {
+            config.statusline.get_or_insert_with(StatuslineConfig::default).context_position = Some(value.to_string());
             true
         }
         _ => false,
@@ -6309,6 +6936,11 @@ fn set_string_value(
         "claude_orchestration.min_agent_sdk_version" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).min_agent_sdk_version = Some(value.to_string()); true }
         "statusline.state_format" => { config.statusline.get_or_insert_with(StatuslineConfig::default).state_format = Some(value.to_string()); true }
         "external_job.artifact_dir" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).artifact_dir = Some(value.to_string()); true }
+        // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
+        "workflow.build_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).build_command = Some(value.to_string()); true }
+        "workflow.test_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).test_command = Some(value.to_string()); true }
+        "workflow.cross_ai_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_command = Some(value.to_string()); true }
+        "workflow.plan_bounce_script" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_script = Some(value.to_string()); true }
         _ => false,
     }
 }
@@ -6391,6 +7023,62 @@ fn clear_config_value(
         "workflow.code_review_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_command = None; true }
         "graphify.graph_path" => { config.graphify.get_or_insert_with(GraphifyConfig::default).graph_path = None; true }
 
+        // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
+        "workflow.compact_content" => { config.workflow.get_or_insert_with(WorkflowConfig::default).compact_content = None; true }
+        "workflow.agent_hint_routing" => { config.workflow.get_or_insert_with(WorkflowConfig::default).agent_hint_routing = None; true }
+        "workflow.auto_prune_state" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_prune_state = None; true }
+        "workflow.build_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).build_command = None; true }
+        "workflow.code_review_point" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_point = None; true }
+        "workflow.context_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_coverage_gate = None; true }
+        "workflow.context_drift_action" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_action = None; true }
+        "workflow.context_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_precheck = None; true }
+        "workflow.cross_ai_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_command = None; true }
+        "workflow.cross_ai_execution" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_execution = None; true }
+        "workflow.cross_ai_timeout" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_timeout = None; true }
+        "workflow.drift_action" => { config.workflow.get_or_insert_with(WorkflowConfig::default).drift_action = None; true }
+        "workflow.drift_threshold" => { config.workflow.get_or_insert_with(WorkflowConfig::default).drift_threshold = None; true }
+        "workflow.human_verify_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).human_verify_mode = None; true }
+        "workflow.inline_plan_threshold" => { config.workflow.get_or_insert_with(WorkflowConfig::default).inline_plan_threshold = None; true }
+        "workflow.live_dom_uat" => { config.workflow.get_or_insert_with(WorkflowConfig::default).live_dom_uat = None; true }
+        "workflow.max_discuss_passes" => { config.workflow.get_or_insert_with(WorkflowConfig::default).max_discuss_passes = None; true }
+        "workflow.plan_bounce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce = None; true }
+        "workflow.plan_bounce_passes" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_passes = None; true }
+        "workflow.plan_bounce_script" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_script = None; true }
+        "workflow.plan_review_convergence" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_review_convergence = None; true }
+        "workflow.post_planning_gaps" => { config.workflow.get_or_insert_with(WorkflowConfig::default).post_planning_gaps = None; true }
+        "workflow.security_enforcement" => { config.workflow.get_or_insert_with(WorkflowConfig::default).security_enforcement = None; true }
+        "workflow.smart_zone_tokens" => { config.workflow.get_or_insert_with(WorkflowConfig::default).smart_zone_tokens = None; true }
+        "workflow.test_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).test_command = None; true }
+        "workflow.worktree_skip_hooks" => { config.workflow.get_or_insert_with(WorkflowConfig::default).worktree_skip_hooks = None; true }
+        "features.global_learnings" => { config.features.get_or_insert_with(FeaturesConfig::default).global_learnings = None; true }
+        "features.thinking_partner" => { config.features.get_or_insert_with(FeaturesConfig::default).thinking_partner = None; true }
+        "gates.confirm_breakdown" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_breakdown = None; true }
+        "gates.confirm_phases" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_phases = None; true }
+        "gates.confirm_plan" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_plan = None; true }
+        "gates.confirm_project" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_project = None; true }
+        "gates.confirm_roadmap" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_roadmap = None; true }
+        "gates.confirm_transition" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_transition = None; true }
+        "gates.execute_next_plan" => { config.gates.get_or_insert_with(GatesConfig::default).execute_next_plan = None; true }
+        "gates.issues_review" => { config.gates.get_or_insert_with(GatesConfig::default).issues_review = None; true }
+        "planning.chunked_parallel" => { config.planning.get_or_insert_with(PlanningConfig::default).chunked_parallel = None; true }
+        "planning.commit_docs" => { config.planning.get_or_insert_with(PlanningConfig::default).commit_docs = None; true }
+        "planning.pr_strict" => { config.planning.get_or_insert_with(PlanningConfig::default).pr_strict = None; true }
+        "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = None; true }
+        "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = None; true }
+        "plan_review.source_grounding_authority" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding_authority = None; true }
+        "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = None; true }
+        "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = None; true }
+        "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = None; true }
+        "hooks.context_warning_threshold" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warning_threshold = None; true }
+        "hooks.context_critical_threshold" => { config.hooks.get_or_insert_with(HooksConfig::default).context_critical_threshold = None; true }
+        "graphify.auto_update" => { config.graphify.get_or_insert_with(GraphifyConfig::default).auto_update = None; true }
+        "context_window" => { config.context_window = None; true }
+        "statusline.context_position" => { config.statusline.get_or_insert_with(StatuslineConfig::default).context_position = None; true }
+        "statusline.show_last_command" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_last_command = None; true }
+        "statusline.show_state_freshness" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_state_freshness = None; true }
+        "dynamic_routing.enabled" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).enabled = None; true }
+        "dynamic_routing.escalate_on_failure" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).escalate_on_failure = None; true }
+
         // GSD 1.8 top-level blocks
         "phase_id_convention" => { config.phase_id_convention = None; true }
         "claude_md_path" => { config.claude_md_path = None; true }
@@ -6461,6 +7149,42 @@ fn mutate_config_entry(
                 "workflow.api_coverage_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.api_coverage_gate = Some(!wf.api_coverage_gate.unwrap_or(false)); true }
                 "workflow.windows_enforce" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.windows_enforce = Some(!wf.windows_enforce.unwrap_or(false)); true }
                 "workflow.mvp_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.mvp_mode = Some(!wf.mvp_mode.unwrap_or(false)); true }
+                // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
+                "workflow.compact_content" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.compact_content = Some(!wf.compact_content.unwrap_or(false)); true }
+                "workflow.agent_hint_routing" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.agent_hint_routing = Some(!wf.agent_hint_routing.unwrap_or(false)); true }
+                "workflow.auto_prune_state" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.auto_prune_state = Some(!wf.auto_prune_state.unwrap_or(false)); true }
+                "workflow.context_coverage_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.context_coverage_gate = Some(!wf.context_coverage_gate.unwrap_or(false)); true }
+                "workflow.context_drift_precheck" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.context_drift_precheck = Some(!wf.context_drift_precheck.unwrap_or(false)); true }
+                "workflow.cross_ai_execution" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.cross_ai_execution = Some(!wf.cross_ai_execution.unwrap_or(false)); true }
+                "workflow.live_dom_uat" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.live_dom_uat = Some(!wf.live_dom_uat.unwrap_or(false)); true }
+                "workflow.plan_bounce" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_bounce = Some(!wf.plan_bounce.unwrap_or(false)); true }
+                "workflow.plan_review_convergence" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_review_convergence = Some(!wf.plan_review_convergence.unwrap_or(false)); true }
+                "workflow.post_planning_gaps" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.post_planning_gaps = Some(!wf.post_planning_gaps.unwrap_or(false)); true }
+                "workflow.security_enforcement" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.security_enforcement = Some(!wf.security_enforcement.unwrap_or(false)); true }
+                "workflow.worktree_skip_hooks" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.worktree_skip_hooks = Some(!wf.worktree_skip_hooks.unwrap_or(false)); true }
+                "features.global_learnings" => { let f = config.features.get_or_insert_with(FeaturesConfig::default); f.global_learnings = Some(!f.global_learnings.unwrap_or(false)); true }
+                "features.thinking_partner" => { let f = config.features.get_or_insert_with(FeaturesConfig::default); f.thinking_partner = Some(!f.thinking_partner.unwrap_or(false)); true }
+                "gates.confirm_breakdown" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_breakdown = Some(!g.confirm_breakdown.unwrap_or(false)); true }
+                "gates.confirm_phases" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_phases = Some(!g.confirm_phases.unwrap_or(false)); true }
+                "gates.confirm_plan" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_plan = Some(!g.confirm_plan.unwrap_or(false)); true }
+                "gates.confirm_project" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_project = Some(!g.confirm_project.unwrap_or(false)); true }
+                "gates.confirm_roadmap" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_roadmap = Some(!g.confirm_roadmap.unwrap_or(false)); true }
+                "gates.confirm_transition" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_transition = Some(!g.confirm_transition.unwrap_or(false)); true }
+                "gates.execute_next_plan" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.execute_next_plan = Some(!g.execute_next_plan.unwrap_or(false)); true }
+                "gates.issues_review" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.issues_review = Some(!g.issues_review.unwrap_or(false)); true }
+                "planning.chunked_parallel" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.chunked_parallel = Some(!p.chunked_parallel.unwrap_or(false)); true }
+                "planning.commit_docs" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.commit_docs = Some(!p.commit_docs.unwrap_or(false)); true }
+                "planning.pr_strict" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.pr_strict = Some(!p.pr_strict.unwrap_or(false)); true }
+                "planning.search_gitignored" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.search_gitignored = Some(!p.search_gitignored.unwrap_or(false)); true }
+                "plan_review.source_grounding" => { let r = config.plan_review.get_or_insert_with(PlanReviewConfig::default); r.source_grounding = Some(!r.source_grounding.unwrap_or(false)); true }
+                "git.create_tag" => { let g = config.git.get_or_insert_with(GitConfig::default); g.create_tag = Some(!g.create_tag.unwrap_or(false)); true }
+                "git.allow_default_branch_commits" => { let g = config.git.get_or_insert_with(GitConfig::default); g.allow_default_branch_commits = Some(!g.allow_default_branch_commits.unwrap_or(false)); true }
+                "hooks.workflow_guard" => { let h = config.hooks.get_or_insert_with(HooksConfig::default); h.workflow_guard = Some(!h.workflow_guard.unwrap_or(false)); true }
+                "graphify.auto_update" => { let g = config.graphify.get_or_insert_with(GraphifyConfig::default); g.auto_update = Some(!g.auto_update.unwrap_or(false)); true }
+                "statusline.show_last_command" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_last_command = Some(!s.show_last_command.unwrap_or(false)); true }
+                "statusline.show_state_freshness" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_state_freshness = Some(!s.show_state_freshness.unwrap_or(false)); true }
+                "dynamic_routing.enabled" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.enabled = Some(!r.enabled.unwrap_or(false)); true }
+                "dynamic_routing.escalate_on_failure" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.escalate_on_failure = Some(!r.escalate_on_failure.unwrap_or(false)); true }
                 // GSD 1.8 top-level blocks
                 "claude_orchestration.enabled" => { let c = config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default); c.enabled = Some(!c.enabled.unwrap_or(false)); true }
                 "statusline.show_context_tokens" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_context_tokens = Some(!s.show_context_tokens.unwrap_or(false)); true }
@@ -6491,6 +7215,46 @@ fn mutate_config_entry(
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     let current = wf.discuss_mode.as_deref().unwrap_or("discuss");
                     wf.discuss_mode = Some(cycle(current));
+                    true
+                }
+                // gsd-core 1.14.0 re-sync (quick task 260916-vqw). The fallback
+                // passed to `cycle` is gsd-core's own documented default, so a
+                // first press advances FROM that rather than from a value this
+                // build invented.
+                "workflow.code_review_point" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.code_review_point.as_deref().unwrap_or("execute:post");
+                    wf.code_review_point = Some(cycle(current));
+                    true
+                }
+                "workflow.context_drift_action" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.context_drift_action.as_deref().unwrap_or("warn");
+                    wf.context_drift_action = Some(cycle(current));
+                    true
+                }
+                "workflow.drift_action" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.drift_action.as_deref().unwrap_or("warn");
+                    wf.drift_action = Some(cycle(current));
+                    true
+                }
+                "workflow.human_verify_mode" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.human_verify_mode.as_deref().unwrap_or("end-of-phase");
+                    wf.human_verify_mode = Some(cycle(current));
+                    true
+                }
+                "plan_review.source_grounding_authority" => {
+                    let r = config.plan_review.get_or_insert_with(PlanReviewConfig::default);
+                    let current = r.source_grounding_authority.as_deref().unwrap_or("grep");
+                    r.source_grounding_authority = Some(cycle(current));
+                    true
+                }
+                "statusline.context_position" => {
+                    let s = config.statusline.get_or_insert_with(StatuslineConfig::default);
+                    let current = s.context_position.as_deref().unwrap_or("end");
+                    s.context_position = Some(cycle(current));
                     true
                 }
                 _ => false,
@@ -6538,6 +7302,71 @@ fn mutate_config_entry(
                     let e = config.external_job.get_or_insert_with(ExternalJobConfig::default);
                     let current = e.poll_timeout_ms.unwrap_or(0);
                     e.poll_timeout_ms = Some(if current >= 60000 { 1000 } else { current + 1000 });
+                    true
+                }
+                // gsd-core 1.14.0 re-sync (quick task 260916-vqw). Each step and
+                // wrap point is chosen from the key's own documented range, so
+                // the cycle reaches gsd-core's default rather than stepping past
+                // it — the `x` key is always the way back to (unset).
+                "workflow.cross_ai_timeout" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.cross_ai_timeout.unwrap_or(0);
+                    wf.cross_ai_timeout = Some(if current >= 900 { 60 } else { current + 60 });
+                    true
+                }
+                "workflow.drift_threshold" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.drift_threshold.unwrap_or(0);
+                    wf.drift_threshold = Some(if current >= 10 { 1 } else { current + 1 });
+                    true
+                }
+                "workflow.inline_plan_threshold" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.inline_plan_threshold.unwrap_or(0);
+                    wf.inline_plan_threshold = Some(if current >= 20 { 1 } else { current + 1 });
+                    true
+                }
+                "workflow.max_discuss_passes" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.max_discuss_passes.unwrap_or(0);
+                    wf.max_discuss_passes = Some(if current >= 10 { 1 } else { current + 1 });
+                    true
+                }
+                "workflow.plan_bounce_passes" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.plan_bounce_passes.unwrap_or(0);
+                    wf.plan_bounce_passes = Some(if current >= 10 { 1 } else { current + 1 });
+                    true
+                }
+                "workflow.smart_zone_tokens" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.smart_zone_tokens.unwrap_or(0);
+                    wf.smart_zone_tokens =
+                        Some(if current >= 400_000 { 25_000 } else { current + 25_000 });
+                    true
+                }
+                // The two thresholds are a PAIR with an ordering constraint
+                // gsd-core enforces (critical strictly below warning), so each
+                // cycles inside its own half of the range rather than through
+                // the whole of 0..100 and straight past the other.
+                "hooks.context_warning_threshold" => {
+                    let h = config.hooks.get_or_insert_with(HooksConfig::default);
+                    let current = h.context_warning_threshold.unwrap_or(0);
+                    h.context_warning_threshold =
+                        Some(if current >= 90 { 30 } else { current.max(25) + 5 });
+                    true
+                }
+                "hooks.context_critical_threshold" => {
+                    let h = config.hooks.get_or_insert_with(HooksConfig::default);
+                    let current = h.context_critical_threshold.unwrap_or(0);
+                    h.context_critical_threshold =
+                        Some(if current >= 20 { 5 } else { current + 5 });
+                    true
+                }
+                "context_window" => {
+                    let current = config.context_window.unwrap_or(0);
+                    config.context_window =
+                        Some(if current >= 1_000_000 { 200_000 } else { current + 200_000 });
                     true
                 }
                 _ => false,
@@ -6590,12 +7419,41 @@ mod tests {
             "claude_md_path": "./.claude/CLAUDE.md",
             "response_language": "English",
             "sub_repos": [],
+            "context_window": 200000,
+            "features": {
+                "global_learnings": false,
+                "thinking_partner": false
+            },
+            "gates": {
+                "confirm_breakdown": true,
+                "confirm_phases": true,
+                "confirm_plan": true,
+                "confirm_project": true,
+                "confirm_roadmap": true,
+                "confirm_transition": true,
+                "execute_next_plan": true,
+                "issues_review": true
+            },
+            "planning": {
+                "chunked_parallel": false,
+                "commit_docs": true,
+                "pr_strict": false,
+                "search_gitignored": false,
+                "sub_repos": []
+            },
+            "plan_review": {
+                "source_grounding": true,
+                "source_grounding_authority": "grep"
+            },
             "git": {
                 "branching_strategy": "phase",
                 "base_branch": "master",
                 "phase_branch_template": "gsd/phase-{phase}-{slug}",
                 "milestone_branch_template": "gsd/{milestone}-{slug}",
-                "quick_branch_template": "gsd/quick-{slug}"
+                "quick_branch_template": "gsd/quick-{slug}",
+                "create_tag": true,
+                "allow_default_branch_commits": false,
+                "protected_branches": ["release"]
             },
             "workflow": {
                 "research": true,
@@ -6631,14 +7489,47 @@ mod tests {
                 "plan_chunked": false,
                 "mvp_mode": false,
                 "security_asvs_level": 1,
-                "security_block_on": "high"
+                "security_block_on": "high",
+                "compact_content": true,
+                "agent_hint_routing": true,
+                "auto_prune_state": false,
+                "build_command": "cargo build",
+                "code_review_depth_overrides": [{ "paths": ["src/auth"], "depth": "deep" }],
+                "code_review_point": "execute:post",
+                "context_coverage_gate": true,
+                "context_drift_action": "warn",
+                "context_drift_precheck": true,
+                "cross_ai_command": "codex exec -",
+                "cross_ai_execution": false,
+                "cross_ai_timeout": 300,
+                "drift_action": "warn",
+                "drift_threshold": 3,
+                "human_verify_mode": "end-of-phase",
+                "inline_plan_threshold": 3,
+                "live_dom_uat": false,
+                "max_discuss_passes": 3,
+                "plan_bounce": false,
+                "plan_bounce_passes": 2,
+                "plan_bounce_script": "./scripts/bounce.sh",
+                "plan_review_convergence": false,
+                "post_planning_gaps": true,
+                "security_enforcement": true,
+                "smart_zone_tokens": 100000,
+                "test_command": "cargo test --no-fail-fast",
+                "worktree_skip_hooks": false
             },
-            "hooks": { "context_warnings": true },
+            "hooks": {
+                "context_warnings": true,
+                "workflow_guard": false,
+                "context_warning_threshold": 35,
+                "context_critical_threshold": 25
+            },
             "intel": { "enabled": true },
             "graphify": {
                 "enabled": true,
                 "build_timeout": 300,
-                "graph_path": ".planning/graphs"
+                "graph_path": ".planning/graphs",
+                "auto_update": false
             },
             "claude_orchestration": {
                 "enabled": false,
@@ -6648,11 +7539,16 @@ mod tests {
             "statusline": {
                 "show_context_tokens": true,
                 "state_format": "compact",
-                "show_git": true
+                "show_git": true,
+                "context_position": "end",
+                "show_last_command": false,
+                "show_state_freshness": false
             },
             "dynamic_routing": {
                 "provider_escalation": false,
-                "max_escalations": 1
+                "max_escalations": 1,
+                "enabled": false,
+                "escalate_on_failure": true
             },
             "review": { "reviewer_instances": {} },
             "external_job": {
@@ -6676,10 +7572,17 @@ mod tests {
     }
 
     /// The number of `push` call sites in `build_defaults_entries`, MEASURED at
-    /// the time the help was authored. It is asserted rather than trusted so a
-    /// 74th option cannot slip past the coverage assertions below by being
-    /// added to a list nobody counted.
-    const DEFAULTS_OPTION_COUNT: usize = 73;
+    /// the time the help was authored and RE-measured at the gsd-core 1.14.0
+    /// re-sync (73 -> 130, quick task 260916-vqw). It is asserted rather than
+    /// trusted so a 131st option cannot slip past the coverage assertions below
+    /// by being added to a list nobody counted.
+    ///
+    /// **It counts STATIC rows only.** `append_passthrough_entries` emits one
+    /// row per unmodelled key found in the config it is handed, so a fixture
+    /// carrying such a key would make this number a property of the fixture
+    /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
+    /// of unmodelled keys, and the pass-through rows have their own fixture.
+    const DEFAULTS_OPTION_COUNT: usize = 130;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -6762,7 +7665,7 @@ mod tests {
         }
 
         assert_eq!(
-            enum_entries, 6,
+            enum_entries, 12,
             "the Defaults tab's Enum-kinded option count changed; each one needs a per-value \
              explanation"
         );
@@ -6785,7 +7688,7 @@ mod tests {
         let entries = all_config_entries();
         let entry = entries
             .iter()
-            .find(|e| e.key == "model_profile")
+            .find(|e| e.key.as_ref() == "model_profile")
             .expect("model_profile is one of the Defaults tab's options");
         let options = dropdown_options(&entry.kind);
         assert_eq!(options.len(), 5, "model_profile offers five values");
@@ -6879,13 +7782,13 @@ mod tests {
         let first_summary = squeeze_ws(entries[0].help.summary);
         let model_idx = entries
             .iter()
-            .position(|e| e.key == "model_profile")
+            .position(|e| e.key.as_ref() == "model_profile")
             .expect("model_profile is one of the Defaults tab's options");
         let model_summary = squeeze_ws(entries[model_idx].help.summary);
 
         let at_first = squeeze_ws(&render_defaults_to_text(120, 40, 0));
         assert!(
-            at_first.contains(entries[0].key),
+            at_first.contains(entries[0].key.as_ref()),
             "the fixture is not populated — the tab painted its empty state, so nothing below \
              this line is about the help pane"
         );
@@ -6920,7 +7823,7 @@ mod tests {
         let short = render_defaults_to_text(120, 10, 0);
         let row = short
             .lines()
-            .find(|line| line.contains(entries[0].key))
+            .find(|line| line.contains(entries[0].key.as_ref()))
             .expect("below the ID-04 floor the option list keeps the whole area");
         assert!(
             row.contains(&entries[0].value),
@@ -6970,6 +7873,532 @@ mod tests {
                 entry.key
             );
         }
+    }
+
+    // ── Pass-through rows (quick task 260916-vqw) ─────────────────────────
+
+    /// A config carrying keys gsd-core writes and this build does not model —
+    /// one at the top level, one nested in a modelled block, and one from a
+    /// templated family ID-3 deliberately never promotes to a typed row.
+    fn config_with_unmodelled_keys() -> crate::state_reader::config_json::GsdConfig {
+        crate::state_reader::config_json::parse_gsd_config(
+            r#"{
+                "mode": "yolo",
+                "workflow": { "research": true, "unknown_gsd_key": 7 },
+                "brand_new_block": { "a": 1 },
+                "review": { "models": { "codex": "gpt-5" } }
+            }"#,
+        )
+        .expect("the pass-through fixture parses")
+    }
+
+    fn passthrough_rows(entries: &[ConfigEntry]) -> Vec<&ConfigEntry> {
+        entries
+            .iter()
+            .filter(|entry| entry.category == PASSTHROUGH_CATEGORY)
+            .collect()
+    }
+
+    #[test]
+    fn an_unmodelled_key_becomes_a_read_only_row_under_its_own_category() {
+        let entries = build_defaults_entries(&config_with_unmodelled_keys(), None);
+        let rows = passthrough_rows(&entries);
+        let keys: Vec<&str> = rows.iter().map(|entry| entry.key.as_ref()).collect();
+
+        assert_eq!(
+            keys,
+            vec!["brand_new_block", "review.models", "workflow.unknown_gsd_key"],
+            "the pass-through walk must reach the top level, the nested blocks \
+             AND the templated families, in sorted order"
+        );
+        for entry in &rows {
+            assert!(
+                matches!(entry.kind, ConfigValueKind::ReadOnly),
+                "`{}` is a pass-through row but its kind is {:?}, so the TUI \
+                 offers to edit a key it cannot write back",
+                entry.key,
+                entry.kind
+            );
+            assert!(
+                dropdown_options(&entry.kind).is_empty(),
+                "`{}` offers dropdown options for a key this build does not model",
+                entry.key
+            );
+        }
+        assert!(
+            rows[0].show_category,
+            "the first pass-through row must print the category header"
+        );
+
+        // The CONTROL. Without it this passes on a walk that reports every key
+        // as unmodelled, including the ones that have typed rows.
+        let modelled: Vec<&str> = entries
+            .iter()
+            .filter(|entry| entry.category != PASSTHROUGH_CATEGORY)
+            .map(|entry| entry.key.as_ref())
+            .collect();
+        assert!(modelled.contains(&"research"));
+        assert!(
+            !modelled.is_empty() && !keys.contains(&"research"),
+            "a MODELLED key leaked into the pass-through rows"
+        );
+    }
+
+    /// The tracer's negative half: the one key the todo named by hand must be a
+    /// first-class row, not a pass-through one.
+    #[test]
+    fn compact_content_is_an_editable_row_naming_its_gsd_core_version() {
+        let entries = all_config_entries();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.key.as_ref() == "workflow.compact_content")
+            .expect("workflow.compact_content has a Defaults-tab row");
+
+        assert!(
+            matches!(entry.kind, ConfigValueKind::Bool),
+            "compact_content is a boolean gate; kind is {:?}",
+            entry.kind
+        );
+        assert_ne!(entry.category, PASSTHROUGH_CATEGORY);
+        assert_eq!(
+            entry.help.since, "v1.14.0",
+            "the help must NAME the gsd-core version that introduced the key"
+        );
+
+        // Editable: the dropdown applies, the toggle flips, the clear unsets.
+        let mut config = populated_gsd_config();
+        assert!(set_config_value(&mut config, "workflow.compact_content", "false"));
+        assert_eq!(
+            config.workflow.as_ref().unwrap().compact_content,
+            Some(false)
+        );
+        assert!(mutate_config_entry(
+            &mut config,
+            "workflow.compact_content",
+            &ConfigValueKind::Bool
+        ));
+        assert_eq!(
+            config.workflow.as_ref().unwrap().compact_content,
+            Some(true)
+        );
+        assert!(clear_config_value(&mut config, "workflow.compact_content"));
+        assert!(config.workflow.as_ref().unwrap().compact_content.is_none());
+
+        // And the version reaches the pane a human reads, not just the struct.
+        let idx = entries
+            .iter()
+            .position(|e| e.key.as_ref() == "workflow.compact_content")
+            .unwrap();
+        let rendered = squeeze_ws(&render_defaults_to_text(120, 40, idx));
+        assert!(
+            rendered.contains(&squeeze_ws(&format!("{SINCE_PREFIX}v1.14.0"))),
+            "the help pane did not draw the `since` marker: {rendered}"
+        );
+    }
+
+    /// Every key the gsd-core 1.14.0 re-sync added, with the kind its row must
+    /// carry — MEASURED from gsd-core's own key table, not from this build.
+    ///
+    /// **Spelled as data rather than as one assertion per key** so the
+    /// `ConfigValueKind` and the `since` are checked together, and so a key
+    /// added to `build_defaults_entries` without a row here is caught by the
+    /// count pin (`DEFAULTS_OPTION_COUNT`) from the other direction.
+    const RESYNCED_KEYS: &[(&str, &str)] = &[
+        ("workflow.agent_hint_routing", "bool"),
+        ("workflow.auto_prune_state", "bool"),
+        ("workflow.build_command", "string"),
+        ("workflow.code_review_depth_overrides", "readonly"),
+        ("workflow.code_review_point", "enum"),
+        ("workflow.compact_content", "bool"),
+        ("workflow.context_coverage_gate", "bool"),
+        ("workflow.context_drift_action", "enum"),
+        ("workflow.context_drift_precheck", "bool"),
+        ("workflow.cross_ai_command", "string"),
+        ("workflow.cross_ai_execution", "bool"),
+        ("workflow.cross_ai_timeout", "integer"),
+        ("workflow.drift_action", "enum"),
+        ("workflow.drift_threshold", "integer"),
+        ("workflow.human_verify_mode", "enum"),
+        ("workflow.inline_plan_threshold", "integer"),
+        ("workflow.live_dom_uat", "bool"),
+        ("workflow.max_discuss_passes", "integer"),
+        ("workflow.plan_bounce", "bool"),
+        ("workflow.plan_bounce_passes", "integer"),
+        ("workflow.plan_bounce_script", "string"),
+        ("workflow.plan_review_convergence", "bool"),
+        ("workflow.post_planning_gaps", "bool"),
+        ("workflow.security_enforcement", "bool"),
+        ("workflow.smart_zone_tokens", "integer"),
+        ("workflow.test_command", "string"),
+        ("workflow.worktree_skip_hooks", "bool"),
+        ("features.global_learnings", "bool"),
+        ("features.thinking_partner", "bool"),
+        ("gates.confirm_breakdown", "bool"),
+        ("gates.confirm_phases", "bool"),
+        ("gates.confirm_plan", "bool"),
+        ("gates.confirm_project", "bool"),
+        ("gates.confirm_roadmap", "bool"),
+        ("gates.confirm_transition", "bool"),
+        ("gates.execute_next_plan", "bool"),
+        ("gates.issues_review", "bool"),
+        ("planning.chunked_parallel", "bool"),
+        ("planning.commit_docs", "bool"),
+        ("planning.pr_strict", "bool"),
+        ("planning.search_gitignored", "bool"),
+        ("planning.sub_repos", "readonly"),
+        ("plan_review.source_grounding", "bool"),
+        ("plan_review.source_grounding_authority", "enum"),
+        ("git.create_tag", "bool"),
+        ("git.allow_default_branch_commits", "bool"),
+        ("git.protected_branches", "readonly"),
+        ("hooks.workflow_guard", "bool"),
+        ("hooks.context_warning_threshold", "integer"),
+        ("hooks.context_critical_threshold", "integer"),
+        ("graphify.auto_update", "bool"),
+        ("context_window", "integer"),
+        ("statusline.context_position", "enum"),
+        ("statusline.show_last_command", "bool"),
+        ("statusline.show_state_freshness", "bool"),
+        ("dynamic_routing.enabled", "bool"),
+        ("dynamic_routing.escalate_on_failure", "bool"),
+    ];
+
+    /// The re-sync's own size, MEASURED against gsd-core 1.14.0's key table:
+    /// 27 `workflow.*` keys plus 30 elsewhere.
+    ///
+    /// Asserted rather than trusted for the same reason
+    /// [`DEFAULTS_OPTION_COUNT`] is: a row quietly dropped from the table above
+    /// would make every loop over it pass while covering one key fewer.
+    const RESYNCED_KEY_COUNT: usize = 57;
+
+    /// `docs/GSD-CORE-SYNC.md` is the baseline a future sync DIFFS FROM, so a
+    /// record that outlives its subject is worse than no record — it tells the
+    /// next reader a surface is covered when it is not.
+    ///
+    /// This pins the three things that can silently rot: the version and commit
+    /// it names must be the ones the constants carry, and its `## Modelled`
+    /// section must list every key `build_defaults_entries` pushes.
+    ///
+    /// **Read from disk through `CARGO_MANIFEST_DIR`**, the same route
+    /// `render_escape_guard.rs`'s census uses, so the assertion is about the
+    /// committed file rather than about a copy of it in this test.
+    #[test]
+    fn the_sync_record_names_every_modelled_key_and_the_measured_baseline() {
+        use crate::state_reader::config_json::{
+            GSD_CORE_SYNCED_COMMIT, GSD_CORE_SYNCED_VERSION,
+        };
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/GSD-CORE-SYNC.md");
+        let doc = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!("the sync record is missing at {}: {e}", path.display())
+        });
+
+        assert!(
+            doc.contains(GSD_CORE_SYNCED_VERSION),
+            "the record does not name version {GSD_CORE_SYNCED_VERSION:?}, which \
+             config_json.rs's constant carries"
+        );
+        assert!(
+            doc.contains(GSD_CORE_SYNCED_COMMIT),
+            "the record does not name commit {GSD_CORE_SYNCED_COMMIT:?}"
+        );
+
+        let modelled = doc
+            .split_once("\n## Modelled")
+            .expect("the record has a `## Modelled` section")
+            .1
+            .split_once("\n## Pass-through")
+            .expect("the record has a `## Pass-through` section after it")
+            .0;
+
+        let missing: Vec<&str> = all_config_entries()
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .filter(|key| !modelled.contains(&format!("`{key}`")))
+            .map(|key| {
+                // Leak-free: the keys are `&'static str` behind `Cow::Borrowed`
+                // for every authored row, and this fixture pushes no others.
+                Box::leak(key.to_string().into_boxed_str()) as &str
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "docs/GSD-CORE-SYNC.md's Modelled section does not list {missing:?} — \
+             the record and the tab have drifted, which is the exact failure the \
+             record exists to prevent. Update both in the SAME commit."
+        );
+    }
+
+    #[test]
+    fn the_resync_covers_every_key_the_drift_measurement_found() {
+        assert_eq!(
+            RESYNCED_KEYS.len(),
+            RESYNCED_KEY_COUNT,
+            "the re-synced key table changed size; re-measure the drift against \
+             gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        let workflow = RESYNCED_KEYS
+            .iter()
+            .filter(|(key, _)| key.starts_with("workflow."))
+            .count();
+        assert_eq!(workflow, 27, "the workflow.* half of the re-sync changed size");
+    }
+
+    fn kind_name(kind: &ConfigValueKind) -> &'static str {
+        match kind {
+            ConfigValueKind::Bool => "bool",
+            ConfigValueKind::Enum(_) => "enum",
+            ConfigValueKind::String => "string",
+            ConfigValueKind::Integer => "integer",
+            ConfigValueKind::Null => "null",
+            ConfigValueKind::ReadOnly => "readonly",
+        }
+    }
+
+    /// Each re-synced key appears EXACTLY once, with the kind gsd-core's type
+    /// column implies and a non-empty measured `since`.
+    ///
+    /// The "exactly once" half matters: a key pushed under two categories
+    /// renders twice and the second row's edits silently fight the first.
+    #[test]
+    fn every_resynced_key_has_one_row_of_the_right_kind_with_a_measured_since() {
+        let entries = all_config_entries();
+        for (key, expected_kind) in RESYNCED_KEYS {
+            let matching: Vec<&ConfigEntry> = entries
+                .iter()
+                .filter(|entry| entry.key.as_ref() == *key)
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "`{key}` has {} Defaults-tab rows; a key listed twice renders \
+                 twice and its two rows fight each other on save",
+                matching.len()
+            );
+            let entry = matching[0];
+            assert_eq!(
+                kind_name(&entry.kind),
+                *expected_kind,
+                "`{key}` is a {expected_kind} in gsd-core's key table but this \
+                 build gives it a {} row",
+                kind_name(&entry.kind)
+            );
+            assert!(
+                !entry.help.since.is_empty(),
+                "`{key}` carries no `since` — resolve it by MEASURING gsd-core's \
+                 history, never from memory (ID-4)"
+            );
+            assert!(
+                entry.help.since.starts_with('v'),
+                "`{key}`'s since is {:?}, which is not a gsd-core tag name",
+                entry.help.since
+            );
+            assert_ne!(
+                entry.category, PASSTHROUGH_CATEGORY,
+                "`{key}` is supposed to be MODELLED but rendered as a \
+                 pass-through row"
+            );
+        }
+    }
+
+    /// Every re-synced key that is editable at all is editable through the arm
+    /// its kind dispatches to, and clears back to `(unset)`.
+    ///
+    /// The read-only key is asserted in the OTHER direction in the same loop,
+    /// so "it is read-only" is a checked property rather than an omission.
+    #[test]
+    fn every_editable_resynced_key_sets_toggles_and_clears() {
+        let entries = all_config_entries();
+        for (key, expected_kind) in RESYNCED_KEYS {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.key.as_ref() == *key)
+                .unwrap();
+            let mut config = populated_gsd_config();
+
+            match *expected_kind {
+                "bool" => {
+                    assert!(set_config_value(&mut config, key, "false"), "{key} set");
+                    assert!(
+                        mutate_config_entry(&mut config, key, &entry.kind),
+                        "{key} toggle"
+                    );
+                }
+                "enum" => {
+                    let options = dropdown_options(&entry.kind);
+                    assert_eq!(
+                        options,
+                        entry
+                            .help
+                            .choices
+                            .iter()
+                            .map(|(v, _)| (*v).to_string())
+                            .collect::<Vec<_>>(),
+                        "{key}: the documented choices and the dropdown disagree"
+                    );
+                    for option in &options {
+                        assert!(
+                            set_config_value(&mut config, key, option),
+                            "{key} could not be set to {option:?}"
+                        );
+                    }
+                    assert!(
+                        mutate_config_entry(&mut config, key, &entry.kind),
+                        "{key} cycle"
+                    );
+                }
+                "string" => {
+                    assert!(set_string_value(&mut config, key, "x"), "{key} set");
+                }
+                "integer" => {
+                    assert!(
+                        mutate_config_entry(&mut config, key, &ConfigValueKind::Integer),
+                        "{key} has an Integer row but no Integer arm, so Enter on \
+                         it is a dead key"
+                    );
+                }
+                "readonly" => {
+                    assert!(
+                        !mutate_config_entry(&mut config, key, &entry.kind),
+                        "{key} is read-only but the toggle arm accepted it"
+                    );
+                    assert!(
+                        dropdown_options(&entry.kind).is_empty(),
+                        "{key} is read-only but offers dropdown options"
+                    );
+                    continue;
+                }
+                other => panic!("unknown expected kind {other:?} for {key}"),
+            }
+
+            assert!(
+                clear_config_value(&mut config, key),
+                "{key} cannot be cleared back to (unset)"
+            );
+        }
+    }
+
+    /// T-VQW-02's other half: a pass-through row is READ-only in every one of
+    /// the three arms that can mutate a config, so nothing can write a key back
+    /// under a name this build does not understand.
+    #[test]
+    fn a_pass_through_key_is_refused_by_every_mutation_arm() {
+        let mut config = config_with_unmodelled_keys();
+        for key in ["brand_new_block", "workflow.unknown_gsd_key", "review.models"] {
+            assert!(
+                !set_config_value(&mut config, key, "true"),
+                "`{key}` was accepted by the dropdown arm"
+            );
+            assert!(
+                !set_string_value(&mut config, key, "x"),
+                "`{key}` was accepted by the string arm"
+            );
+            assert!(
+                !clear_config_value(&mut config, key),
+                "`{key}` was accepted by the clear arm"
+            );
+            assert!(
+                !mutate_config_entry(&mut config, key, &ConfigValueKind::ReadOnly),
+                "`{key}` was accepted by the toggle arm"
+            );
+        }
+        // The control: the same four arms DO recognise a modelled key, so the
+        // refusals above are about the key rather than about broken arms.
+        assert!(set_config_value(&mut config, "research", "false"));
+        assert!(clear_config_value(&mut config, "research"));
+    }
+
+    /// T-VQW-01. A pass-through row is the first Defaults-tab row whose KEY is
+    /// project-supplied, so the key crosses the same untrusted-text boundary
+    /// `entry.value` already did.
+    ///
+    /// The fixture's hostile characters are drawn BY IMPORT from
+    /// `LOOK_ALIKE_PAIRS` (D-21-6) rather than respelled here, and the row is
+    /// SELECTED so the list scrolls it into the viewport — a 130-row list at 40
+    /// rows of terminal would otherwise never draw it and this test would pass
+    /// by never rendering the site it is about.
+    #[test]
+    fn a_hostile_pass_through_key_cannot_reach_a_cell_unescaped() {
+        use crate::test_support::LOOK_ALIKE_PAIRS;
+
+        let hostile_key = format!("brand_{}_block", LOOK_ALIKE_PAIRS[4].1);
+        let hostile_value = format!("value{}", LOOK_ALIKE_PAIRS[4].1);
+        // Built THROUGH serde_json rather than by `format!` into a raw string:
+        // a hand-escaped literal has to spell JSON's `\uXXXX` surrogate pairs
+        // for an astral-plane tag character, and the first version of this test
+        // wrote Rust's `\u{e0041}` instead and failed at "the hostile fixture
+        // parses" — a fixture that cannot parse asserts nothing about escaping.
+        let mut root = serde_json::Map::new();
+        root.insert("mode".to_string(), serde_json::Value::from("yolo"));
+        root.insert(
+            hostile_key.clone(),
+            serde_json::Value::from(hostile_value.clone()),
+        );
+        let raw = serde_json::to_string(&serde_json::Value::Object(root))
+            .expect("the hostile fixture serialises");
+        let config = crate::state_reader::config_json::parse_gsd_config(&raw)
+            .expect("the hostile fixture parses");
+
+        let entries = build_defaults_entries(&config, None);
+        let idx = entries
+            .iter()
+            .position(|entry| entry.category == PASSTHROUGH_CATEGORY)
+            .expect("the hostile key produced a pass-through row");
+
+        let mut ctx = test_ctx();
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.defaults_config = Some(config);
+            cache.defaults_selected = idx;
+        }
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (width, height) = (200u16, 40u16);
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render_defaults_tab(frame, frame.area(), &ctx))
+            .expect("draw the Defaults tab");
+        let buffer = terminal.backend().buffer().clone();
+        let drawn: String = (0..height)
+            .flat_map(|y| {
+                (0..width).map(move |x| (x, y))
+            })
+            .filter_map(|(x, y)| buffer.cell((x, y)).map(|cell| cell.symbol().to_string()))
+            .collect();
+
+        // ARRIVAL first: without it every assertion below passes by the row
+        // never having been rendered at all.
+        assert!(
+            drawn.contains("brand_"),
+            "the hostile pass-through row never reached the viewport, so nothing \
+             below this line is about escaping"
+        );
+        let leaked: Vec<char> = drawn
+            .chars()
+            .filter(|c| crate::text::is_invisible_formatting_char(*c))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "the pass-through row put {leaked:?} into the terminal buffer — those \
+             characters render as nothing, so what the operator reads is not what \
+             the key is"
+        );
+        // The expected spelling comes from the SAME composition the render
+        // applies (`shown` delegates to `render_for_terminal`), not from the
+        // half of it that handles this one class. Naming a half here would make
+        // the assertion disagree with the render the day the composition
+        // changes, and would add a bare `display_identity` needle to the census
+        // `ui::tests::no_display_identity_call_under_ui_stands_outside_a_composition`
+        // keeps over this directory.
+        assert!(
+            drawn.contains(&crate::text::render_for_terminal(&hostile_key).to_string()),
+            "the escaped spelling of the key is absent, so the row drew something \
+             other than the key it is for"
+        );
     }
 
     #[test]
