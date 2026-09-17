@@ -182,14 +182,22 @@ fn row(key: &str, description: &str) -> Line<'static> {
     Line::from(format!("  {key:<13} {description}"))
 }
 
-/// The whole help body, as a pure function of nothing.
+/// The whole help body, as a pure function of one startup-resolved flag.
 ///
 /// **Extracted from `render` on purpose**, for the reason `footer_spans` was
 /// split out of `build_footer`: a `Paragraph` exposes no public text accessor,
 /// so content assertions against a rendered buffer cannot tell a missing row
 /// from a clipped one. A `Vec<Line>` concatenates cleanly and every content test
 /// below reads this instead.
-pub(super) fn help_lines() -> Vec<Line<'static>> {
+///
+/// `experimental` decides whether the driver is documented here at all
+/// (260917-fko D2/D3). **The help screen is the only place keys are documented**,
+/// which is exactly why it has to be gated: leaving the driver rows in while the
+/// surface is hidden would teach a user about a tab they cannot open and keys
+/// that do nothing, and leaving the badge and injection legends in would name
+/// glyphs the dashboard can no longer paint. With the flag on, the Driver
+/// section's heading carries the EXPERIMENTAL marker (D3).
+pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = vec![
         heading("Keybindings"),
         Line::from(""),
@@ -207,35 +215,59 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c", "Create new project"),
         row("d", "Delete project"),
         row("?", "Toggle this help"),
-        row("r", "Start a driver run (dashboard)"),
-        row("x", "Stop the live driver run (dashboard)"),
-        row("o", "Toggle driver opt-in (dashboard)"),
+    ];
+
+    // The three dashboard driver keys, documented only while they are bound.
+    if experimental {
+        lines.push(row("r", "Start a driver run (dashboard)"));
+        lines.push(row("x", "Stop the live driver run (dashboard)"));
+        lines.push(row("o", "Toggle driver opt-in (dashboard)"));
+    }
+
+    lines.extend([
         row("e", "Enqueue next action (detail view)"),
         row("r", "Toggle roadmap visualization (detail view)"),
         row("q / Esc", "Quit / Back"),
         row("Ctrl+C", "Force quit"),
         Line::from(""),
-        // ── The Driver tab (Phase 18). There is deliberately no pane-focus
-        // mode: the output pane's default is to follow its tail, so scrolling
-        // is the exception rather than a second mode the user has to track.
-        heading("Driver Tab (detail view)"),
-        Line::from(""),
-        row("Shift+D", "Jump to the Driver tab from any detail tab"),
-        row("j / k", "Move the run selection"),
-        row("PgUp / PgDn", "Scroll the output pane"),
-        row("f", "Toggle following the live tail"),
-        row("G", "Jump to the output tail and follow again"),
-        row("i", "Inject a message into the live run"),
-        row("s", "Start a run: command, then optional goal"),
-        row("x", "Stop the live run (asks first)"),
-        // Both surfaces bind `o` for the same action and the help lists both,
-        // which is what makes the consistency visible instead of coincidental.
-        // The two descriptions must not be byte-identical, or the whole-row
-        // assertion below cannot tell which section it matched — the dashboard
-        // row at the top is disambiguated by its trailing parenthetical, and
-        // this one's wording differs throughout.
-        row("o", "Toggle driver opt-in for this project"),
-        Line::from(""),
+    ]);
+
+    // ── The Driver tab (Phase 18). There is deliberately no pane-focus
+    // mode: the output pane's default is to follow its tail, so scrolling
+    // is the exception rather than a second mode the user has to track.
+    //
+    // The whole section — heading, blank line, nine rows and its trailing
+    // blank — goes together when the experimental surfaces are off; the
+    // blank line above is the one that survives, so the Filter Syntax
+    // heading below has exactly one blank before it either way.
+    if experimental {
+        lines.extend([
+            // D3: the literal word EXPERIMENTAL on the help screen's Driver
+            // heading, one of the two places it must appear. The em dash is
+            // the separator `app.rs` already uses in its status strings.
+            heading("Driver Tab (detail view) \u{2014} EXPERIMENTAL"),
+            Line::from(""),
+            row("Shift+D", "Jump to the Driver tab from any detail tab"),
+            row("j / k", "Move the run selection"),
+            row("PgUp / PgDn", "Scroll the output pane"),
+            row("f", "Toggle following the live tail"),
+            row("G", "Jump to the output tail and follow again"),
+            row("i", "Inject a message into the live run"),
+            row("s", "Start a run: command, then optional goal"),
+            row("x", "Stop the live run (asks first)"),
+            // Both surfaces bind `o` for the same action and the help lists
+            // both, which is what makes the consistency visible instead of
+            // coincidental. The two descriptions must not be byte-identical,
+            // or the whole-row assertion below cannot tell which section it
+            // matched — the dashboard row at the top is disambiguated by its
+            // trailing parenthetical, and this one's wording differs
+            // throughout.
+            row("o", "Toggle driver opt-in for this project"),
+            Line::from(""),
+        ]);
+    }
+
+    lines.extend([
         heading("Filter Syntax"),
         Line::from(""),
         row("/term", "Search all columns"),
@@ -249,24 +281,35 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         // is carried by colour alone.
         heading("Dashboard Badges"),
         Line::from(""),
-    ];
+    ]);
 
     for (glyph, meaning) in BADGE_LEGEND {
+        // The driven badge is the dashboard's driver surface; with the
+        // experimental features off `row_badge` can never yield it, so
+        // documenting it would name a glyph nothing paints.
+        if !experimental && glyph == BADGE_DRIVEN {
+            continue;
+        }
         lines.push(Line::from(format!("  {glyph} {meaning}")));
     }
     lines.push(Line::from(""));
 
-    // ── The injection legend, with the honest gloss (D-07, D-10).
-    lines.push(heading("Injected Message States"));
-    lines.push(Line::from(""));
-    for (index, (glyph, label, gloss)) in INJECTION_LEGEND.into_iter().enumerate() {
-        lines.push(Line::from(format!("  {glyph} {label:<11} {gloss}")));
-        let continuation = INJECTION_LEGEND_CONT[index];
-        if !continuation.is_empty() {
-            lines.push(Line::from(format!("  {:<14}{continuation}", "")));
+    // ── The injection legend, with the honest gloss (D-07, D-10). Injection is
+    // reachable only from the Driver tab's `i` key, so the whole section —
+    // heading, blank and loop — goes with it. The blank pushed above is the one
+    // that survives, leaving exactly one before the closing hint either way.
+    if experimental {
+        lines.push(heading("Injected Message States"));
+        lines.push(Line::from(""));
+        for (index, (glyph, label, gloss)) in INJECTION_LEGEND.into_iter().enumerate() {
+            lines.push(Line::from(format!("  {glyph} {label:<11} {gloss}")));
+            let continuation = INJECTION_LEGEND_CONT[index];
+            if !continuation.is_empty() {
+                lines.push(Line::from(format!("  {:<14}{continuation}", "")));
+            }
         }
+        lines.push(Line::from(""));
     }
-    lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled(
         "Press ? or Esc to close   j/k, PgUp/PgDn scroll".to_string(),
@@ -279,13 +322,14 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
 crate::ui::screens::adjudicate_screen!(
     HelpScreen,
     crate::ui::screens::RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY,
-    "Draws `help_lines()`, which the module doc calls a pure function of \
-     nothing: keybindings, the filter grammar and two legends, every byte of \
-     it authored in this repository. It `Clear`s its popup area and paints \
-     no background, so nothing from `AppContext` reaches a cell. Checked, \
-     not claimed: the fixture registers the hostile identity and puts a \
-     hostile project state behind it, and the probe asserts the clean stem \
-     is absent from the buffer.",
+    "Draws `help_lines(ctx.experimental)`: keybindings, the filter grammar \
+     and two legends, every byte of it authored in this repository. The one \
+     value it takes from `AppContext` is a startup-resolved bool that selects \
+     between two authored bodies — no borrowed text, no identity, no project \
+     state. It `Clear`s its popup area and paints no background, so nothing \
+     attacker-influenced reaches a cell. Checked, not claimed: the fixture \
+     registers the hostile identity and puts a hostile project state behind \
+     it, and the probe asserts the clean stem is absent from the buffer.",
 );
 
 impl Screen for HelpScreen {
@@ -341,12 +385,12 @@ impl Screen for HelpScreen {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, _ctx: &AppContext) {
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         // Help renders as an overlay on top of whatever is below
         let popup_area = centered_rect(area, POPUP_WIDTH_PCT, POPUP_HEIGHT_PCT);
         frame.render_widget(Clear, popup_area);
 
-        let help_text = help_lines();
+        let help_text = help_lines(ctx.experimental);
         let block = Block::default().borders(Borders::ALL).title(" Help ");
         let inner = block.inner(popup_area);
 
@@ -395,7 +439,13 @@ mod tests {
     /// Every rendered row, joined — the form a content assertion can search
     /// without caring which line a phrase landed on.
     fn body() -> String {
-        help_lines()
+        body_with(true)
+    }
+
+    /// The same, at a chosen `experimental` flag — the form the 260917-fko
+    /// flag-off assertions read.
+    fn body_with(experimental: bool) -> String {
+        help_lines(experimental)
             .iter()
             .map(|line| {
                 line.spans
@@ -655,7 +705,7 @@ mod tests {
         // grown popup's inner height is 24*90/100 - 2 = 19 rows, and the body is
         // far longer than that. If this ever stops being true the scrolling is
         // still correct, but the claim in the module doc would not be.
-        let total = help_lines().len();
+        let total = help_lines(true).len();
         assert!(
             total > 19,
             "the help body is {total} rows; the 80x24 popup shows 19, so the \

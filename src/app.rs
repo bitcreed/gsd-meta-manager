@@ -462,7 +462,22 @@ impl App {
     /// happens to have registered. This constructor is what makes the
     /// `main_loop` property tests possible without a config file.
     pub fn new_for_test() -> Self {
-        Self::from_config(Config::new(), PathBuf::from("/nonexistent/config.json"))
+        let mut app = Self::from_config(Config::new(), PathBuf::from("/nonexistent/config.json"));
+        // The experimental surfaces are ON in this fixture, matching every
+        // `AppContext` fixture in the tree (260917-fko). Two reasons, and the
+        // second is the load-bearing one:
+        //
+        // 1. The driver tests written before the flag existed keep asserting
+        //    exactly what they always asserted.
+        // 2. `from_config` resolves the flag from the PROCESS ENVIRONMENT, so
+        //    without this line every driver test's verdict would depend on
+        //    whether the developer or the CI runner happened to export
+        //    `GSDMM_EXPERIMENTAL_FEATURES` — the same "depends on the machine"
+        //    defect this constructor exists to remove for `config.json`.
+        //
+        // The flag-off tests set `app.ctx.experimental = false` explicitly.
+        app.ctx.experimental = true;
+        app
     }
 
     fn from_config(config: Config, config_path: PathBuf) -> Self {
@@ -1893,6 +1908,15 @@ impl App {
     pub fn start_driver_run(&mut self, alias: &str, command: &str, goal: Option<&str>) {
         use crate::driver::spawn::{admit, drive_argv, spawn_detached};
 
+        // The TUI must not be able to start a run while the surface that offers
+        // it does not exist (260917-fko D2). Defensive: every key that reaches
+        // here is already gated, and this is the backstop for the one that is
+        // ever added without one. It is silent on purpose — an error message
+        // would itself disclose that a driver exists.
+        if !self.ctx.experimental {
+            return;
+        }
+
         let Some(project) = self.ctx.config.projects.get(alias) else {
             self.ctx.error_message = Some(format!("No registered project named '{alias}'"));
             self.needs_redraw = true;
@@ -2012,6 +2036,14 @@ impl App {
     #[cfg(unix)]
     pub fn stop_driver_run(&mut self, alias: &str) {
         use crate::driver::kill::ReapArm;
+
+        // The sibling of the guard in `start_driver_run`, and for the same
+        // reason: the TUI must not be able to stop a run while the surface that
+        // offers it does not exist (260917-fko D2). A run started by the `drive`
+        // CLI, which stays ungated (D5), is still stoppable from the CLI side.
+        if !self.ctx.experimental {
+            return;
+        }
 
         let Some(run) = self.ctx.observed_runs.get(alias) else {
             self.ctx.error_message = Some(format!("No run is being observed for '{alias}'"));
@@ -4112,10 +4144,10 @@ mod tests {
         // index does not round-trip lands on a different tab than the one the
         // user asked for.
         assert_eq!(tab_index(&DetailSubView::Driver), 10);
-        assert_eq!(sub_view_from_index(10), DetailSubView::Driver);
+        assert_eq!(sub_view_from_index(10, true), DetailSubView::Driver);
         // The fallback is unchanged: an out-of-range index still lands on the
         // first tab and never on the newest one.
-        assert_eq!(sub_view_from_index(11), DetailSubView::PhaseList);
+        assert_eq!(sub_view_from_index(11, true), DetailSubView::PhaseList);
     }
 
     /// A stop with nowhere to report its outcome refuses **visibly** (WR-11).

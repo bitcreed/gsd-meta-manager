@@ -976,6 +976,24 @@ fn no_runs_lines(alias: &str, opted_in: bool) -> Vec<Line<'static>> {
 /// `Constraint::Min` floor rather than a percentage. Below
 /// [`DRIVER_TWO_PANE_MIN_CELLS`] the list is dropped and its identity moves into
 /// the detail pane's block title.
+/// The Driver pane's identity title, carrying D3's EXPERIMENTAL marker.
+///
+/// **Unconditional, and that is correct**: since quick task 260917-fko this
+/// whole function is reachable only when `AppContext.experimental` is set, so
+/// anyone who can read this title is by construction in an experimental
+/// session. A second flag threaded down here would be a bool that can only ever
+/// hold one value.
+///
+/// One constant for both title sites — the empty-runs early return and the
+/// two-pane detail block — so a project with no runs yet is marked too. The
+/// narrow tier deliberately keeps `run_list_title`: that tier exists to give
+/// the detail pane the selected run's identity, and overwriting it with this
+/// marker would cost the user the information the tier was added for.
+///
+/// The em dash is written as a `\u{…}` escape, matching the `DRIVER_LIVE_MARKER`
+/// convention in `detail.rs`.
+const DRIVER_PANE_TITLE: &str = " Driver \u{2014} EXPERIMENTAL ";
+
 pub(super) fn render_driver_tab(
     frame: &mut Frame,
     area: Rect,
@@ -989,7 +1007,9 @@ pub(super) fn render_driver_tab(
     // The "no state / no data" early return, in the shape `render_pipeline_tab`
     // established: one bordered block, one message, nothing else painted.
     if runs.is_empty() {
-        let block = Block::default().borders(Borders::ALL).title(" Driver ");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(DRIVER_PANE_TITLE);
         // A project with no runs at all is the *most* likely place to be
         // starting one, so the preview has to survive this branch. Showing "no
         // runs yet" over the top of a start the user is one keystroke from
@@ -1051,7 +1071,9 @@ pub(super) fn render_driver_tab(
     // At the narrow tier the selection has nowhere else to go, so it becomes the
     // pane's title. `j`/`k` still move it; only the list's rendering is dropped.
     let detail_block = if list_area.is_some() {
-        Block::default().borders(Borders::NONE).title(" Driver ")
+        Block::default()
+            .borders(Borders::NONE)
+            .title(DRIVER_PANE_TITLE)
     } else {
         Block::default()
             .borders(Borders::NONE)

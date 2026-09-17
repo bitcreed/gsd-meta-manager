@@ -241,10 +241,19 @@ fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
     let state = ctx.project_states.get(alias);
 
     // Tri-state `Liveness` is resolved by `is_live()`, never re-derived here.
-    let driven_and_live = ctx
-        .observed_runs
-        .get(alias)
-        .is_some_and(|run| run.is_live());
+    //
+    // **The single gate for the whole driven surface on this screen**
+    // (260917-fko D2). With the experimental surfaces off this resolves false
+    // whatever the reconciliation scan observed, which removes the driven badge,
+    // its rank-1 slot in `alias_badge`, and therefore the attention-first sort's
+    // driver-first ordering — without touching `alias_badge`, `BadgeInputs`, the
+    // rank table or any consumer. Gating each consumer instead is the version
+    // that gets half-applied.
+    let driven_and_live = ctx.experimental
+        && ctx
+            .observed_runs
+            .get(alias)
+            .is_some_and(|run| run.is_live());
 
     let has_session = ctx
         .config
@@ -457,7 +466,10 @@ impl Screen for NormalScreen {
             // (`r` is bound in `detail.rs` for the roadmap toggle. That is a
             // different screen with its own `handle_key` match, so it is not a
             // collision — the help screen annotates both with their scope.)
-            KeyCode::Char('r') => {
+            // The match guard is what makes the key fall through UNHANDLED
+            // with the experimental surfaces off, rather than being consumed by
+            // an arm that quietly does nothing (260917-fko D2).
+            KeyCode::Char('r') if ctx.experimental => {
                 if let Some(alias) = ctx.selected_alias() {
                     ctx.needs_redraw = true;
                     ScreenAction::Push(Box::new(DriverConfirmScreen::new(
@@ -468,7 +480,10 @@ impl Screen for NormalScreen {
                     ScreenAction::None
                 }
             }
-            KeyCode::Char('x') => {
+            // The match guard is what makes the key fall through UNHANDLED
+            // with the experimental surfaces off, rather than being consumed by
+            // an arm that quietly does nothing (260917-fko D2).
+            KeyCode::Char('x') if ctx.experimental => {
                 if let Some(alias) = ctx.selected_alias() {
                     ctx.needs_redraw = true;
                     ScreenAction::Push(Box::new(DriverConfirmScreen::new(
@@ -479,7 +494,10 @@ impl Screen for NormalScreen {
                     ScreenAction::None
                 }
             }
-            KeyCode::Char('o') => {
+            // The match guard is what makes the key fall through UNHANDLED
+            // with the experimental surfaces off, rather than being consumed by
+            // an arm that quietly does nothing (260917-fko D2).
+            KeyCode::Char('o') if ctx.experimental => {
                 if let Some(alias) = ctx.selected_alias() {
                     ctx.needs_redraw = true;
                     ScreenAction::Push(Box::new(DriverConfirmScreen::new(

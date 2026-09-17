@@ -319,8 +319,28 @@ pub(super) fn driver_offset_now(stored: u16, following: bool, vp: ViewportMetric
     }
 }
 
-/// How many tabs the detail view has, including the Driver tab at index 10.
+/// The **array capacity** of [`TAB_LABELS_FULL`] and [`TAB_LABELS_COMPACT`] —
+/// every tab this view can have, Driver included.
+///
+/// **Not the number of tabs a given session shows.** Since quick task
+/// 260917-fko the Driver tab exists only when `AppContext.experimental` is set,
+/// so the bound every loop, clamp and navigation guard needs is
+/// [`visible_tab_count`], not this. This constant survives as the label arrays'
+/// length and as the index the Driver entry sits at the end of.
 pub(crate) const TAB_COUNT: usize = 11;
+
+/// How many tabs the detail view actually shows: 11 with the experimental
+/// surfaces on, 10 without.
+///
+/// The one bound. A second `TAB_COUNT - 1` left behind anywhere is how the
+/// Right arrow would walk onto a tab that does not render (260917-fko D2).
+pub(crate) fn visible_tab_count(experimental: bool) -> usize {
+    if experimental {
+        TAB_COUNT
+    } else {
+        TAB_COUNT - 1
+    }
+}
 
 /// Full tab labels, one per index. The Driver entry omits its live-marker cell,
 /// which [`tab_titles`] always appends as a span of its own (see
@@ -367,6 +387,45 @@ pub(crate) const TAB_BAR_FULL_CELLS: u16 = 107;
 /// Rendered width of the compact label set, by the same arithmetic:
 /// `45 + 1 + 22 + 10 = 77`.
 pub(crate) const TAB_BAR_COMPACT_CELLS: u16 = 77;
+
+/// Rendered width of the full label set **without** the Driver tab, by the same
+/// `Σ(len + 2) + (n − 1)` formula: `67 + 20 + 9 = 96`.
+///
+/// Dropping the eleventh tab costs four things and the arithmetic has to lose
+/// all four: its 7-cell label, its reserved marker cell, its two pads and the
+/// one divider that joined it to `0:Docs` — `107 − 7 − 1 − 2 − 1 = 96`.
+/// `the_tab_bar_widths_are_the_label_arrays_own_arithmetic` re-derives it from
+/// [`TAB_LABELS_FULL`] so a renamed label cannot leave this number behind
+/// (260917-fko).
+pub(crate) const TAB_BAR_FULL_CELLS_NO_DRIVER: u16 = 96;
+
+/// Rendered width of the compact label set without the Driver tab:
+/// `40 + 20 + 9 = 69`. The same four deductions as above, against a 4-cell
+/// compact label: `77 − 4 − 1 − 2 − 1 = 69`.
+pub(crate) const TAB_BAR_COMPACT_CELLS_NO_DRIVER: u16 = 69;
+
+/// The full tier's threshold for this session's tab count.
+pub(crate) fn tab_bar_full_cells(experimental: bool) -> u16 {
+    if experimental {
+        TAB_BAR_FULL_CELLS
+    } else {
+        TAB_BAR_FULL_CELLS_NO_DRIVER
+    }
+}
+
+/// The compact tier's threshold for this session's tab count.
+///
+/// Ten tabs fit the compact bar in 69 cells rather than 77, so a flag-off
+/// session at 70 columns gets whole compact labels where an eleven-tab session
+/// would have been pushed into the windowed tier. Reusing the eleven-tab
+/// numbers would have cost exactly that.
+pub(crate) fn tab_bar_compact_cells(experimental: bool) -> u16 {
+    if experimental {
+        TAB_BAR_COMPACT_CELLS
+    } else {
+        TAB_BAR_COMPACT_CELLS_NO_DRIVER
+    }
+}
 
 /// The Driver label's reserved final cell while a run is live: `◆`.
 ///
@@ -416,36 +475,48 @@ fn tab_entry_cells(label_cells: usize) -> usize {
 ///
 /// `driver_live` drives only the Driver label's reserved marker cell, which is
 /// present either way (see [`DRIVER_IDLE_MARKER`]).
+///
+/// `experimental` decides whether the Driver label is in the set at all: with
+/// it off the labels are sliced to the first ten and the tier thresholds drop
+/// accordingly, so nothing about the bar tells the user an eleventh tab exists
+/// (260917-fko D2).
 pub(crate) fn tab_titles(
     width: u16,
     active: usize,
     driver_live: bool,
+    experimental: bool,
 ) -> (Vec<Line<'static>>, usize) {
-    let active = active.min(TAB_COUNT - 1);
+    let visible = visible_tab_count(experimental);
+    let active = active.min(visible - 1);
 
-    if width >= TAB_BAR_FULL_CELLS {
+    if width >= tab_bar_full_cells(experimental) {
         return (
-            (0..TAB_COUNT)
-                .map(|i| tab_label_line(&TAB_LABELS_FULL, i, driver_live))
+            (0..visible)
+                .map(|i| tab_label_line(&TAB_LABELS_FULL[..visible], i, driver_live))
                 .collect(),
             active,
         );
     }
-    if width >= TAB_BAR_COMPACT_CELLS {
+    if width >= tab_bar_compact_cells(experimental) {
         return (
-            (0..TAB_COUNT)
-                .map(|i| tab_label_line(&TAB_LABELS_COMPACT, i, driver_live))
+            (0..visible)
+                .map(|i| tab_label_line(&TAB_LABELS_COMPACT[..visible], i, driver_live))
                 .collect(),
             active,
         );
     }
 
-    windowed_tab_titles(width, active, driver_live)
+    windowed_tab_titles(width, active, driver_live, experimental)
 }
 
 /// One tab's `Line`. The Driver entry gets its marker cell as a second span so
 /// the label's width is identical live and idle.
-fn tab_label_line(labels: &[&'static str; TAB_COUNT], index: usize, driver_live: bool) -> Line<'static> {
+///
+/// Takes a **slice** rather than a `[&str; TAB_COUNT]` so the flag-off ten-label
+/// view can be passed without copying: with the Driver label sliced away this
+/// function's `index == DRIVER_TAB_INDEX` branch — and therefore the magenta
+/// live marker — is simply never reached.
+fn tab_label_line(labels: &[&'static str], index: usize, driver_live: bool) -> Line<'static> {
     if index == DRIVER_TAB_INDEX {
         let marker = if driver_live {
             Span::styled(DRIVER_LIVE_MARKER, Style::default().fg(Color::Magenta))
@@ -459,8 +530,14 @@ fn tab_label_line(labels: &[&'static str; TAB_COUNT], index: usize, driver_live:
 }
 
 /// The width in cells of one compact label, marker cell included.
-fn compact_label_cells(index: usize) -> usize {
-    TAB_LABELS_COMPACT[index].chars().count() + usize::from(index == DRIVER_TAB_INDEX)
+///
+/// The marker cell is the Driver tab's, so it is only ever charged when the
+/// experimental surfaces are on — with them off the index can never be
+/// [`DRIVER_TAB_INDEX`] anyway, and the flag keeps that explicit rather than
+/// relying on the caller's bound.
+fn compact_label_cells(index: usize, experimental: bool) -> usize {
+    TAB_LABELS_COMPACT[index].chars().count()
+        + usize::from(experimental && index == DRIVER_TAB_INDEX)
 }
 
 /// The windowed tier: the widest contiguous run of compact labels that contains
@@ -470,13 +547,21 @@ fn compact_label_cells(index: usize) -> usize {
 /// the active label is the one thing that is never given up. If even the active
 /// label alone overflows the bar it is still rendered: a clipped label the user
 /// can see beats a correct one they cannot.
-fn windowed_tab_titles(width: u16, active: usize, driver_live: bool) -> (Vec<Line<'static>>, usize) {
+fn windowed_tab_titles(
+    width: u16,
+    active: usize,
+    driver_live: bool,
+    experimental: bool,
+) -> (Vec<Line<'static>>, usize) {
+    let visible = visible_tab_count(experimental);
     let cost = |start: usize, end: usize| -> usize {
-        let mut entries: Vec<usize> = (start..end).map(compact_label_cells).collect();
+        let mut entries: Vec<usize> = (start..end)
+            .map(|index| compact_label_cells(index, experimental))
+            .collect();
         if start > 0 {
             entries.insert(0, 1);
         }
-        if end < TAB_COUNT {
+        if end < visible {
             entries.push(1);
         }
         let cells: usize = entries.iter().copied().map(tab_entry_cells).sum();
@@ -488,7 +573,7 @@ fn windowed_tab_titles(width: u16, active: usize, driver_live: bool) -> (Vec<Lin
     let mut end = active + 1;
     loop {
         let mut grew = false;
-        if end < TAB_COUNT && cost(start, end + 1) <= budget {
+        if end < visible && cost(start, end + 1) <= budget {
             end += 1;
             grew = true;
         }
@@ -508,9 +593,13 @@ fn windowed_tab_titles(width: u16, active: usize, driver_live: bool) -> (Vec<Lin
     }
     let select = titles.len() + (active - start);
     for i in start..end {
-        titles.push(tab_label_line(&TAB_LABELS_COMPACT, i, driver_live));
+        titles.push(tab_label_line(
+            &TAB_LABELS_COMPACT[..visible],
+            i,
+            driver_live,
+        ));
     }
-    if end < TAB_COUNT {
+    if end < visible {
         titles.push(Line::from(Span::styled(TAB_OVERFLOW_RIGHT, marker_style)));
     }
 
@@ -685,7 +774,15 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
 
 /// `pub(crate)` for the same reason as [`tab_index`]: the round trip is the
 /// property worth asserting, and it takes both halves.
-pub(crate) fn sub_view_from_index(index: usize) -> DetailSubView {
+///
+/// With `experimental` off, index 10 is **not a tab**, so it falls through to
+/// the same first-tab fallback an out-of-range index already took. That is what
+/// makes `Shift+D` and a stored Driver index land somewhere real instead of on
+/// a tab the bar does not draw (260917-fko D2).
+pub(crate) fn sub_view_from_index(index: usize, experimental: bool) -> DetailSubView {
+    if index == DRIVER_TAB_INDEX && !experimental {
+        return DetailSubView::PhaseList;
+    }
     match index {
         0 => DetailSubView::PhaseList,
         1 => DetailSubView::RoadmapViz,
@@ -702,6 +799,26 @@ pub(crate) fn sub_view_from_index(index: usize) -> DetailSubView {
         // tab rather than on the newest one.
         _ => DetailSubView::PhaseList,
     }
+}
+
+/// The sub-view a flag-off session is actually on, given the one it has stored.
+///
+/// **`DetailSubView::Driver` does not exist when the experimental surfaces are
+/// off**, so a stored one — parked by an earlier session that had the flag set,
+/// or by a `Shift+D` that slipped through — has to read as the default tab
+/// rather than as a tab nothing renders.
+///
+/// Applied at the **three** sites that read `detail_sub_view_per_project` for
+/// the current view: the key handler, the main render and the overlay backdrop
+/// render. Those three are the whole reachability surface of the Driver tab, so
+/// coercing here disarms all ten Driver-only key arms, both `render_driver_tab`
+/// dispatches and the Driver-entry scan schedule at once — one coercion instead
+/// of a guard per arm, which is the version that cannot be half-applied.
+pub(crate) fn effective_sub_view(stored: DetailSubView, experimental: bool) -> DetailSubView {
+    if !experimental && stored == DetailSubView::Driver {
+        return DetailSubView::PhaseList;
+    }
+    stored
 }
 
 /// Terminal emulators probed by NAME, as a **preference order of last resort**.
@@ -1144,7 +1261,7 @@ fn switch_to_tab(
     scroll_offset: &mut u16,
     ctx: &mut AppContext,
 ) -> ScreenAction {
-    let new_view = sub_view_from_index(new_index);
+    let new_view = sub_view_from_index(new_index, ctx.experimental);
     ctx.detail_sub_view_per_project
         .insert(alias.to_string(), new_view.clone());
     *scroll_offset = 0;
@@ -1346,11 +1463,17 @@ impl Screen for DetailScreen {
         _modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
-        let current_view = ctx
-            .detail_sub_view_per_project
-            .get(&self.alias)
-            .cloned()
-            .unwrap_or_default();
+        // Read through `effective_sub_view`: with the experimental surfaces off
+        // a stored `Driver` is not a tab, and every Driver-only key arm below
+        // is guarded by `current_view == DetailSubView::Driver` — so coercing
+        // here is what disarms all ten of them at once (260917-fko D2).
+        let current_view = effective_sub_view(
+            ctx.detail_sub_view_per_project
+                .get(&self.alias)
+                .cloned()
+                .unwrap_or_default(),
+            ctx.experimental,
+        );
         let current_idx = tab_index(&current_view);
 
         // Text-input intercept: when the Defaults tab has a String entry being
@@ -2067,7 +2190,12 @@ impl Screen for DetailScreen {
             // arrives without needing the `_modifiers` parameter this handler
             // ignores — so `Shift+D` costs no new plumbing and collides with
             // nothing.
-            KeyCode::Char('D') => {
+            //
+            // The match guard, not an `if` inside the arm: with the flag off
+            // the key must fall through **unhandled**, exactly as it did before
+            // the Driver tab existed, rather than being consumed by an arm that
+            // does nothing (260917-fko D2).
+            KeyCode::Char('D') if ctx.experimental => {
                 switch_to_tab(&self.alias, DRIVER_TAB_INDEX, &mut self.scroll_offset, ctx)
             }
             // Tab switching via arrow keys
@@ -2079,7 +2207,10 @@ impl Screen for DetailScreen {
                 }
             }
             KeyCode::Right => {
-                if current_idx < TAB_COUNT - 1 {
+                // The visible count, not `TAB_COUNT - 1`: with the flag off the
+                // last tab is index 9, and walking to 10 would park the user on
+                // a tab the bar does not draw.
+                if current_idx < visible_tab_count(ctx.experimental) - 1 {
                     switch_to_tab(&self.alias, current_idx + 1, &mut self.scroll_offset, ctx)
                 } else {
                     ScreenAction::None
@@ -3211,11 +3342,17 @@ impl Screen for DetailScreen {
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
 
-        let sub_view = ctx
-            .detail_sub_view_per_project
-            .get(alias)
-            .cloned()
-            .unwrap_or_default();
+        // Coerced, for the reason `effective_sub_view` records: a stored
+        // `Driver` is not a tab when the experimental surfaces are off, and
+        // this read is what feeds the content dispatch below — so the
+        // `render_driver_tab` arm becomes unreachable from here.
+        let sub_view = effective_sub_view(
+            ctx.detail_sub_view_per_project
+                .get(alias)
+                .cloned()
+                .unwrap_or_default(),
+            ctx.experimental,
+        );
         let tab_idx = tab_index(&sub_view);
 
         // Split into: tab bar, content, footer
@@ -3233,7 +3370,12 @@ impl Screen for DetailScreen {
         // `render_main_only` take their titles from `tab_titles`; a tier applied
         // to only one of them would leave the Driver tab visible on one render
         // path and invisible on the other.
-        let (titles, select) = tab_titles(tab_area.width, tab_idx, driver_live_for(ctx, alias));
+        let (titles, select) = tab_titles(
+            tab_area.width,
+            tab_idx,
+            driver_live_for(ctx, alias),
+            ctx.experimental,
+        );
         let tabs_widget = Tabs::new(titles)
             .select(select)
             .highlight_style(
@@ -4747,11 +4889,16 @@ impl DetailScreen {
     pub fn render_main_only(&self, frame: &mut Frame, main_area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
 
-        let sub_view = ctx
-            .detail_sub_view_per_project
-            .get(alias)
-            .cloned()
-            .unwrap_or_default();
+        // Coerced for the same reason as the site in `render`: this is the
+        // third and last read of the stored sub-view, used as the backdrop
+        // behind the Enqueue and Driver-inject overlays.
+        let sub_view = effective_sub_view(
+            ctx.detail_sub_view_per_project
+                .get(alias)
+                .cloned()
+                .unwrap_or_default(),
+            ctx.experimental,
+        );
         let tab_idx = tab_index(&sub_view);
 
         // Split into tab bar and content
@@ -4761,7 +4908,12 @@ impl DetailScreen {
 
         // Render tab bar — the duplicate of the site in `render`, and the reason
         // `tab_titles` exists as one function rather than two constructions.
-        let (titles, select) = tab_titles(tab_area.width, tab_idx, driver_live_for(ctx, alias));
+        let (titles, select) = tab_titles(
+            tab_area.width,
+            tab_idx,
+            driver_live_for(ctx, alias),
+            ctx.experimental,
+        );
         let tabs_widget = Tabs::new(titles)
             .select(select)
             .highlight_style(
@@ -9406,7 +9558,7 @@ mod tests {
     #[test]
     fn every_tab_index_round_trips_through_its_sub_view() {
         for index in 0..TAB_COUNT {
-            let view = sub_view_from_index(index);
+            let view = sub_view_from_index(index, true);
             assert_eq!(
                 tab_index(&view),
                 index,
@@ -9414,10 +9566,10 @@ mod tests {
                 tab_index(&view)
             );
         }
-        assert_eq!(sub_view_from_index(DRIVER_TAB_INDEX), DetailSubView::Driver);
+        assert_eq!(sub_view_from_index(DRIVER_TAB_INDEX, true), DetailSubView::Driver);
         assert_eq!(tab_index(&DetailSubView::Driver), DRIVER_TAB_INDEX);
         // The out-of-range fallback still lands on the first tab, not the newest.
-        assert_eq!(sub_view_from_index(TAB_COUNT), DetailSubView::PhaseList);
+        assert_eq!(sub_view_from_index(TAB_COUNT, true), DetailSubView::PhaseList);
     }
 
     /// The rendered width of one `Line`, in cells.
@@ -9433,7 +9585,7 @@ mod tests {
 
     #[test]
     fn the_full_tier_renders_eleven_labels_at_its_measured_width() {
-        let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, false);
+        let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, false, true);
         assert_eq!(titles.len(), TAB_COUNT);
         assert_eq!(select, DRIVER_TAB_INDEX);
         assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_FULL_CELLS));
@@ -9441,12 +9593,12 @@ mod tests {
 
     #[test]
     fn the_compact_tier_renders_eleven_labels_at_its_measured_width() {
-        let (titles, select) = tab_titles(TAB_BAR_COMPACT_CELLS, 4, false);
+        let (titles, select) = tab_titles(TAB_BAR_COMPACT_CELLS, 4, false, true);
         assert_eq!(titles.len(), TAB_COUNT);
         assert_eq!(select, 4);
         assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS));
         // One cell below the full width is already the compact tier.
-        let (titles, _) = tab_titles(TAB_BAR_FULL_CELLS - 1, 4, false);
+        let (titles, _) = tab_titles(TAB_BAR_FULL_CELLS - 1, 4, false, true);
         assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS));
     }
 
@@ -9457,7 +9609,7 @@ mod tests {
     fn the_windowed_tier_always_contains_the_active_tab() {
         for active in [0usize, 5, DRIVER_TAB_INDEX] {
             for width in [20u16, 30, 40, 60, 76] {
-                let (titles, select) = tab_titles(width, active, false);
+                let (titles, select) = tab_titles(width, active, false, true);
                 assert!(
                     select < titles.len(),
                     "select {select} is out of range for {} titles at width {width}",
@@ -9482,7 +9634,7 @@ mod tests {
     /// was cut rather than being silent.
     #[test]
     fn the_windowed_tier_fits_and_marks_the_side_it_truncated() {
-        let (titles, _) = tab_titles(40, DRIVER_TAB_INDEX, false);
+        let (titles, _) = tab_titles(40, DRIVER_TAB_INDEX, false, true);
         assert!(bar_cells(&titles) <= 40, "windowed bar overflows 40 columns");
         let first: String = titles[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(
@@ -9490,7 +9642,7 @@ mod tests {
             "tabs were truncated on the left with no marker"
         );
 
-        let (titles, _) = tab_titles(40, 0, false);
+        let (titles, _) = tab_titles(40, 0, false, true);
         assert!(bar_cells(&titles) <= 40);
         let last: String = titles[titles.len() - 1]
             .spans
@@ -9511,8 +9663,8 @@ mod tests {
     #[test]
     fn the_driver_label_is_the_same_width_live_and_idle() {
         for width in [TAB_BAR_FULL_CELLS, TAB_BAR_COMPACT_CELLS, 40] {
-            let (live, _) = tab_titles(width, DRIVER_TAB_INDEX, true);
-            let (idle, _) = tab_titles(width, DRIVER_TAB_INDEX, false);
+            let (live, _) = tab_titles(width, DRIVER_TAB_INDEX, true, true);
+            let (idle, _) = tab_titles(width, DRIVER_TAB_INDEX, false, true);
             assert_eq!(
                 bar_cells(&live),
                 bar_cells(&idle),
@@ -9520,7 +9672,7 @@ mod tests {
             );
         }
 
-        let (live, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, true);
+        let (live, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, true, true);
         let text: String = live[select]
             .spans
             .iter()
@@ -9528,7 +9680,7 @@ mod tests {
             .collect();
         assert_eq!(text, format!("D:Drive{DRIVER_LIVE_MARKER}"));
 
-        let (idle, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, false);
+        let (idle, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, false, true);
         let text: String = idle[select]
             .spans
             .iter()
@@ -9555,7 +9707,7 @@ mod tests {
                 let mut ctx = test_ctx();
                 let screen = DetailScreen::new("meta-mgr".to_string());
                 ctx.detail_sub_view_per_project
-                    .insert("meta-mgr".to_string(), sub_view_from_index(active));
+                    .insert("meta-mgr".to_string(), sub_view_from_index(active, true));
 
                 let mut terminal = Terminal::new(TestBackend::new(width, 24))
                     .expect("TestBackend terminal");
