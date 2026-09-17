@@ -1466,9 +1466,18 @@ const REPARSED_COMMAND_SECTIONS: &[&str] = &["alias"];
 ///
 /// # THE SUBSECTION AND THE VARIABLE ARE NEVER READ, AND THAT IS THE RULE
 ///
-/// * **The SUBSECTION is not read** because `alias` has none: git's alias grammar
-///   is `alias.<name>`, two halves and no condition between them. Reading a half
-///   that does not exist could only introduce a case rule for nothing.
+/// * **The SUBSECTION is not read** because reading it would mean enumerating an
+///   OPEN family. **Since git 2.54 that family is open in TWO dimensions at
+///   once**: the two-level `alias.<name>` and the three-level
+///   `alias.<name>.command`, with `<name>` in either shape being arbitrary UTF-8
+///   — a raw-byte, CASE-SENSITIVE subsection, unlike the section half, which git
+///   folds and which this function therefore compares with `eq_ignore_ascii_case`.
+///   **Not reading it is exactly what makes 2.54's spelling covered with NO code
+///   change, and a guard that had enumerated the two-level shape would have
+///   FAILED OPEN on the three-level one.** See
+///   [`REPARSED_COMMAND_SECTIONS`]'s re-derivation record for the source; an
+///   earlier version of this bullet argued from the premise that the `alias`
+///   section has no subsection form, which git 2.54 made FALSE.
 /// * **The VARIABLE is not read** because every variable in the `alias` section
 ///   IS an alias name — an open family by construction, since the name is chosen
 ///   by whoever writes the config. Enumerating it would be enumerating the
