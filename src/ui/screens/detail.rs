@@ -5383,11 +5383,16 @@ enum ConfigValueKind {
 /// What one Defaults-tab option MEANS, authored at the option's definition site.
 ///
 /// **Why a field and not a lookup table** (ID-01, quick task 260909-s0n). The
-/// Defaults tab lists 73 raw GSD config keys — `nyquist_validation`,
+/// Defaults tab lists 130 raw GSD config keys — `nyquist_validation`,
 /// `workflow.specless_probe_fallback`, `granularity` — as bare identifiers next
 /// to a value, and there is no second place in this TUI that says what any of
 /// them does. A `HashMap<&str, &str>` keyed by config key would compile fine on
-/// the day a 74th option is added and silently render a blank line at runtime.
+/// the day a 131st option is added and silently render a blank line at runtime.
+///
+/// **The mechanism was measured doing its job.** The gsd-core 1.14.0 re-sync
+/// (quick task 260916-vqw) added 57 options in one pass; every one of them was
+/// a compile error until its `ConfigHelp` was written, which is exactly the
+/// breakage a side table would have replaced with 57 blank lines.
 /// Carrying the help as a REQUIRED field, supplied through
 /// [`build_defaults_entries`]'s `push` closure, makes a new option with no help
 /// a COMPILE ERROR instead. That breakage is the coverage mechanism.
@@ -5700,7 +5705,7 @@ fn build_defaults_entries(
     use crate::state_reader::config_json::GsdConfig;
 
     let mut entries = Vec::new();
-    // `help` is REQUIRED and last (ID-01). A 74th option added below without a
+    // `help` is REQUIRED and last (ID-01). A 131st option added below without a
     // `ConfigHelp` does not compile, which is the whole reason the help lives
     // here rather than in a key-indexed side table.
     let mut push = |cat: &'static str,
@@ -5862,6 +5867,47 @@ fn build_defaults_entries(
     push(cat, "workflow.plan_review_convergence", v, k, false, fd, ConfigHelp::new(
         "Unlocks the replan-until-the-reviewers-agree loop; while off, that command exits telling you which key to set.",
     ).since("v1.01.0"));
+    let ppl = config.planning.as_ref();
+    let dpl = defaults.and_then(|d: &GsdConfig| d.planning.as_ref());
+    let (v, k, fd) = bool_l(ppl.and_then(|p| p.chunked_parallel), dpl.and_then(|p| p.chunked_parallel));
+    push(cat, "planning.chunked_parallel", v, k, false, fd, ConfigHelp::new(
+        "In chunked mode, writes the per-plan files concurrently instead of one after another; opt-in.",
+    ).since("v1.13.0"));
+    let (v, k, fd) = bool_l(ppl.and_then(|p| p.pr_strict), dpl.and_then(|p| p.pr_strict));
+    push(cat, "planning.pr_strict", v, k, false, fd, ConfigHelp::new(
+        "Drops every .planning path from a generated PR branch, structural files included, rather than just the transient ones.",
+    ).since("v1.12.0"));
+    let prv = config.plan_review.as_ref();
+    let dprv = defaults.and_then(|d: &GsdConfig| d.plan_review.as_ref());
+    let (v, k, fd) = bool_l(prv.and_then(|p| p.source_grounding), dprv.and_then(|p| p.source_grounding));
+    push(cat, "plan_review.source_grounding", v, k, false, fd, ConfigHelp::new(
+        "Resolves every symbol a plan cites against the live tree, so a plan naming a function nobody wrote is flagged.",
+    ).since("v1.2.0"));
+    let (v, k, fd) = enum_l(
+        prv.and_then(|p| p.source_grounding_authority.as_deref()),
+        dprv.and_then(|p| p.source_grounding_authority.as_deref()),
+        &["grep", "intel", "treesitter", "lsp", "scip"],
+    );
+    push(cat, "plan_review.source_grounding_authority", v, k, false, fd, ConfigHelp::with_choices(
+        "Which resolver decides whether a cited symbol exists, trading setup cost against precision.",
+        &[
+            ("grep", "a ripgrep search; needs no extra tooling anywhere"),
+            ("intel", "the api-map index; needs intel_enabled on"),
+            ("treesitter", "reserved for a future tree-sitter adapter"),
+            ("lsp", "reserved for a future language-server adapter"),
+            ("scip", "reserved for a future SCIP index adapter"),
+        ],
+    ).since("v1.2.0"));
+    let pfe = config.features.as_ref();
+    let dfe = defaults.and_then(|d: &GsdConfig| d.features.as_ref());
+    let (v, k, fd) = bool_l(pfe.and_then(|f| f.global_learnings), dfe.and_then(|f| f.global_learnings));
+    push(cat, "features.global_learnings", v, k, false, fd, ConfigHelp::new(
+        "Copies what one project learned into a shared store at phase end and feeds it back to later planners.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pfe.and_then(|f| f.thinking_partner), dfe.and_then(|f| f.thinking_partner));
+    push(cat, "features.thinking_partner", v, k, false, fd, ConfigHelp::new(
+        "Adds a second opinion at each decision point in the workflow, arguing the case before a choice is made.",
+    ).since("v1.01.0"));
 
     // ── Execution ──────────────────────────────────────────────
     let cat = "Execution";
@@ -6013,6 +6059,15 @@ fn build_defaults_entries(
     push(cat, "commit_docs", v, k, true, fd, ConfigHelp::new(
         "Commits .planning/ artifacts such as PLAN.md and SUMMARY.md; off keeps them out of git history.",
     ));
+    // gsd-core's NAMESPACED spelling of the same switch. Both are modelled
+    // because they are different JSON paths and a project may carry either.
+    let (v, k, fd) = bool_l(
+        config.planning.as_ref().and_then(|p| p.commit_docs),
+        defaults.and_then(|d| d.planning.as_ref().and_then(|p| p.commit_docs)),
+    );
+    push(cat, "planning.commit_docs", v, k, false, fd, ConfigHelp::new(
+        "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(pwf.and_then(|w| w.skip_discuss), dwf.and_then(|w| w.skip_discuss));
     push(cat, "skip_discuss", v, k, false, fd, ConfigHelp::new(
         "Skips the discussion round entirely and plans each phase straight from its roadmap entry.",
@@ -6071,6 +6126,13 @@ fn build_defaults_entries(
     push(cat, "graphify.graph_path", v, k, false, fd, ConfigHelp::new(
         "Where graph.json lives, letting several projects share one umbrella graph instead of each building its own.",
     ));
+    let (v, k, fd) = bool_l(
+        config.graphify.as_ref().and_then(|g| g.auto_update),
+        defaults.and_then(|d| d.graphify.as_ref().and_then(|g| g.auto_update)),
+    );
+    push(cat, "graphify.auto_update", v, k, false, fd, ConfigHelp::new(
+        "Rebuilds that graph in the background after a commit or merge on the default branch, instead of on request.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(config.brave_search, defaults.and_then(|d| d.brave_search));
     push(cat, "brave_search", v, k, false, fd, ConfigHelp::new(
         "Lets the research agent query Brave web search; without BRAVE_API_KEY in the environment it does nothing.",
@@ -6173,6 +6235,29 @@ fn build_defaults_entries(
     push(cat, "quick_branch_template", qbt_val, qbt_kind, false, qbt_fd, ConfigHelp::new(
         "Optional name pattern, with {slug} substituted, for a quick task's branch; unset keeps quick work here.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let (v, k, fd) = bool_l(pgit.and_then(|g| g.create_tag), dgit.and_then(|g| g.create_tag));
+    push(cat, "git.create_tag", v, k, false, fd, ConfigHelp::new(
+        "Tags the repository when a milestone closes; turn it off for a project with its own release flow.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(
+        pgit.and_then(|g| g.allow_default_branch_commits),
+        dgit.and_then(|g| g.allow_default_branch_commits),
+    );
+    push(cat, "git.allow_default_branch_commits", v, k, false, fd, ConfigHelp::with_choices(
+        "Escape hatch letting an executor commit straight onto the repository's own trunk instead of refusing.",
+        &[
+            ("true", "the pre-commit guard stops refusing on trunk"),
+            ("false", "the guard refuses, which is what you want"),
+        ],
+    ).since("v1.13.0"));
+    let (v, k, fd) = opt_json_readonly(
+        pgit.and_then(|g| g.protected_branches.as_ref()),
+        dgit.and_then(|g| g.protected_branches.as_ref()),
+    );
+    push(cat, "git.protected_branches", v, k, false, fd, ConfigHelp::new(
+        "Extra shared branch names that raise the same warning the base one does; a list, so edited in the file.",
+    ).since("v1.12.0"));
 
     // ── Misc ──────────────────────────────────────────────────
     let cat = "Misc";
@@ -6183,6 +6268,31 @@ fn build_defaults_entries(
     push(cat, "context_warnings", v, k, true, fd, ConfigHelp::new(
         "Warns in the statusline as a session's context budget runs out, before a compaction loses what was said.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let phk = config.hooks.as_ref();
+    let dhk = defaults.and_then(|d: &GsdConfig| d.hooks.as_ref());
+    let (v, k, fd) = u32_l(
+        phk.and_then(|h| h.context_warning_threshold),
+        dhk.and_then(|h| h.context_warning_threshold),
+    );
+    push(cat, "hooks.context_warning_threshold", v, k, false, fd, ConfigHelp::new(
+        "Percent of the window still FREE at which that warning first appears; default 35, and it must sit above the next row.",
+    ).since("v1.14.0"));
+    let (v, k, fd) = u32_l(
+        phk.and_then(|h| h.context_critical_threshold),
+        dhk.and_then(|h| h.context_critical_threshold),
+    );
+    push(cat, "hooks.context_critical_threshold", v, k, false, fd, ConfigHelp::new(
+        "Percent still FREE at which the warning escalates; default 25, and it must stay strictly below the row above.",
+    ).since("v1.14.0"));
+    let (v, k, fd) = bool_l(phk.and_then(|h| h.workflow_guard), dhk.and_then(|h| h.workflow_guard));
+    push(cat, "hooks.workflow_guard", v, k, false, fd, ConfigHelp::new(
+        "Warns when a file is edited outside any GSD command, and hard-blocks force-adding files on an agent branch.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = u32_l(config.context_window, defaults.and_then(|d| d.context_window));
+    push(cat, "context_window", v, k, false, fd, ConfigHelp::new(
+        "Tokens the model you run can hold; 200000 by default, and at 500000 or more GSD reads prior summaries in full.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(pwf.and_then(|w| w.research_before_questions), dwf.and_then(|w| w.research_before_questions));
     push(cat, "research_before_questions", v, k, false, fd, ConfigHelp::new(
         "Researches the topic before the discussion round, so the questions you are asked are already informed.",
@@ -6203,6 +6313,13 @@ fn build_defaults_entries(
     push(cat, "search_gitignored", v, k, false, fd, ConfigHelp::new(
         "Includes gitignored paths in broad ripgrep searches, so build output and vendored code are searched too.",
     ));
+    let (v, k, fd) = bool_l(
+        config.planning.as_ref().and_then(|p| p.search_gitignored),
+        defaults.and_then(|d| d.planning.as_ref().and_then(|p| p.search_gitignored)),
+    );
+    push(cat, "planning.search_gitignored", v, k, false, fd, ConfigHelp::new(
+        "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
+    ).since("v1.01.0"));
     let (v, k, fd) = str_l(config.project_code.as_deref(), defaults.and_then(|d| d.project_code.as_deref()));
     push(cat, "project_code", v, k, false, fd, ConfigHelp::new(
         "Short prefix for phase directories and requirement ids — CK gives CK-01-foundation and CK-01.",
@@ -6223,6 +6340,13 @@ fn build_defaults_entries(
     push(cat, "sub_repos", v, k, false, fd, ConfigHelp::new(
         "Child directories with their own .git, auto-detected so commits route correctly; edited in the file.",
     ));
+    let (v, k, fd) = opt_json_readonly(
+        config.planning.as_ref().and_then(|p| p.sub_repos.as_ref()),
+        defaults.and_then(|d| d.planning.as_ref().and_then(|p| p.sub_repos.as_ref())),
+    );
+    push(cat, "planning.sub_repos", v, k, false, fd, ConfigHelp::new(
+        "The namespaced form of the list above — gsd-core reads this path; a list either way, so edited in the file.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(pwf.and_then(|w| w.auto_prune_state), dwf.and_then(|w| w.auto_prune_state));
     push(cat, "workflow.auto_prune_state", v, k, false, fd, ConfigHelp::new(
         "Drops entries from STATE.md that have gone stale at each phase boundary, rather than stopping to ask you.",
@@ -6261,6 +6385,27 @@ fn build_defaults_entries(
     push(cat, "statusline.show_git", v, k, false, fd, ConfigHelp::new(
         "Shows the current git branch and its dirty-tree marker in the statusline.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let (v, k, fd) = enum_l(
+        psl.and_then(|s| s.context_position.as_deref()),
+        dsl.and_then(|s| s.context_position.as_deref()),
+        &["end", "front"],
+    );
+    push(cat, "statusline.context_position", v, k, false, fd, ConfigHelp::with_choices(
+        "Where the window meter sits on the line, which decides whether a narrow terminal cuts it off.",
+        &[
+            ("end", "at the tail of the line, the default"),
+            ("front", "right after the model name, so it survives a cut"),
+        ],
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(psl.and_then(|s| s.show_last_command), dsl.and_then(|s| s.show_last_command));
+    push(cat, "statusline.show_last_command", v, k, false, fd, ConfigHelp::new(
+        "Appends the slash command most recently invoked, read out of the running session's transcript.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(psl.and_then(|s| s.show_state_freshness), dsl.and_then(|s| s.show_state_freshness));
+    push(cat, "statusline.show_state_freshness", v, k, false, fd, ConfigHelp::new(
+        "Says how many commits the tree has moved since STATE.md was stamped, once that gap passes twenty.",
+    ).since("v1.12.0"));
 
     // ── Routing ───────────────────────────────────────────────
     let cat = "Routing";
@@ -6274,6 +6419,15 @@ fn build_defaults_entries(
     push(cat, "dynamic_routing.max_escalations", v, k, false, fd, ConfigHelp::new(
         "How many escalation hops one step may take before the resolver gives up and names every model it tried.",
     ));
+    // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
+    let (v, k, fd) = bool_l(pdr.and_then(|r| r.enabled), ddr.and_then(|r| r.enabled));
+    push(cat, "dynamic_routing.enabled", v, k, false, fd, ConfigHelp::new(
+        "Master switch: agents pick their model from the work's difficulty tier rather than from a fixed profile.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pdr.and_then(|r| r.escalate_on_failure), ddr.and_then(|r| r.escalate_on_failure));
+    push(cat, "dynamic_routing.escalate_on_failure", v, k, false, fd, ConfigHelp::new(
+        "Moves a retried step up one tier after a soft failure; off, every attempt stays on the tier it started at.",
+    ).since("v1.01.0"));
 
     // ── External Job ──────────────────────────────────────────
     let cat = "External Job";
@@ -6314,6 +6468,46 @@ fn build_defaults_entries(
     push(cat, "review.reviewer_instances", v, k, true, fd, ConfigHelp::new(
         "Named cross-AI reviewer instances that /gsd-review dispatches to; shown here, edited in the config file.",
     ));
+
+    // ── Gates ─────────────────────────────────────────────────
+    // gsd-core's `gates.*` block: eight stop-and-ask points, all defaulting to
+    // on. Its own category because turning the set off is how a project goes
+    // unattended, and a reader scanning for that should find them together.
+    let cat = "Gates";
+    let pga = config.gates.as_ref();
+    let dga = defaults.and_then(|d: &GsdConfig| d.gates.as_ref());
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_project), dga.and_then(|g| g.confirm_project));
+    push(cat, "gates.confirm_project", v, k, true, fd, ConfigHelp::new(
+        "Shows you the gathered project details and waits for a yes before writing PROJECT.md.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_roadmap), dga.and_then(|g| g.confirm_roadmap));
+    push(cat, "gates.confirm_roadmap", v, k, false, fd, ConfigHelp::new(
+        "Shows you the drafted milestone plan and waits for a yes before any phase is written.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_phases), dga.and_then(|g| g.confirm_phases));
+    push(cat, "gates.confirm_phases", v, k, false, fd, ConfigHelp::new(
+        "Shows you how the milestone was cut into phases and waits for a yes before planning any of them.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_breakdown), dga.and_then(|g| g.confirm_breakdown));
+    push(cat, "gates.confirm_breakdown", v, k, false, fd, ConfigHelp::new(
+        "Shows you how a phase was cut into tasks and waits for a yes before the plan is finalised.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_plan), dga.and_then(|g| g.confirm_plan));
+    push(cat, "gates.confirm_plan", v, k, false, fd, ConfigHelp::new(
+        "Waits for a yes on each finished PLAN.md before its tasks are executed.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.execute_next_plan), dga.and_then(|g| g.execute_next_plan));
+    push(cat, "gates.execute_next_plan", v, k, false, fd, ConfigHelp::new(
+        "Stops between two plans of the same phase and asks before starting the following one.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.confirm_transition), dga.and_then(|g| g.confirm_transition));
+    push(cat, "gates.confirm_transition", v, k, false, fd, ConfigHelp::new(
+        "Stops at a phase boundary and asks before moving on to the one after it.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = bool_l(pga.and_then(|g| g.issues_review), dga.and_then(|g| g.issues_review));
+    push(cat, "gates.issues_review", v, k, false, fd, ConfigHelp::new(
+        "Shows you the open issues and waits for a yes before any fix plan is written from them.",
+    ).since("v1.01.0"));
 
     append_passthrough_entries(&mut entries, config, defaults);
 
@@ -6621,6 +6815,29 @@ fn set_config_value(
             "workflow.post_planning_gaps" => { config.workflow.get_or_insert_with(WorkflowConfig::default).post_planning_gaps = Some(b); return true; }
             "workflow.security_enforcement" => { config.workflow.get_or_insert_with(WorkflowConfig::default).security_enforcement = Some(b); return true; }
             "workflow.worktree_skip_hooks" => { config.workflow.get_or_insert_with(WorkflowConfig::default).worktree_skip_hooks = Some(b); return true; }
+            "features.global_learnings" => { config.features.get_or_insert_with(FeaturesConfig::default).global_learnings = Some(b); return true; }
+            "features.thinking_partner" => { config.features.get_or_insert_with(FeaturesConfig::default).thinking_partner = Some(b); return true; }
+            "gates.confirm_breakdown" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_breakdown = Some(b); return true; }
+            "gates.confirm_phases" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_phases = Some(b); return true; }
+            "gates.confirm_plan" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_plan = Some(b); return true; }
+            "gates.confirm_project" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_project = Some(b); return true; }
+            "gates.confirm_roadmap" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_roadmap = Some(b); return true; }
+            "gates.confirm_transition" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_transition = Some(b); return true; }
+            "gates.execute_next_plan" => { config.gates.get_or_insert_with(GatesConfig::default).execute_next_plan = Some(b); return true; }
+            "gates.issues_review" => { config.gates.get_or_insert_with(GatesConfig::default).issues_review = Some(b); return true; }
+            "planning.chunked_parallel" => { config.planning.get_or_insert_with(PlanningConfig::default).chunked_parallel = Some(b); return true; }
+            "planning.commit_docs" => { config.planning.get_or_insert_with(PlanningConfig::default).commit_docs = Some(b); return true; }
+            "planning.pr_strict" => { config.planning.get_or_insert_with(PlanningConfig::default).pr_strict = Some(b); return true; }
+            "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = Some(b); return true; }
+            "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = Some(b); return true; }
+            "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = Some(b); return true; }
+            "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = Some(b); return true; }
+            "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = Some(b); return true; }
+            "graphify.auto_update" => { config.graphify.get_or_insert_with(GraphifyConfig::default).auto_update = Some(b); return true; }
+            "statusline.show_last_command" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_last_command = Some(b); return true; }
+            "statusline.show_state_freshness" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_state_freshness = Some(b); return true; }
+            "dynamic_routing.enabled" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).enabled = Some(b); return true; }
+            "dynamic_routing.escalate_on_failure" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).escalate_on_failure = Some(b); return true; }
             // GSD 1.8 top-level blocks
             "claude_orchestration.enabled" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).enabled = Some(b); return true; }
             "statusline.show_context_tokens" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_context_tokens = Some(b); return true; }
@@ -6664,6 +6881,14 @@ fn set_config_value(
         }
         "workflow.human_verify_mode" => {
             config.workflow.get_or_insert_with(WorkflowConfig::default).human_verify_mode = Some(value.to_string());
+            true
+        }
+        "plan_review.source_grounding_authority" => {
+            config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding_authority = Some(value.to_string());
+            true
+        }
+        "statusline.context_position" => {
+            config.statusline.get_or_insert_with(StatuslineConfig::default).context_position = Some(value.to_string());
             true
         }
         _ => false,
@@ -6825,6 +7050,34 @@ fn clear_config_value(
         "workflow.smart_zone_tokens" => { config.workflow.get_or_insert_with(WorkflowConfig::default).smart_zone_tokens = None; true }
         "workflow.test_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).test_command = None; true }
         "workflow.worktree_skip_hooks" => { config.workflow.get_or_insert_with(WorkflowConfig::default).worktree_skip_hooks = None; true }
+        "features.global_learnings" => { config.features.get_or_insert_with(FeaturesConfig::default).global_learnings = None; true }
+        "features.thinking_partner" => { config.features.get_or_insert_with(FeaturesConfig::default).thinking_partner = None; true }
+        "gates.confirm_breakdown" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_breakdown = None; true }
+        "gates.confirm_phases" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_phases = None; true }
+        "gates.confirm_plan" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_plan = None; true }
+        "gates.confirm_project" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_project = None; true }
+        "gates.confirm_roadmap" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_roadmap = None; true }
+        "gates.confirm_transition" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_transition = None; true }
+        "gates.execute_next_plan" => { config.gates.get_or_insert_with(GatesConfig::default).execute_next_plan = None; true }
+        "gates.issues_review" => { config.gates.get_or_insert_with(GatesConfig::default).issues_review = None; true }
+        "planning.chunked_parallel" => { config.planning.get_or_insert_with(PlanningConfig::default).chunked_parallel = None; true }
+        "planning.commit_docs" => { config.planning.get_or_insert_with(PlanningConfig::default).commit_docs = None; true }
+        "planning.pr_strict" => { config.planning.get_or_insert_with(PlanningConfig::default).pr_strict = None; true }
+        "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = None; true }
+        "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = None; true }
+        "plan_review.source_grounding_authority" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding_authority = None; true }
+        "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = None; true }
+        "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = None; true }
+        "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = None; true }
+        "hooks.context_warning_threshold" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warning_threshold = None; true }
+        "hooks.context_critical_threshold" => { config.hooks.get_or_insert_with(HooksConfig::default).context_critical_threshold = None; true }
+        "graphify.auto_update" => { config.graphify.get_or_insert_with(GraphifyConfig::default).auto_update = None; true }
+        "context_window" => { config.context_window = None; true }
+        "statusline.context_position" => { config.statusline.get_or_insert_with(StatuslineConfig::default).context_position = None; true }
+        "statusline.show_last_command" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_last_command = None; true }
+        "statusline.show_state_freshness" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_state_freshness = None; true }
+        "dynamic_routing.enabled" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).enabled = None; true }
+        "dynamic_routing.escalate_on_failure" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).escalate_on_failure = None; true }
 
         // GSD 1.8 top-level blocks
         "phase_id_convention" => { config.phase_id_convention = None; true }
@@ -6909,6 +7162,29 @@ fn mutate_config_entry(
                 "workflow.post_planning_gaps" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.post_planning_gaps = Some(!wf.post_planning_gaps.unwrap_or(false)); true }
                 "workflow.security_enforcement" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.security_enforcement = Some(!wf.security_enforcement.unwrap_or(false)); true }
                 "workflow.worktree_skip_hooks" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.worktree_skip_hooks = Some(!wf.worktree_skip_hooks.unwrap_or(false)); true }
+                "features.global_learnings" => { let f = config.features.get_or_insert_with(FeaturesConfig::default); f.global_learnings = Some(!f.global_learnings.unwrap_or(false)); true }
+                "features.thinking_partner" => { let f = config.features.get_or_insert_with(FeaturesConfig::default); f.thinking_partner = Some(!f.thinking_partner.unwrap_or(false)); true }
+                "gates.confirm_breakdown" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_breakdown = Some(!g.confirm_breakdown.unwrap_or(false)); true }
+                "gates.confirm_phases" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_phases = Some(!g.confirm_phases.unwrap_or(false)); true }
+                "gates.confirm_plan" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_plan = Some(!g.confirm_plan.unwrap_or(false)); true }
+                "gates.confirm_project" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_project = Some(!g.confirm_project.unwrap_or(false)); true }
+                "gates.confirm_roadmap" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_roadmap = Some(!g.confirm_roadmap.unwrap_or(false)); true }
+                "gates.confirm_transition" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_transition = Some(!g.confirm_transition.unwrap_or(false)); true }
+                "gates.execute_next_plan" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.execute_next_plan = Some(!g.execute_next_plan.unwrap_or(false)); true }
+                "gates.issues_review" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.issues_review = Some(!g.issues_review.unwrap_or(false)); true }
+                "planning.chunked_parallel" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.chunked_parallel = Some(!p.chunked_parallel.unwrap_or(false)); true }
+                "planning.commit_docs" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.commit_docs = Some(!p.commit_docs.unwrap_or(false)); true }
+                "planning.pr_strict" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.pr_strict = Some(!p.pr_strict.unwrap_or(false)); true }
+                "planning.search_gitignored" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.search_gitignored = Some(!p.search_gitignored.unwrap_or(false)); true }
+                "plan_review.source_grounding" => { let r = config.plan_review.get_or_insert_with(PlanReviewConfig::default); r.source_grounding = Some(!r.source_grounding.unwrap_or(false)); true }
+                "git.create_tag" => { let g = config.git.get_or_insert_with(GitConfig::default); g.create_tag = Some(!g.create_tag.unwrap_or(false)); true }
+                "git.allow_default_branch_commits" => { let g = config.git.get_or_insert_with(GitConfig::default); g.allow_default_branch_commits = Some(!g.allow_default_branch_commits.unwrap_or(false)); true }
+                "hooks.workflow_guard" => { let h = config.hooks.get_or_insert_with(HooksConfig::default); h.workflow_guard = Some(!h.workflow_guard.unwrap_or(false)); true }
+                "graphify.auto_update" => { let g = config.graphify.get_or_insert_with(GraphifyConfig::default); g.auto_update = Some(!g.auto_update.unwrap_or(false)); true }
+                "statusline.show_last_command" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_last_command = Some(!s.show_last_command.unwrap_or(false)); true }
+                "statusline.show_state_freshness" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_state_freshness = Some(!s.show_state_freshness.unwrap_or(false)); true }
+                "dynamic_routing.enabled" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.enabled = Some(!r.enabled.unwrap_or(false)); true }
+                "dynamic_routing.escalate_on_failure" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.escalate_on_failure = Some(!r.escalate_on_failure.unwrap_or(false)); true }
                 // GSD 1.8 top-level blocks
                 "claude_orchestration.enabled" => { let c = config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default); c.enabled = Some(!c.enabled.unwrap_or(false)); true }
                 "statusline.show_context_tokens" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_context_tokens = Some(!s.show_context_tokens.unwrap_or(false)); true }
@@ -6967,6 +7243,18 @@ fn mutate_config_entry(
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     let current = wf.human_verify_mode.as_deref().unwrap_or("end-of-phase");
                     wf.human_verify_mode = Some(cycle(current));
+                    true
+                }
+                "plan_review.source_grounding_authority" => {
+                    let r = config.plan_review.get_or_insert_with(PlanReviewConfig::default);
+                    let current = r.source_grounding_authority.as_deref().unwrap_or("grep");
+                    r.source_grounding_authority = Some(cycle(current));
+                    true
+                }
+                "statusline.context_position" => {
+                    let s = config.statusline.get_or_insert_with(StatuslineConfig::default);
+                    let current = s.context_position.as_deref().unwrap_or("end");
+                    s.context_position = Some(cycle(current));
                     true
                 }
                 _ => false,
@@ -7057,6 +7345,30 @@ fn mutate_config_entry(
                         Some(if current >= 400_000 { 25_000 } else { current + 25_000 });
                     true
                 }
+                // The two thresholds are a PAIR with an ordering constraint
+                // gsd-core enforces (critical strictly below warning), so each
+                // cycles inside its own half of the range rather than through
+                // the whole of 0..100 and straight past the other.
+                "hooks.context_warning_threshold" => {
+                    let h = config.hooks.get_or_insert_with(HooksConfig::default);
+                    let current = h.context_warning_threshold.unwrap_or(0);
+                    h.context_warning_threshold =
+                        Some(if current >= 90 { 30 } else { current.max(25) + 5 });
+                    true
+                }
+                "hooks.context_critical_threshold" => {
+                    let h = config.hooks.get_or_insert_with(HooksConfig::default);
+                    let current = h.context_critical_threshold.unwrap_or(0);
+                    h.context_critical_threshold =
+                        Some(if current >= 20 { 5 } else { current + 5 });
+                    true
+                }
+                "context_window" => {
+                    let current = config.context_window.unwrap_or(0);
+                    config.context_window =
+                        Some(if current >= 1_000_000 { 200_000 } else { current + 200_000 });
+                    true
+                }
                 _ => false,
             }
         }
@@ -7107,12 +7419,41 @@ mod tests {
             "claude_md_path": "./.claude/CLAUDE.md",
             "response_language": "English",
             "sub_repos": [],
+            "context_window": 200000,
+            "features": {
+                "global_learnings": false,
+                "thinking_partner": false
+            },
+            "gates": {
+                "confirm_breakdown": true,
+                "confirm_phases": true,
+                "confirm_plan": true,
+                "confirm_project": true,
+                "confirm_roadmap": true,
+                "confirm_transition": true,
+                "execute_next_plan": true,
+                "issues_review": true
+            },
+            "planning": {
+                "chunked_parallel": false,
+                "commit_docs": true,
+                "pr_strict": false,
+                "search_gitignored": false,
+                "sub_repos": []
+            },
+            "plan_review": {
+                "source_grounding": true,
+                "source_grounding_authority": "grep"
+            },
             "git": {
                 "branching_strategy": "phase",
                 "base_branch": "master",
                 "phase_branch_template": "gsd/phase-{phase}-{slug}",
                 "milestone_branch_template": "gsd/{milestone}-{slug}",
-                "quick_branch_template": "gsd/quick-{slug}"
+                "quick_branch_template": "gsd/quick-{slug}",
+                "create_tag": true,
+                "allow_default_branch_commits": false,
+                "protected_branches": ["release"]
             },
             "workflow": {
                 "research": true,
@@ -7177,12 +7518,18 @@ mod tests {
                 "test_command": "cargo test --no-fail-fast",
                 "worktree_skip_hooks": false
             },
-            "hooks": { "context_warnings": true },
+            "hooks": {
+                "context_warnings": true,
+                "workflow_guard": false,
+                "context_warning_threshold": 35,
+                "context_critical_threshold": 25
+            },
             "intel": { "enabled": true },
             "graphify": {
                 "enabled": true,
                 "build_timeout": 300,
-                "graph_path": ".planning/graphs"
+                "graph_path": ".planning/graphs",
+                "auto_update": false
             },
             "claude_orchestration": {
                 "enabled": false,
@@ -7192,11 +7539,16 @@ mod tests {
             "statusline": {
                 "show_context_tokens": true,
                 "state_format": "compact",
-                "show_git": true
+                "show_git": true,
+                "context_position": "end",
+                "show_last_command": false,
+                "show_state_freshness": false
             },
             "dynamic_routing": {
                 "provider_escalation": false,
-                "max_escalations": 1
+                "max_escalations": 1,
+                "enabled": false,
+                "escalate_on_failure": true
             },
             "review": { "reviewer_instances": {} },
             "external_job": {
@@ -7220,10 +7572,17 @@ mod tests {
     }
 
     /// The number of `push` call sites in `build_defaults_entries`, MEASURED at
-    /// the time the help was authored. It is asserted rather than trusted so a
-    /// 74th option cannot slip past the coverage assertions below by being
-    /// added to a list nobody counted.
-    const DEFAULTS_OPTION_COUNT: usize = 100;
+    /// the time the help was authored and RE-measured at the gsd-core 1.14.0
+    /// re-sync (73 -> 130, quick task 260916-vqw). It is asserted rather than
+    /// trusted so a 131st option cannot slip past the coverage assertions below
+    /// by being added to a list nobody counted.
+    ///
+    /// **It counts STATIC rows only.** `append_passthrough_entries` emits one
+    /// row per unmodelled key found in the config it is handed, so a fixture
+    /// carrying such a key would make this number a property of the fixture
+    /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
+    /// of unmodelled keys, and the pass-through rows have their own fixture.
+    const DEFAULTS_OPTION_COUNT: usize = 130;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -7306,7 +7665,7 @@ mod tests {
         }
 
         assert_eq!(
-            enum_entries, 10,
+            enum_entries, 12,
             "the Defaults tab's Enum-kinded option count changed; each one needs a per-value \
              explanation"
         );
@@ -7672,7 +8031,119 @@ mod tests {
         ("workflow.smart_zone_tokens", "integer"),
         ("workflow.test_command", "string"),
         ("workflow.worktree_skip_hooks", "bool"),
+        ("features.global_learnings", "bool"),
+        ("features.thinking_partner", "bool"),
+        ("gates.confirm_breakdown", "bool"),
+        ("gates.confirm_phases", "bool"),
+        ("gates.confirm_plan", "bool"),
+        ("gates.confirm_project", "bool"),
+        ("gates.confirm_roadmap", "bool"),
+        ("gates.confirm_transition", "bool"),
+        ("gates.execute_next_plan", "bool"),
+        ("gates.issues_review", "bool"),
+        ("planning.chunked_parallel", "bool"),
+        ("planning.commit_docs", "bool"),
+        ("planning.pr_strict", "bool"),
+        ("planning.search_gitignored", "bool"),
+        ("planning.sub_repos", "readonly"),
+        ("plan_review.source_grounding", "bool"),
+        ("plan_review.source_grounding_authority", "enum"),
+        ("git.create_tag", "bool"),
+        ("git.allow_default_branch_commits", "bool"),
+        ("git.protected_branches", "readonly"),
+        ("hooks.workflow_guard", "bool"),
+        ("hooks.context_warning_threshold", "integer"),
+        ("hooks.context_critical_threshold", "integer"),
+        ("graphify.auto_update", "bool"),
+        ("context_window", "integer"),
+        ("statusline.context_position", "enum"),
+        ("statusline.show_last_command", "bool"),
+        ("statusline.show_state_freshness", "bool"),
+        ("dynamic_routing.enabled", "bool"),
+        ("dynamic_routing.escalate_on_failure", "bool"),
     ];
+
+    /// The re-sync's own size, MEASURED against gsd-core 1.14.0's key table:
+    /// 27 `workflow.*` keys plus 30 elsewhere.
+    ///
+    /// Asserted rather than trusted for the same reason
+    /// [`DEFAULTS_OPTION_COUNT`] is: a row quietly dropped from the table above
+    /// would make every loop over it pass while covering one key fewer.
+    const RESYNCED_KEY_COUNT: usize = 57;
+
+    /// `docs/GSD-CORE-SYNC.md` is the baseline a future sync DIFFS FROM, so a
+    /// record that outlives its subject is worse than no record — it tells the
+    /// next reader a surface is covered when it is not.
+    ///
+    /// This pins the three things that can silently rot: the version and commit
+    /// it names must be the ones the constants carry, and its `## Modelled`
+    /// section must list every key `build_defaults_entries` pushes.
+    ///
+    /// **Read from disk through `CARGO_MANIFEST_DIR`**, the same route
+    /// `render_escape_guard.rs`'s census uses, so the assertion is about the
+    /// committed file rather than about a copy of it in this test.
+    #[test]
+    fn the_sync_record_names_every_modelled_key_and_the_measured_baseline() {
+        use crate::state_reader::config_json::{
+            GSD_CORE_SYNCED_COMMIT, GSD_CORE_SYNCED_VERSION,
+        };
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/GSD-CORE-SYNC.md");
+        let doc = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!("the sync record is missing at {}: {e}", path.display())
+        });
+
+        assert!(
+            doc.contains(GSD_CORE_SYNCED_VERSION),
+            "the record does not name version {GSD_CORE_SYNCED_VERSION:?}, which \
+             config_json.rs's constant carries"
+        );
+        assert!(
+            doc.contains(GSD_CORE_SYNCED_COMMIT),
+            "the record does not name commit {GSD_CORE_SYNCED_COMMIT:?}"
+        );
+
+        let modelled = doc
+            .split_once("\n## Modelled")
+            .expect("the record has a `## Modelled` section")
+            .1
+            .split_once("\n## Pass-through")
+            .expect("the record has a `## Pass-through` section after it")
+            .0;
+
+        let missing: Vec<&str> = all_config_entries()
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .filter(|key| !modelled.contains(&format!("`{key}`")))
+            .map(|key| {
+                // Leak-free: the keys are `&'static str` behind `Cow::Borrowed`
+                // for every authored row, and this fixture pushes no others.
+                Box::leak(key.to_string().into_boxed_str()) as &str
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "docs/GSD-CORE-SYNC.md's Modelled section does not list {missing:?} — \
+             the record and the tab have drifted, which is the exact failure the \
+             record exists to prevent. Update both in the SAME commit."
+        );
+    }
+
+    #[test]
+    fn the_resync_covers_every_key_the_drift_measurement_found() {
+        assert_eq!(
+            RESYNCED_KEYS.len(),
+            RESYNCED_KEY_COUNT,
+            "the re-synced key table changed size; re-measure the drift against \
+             gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        let workflow = RESYNCED_KEYS
+            .iter()
+            .filter(|(key, _)| key.starts_with("workflow."))
+            .count();
+        assert_eq!(workflow, 27, "the workflow.* half of the re-sync changed size");
+    }
 
     fn kind_name(kind: &ConfigValueKind) -> &'static str {
         match kind {

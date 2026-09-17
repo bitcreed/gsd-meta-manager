@@ -97,7 +97,88 @@ pub struct GsdConfig {
     pub claude_md_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_repos: Option<serde_json::Value>,
+    // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<FeaturesConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<GatesConfig>,
+    /// gsd-core's NAMESPACED spellings of three keys this build also models at
+    /// the top level (`commit_docs`, `search_gitignored`, `sub_repos`).
+    ///
+    /// **Both are modelled on purpose.** They are distinct JSON paths, a real
+    /// project may carry either, and collapsing them would make the Defaults
+    /// tab show a value the file does not contain at the path it claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning: Option<PlanningConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_review: Option<PlanReviewConfig>,
     /// Top-level gsd-core keys this build does not model — see [`ExtraKeys`].
+    #[serde(flatten)]
+    pub extra: ExtraKeys,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct FeaturesConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_learnings: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_partner: Option<bool>,
+    /// See [`ExtraKeys`].
+    #[serde(flatten)]
+    pub extra: ExtraKeys,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct GatesConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_breakdown: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_phases: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_plan: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_project: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_roadmap: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_transition: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execute_next_plan: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issues_review: Option<bool>,
+    /// See [`ExtraKeys`].
+    #[serde(flatten)]
+    pub extra: ExtraKeys,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct PlanningConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunked_parallel: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_docs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_strict: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_gitignored: Option<bool>,
+    /// A list of sub-repo paths — surfaced read-only, like the top-level
+    /// `sub_repos` it namespaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_repos: Option<serde_json::Value>,
+    /// See [`ExtraKeys`].
+    #[serde(flatten)]
+    pub extra: ExtraKeys,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct PlanReviewConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_grounding: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_grounding_authority: Option<String>,
+    /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
 }
@@ -123,6 +204,13 @@ pub struct StatuslineConfig {
     pub state_format: Option<String>,
     #[serde(default)]
     pub show_git: Option<bool>,
+    // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_position: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_last_command: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_state_freshness: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -134,6 +222,11 @@ pub struct DynamicRoutingConfig {
     pub provider_escalation: Option<bool>,
     #[serde(default)]
     pub max_escalations: Option<u32>,
+    // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate_on_failure: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -186,6 +279,14 @@ pub struct GitConfig {
     pub milestone_branch_template: Option<String>,
     #[serde(default)]
     pub quick_branch_template: Option<serde_json::Value>,
+    // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_tag: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_default_branch_commits: Option<bool>,
+    /// A list of branch names — surfaced read-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_branches: Option<serde_json::Value>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -333,6 +434,13 @@ pub struct WorkflowConfig {
 pub struct HooksConfig {
     #[serde(default)]
     pub context_warnings: Option<bool>,
+    // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_guard: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_warning_threshold: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_critical_threshold: Option<u32>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -355,6 +463,9 @@ pub struct GraphifyConfig {
     pub build_timeout: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_path: Option<String>,
+    // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -847,6 +958,133 @@ mod tests {
         let serialized = serialize_gsd_config(&config).unwrap();
         assert!(!serialized.contains("agent_hint_routing"));
         assert!(!serialized.contains("smart_zone_tokens"));
+    }
+
+    /// The 30 non-`workflow` keys the gsd-core 1.14.0 re-sync added, including
+    /// four blocks this build had never seen at all.
+    #[test]
+    fn the_resynced_non_workflow_keys_parse_and_round_trip() {
+        let content = r#"{
+            "context_window": 1000000,
+            "features": { "global_learnings": true, "thinking_partner": true },
+            "gates": {
+                "confirm_breakdown": false,
+                "confirm_phases": false,
+                "confirm_plan": false,
+                "confirm_project": false,
+                "confirm_roadmap": false,
+                "confirm_transition": false,
+                "execute_next_plan": false,
+                "issues_review": false
+            },
+            "planning": {
+                "chunked_parallel": true,
+                "commit_docs": false,
+                "pr_strict": true,
+                "search_gitignored": true,
+                "sub_repos": ["backend", "frontend"]
+            },
+            "plan_review": {
+                "source_grounding": false,
+                "source_grounding_authority": "intel"
+            },
+            "git": {
+                "create_tag": false,
+                "allow_default_branch_commits": true,
+                "protected_branches": ["release", "staging"]
+            },
+            "hooks": {
+                "workflow_guard": true,
+                "context_warning_threshold": 40,
+                "context_critical_threshold": 20
+            },
+            "graphify": { "auto_update": true },
+            "statusline": {
+                "context_position": "front",
+                "show_last_command": true,
+                "show_state_freshness": true
+            },
+            "dynamic_routing": { "enabled": true, "escalate_on_failure": false }
+        }"#;
+        let config = parse_gsd_config(content).expect("the re-synced fixture parses");
+
+        assert_eq!(config.context_window, Some(1_000_000));
+        let features = config.features.as_ref().unwrap();
+        assert_eq!(features.global_learnings, Some(true));
+        assert_eq!(features.thinking_partner, Some(true));
+        let gates = config.gates.as_ref().unwrap();
+        assert_eq!(gates.confirm_breakdown, Some(false));
+        assert_eq!(gates.issues_review, Some(false));
+        assert!(gates.extra.is_empty(), "a gates.* key fell through: {:?}", gates.extra);
+        let planning = config.planning.as_ref().unwrap();
+        assert_eq!(planning.chunked_parallel, Some(true));
+        assert_eq!(planning.commit_docs, Some(false));
+        assert_eq!(planning.pr_strict, Some(true));
+        assert_eq!(planning.search_gitignored, Some(true));
+        assert!(planning.sub_repos.as_ref().unwrap().is_array());
+        // The namespaced spellings are a DIFFERENT path from the top-level
+        // ones, and modelling both is deliberate — see `GsdConfig::planning`.
+        assert!(
+            config.commit_docs.is_none() && config.search_gitignored.is_none(),
+            "planning.* leaked into the top-level keys, so the tab would show a \
+             value at a path the file does not use"
+        );
+        let review = config.plan_review.as_ref().unwrap();
+        assert_eq!(review.source_grounding, Some(false));
+        assert_eq!(review.source_grounding_authority.as_deref(), Some("intel"));
+        let git = config.git.as_ref().unwrap();
+        assert_eq!(git.create_tag, Some(false));
+        assert_eq!(git.allow_default_branch_commits, Some(true));
+        assert!(git.protected_branches.as_ref().unwrap().is_array());
+        let hooks = config.hooks.as_ref().unwrap();
+        assert_eq!(hooks.workflow_guard, Some(true));
+        assert_eq!(hooks.context_warning_threshold, Some(40));
+        assert_eq!(hooks.context_critical_threshold, Some(20));
+        assert_eq!(config.graphify.as_ref().unwrap().auto_update, Some(true));
+        let sl = config.statusline.as_ref().unwrap();
+        assert_eq!(sl.context_position.as_deref(), Some("front"));
+        assert_eq!(sl.show_last_command, Some(true));
+        assert_eq!(sl.show_state_freshness, Some(true));
+        let dr = config.dynamic_routing.as_ref().unwrap();
+        assert_eq!(dr.enabled, Some(true));
+        assert_eq!(dr.escalate_on_failure, Some(false));
+
+        let serialized = serialize_gsd_config(&config).expect("serialises");
+        let reparsed = parse_gsd_config(&serialized).expect("re-parses");
+        assert_eq!(reparsed.context_window, Some(1_000_000));
+        assert_eq!(
+            reparsed.gates.as_ref().unwrap().confirm_plan,
+            Some(false)
+        );
+        assert_eq!(
+            reparsed.plan_review.as_ref().unwrap().source_grounding_authority.as_deref(),
+            Some("intel")
+        );
+        assert_eq!(
+            serialized,
+            serialize_gsd_config(&reparsed).unwrap(),
+            "the save path is not a fixed point over the re-synced blocks"
+        );
+    }
+
+    /// The four new blocks are omitted entirely from a default config, so
+    /// saving an untouched project does not invent `gates` / `features` /
+    /// `planning` / `plan_review` sections gsd-core never saw.
+    #[test]
+    fn the_resynced_blocks_are_absent_from_a_default_config() {
+        let serialized = serialize_gsd_config(&GsdConfig::default()).unwrap();
+        for block in ["features", "gates", "planning", "plan_review", "context_window"] {
+            assert!(
+                !serialized.contains(block),
+                "a default config emitted {block:?}"
+            );
+        }
+        let empty = parse_gsd_config("{}").unwrap();
+        assert!(empty.features.is_none());
+        assert!(empty.gates.is_none());
+        assert!(empty.planning.is_none());
+        assert!(empty.plan_review.is_none());
+        assert!(empty.context_window.is_none());
     }
 
     /// ID-1: the baseline a future sync diffs from has to be measured, and a
