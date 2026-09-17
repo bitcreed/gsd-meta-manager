@@ -1677,7 +1677,12 @@ security test is the failure this repository's conventions are written against.
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+**All four questions were closed during `/gsd-plan-phase 22`** (plans `22-01` … `22-04`, written
+2026-09-16). Each carries a `RESOLVED:` line naming where its answer actually landed, verified
+against the plan text rather than asserted. Nothing below is outstanding; read the cited plan for
+the binding form of the answer.
 
 1. **What exactly does `claude auth login` look like inside a one-shot container?**
    - What we know: the subcommand exists with `--claudeai` (default), `--console`, `--sso`,
@@ -1686,6 +1691,14 @@ security test is the failure this repository's conventions are written against.
    - What's unclear: whether the device/URL flow is usable with no browser *in* the container.
    - Recommendation: first task of whichever plan owns CTNR-03 — it is one command and one
      observation, and it does not gate planning.
+   - **RESOLVED — plan `22-02` (CTNR-03).** The mechanism is an **interactive `claude auth login
+     --claudeai` one-shot**, spelled out verbatim per runtime in `22-02`'s `user_setup` block, with
+     the volume and `CLAUDE_CONFIG_DIR` mount named. A driven run never logs in: `22-02`'s
+     `assert_volume_authenticated` refuses on `loggedIn != true` before any container is created
+     and carries that one-shot command as the named remedy (D-22-12). `setup-token` was
+     **declined** — `22-01` threat `T-22-08` records why: it would put a subscription credential
+     in the process table. The browserless-flow uncertainty survives as assumption **A1** in
+     `22-01`/`22-02`, where `22-02`'s own probes are the first thing to exercise it.
 
 2. **Which label strings does D-22-16 settle on, and does the reader accept both?**
    - What we know: the producer emits `"Host"`; five in-tree sites say `"host"`; `journal.jsonl`
@@ -1694,16 +1707,41 @@ security test is the failure this repository's conventions are written against.
    - Recommendation: choose lowercase (it matches the five existing fixtures and every other
      string this codebase puts on disk), make the reader accept both, and pin the tolerance with
      a test — the durable-record rule (D-22-16, *one-way*) makes silence here expensive.
+   - **RESOLVED — plan `22-04`, decision `I-18`.** Lowercase, via named constants
+     `TARGET_LABEL_HOST` / `TARGET_LABEL_CONTAINER`, with the reader accepting **both** spellings
+     and a test pinning that tolerance on two fixture records (one capitalised, one lowercase).
+     Pre-Phase-22 records therefore keep reading correctly and no migration exists — which is why
+     `22-04` re-rates the decision `costly` rather than `one-way` and carries no decision
+     checkpoint. `22-04` also corrects this section's count: **six** in-tree sites already spell it
+     lowercase, not five — RESEARCH scanned `src/` only and missed `tests/envelope_wiring.rs:256`.
 
 3. **Where does the named volume's name live, and how is a rename handled?**
    - What we know: D-22-09 rates a rename as *costly* — it is user state.
    - Recommendation: a single named constant with a comment saying a change is a user migration,
      asserted by a test, in the register `SUBSCRIPTION_API_KEY_SOURCE` uses at `gate.rs:77-81`.
+   - **RESOLVED — plan `22-01`.** A single named constant `CLAUDE_CONFIG_VOLUME =
+     "gsd-mm-claude-config"` (with `CLAUDE_CONFIG_MOUNT = "/claude-config"`), added in exactly the
+     `gate.rs:77-81` register the recommendation named, whose doc must state that changing the name
+     or internal layout is a **user migration** — everyone authenticated into it logs in again
+     (D-22-09's reversibility note). Pinned by test: `22-01`'s argv suite asserts the volume
+     mount's source *is* the constant, its destination *is* the mount-point constant, and that no
+     `-v` value has the host home directory as its source.
 
 4. **Does the egress-allowlist posture change ROADMAP § Phase 22's risk list?**
    - What we know: C-1 — the verbatim-adopted wording is not deliverable on rootless podman.
    - Recommendation: the plan should state the real posture and record the measured docker
      recipe as a deferred, sized follow-up rather than quietly dropping the risk line.
+   - **RESOLVED — plan `22-02`, decision `I-08`; recorded by plan `22-04`, decision `I-21`.**
+     Yes, the risk list changes, and the change is made explicitly rather than quietly: `22-02`
+     keeps D-22-14's *intent* and corrects its *claim*, introducing
+     `EgressPosture { Enforced { mechanism }, Unrestricted { backend } }` — a type that cannot
+     represent an enforced allowlist it did not obtain. Threat `T-22-16` in `22-02` carries the
+     posture as an explicit **accept** ("not enforceable inside the spike's fence … stated rather
+     than promised away"), and the measured docker recipe (`docker network create --internal` plus
+     a dual-homed proxy) is written down as a **sized follow-up, not dropped**. `22-04` records the
+     obtained posture on the run record as `RunRecord.egress`, so each run states what it actually
+     got. `22-02` also forbids describing the container's egress as restricted or allowlisted when
+     it is not.
 
 ---
 
