@@ -4,6 +4,7 @@ use gsd_meta_manager::state_reader::state_md::{
     extract_frontmatter, parse_state_md, read_frontmatter, FrontmatterFault, FrontmatterOutcome,
     StateVersion,
 };
+use gsd_meta_manager::state_reader::backlog::parse_backlog_items;
 use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state, PhaseMarker};
 use std::fs;
 use tempfile::TempDir;
@@ -189,6 +190,127 @@ fn test_count_backlog_ignores_files_starting_with_999() {
     // Create a file (not directory) starting with 999
     fs::write(phases_dir.join("999-notes.txt"), "not a dir").unwrap();
     assert_eq!(count_backlog_items(tmp.path()), 0);
+}
+
+// ============================================================================
+// Backlog count/parse agreement (260916-vr0)
+//
+// The overview advertises a backlog count; the Backlog tab draws a row per
+// parsed item. Those were two different rules, and on every real disk they
+// disagreed totally: measured across all six registered projects, 12 of 12
+// `999.*` directories contain exactly one entry — `.gitkeep` — and zero contain
+// a `.md` file. The parser required a `.md` file, so it returned zero items for
+// every project that had a backlog at all.
+//
+// The fixtures below mirror that measured shape rather than an idealised one: a
+// `999.N-slug` directory whose entire payload is its NAME.
+// ============================================================================
+
+/// A `phases/` tree in the shape every measured project actually has on disk:
+/// two well-formed `999.N-slug` directories holding nothing but a zero-byte
+/// `.gitkeep`, beside one ordinary phase directory.
+fn make_md_less_backlog_fixture() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let phases_dir = tmp.path().join("phases");
+    fs::create_dir_all(phases_dir.join("01-core-infra")).unwrap();
+    for dir_name in [
+        "999.1-milestone-archive-browser-tab",
+        "999.2-container-claude-injection",
+    ] {
+        let item_dir = phases_dir.join(dir_name);
+        fs::create_dir_all(&item_dir).unwrap();
+        // Exactly what is in every real one: an empty `.gitkeep`, no `.md`.
+        fs::write(item_dir.join(".gitkeep"), "").unwrap();
+    }
+    tmp
+}
+
+/// **The reported symptom, as a test.** The overview says 2, the tab draws 0.
+#[test]
+fn md_less_backlog_directories_reach_the_tab_instead_of_being_discarded() {
+    let tmp = make_md_less_backlog_fixture();
+    let counted = count_backlog_items(tmp.path());
+    let drawn = parse_backlog_items(tmp.path()).len();
+
+    assert_eq!(
+        counted, 2,
+        "the fixture is only meaningful if the overview counts both directories; \
+         overview counted {counted}, expected 2"
+    );
+    assert_eq!(
+        drawn, 2,
+        "overview counted {counted}, the tab could draw {drawn}. A backlog \
+         directory's payload is its NAME; requiring a `.md` file inside it \
+         discards 100% of the directories that exist on real disks."
+    );
+}
+
+/// **The invariant.** The number the overview advertises IS the number of rows
+/// the tab can draw. Not "close to" — the same number, from the same rule.
+#[test]
+fn the_overview_count_equals_the_number_of_rows_the_backlog_tab_can_draw() {
+    let tmp = make_md_less_backlog_fixture();
+    let counted = count_backlog_items(tmp.path()) as usize;
+    let drawn = parse_backlog_items(tmp.path()).len();
+
+    assert_eq!(
+        counted, drawn,
+        "overview counted {counted}, the tab could draw {drawn}. These must be \
+         one rule in one place; two rules kept in agreement by care is what \
+         produced a non-zero count above an empty list."
+    );
+}
+
+/// The description fallback and the absent-file fields, on the shape that is
+/// the norm rather than the exception.
+#[test]
+fn a_backlog_item_with_no_md_file_is_described_by_its_humanized_slug() {
+    let tmp = make_md_less_backlog_fixture();
+    let items = parse_backlog_items(tmp.path());
+
+    assert_eq!(
+        items.len(),
+        2,
+        "overview counted {}, the tab could draw {}",
+        count_backlog_items(tmp.path()),
+        items.len()
+    );
+
+    let numbers: Vec<&str> = items
+        .iter()
+        .map(|i| i.number.as_raw_for_logic_only())
+        .collect();
+    assert_eq!(
+        numbers,
+        vec!["999.1", "999.2"],
+        "items keep their existing ascending order by number"
+    );
+
+    let descriptions: Vec<&str> = items
+        .iter()
+        .map(|i| i.description.as_raw_for_logic_only())
+        .collect();
+    assert_eq!(
+        descriptions,
+        vec![
+            "Milestone archive browser tab",
+            "Container claude injection"
+        ],
+        "with no `.md` heading to read, the humanized slug is the description"
+    );
+
+    for item in &items {
+        assert!(
+            item.path.is_none(),
+            "{}: there is no `.md` file, so there is no path to one",
+            item.dir_name.as_raw_for_logic_only()
+        );
+        assert!(
+            item.content.is_none(),
+            "{}: `parse_backlog_items` never loads content",
+            item.dir_name.as_raw_for_logic_only()
+        );
+    }
 }
 
 // ============================================================================
