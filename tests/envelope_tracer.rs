@@ -19,6 +19,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use gsd_meta_manager::envelope::{cred, envelope_dir, envelope_dir_in, hooks, ENVELOPE_ROOT_ENV};
 use tempfile::TempDir;
@@ -174,15 +175,72 @@ fn neither_push_writes_into_the_driven_repository_config_or_hooks() {
 /// that directory for credential shapes, so a stub run from the *test process's*
 /// cwd would be scanning this project's own checkout: slow, and green or red for
 /// reasons that have nothing to do with the fixture.
+///
+/// The spawn is wrapped in a bounded, **ETXTBSY-only** retry (quick 260917-lkg).
+/// See the ETXTBSY section of this file's header for the mechanism. Three things
+/// carry it and none of them may be relaxed:
+///
+/// * only `ErrorKind::ExecutableFileBusy` retries — every other spawn error fails
+///   on the spot under the original `the generated stub is executable` wording, so
+///   a genuinely non-executable stub (`PermissionDenied` for a bad mode, `ENOEXEC`
+///   for a bad shebang) is still a loud, immediate, correctly-attributed failure
+///   and the loop cannot become a swallow-all;
+/// * expiry PANICS rather than returning a synthesised `Output`, because every
+///   caller is about to assert on what the stub did and an exec that never
+///   happened proves nothing about it;
+/// * the 25ms sleep is INSIDE the poll loop, which is this project's house idiom
+///   (`tests/driver_reattach.rs`'s `*_within` helpers) — it returns the moment the
+///   inode frees and fails loudly when it never does, unlike a fixed
+///   pre-assertion `sleep`, which those headers forbid.
 fn run_stub(fx: &Fixture, stub: &Path, ref_line: &str) -> Output {
-    let mut child = Command::new(stub)
-        .current_dir(&fx.work)
+    // Built once and bound mutably: `Command::spawn` takes `&mut self`, so one
+    // builder can be spawned repeatedly with no rebuild and no closure.
+    let mut cmd = Command::new(stub);
+    cmd.current_dir(&fx.work)
         .env(ENVELOPE_ROOT_ENV, &fx.envelope_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the generated stub is executable");
+        .stderr(Stdio::piped());
+
+    // `Duration::from_secs(30)` inline at the single site, matching
+    // `tests/driver_reattach.rs`'s call-site convention rather than adding a
+    // named constant for one use. Generous on purpose: the observed pin clears
+    // in microseconds, so the limit only ever costs wall time on a real failure.
+    let limit = Duration::from_secs(30);
+    let deadline = Instant::now() + limit;
+    let mut attempts: u32 = 0;
+
+    let mut child = loop {
+        attempts += 1;
+        match cmd.spawn() {
+            Ok(child) => break child,
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                if Instant::now() >= deadline {
+                    panic!(
+                        "ETXTBSY never cleared for {} after {attempts} spawn attempts over \
+                         {limit:?}: the exec NEVER HAPPENED, so nothing whatever was proven \
+                         about whether this stub refuses or acts. This is a hard failure, not \
+                         a skip, and `Text file busy` is never the refusal this test asserts. \
+                         Last error: {e:?}",
+                        stub.display()
+                    );
+                }
+                // Emitted so the retry branch is COUNTABLE rather than merely
+                // absent: "the flake did not recur" and "the branch fired N
+                // times and every run still passed" are different claims.
+                eprintln!(
+                    "ETXTBSY on {} (attempt {attempts}); the inode is pinned by a writer \
+                     inherited into a sibling test thread's forked child — retrying",
+                    stub.display()
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            // Verbatim the pre-retry message, so a stub that is genuinely not
+            // executable still fails for its own reason and is not masked.
+            Err(e) => panic!("the generated stub is executable: {e:?}"),
+        }
+    };
+
     child
         .stdin
         .as_mut()
