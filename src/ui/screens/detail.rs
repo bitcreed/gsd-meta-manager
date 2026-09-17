@@ -2299,7 +2299,7 @@ impl Screen for DetailScreen {
                                 let dropdown_idx = cache.defaults_dropdown_selected.min(options.len().saturating_sub(1));
                                 if let Some(value) = options.get(dropdown_idx).cloned() {
                                     if let Some(active) = active_config_mut(cache) {
-                                        if set_config_value(active, entry.key, &value) {
+                                        if set_config_value(active, entry.key.as_ref(), &value) {
                                             persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
@@ -2334,7 +2334,7 @@ impl Screen for DetailScreen {
                                         };
                                 } else if matches!(entry.kind, ConfigValueKind::Integer) {
                                     if let Some(active) = active_config_mut(cache) {
-                                        if mutate_config_entry(active, entry.key, &entry.kind) {
+                                        if mutate_config_entry(active, entry.key.as_ref(), &entry.kind) {
                                             persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
@@ -2421,8 +2421,16 @@ impl Screen for DetailScreen {
                     let selected = cache.defaults_selected;
                     if let Some(entry) = entries.get(selected).cloned() {
                         let key = entry.key;
+                        // The status message interleaves the key with a
+                        // sentence this build wrote, so there is no field to
+                        // give a carrier and the escape happens at the
+                        // `format!` (the WR-03 shape). A pass-through key
+                        // reaches the `cannot be cleared` arm by construction,
+                        // which is exactly the arm an unescaped key would leak
+                        // through.
+                        let key_shown = shown(key.as_ref());
                         if let Some(active) = active_config_mut(cache) {
-                            let cleared = clear_config_value(active, key);
+                            let cleared = clear_config_value(active, key.as_ref());
                             if cleared {
                                 persist_active_config(
                                     target,
@@ -2431,12 +2439,12 @@ impl Screen for DetailScreen {
                                     &mut ctx.status_message,
                                 );
                                 ctx.status_message = Some((
-                                    format!("Cleared {}", key),
+                                    format!("Cleared {}", key_shown),
                                     std::time::Instant::now(),
                                 ));
                             } else {
                                 ctx.status_message = Some((
-                                    format!("{} cannot be cleared", key),
+                                    format!("{} cannot be cleared", key_shown),
                                     std::time::Instant::now(),
                                 ));
                             }
@@ -3157,9 +3165,9 @@ impl DetailScreen {
                     let key = entry.key;
                     if let Some(active) = active_config_mut(cache) {
                         let applied = if buffer.is_empty() {
-                            clear_config_value(active, key)
+                            clear_config_value(active, key.as_ref())
                         } else {
-                            set_string_value(active, key, &buffer)
+                            set_string_value(active, key.as_ref(), &buffer)
                         };
                         if applied {
                             persist_active_config(
@@ -4547,8 +4555,18 @@ impl DetailScreen {
                 } else {
                     Span::raw("                  ")
                 };
+                // READ BY A HUMAN, through a `ListItem`, and untrusted since
+                // quick task 260916-vqw (T-VQW-01). The comment that used to
+                // sit at `val_span` said "`category` and `key` beside it are
+                // `&'static str` literals from `build_defaults_entries` and
+                // need nothing" — true while every row was authored here, and
+                // FALSE the moment `append_passthrough_entries` started
+                // emitting rows whose key is a dotted path built out of the
+                // project's own `.planning/config.json`. Escaped BEFORE the
+                // padding, so the column width counts what the terminal will
+                // draw rather than what the file contained.
                 let key_span = Span::styled(
-                    format!("{:<30}", entry.key),
+                    format!("{:<30}", shown(entry.key.as_ref())),
                     Style::default().fg(Color::White),
                 );
                 let val_style = match entry.kind {
@@ -4572,8 +4590,9 @@ impl DetailScreen {
                 // `.planning/config.json`, and its string-valued keys (`mode`,
                 // `granularity`, `project_code`, `phase_naming`,
                 // `response_language`) are free-form text this build did not
-                // author. `category` and `key` beside it are `&'static str`
-                // literals from `build_defaults_entries` and need nothing.
+                // author. `category` beside it is a `&'static str` literal
+                // from `build_defaults_entries` and needs nothing; `key` is
+                // NO LONGER in that class and is escaped at its own span.
                 //
                 // Found by POPULATING the fixture, not by reading (21-25 T2):
                 // `defaults_config` was `None` under probe, so this tab painted
@@ -4645,8 +4664,13 @@ impl DetailScreen {
             if let Some(editing_idx) = cache.defaults_editing {
                 if let Some(entry) = entries.get(editing_idx) {
                     if matches!(entry.kind, ConfigValueKind::String) {
-                        let title =
-                            format!(" {} {DEFAULTS_EDIT_BRANCH_TOKEN} ", entry.key);
+                        // `Block::title` PRESERVES the invisible class (the
+                        // per-widget-family table in `render_escape_guard.rs`),
+                        // so the key is escaped here as well as in the list.
+                        let title = format!(
+                            " {} {DEFAULTS_EDIT_BRANCH_TOKEN} ",
+                            shown(entry.key.as_ref())
+                        );
                         // READ BY A HUMAN, and the whole point of `EditBuffer`:
                         // there is no other route from the buffer to a cell.
                         // `Span::styled(buffer.clone(), ..)` does not compile.
@@ -4696,7 +4720,7 @@ impl DetailScreen {
                     if !options.is_empty() {
                         let dropdown_idx =
                             cache.defaults_dropdown_selected.min(options.len() - 1);
-                        let title = format!(" {} ", entry.key);
+                        let title = format!(" {} ", shown(entry.key.as_ref()));
                         let popup_w =
                             dropdown_popup_width(&options, &entry.help, &title, area.width);
                         let popup_h = (options.len() as u16 + 2).min(area.height.saturating_sub(2));
@@ -5388,12 +5412,30 @@ struct ConfigHelp {
     /// `every_choice_bearing_entry_documents_exactly_its_dropdown_options`, so
     /// the list a human READS is the list the editor OFFERS.
     choices: &'static [(&'static str, &'static str)],
+    /// The gsd-core release that introduced this key, as a tag name
+    /// (`"v1.14.0"`), or `""` for a key whose introduction predates the sync
+    /// record (quick task 260916-vqw).
+    ///
+    /// **MEASURED from gsd-core's history, never recalled** (ID-4). The
+    /// command is recorded in `docs/GSD-CORE-SYNC.md` so the next sync
+    /// reproduces it rather than guessing:
+    ///
+    /// ```text
+    /// C=$(git -C ~/projects/node/gsd-core log --reverse --format=%H \
+    ///       -S"<dotted.key>" -- docs/CONFIGURATION.md src/ | head -1)
+    /// git -C ~/projects/node/gsd-core tag --contains "$C" --sort=v:refname | head -1
+    /// ```
+    ///
+    /// It is a `&'static str` this build authored, exactly like `summary` and
+    /// `choices`, so rendering it keeps the help pane outside the file's
+    /// `shown()` rule by construction (T-S0N-01).
+    since: &'static str,
 }
 
 impl ConfigHelp {
     /// Help for an option with no discrete choice set.
     const fn new(summary: &'static str) -> Self {
-        Self { summary, choices: &[] }
+        Self { summary, choices: &[], since: "" }
     }
 
     /// Help for an option whose values are enumerable, each with its own
@@ -5402,7 +5444,20 @@ impl ConfigHelp {
         summary: &'static str,
         choices: &'static [(&'static str, &'static str)],
     ) -> Self {
-        Self { summary, choices }
+        Self { summary, choices, since: "" }
+    }
+
+    /// Record the gsd-core release this key arrived in.
+    ///
+    /// A builder rather than a fourth constructor parameter so the 73 call
+    /// sites that predate the sync record are untouched, and so the two
+    /// constructors do not have to be doubled.
+    const fn since(self, version: &'static str) -> Self {
+        Self {
+            summary: self.summary,
+            choices: self.choices,
+            since: version,
+        }
     }
 
     /// The recorded explanation for one value, or `None` when the value has
@@ -5441,6 +5496,14 @@ const CHOICE_SEPARATOR: &str = " — ";
 
 /// Between two choices on the help pane's choice row.
 const CHOICE_DELIMITER: &str = "  ·  ";
+
+/// Introduces the help pane's `since` marker.
+///
+/// Spelled once because the assertion that `workflow.compact_content`'s help
+/// NAMES the gsd-core version that introduced it looks for this token rather
+/// than respelling the separator — a test that spells its own separator passes
+/// on a render that drew a different one.
+const SINCE_PREFIX: &str = "  · since gsd-core ";
 
 /// Width of the dropdown's current-value marker column (`"● "` / `"  "`).
 const DROPDOWN_MARKER_WIDTH: usize = 2;
@@ -5494,10 +5557,20 @@ fn dropdown_popup_width(
 /// string reaches this function it needs `crate::text::render_for_terminal`,
 /// and the guarantee stops being structural.
 fn build_config_help_pane(help: &ConfigHelp) -> Paragraph<'static> {
-    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+    let mut summary_spans: Vec<Span<'static>> = vec![Span::styled(
         help.summary,
         Style::default().fg(Color::Gray),
-    ))];
+    )];
+    if !help.since.is_empty() {
+        // A dim trailing marker rather than a line of its own: the pane has
+        // four rows total and a whole row spent on a version string is a row
+        // the choice list needs. Still a `&'static str` — see `ConfigHelp`.
+        summary_spans.push(Span::styled(
+            format!("{SINCE_PREFIX}{} ", help.since),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let mut lines: Vec<Line<'static>> = vec![Line::from(summary_spans)];
 
     if !help.choices.is_empty() {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -5531,7 +5604,18 @@ fn build_config_help_pane(help: &ConfigHelp) -> Paragraph<'static> {
 #[derive(Clone)]
 struct ConfigEntry {
     category: &'static str,
-    key: &'static str,
+    /// **`Cow`, and the `Owned` half is UNTRUSTED TEXT** (T-VQW-01, quick task
+    /// 260916-vqw).
+    ///
+    /// Every row this build authors passes a `&'static str` and arrives here as
+    /// `Borrowed`, exactly as before. The pass-through rows at the end of
+    /// [`build_defaults_entries`] carry `Owned` dotted paths built from keys
+    /// read out of the project's `.planning/config.json`, which is
+    /// attacker-influenced content in precisely the way `value` beside it
+    /// already was. Every site that draws this field therefore goes through
+    /// [`shown`], and `category` stays `&'static str` because nothing
+    /// project-supplied can reach it.
+    key: std::borrow::Cow<'static, str>,
     value: String,
     kind: ConfigValueKind,
     show_category: bool,
@@ -5628,7 +5712,7 @@ fn build_defaults_entries(
                     help: ConfigHelp| {
         entries.push(ConfigEntry {
             category: cat,
-            key,
+            key: std::borrow::Cow::Borrowed(key),
             value,
             kind,
             show_category: first,
@@ -5802,6 +5886,14 @@ fn build_defaults_entries(
     push(cat, "text_mode", v, k, false, fd, ConfigHelp::new(
         "Asks questions as plain numbered lists instead of interactive menus, for terminals that lack them.",
     ));
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.compact_content), dwf.and_then(|w| w.compact_content));
+    push(cat, "workflow.compact_content", v, k, false, fd, ConfigHelp::with_choices(
+        "Serves GSD's own shipped workflows, templates and agent personas in their terser form to spend less of the window.",
+        &[
+            ("true", "skips the deferred elaborations, reads .compact.md siblings"),
+            ("false", "the full instruction set, byte-identical to before"),
+        ],
+    ).since("v1.14.0"));
     let (v, k, fd) = str_l(
         config.response_language.as_deref(),
         defaults.and_then(|d| d.response_language.as_deref()),
@@ -6080,7 +6172,125 @@ fn build_defaults_entries(
         "Named cross-AI reviewer instances that /gsd-review dispatches to; shown here, edited in the config file.",
     ));
 
+    append_passthrough_entries(&mut entries, config, defaults);
+
     entries
+}
+
+/// The category every unmodelled key lands under.
+///
+/// Last, and its own category, so the list a reader scans top-down is
+/// "everything this build understands" followed by "everything it does not".
+const PASSTHROUGH_CATEGORY: &str = "Not modelled";
+
+/// The one help summary every pass-through row shares.
+///
+/// **A static literal on purpose** (T-VQW-01). Interpolating the key into it
+/// would put project-supplied text inside a [`ConfigHelp`], and
+/// [`build_config_help_pane`]'s structural "nothing out of config.json reaches
+/// here" property would stop being structural.
+const PASSTHROUGH_HELP: ConfigHelp = ConfigHelp::new(
+    "Present in this project's config.json but not modelled by this build — shown read-only, and preserved when you save.",
+);
+
+/// Rows for every key the project's (or the global defaults') config carries
+/// that this build has no typed field for.
+///
+/// **This is what makes "not silently missing" true for the keys ID-3 does not
+/// promote to typed rows** — gsd-core's nested and templated families
+/// (`review.models.<cli>`, `model_policy.*`, `effort.*`, `agent_tools.<selector>`,
+/// …), plus anything a release adds after [`GSD_CORE_SYNCED_COMMIT`]. A key
+/// here is visible, is preserved by the writer, and cannot be edited from the
+/// TUI; `docs/GSD-CORE-SYNC.md` records which families are deliberately in this
+/// state rather than merely unnoticed.
+///
+/// Rows are emitted in SORTED key order (a `BTreeMap`), so the list does not
+/// reshuffle between frames as a `serde_json::Map`'s iteration order would
+/// allow under the `preserve_order` feature.
+///
+/// Layering matches the `opt_*_layered` helpers: the global defaults are laid
+/// down first and the project's own keys overwrite them, so a key present in
+/// both is attributed to the project and only a defaults-only key carries the
+/// inherited marker.
+fn append_passthrough_entries(
+    entries: &mut Vec<ConfigEntry>,
+    config: &crate::state_reader::config_json::GsdConfig,
+    defaults: Option<&crate::state_reader::config_json::GsdConfig>,
+) {
+    use crate::state_reader::config_json::{ExtraKeys, GsdConfig};
+    use std::collections::BTreeMap;
+
+    /// Every `(dotted path, value)` pair one config contributes.
+    fn collect(config: &GsdConfig, out: &mut Vec<(String, serde_json::Value)>) {
+        let mut take = |prefix: &str, extra: &ExtraKeys| {
+            for (key, value) in extra {
+                out.push((format!("{prefix}{key}"), value.clone()));
+            }
+        };
+        take("", &config.extra);
+        if let Some(block) = config.git.as_ref() {
+            take("git.", &block.extra);
+        }
+        if let Some(block) = config.workflow.as_ref() {
+            take("workflow.", &block.extra);
+        }
+        if let Some(block) = config.hooks.as_ref() {
+            take("hooks.", &block.extra);
+        }
+        if let Some(block) = config.intel.as_ref() {
+            take("intel.", &block.extra);
+        }
+        if let Some(block) = config.graphify.as_ref() {
+            take("graphify.", &block.extra);
+        }
+        if let Some(block) = config.claude_orchestration.as_ref() {
+            take("claude_orchestration.", &block.extra);
+        }
+        if let Some(block) = config.statusline.as_ref() {
+            take("statusline.", &block.extra);
+        }
+        if let Some(block) = config.dynamic_routing.as_ref() {
+            take("dynamic_routing.", &block.extra);
+        }
+        if let Some(block) = config.review.as_ref() {
+            take("review.", &block.extra);
+        }
+        if let Some(block) = config.external_job.as_ref() {
+            take("external_job.", &block.extra);
+        }
+        if let Some(block) = config.capabilities.as_ref() {
+            take("capabilities.", &block.extra);
+        }
+    }
+
+    // `(value, from_defaults)`, defaults first so the project overwrites them.
+    let mut rows: BTreeMap<String, (serde_json::Value, bool)> = BTreeMap::new();
+    if let Some(defaults) = defaults {
+        let mut found = Vec::new();
+        collect(defaults, &mut found);
+        for (key, value) in found {
+            rows.insert(key, (value, true));
+        }
+    }
+    let mut found = Vec::new();
+    collect(config, &mut found);
+    for (key, value) in found {
+        rows.insert(key, (value, false));
+    }
+
+    let mut first = true;
+    for (key, (value, from_defaults)) in rows {
+        entries.push(ConfigEntry {
+            category: PASSTHROUGH_CATEGORY,
+            key: std::borrow::Cow::Owned(key),
+            value: json_display(&value),
+            kind: ConfigValueKind::ReadOnly,
+            show_category: first,
+            from_defaults,
+            help: PASSTHROUGH_HELP,
+        });
+        first = false;
+    }
 }
 
 /// Build defaults entries respecting the cache's edit target.
@@ -6133,6 +6343,25 @@ pub(super) fn first_string_entry(cache: &super::ProjectViewCache) -> Option<(usi
         .enumerate()
         .find(|(_, entry)| matches!(entry.kind, ConfigValueKind::String))
         .map(|(idx, entry)| (idx, entry.value))
+}
+
+/// The index of the first PASS-THROUGH row of a cache's Defaults list — for the
+/// render-escape probe, and DERIVED for the same reason [`first_string_entry`]
+/// is (quick task 260916-vqw).
+///
+/// Pass-through rows are appended AFTER every authored category, so at a
+/// 60-row probe terminal a 130-row list never draws one with the cursor at
+/// zero. `probe_ctx` moves the cursor here so the row scrolls into the
+/// viewport; without that the fixture's hostile key would be populated,
+/// unrendered, and counted as coverage.
+///
+/// Returns `None` for a cache with no config — which is what `chrome_ctx` is —
+/// so the baseline keeps its cursor at zero.
+#[cfg(test)]
+pub(super) fn first_passthrough_entry(cache: &super::ProjectViewCache) -> Option<usize> {
+    entries_for_cache(cache)
+        .into_iter()
+        .position(|entry| entry.category == PASSTHROUGH_CATEGORY)
 }
 
 /// Get a mutable reference to whichever config the user is currently
@@ -6236,6 +6465,8 @@ fn set_config_value(
             "workflow.api_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).api_coverage_gate = Some(b); return true; }
             "workflow.windows_enforce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).windows_enforce = Some(b); return true; }
             "workflow.mvp_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).mvp_mode = Some(b); return true; }
+            // gsd-core 1.14 (quick task 260916-vqw)
+            "workflow.compact_content" => { config.workflow.get_or_insert_with(WorkflowConfig::default).compact_content = Some(b); return true; }
             // GSD 1.8 top-level blocks
             "claude_orchestration.enabled" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).enabled = Some(b); return true; }
             "statusline.show_context_tokens" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_context_tokens = Some(b); return true; }
@@ -6391,6 +6622,9 @@ fn clear_config_value(
         "workflow.code_review_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_command = None; true }
         "graphify.graph_path" => { config.graphify.get_or_insert_with(GraphifyConfig::default).graph_path = None; true }
 
+        // gsd-core 1.14 (quick task 260916-vqw)
+        "workflow.compact_content" => { config.workflow.get_or_insert_with(WorkflowConfig::default).compact_content = None; true }
+
         // GSD 1.8 top-level blocks
         "phase_id_convention" => { config.phase_id_convention = None; true }
         "claude_md_path" => { config.claude_md_path = None; true }
@@ -6461,6 +6695,8 @@ fn mutate_config_entry(
                 "workflow.api_coverage_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.api_coverage_gate = Some(!wf.api_coverage_gate.unwrap_or(false)); true }
                 "workflow.windows_enforce" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.windows_enforce = Some(!wf.windows_enforce.unwrap_or(false)); true }
                 "workflow.mvp_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.mvp_mode = Some(!wf.mvp_mode.unwrap_or(false)); true }
+                // gsd-core 1.14 (quick task 260916-vqw)
+                "workflow.compact_content" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.compact_content = Some(!wf.compact_content.unwrap_or(false)); true }
                 // GSD 1.8 top-level blocks
                 "claude_orchestration.enabled" => { let c = config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default); c.enabled = Some(!c.enabled.unwrap_or(false)); true }
                 "statusline.show_context_tokens" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_context_tokens = Some(!s.show_context_tokens.unwrap_or(false)); true }
@@ -6630,6 +6866,7 @@ mod tests {
                 "plan_drift_precheck": true,
                 "plan_chunked": false,
                 "mvp_mode": false,
+                "compact_content": true,
                 "security_asvs_level": 1,
                 "security_block_on": "high"
             },
@@ -6679,7 +6916,7 @@ mod tests {
     /// the time the help was authored. It is asserted rather than trusted so a
     /// 74th option cannot slip past the coverage assertions below by being
     /// added to a list nobody counted.
-    const DEFAULTS_OPTION_COUNT: usize = 73;
+    const DEFAULTS_OPTION_COUNT: usize = 74;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -6785,7 +7022,7 @@ mod tests {
         let entries = all_config_entries();
         let entry = entries
             .iter()
-            .find(|e| e.key == "model_profile")
+            .find(|e| e.key.as_ref() == "model_profile")
             .expect("model_profile is one of the Defaults tab's options");
         let options = dropdown_options(&entry.kind);
         assert_eq!(options.len(), 5, "model_profile offers five values");
@@ -6879,13 +7116,13 @@ mod tests {
         let first_summary = squeeze_ws(entries[0].help.summary);
         let model_idx = entries
             .iter()
-            .position(|e| e.key == "model_profile")
+            .position(|e| e.key.as_ref() == "model_profile")
             .expect("model_profile is one of the Defaults tab's options");
         let model_summary = squeeze_ws(entries[model_idx].help.summary);
 
         let at_first = squeeze_ws(&render_defaults_to_text(120, 40, 0));
         assert!(
-            at_first.contains(entries[0].key),
+            at_first.contains(entries[0].key.as_ref()),
             "the fixture is not populated — the tab painted its empty state, so nothing below \
              this line is about the help pane"
         );
@@ -6920,7 +7157,7 @@ mod tests {
         let short = render_defaults_to_text(120, 10, 0);
         let row = short
             .lines()
-            .find(|line| line.contains(entries[0].key))
+            .find(|line| line.contains(entries[0].key.as_ref()))
             .expect("below the ID-04 floor the option list keeps the whole area");
         assert!(
             row.contains(&entries[0].value),
@@ -6970,6 +7207,249 @@ mod tests {
                 entry.key
             );
         }
+    }
+
+    // ── Pass-through rows (quick task 260916-vqw) ─────────────────────────
+
+    /// A config carrying keys gsd-core writes and this build does not model —
+    /// one at the top level, one nested in a modelled block, and one from a
+    /// templated family ID-3 deliberately never promotes to a typed row.
+    fn config_with_unmodelled_keys() -> crate::state_reader::config_json::GsdConfig {
+        crate::state_reader::config_json::parse_gsd_config(
+            r#"{
+                "mode": "yolo",
+                "workflow": { "research": true, "unknown_gsd_key": 7 },
+                "brand_new_block": { "a": 1 },
+                "review": { "models": { "codex": "gpt-5" } }
+            }"#,
+        )
+        .expect("the pass-through fixture parses")
+    }
+
+    fn passthrough_rows(entries: &[ConfigEntry]) -> Vec<&ConfigEntry> {
+        entries
+            .iter()
+            .filter(|entry| entry.category == PASSTHROUGH_CATEGORY)
+            .collect()
+    }
+
+    #[test]
+    fn an_unmodelled_key_becomes_a_read_only_row_under_its_own_category() {
+        let entries = build_defaults_entries(&config_with_unmodelled_keys(), None);
+        let rows = passthrough_rows(&entries);
+        let keys: Vec<&str> = rows.iter().map(|entry| entry.key.as_ref()).collect();
+
+        assert_eq!(
+            keys,
+            vec!["brand_new_block", "review.models", "workflow.unknown_gsd_key"],
+            "the pass-through walk must reach the top level, the nested blocks \
+             AND the templated families, in sorted order"
+        );
+        for entry in &rows {
+            assert!(
+                matches!(entry.kind, ConfigValueKind::ReadOnly),
+                "`{}` is a pass-through row but its kind is {:?}, so the TUI \
+                 offers to edit a key it cannot write back",
+                entry.key,
+                entry.kind
+            );
+            assert!(
+                dropdown_options(&entry.kind).is_empty(),
+                "`{}` offers dropdown options for a key this build does not model",
+                entry.key
+            );
+        }
+        assert!(
+            rows[0].show_category,
+            "the first pass-through row must print the category header"
+        );
+
+        // The CONTROL. Without it this passes on a walk that reports every key
+        // as unmodelled, including the ones that have typed rows.
+        let modelled: Vec<&str> = entries
+            .iter()
+            .filter(|entry| entry.category != PASSTHROUGH_CATEGORY)
+            .map(|entry| entry.key.as_ref())
+            .collect();
+        assert!(modelled.contains(&"research"));
+        assert!(
+            !modelled.is_empty() && !keys.contains(&"research"),
+            "a MODELLED key leaked into the pass-through rows"
+        );
+    }
+
+    /// The tracer's negative half: the one key the todo named by hand must be a
+    /// first-class row, not a pass-through one.
+    #[test]
+    fn compact_content_is_an_editable_row_naming_its_gsd_core_version() {
+        let entries = all_config_entries();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.key.as_ref() == "workflow.compact_content")
+            .expect("workflow.compact_content has a Defaults-tab row");
+
+        assert!(
+            matches!(entry.kind, ConfigValueKind::Bool),
+            "compact_content is a boolean gate; kind is {:?}",
+            entry.kind
+        );
+        assert_ne!(entry.category, PASSTHROUGH_CATEGORY);
+        assert_eq!(
+            entry.help.since, "v1.14.0",
+            "the help must NAME the gsd-core version that introduced the key"
+        );
+
+        // Editable: the dropdown applies, the toggle flips, the clear unsets.
+        let mut config = populated_gsd_config();
+        assert!(set_config_value(&mut config, "workflow.compact_content", "false"));
+        assert_eq!(
+            config.workflow.as_ref().unwrap().compact_content,
+            Some(false)
+        );
+        assert!(mutate_config_entry(
+            &mut config,
+            "workflow.compact_content",
+            &ConfigValueKind::Bool
+        ));
+        assert_eq!(
+            config.workflow.as_ref().unwrap().compact_content,
+            Some(true)
+        );
+        assert!(clear_config_value(&mut config, "workflow.compact_content"));
+        assert!(config.workflow.as_ref().unwrap().compact_content.is_none());
+
+        // And the version reaches the pane a human reads, not just the struct.
+        let idx = entries
+            .iter()
+            .position(|e| e.key.as_ref() == "workflow.compact_content")
+            .unwrap();
+        let rendered = squeeze_ws(&render_defaults_to_text(120, 40, idx));
+        assert!(
+            rendered.contains(&squeeze_ws(&format!("{SINCE_PREFIX}v1.14.0"))),
+            "the help pane did not draw the `since` marker: {rendered}"
+        );
+    }
+
+    /// T-VQW-02's other half: a pass-through row is READ-only in every one of
+    /// the three arms that can mutate a config, so nothing can write a key back
+    /// under a name this build does not understand.
+    #[test]
+    fn a_pass_through_key_is_refused_by_every_mutation_arm() {
+        let mut config = config_with_unmodelled_keys();
+        for key in ["brand_new_block", "workflow.unknown_gsd_key", "review.models"] {
+            assert!(
+                !set_config_value(&mut config, key, "true"),
+                "`{key}` was accepted by the dropdown arm"
+            );
+            assert!(
+                !set_string_value(&mut config, key, "x"),
+                "`{key}` was accepted by the string arm"
+            );
+            assert!(
+                !clear_config_value(&mut config, key),
+                "`{key}` was accepted by the clear arm"
+            );
+            assert!(
+                !mutate_config_entry(&mut config, key, &ConfigValueKind::ReadOnly),
+                "`{key}` was accepted by the toggle arm"
+            );
+        }
+        // The control: the same four arms DO recognise a modelled key, so the
+        // refusals above are about the key rather than about broken arms.
+        assert!(set_config_value(&mut config, "research", "false"));
+        assert!(clear_config_value(&mut config, "research"));
+    }
+
+    /// T-VQW-01. A pass-through row is the first Defaults-tab row whose KEY is
+    /// project-supplied, so the key crosses the same untrusted-text boundary
+    /// `entry.value` already did.
+    ///
+    /// The fixture's hostile characters are drawn BY IMPORT from
+    /// `LOOK_ALIKE_PAIRS` (D-21-6) rather than respelled here, and the row is
+    /// SELECTED so the list scrolls it into the viewport — a 130-row list at 40
+    /// rows of terminal would otherwise never draw it and this test would pass
+    /// by never rendering the site it is about.
+    #[test]
+    fn a_hostile_pass_through_key_cannot_reach_a_cell_unescaped() {
+        use crate::test_support::LOOK_ALIKE_PAIRS;
+
+        let hostile_key = format!("brand_{}_block", LOOK_ALIKE_PAIRS[4].1);
+        let hostile_value = format!("value{}", LOOK_ALIKE_PAIRS[4].1);
+        // Built THROUGH serde_json rather than by `format!` into a raw string:
+        // a hand-escaped literal has to spell JSON's `\uXXXX` surrogate pairs
+        // for an astral-plane tag character, and the first version of this test
+        // wrote Rust's `\u{e0041}` instead and failed at "the hostile fixture
+        // parses" — a fixture that cannot parse asserts nothing about escaping.
+        let mut root = serde_json::Map::new();
+        root.insert("mode".to_string(), serde_json::Value::from("yolo"));
+        root.insert(
+            hostile_key.clone(),
+            serde_json::Value::from(hostile_value.clone()),
+        );
+        let raw = serde_json::to_string(&serde_json::Value::Object(root))
+            .expect("the hostile fixture serialises");
+        let config = crate::state_reader::config_json::parse_gsd_config(&raw)
+            .expect("the hostile fixture parses");
+
+        let entries = build_defaults_entries(&config, None);
+        let idx = entries
+            .iter()
+            .position(|entry| entry.category == PASSTHROUGH_CATEGORY)
+            .expect("the hostile key produced a pass-through row");
+
+        let mut ctx = test_ctx();
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.defaults_config = Some(config);
+            cache.defaults_selected = idx;
+        }
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (width, height) = (200u16, 40u16);
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render_defaults_tab(frame, frame.area(), &ctx))
+            .expect("draw the Defaults tab");
+        let buffer = terminal.backend().buffer().clone();
+        let drawn: String = (0..height)
+            .flat_map(|y| {
+                (0..width).map(move |x| (x, y))
+            })
+            .filter_map(|(x, y)| buffer.cell((x, y)).map(|cell| cell.symbol().to_string()))
+            .collect();
+
+        // ARRIVAL first: without it every assertion below passes by the row
+        // never having been rendered at all.
+        assert!(
+            drawn.contains("brand_"),
+            "the hostile pass-through row never reached the viewport, so nothing \
+             below this line is about escaping"
+        );
+        let leaked: Vec<char> = drawn
+            .chars()
+            .filter(|c| crate::text::is_invisible_formatting_char(*c))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "the pass-through row put {leaked:?} into the terminal buffer — those \
+             characters render as nothing, so what the operator reads is not what \
+             the key is"
+        );
+        // The expected spelling comes from the SAME composition the render
+        // applies (`shown` delegates to `render_for_terminal`), not from the
+        // half of it that handles this one class. Naming a half here would make
+        // the assertion disagree with the render the day the composition
+        // changes, and would add a bare `display_identity` needle to the census
+        // `ui::tests::no_display_identity_call_under_ui_stands_outside_a_composition`
+        // keeps over this directory.
+        assert!(
+            drawn.contains(&crate::text::render_for_terminal(&hostile_key).to_string()),
+            "the escaped spelling of the key is absent, so the row drew something \
+             other than the key it is for"
+        );
     }
 
     #[test]
