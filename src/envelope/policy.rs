@@ -1004,6 +1004,84 @@ fn config_key_of(assignment: &str) -> &str {
 /// a plan-check caught it, exactly as a plan-check caught round 7's residue
 /// hidden behind a pin that could not observe it. The residue paragraph above
 /// carries that earlier correction; this paragraph carries this one.
+///
+/// # THE RE-DERIVATION AGAINST `git version 2.55.0`
+///
+/// **The range actually read**: `Documentation/RelNotes/2.44.0.adoc` through
+/// `2.55.0.adoc` on git/git master — twelve files, every release between the
+/// version the probe table above was measured on and the version now recorded at
+/// [`CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION`] — cross-checked
+/// against master's `Documentation/config.adoc` and `config.c`. **The `.txt`
+/// variants 404 across this whole range**: the release notes were renamed to
+/// `.adoc`. A future re-auditor who gets a 404 should change the extension rather
+/// than conclude the notes are missing.
+///
+/// **The verdict: NOTHING NEW. No third indirection section exists at 2.55.0.**
+/// `include` and `includeIf` remain the complete set, and this constant is
+/// byte-identical after the re-derivation. `Documentation/config.adoc` on master
+/// still says the `include` and `includeIf` sections are the ones that allow
+/// including config directives from another source, and `config.c`'s
+/// `git_config_include` splices on exactly two keys — `include.path`, and
+/// `includeif` with a true condition and a `path` key — and no others. **A
+/// no-change outcome is the RESULT of the re-audit, not a skipped re-audit.**
+///
+/// **The near-misses, each NAMED and EXCLUDED with the reason it fails the class
+/// test.** The class test is *does this add a SECTION whose value names another
+/// source git reads CONFIG from, spliced at the naming directive's precedence*:
+///
+/// * 2.46's fix for a repository whose configuration has `includeif.onbranch`,
+///   and its straightening of `hasconfig:remote.*.url`: both are the EXISTING
+///   `includeIf` section, not a new one.
+/// * 2.47's crash fix for `includeIf.onbranch` used outside a repository: the
+///   same existing section again.
+/// * 2.52's `:(optional)` prefix on pathname-valued variables such as
+///   `blame.ignorerevsfile`: a tolerate-a-missing-file marker on variables that
+///   already existed. Git reads no CONFIG from that file, and the prefix creates
+///   no section.
+/// * 2.47's settable default object hash and ref backend format: configuration of
+///   git's OWN STORAGE, not a splice of config from a named file.
+///
+/// **NOT IN RANGE, recorded so the next re-auditor does not re-discover it**:
+/// `Documentation/RelNotes/2.56.0.adoc` is in development and NOT released. It
+/// teaches the conditional-inclusion facility a condition keyed on the worktree
+/// location. That is a new CONDITION inside the EXISTING `includeIf` section, so
+/// it would not qualify as a third section even once released — and the rule
+/// covers it by construction, because
+/// [`config_key_names_an_indirection_section`] never reads the subsection the
+/// condition lives in.
+///
+/// # WHAT THIS RE-DERIVATION WAS NOT: DOCUMENTARY, NOT MEASURED
+///
+/// **It was release notes plus git's own source, and NOTHING was re-run.** The
+/// `/ENV_WINS` vs `/INCLUDE_WINS` harness that produced the 2.43.0 probe table
+/// above was NOT re-executed against 2.55.0, because **no `git version 2.55.0`
+/// binary exists on the machine that performed this work**. The 2.43.0 probe
+/// table above therefore remains what it always was — a record of a measurement
+/// taken on a real 2.43.0 binary — and it was deliberately left byte-identical
+/// rather than restamped, since restamping it would fabricate a measurement
+/// nobody took. **Nothing in this section may be read as a claim that the probe
+/// table was re-measured.**
+///
+/// # WHAT *IS* LIVE MEASUREMENT, AND EXACTLY HOW FAR IT REACHES
+///
+/// The reverse-direction drift pin below iterates THESE entries and probes a
+/// REAL git binary, so it re-measures against whatever git is installed wherever
+/// the suite runs: it passes on the locally installed `git version 2.53.0`, and
+/// release CI runs it on the runner's `git version 2.55.0`. **That is genuine
+/// two-sided live confirmation of the REVERSE direction** — both named sections
+/// are still honoured by the git this constant now records, not merely by the
+/// 2.43.0 the table was taken on. Its floor
+/// (`INDIRECTION_SECTIONS.len() >= 2`) is unaffected by this re-derivation
+/// because the array does not shrink.
+///
+/// **And in the same breath, unsoftened: that is STILL NOT a control over the
+/// FORWARD, fail-open direction, which remains UNCONTROLLED.** A third
+/// indirection section added by a future git is still unobserved by every
+/// automated thing in this file, because the pin iterates these entries and an
+/// entry that does not exist is never probed. **This section is evidence that a
+/// human looked ONCE, at ONE point in the version history. It does not close the
+/// residue and must not be read as closing it.** The residue and
+/// revisit-condition sections above stand exactly as written.
 const INDIRECTION_SECTIONS: &[&str] = &["include", "includeIf"];
 
 /// The `git --version` [`INDIRECTION_SECTIONS`] and [`REPARSED_COMMAND_SECTIONS`]
@@ -1018,7 +1096,7 @@ const INDIRECTION_SECTIONS: &[&str] = &["include", "includeIf"];
 /// **What it is NOT: it is not a control over either constant's fail-open
 /// residue.** See [`INDIRECTION_SECTIONS`]'s revisit condition for the
 /// schedule-versus-control distinction, which holds here in the same terms.
-pub const CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION: &str = "git version 2.43.0";
+pub const CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION: &str = "git version 2.55.0";
 
 /// The SECTION half of a git config key: the text before the **first** `.`.
 ///
