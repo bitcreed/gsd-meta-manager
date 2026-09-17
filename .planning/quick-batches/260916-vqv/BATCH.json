@@ -3,7 +3,7 @@
   "batch_id": "260916-vqv",
   "created_at": "2026-09-17T04:51:27.487Z",
   "options": {},
-  "base_revision": "be80701e35bca5376a3278d23c6af398f0c48cd7",
+  "base_revision": "89fdea873f1e14433da70165798588c7e44fa211",
   "items": [
     {
       "quick_id": "260916-vqw",
@@ -50,7 +50,7 @@
       "quick_id": "260916-vqy",
       "client_id": null,
       "description": "Visualize execution waves per phase in roadmap (area: ui, severity: major) — todo: .planning/todos/pending/2026-09-11-visualize-execution-waves-per-phase-in-roadmap.md",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [
         "260916-vqx"
       ],
@@ -66,14 +66,14 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 3,
-      "commit": null,
+      "commit": "cf676b2",
       "failure_reason": null
     },
     {
       "quick_id": "260916-vqz",
       "client_id": null,
       "description": "Add b keybinding to open backlog from main screen (area: ui, severity: minor) — todo: .planning/todos/pending/2026-09-15-add-b-keybinding-to-open-backlog-from-main-screen.md",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [
         "260916-vr0"
       ],
@@ -88,7 +88,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 4,
-      "commit": null,
+      "commit": "d256191",
       "failure_reason": null
     },
     {

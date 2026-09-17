@@ -64,7 +64,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-15 - Completed quick task 260915-hsh: updated all Cargo dependencies to latest, including the majors `dirs` 6 → 7 and `process-wrap` 9.1 → 10.0 (both zero-source-change); `notify` held at 8.2.0 while 9.0 is still rc; MSRV floor re-measured unchanged at 1.88.0; 2005 passed / 1 failed against a 2002 / 4 baseline
+Last activity: 2026-09-17 - Completed quick batch 260916-vqv (6 of 6 items). This resume run shipped the last two: 260916-vqy (derive a phase's execution waves from PLAN.md frontmatter and group the Pipeline tab by them; multi-wave marker in the phase list) and 260916-vqz (`b` on the dashboard opens the selected project's detail view already on a populated Backlog tab, documented on its own help row). Gates on the final tree: `cargo build` pass, `cargo clippy -- -D warnings` pass, `cargo test --no-fail-fast` 48 suites / 2087 passed / 1 failed — the known-environmental `envelope::policy` git-version-constants test (installed git 2.53 vs constants derived against 2.43). Both items' SUMMARY.md carry a "Coordinator inferred decisions (for audit)" section: the batch resumed past a self-inflicted base-revision divergence, the two items were serialized (not parallel) because both touch `src/ui/screens/detail.rs`, and 260916-vqz ran unisolated on the primary checkout after the #1941/#48 worktree base-check auto-degrade.
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -398,6 +398,8 @@ Recent decisions affecting current work:
 | 260916-vqx | Show plan token estimate and actual counts | 2026-09-17 | f330b9a | /home/blk/projects/rust/gsd-meta-manager/.planning/quick/260916-vqx-show-plan-token-estimate-and-actual-counts-area-ui-severity |
 | 260916-vr0 | Backlog tab shows empty despite non-zero count on overview | 2026-09-17 | f1cd6e9 | /home/blk/projects/rust/gsd-meta-manager/.planning/quick/260916-vr0-backlog-tab-shows-empty-despite-non-zero-count-on-overview-a |
 | 260916-vr1 | Git view - show co-author model and full commit message on Enter | 2026-09-17 | 4a8094e | /home/blk/projects/rust/gsd-meta-manager/.planning/quick/260916-vr1-git-view-show-co-author-model-and-full-commit-message-on-ent |
+| 260916-vqy | Visualize execution waves per phase in roadmap | 2026-09-17 | cf676b2 | /home/blk/projects/rust/gsd-meta-manager/.planning/quick/260916-vqy-visualize-execution-waves-per-phase-in-roadmap-area-ui-sever |
+| 260916-vqz | Add b keybinding to open backlog from main screen | 2026-09-17 | d256191 | /home/blk/projects/rust/gsd-meta-manager/.planning/quick/260916-vqz-add-b-keybinding-to-open-backlog-from-main-screen-area-ui-se |
 
 ## Session Continuity
 
