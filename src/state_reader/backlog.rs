@@ -43,17 +43,38 @@ pub fn parse_backlog_dir_name(name: &str) -> Option<(String, String)> {
     Some((number, slug))
 }
 
-/// Parse all backlog items from the `.planning/phases/` directory.
-/// Reads 999.* directories, extracts number/slug, finds description from first heading.
-/// Does NOT load content (leaves it as None).
-pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
+/// **The SOLE definition of "which directories under `.planning/phases/` are
+/// backlog items"** — returning `(dir_name, number, slug)` for each.
+///
+/// # Why this exists as one function (260916-vr0)
+///
+/// It used to be two rules. The overview's count kept any entry whose name
+/// merely `starts_with("999")`; the Backlog tab's parser additionally required a
+/// `.md` file INSIDE the directory. Two rules kept in agreement by care are two
+/// rules that disagree, and these disagreed totally: measured across all six
+/// registered projects, 12 of 12 `999.*` directories hold exactly one entry —
+/// `.gitkeep` — and ZERO hold a `.md` file. So the overview advertised 4 while
+/// the tab drew 0, for every project that had a backlog at all.
+///
+/// Reconciled toward the STRICT rule (D-INF-02): the count's only job is to say
+/// how many rows the tab will draw, so the tab's rule is the correct one. A name
+/// [`parse_backlog_dir_name`] rejects is one from which no number and no slug
+/// can be extracted, so it could never have been DISPLAYED — and must therefore
+/// not be counted either.
+///
+/// # No file reads
+///
+/// One `read_dir` and nothing more. This runs on the dashboard refresh path for
+/// every registered project; opening files per entry is what the count must
+/// never start doing.
+pub fn backlog_dirs(planning_dir: &Path) -> Vec<(String, String, String)> {
     let phases_dir = planning_dir.join("phases");
     let entries = match std::fs::read_dir(&phases_dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
     };
 
-    let mut items: Vec<BacklogItem> = entries
+    entries
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.file_name()
@@ -65,22 +86,51 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
         .filter_map(|e| {
             let dir_name = e.file_name().to_string_lossy().to_string();
             let (number, slug) = parse_backlog_dir_name(&dir_name)?;
+            Some((dir_name, number, slug))
+        })
+        .collect()
+}
 
-            // Skip directories with no .md files (empty backlog placeholders)
-            let md_path = find_first_md_file(&e.path())?;
+/// How many backlog items a project has — the SAME rule, and therefore the same
+/// number, as the list [`parse_backlog_items`] returns.
+pub fn count_backlog_dirs(planning_dir: &Path) -> usize {
+    backlog_dirs(planning_dir).len()
+}
 
-            // Try to find description from first .md file's first heading
-            let description = find_first_heading(&e.path()).unwrap_or_else(|| humanize_slug(&slug));
+/// Parse all backlog items from the `.planning/phases/` directory.
+/// Matches via [`backlog_dirs`], so the list cannot diverge from the count.
+/// Does NOT load content (leaves it as None).
+pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
+    let phases_dir = planning_dir.join("phases");
+
+    let mut items: Vec<BacklogItem> = backlog_dirs(planning_dir)
+        .into_iter()
+        .map(|(dir_name, number, slug)| {
+            let item_dir = phases_dir.join(&dir_name);
+
+            // MEASURED: a backlog item's payload is its DIRECTORY NAME, and a
+            // markdown body is an optional enrichment that in practice is never
+            // present — 12 of 12 real `999.*` directories contain only
+            // `.gitkeep`. So an absent `.md` resolves to `path: None` rather
+            // than deciding whether the item exists at all.
+            let md_path = find_first_md_file(&item_dir);
+
+            // Description: the first heading when there IS a `.md`, the
+            // humanized slug when there is not.
+            let description = find_first_heading(&item_dir).unwrap_or_else(|| humanize_slug(&slug));
 
             // The ONE place these four values are created, so the ONE place
             // they are wrapped. Everything downstream inherits the carrier.
-            Some(BacklogItem {
+            // This change raises the number of untrusted directory names that
+            // reach the renderer from zero to ALL of them (T-vr0-01), which
+            // makes the wrapping more load-bearing here, not less.
+            BacklogItem {
                 dir_name: Untrusted::from_untrusted_source(dir_name),
                 number: Untrusted::from_untrusted_source(number),
                 description: Untrusted::from_untrusted_source(description),
                 content: None,
-                path: Some(md_path),
-            })
+                path: md_path,
+            }
         })
         .collect();
 

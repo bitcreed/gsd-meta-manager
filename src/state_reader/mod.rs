@@ -594,24 +594,17 @@ fn detect_async_jobs(planning_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Count directories matching the 999* pattern in .planning/phases/.
-/// These represent backlog items in GSD projects.
+/// Count the backlog items in `.planning/phases/`.
+///
+/// **Delegates to [`backlog::count_backlog_dirs`] rather than re-deciding what a
+/// backlog item is** (260916-vr0, D-INF-02). This used to carry its own looser
+/// rule — any entry whose name `starts_with("999")` — while the Backlog tab
+/// applied a stricter one, so the number advertised here was not the number of
+/// rows the tab could draw. One rule in one place is what makes that
+/// impossible; a future edit to the matching rule now cannot move the count
+/// without moving the list.
 pub fn count_backlog_items(planning_dir: &Path) -> u32 {
-    let phases_dir = planning_dir.join("phases");
-    std::fs::read_dir(&phases_dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .map(|n| n.starts_with("999"))
-                        .unwrap_or(false)
-                        && e.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                })
-                .count() as u32
-        })
-        .unwrap_or(0)
+    backlog::count_backlog_dirs(planning_dir) as u32
 }
 
 #[cfg(test)]
