@@ -857,9 +857,62 @@ type Fixture = fn(&str) -> Vec<ProbeState>;
 /// once means the probe's invisible-class assertion goes red for whichever one a
 /// screen renders raw, without the probe having to know which.
 fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
+    use crate::state_reader::disk_status::{DiskInference, DiskStatus, PlanTokens};
     use crate::state_reader::queue_md::QueuedAction;
     use crate::state_reader::roadmap_md::RoadmapPhase;
     use crate::state_reader::ProjectState;
+
+    let phases = vec![RoadmapPhase {
+        number: "1".to_string(),
+        name: identity.to_string(),
+        description: identity.to_string(),
+        completed: false,
+        total_plans: 1,
+        completed_plans: 0,
+        depends_on: vec![identity.to_string()],
+    }];
+
+    // The Pipeline tab's fixture hole, closed here (LIMIT 1, again).
+    //
+    // `phase_disk_statuses` used to arrive at `..Default::default()`, i.e.
+    // EMPTY, and `DetailScreen::render_pipeline_tab` looks its inference up by
+    // the selected phase's `number` — so the lookup missed on every run and the
+    // right pane returned at the `None => "  No disk data"` arm. The tab was
+    // enumerated by `detail_tabs_expected_to_arrive` and drawn by the probe, and
+    // its `Some(inf)` branch — which now draws a PLAN IDENTIFIER read out of a
+    // third-party project's `.planning/` filename — was never rendered by any
+    // committed control. `DETAIL_TAB_ARRIVAL`'s `true` for this tab was
+    // satisfied by the LEFT pane's phase list alone, so nothing went red to say
+    // the right pane was dark.
+    //
+    // The key is DERIVED from the fixture's own phase entry rather than
+    // respelling `"1"` a second time, for the reason `probe_ctx` derives
+    // `project_path` from the registered project rather than rebuilding it: two
+    // spellings of one key are two things that can drift apart.
+    let phase_disk_statuses = phases
+        .iter()
+        .map(|phase| {
+            (
+                phase.number.clone(),
+                DiskInference {
+                    status: DiskStatus::Executed,
+                    plan_count: 1,
+                    summary_count: 1,
+                    has_plans: true,
+                    has_summaries: true,
+                    // The plan id is a filename stem out of a foreign
+                    // `.planning/` directory — the newest third-party-text sink
+                    // on this tab, and the reason this fixture edit exists.
+                    plan_tokens: vec![PlanTokens {
+                        id: identity.to_string(),
+                        estimate: Some(95_000),
+                        actual: Some(12_846),
+                    }],
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
 
     ProjectState {
         status: identity.to_string(),
@@ -872,15 +925,8 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
         completed_plans: 0,
         milestone: identity.to_string(),
         backlog_count: 1,
-        phases: vec![RoadmapPhase {
-            number: "1".to_string(),
-            name: identity.to_string(),
-            description: identity.to_string(),
-            completed: false,
-            total_plans: 1,
-            completed_plans: 0,
-            depends_on: vec![identity.to_string()],
-        }],
+        phases,
+        phase_disk_statuses,
         queued_actions: vec![QueuedAction {
             command: identity.to_string(),
         }],
@@ -1339,7 +1385,12 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
         "Pipeline tab",
         true,
-        "Draws the current phase name, status and pause context.",
+        "Draws the current phase name, status and pause context — and, since \
+         `phase_disk_statuses` was populated (260916-vqx), the RIGHT pane's \
+         `Some(inf)` branch too, including a plan identifier read out of a \
+         third-party `.planning/` filename. Before that this tab's right pane \
+         returned at `No disk data` while this row already read `true` on the \
+         left pane alone.",
     ),
     (
         "Queue tab",

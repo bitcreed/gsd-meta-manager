@@ -2469,13 +2469,21 @@ actuals:
 
     #[test]
     fn test_junk_token_values_are_none_never_a_panic() {
+        // Deliberately NOT a blank-shape character here: `test_support::DEGENERATE`
+        // owns that payload set and `spawn_seam_guard`'s
+        // `the_degenerate_payload_set_is_spelled_in_exactly_one_place` census
+        // reports any hand copy of a witness. The non-ASCII case this list wants
+        // is a DIGIT that `u64::from_str` refuses — Arabic-Indic `١٢` — which is
+        // the parse property under test and not that guard's business. The
+        // escaping property belongs to the renderer and is pinned there, in
+        // `ui::screens::detail::tests::a_hostile_plan_label_reaches_no_cell_unescaped`.
         for value in [
             "soon",
             "",
             "-5",
             "1e5",
             "9_000",
-            "\u{202e}",
+            "\u{0661}\u{0662}",
             "99999999999999999999999999",
         ] {
             let content = format!("---\nestimate:\n  tokens: {value}\n---\n");
