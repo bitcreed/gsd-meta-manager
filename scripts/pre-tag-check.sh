@@ -581,11 +581,14 @@ fi
 # ---------------------------------------------------------------------------
 # GATE 4 — tests (publish job's "Test" step)
 #
-# DELIBERATELY DIFFERS FROM CI: CI runs a plain `cargo test`, this runs
-# `cargo test --no-fail-fast`. Fail-fast stops at the first failing test BINARY
-# and hides every later suite behind it — which is exactly how the v1.7.0
-# breakage stayed invisible locally. The point of a dry-run is the whole
-# picture, so the whole suite runs.
+# `--no-fail-fast`, and CI NOW AGREES. Fail-fast stops at the first failing
+# test BINARY and hides every later suite behind it — which is exactly how the
+# v1.7.0 breakage stayed invisible locally, and how this crate went on to burn
+# three tags discovering one environment-dependent failure at a time. This gate
+# diverged from CI on that point for as long as CI ran a plain `cargo test`;
+# quick task 260917-r4c moved the publish job's Test step to `--no-fail-fast`
+# too, so the divergence is closed and this line now mirrors the workflow
+# rather than deliberately departing from it.
 # ---------------------------------------------------------------------------
 section "GATE 4 — cargo test --no-fail-fast"
 if run_gate "gate4-test.log" cargo test --no-fail-fast; then

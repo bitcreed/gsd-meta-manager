@@ -53,6 +53,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Node is a build-time dependency of the TEST SUITE, not of the crate:
+      # the conformance oracle below is a Node program. 24 is the major
+      # scripts/pre-tag-check.Dockerfile carries, so the dry run and this job
+      # meet the same runtime.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # tests/driver_router_conformance.rs compares this crate's router rule
+      # table against GSD's OWN router, and fails BY DESIGN when that oracle is
+      # absent — an absent oracle means nothing checked that the transcription
+      # still holds. An ubuntu-latest runner has Node but no GSD, which is how
+      # v1.7.1 died here. THE POINT IS TO PROVIDE THE DEPENDENCY, not to switch
+      # the check off. The script pins the exact GSD version read out of
+      # GSD_CORE_SYNCED_VERSION and exits non-zero if the oracle does not
+      # answer, so this step cannot succeed while leaving the test vacuous.
+      # It MUST stay ahead of Test. `./scripts/pre-tag-check.sh --container`
+      # calls this same script, so the local rehearsal provisions identically.
+      - name: Provision the GSD conformance oracle
+        run: ./scripts/install-conformance-oracle.sh
+
       - name: Check tag matches Cargo.toml version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -65,8 +86,15 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      # --no-fail-fast, deliberately. Fail-fast stops at the first failing test
+      # BINARY and hides every later suite behind it — which is exactly how
+      # this crate burned three tags discovering one environment-dependent
+      # failure at a time. A future breakage now surfaces as a complete list in
+      # one run. It is also what makes this job and scripts/pre-tag-check.sh
+      # gate 4 finally agree; that script's gate 4 comment records the
+      # divergence this line closes.
       - name: Test
-        run: cargo test
+        run: cargo test --no-fail-fast
 
       - name: Clippy
         run: cargo clippy -- -D warnings
