@@ -1,14 +1,14 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.7.0
-milestone_name: Autonomous Orchestration Preview
+milestone: v1.7.1
+milestone_name: Release Gate Repair
 current_phase: 22
 current_phase_name: container-execution-target
 status: shipped
-stopped_at: Tagged v1.7.0 — Autonomous Orchestration Preview
-last_updated: "2026-09-17T19:20:00.000Z"
+stopped_at: Tagged and pushed v1.7.1 — Release Gate Repair
+last_updated: "2026-09-17T23:30:00.000Z"
 last_activity: 2026-09-17
-last_activity_desc: "Completed quick task 260917-hc3: `drive` hidden from --help, parser untouched"
+last_activity_desc: "Released v1.7.1 — the publish gate repaired and the release that actually reaches crates.io; v1.7.0 never published"
 state_head: 5ce3dc33c33a663f82e2b69379615841c46a11e5
 progress:
   total_phases: 10
@@ -25,13 +25,31 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v1.7.0 shipped (Autonomous Orchestration Preview). The v2.0 **Autonomous
-Orchestration** milestone is NOT finished — v1.7.0 is an interim release cut mid-milestone, at
-Phase 22. Work resumes at Phase 22 (container-execution-target).
+**Current focus:** v1.7.1 shipped (Release Gate Repair) — a patch on top of v1.7.0's
+Autonomous Orchestration Preview, and the release that actually published. The v2.0 **Autonomous
+Orchestration** milestone is NOT finished — v1.7.0/v1.7.1 are interim releases cut mid-milestone,
+at Phase 22. Work resumes at Phase 22 (container-execution-target).
 
 ## Current Position
 
-Status: **v1.7.0 shipped (Autonomous Orchestration Preview)** — interim release, cut mid-milestone.
+Status: **v1.7.1 shipped (Release Gate Repair)** — a patch release over v1.7.0, and the one that
+  actually reached crates.io. **v1.7.0 was tagged and pushed but NEVER PUBLISHED**: its CI publish
+  job died at `cargo test`, so the v1.7.0 tag names a version no consumer can install and v1.7.1
+  supersedes it. Nothing in non-test `src/` changed between the two — v1.7.1 is test, tooling and
+  documentation only, which is what makes it a patch. Five quick tasks make it up: 260917-ii4
+  (config-section constants re-derived against git 2.55.0, the runner's version — neither
+  `INDIRECTION_SECTIONS` nor `REPARSED_COMMAND_SECTIONS` changed, and a git 2.54
+  `alias.<name>.command` spelling falsified a doc justification, repaired in place), 260917-jdi
+  (`scripts/pre-tag-check.sh`, a local dry run of the publish gate, with CLAUDE.md release step 3
+  routed through it), 260917-k6y (`tests/driver_reattach.rs`: two spawn/write races closed by
+  waiting on the artifact rather than on process liveness), 260917-lkg
+  (`tests/envelope_tracer.rs`: the ETXTBSY exec race closed with a bounded ETXTBSY-only retry) and
+  260917-nhc (`src/driver/run.rs`'s `proc_parse` test race closed with a bounded seqlock re-read).
+  Pre-tag gate on the tagged tree: gates 1/2/3/5 PASS, gate 4 failing on exactly one test — the
+  environmental git-version witness (local git 2.53.0 against constants derived against 2.55.0),
+  green on the runner. 48 suites / 2120 passed / 1 failed / 15 ignored.
+
+Carried forward from v1.7.0 (unchanged by this patch):
   The entire v2.0 driver stack (Phases 15-21: duplex stream-json transport, run journal, supervisor
   with detach/kill-switch/dry-run/opt-in gate, Driver tab with live watch and durable injection, the
   GITSAFE git/blast-radius envelope, the deterministic decision router with run bounds, and the LLM
@@ -425,16 +443,25 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-17T19:20:00.000Z
-Stopped at: Tagged v1.7.0 — Autonomous Orchestration Preview
-Release: `Cargo.toml` at 1.7.0, `Cargo.lock` refreshed (9 packages relocked; `generic-array`
-0.14.7 and `unicode-width` 0.2.0 remain behind latest under upstream `=` pins). Gates on the
-tagged tree: `cargo build` 0, `cargo clippy -- -D warnings` 0, `cargo test --no-fail-fast`
-48 suites / 2120 passed / 1 failed / 15 ignored — the one failure being the known-environmental
-`envelope::policy` git-version-constants test (installed git 2.53 vs constants derived against
-2.43). `master` fast-forwarded from `dev` (a95dce8 -> 12247ca, 261 commits) before the release
-commit; nothing pushed, the tag is local only.
-Next action (v2.0 resumes here, the release did NOT close the milestone): execute Phase 22, and
+Last session: 2026-09-17T23:30:00.000Z
+Stopped at: Tagged and pushed v1.7.1 — Release Gate Repair
+Release: `Cargo.toml` at 1.7.1, `Cargo.lock` refreshed by `cargo update` — **only this crate's own
+version entry moved** (1.7.0 -> 1.7.1); no dependency relocked, because v1.7.0's refresh was a day
+earlier. `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0 (latest 0.2.2) remain
+behind latest under upstream `=` pins — the same two carried over from v1.7.0, deferred, not
+bumpable from this manifest. Verification ran through `./scripts/pre-tag-check.sh v1.7.1`
+(CLAUDE.md release step 3): gates 1 (tag/version), 2 (MSRV 1.88 `cargo check --locked`),
+3 (`cargo build --release`) and 5 (`cargo clippy -- -D warnings`) PASS, no gate NOT REACHED, and
+gate 4 (`cargo test --no-fail-fast`, 48 suites / 2120 passed / 1 failed / 15 ignored) failing on
+exactly one test — `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`,
+which is environmental (local git 2.53.0 against constants deliberately re-derived against the
+runner's 2.55.0) and is the state a correctly-prepared v1.7.1 is supposed to be in.
+`master` pushed, `dev` fast-forwarded to `master` and pushed (never rebased — planning docs cite
+shas), then the `v1.7.1` tag pushed last, which is what triggers `.github/workflows/release.yml`
+and the crates.io publish.
+**v1.7.0 is superseded and was never on crates.io** — its publish job failed at `cargo test`.
+Do not treat the v1.7.0 tag as a released version.
+Next action (v2.0 resumes here, neither release closed the milestone): execute Phase 22, and
 re-run `/gsd-secure-phase 19` so 19/20/21 can move off "In Progress".
 Prior-session note, still live:
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
