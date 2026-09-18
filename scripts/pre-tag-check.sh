@@ -17,7 +17,25 @@
 # .github/workflows/release.yml IS THE AUTHORITY. Wherever this script and that
 # workflow disagree, the workflow is right and this script is stale.
 #
-# Usage: ./scripts/pre-tag-check.sh [vX.Y.Z]
+# --container RUNS THESE SAME GATES INSIDE AN ubuntu-latest LOOKALIKE. A BARE
+# local run cannot certify the publish job: this machine has GSD installed and
+# a different ambient git, so the two tests that have actually blocked
+# publication — the router-conformance oracle test and the git-version witness
+# — both pass here on precisely the trees CI rejects. Container mode builds
+# scripts/pre-tag-check.Dockerfile, provisions the oracle in there with the
+# same scripts/install-conformance-oracle.sh the publish job calls, and re-runs
+# this script inside it.
+#
+# Environment:
+#   PRE_TAG_CONTAINER_RUNTIME   force a specific container runtime instead of
+#                               probing docker then podman. It exists for two
+#                               reasons: unusual rootless setups, and so the
+#                               no-usable-runtime failure path is TESTABLE
+#                               (point it at a name that does not exist).
+#   PRE_TAG_CHECK_IN_CONTAINER  set by the dispatch on the INNER run. Asking
+#                               for --container while it is set is a hard error.
+#
+# Usage: ./scripts/pre-tag-check.sh [--container] [vX.Y.Z]
 
 # `set -u` only, on purpose:
 #   - no `set -e`: gates 2-5 must ALL run and report, so the operator gets the
@@ -30,13 +48,27 @@ PROG="${0##*/}"
 
 usage() {
 	cat <<'USAGE'
-Usage: ./scripts/pre-tag-check.sh [TAG]
+Usage: ./scripts/pre-tag-check.sh [--container] [TAG]
 
 Runs, locally, the gates that .github/workflows/release.yml runs on a tag push.
 
-  TAG   optional, e.g. v1.7.1. When given, gate 1 asserts it matches the
-        Cargo.toml version and hard-stops on disagreement. When omitted, gate 1
-        just reports the crate version and is marked SKIPPED.
+  TAG          optional, e.g. v1.7.1. When given, gate 1 asserts it matches the
+               Cargo.toml version and hard-stops on disagreement. When omitted,
+               gate 1 just reports the crate version and is marked SKIPPED.
+
+  --container  run the gates inside an ubuntu-latest lookalike built from
+               scripts/pre-tag-check.Dockerfile, after provisioning the GSD
+               conformance oracle in there with the same
+               scripts/install-conformance-oracle.sh the publish job calls.
+               A green container run certifies the publish job in a way a bare
+               local run cannot. Composes with TAG, in either order.
+
+               If no container runtime is usable this FAILS LOUDLY and exits
+               non-zero. There is deliberately NO fallback to a local run.
+
+Environment:
+  PRE_TAG_CONTAINER_RUNTIME   force a runtime instead of probing docker,
+                              then podman.
 
 Exit status: 0 when no gate FAILED, 1 when any gate FAILED, 2 on bad usage.
 USAGE
@@ -44,11 +76,15 @@ USAGE
 
 TAG_ARG=""
 HAVE_TAG=0
+CONTAINER=0
 for arg in "$@"; do
 	case "$arg" in
 	-h | --help)
 		usage
 		exit 0
+		;;
+	--container)
+		CONTAINER=1
 		;;
 	-*)
 		echo "$PROG: unknown option: $arg" >&2
@@ -69,6 +105,186 @@ done
 
 RULE="================================================================================"
 THIN="--------------------------------------------------------------------------------"
+
+# ===========================================================================
+# --container DISPATCH
+#
+# PLACEMENT IS DELIBERATE: after RULE/THIN (this block shouts with them) and
+# BEFORE the EXIT trap is installed further down. That trap prints a five-gate
+# summary describing gates that never ran in THIS process — on a container
+# dispatch every line of it would read NOT REACHED, a confusing lie stapled to
+# the end of a real run. The INNER run prints its own banner and its own
+# summary, streamed straight through to this terminal, and that is the only
+# summary a --container invocation should show. So this block must exit before
+# the trap exists.
+#
+# Nothing below this block is reachable in container mode, and nothing in it
+# runs at all in bare mode.
+# ===========================================================================
+if [ "$CONTAINER" -eq 1 ]; then
+	# --- 1. RECURSION GUARD -------------------------------------------------
+	# The dispatch never passes --container inward, so this is belt-and-braces.
+	# It is explicit anyway because an accidental recursion in a script that
+	# builds images and runs ~2100 tests is expensive enough to be worth a
+	# named variable and a hard stop.
+	if [ -n "${PRE_TAG_CHECK_IN_CONTAINER:-}" ]; then
+		echo "$RULE" >&2
+		echo "HARD ERROR: --container requested while PRE_TAG_CHECK_IN_CONTAINER is set." >&2
+		echo "That variable means this process is ALREADY the in-container run, so" >&2
+		echo "honouring the flag would build an image inside a container and start the" >&2
+		echo "whole gate suite again. Drop the flag: the inner run is a bare run." >&2
+		echo "$RULE" >&2
+		exit 2
+	fi
+
+	# --- 2. RUNTIME RESOLUTION ---------------------------------------------
+	# A runtime BINARY whose daemon does not answer is not a usable runtime, so
+	# probe `<runtime> info` and not merely `command -v`.
+	if [ -n "${PRE_TAG_CONTAINER_RUNTIME:-}" ]; then
+		RUNTIME_CANDIDATES="$PRE_TAG_CONTAINER_RUNTIME"
+	else
+		RUNTIME_CANDIDATES="docker podman"
+	fi
+	RUNTIME=""
+	for candidate in $RUNTIME_CANDIDATES; do
+		if command -v "$candidate" >/dev/null 2>&1 && "$candidate" info >/dev/null 2>&1; then
+			RUNTIME="$candidate"
+			break
+		fi
+	done
+
+	if [ -z "$RUNTIME" ]; then
+		echo "$RULE" >&2
+		echo "HARD ERROR: no usable container runtime." >&2
+		echo "$THIN" >&2
+		echo "Tried: $RUNTIME_CANDIDATES" >&2
+		echo "(a runtime counts as usable only when its binary is on PATH AND" >&2
+		echo " \`<runtime> info\` succeeds — an unreachable daemon is not a runtime)." >&2
+		echo "$THIN" >&2
+		echo "THIS RUN HAS CERTIFIED NOTHING. No gate ran." >&2
+		echo >&2
+		echo "There is deliberately NO FALLBACK to a local run. A silent fallback" >&2
+		echo "would recreate the exact blind spot --container exists to close: a" >&2
+		echo "green local gate on the one thing CI is red on. This machine has GSD" >&2
+		echo "installed and a different ambient git, so the two tests that have" >&2
+		echo "actually blocked publication pass here on the trees CI rejects." >&2
+		echo >&2
+		echo "Start a container runtime, or set PRE_TAG_CONTAINER_RUNTIME to one that" >&2
+		echo "works, and re-run. To knowingly run the weaker local gates instead, drop" >&2
+		echo "--container — and read the reconciliation banner it prints." >&2
+		echo "$RULE" >&2
+		exit 1
+	fi
+
+	# Resolve the repo root from this script's OWN location. The container
+	# dispatch runs BEFORE the run-from-the-repo-root check further down, so it
+	# cannot lean on cwd to decide what to bind-mount.
+	CONTAINER_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+	CONTAINER_REPO_ROOT=$(cd -- "$CONTAINER_SCRIPT_DIR/.." && pwd)
+	CONTAINER_IMAGE="gsdmm-pre-tag-check:latest"
+	CONTAINER_TARGET_VOL="gsdmm-pretag-target"
+	CONTAINER_CARGO_VOL="gsdmm-pretag-cargo-home"
+
+	echo "$RULE"
+	echo "!!! CONTAINER MODE !!!"
+	echo "$THIN"
+	echo "  runtime    : $RUNTIME"
+	echo "  image      : $CONTAINER_IMAGE"
+	echo "  dockerfile : $CONTAINER_SCRIPT_DIR/pre-tag-check.Dockerfile"
+	echo "  repo       : $CONTAINER_REPO_ROOT -> /work"
+	echo "$THIN"
+	echo "  The gates below run inside an ubuntu-latest lookalike, after the SAME"
+	echo "  scripts/install-conformance-oracle.sh the publish job calls has"
+	echo "  provisioned the conformance oracle in there. What you are about to read"
+	echo "  is the inner run's own banner and summary."
+	echo "$RULE"
+	echo
+
+	# --- 3. BUILD ----------------------------------------------------------
+	# Build on EVERY invocation. The layer cache makes an unchanged Dockerfile
+	# near-instant, and a stale image is a lie about what was tested.
+	# The build context is scripts/ and the Dockerfile copies nothing from it:
+	# the repo arrives as a bind mount at run time, not as an image layer.
+	echo "+ $RUNTIME build -t $CONTAINER_IMAGE -f pre-tag-check.Dockerfile $CONTAINER_SCRIPT_DIR"
+	if ! "$RUNTIME" build \
+		-t "$CONTAINER_IMAGE" \
+		-f "$CONTAINER_SCRIPT_DIR/pre-tag-check.Dockerfile" \
+		"$CONTAINER_SCRIPT_DIR"; then
+		echo "$RULE" >&2
+		echo "HARD ERROR: the image build failed. THIS RUN HAS CERTIFIED NOTHING." >&2
+		echo "No fallback to a local run; see --help." >&2
+		echo "$RULE" >&2
+		exit 1
+	fi
+	echo
+
+	# --- 4. VOLUME BOOTSTRAP -----------------------------------------------
+	# Two stable named volumes so the cargo cache survives between runs — a cold
+	# run is three profiles compiled from scratch.
+	#
+	# Named volumes are created ROOT-OWNED, and the gate run is unprivileged, so
+	# chown them first. The privileged step runs the SAME freshly-built image
+	# (deliberately: no second image to pull, audit or keep current), mounts
+	# ONLY the two volumes and never the repo, and runs nothing but chown.
+	for vol in "$CONTAINER_TARGET_VOL" "$CONTAINER_CARGO_VOL"; do
+		"$RUNTIME" volume create "$vol" >/dev/null 2>&1 || true
+	done
+	if ! "$RUNTIME" run --rm -u 0:0 \
+		-v "$CONTAINER_TARGET_VOL:/cargo-target" \
+		-v "$CONTAINER_CARGO_VOL:/cargo-home" \
+		"$CONTAINER_IMAGE" \
+		chown -R "$(id -u):$(id -g)" /cargo-target /cargo-home; then
+		echo "$RULE" >&2
+		echo "HARD ERROR: could not chown the cache volumes to $(id -u):$(id -g)." >&2
+		echo "The gate run is unprivileged and would fail to write its build cache." >&2
+		echo "THIS RUN HAS CERTIFIED NOTHING; there is no fallback to a local run." >&2
+		echo "$RULE" >&2
+		exit 1
+	fi
+
+	# --- 5. RUN ------------------------------------------------------------
+	# The inner command mirrors the publish job INCLUDING its provisioning step.
+	# That is precisely what makes a green container run mean a green publish
+	# job: same script, same order, same absent-until-provisioned oracle.
+	CONTAINER_INNER="./scripts/install-conformance-oracle.sh && ./scripts/pre-tag-check.sh"
+	if [ "$HAVE_TAG" -eq 1 ]; then
+		CONTAINER_INNER="$CONTAINER_INNER $(printf '%q' "$TAG_ARG")"
+	fi
+
+	# --cpuset-cpus 0-3 so `nproc` reports 4 in there, like the runner: test
+	# parallelism is one of the few things that changes which flakes surface.
+	#
+	# A DEDICATED CARGO_TARGET_DIR IS REQUIRED. Sharing the host's target/ would
+	# thrash the developer's build cache between two different environments,
+	# with every subsequent local build paying for this run.
+	#
+	# The /work bind mount is READ-WRITE, so gates 3-5 can touch Cargo.lock if
+	# it is stale. That surfaces in `git status`, and it is arguably what you
+	# want to find out before tagging — CI would fail on it too. Read-only
+	# would simply break the three gates that legitimately compile.
+	"$RUNTIME" run --rm \
+		-u "$(id -u):$(id -g)" \
+		--cpuset-cpus 0-3 \
+		-e HOME=/home/runner \
+		-e CARGO_TARGET_DIR=/cargo-target \
+		-e CARGO_HOME=/cargo-home \
+		-e PRE_TAG_CHECK_IN_CONTAINER=1 \
+		-v "$CONTAINER_REPO_ROOT:/work" \
+		-w /work \
+		-v "$CONTAINER_TARGET_VOL:/cargo-target" \
+		-v "$CONTAINER_CARGO_VOL:/cargo-home" \
+		"$CONTAINER_IMAGE" \
+		bash -c "$CONTAINER_INNER"
+	CONTAINER_RC=$?
+
+	echo
+	echo "$RULE"
+	echo "!!! CONTAINER MODE — inner run exited $CONTAINER_RC !!!"
+	echo "  The summary above is the inner run's. This process ran no gates of its"
+	echo "  own and propagates that status verbatim."
+	echo "$RULE"
+	exit "$CONTAINER_RC"
+fi
 
 POLICY_FILE="src/envelope/policy.rs"
 CONST_NAME="CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION"
