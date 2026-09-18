@@ -5,10 +5,10 @@ milestone_name: Release Gate Repair
 current_phase: 22
 current_phase_name: container-execution-target
 status: shipped
-stopped_at: Tagged and pushed v1.7.1 — Release Gate Repair
+stopped_at: "Tagged and pushed v1.7.1 — but the publish job failed on the oracle-less router conformance test; crates.io still at 1.6.0"
 last_updated: "2026-09-17T23:30:00.000Z"
 last_activity: 2026-09-17
-last_activity_desc: "Released v1.7.1 — the publish gate repaired and the release that actually reaches crates.io; v1.7.0 never published"
+last_activity_desc: "Released v1.7.1; publish job FAILED at cargo test (driver_router_conformance oracle absent on the runner) — nothing published, crates.io still 1.6.0"
 state_head: 5ce3dc33c33a663f82e2b69379615841c46a11e5
 progress:
   total_phases: 10
@@ -32,10 +32,18 @@ at Phase 22. Work resumes at Phase 22 (container-execution-target).
 
 ## Current Position
 
-Status: **v1.7.1 shipped (Release Gate Repair)** — a patch release over v1.7.0, and the one that
-  actually reached crates.io. **v1.7.0 was tagged and pushed but NEVER PUBLISHED**: its CI publish
-  job died at `cargo test`, so the v1.7.0 tag names a version no consumer can install and v1.7.1
-  supersedes it. Nothing in non-test `src/` changed between the two — v1.7.1 is test, tooling and
+Status: **v1.7.1 tagged and pushed (Release Gate Repair) — BUT IT DID NOT PUBLISH EITHER.**
+  crates.io is still at **1.6.0**; neither 1.7.0 nor 1.7.1 exists there. v1.7.0's publish job died
+  at `cargo test`; v1.7.1's publish job died at `cargo test` too, but on a DIFFERENT test —
+  `tests/driver_router_conformance.rs::the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state`,
+  which fails BY DESIGN when its oracle (`~/.claude/gsd-core/bin/gsd-tools.cjs` or a `gsd-tools` on
+  PATH) is absent, and the `ubuntu-latest` runner has no GSD install. The escape hatch the test
+  names itself is `GSD_META_MANAGER_ALLOW_MISSING_ORACLE=1`. **`scripts/pre-tag-check.sh` structurally
+  cannot catch this**: the oracle IS installed on the developer machine, so the test passes locally
+  and the gate is green on precisely the thing CI is red on. Next release must address that gap.
+  The five fixes below all landed and the git-version witness DID go green on the runner
+  (lib suite 1346 passed / 0 failed), so v1.7.1 is a strictly better tree than v1.7.0 —
+  it is just not on crates.io. Nothing in non-test `src/` changed between the two — v1.7.1 is test, tooling and
   documentation only, which is what makes it a patch. Five quick tasks make it up: 260917-ii4
   (config-section constants re-derived against git 2.55.0, the runner's version — neither
   `INDIRECTION_SECTIONS` nor `REPARSED_COMMAND_SECTIONS` changed, and a git 2.54
@@ -457,11 +465,21 @@ exactly one test — `envelope::policy::tests::the_config_section_constants_reco
 which is environmental (local git 2.53.0 against constants deliberately re-derived against the
 runner's 2.55.0) and is the state a correctly-prepared v1.7.1 is supposed to be in.
 `master` pushed, `dev` fast-forwarded to `master` and pushed (never rebased — planning docs cite
-shas), then the `v1.7.1` tag pushed last, which is what triggers `.github/workflows/release.yml`
-and the crates.io publish.
-**v1.7.0 is superseded and was never on crates.io** — its publish job failed at `cargo test`.
-Do not treat the v1.7.0 tag as a released version.
-Next action (v2.0 resumes here, neither release closed the milestone): execute Phase 22, and
+shas), then the `v1.7.1` tag pushed last, which triggered `.github/workflows/release.yml`
+(run 35290670227).
+**RESULT: msrv job success, publish job FAILURE at the `Test` step — nothing published.**
+crates.io remains at **1.6.0**; neither the v1.7.0 nor the v1.7.1 tag names an installable version.
+The failing test is
+`tests/driver_router_conformance.rs::the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state`
+at `tests/driver_router_conformance.rs:377`, panicking because the GSD conformance oracle is not
+present on the runner. It was NOT re-run and NOT fixed — that is the next task, and the honest
+options are to install GSD/Node in the publish job or to set
+`GSD_META_MANAGER_ALLOW_MISSING_ORACLE=1` there and accept that CI verifies none of the
+transcription. Whichever is chosen, `scripts/pre-tag-check.sh` needs a way to reproduce the
+runner's oracle-absent condition, because a developer machine always has the oracle and the
+script was green on this exact tree.
+Next action: repair the publish gate for this test, then cut **v1.7.2** — do not re-push v1.7.1.
+After that, v2.0 resumes (no release has closed the milestone): execute Phase 22, and
 re-run `/gsd-secure-phase 19` so 19/20/21 can move off "In Progress".
 Prior-session note, still live:
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
