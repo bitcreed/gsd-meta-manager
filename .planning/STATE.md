@@ -1,14 +1,14 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.7.1
+milestone: v1.7.2
 milestone_name: Release Gate Repair
 current_phase: 22
 current_phase_name: container-execution-target
 status: shipped
-stopped_at: "Tagged and pushed v1.7.1 — but the publish job failed on the oracle-less router conformance test; crates.io still at 1.6.0"
-last_updated: "2026-09-17T23:30:00.000Z"
-last_activity: 2026-09-17
-last_activity_desc: "Quick task 260917-r4c: clean-container audit enumerated every environment-dependent test at once (3 found, all resolved); the publish job now provisions the GSD conformance oracle and runs --no-fail-fast, and pre-tag-check.sh gained --container. v1.7.2 not yet cut."
+stopped_at: "Tagged and pushed v1.7.2 — the first release cut behind a green --container gate; supersedes the unpublished v1.7.0 and v1.7.1"
+last_updated: "2026-09-18T00:40:00.000Z"
+last_activity: 2026-09-18
+last_activity_desc: "Cut v1.7.2 (Release Gate Repair): Cargo.toml 1.7.1 -> 1.7.2, cargo update relocked only this crate, and ./scripts/pre-tag-check.sh --container v1.7.2 exited 0 with all five gates PASS (48 suites / 2121 passed / 0 failed / 15 ignored, git 2.55.0 MATCH) — the first time the local gate and the runner agree."
 state_head: 5ce3dc33c33a663f82e2b69379615841c46a11e5
 progress:
   total_phases: 10
@@ -25,12 +25,39 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v1.7.1 shipped (Release Gate Repair) — a patch on top of v1.7.0's
-Autonomous Orchestration Preview, and the release that actually published. The v2.0 **Autonomous
-Orchestration** milestone is NOT finished — v1.7.0/v1.7.1 are interim releases cut mid-milestone,
-at Phase 22. Work resumes at Phase 22 (container-execution-target).
+**Current focus:** v1.7.2 shipped (Release Gate Repair) — a patch on top of v1.7.0's
+Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
+**Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
+cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-target).
 
 ## Current Position
+
+Status: **v1.7.2 tagged and pushed (Release Gate Repair) — the first release cut behind a green
+  `--container` gate.** It supersedes and carries the contents of v1.7.0 and v1.7.1, NEITHER OF
+  WHICH EVER PUBLISHED: for anyone installing from crates.io this is the jump from **1.6.0**.
+  `Cargo.toml` moved 1.7.1 -> 1.7.2; `cargo update` relocked only this crate's own entry, with
+  `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0 (latest 0.2.2) still held by
+  upstream `=` pins. What made this cut different is quick task 260917-r4c: the publish job's
+  `Test` step now runs `--no-fail-fast` (so a red run enumerates every failure instead of one per
+  tag), provisions the GSD conformance oracle via `actions/setup-node@v4` +
+  `scripts/install-conformance-oracle.sh`, and `scripts/pre-tag-check.sh` gained `--container`,
+  which re-runs every gate inside an `ubuntu-latest` lookalike. Gate on this tree:
+  `./scripts/pre-tag-check.sh --container v1.7.2` exit **0**, all five gates PASS, git banner
+  MATCH at 2.55.0, 48 suites / **2121 passed / 0 failed** / 15 ignored. The bare local run is
+  unchanged at exit 1 with gates 1/2/3/5 PASS and gate 4 failing on exactly one test, the
+  environmental git-version witness (local git 2.53.0 vs constants derived against 2.55.0), which
+  the container proves green on the runner's git.
+
+Release history preserved (do not rewrite — this is the record):
+  **v1.7.0 was tagged and pushed but NEVER PUBLISHED** — its publish job died at `cargo test` on
+  the git-version witness. **v1.7.1 was tagged and pushed but NEVER PUBLISHED EITHER** — its
+  publish job died at `cargo test` too, but on a DIFFERENT test,
+  `tests/driver_router_conformance.rs::the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state`,
+  which fails BY DESIGN when its oracle is absent and the `ubuntu-latest` runner had no GSD
+  install. Fail-fast is what made each tag reveal exactly one failure; that is the cycle v1.7.2
+  closes at the source.
+
+Superseded detail from the v1.7.1 entry, kept verbatim:
 
 Status: **v1.7.1 tagged and pushed (Release Gate Repair) — BUT IT DID NOT PUBLISH EITHER.**
   crates.io is still at **1.6.0**; neither 1.7.0 nor 1.7.1 exists there. v1.7.0's publish job died
@@ -453,8 +480,32 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-17T23:30:00.000Z
-Stopped at: Tagged and pushed v1.7.1 — Release Gate Repair
+Last session: 2026-09-18T00:40:00.000Z
+Stopped at: Tagged and pushed v1.7.2 — Release Gate Repair
+Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
+(1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
+bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0
+(latest 0.2.2), both held by upstream `=` pins. `Cargo.lock` is committed — CI publishes with
+`cargo publish --locked`.
+Verification ran through **both** arms of CLAUDE.md release step 3:
+  `./scripts/pre-tag-check.sh --container v1.7.2` — **exit 0**, gates 1 (tag/version),
+  2 (MSRV 1.88), 3 (`cargo build --release`), 4 (`cargo test --no-fail-fast`) and 5
+  (`cargo clippy -- -D warnings`) ALL PASS; git banner **MATCH** (container git 2.55.0 against the
+  constant's 2.55.0); 48 suites / 2121 passed / **0 failed** / 15 ignored. This is the arm that
+  corresponds to CI, and it is the first time it has been green.
+  `./scripts/pre-tag-check.sh v1.7.2` (bare, dev machine) — exit 1, gates 1/2/3/5 PASS, gate 4
+  failing on **exactly one** test: the environmental git-version witness
+  `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`
+  (local git 2.53.0 vs constants derived against 2.55.0). 48 suites / 2120 passed / 1 failed /
+  15 ignored. That single failure is the state a correctly-prepared release is supposed to be in,
+  and the container run is the proof it goes green on the runner.
+Deliberately-open items carried, NOT fixed in this release: the `run_stub` BrokenPipe race in
+`tests/envelope_tracer.rs` (~1 in 800 contended runs) and the second BrokenPipe at
+`tests/envelope_interior_path.rs:1068`. Neither appeared in either gate run.
+`master` pushed, `dev` fast-forwarded to `master` and pushed (never rebased — planning docs cite
+shas), then the `v1.7.2` tag pushed last, triggering `.github/workflows/release.yml`.
+
+Previous session (2026-09-17T23:30:00.000Z) — Tagged and pushed v1.7.1, which DID NOT PUBLISH:
 Release: `Cargo.toml` at 1.7.1, `Cargo.lock` refreshed by `cargo update` — **only this crate's own
 version entry moved** (1.7.0 -> 1.7.1); no dependency relocked, because v1.7.0's refresh was a day
 earlier. `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0 (latest 0.2.2) remain
@@ -480,8 +531,8 @@ options are to install GSD/Node in the publish job or to set
 transcription. Whichever is chosen, `scripts/pre-tag-check.sh` needs a way to reproduce the
 runner's oracle-absent condition, because a developer machine always has the oracle and the
 script was green on this exact tree.
-Next action: repair the publish gate for this test, then cut **v1.7.2** — do not re-push v1.7.1.
-After that, v2.0 resumes (no release has closed the milestone): execute Phase 22, and
+(That repair was done by quick task 260917-r4c and v1.7.2 was cut on top of it — see above.)
+Next action: v2.0 resumes (no release has closed the milestone): execute Phase 22, and
 re-run `/gsd-secure-phase 19` so 19/20/21 can move off "In Progress".
 Prior-session note, still live:
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
