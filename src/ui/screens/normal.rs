@@ -2455,4 +2455,109 @@ mod tests {
              never selected"
         );
     }
+
+    // --- quick-260922-hdh: registered folders that are gone ---------------
+
+    /// Render the dashboard through the real [`Screen::render`] into a
+    /// `TestBackend` and return every terminal row as `(symbol, fg)` cells.
+    ///
+    /// Cells, not a joined string: the border glyph is multi-byte, so a byte
+    /// offset into a joined row would not be a column. Text is located by cell
+    /// column with [`find_in_row`].
+    fn render_dashboard_cells(ctx: &AppContext, width: u16, height: u16) -> Vec<Vec<(String, Color)>> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        let screen = NormalScreen::new();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(&screen, frame, area, ctx);
+            })
+            .expect("draw the dashboard");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        let cell = buffer.cell((x, y)).expect("cell inside the buffer");
+                        (cell.symbol().to_string(), cell.fg)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The starting column of `text` in `row`, matching one char per cell.
+    fn find_in_row(row: &[(String, Color)], text: &str) -> Option<usize> {
+        let want: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        (0..row.len().saturating_sub(want.len() - 1))
+            .find(|&x| want.iter().enumerate().all(|(i, w)| row[x + i].0 == *w))
+    }
+
+    /// The single rendered row holding `text`, as its cells.
+    fn row_with<'a>(rows: &'a [Vec<(String, Color)>], text: &str) -> &'a [(String, Color)] {
+        let hits: Vec<&Vec<(String, Color)>> =
+            rows.iter().filter(|r| find_in_row(r, text).is_some()).collect();
+        assert_eq!(hits.len(), 1, "expected exactly one rendered row holding {text:?}");
+        hits[0]
+    }
+
+    /// Every cell of `text` in `row` is drawn with foreground `color`.
+    fn text_is_colored(row: &[(String, Color)], text: &str, color: Color) -> bool {
+        let x = find_in_row(row, text).expect("text is on the row");
+        (x..x + text.chars().count()).all(|c| row[c].1 == color)
+    }
+
+    #[test]
+    fn folder_presence_missing_folder_row_renders_red_end_to_end() {
+        // A real project folder, parsed after it genuinely disappeared.
+        let td = TempDir::new().unwrap();
+        let vanished = td.path().join("vanished");
+        fs::create_dir_all(vanished.join(".planning")).unwrap();
+        fs::write(
+            vanished.join(".planning").join("STATE.md"),
+            "---\nstatus: executing\n---\n",
+        )
+        .unwrap();
+        fs::remove_dir_all(&vanished).unwrap();
+
+        let mut ctx = ctx_with_aliases(&["vanished", "intact"]);
+        ctx.config.projects.get_mut("vanished").unwrap().path = vanished.clone();
+        ctx.project_states.insert(
+            "vanished".to_string(),
+            parse_project_state(&vanished.join(".planning")),
+        );
+
+        let rows = render_dashboard_cells(&ctx, 100, 12);
+
+        let gone = row_with(&rows, "vanished");
+        assert!(
+            find_in_row(gone, "(missing)").is_some(),
+            "the row of a project whose folder is gone must read (missing)"
+        );
+        assert!(
+            text_is_colored(gone, "vanished", Color::Red),
+            "the alias of a missing project must be red"
+        );
+        assert!(
+            text_is_colored(gone, "(missing)", Color::Red),
+            "the (missing) marker must be red"
+        );
+
+        // Control: `intact` also has a nonexistent fixture path, but its state
+        // came from `ProjectState::default()`, not a parse. Presence is decided
+        // at parse time, never by a stat at render time.
+        let intact = row_with(&rows, "intact");
+        assert!(
+            find_in_row(intact, "(missing)").is_none(),
+            "a row whose state was not parsed as missing shows no marker"
+        );
+        assert!(
+            !text_is_colored(intact, "intact", Color::Red),
+            "a present project's alias must not be red"
+        );
+    }
 }
