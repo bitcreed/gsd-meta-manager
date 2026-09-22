@@ -2567,4 +2567,26 @@ mod tests {
             "a present project's alias must not be red"
         );
     }
+
+    #[test]
+    fn folder_presence_no_planning_row_renders_red_with_its_marker() {
+        let mut ctx = ctx_with_aliases(&["bare"]);
+        ctx.project_states.get_mut("bare").unwrap().presence = ProjectPresence::NoPlanning;
+
+        let rows = render_dashboard_cells(&ctx, 100, 12);
+
+        let bare = row_with(&rows, "bare");
+        assert!(
+            find_in_row(bare, "(no .planning)").is_some(),
+            "a folder without .planning/ must read (no .planning)"
+        );
+        assert!(
+            find_in_row(bare, "(missing)").is_none(),
+            "a folder that exists must not read as missing"
+        );
+        assert!(
+            text_is_colored(bare, "bare", Color::Red),
+            "the alias of a folder without .planning/ must be red"
+        );
+    }
 }

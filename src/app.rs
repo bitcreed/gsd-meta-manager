@@ -2206,6 +2206,17 @@ mod tests {
         assert_eq!(format_phase_display(&state), UNREADABLE_STATE_LABEL);
     }
 
+    /// A folder that exists without `.planning/` is not "gone": it gets its own
+    /// marker so the two fixes a user needs are not confused (quick-260922-hdh).
+    #[test]
+    fn folder_presence_no_planning_shows_its_own_marker() {
+        let state = ProjectState {
+            presence: ProjectPresence::NoPlanning,
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&state), "(no .planning)");
+    }
+
     /// "Unreadable" tells a user the file is broken; the line tells them where
     /// to look. The number is the only thing the parser knew that crosses into
     /// the cell — no parser vocabulary comes with it.
