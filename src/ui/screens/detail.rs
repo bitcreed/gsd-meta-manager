@@ -1329,6 +1329,9 @@ fn switch_to_tab(
         cache.defaults_editing = None;
         cache.defaults_dropdown_selected = 0;
         cache.defaults_text_buffer.clear();
+        // A returning operator lands on the whole list, not in typing mode.
+        cache.defaults_filter.clear();
+        cache.defaults_filter_typing = false;
     }
 
     // Lazy-init the docs browser on first visit: resolve the active phase
@@ -1604,6 +1607,14 @@ impl Screen for DetailScreen {
                         cache.defaults_editing = None;
                         cache.defaults_dropdown_selected = 0;
                         cache.defaults_text_buffer.clear();
+                        ctx.needs_redraw = true;
+                        return ScreenAction::None;
+                    }
+                    // Then a confirmed `/` filter: Esc and q clear it and keep
+                    // the screen ([INFERRED A3], the arm is shared).
+                    if !cache.defaults_filter.is_empty() {
+                        cache.defaults_filter.clear();
+                        cache.defaults_filter_typing = false;
                         ctx.needs_redraw = true;
                         return ScreenAction::None;
                     }
@@ -2607,6 +2618,9 @@ impl Screen for DetailScreen {
                             }
                             cache.defaults_editing = None;
                             cache.defaults_dropdown_selected = 0;
+                        } else if !defaults_selection_visible(cache) {
+                            // A filter that hides the cursor's row (T-HDI-04):
+                            // there is nothing on screen to edit.
                         } else {
                             let entries = entries_for_cache(cache);
                             let selected = cache.defaults_selected;
@@ -2728,7 +2742,8 @@ impl Screen for DetailScreen {
                     .map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 let target = cache.defaults_edit_target;
-                if cache.defaults_editing.is_none() {
+                // Never clear a row the filter hides (T-HDI-04).
+                if cache.defaults_editing.is_none() && defaults_selection_visible(cache) {
                     let entries = entries_for_cache(cache);
                     let selected = cache.defaults_selected;
                     if let Some(entry) = entries.get(selected).cloned() {
@@ -2780,6 +2795,8 @@ impl Screen for DetailScreen {
                 }
                 cache.defaults_user_config =
                     crate::state_reader::config_json::load_user_defaults();
+                // The pass-through row set may have changed under the filter.
+                snap_defaults_selection(cache);
                 ctx.status_message = Some(("Config reloaded".to_string(), std::time::Instant::now()));
                 ctx.needs_redraw = true;
                 ScreenAction::None
@@ -2846,6 +2863,9 @@ impl Screen for DetailScreen {
                         Some(crate::state_reader::config_json::GsdConfig::default());
                 }
                 cache.defaults_selected = 0;
+                // The filter is kept across targets ([INFERRED A8]); row 0 may
+                // be one it hides.
+                snap_defaults_selection(cache);
                 let label = match cache.defaults_edit_target {
                     DefaultsEditTarget::Project => "Editing project config",
                     DefaultsEditTarget::Global => "Editing ~/.gsd/defaults.json",
@@ -5138,6 +5158,16 @@ impl DetailScreen {
                 }
             })
             .collect();
+
+        // A filter that matches nothing: one dim line, no selection, no help
+        // (T-HDI-04). The `ListState` below selects `None` because the
+        // cursor's position in an empty `visible` is `None`.
+        let items = if filtering && visible.is_empty() {
+            vec![ListItem::new("  No config keys match")
+                .style(Style::default().fg(Color::DarkGray))]
+        } else {
+            items
+        };
 
         let mut title = match edit_target {
             DefaultsEditTarget::Project => " Config Settings ".to_string(),
@@ -7537,6 +7567,17 @@ fn snap_defaults_selection(cache: &mut super::ProjectViewCache) {
             cache.defaults_selected = first;
         }
     }
+}
+
+/// Is the Defaults cursor on a row the filter currently shows? Always true
+/// with no filter, so the unfiltered Enter / x paths are untouched (a stale
+/// cursor still falls to the `entries.get` they already go through).
+fn defaults_selection_visible(cache: &super::ProjectViewCache) -> bool {
+    if cache.defaults_filter.is_empty() {
+        return true;
+    }
+    let entries = entries_for_cache(cache);
+    visible_defaults_indices(cache, &entries).contains(&cache.defaults_selected)
 }
 
 /// After the filter text changed: put the cursor on the first match
