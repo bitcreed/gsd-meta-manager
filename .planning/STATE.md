@@ -411,7 +411,6 @@ Recent decisions affecting current work:
 - [2026-08-19] [driver] The verify-work gate policy must be configurable — skip | defer | auto-validate — [todo file](.planning/todos/pending/2026-08-19-verify-work-gate-policy-configurable.md)
 - [2026-08-22] [ui] Phases panel marker/grey disagrees with the disk-inferred stage — [todo file](.planning/todos/pending/2026-08-22-phase-list-grey-marker-disagrees-with-disk-inferred-stage.md)
 - [2026-09-15] [ui] Make queue input truly multi-line — [todo file](.planning/todos/pending/2026-09-15-make-queue-input-truly-multi-line.md) — Needs TBD — this todo's deliverable is a **UX proposal**, not a fix. Whoever picks.
-- [2026-09-22] [ui] Enter on config screen no longer opens the options menu — [todo file](.planning/todos/pending/2026-09-22-enter-on-config-screen-no-longer-opens-the-options-menu.md)
 - [2026-09-22] [ui] Filter the config screen by typing slash — [todo file](.planning/todos/pending/2026-09-22-filter-the-config-screen-by-typing-slash.md)
 - [2026-09-22] [ui] Show registered projects whose folder is missing in red — [todo file](.planning/todos/pending/2026-09-22-show-registered-projects-whose-folder-is-missing-in-red.md)
 - [2026-09-22] [driver] Support Codex as well as Claude as the agent runtime — [todo file](.planning/todos/pending/2026-09-22-support-codex-as-well-as-claude-as-the-agent-runtime.md)
