@@ -223,6 +223,29 @@ fn establish_envelope(
 #[cfg(debug_assertions)]
 const AGENT_PROGRAM_OVERRIDDEN: &str = "agent_program_overridden";
 
+/// The diagnostic code that marks a run driven under a runtime the safety
+/// envelope only partly reaches (260922-hdj, T-hdj-05).
+///
+/// A short stable identifier a later reader greps for, in the register of
+/// [`AGENT_PROGRAM_OVERRIDDEN`]. Written for every Codex run, never for a
+/// Claude one.
+const RUNTIME_ENVELOPE_PARTIAL: &str = "runtime_envelope_partial";
+
+/// The fixed, driver-authored sentence that accompanies
+/// [`RUNTIME_ENVELOPE_PARTIAL`] on a Codex run.
+///
+/// It states what DOES bound the run and what does NOT, because both halves
+/// are facts about this build rather than about the run: the Codex argv names
+/// the `workspace-write` sandbox (network off, writes limited to the project
+/// root and its `.git`) and the child environment gets the git and credential
+/// envelope, while the `PreToolUse` guard hook and the tool deny list ride
+/// `--settings` / `--disallowedTools`, which `codex exec` has no equivalent
+/// for.
+const CODEX_ENVELOPE_DISCLOSURE: &str = "this run executes under codex exec in the \
+     workspace-write sandbox (network off, writes limited to the project root and its \
+     .git); the git and credential environment envelope applies, but the PreToolUse \
+     guard hook and the tool deny list have NO Codex carrier and do not apply to this run";
+
 /// How long the agent's group is given between the terminate signal and the
 /// uncatchable one **when the stop arrives during startup**.
 ///
@@ -1750,6 +1773,33 @@ fn journal_agent_program_override(journal: &mut JournalRun, args: &DriveArgs) {
     }
 }
 
+/// Disclose, **before** the run's first exec record, that a non-Claude runtime
+/// runs with only part of the safety envelope (260922-hdj).
+///
+/// Position is the point, exactly as for [`journal_agent_program_override`]: a
+/// reader scanning the journal top to bottom meets the caveat before anything
+/// that could read as a fully-enveloped run. A Claude run writes nothing here,
+/// so its journal is byte-identical to before.
+///
+/// A failed write is warned about by error kind only and swallowed, as the
+/// sibling helper's is: the run's terminal record matters more than this one.
+fn journal_runtime_disclosure(journal: &mut JournalRun, runtime: AgentRuntime) {
+    let detail = match runtime {
+        AgentRuntime::Claude => return,
+        AgentRuntime::Codex => CODEX_ENVELOPE_DISCLOSURE,
+    };
+    if let Err(err) = journal.record(&JournalEvent::Diagnostic {
+        code: RUNTIME_ENVELOPE_PARTIAL.to_string(),
+        detail: detail.to_string(),
+    }) {
+        // The error KIND only, never a message body (T-17-05).
+        tracing::warn!(
+            kind = ?err.kind(),
+            "could not journal the runtime envelope disclosure",
+        );
+    }
+}
+
 /// The executor for **one** iteration.
 ///
 /// **Constructed per iteration rather than once per run, and the reason is the
@@ -2860,6 +2910,9 @@ pub async fn execute_run(
     // real agent's. Release builds have no override to mark.
     #[cfg(debug_assertions)]
     journal_agent_program_override(&mut run.journal, args);
+    // Beside the override marker and for the same reason: before any exec
+    // record. A no-op for Claude (260922-hdj).
+    journal_runtime_disclosure(&mut run.journal, project.runtime());
 
     // The raw wire line of every `user` replay echo, which is the **only**
     // evidence the protocol offers that the agent has started on an injected
