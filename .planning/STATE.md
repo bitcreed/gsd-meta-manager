@@ -404,16 +404,17 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- [2026-07-29] [ui] Badge glyphs may misalign by one cell across terminals — [todo file](.planning/todos/pending/2026-07-29-badge-glyph-display-width-alignment.md) — Needs TBD — options include pinning a fixed-width badge cell regardless of glyph, choosing.
-- [2026-07-29] [ui] Driver tab renders blank pipeline row at terminal heights 8-13 — [todo file](.planning/todos/pending/2026-07-29-driver-tab-layout-at-medium-terminal-heights.md) — Needs TBD. Likely either an additional height tier that drops the pipeline row and its rule.
-- [2026-07-29] [ui] Invalidate browser file cache after $EDITOR exits — [todo file](.planning/todos/pending/2026-07-29-invalidate-browser-cache-after-editor-exit.md) — Needs Invalidate `cache.browser_file_content` (or re-read the file) on the `$EDITOR`.
-- [2026-08-18] [testing] driver_reattach liveness probe races the run.json write — [todo file](.planning/todos/pending/2026-08-18-driver-reattach-spawn-artifact-race.md)
-- [2026-08-18] [ui] Surface destructive confirmations in a modal popup with Yes/No buttons — [todo file](.planning/todos/pending/2026-08-18-surface-destructive-confirmations-in-a-modal-popup-with-yes.md) — Needs Introduce one reusable modal-popup widget for destructive confirmations and route every.
+- [2026-07-29] [ui] Badge glyphs may misalign by one cell across terminals — [todo file](.planning/todos/pending/2026-07-29-badge-glyph-display-width-alignment.md)
+- [2026-07-29] [ui] Driver tab renders blank pipeline row at terminal heights 8-13 — [todo file](.planning/todos/pending/2026-07-29-driver-tab-layout-at-medium-terminal-heights.md)
+- [2026-07-29] [ui] Invalidate browser file cache after $EDITOR exits — [todo file](.planning/todos/pending/2026-07-29-invalidate-browser-cache-after-editor-exit.md)
+- [2026-08-18] [ui] Surface destructive confirmations in a modal popup with Yes/No buttons — [todo file](.planning/todos/pending/2026-08-18-surface-destructive-confirmations-in-a-modal-popup-with-yes.md)
 - [2026-08-19] [driver] The verify-work gate policy must be configurable — skip | defer | auto-validate — [todo file](.planning/todos/pending/2026-08-19-verify-work-gate-policy-configurable.md)
 - [2026-08-22] [ui] Phases panel marker/grey disagrees with the disk-inferred stage — [todo file](.planning/todos/pending/2026-08-22-phase-list-grey-marker-disagrees-with-disk-inferred-stage.md)
-- [2026-09-12] [ui] Visualize execution waves per phase in roadmap — [todo file](.planning/todos/pending/2026-09-11-visualize-execution-waves-per-phase-in-roadmap.md) — Needs TBD. Likely needs:.
-- [2026-09-15] [ui] Add b keybinding to open backlog from main screen — [todo file](.planning/todos/pending/2026-09-15-add-b-keybinding-to-open-backlog-from-main-screen.md) — Needs TBD — approach hint: bind `KeyCode::Char('b')` in `NormalScreen::handle_key`.
 - [2026-09-15] [ui] Make queue input truly multi-line — [todo file](.planning/todos/pending/2026-09-15-make-queue-input-truly-multi-line.md) — Needs TBD — this todo's deliverable is a **UX proposal**, not a fix. Whoever picks.
+- [2026-09-22] [ui] Enter on config screen no longer opens the options menu — [todo file](.planning/todos/pending/2026-09-22-enter-on-config-screen-no-longer-opens-the-options-menu.md)
+- [2026-09-22] [ui] Filter the config screen by typing slash — [todo file](.planning/todos/pending/2026-09-22-filter-the-config-screen-by-typing-slash.md)
+- [2026-09-22] [ui] Show registered projects whose folder is missing in red — [todo file](.planning/todos/pending/2026-09-22-show-registered-projects-whose-folder-is-missing-in-red.md)
+- [2026-09-22] [driver] Support Codex as well as Claude as the agent runtime — [todo file](.planning/todos/pending/2026-09-22-support-codex-as-well-as-claude-as-the-agent-runtime.md)
 
 ### Blockers/Concerns
 
