@@ -75,6 +75,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::error::{CapabilityError, SendError, SpawnError};
+use crate::executor::codex_json::{self, CodexStep};
 use crate::executor::gate::{self, GateOutcome};
 use crate::executor::outcome::{derive_run_outcome_from_envelopes, RunSnapshot};
 use crate::executor::stream_json::{
@@ -129,10 +130,10 @@ const EXIT_DRAIN_CAP: Duration = Duration::from_secs(30);
 /// Bounded, so a blocked consumer applies backpressure to the reader rather
 /// than growing memory without limit. Generous on purpose: Claude caps its exit
 /// drain at 30 seconds, so a slow consumer can truncate a run's tail.
-const EVENT_CHANNEL_CAPACITY: usize = 8192;
+pub(super) const EVENT_CHANNEL_CAPACITY: usize = 8192;
 
 /// Capacity of the stdin writer's command channel.
-const WRITER_CHANNEL_CAPACITY: usize = 64;
+pub(super) const WRITER_CHANNEL_CAPACITY: usize = 64;
 
 /// An absolute ceiling on how long the supervisor may be parked handing **one**
 /// event to its consumer.
@@ -641,6 +642,7 @@ impl ClaudeExecutor {
         tokio::spawn(
             Coordinator {
                 child,
+                protocol: StreamProtocol::ClaudeStreamJson,
                 reader_rx,
                 events_tx,
                 writer_tx: writer_tx.clone(),
@@ -838,7 +840,7 @@ impl Executor for ClaudeExecutor {
 }
 
 /// Capture a project snapshot without touching the async reactor thread.
-async fn capture_snapshot(root: PathBuf) -> RunSnapshot {
+pub(super) async fn capture_snapshot(root: PathBuf) -> RunSnapshot {
     let fallback = root.clone();
     tokio::task::spawn_blocking(move || RunSnapshot::capture(&root))
         .await
@@ -847,16 +849,33 @@ async fn capture_snapshot(root: PathBuf) -> RunSnapshot {
 
 /// What a reader task hands to the coordinator.
 #[derive(Debug)]
-enum ReaderItem {
+pub(super) enum ReaderItem {
     /// A framed line, already parsed in the reader task.
     Envelope(Envelope),
     /// A line over `MAX_LINE_BYTES`, discarded rather than parsed.
     Truncated { bytes: usize, prefix: String },
+    /// A Codex `exec --json` line, parsed and mapped in the Codex reader task
+    /// (`src/executor/codex.rs`). The Claude reader never produces this.
+    Codex { raw: String, step: CodexStep },
+}
+
+/// Which wire protocol the coordinator is supervising (260922-hdj).
+///
+/// It changes exactly one thing: whether there is a first user message to
+/// release. Claude's prompt travels over stdin and is withheld until the gate
+/// or the grace; Codex's prompt rides argv, so there is nothing to release and
+/// the grace timer never arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StreamProtocol {
+    /// Claude Code, duplex `stream-json`.
+    ClaudeStreamJson,
+    /// `codex exec --json`, one prompt on argv, stdin closed.
+    CodexExecJson,
 }
 
 /// One framed line, or the reason there is not one.
 #[derive(Debug)]
-enum BoundedLine {
+pub(super) enum BoundedLine {
     Line(String),
     Truncated { bytes: usize, prefix: String },
     Eof,
@@ -866,7 +885,7 @@ enum BoundedLine {
 ///
 /// The bound is enforced while consuming, so an unbounded single line from the
 /// subprocess is drained to its newline without ever being fully retained.
-async fn read_bounded_line<R>(reader: &mut R) -> std::io::Result<BoundedLine>
+pub(super) async fn read_bounded_line<R>(reader: &mut R) -> std::io::Result<BoundedLine>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -980,7 +999,7 @@ async fn read_stdout(
 /// child that is alive, and the idle cap's job is to kill runs that have gone
 /// *silent*. Counting only stdout would let a run that is loudly retrying on
 /// stderr be torn down as stalled.
-async fn read_stderr(
+pub(super) async fn read_stderr(
     stderr: tokio::process::ChildStderr,
     tx: mpsc::Sender<ExecutionEvent>,
     last_line_at: Arc<watch::Sender<Instant>>,
@@ -1039,26 +1058,28 @@ async fn write_stdin(
 }
 
 /// Owns the child and the run's state machine.
-struct Coordinator {
-    child: Box<dyn ChildWrapper>,
-    reader_rx: mpsc::Receiver<ReaderItem>,
-    events_tx: mpsc::Sender<ExecutionEvent>,
-    writer_tx: mpsc::Sender<WriterCommand>,
-    pending_control: PendingControl,
-    gate_tx: oneshot::Sender<Result<GateOutcome, SpawnError>>,
-    outcome_tx: oneshot::Sender<RunOutcome>,
-    cancel_rx: oneshot::Receiver<()>,
-    running: Arc<AtomicBool>,
-    first_message: String,
+pub(super) struct Coordinator {
+    pub(super) child: Box<dyn ChildWrapper>,
+    /// Which wire protocol this run speaks; see [`StreamProtocol`].
+    pub(super) protocol: StreamProtocol,
+    pub(super) reader_rx: mpsc::Receiver<ReaderItem>,
+    pub(super) events_tx: mpsc::Sender<ExecutionEvent>,
+    pub(super) writer_tx: mpsc::Sender<WriterCommand>,
+    pub(super) pending_control: PendingControl,
+    pub(super) gate_tx: oneshot::Sender<Result<GateOutcome, SpawnError>>,
+    pub(super) outcome_tx: oneshot::Sender<RunOutcome>,
+    pub(super) cancel_rx: oneshot::Receiver<()>,
+    pub(super) running: Arc<AtomicBool>,
+    pub(super) first_message: String,
     /// What the argv asked for, so the gate can confirm the flag took effect
     /// against what `system/init` reports back (D-15).
-    permission_mode: PermissionMode,
+    pub(super) permission_mode: PermissionMode,
     /// Total time since spawn this run may take (D-13).
-    wall_clock_cap: Duration,
+    pub(super) wall_clock_cap: Duration,
     /// Time since the reader last observed a line this run may go silent for
     /// (D-13). Strictly greater than the background-subagent wait ceiling; see
     /// [`Coordinator::run`].
-    idle_cap: Duration,
+    pub(super) idle_cap: Duration,
     /// How long to wait for the child's `system/init` before releasing the
     /// first user message anyway (260908-uqq). Carried from
     /// [`ExecutionOptions::prompt_release_grace`], where the reasoning lives.
@@ -1067,15 +1088,15 @@ struct Coordinator {
     /// therefore what a capability refusal costs on this run: a CLI that
     /// announces inside the grace is refused before anything reaches its stdin,
     /// a CLI that announces later is refused after the prompt it was sent.
-    prompt_release_grace: Duration,
+    pub(super) prompt_release_grace: Duration,
     /// The instant the reader last observed a line. The idle arm re-arms from
     /// this and from nothing else (D-13, Pitfall E).
-    last_line_rx: watch::Receiver<Instant>,
-    before: RunSnapshot,
-    project_root: PathBuf,
+    pub(super) last_line_rx: watch::Receiver<Instant>,
+    pub(super) before: RunSnapshot,
+    pub(super) project_root: PathBuf,
     /// Where the raw line of every `user` replay echo is republished, when a
     /// caller asked for it (see [`ClaudeExecutor::observing_replay_echoes`]).
-    replay_observer: Option<mpsc::UnboundedSender<String>>,
+    pub(super) replay_observer: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// Which cap the supervisor breached.
@@ -1155,9 +1176,10 @@ impl Coordinator {
     /// easy error. Likewise `budget_usd` stays plumbed to the flag and nothing
     /// more (D-16): it is a post-turn circuit breaker that cannot prevent the
     /// turn it fires on from spending, so no cost enforcement is built on it.
-    async fn run(self) {
+    pub(super) async fn run(self) {
         let Coordinator {
             mut child,
+            protocol,
             mut reader_rx,
             events_tx,
             writer_tx,
@@ -1183,7 +1205,11 @@ impl Coordinator {
         // it — the gate passing in `handle_item`, and the grace expiring in the
         // enforcement block below — and it is what keeps the prompt written
         // exactly once whichever of them fires first (260908-uqq).
-        let mut prompt_released = false;
+        //
+        // A Codex run starts released: its prompt rode argv, there is no first
+        // message to write, and the grace timer must never arm (260922-hdj).
+        // False for Claude, exactly as before.
+        let mut prompt_released = matches!(protocol, StreamProtocol::CodexExecJson);
         let mut cancelled = false;
         let mut refused: Option<CapabilityError> = None;
         let mut breach: Option<Breach> = None;
@@ -1715,6 +1741,62 @@ async fn handle_item(
     replay_observer: Option<&mpsc::UnboundedSender<String>>,
 ) -> bool {
     match item {
+        ReaderItem::Codex { raw, step } => match step {
+            // The start gate for a Codex run. There is no capability list to
+            // validate — Codex announces a thread and nothing else — and no
+            // prompt to release, because it rode argv. Nothing is written to
+            // the writer (260922-hdj).
+            CodexStep::ThreadStarted { thread_id } if !*gated => {
+                *gated = true;
+                if let Some(tx) = gate_tx.take() {
+                    let _ = tx.send(Ok(codex_json::gate_outcome_for_thread(&thread_id)));
+                }
+                forward(
+                    events_tx,
+                    ExecutionEvent::SessionStarted {
+                        session_id: thread_id,
+                        capabilities: Vec::new(),
+                        claude_code_version: String::new(),
+                        api_key_source: None,
+                        permission_mode: None,
+                    },
+                    forward_deadline,
+                    dropped,
+                )
+                .await
+            }
+            CodexStep::ThreadStarted { .. } | CodexStep::Unknown => {
+                forward(
+                    events_tx,
+                    ExecutionEvent::Unknown { raw },
+                    forward_deadline,
+                    dropped,
+                )
+                .await
+            }
+            // Onto the SAME envelopes the Claude arm fills, so the unchanged
+            // `derive_run_outcome_from_envelopes` classifies the run. No `Cost`
+            // event: Codex reports none.
+            CodexStep::TurnEnded(result) => {
+                envelopes.push((*result).clone());
+                forward(
+                    events_tx,
+                    ExecutionEvent::TurnCompleted(result),
+                    forward_deadline,
+                    dropped,
+                )
+                .await
+            }
+            CodexStep::Output { stream, text } => {
+                forward(
+                    events_tx,
+                    ExecutionEvent::AgentOutput { stream, text },
+                    forward_deadline,
+                    dropped,
+                )
+                .await
+            }
+        },
         ReaderItem::Truncated { bytes, prefix } => {
             forward(
                 events_tx,

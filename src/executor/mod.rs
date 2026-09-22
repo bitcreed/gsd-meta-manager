@@ -43,8 +43,14 @@
 // portable and testable everywhere.
 #[cfg(unix)]
 pub mod claude;
+// The Codex transport, Unix-only for exactly the reason `claude` is: it reuses
+// that module's process-group supervisor (260922-hdj).
+#[cfg(unix)]
+pub mod codex;
+pub mod codex_json;
 pub mod gate;
 pub mod outcome;
+pub mod runtime;
 pub mod stream_json;
 
 use std::collections::HashMap;
@@ -74,10 +80,10 @@ pub type PendingControl = Arc<Mutex<HashMap<String, oneshot::Sender<ControlRespo
 /// Drives an agent process and reports what it did.
 ///
 /// **On object safety and `async fn`.** The async methods return boxed futures
-/// by hand rather than depending on `async-trait`. There is exactly one
-/// implementor in this phase, and Phase 22 adds an [`ExecutionTarget`] *variant*
-/// — not a second implementor — so the dependency would buy nothing but a
-/// Cargo line. If a genuinely second backend ever lands, revisit.
+/// by hand rather than depending on `async-trait`. Since 260922-hdj there are
+/// three implementors — `ClaudeExecutor`, `CodexExecutor`, and the driver's
+/// `runtime::AgentExecutor` enum that delegates to one of them — and the
+/// hand-boxed futures still cost nothing a dependency would save.
 ///
 /// **On backend honesty.** `send` and `interrupt` are a *Claude capability
 /// tier*, not backend parity. A hypothetical Codex or aider backend satisfies
@@ -161,6 +167,7 @@ pub trait Executor {
 pub struct DrivableProject {
     alias: String,
     root: PathBuf,
+    runtime: runtime::AgentRuntime,
 }
 
 impl DrivableProject {
@@ -217,6 +224,8 @@ impl DrivableProject {
         Ok(Self {
             alias: alias.to_string(),
             root: project.path.clone(),
+            // Claude until the driver resolves otherwise; see `with_runtime`.
+            runtime: runtime::AgentRuntime::default(),
         })
     }
 
@@ -242,6 +251,7 @@ impl DrivableProject {
         Self {
             alias: alias.into(),
             root: root.into(),
+            runtime: runtime::AgentRuntime::default(),
         }
     }
 
@@ -253,6 +263,23 @@ impl DrivableProject {
     /// The filesystem root the agent runs in.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The agent runtime this project is driven by. Claude unless the driver
+    /// stamped another one on with [`Self::with_runtime`].
+    pub fn runtime(&self) -> runtime::AgentRuntime {
+        self.runtime
+    }
+
+    /// The same token, carrying the runtime `drive` resolved from the manager
+    /// config (260922-hdj ID-9).
+    ///
+    /// It rides on the token rather than being threaded through every driver
+    /// signature, so each spawn site reads it from the one value it already
+    /// must hold to spawn at all. Consuming `self` keeps this from being a
+    /// constructor: it can only re-label a token that passed the gate.
+    pub(crate) fn with_runtime(self, runtime: runtime::AgentRuntime) -> Self {
+        Self { runtime, ..self }
     }
 }
 
@@ -748,6 +775,18 @@ pub enum ExecutionEvent {
     EventsDropped {
         /// How many events this run lost in total.
         count: u64,
+    },
+    /// A line from a non-Claude runtime that is neither a turn boundary nor
+    /// the start gate — a Codex item, `turn.started` or top-level `error`
+    /// (260922-hdj).
+    ///
+    /// `stream` is a driver-built `codex:<...>` label from a fixed alphabet;
+    /// `text` is the line's readable content and is untrusted wire data.
+    AgentOutput {
+        /// The journal stream label.
+        stream: String,
+        /// The line's readable text.
+        text: String,
     },
     /// The process exited.
     Exited(ExitStatus),

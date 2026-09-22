@@ -840,6 +840,26 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
 
     let project = DrivableProject::from_registry(args.alias.as_str(), entry)?;
 
+    // **Which agent drives this project**, resolved from the MANAGER's config
+    // only: the entry's `runtime`, else the `default_runtime` preference, else
+    // Claude (260922-hdj ID-2). GSD's own runtime keys are never read. The
+    // preference is consulted only when the entry names nothing, so a bad
+    // preference cannot refuse a project that names its own runtime. Pure and
+    // above the dry-run branch: an unrecognized value is refused before
+    // anything is created, identically for a preview (WR-09).
+    let runtime = match entry.runtime() {
+        Ok(Some(runtime)) => runtime,
+        Ok(None) => crate::executor::runtime::resolve(
+            None,
+            config
+                .preferences
+                .default_runtime()
+                .map_err(DriveError::RuntimeUnrecognized)?,
+        ),
+        Err(err) => return Err(DriveError::RuntimeUnrecognized(err)),
+    };
+    let project = project.with_runtime(runtime);
+
     // **The four refusals about WHAT WAS ASKED FOR, before the dry-run branch**
     // — unlike the ones about *running*, which sit below it. The run-id and
     // platform refusals are about a run: a preview creates nothing to identify

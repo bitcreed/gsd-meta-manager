@@ -280,7 +280,11 @@ where
 }
 
 /// The `result` payload. One per **turn** (D-29).
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Default` exists so a non-Claude runtime can synthesize a turn boundary with
+/// `..Default::default()` (260922-hdj). Every field is already
+/// `#[serde(default)]`, so deserialization is unchanged.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ResultMessage {
     /// Observed: `success`, `error_max_turns`, `error_during_execution`,
     /// `error_max_budget_usd`. Deliberately a `String`.

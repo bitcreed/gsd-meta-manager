@@ -45,6 +45,9 @@ const ESCAPE_HATCH_HOME: &str = "src/executor/mod.rs";
 const SPAWN_ALLOWLIST: &[&str] = &[
     // The agent spawn. The one that takes the capability type.
     "src/executor/claude.rs",
+    // The Codex agent spawn (260922-hdj). Takes the capability type exactly as
+    // the Claude spawn does.
+    "src/executor/codex.rs",
     // Git shell-out inside this module's own in-source test helper. No agent.
     "src/executor/outcome.rs",
     // A `sleep` child inside this module's own in-source tests, so the "already

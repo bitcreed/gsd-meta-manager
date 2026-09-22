@@ -2184,6 +2184,13 @@ pub fn from_exec_event(ev: &ExecutionEvent, argv_digest: &str) -> Option<Journal
             stream: "stderr".to_string(),
             text: line.clone(),
         },
+        // A non-Claude runtime's narration line (260922-hdj). The label is
+        // driver-built from a fixed alphabet; the text goes through the same
+        // redaction every `exec_event` text does.
+        ExecutionEvent::AgentOutput { stream, text } => JournalEvent::ExecEvent {
+            stream: stream.clone(),
+            text: text.clone(),
+        },
         ExecutionEvent::TurnCompleted(result) => JournalEvent::ExecEvent {
             stream: "turn_completed".to_string(),
             text: turn_result_text(result),

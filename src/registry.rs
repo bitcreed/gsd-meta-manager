@@ -1162,6 +1162,8 @@ mod tests {
             E::RunIdInvalid { .. } => 1,
             E::AliasNotVisible { .. } => 1,
             E::TargetPhaseInvalid { .. } => 1,
+            // The config value it echoes is user-authored text (260922-hdj).
+            E::RuntimeUnrecognized(_) => 1,
             E::UnsupportedPlatform { .. }
             | E::RunIdRequired
             | E::NoCommandSource
@@ -1243,6 +1245,13 @@ mod tests {
                 DriveError::TargetPhaseInvalid {
                     target_phase: carrier(),
                 },
+            ),
+            (
+                "DriveError::RuntimeUnrecognized",
+                DriveError::RuntimeUnrecognized(crate::executor::runtime::UnrecognizedRuntime {
+                    key: "runtime",
+                    value: carrier(),
+                }),
             ),
         ] {
             assert_eq!(
@@ -1481,10 +1490,12 @@ mod tests {
         }
 
         assert!(
-            subjects_seen == corpus.len() * 11,
+            // Twelve since 260922-hdj: `DriveError::RuntimeUnrecognized`
+            // echoes a user-authored config value, so it joined the list.
+            subjects_seen == corpus.len() * 12,
             "only {subjects_seen} subject/value pairs were checked across \
-             {} corpus members. Each member must reach all ELEVEN subjects — \
-             four `OptInError` variants, three `DriveError` variants, both \
+             {} corpus members. Each member must reach all TWELVE subjects — \
+             four `OptInError` variants, four `DriveError` variants, both \
              halves of `remove`, and the two opt-in functions — or a subject \
              has silently dropped out of the list the wildcard-free classifiers \
              gate",

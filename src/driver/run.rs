@@ -96,7 +96,7 @@ use crate::envelope::cred::{self, EnvelopeEnv};
 use crate::envelope::hooks;
 use crate::envelope::policy::{self, ParkReason};
 use crate::error::{DriveError, LockError, SpawnError};
-use crate::executor::claude::ClaudeExecutor;
+use crate::executor::runtime::{AgentExecutor, AgentRuntime};
 use crate::executor::stream_json::{StreamMessage, UserMessage};
 use crate::executor::{
     DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionOptions, Executor, RunOutcome,
@@ -207,11 +207,6 @@ fn establish_envelope(
     })
 }
 
-/// The program this driver execs unless a debug build was told otherwise.
-///
-/// A named constant because a release build has exactly one answer here and the
-/// override that produced the other one is gone from the parser (D-30).
-const DEFAULT_AGENT_PROGRAM: &str = "claude";
 
 /// The diagnostic code that marks a run driven by a stand-in rather than by the
 /// agent (D-30, WR-16).
@@ -526,7 +521,11 @@ fn spawn_failure_label(err: &SpawnError) -> &'static str {
         | SpawnError::PipeUnavailable { .. }
         | SpawnError::PidUnavailable
         | SpawnError::InitNeverObserved
-        | SpawnError::EncodeCommand { .. } => "spawn_failed",
+        | SpawnError::EncodeCommand { .. }
+        // The runtime refused before launching anything (260922-hdj). Nothing
+        // ran, so this is the honest remainder too, and the closed label set
+        // stays unchanged.
+        | SpawnError::UnsupportedByRuntime { .. } => "spawn_failed",
     }
 }
 
@@ -588,6 +587,11 @@ fn spawn_failure_diagnostic(err: &SpawnError) -> (&'static str, &'static str) {
         SpawnError::EncodeCommand { .. } => (
             "spawn_command_unencodable",
             "the command could not be encoded as an outbound NDJSON user message",
+        ),
+        SpawnError::UnsupportedByRuntime { .. } => (
+            "spawn_unsupported_by_runtime",
+            "the project's agent runtime cannot drive what this spawn asked for, so \
+             nothing was launched",
         ),
     }
 }
@@ -1246,7 +1250,7 @@ fn finish_run(
 }
 
 async fn shutdown_on_terminate(
-    executor: &ClaudeExecutor,
+    executor: &AgentExecutor,
     handle: &mut ExecutionHandle,
     journal: &mut JournalRun,
     escalations_used: u32,
@@ -1513,7 +1517,7 @@ async fn read_inbox(inbox_path: &Path, cursor: &mut TailCursor) -> Vec<InboxMess
 /// `tests/executor_transport.rs::a_message_sent_mid_turn_is_not_buffered_by_the_driver`
 /// is the regression guard that fails anyone who adds one.
 async fn deliver_pending_inbox(
-    executor: &ClaudeExecutor,
+    executor: &AgentExecutor,
     handle: &mut ExecutionHandle,
     journal: &mut JournalRun,
     inbox_path: &Path,
@@ -1658,16 +1662,21 @@ fn journal_one_as_missed(journal: &mut JournalRun, id: &str, reason: &str) {
 /// arms — the released binary would still contain the code path that execs an
 /// arbitrary program, merely with nothing able to select it, and "unreachable
 /// today" is a fact about today.
+///
+/// Without an override the answer is the project's runtime's own program
+/// (260922-hdj): `claude` for a Claude project — byte-identical to the constant
+/// this replaced, so a Claude run's argv digest is unchanged — and `codex` for a
+/// Codex one.
 #[cfg(debug_assertions)]
-fn agent_program(args: &DriveArgs) -> PathBuf {
+fn agent_program(args: &DriveArgs, runtime: AgentRuntime) -> PathBuf {
     args.claude_program
         .clone()
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_AGENT_PROGRAM))
+        .unwrap_or_else(|| PathBuf::from(runtime.program()))
 }
 
 #[cfg(not(debug_assertions))]
-fn agent_program(_args: &DriveArgs) -> PathBuf {
-    PathBuf::from(DEFAULT_AGENT_PROGRAM)
+fn agent_program(_args: &DriveArgs, runtime: AgentRuntime) -> PathBuf {
+    PathBuf::from(runtime.program())
 }
 
 /// The leading arguments placed before the executor's own generated argv.
@@ -1760,17 +1769,23 @@ fn journal_agent_program_override(journal: &mut JournalRun, args: &DriveArgs) {
 /// A pair of `#[cfg]` functions rather than an `if cfg!(…)`, for exactly the
 /// reason [`agent_program`] gives: `cfg!` compiles both arms, so the released
 /// binary would still contain the path that execs an arbitrary program.
+///
+/// **The runtime picks the backend** (260922-hdj). Both call sites pass
+/// `project.runtime()`, the value `drive` stamped onto the capability token, so
+/// the iteration spawn and the model seam can never disagree about which agent
+/// a project is driven by. The debug override replaces the *program* only; the
+/// protocol still follows the runtime, which is how the Codex fixture is driven.
 #[cfg(debug_assertions)]
-fn build_executor(args: &DriveArgs) -> ClaudeExecutor {
+fn build_executor(args: &DriveArgs, runtime: AgentRuntime) -> AgentExecutor {
     match &args.claude_program {
-        Some(program) => ClaudeExecutor::with_program(program, args.claude_args.clone()),
-        None => ClaudeExecutor::new(),
+        Some(program) => AgentExecutor::with_program(runtime, program, args.claude_args.clone()),
+        None => AgentExecutor::new(runtime),
     }
 }
 
 #[cfg(not(debug_assertions))]
-fn build_executor(_args: &DriveArgs) -> ClaudeExecutor {
-    ClaudeExecutor::new()
+fn build_executor(_args: &DriveArgs, runtime: AgentRuntime) -> AgentExecutor {
+    AgentExecutor::new(runtime)
 }
 
 /// The terminal label for a routed run whose declared target was met.
@@ -2002,7 +2017,7 @@ async fn consult_model_seam(
         ..Default::default()
     };
 
-    let executor = build_executor(args);
+    let executor = build_executor(args, project.runtime());
     let mut handle = match executor.start(project, prompt, options).await {
         Ok(handle) => handle,
         Err(err) => {
@@ -2721,7 +2736,7 @@ pub async fn execute_run(
     // routed marker is a constant, and digesting a constant would give every
     // routed run against every target the same digest. The driver's real argv
     // carries `--target-phase N`, which is what tells two routed runs apart.
-    let mut argv = vec![agent_program(args).display().to_string()];
+    let mut argv = vec![agent_program(args, project.runtime()).display().to_string()];
     argv.extend(agent_leading_args(args));
     argv.push(digested_command_fragment(&source));
     let argv_digest = journal::argv_digest(&argv);
@@ -3111,7 +3126,7 @@ pub async fn execute_run(
         // observes; see `build_executor`.
         let (pgid_tx, mut pgid_rx) = oneshot::channel::<u32>();
 
-        let executor = build_executor(args)
+        let executor = build_executor(args, project.runtime())
             .observing_spawn(pgid_tx)
             .observing_replay_echoes(echo_tx.clone());
 
@@ -4833,7 +4848,7 @@ mod tests {
         let message = InboxMessage::new("steer this run");
         inbox::append(&inbox_path, &message).expect("append");
 
-        let executor = ClaudeExecutor::new();
+        let executor = AgentExecutor::Claude(crate::executor::claude::ClaudeExecutor::new());
         let mut handle = dead_handle();
         let mut cursor = TailCursor::default();
         let mut pending = PendingAcks::default();
@@ -4932,7 +4947,7 @@ mod tests {
         // A handle whose agent is not running, so `cancel` resolves immediately
         // through `wait_outcome`'s already-consumed arm. No child, no signal and
         // no race — the path under test is the journal write, not the teardown.
-        let executor = ClaudeExecutor::new();
+        let executor = AgentExecutor::Claude(crate::executor::claude::ClaudeExecutor::new());
         let mut handle = dead_handle();
         shutdown_on_terminate(&executor, &mut handle, &mut journal, SPENT).await;
 

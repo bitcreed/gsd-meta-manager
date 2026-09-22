@@ -59,8 +59,39 @@ pub struct RegisteredProject {
     /// serialises back to nothing at all. That is asserted by
     /// `a_config_written_by_a_newer_binary_keeps_its_unknown_fields_and_its_version`
     /// rather than assumed.
+    ///
+    /// **One key in here is modelled: `runtime`**, read through
+    /// [`RegisteredProject::runtime`] (260922-hdj ID-1). It lives here rather
+    /// than as a typed field on purpose: a typed field would break every struct
+    /// literal of this type across the tree, and an unrecognized value in a
+    /// typed field would fail the whole config load — the TUI would not start
+    /// over one typo. Read through the accessor, a bad value is a refusal at
+    /// drive time and round-trips untouched.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// The manager-config key naming a project's agent runtime.
+pub const RUNTIME_KEY: &str = "runtime";
+
+/// The manager-config preference naming the default agent runtime.
+pub const DEFAULT_RUNTIME_KEY: &str = "default_runtime";
+
+impl RegisteredProject {
+    /// The agent runtime this entry names, if it names one.
+    ///
+    /// `Ok(None)` when the key is absent. An unrecognized value is an `Err`
+    /// rather than a silent default, so a typo is reported instead of driving
+    /// the project under the wrong agent.
+    pub fn runtime(
+        &self,
+    ) -> Result<Option<crate::executor::runtime::AgentRuntime>, crate::executor::runtime::UnrecognizedRuntime>
+    {
+        self.extra
+            .get(RUNTIME_KEY)
+            .map(|value| crate::executor::runtime::AgentRuntime::from_config_value(RUNTIME_KEY, value))
+            .transpose()
+    }
 }
 
 /// The user's deliberate designation of a project as drivable (D-14).
@@ -305,8 +336,29 @@ pub struct Preferences {
     ///
     /// See [`RegisteredProject::extra`] — same technique, same reason, same
     /// shared-file hazard.
+    ///
+    /// **One key in here is modelled: `default_runtime`**, read through
+    /// [`Preferences::default_runtime`], for the same reasons the entry's
+    /// `runtime` key is (260922-hdj ID-1).
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl Preferences {
+    /// The default agent runtime for projects whose entry names none.
+    ///
+    /// `Ok(None)` when the key is absent; an unrecognized value is an `Err`.
+    pub fn default_runtime(
+        &self,
+    ) -> Result<Option<crate::executor::runtime::AgentRuntime>, crate::executor::runtime::UnrecognizedRuntime>
+    {
+        self.extra
+            .get(DEFAULT_RUNTIME_KEY)
+            .map(|value| {
+                crate::executor::runtime::AgentRuntime::from_config_value(DEFAULT_RUNTIME_KEY, value)
+            })
+            .transpose()
+    }
 }
 
 impl Default for Preferences {

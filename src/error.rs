@@ -128,6 +128,19 @@ pub enum SpawnError {
         /// The underlying serialisation error.
         source: serde_json::Error,
     },
+    /// The project's agent runtime cannot drive what this spawn asked for, so
+    /// it was refused **before anything was launched** (260922-hdj).
+    ///
+    /// Raised under Codex for the model seam, `resume_session`, `budget_usd`,
+    /// and a project whose `.git` is not a directory. A refusal rather than a
+    /// silent fallback: quietly running a Codex project's seam under Claude
+    /// would spend a second account's quota the user never pointed at it.
+    UnsupportedByRuntime {
+        /// The runtime, as its config word.
+        runtime: &'static str,
+        /// What was asked for, named by the driver.
+        feature: &'static str,
+    },
 }
 
 impl fmt::Display for SpawnError {
@@ -165,6 +178,10 @@ impl fmt::Display for SpawnError {
             Self::EncodeCommand { source } => {
                 write!(f, "failed to encode the command as a user message: {source}")
             }
+            Self::UnsupportedByRuntime { runtime, feature } => write!(
+                f,
+                "the {runtime} runtime cannot drive {feature}, so nothing was launched"
+            ),
         }
     }
 }
@@ -201,6 +218,17 @@ pub enum SendError {
         /// The request id that was never answered.
         request_id: String,
     },
+    /// The run's agent runtime has no channel for this operation (260922-hdj).
+    ///
+    /// `codex exec` takes one prompt on argv and reads no stdin, so there is
+    /// nothing to deliver a mid-run message or an interrupt over. The driver
+    /// journals an injected message as undelivered rather than losing it.
+    UnsupportedByRuntime {
+        /// The runtime, as its config word.
+        runtime: &'static str,
+        /// The operation that was attempted.
+        operation: &'static str,
+    },
 }
 
 impl fmt::Display for SendError {
@@ -212,6 +240,10 @@ impl fmt::Display for SendError {
             Self::ControlResponseLost { request_id } => write!(
                 f,
                 "no control_response ever arrived for request id `{request_id}`"
+            ),
+            Self::UnsupportedByRuntime { runtime, operation } => write!(
+                f,
+                "the {runtime} runtime has no channel for {operation} on a running agent"
             ),
         }
     }
@@ -823,6 +855,13 @@ pub enum DriveError {
     PlanApprovalStale(crate::journal::ApprovalRefusal),
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
+    /// The manager config names an agent runtime this build does not know
+    /// (260922-hdj).
+    ///
+    /// A pure refusal raised in [`crate::driver::drive`] directly after the
+    /// opt-in gate and **above the dry-run branch**, so it creates nothing and
+    /// a preview refuses exactly what the run would (WR-09).
+    RuntimeUnrecognized(crate::executor::runtime::UnrecognizedRuntime),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
     // "--dry-run is not implemented yet", which stopped being true the moment
     // `driver::dry_run` landed; a variant that can never be constructed and
@@ -1014,6 +1053,10 @@ impl fmt::Display for DriveError {
             Self::PlanApprovalMalformed(err) => write!(f, "{err}"),
             Self::PlanApprovalStale(refusal) => write!(f, "{refusal}"),
             Self::OptIn(err) => write!(f, "{err}"),
+            Self::RuntimeUnrecognized(err) => write!(
+                f,
+                "{err}. The run was refused before anything was created"
+            ),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
             Self::Journal { detail } => write!(f, "the run journal failed: {detail}"),
@@ -1036,6 +1079,7 @@ impl std::error::Error for DriveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::OptIn(err) => Some(err),
+            Self::RuntimeUnrecognized(err) => Some(err),
             Self::Lock(err) => Some(err),
             Self::Spawn(err) => Some(err),
             // No source: these carry their whole story in their own text.
