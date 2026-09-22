@@ -1494,6 +1494,17 @@ impl Screen for DetailScreen {
             if let Some(editing_idx) = editing_text_idx {
                 return self.handle_text_input_key(code, ctx, editing_idx);
             }
+            // Filter-input intercept (quick 260922-hdi): while the `/` line
+            // has focus every key belongs to it, so a query containing x / d /
+            // r / q / a digit never clears a value, flips the edit target,
+            // switches the tab or pops the screen (T-HDI-01).
+            let filter_typing = ctx
+                .view_cache
+                .get(&self.alias)
+                .is_some_and(|c| c.defaults_filter_typing && c.defaults_editing.is_none());
+            if filter_typing {
+                return self.handle_config_filter_key(code, ctx);
+            }
         }
 
         match code {
@@ -1711,11 +1722,7 @@ impl Screen for DetailScreen {
                                 }
                             }
                         } else {
-                            let entry_count = entries_count_for_cache(cache);
-                            if entry_count > 0 {
-                                let max = entry_count.saturating_sub(1);
-                                cache.defaults_selected = (cache.defaults_selected + 1).min(max);
-                            }
+                            move_defaults_selection(cache, 1);
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1832,7 +1839,7 @@ impl Screen for DetailScreen {
                             cache.defaults_dropdown_selected =
                                 cache.defaults_dropdown_selected.saturating_sub(1);
                         } else {
-                            cache.defaults_selected = cache.defaults_selected.saturating_sub(1);
+                            move_defaults_selection(cache, -1);
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1983,11 +1990,7 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Defaults => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        let entry_count = entries_count_for_cache(cache);
-                        if entry_count > 0 {
-                            let max = entry_count.saturating_sub(1);
-                            cache.defaults_selected = (cache.defaults_selected + PAGE_SCROLL_LINES as usize).min(max);
-                        }
+                        move_defaults_selection(cache, PAGE_SCROLL_LINES as isize);
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Browse => {
@@ -2119,7 +2122,7 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Defaults => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.defaults_selected = cache.defaults_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        move_defaults_selection(cache, -(PAGE_SCROLL_LINES as isize));
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Browse => {
@@ -2702,6 +2705,18 @@ impl Screen for DetailScreen {
                     cache.browser_file_name = None;
                     ctx.needs_redraw = true;
                 }
+                ScreenAction::None
+            }
+            // '/' key: open the Config tab's filter input (quick 260922-hdi),
+            // seeded with the current filter so it can be refined ([INFERRED A4]).
+            KeyCode::Char('/') if current_view == DetailSubView::Defaults => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if cache.defaults_editing.is_some() {
+                    return ScreenAction::None;
+                }
+                cache.defaults_filter_typing = true;
+                snap_defaults_selection(cache);
+                ctx.needs_redraw = true;
                 ScreenAction::None
             }
             // 'x' key: clear (unset) the value of the selected config row
@@ -3426,6 +3441,45 @@ impl Screen for DetailScreen {
 impl DetailScreen {
     /// Handle a keystroke while a text-input editor is open on the Defaults
     /// tab. Char/Backspace edit the buffer, Enter persists, Esc cancels.
+    /// Keys while the Config tab's `/` filter input has focus (quick
+    /// 260922-hdi), modelled on `NormalScreen::handle_search_key`. Every arm
+    /// returns `ScreenAction::None`, and `_` swallows the rest, which is what
+    /// keeps x / d / r / q / digits / ? / Left / Right / Tab from reaching
+    /// their global arms while the operator types.
+    fn handle_config_filter_key(&self, code: KeyCode, ctx: &mut AppContext) -> ScreenAction {
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        match code {
+            KeyCode::Char(c) => {
+                cache.defaults_filter.push(c);
+                select_first_visible(cache);
+            }
+            KeyCode::Backspace => {
+                cache.defaults_filter.pop();
+                select_first_visible(cache);
+            }
+            // Clear and leave; the cursor is an underlying index, so it stays
+            // on the row it was on.
+            KeyCode::Esc => {
+                cache.defaults_filter.clear();
+                cache.defaults_filter_typing = false;
+            }
+            // Confirm: keep the filter, drop focus ([INFERRED A2]). The next
+            // Enter edits the selected row.
+            KeyCode::Enter => {
+                cache.defaults_filter_typing = false;
+                snap_defaults_selection(cache);
+            }
+            // [INFERRED A7] arrows and pages navigate while typing; j/k are text.
+            KeyCode::Down => move_defaults_selection(cache, 1),
+            KeyCode::Up => move_defaults_selection(cache, -1),
+            KeyCode::PageDown => move_defaults_selection(cache, PAGE_SCROLL_LINES as isize),
+            KeyCode::PageUp => move_defaults_selection(cache, -(PAGE_SCROLL_LINES as isize)),
+            _ => {}
+        }
+        ctx.needs_redraw = true;
+        ScreenAction::None
+    }
+
     fn handle_text_input_key(
         &self,
         code: KeyCode,
@@ -4982,11 +5036,33 @@ impl DetailScreen {
             return;
         }
 
-        let items: Vec<ListItem> = entries
+        // The `/` filter (quick 260922-hdi). `visible` holds UNDERLYING indices;
+        // `selected` stays one too, so the highlight compares underlying
+        // indices and only the `ListState` below speaks visible positions.
+        let (filter, typing) = cache
+            .map(|c| (c.defaults_filter.clone(), c.defaults_filter_typing))
+            .unwrap_or_default();
+        let filtering = !filter.is_empty();
+        let visible = match cache {
+            Some(c) => visible_defaults_indices(c, &entries),
+            None => (0..entries.len()).collect(),
+        };
+
+        let items: Vec<ListItem> = visible
             .iter()
             .enumerate()
-            .map(|(i, entry)| {
-                let cat_span = if entry.show_category {
+            .map(|(pos, &i)| {
+                let entry = &entries[i];
+                // Unfiltered: the builder's own `show_category`, so the
+                // unfiltered render is unchanged. Filtered: the category heads
+                // the first visible row of each run, since the builder's flag
+                // is keyed to the unfiltered order.
+                let show_category = if filtering {
+                    pos == 0 || entries[visible[pos - 1]].category != entry.category
+                } else {
+                    entry.show_category
+                };
+                let cat_span = if show_category {
                     Span::styled(
                         format!("{:<18}", entry.category),
                         Style::default().fg(Color::DarkGray),
@@ -5063,10 +5139,22 @@ impl DetailScreen {
             })
             .collect();
 
-        let title = match edit_target {
+        let mut title = match edit_target {
             DefaultsEditTarget::Project => " Config Settings ".to_string(),
             DefaultsEditTarget::Global => " Global Defaults (~/.gsd/defaults.json) ".to_string(),
         };
+        // Filter echo + count ([INFERRED A5]). The filter is operator-typed
+        // and `Block::title` preserves the invisible class, so it is drawn
+        // only through `shown()` (T-HDI-03).
+        if filtering || typing {
+            title.push_str(&format!(
+                " /{}{} ({}/{}) ",
+                shown(&filter),
+                if typing { "_" } else { "" },
+                visible.len(),
+                entries.len()
+            ));
+        }
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::TOP)
@@ -5088,16 +5176,29 @@ impl DetailScreen {
         };
 
         let mut list_state = ListState::default();
-        list_state.select(Some(selected));
+        if filtering {
+            // The VISIBLE position of the underlying cursor, never the
+            // underlying index itself (else the viewport follows the wrong row).
+            list_state.select(visible.iter().position(|&i| i == selected));
+        } else {
+            list_state.select(Some(selected));
+        }
         frame.render_stateful_widget(list, list_area, &mut list_state);
 
         if let Some(help_area) = help_area {
-            // `selected` is the cache's own cursor and the list is non-empty
-            // here, but the cache is not this function's to trust: an entry
-            // count that shrank since the cursor was set would panic on a
-            // bare index.
-            let idx = selected.min(entries.len() - 1);
-            frame.render_widget(build_config_help_pane(&entries[idx].help), help_area);
+            if filtering {
+                // Help only for a row the filter shows (T-HDI-05).
+                if visible.contains(&selected) {
+                    frame.render_widget(build_config_help_pane(&entries[selected].help), help_area);
+                }
+            } else {
+                // `selected` is the cache's own cursor and the list is non-empty
+                // here, but the cache is not this function's to trust: an entry
+                // count that shrank since the cursor was set would panic on a
+                // bare index.
+                let idx = selected.min(entries.len() - 1);
+                frame.render_widget(build_config_help_pane(&entries[idx].help), help_area);
+            }
         }
 
         // Render dropdown OR text-input overlay if editing
@@ -7368,8 +7469,87 @@ fn entries_for_cache(cache: &super::ProjectViewCache) -> Vec<ConfigEntry> {
         .unwrap_or_default()
 }
 
-fn entries_count_for_cache(cache: &super::ProjectViewCache) -> usize {
-    entries_for_cache(cache).len()
+/// Does `entry` match the Config tab's `/` filter? `q_lower` is the filter,
+/// already lowercased; empty matches everything. Key + category only
+/// (quick 260922-hdi, [INFERRED A1]): help prose would make short terms hit
+/// dozens of unrelated rows, and matching the value would make a row vanish
+/// from under the cursor the moment it is edited.
+fn config_row_matches(entry: &ConfigEntry, q_lower: &str) -> bool {
+    q_lower.is_empty()
+        || entry.key.to_lowercase().contains(q_lower)
+        || entry.category.to_lowercase().contains(q_lower)
+}
+
+/// UNDERLYING indices (into `entries`) of the rows the cache's filter shows —
+/// every index when the filter is empty.
+fn visible_defaults_indices(cache: &super::ProjectViewCache, entries: &[ConfigEntry]) -> Vec<usize> {
+    let q = cache.defaults_filter.to_lowercase();
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| config_row_matches(e, &q))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Move `defaults_selected` by `delta` VISIBLE rows. With no filter this is
+/// exactly the tab's historical arithmetic (clamp to the last row going down,
+/// saturate at 0 going up). With a filter the cursor walks the visible list;
+/// a hidden cursor snaps to the first visible row, and an empty visible list
+/// is a no-op.
+fn move_defaults_selection(cache: &mut super::ProjectViewCache, delta: isize) {
+    let entries = entries_for_cache(cache);
+    if cache.defaults_filter.is_empty() {
+        if delta >= 0 {
+            if !entries.is_empty() {
+                let max = entries.len() - 1;
+                cache.defaults_selected = (cache.defaults_selected + delta as usize).min(max);
+            }
+        } else {
+            cache.defaults_selected = cache.defaults_selected.saturating_sub(delta.unsigned_abs());
+        }
+        return;
+    }
+    let visible = visible_defaults_indices(cache, &entries);
+    let Some(&first) = visible.first() else {
+        return;
+    };
+    match visible.iter().position(|&i| i == cache.defaults_selected) {
+        None => cache.defaults_selected = first,
+        Some(pos) => {
+            let new_pos = pos.saturating_add_signed(delta).min(visible.len() - 1);
+            cache.defaults_selected = visible[new_pos];
+        }
+    }
+}
+
+/// With a non-empty filter, move a cursor that sits on a HIDDEN row to the
+/// first visible one. A visible cursor, an empty filter, or a filter that
+/// matches nothing leaves it where it is.
+fn snap_defaults_selection(cache: &mut super::ProjectViewCache) {
+    if cache.defaults_filter.is_empty() {
+        return;
+    }
+    let entries = entries_for_cache(cache);
+    let visible = visible_defaults_indices(cache, &entries);
+    if let Some(&first) = visible.first() {
+        if !visible.contains(&cache.defaults_selected) {
+            cache.defaults_selected = first;
+        }
+    }
+}
+
+/// After the filter text changed: put the cursor on the first match
+/// ([INFERRED A6], the dashboard's `select(Some(0))`). An emptied filter or
+/// one that matches nothing leaves the cursor alone.
+fn select_first_visible(cache: &mut super::ProjectViewCache) {
+    if cache.defaults_filter.is_empty() {
+        return;
+    }
+    let entries = entries_for_cache(cache);
+    if let Some(&first) = visible_defaults_indices(cache, &entries).first() {
+        cache.defaults_selected = first;
+    }
 }
 
 /// The Defaults string-edit popup's title suffix.

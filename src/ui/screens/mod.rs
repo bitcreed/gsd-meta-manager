@@ -982,6 +982,16 @@ pub struct ProjectViewCache {
     /// the type's doc for why the fix is a type rather than a `shown()` at the
     /// popup.
     pub defaults_text_buffer: EditBuffer,
+    /// The operator-typed `/` filter for the Config tab (quick 260922-hdi).
+    ///
+    /// Matched raw (case-insensitively) against each row's key and category,
+    /// and only ever drawn through `shown()`. It narrows what the tab SHOWS;
+    /// `defaults_selected` / `defaults_editing` stay indices into the
+    /// UNFILTERED entry list.
+    pub defaults_filter: String,
+    /// True while the Config tab's filter input line has focus: every
+    /// character key edits `defaults_filter` instead of firing a shortcut.
+    pub defaults_filter_typing: bool,
     // ── Docs browser tab state ────────────────────────────────────────
     pub browser_depth: crate::browser::BrowserDepth,
     /// `None` until the user first activates the Docs tab; then set to the
