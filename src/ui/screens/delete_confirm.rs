@@ -406,4 +406,42 @@ mod tests {
             "and the sibling maps are still cleaned on the removal path (D-27)"
         );
     }
+
+    #[test]
+    fn folder_presence_unregistering_a_project_whose_folder_is_gone_removes_it() {
+        // quick-260922-hdh: a red "(missing)" row exists so the user can find
+        // the stale entry and remove it. The removal must not need the folder.
+        use crate::state_reader::{parse_project_state, ProjectPresence};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let vanished = dir.path().join("vanished");
+        ctx.config.projects.get_mut(ALIAS).unwrap().path = vanished.clone();
+        ctx.project_states.insert(
+            ALIAS.to_string(),
+            parse_project_state(&vanished.join(".planning")),
+        );
+        assert_eq!(
+            ctx.project_states[ALIAS].presence,
+            ProjectPresence::FolderMissing,
+            "precondition: the project's folder reads as gone"
+        );
+
+        confirm_removal(&mut ctx);
+
+        assert!(
+            !ctx.config.projects.contains_key(ALIAS),
+            "a project whose folder is gone must be removable from the registry"
+        );
+        assert!(
+            !ctx.project_states.contains_key(ALIAS),
+            "and its cached state must go with it"
+        );
+        assert_eq!(ctx.error_message, None);
+        let (status, _) = ctx
+            .status_message
+            .as_ref()
+            .expect("a removal reports what it did");
+        assert!(status.contains("Removed"), "got: {status}");
+    }
 }
