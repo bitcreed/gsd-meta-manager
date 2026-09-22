@@ -5163,8 +5163,7 @@ impl DetailScreen {
         // (T-HDI-04). The `ListState` below selects `None` because the
         // cursor's position in an empty `visible` is `None`.
         let items = if filtering && visible.is_empty() {
-            vec![ListItem::new("  No config keys match")
-                .style(Style::default().fg(Color::DarkGray))]
+            vec![ListItem::new("  No config keys match").style(Style::default().fg(Color::DarkGray))]
         } else {
             items
         };
@@ -6153,6 +6152,8 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw(" defaults  "));
             spans.push(Span::styled("[r]", b));
             spans.push(Span::raw("eload  "));
+            spans.push(Span::styled("[/]", b));
+            spans.push(Span::raw("filter  "));
         }
         _ => {
             spans.push(Span::styled("[e]", b));
@@ -7512,7 +7513,10 @@ fn config_row_matches(entry: &ConfigEntry, q_lower: &str) -> bool {
 
 /// UNDERLYING indices (into `entries`) of the rows the cache's filter shows —
 /// every index when the filter is empty.
-fn visible_defaults_indices(cache: &super::ProjectViewCache, entries: &[ConfigEntry]) -> Vec<usize> {
+fn visible_defaults_indices(
+    cache: &super::ProjectViewCache,
+    entries: &[ConfigEntry],
+) -> Vec<usize> {
     let q = cache.defaults_filter.to_lowercase();
     entries
         .iter()
@@ -9695,7 +9699,7 @@ mod tests {
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
             "  [Esc]back  [1-0/D]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
-             [r]eload  [?]help"
+             [r]eload  [/]filter  [?]help"
         );
     }
 
@@ -13843,8 +13847,14 @@ mod tests {
             .position(|e| e.key.as_ref() == key)
             .expect("the Defaults tab has a context_drift_action row");
         let (mut ctx, mode_idx) = ctx_on_config_row(sparse_gsd_config(), "mode");
-        assert_ne!(target_idx, mode_idx, "precondition: the cursor starts elsewhere");
-        assert_eq!(entries[target_idx].value, "(unset)", "precondition: an UNSET row");
+        assert_ne!(
+            target_idx, mode_idx,
+            "precondition: the cursor starts elsewhere"
+        );
+        assert_eq!(
+            entries[target_idx].value, "(unset)",
+            "precondition: an UNSET row"
+        );
         let before = config_row_values(&ctx);
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
 
@@ -13853,14 +13863,21 @@ mod tests {
             let cache = &ctx.view_cache[TEST_ALIAS];
             assert_eq!(cache.defaults_filter, "context_drift_action");
             assert!(cache.defaults_filter_typing, "the input still has focus");
-            assert_eq!(cache.defaults_selected, target_idx, "the cursor follows the match");
+            assert_eq!(
+                cache.defaults_selected, target_idx,
+                "the cursor follows the match"
+            );
             assert!(cache.defaults_editing.is_none());
             assert!(matches!(
                 cache.defaults_edit_target,
                 super::super::DefaultsEditTarget::Project
             ));
         }
-        assert_eq!(config_row_values(&ctx), before, "a typed char fired its shortcut");
+        assert_eq!(
+            config_row_values(&ctx),
+            before,
+            "a typed char fired its shortcut"
+        );
         assert_eq!(
             ctx.detail_sub_view_per_project.get(TEST_ALIAS),
             Some(&DetailSubView::Defaults)
@@ -13870,7 +13887,10 @@ mod tests {
         {
             let cache = &ctx.view_cache[TEST_ALIAS];
             assert!(!cache.defaults_filter_typing, "Enter while typing confirms");
-            assert_eq!(cache.defaults_filter, "context_drift_action", "and keeps the filter");
+            assert_eq!(
+                cache.defaults_filter, "context_drift_action",
+                "and keeps the filter"
+            );
             assert_eq!(cache.defaults_editing, None, "confirming opens nothing");
         }
 
@@ -13885,7 +13905,10 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let after = config_row_values(&ctx);
         let pick = dropdown_options(&entries[target_idx].kind)[1].clone();
-        assert_eq!(after[target_idx], pick, "the pick lands on the filtered key");
+        assert_eq!(
+            after[target_idx], pick,
+            "the pick lands on the filtered key"
+        );
         for (i, (b, a)) in before.iter().zip(&after).enumerate() {
             if i != target_idx {
                 assert_eq!(b, a, "row {i} ({}) changed", entries[i].key);
@@ -13903,13 +13926,21 @@ mod tests {
             let sel = |ctx: &AppContext| ctx.view_cache[TEST_ALIAS].defaults_selected;
 
             type_config_filter(&mut screen, &mut ctx, query);
-            assert_eq!(sel(&ctx), expected[0], "{query}: typing selects the first match");
+            assert_eq!(
+                sel(&ctx),
+                expected[0],
+                "{query}: typing selects the first match"
+            );
             for want in &expected[1..=4] {
                 press(&mut screen, &mut ctx, KeyCode::Down);
                 assert_eq!(sel(&ctx), *want, "{query}: Down skips hidden rows");
             }
             press(&mut screen, &mut ctx, KeyCode::Down);
-            assert_eq!(sel(&ctx), expected[4], "{query}: Down clamps at the last match");
+            assert_eq!(
+                sel(&ctx),
+                expected[4],
+                "{query}: Down clamps at the last match"
+            );
             press(&mut screen, &mut ctx, KeyCode::Up);
             assert_eq!(sel(&ctx), expected[3]);
             press(&mut screen, &mut ctx, KeyCode::PageUp);
@@ -13920,12 +13951,19 @@ mod tests {
             press(&mut screen, &mut ctx, KeyCode::Enter);
             assert!(!ctx.view_cache[TEST_ALIAS].defaults_filter_typing);
             press(&mut screen, &mut ctx, KeyCode::Char('k'));
-            assert_eq!(sel(&ctx), expected[3], "{query}: k navigates once confirmed");
+            assert_eq!(
+                sel(&ctx),
+                expected[3],
+                "{query}: k navigates once confirmed"
+            );
             press(&mut screen, &mut ctx, KeyCode::Char('k'));
             assert_eq!(sel(&ctx), expected[2]);
             press(&mut screen, &mut ctx, KeyCode::Char('j'));
             assert_eq!(sel(&ctx), expected[3]);
-            assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_filter, query, "j/k are not text");
+            assert_eq!(
+                ctx.view_cache[TEST_ALIAS].defaults_filter, query,
+                "j/k are not text"
+            );
         }
     }
 
@@ -13950,16 +13988,31 @@ mod tests {
         type_config_filter(&mut screen, &mut ctx, "drift");
         let text = draw_config_tab(&screen, &ctx, 160, 45).join("\n");
         for key in &drift_keys {
-            assert!(text.contains(key.as_str()), "matching row `{key}` not drawn");
+            assert!(
+                text.contains(key.as_str()),
+                "matching row `{key}` not drawn"
+            );
         }
-        assert!(!text.contains("granularity"), "a non-matching row was drawn");
+        assert!(
+            !text.contains("granularity"),
+            "a non-matching row was drawn"
+        );
         assert!(text.contains("/drift_"), "the typing echo is missing");
-        assert!(text.contains(&format!("({}/{total})", 5)), "the count is missing");
+        assert!(
+            text.contains(&format!("({}/{total})", 5)),
+            "the count is missing"
+        );
 
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let text = draw_config_tab(&screen, &ctx, 160, 45).join("\n");
-        assert!(!text.contains("/drift_"), "the cursor mark outlived the input focus");
-        assert!(text.contains("/drift"), "the confirmed filter is no longer echoed");
+        assert!(
+            !text.contains("/drift_"),
+            "the cursor mark outlived the input focus"
+        );
+        assert!(
+            text.contains("/drift"),
+            "the confirmed filter is no longer echoed"
+        );
         assert!(text.contains(&format!("(5/{total})")));
     }
 
@@ -13976,7 +14029,10 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         for c in ['x', 'q', '3', 'r', '?', 'j', 'k', 'd'] {
             let action = screen.handle_key(KeyCode::Char(c), KeyModifiers::NONE, &mut ctx);
-            assert!(matches!(action, ScreenAction::None), "`{c}` returned an action");
+            assert!(
+                matches!(action, ScreenAction::None),
+                "`{c}` returned an action"
+            );
         }
         {
             let cache = &ctx.view_cache[TEST_ALIAS];
@@ -13986,7 +14042,11 @@ mod tests {
                 super::super::DefaultsEditTarget::Project
             ));
         }
-        assert_eq!(config_row_values(&ctx), before, "a typed key mutated a value");
+        assert_eq!(
+            config_row_values(&ctx),
+            before,
+            "a typed key mutated a value"
+        );
         let mode_idx = build_defaults_entries(&sparse_gsd_config(), None)
             .iter()
             .position(|e| e.key.as_ref() == "mode")
@@ -13995,7 +14055,10 @@ mod tests {
 
         for code in [KeyCode::Left, KeyCode::Right, KeyCode::Tab, KeyCode::Delete] {
             let action = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
-            assert!(matches!(action, ScreenAction::None), "{code:?} returned an action");
+            assert!(
+                matches!(action, ScreenAction::None),
+                "{code:?} returned an action"
+            );
             assert_eq!(
                 ctx.detail_sub_view_per_project.get(TEST_ALIAS),
                 Some(&DetailSubView::Defaults),
@@ -14020,7 +14083,10 @@ mod tests {
             let cache = &ctx.view_cache[TEST_ALIAS];
             assert!(cache.defaults_filter.is_empty());
             assert!(!cache.defaults_filter_typing);
-            assert_eq!(cache.defaults_selected, row, "Esc moved the cursor off its row");
+            assert_eq!(
+                cache.defaults_selected, row,
+                "Esc moved the cursor off its row"
+            );
         }
 
         // Esc, then q, on a CONFIRMED filter: clears, no Pop ([INFERRED A3]).
@@ -14028,7 +14094,10 @@ mod tests {
             type_config_filter(&mut screen, &mut ctx, "drift");
             press(&mut screen, &mut ctx, KeyCode::Enter);
             let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
-            assert!(matches!(action, ScreenAction::None), "{key:?} popped a filtered tab");
+            assert!(
+                matches!(action, ScreenAction::None),
+                "{key:?} popped a filtered tab"
+            );
             let cache = &ctx.view_cache[TEST_ALIAS];
             assert!(cache.defaults_filter.is_empty(), "{key:?} kept the filter");
             assert!(!cache.defaults_filter_typing);
@@ -14036,7 +14105,10 @@ mod tests {
 
         // No filter: Esc pops exactly as before.
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::Pop), "Esc with no filter must pop");
+        assert!(
+            matches!(action, ScreenAction::Pop),
+            "Esc with no filter must pop"
+        );
 
         // Popup first, then filter, then pop.
         type_config_filter(&mut screen, &mut ctx, "drift");
@@ -14047,8 +14119,14 @@ mod tests {
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(drift[4]));
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None, "popup closes first");
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_filter, "drift", "and keeps the filter");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing, None,
+            "popup closes first"
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_filter, "drift",
+            "and keeps the filter"
+        );
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
         assert!(ctx.view_cache[TEST_ALIAS].defaults_filter.is_empty());
@@ -14077,13 +14155,19 @@ mod tests {
         ] {
             press(&mut screen, &mut ctx, code);
             let cache = &ctx.view_cache[TEST_ALIAS];
-            assert_eq!(cache.defaults_selected, selected, "{code:?} moved the cursor");
+            assert_eq!(
+                cache.defaults_selected, selected,
+                "{code:?} moved the cursor"
+            );
             assert_eq!(cache.defaults_editing, None, "{code:?} opened an editor");
             assert_eq!(config_row_values(&ctx), before, "{code:?} changed a value");
         }
 
         let text = draw_config_tab(&screen, &ctx, 120, 30).join("\n");
-        assert!(text.contains("No config keys match"), "the empty state is not drawn");
+        assert!(
+            text.contains("No config keys match"),
+            "the empty state is not drawn"
+        );
         assert!(text.contains("(0/"), "the zero count is not echoed");
     }
 
@@ -14097,7 +14181,10 @@ mod tests {
         let entries = build_defaults_entries(&config, None);
         let pos = |key: &str| entries.iter().position(|e| e.key.as_ref() == key).unwrap();
         let (threshold, mode) = (pos("workflow.drift_threshold"), pos("mode"));
-        assert_eq!(entries[threshold].value, "5", "precondition: the row is set");
+        assert_eq!(
+            entries[threshold].value, "5",
+            "precondition: the row is set"
+        );
         let (mut ctx, _) = ctx_on_config_row(config, "mode");
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
 
@@ -14105,8 +14192,14 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Enter);
         press(&mut screen, &mut ctx, KeyCode::Char('x'));
         let values = config_row_values(&ctx);
-        assert_eq!(values[threshold], "(unset)", "x did not clear the filtered row");
-        assert_eq!(values[mode], "yolo", "x cleared the row under the old cursor");
+        assert_eq!(
+            values[threshold], "(unset)",
+            "x did not clear the filtered row"
+        );
+        assert_eq!(
+            values[mode], "yolo",
+            "x cleared the row under the old cursor"
+        );
     }
 
     #[test]
@@ -14126,8 +14219,14 @@ mod tests {
             &mut ctx,
         );
         let cache = &ctx.view_cache[TEST_ALIAS];
-        assert!(cache.defaults_filter.is_empty(), "arrival kept a stale filter");
-        assert!(!cache.defaults_filter_typing, "arrival kept the input focus");
+        assert!(
+            cache.defaults_filter.is_empty(),
+            "arrival kept a stale filter"
+        );
+        assert!(
+            !cache.defaults_filter_typing,
+            "arrival kept the input focus"
+        );
 
         // `d` keeps the filter and the cursor on a VISIBLE row. Nothing
         // mutating follows: Global persists to the real ~/.gsd/defaults.json.
@@ -14144,7 +14243,10 @@ mod tests {
         assert_eq!(cache.defaults_filter, "drift", "d dropped the filter");
         let entries = entries_for_cache(cache);
         let key = entries[cache.defaults_selected].key.to_string();
-        assert!(key.contains("drift"), "d parked the cursor on hidden row `{key}`");
+        assert!(
+            key.contains("drift"),
+            "d parked the cursor on hidden row `{key}`"
+        );
     }
 
     /// T-HDI-03: the echo goes through `shown()`; the raw ESC is matched but
@@ -14157,13 +14259,19 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('/'));
         press(&mut screen, &mut ctx, KeyCode::Char('\u{1b}'));
         press(&mut screen, &mut ctx, KeyCode::Char('a'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_filter, "\u{1b}a", "matched raw");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_filter, "\u{1b}a",
+            "matched raw"
+        );
 
         let rows = draw_config_tab(&screen, &ctx, 120, 30);
         assert!(
             rows.iter().all(|r| !r.contains('\u{1b}')),
             "a raw ESC reached a cell"
         );
-        assert!(rows.join("\n").contains(&format!("(0/{total})")), "the count is missing");
+        assert!(
+            rows.join("\n").contains(&format!("(0/{total})")),
+            "the count is missing"
+        );
     }
 }
