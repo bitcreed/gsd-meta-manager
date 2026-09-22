@@ -7,6 +7,7 @@ use super::help::HelpScreen;
 use super::{AppContext, Screen, ScreenAction, SortMode};
 use crate::app::{classify_status, format_phase_display, DetailSubView, StatusCategory};
 use crate::state_reader::disk_status::DiskStatus;
+use crate::state_reader::ProjectPresence;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -805,7 +806,13 @@ impl NormalScreen {
                         _ => "-".to_string(),
                     };
 
-                    let row_color = status_color(&status_str);
+                    // A registered project that is no longer a working GSD
+                    // project on disk is red whatever its (default) status
+                    // says. Presence was decided at parse time; never stat here.
+                    let row_color = match state {
+                        Some(s) if s.presence != ProjectPresence::Present => Color::Red,
+                        _ => status_color(&status_str),
+                    };
 
                     // Build status cell: milestone complete, pipeline, or expanded
                     let is_milestone_complete = match state {

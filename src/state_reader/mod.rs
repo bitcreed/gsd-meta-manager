@@ -11,6 +11,33 @@ pub mod workstreams;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Whether a registered project is still on disk as a GSD project.
+///
+/// Registration checks the path exactly once (`registry::add_project`); after
+/// that a folder can be moved or deleted under the dashboard. Without this, such
+/// an entry parses to the same placeholder as a project whose `STATE.md` is
+/// unreadable, and the two cannot be told apart.
+///
+/// **An enum, not a `String` or a `bool`.** It is a classification this crate
+/// authors from two `is_dir()` stats, not text read from the repository, so it
+/// must not widen `tests/spawn_seam_guard.rs`'s census of free `String` fields
+/// on [`ProjectState`]; and it has three states, not two, because a folder
+/// that exists without `.planning/` is a different fix for the user than a
+/// folder that is gone.
+///
+/// Decided in [`parse_project_state`] only, never at render time: a state built
+/// from [`ProjectState::default()`] is [`ProjectPresence::Present`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProjectPresence {
+    /// The project folder and its `.planning/` directory both exist.
+    #[default]
+    Present,
+    /// The project folder exists but has no `.planning/` directory.
+    NoPlanning,
+    /// The project folder itself is gone (or is not a directory).
+    FolderMissing,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectState {
     pub status: String,
@@ -139,6 +166,9 @@ pub struct ProjectState {
     /// boundary, and `tests/spawn_seam_guard.rs`'s census of every free
     /// `String` on this struct stays satisfied without widening it.
     pub state_md_recovered: bool,
+    /// Whether the project folder and its `.planning/` still exist, as of the
+    /// last parse. See [`ProjectPresence`].
+    pub presence: ProjectPresence,
 }
 
 impl ProjectState {
@@ -384,6 +414,18 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| planning_dir.to_path_buf());
+
+    // Presence, decided here and nowhere else. No early return: every read
+    // below already fails silently on a missing path, and a single code path
+    // means a field added later cannot be skipped for missing projects.
+    state.presence = if !state.project_root.is_dir() {
+        ProjectPresence::FolderMissing
+    } else if !planning_dir.is_dir() {
+        ProjectPresence::NoPlanning
+    } else {
+        ProjectPresence::Present
+    };
+
     state.last_activity = git_ops::project_last_activity(&state.project_root);
 
     // Parse STATE.md

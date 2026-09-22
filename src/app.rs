@@ -3,7 +3,7 @@ use crate::change_tracker::ChangeTracker;
 use crate::config::{load_config, save_config, Config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
-use crate::state_reader::{self, ProjectState};
+use crate::state_reader::{self, ProjectPresence, ProjectState};
 use crate::ui::screens::normal::NormalScreen;
 use crate::ui::screens::{AppContext, Screen, ScreenAction};
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -384,6 +384,17 @@ pub const UNREADABLE_STATE_LABEL: &str = "! STATE.md unreadable";
 /// applied to a document.
 pub const RECOVERED_STATE_MARKER: &str = "~ ";
 
+/// The phase cell of a registered project whose folder no longer exists
+/// ([`ProjectPresence::FolderMissing`]).
+///
+/// **Why a marker rather than a count-derived phase.** Every read of a missing
+/// folder fails silently, so the counts behind a phase label are all defaults;
+/// "P1: Unknown" would be a guess that looks like a fact, and would read exactly
+/// like an unreadable STATE.md. The literal text keeps the state readable
+/// without color, and because the dashboard filter matches against
+/// [`format_phase_display`], typing `/missing` lists every such project.
+pub const MISSING_FOLDER_LABEL: &str = "(missing)";
+
 /// The unreadable-state cell, naming the fault's FILE line when one is known.
 ///
 /// The bare constant is unchanged and is still what a location-less fault
@@ -403,6 +414,12 @@ pub fn unreadable_state_label(
 }
 
 pub fn format_phase_display(state: &ProjectState) -> String {
+    // A project that is no longer on disk has no phase to show; every value
+    // behind a label would be a default. Outranks the unreadable and recovered
+    // branches, which both describe a file that is not there.
+    if state.presence == ProjectPresence::FolderMissing {
+        return MISSING_FOLDER_LABEL.to_string();
+    }
     // A phase label derived from counts while the file that names the phase is
     // unreadable is a guess wearing a fact's clothes. Say so instead.
     if state.state_md_unreadable {
