@@ -395,6 +395,19 @@ pub const RECOVERED_STATE_MARKER: &str = "~ ";
 /// [`format_phase_display`], typing `/missing` lists every such project.
 pub const MISSING_FOLDER_LABEL: &str = "(missing)";
 
+/// The phase cell of a registered project whose folder exists but has no
+/// `.planning/` directory ([`ProjectPresence::NoPlanning`]).
+///
+/// **Distinct from [`MISSING_FOLDER_LABEL`] on purpose.** "The folder is gone"
+/// and "the folder is no longer a GSD project" are different fixes for a user,
+/// so they must not read the same. Still drawn red: either way the entry is not
+/// a working GSD project.
+///
+/// **Known transient.** Right after create-project the folder exists before
+/// GSD writes `.planning/`, so the row reads this for up to about 60s, until the
+/// existing post-create poll sees the directory and triggers a reparse.
+pub const NO_PLANNING_LABEL: &str = "(no .planning)";
+
 /// The unreadable-state cell, naming the fault's FILE line when one is known.
 ///
 /// The bare constant is unchanged and is still what a location-less fault
@@ -414,11 +427,14 @@ pub fn unreadable_state_label(
 }
 
 pub fn format_phase_display(state: &ProjectState) -> String {
-    // A project that is no longer on disk has no phase to show; every value
-    // behind a label would be a default. Outranks the unreadable and recovered
-    // branches, which both describe a file that is not there.
-    if state.presence == ProjectPresence::FolderMissing {
-        return MISSING_FOLDER_LABEL.to_string();
+    // A project that is no longer on disk (or no longer has `.planning/`) has
+    // no phase to show; every value behind a label would be a default.
+    // Outranks the unreadable and recovered branches, which both describe a
+    // file that is not there.
+    match state.presence {
+        ProjectPresence::FolderMissing => return MISSING_FOLDER_LABEL.to_string(),
+        ProjectPresence::NoPlanning => return NO_PLANNING_LABEL.to_string(),
+        ProjectPresence::Present => {}
     }
     // A phase label derived from counts while the file that names the phase is
     // unreadable is a guess wearing a fact's clothes. Say so instead.
