@@ -1487,7 +1487,7 @@ impl Screen for DetailScreen {
                     cache
                         .map(entries_for_cache)
                         .and_then(|entries| entries.into_iter().nth(idx))
-                        .filter(|e| matches!(e.kind, ConfigValueKind::String))
+                        .filter(|e| matches!(e.kind.editable(), ConfigValueKind::String))
                         .map(|_| idx)
                 })
             };
@@ -2613,7 +2613,7 @@ impl Screen for DetailScreen {
                                     let current_idx = options.iter().position(|o| o == &entry.value).unwrap_or(0);
                                     cache.defaults_editing = Some(selected);
                                     cache.defaults_dropdown_selected = current_idx;
-                                } else if matches!(entry.kind, ConfigValueKind::String) {
+                                } else if matches!(entry.kind.editable(), ConfigValueKind::String) {
                                     cache.defaults_editing = Some(selected);
                                     // THE SEED, and the site the laundering ran
                                     // through: `entry.value` is a free-form
@@ -2629,7 +2629,7 @@ impl Screen for DetailScreen {
                                                 entry.value.clone(),
                                             )
                                         };
-                                } else if matches!(entry.kind, ConfigValueKind::Integer) {
+                                } else if matches!(entry.kind.editable(), ConfigValueKind::Integer) {
                                     if let Some(active) = active_config_mut(cache) {
                                         if mutate_config_entry(active, entry.key.as_ref(), &entry.kind) {
                                             persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
@@ -5018,7 +5018,9 @@ impl DetailScreen {
                             Style::default().fg(Color::DarkGray)
                         }
                     }
-                    ConfigValueKind::Null => Style::default().fg(Color::DarkGray),
+                    ConfigValueKind::Null | ConfigValueKind::Unset(_) => {
+                        Style::default().fg(Color::DarkGray)
+                    }
                     ConfigValueKind::ReadOnly => Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
@@ -5102,7 +5104,7 @@ impl DetailScreen {
         if let Some(cache) = cache {
             if let Some(editing_idx) = cache.defaults_editing {
                 if let Some(entry) = entries.get(editing_idx) {
-                    if matches!(entry.kind, ConfigValueKind::String) {
+                    if matches!(entry.kind.editable(), ConfigValueKind::String) {
                         // `Block::title` PRESERVES the invisible class (the
                         // per-widget-family table in `render_escape_guard.rs`),
                         // so the key is escaped here as well as in the list.
@@ -6046,10 +6048,30 @@ enum ConfigValueKind {
     Enum(&'static [&'static str]),
     String,
     Integer,
+    /// Unset, with nothing to say what it would be — the read-only
+    /// shape-varying keys. Not editable.
     Null,
+    /// Unset in both layers, but with a known shape: the kind the row takes
+    /// the moment it is set. It renders as `(unset)` exactly like `Null`,
+    /// yet Enter still opens that kind's editor — collapsing it into `Null`
+    /// is what made every unset bool/enum row a dead key (debug session
+    /// `enter-unset-config-row`).
+    Unset(Box<ConfigValueKind>),
     /// Display-only: shape-varying keys (JSON value could be int/string/array)
     /// that we surface as a formatted string but never make editable.
     ReadOnly,
+}
+
+impl ConfigValueKind {
+    /// The kind an EDIT acts on: an unset row edits as the kind it becomes.
+    /// Display code matches on the kind itself; every edit path goes through
+    /// this, so an unset row and a set row of the same key edit identically.
+    fn editable(&self) -> &ConfigValueKind {
+        match self {
+            ConfigValueKind::Unset(inner) => inner.editable(),
+            other => other,
+        }
+    }
 }
 
 /// What one Defaults-tab option MEANS, authored at the option's definition site.
@@ -6310,7 +6332,7 @@ fn opt_bool_layered(project: Option<bool>, defaults: Option<bool>) -> (String, C
     } else if let Some(v) = defaults {
         (v.to_string(), ConfigValueKind::Bool, true)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Null, false)
+        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Bool)), false)
     }
 }
 
@@ -6320,7 +6342,7 @@ fn opt_str_layered(project: Option<&str>, defaults: Option<&str>) -> (String, Co
     } else if let Some(s) = defaults {
         (s.to_string(), ConfigValueKind::String, true)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Null, false)
+        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::String)), false)
     }
 }
 
@@ -6330,7 +6352,7 @@ fn opt_u32_layered(project: Option<u32>, defaults: Option<u32>) -> (String, Conf
     } else if let Some(n) = defaults {
         (n.to_string(), ConfigValueKind::Integer, true)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Null, false)
+        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Integer)), false)
     }
 }
 
@@ -6344,7 +6366,7 @@ fn opt_enum_layered(
     } else if let Some(s) = defaults {
         (s.to_string(), ConfigValueKind::Enum(options), true)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Null, false)
+        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Enum(options))), false)
     }
 }
 
@@ -6902,7 +6924,11 @@ fn build_defaults_entries(
     let (qbt_val, qbt_kind, qbt_fd) = match (qbt_proj, qbt_def) {
         (Some(s), _) => (s, ConfigValueKind::String, false),
         (None, Some(s)) => (s, ConfigValueKind::String, true),
-        (None, None) => ("(unset)".to_string(), ConfigValueKind::Null, false),
+        (None, None) => (
+            "(unset)".to_string(),
+            ConfigValueKind::Unset(Box::new(ConfigValueKind::String)),
+            false,
+        ),
     };
     push(cat, "quick_branch_template", qbt_val, qbt_kind, false, qbt_fd, ConfigHelp::new(
         "Optional name pattern, with {slug} substituted, for a quick task's branch; unset keeps quick work here.",
@@ -7438,7 +7464,7 @@ fn persist_active_config(
 /// Returns the list of selectable values for an entry's kind, or empty if the
 /// list is not statically known (e.g. free-form strings, integers).
 fn dropdown_options(kind: &ConfigValueKind) -> Vec<String> {
-    match kind {
+    match kind.editable() {
         ConfigValueKind::Bool => vec!["true".to_string(), "false".to_string()],
         ConfigValueKind::Enum(opts) => opts.iter().map(|s| s.to_string()).collect(),
         _ => Vec::new(),
@@ -7804,7 +7830,10 @@ fn mutate_config_entry(
     use crate::state_reader::config_json::*;
 
     match kind {
-        ConfigValueKind::Null => false, // Cannot toggle unset values without initializing parent
+        ConfigValueKind::Null => false, // Shape unknown: nothing to toggle to
+        // Every arm below initialises its parent block, so an unset row
+        // toggles/cycles exactly as its set counterpart does.
+        ConfigValueKind::Unset(inner) => mutate_config_entry(config, key, inner),
         ConfigValueKind::String => false, // String editing not supported via Enter
         ConfigValueKind::Bool => {
             // Toggle the boolean field
@@ -8983,7 +9012,7 @@ mod tests {
             ConfigValueKind::Enum(_) => "enum",
             ConfigValueKind::String => "string",
             ConfigValueKind::Integer => "integer",
-            ConfigValueKind::Null => "null",
+            ConfigValueKind::Null | ConfigValueKind::Unset(_) => "null",
             ConfigValueKind::ReadOnly => "readonly",
         }
     }
