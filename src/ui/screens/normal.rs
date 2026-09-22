@@ -2589,4 +2589,16 @@ mod tests {
             "the alias of a folder without .planning/ must be red"
         );
     }
+
+    #[test]
+    fn folder_presence_filter_slash_missing_lists_only_missing_rows() {
+        let mut ctx = ctx_with_aliases(&["vanished", "intact"]);
+        ctx.project_states.get_mut("vanished").unwrap().presence =
+            ProjectPresence::FolderMissing;
+        ctx.recompute_filtered_aliases();
+
+        search(&mut NormalScreen::new(), &mut ctx, "missing");
+
+        assert_eq!(ctx.filtered_aliases, vec!["vanished".to_string()]);
+    }
 }

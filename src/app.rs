@@ -2233,6 +2233,31 @@ mod tests {
         assert_eq!(format_phase_display(&state), "(no .planning)");
     }
 
+    /// A missing folder outranks the unreadable and recovered branches: both
+    /// describe a file that is not there any more.
+    #[test]
+    fn folder_presence_marker_outranks_unreadable_and_recovered() {
+        let unreadable = ProjectState {
+            presence: ProjectPresence::FolderMissing,
+            state_md_unreadable: true,
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&unreadable), MISSING_FOLDER_LABEL);
+
+        let recovered = ProjectState {
+            presence: ProjectPresence::FolderMissing,
+            state_md_recovered: true,
+            ..Default::default()
+        };
+        let cell = format_phase_display(&recovered);
+        assert_eq!(cell, MISSING_FOLDER_LABEL);
+        assert!(!cell.starts_with(RECOVERED_STATE_MARKER));
+
+        let present = format_phase_display(&ProjectState::default());
+        assert!(!present.contains(MISSING_FOLDER_LABEL));
+        assert!(!present.contains(NO_PLANNING_LABEL));
+    }
+
     /// "Unreadable" tells a user the file is broken; the line tells them where
     /// to look. The number is the only thing the parser knew that crosses into
     /// the cell — no parser vocabulary comes with it.

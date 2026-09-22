@@ -672,6 +672,32 @@ mod tests {
         td
     }
 
+    // --- quick-260922-hdh: presence is decided at parse time ---------------
+
+    #[test]
+    fn folder_presence_is_folder_missing_when_root_is_gone() {
+        let td = TempDir::new().unwrap();
+        let gone = td.path().join("never-created");
+        let state = parse_project_state(&gone.join(".planning"));
+        assert_eq!(state.presence, ProjectPresence::FolderMissing);
+        assert_eq!(state.status, "unknown");
+        assert_eq!(state.project_root, gone);
+    }
+
+    #[test]
+    fn folder_presence_is_no_planning_when_root_exists_without_planning() {
+        let td = TempDir::new().unwrap();
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.presence, ProjectPresence::NoPlanning);
+    }
+
+    #[test]
+    fn folder_presence_is_present_for_a_real_planning_dir() {
+        let td = make_planning(&[("STATE.md", "---\nstatus: executing\n---\n")]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.presence, ProjectPresence::Present);
+    }
+
     #[test]
     fn test_frontmatter_current_phase_name_flows_into_state() {
         let td = make_planning(&[(
