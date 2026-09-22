@@ -3,6 +3,8 @@ created: 2026-09-22T16:52:25.454Z
 title: Show registered projects whose folder is missing in red
 area: ui
 severity: minor
+completed: 2026-09-22
+resolved_by: quick 260922-hdh (c8d79f4..0e112b2), batch 260922-hdg
 files:
   - src/registry.rs:403
   - src/ui/screens/normal.rs

@@ -3,6 +3,8 @@ created: 2026-09-22T16:52:25.454Z
 title: Support Codex as well as Claude as the agent runtime
 area: driver
 severity: minor
+completed: 2026-09-22
+resolved_by: quick 260922-hdj MVP slice (5eb7d2a..862c038), batch 260922-hdg; remainder in todos/pending/2026-09-22-codex-runtime-remainder-after-mvp.md
 files:
   - src/executor/claude.rs
   - src/executor/mod.rs

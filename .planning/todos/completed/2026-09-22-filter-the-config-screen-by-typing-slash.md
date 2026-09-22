@@ -3,6 +3,8 @@ created: 2026-09-22T16:52:25.454Z
 title: Filter the config screen by typing slash
 area: ui
 severity: minor
+completed: 2026-09-22
+resolved_by: quick 260922-hdi (8a0c732..b90ef32), batch 260922-hdg
 files:
   - src/ui/screens/detail.rs:5065
   - src/ui/screens/detail.rs:6823

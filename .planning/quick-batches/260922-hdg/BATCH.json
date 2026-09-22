@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "batch_id": "260922-hdg",
+  "created_at": "2026-09-22T17:30:32.739Z",
+  "options": {},
+  "base_revision": "9ef0f7f0f4e74669ee301067c69bbaedff2bc756",
+  "items": [
+    {
+      "quick_id": "260922-hdh",
+      "client_id": null,
+      "description": "Show registered projects whose folder is missing in red (todo .planning/todos/pending/2026-09-22-show-registered-projects-whose-folder-is-missing-in-red.md): on load/refresh check each registered path and its .planning/ dir; render missing entries in red in the project list with a \"(missing)\" suffix readable without color; delete flow (src/ui/screens/delete_confirm.rs) is the removal path",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/mod.rs",
+        "src/app.rs",
+        "src/ui/screens/normal.rs",
+        "src/ui/screens/delete_confirm.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "0e112b2",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260922-hdi",
+      "client_id": null,
+      "description": "Filter the config screen by typing slash (todo .planning/todos/pending/2026-09-22-filter-the-config-screen-by-typing-slash.md): on the Config Settings screen in src/ui/screens/detail.rs, / opens a filter input narrowing rows by key (and optionally help text); Esc clears; Enter/arrows act on the filtered selection which must map back to the correct underlying row; do not regress ConfigValueKind::Unset Enter-opens-chooser fix from commits 72b5e03..9ef0f7f",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/ui/screens/mod.rs",
+        "src/ui/screens/detail.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "b90ef32",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260922-hdj",
+      "client_id": null,
+      "description": "Support Codex as well as Claude as the agent runtime (todo .planning/todos/pending/2026-09-22-support-codex-as-well-as-claude-as-the-agent-runtime.md): research the installed codex CLI (codex --help, codex exec --help, JSON event output) and docs; introduce a runtime abstraction behind src/executor/ (spawn argv, output-stream parser, session/liveness detection in src/session_detector.rs, driver usage in src/driver/); keep Claude behavior byte-identical; select runtime per project or globally in config; if too large deliver a minimum viable slice (abstraction plus working Codex executor) and file the remainder as a new pending todo, flagged for audit",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/executor/runtime.rs",
+        "src/executor/codex_json.rs",
+        "src/executor/codex.rs",
+        "src/executor/mod.rs",
+        "src/executor/claude.rs",
+        "src/executor/stream_json.rs",
+        "src/error.rs",
+        "src/config.rs",
+        "src/journal/mod.rs",
+        "src/driver/run.rs",
+        "src/driver/mod.rs",
+        "tests/spawn_seam_guard.rs",
+        "tests/async_blocking_guard.rs",
+        "tests/driver_codex_runtime.rs",
+        "tests/fixtures/fake-codex.sh",
+        "tests/fixtures/codex/README.md",
+        "tests/fixtures/codex/01-exec-success.jsonl",
+        "tests/fixtures/codex/02-exec-failure.jsonl",
+        ".planning/todos/pending/2026-09-22-codex-runtime-remainder-after-mvp.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "862c038",
+      "failure_reason": null
+    }
+  ]
+}
