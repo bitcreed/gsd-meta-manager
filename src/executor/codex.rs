@@ -491,4 +491,201 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn a_dash_leading_prompt_is_the_one_element_after_the_terminator() {
+        let prompt = "-m gpt-evil --add-dir / ; rm -rf ~";
+        let argv = argv_strings(&ExecutionOptions::default(), prompt);
+        let terminator = argv
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("the argv carries a terminator");
+        assert_eq!(terminator, argv.len() - 2, "`--` is second to last");
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some(prompt),
+            "the whole prompt is ONE element, after `--`, and last (CWE-88)"
+        );
+    }
+
+    #[test]
+    fn the_model_flag_appears_only_when_a_model_is_set() {
+        let unset = argv_strings(&ExecutionOptions::default(), "p");
+        assert!(!unset.iter().any(|arg| arg == "-m"), "{unset:?}");
+
+        let options = ExecutionOptions {
+            model: Some("gpt-5-codex".to_string()),
+            ..Default::default()
+        };
+        let set = argv_strings(&options, "p");
+        let at = set
+            .iter()
+            .position(|arg| arg == "-m")
+            .expect("-m is emitted for a set model");
+        assert_eq!(set[at + 1], "gpt-5-codex");
+        assert!(
+            at < set.iter().position(|arg| arg == "--").expect("terminator"),
+            "the model flag sits before the terminator"
+        );
+    }
+
+    #[test]
+    fn the_add_dir_is_always_the_projects_git_dir() {
+        let argv = argv_strings(&ExecutionOptions::default(), "p");
+        let at = argv
+            .iter()
+            .position(|arg| arg == "--add-dir")
+            .expect("--add-dir is always emitted");
+        assert_eq!(argv[at + 1], "/work/proj/.git");
+    }
+
+    #[test]
+    fn what_codex_cannot_honour_is_refused_before_anything_is_built() {
+        let seam = ExecutionOptions {
+            profile: SpawnProfile::ModelSeam {
+                json_schema: "{}".to_string(),
+            },
+            ..Default::default()
+        };
+        let resume = ExecutionOptions {
+            resume_session: Some("t-1".to_string()),
+            ..Default::default()
+        };
+        let budget = ExecutionOptions {
+            budget_usd: Some(1.0),
+            ..Default::default()
+        };
+        for (what, options) in [("model seam", seam), ("resume", resume), ("budget", budget)] {
+            let err = build_codex_argv(&options, Path::new("/work/proj"), "p")
+                .expect_err("refused under codex");
+            assert!(
+                matches!(
+                    err,
+                    SpawnError::UnsupportedByRuntime {
+                        runtime: "codex",
+                        ..
+                    }
+                ),
+                "{what}: got {err:?}"
+            );
+        }
+    }
+
+    /// The permission-bypass flag family and the full-access sandbox value,
+    /// assembled at RUNTIME from halves so no line of this file carries them
+    /// (the `tests/spawn_seam_guard.rs` src scan would otherwise report this
+    /// test itself).
+    fn forbidden_needles() -> Vec<String> {
+        vec![
+            format!("{}{}", "--danger", "ously"),
+            format!("{}{}", "danger-full", "-access"),
+            // `--yolo` is the documented alias of the bypass flag.
+            format!("{}{}", "--yo", "lo"),
+        ]
+    }
+
+    #[test]
+    fn no_combination_of_options_widens_the_sandbox_or_bypasses_approval() {
+        let needles = forbidden_needles();
+        for model in [None, Some("gpt-5-codex".to_string())] {
+            for tools in [Vec::new(), vec!["Bash(git push:*)".to_string()]] {
+                for settings in [None, Some(std::path::PathBuf::from("/tmp/settings.json"))] {
+                    let options = ExecutionOptions {
+                        model: model.clone(),
+                        envelope_disallowed_tools: tools.clone(),
+                        envelope_settings: settings.clone(),
+                        ..Default::default()
+                    };
+                    let argv = argv_strings(&options, "p");
+                    let sandbox = argv
+                        .iter()
+                        .position(|arg| arg == "-s")
+                        .expect("the sandbox is always named");
+                    assert_eq!(argv[sandbox + 1], "workspace-write", "{argv:?}");
+                    for arg in &argv {
+                        for needle in &needles {
+                            assert!(!arg.contains(needle.as_str()), "{arg:?} in {argv:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_scrub_keeps_codex_home_and_the_ca_and_drops_every_other_agent_variable() {
+        for kept in ["CODEX_HOME", "CODEX_CA_CERTIFICATE", "PATH", "HOME", "CODEXHOME"] {
+            assert!(!scrubbed_from_codex_child(OsStr::new(kept)), "{kept} is kept");
+        }
+        for dropped in [
+            "CODEX_THREAD_ID",
+            "CODEX_SESSION_ID",
+            "CODEX_CI",
+            "CODEX_SANDBOX_NETWORK_DISABLED",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDECODE",
+        ] {
+            assert!(
+                scrubbed_from_codex_child(OsStr::new(dropped)),
+                "{dropped} is scrubbed"
+            );
+        }
+    }
+
+    /// A handle that is not attached to any process: only the fields `send`
+    /// and `interrupt` could possibly touch need to be real.
+    fn detached_handle() -> ExecutionHandle {
+        let (_events_tx, events) = mpsc::channel(1);
+        let (stdin_tx, _stdin_rx) = mpsc::channel(1);
+        ExecutionHandle {
+            id: ExecutionId(Uuid::new_v4()),
+            session_id: "t-1".to_string(),
+            events,
+            capabilities: Vec::new(),
+            pgid: 0,
+            claude_code_version: String::new(),
+            pending_control: Arc::new(Mutex::new(Default::default())),
+            control_response_cap: std::time::Duration::from_secs(1),
+            stdin_tx,
+            running: Arc::new(AtomicBool::new(true)),
+            cancel_tx: None,
+            outcome_rx: None,
+            outcome: None,
+            next_control_seq: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_and_interrupt_are_typed_refusals_under_codex() {
+        let executor = runtime::AgentExecutor::new(AgentRuntime::Codex);
+        let mut handle = detached_handle();
+        let sent = executor
+            .send(&mut handle, UserMessage::text("steer"))
+            .await
+            .expect_err("codex has no stdin channel");
+        assert!(
+            matches!(
+                sent,
+                SendError::UnsupportedByRuntime {
+                    runtime: "codex",
+                    ..
+                }
+            ),
+            "got {sent:?}"
+        );
+        let interrupted = executor
+            .interrupt(&mut handle)
+            .await
+            .expect_err("codex has no control channel");
+        assert!(
+            matches!(
+                interrupted,
+                SendError::UnsupportedByRuntime {
+                    runtime: "codex",
+                    ..
+                }
+            ),
+            "got {interrupted:?}"
+        );
+    }
 }

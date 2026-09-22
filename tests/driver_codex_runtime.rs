@@ -14,7 +14,7 @@
 #![cfg(unix)]
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::{drive, DriveArgs};
@@ -26,6 +26,12 @@ const SUCCESS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/codex/01-exec-success.jsonl"
 );
+const FAILURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/codex/02-exec-failure.jsonl"
+);
+/// The diagnostic code every Codex run journals before its first exec record.
+const RUNTIME_ENVELOPE_PARTIAL: &str = "runtime_envelope_partial";
 
 const ALIAS: &str = "codexed";
 /// A fixed run id so the test knows where to read, rather than globbing.
@@ -38,13 +44,28 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-/// Point the envelope at a temp root for this test binary, exactly once — the
-/// same isolation `tests/driver_tracer.rs` documents.
+/// The agent-family variables this binary plants in its own environment, so
+/// the env-hardening test has something to see scrubbed. `CODEX_HOME` is the
+/// one that must survive.
+const PLANTED_ENV: [(&str, &str); 4] = [
+    ("CODEX_THREAD_ID", "01a0ca2f-0000-7000-8000-00000000beef"),
+    ("CODEX_SANDBOX_NETWORK_DISABLED", "1"),
+    ("CODEX_HOME", "/nonexistent/codex-home"),
+    ("CLAUDECODE", "1"),
+];
+
+/// Point the envelope at a temp root for this test binary and plant
+/// [`PLANTED_ENV`] — both exactly once, inside one `OnceLock`, so every
+/// `set_var` in this binary happens before any test drives a run (the
+/// isolation `tests/driver_tracer.rs` documents).
 fn isolate_envelope_root() {
     static ROOT: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let dir = TempDir::new().expect("an envelope temp root");
         std::env::set_var(gsd_meta_manager::envelope::ENVELOPE_ROOT_ENV, dir.path());
+        for (key, value) in PLANTED_ENV {
+            std::env::set_var(key, value);
+        }
         dir
     });
 }
@@ -158,10 +179,6 @@ fn journal_records(root: &Path) -> Vec<Value> {
         .collect()
 }
 
-fn canonical(path: &Path) -> PathBuf {
-    path.canonicalize().expect("canonicalize")
-}
-
 #[tokio::test]
 async fn a_codex_registered_project_is_driven_through_codex_exec_end_to_end() {
     let root = project_root();
@@ -194,7 +211,6 @@ async fn a_codex_registered_project_is_driven_through_codex_exec_end_to_end() {
         ["/dev/null"],
         "an inherited stdin hangs codex exec; the child must get /dev/null"
     );
-    assert!(canonical(root.path()).is_dir());
 
     let record = run_record(root.path());
     assert_eq!(
@@ -224,5 +240,229 @@ async fn a_codex_registered_project_is_driven_through_codex_exec_end_to_end() {
             .iter()
             .any(|r| r["kind"] == "exec_event" && r["stream"] == "turn_completed"),
         "the synthesized turn boundary is journaled like a Claude one"
+    );
+}
+
+/// The index of the first journal record matching `pred`.
+fn position(records: &[Value], pred: impl Fn(&Value) -> bool) -> Option<usize> {
+    records.iter().position(pred)
+}
+
+fn is_disclosure(record: &Value) -> bool {
+    record["kind"] == "diagnostic" && record["code"] == RUNTIME_ENVELOPE_PARTIAL
+}
+
+#[tokio::test]
+async fn every_codex_run_discloses_the_partial_envelope_before_its_first_exec_record() {
+    let root = project_root();
+    let logs = log_dir();
+    let config = config_for(root.path(), one("runtime", "codex"), Map::new());
+    drive(args(SUCCESS, "0", logs.path()), &config)
+        .await
+        .expect("the run completes");
+
+    let records = journal_records(root.path());
+    let disclosure = position(&records, is_disclosure)
+        .expect("a codex run journals the runtime_envelope_partial diagnostic");
+    let started = position(&records, |r| r["kind"] == "exec_started").expect("exec_started");
+    assert!(
+        disclosure < started,
+        "the disclosure must precede the first exec record, so nothing reads as a \
+         fully-enveloped run first ({disclosure} vs {started})"
+    );
+    let detail = records[disclosure]["detail"].as_str().expect("detail");
+    for fact in ["codex exec", "workspace-write", "PreToolUse", "deny list"] {
+        assert!(
+            detail.contains(fact),
+            "the disclosure names {fact:?}: {detail}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_project_with_no_runtime_key_spawns_the_unchanged_claude_argv() {
+    let root = project_root();
+    // GSD's OWN runtime key says codex. The manager must ignore it (ID-2): the
+    // assertion below goes red the moment it silently becomes the default.
+    std::fs::write(
+        root.path().join(".planning").join("config.json"),
+        br#"{"runtime": "codex"}"#,
+    )
+    .expect("write GSD config");
+    let logs = log_dir();
+    let config = config_for(root.path(), Map::new(), Map::new());
+
+    // Not asserted: the stand-in replays codex JSONL, which carries no Claude
+    // `system/init`, so the Claude run ends as a startup failure. Only what
+    // was SPAWNED is under test here.
+    let _ = drive(args(SUCCESS, "0", logs.path()), &config).await;
+
+    let argv = logged(logs.path(), "argv");
+    assert_eq!(
+        argv[..8],
+        [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--replay-user-messages",
+            "--session-id",
+        ],
+        "{argv:?}"
+    );
+    let session = uuid::Uuid::parse_str(&argv[8]).expect("position 8 is the session UUID");
+    assert_eq!(session.get_version_num(), 4, "a v4 session id");
+    assert_eq!(
+        argv[9..14],
+        [
+            "--setting-sources",
+            "project",
+            "--permission-mode",
+            "dontAsk",
+            "--strict-mcp-config",
+        ],
+        "{argv:?}"
+    );
+    assert_eq!(argv.len(), 18, "nothing beyond the envelope pair: {argv:?}");
+    assert_eq!(argv[14], "--disallowedTools");
+    assert!(!argv[15].is_empty(), "the deny list is non-empty");
+    assert_eq!(argv[16], "--settings");
+    assert!(!argv[17].is_empty(), "the settings path is named");
+
+    if let Ok(raw) = std::fs::read_to_string(run_paths(root.path()).journal) {
+        assert!(
+            !raw.contains(RUNTIME_ENVELOPE_PARTIAL),
+            "a Claude run carries no runtime disclosure; its journal is unchanged"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_default_runtime_preference_applies_only_when_the_entry_names_none() {
+    // Preference alone: Codex.
+    let root = project_root();
+    let logs = log_dir();
+    let config = config_for(root.path(), Map::new(), one("default_runtime", "codex"));
+    drive(args(SUCCESS, "0", logs.path()), &config)
+        .await
+        .expect("a codex run by preference completes");
+    assert_eq!(logged(logs.path(), "argv")[0], "exec");
+
+    // Entry `claude` outranks a `codex` preference.
+    let root = project_root();
+    let logs = log_dir();
+    let config = config_for(
+        root.path(),
+        one("runtime", "claude"),
+        one("default_runtime", "codex"),
+    );
+    let _ = drive(args(SUCCESS, "0", logs.path()), &config).await;
+    assert_eq!(logged(logs.path(), "argv")[0], "-p");
+}
+
+#[tokio::test]
+async fn an_unrecognized_runtime_is_refused_before_anything_is_created() {
+    for dry_run in [false, true] {
+        let root = project_root();
+        let logs = log_dir();
+        let config = config_for(root.path(), one("runtime", "gemini"), Map::new());
+        let mut drive_args = args(SUCCESS, "0", logs.path());
+        drive_args.dry_run = dry_run;
+
+        let err = drive(drive_args, &config)
+            .await
+            .expect_err("an unknown runtime is refused");
+        assert!(
+            matches!(
+                err,
+                gsd_meta_manager::error::DriveError::RuntimeUnrecognized(_)
+            ),
+            "dry_run={dry_run}: got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("gemini"),
+            "the refusal names the value: {err}"
+        );
+        assert!(
+            !logs.path().join("argv").exists(),
+            "dry_run={dry_run}: nothing was spawned"
+        );
+        assert!(
+            !root.path().join(".planning").join("meta-manager").exists(),
+            "dry_run={dry_run}: no run directory, no journal"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_codex_turn_fails_the_run_and_journals_the_error() {
+    let root = project_root();
+    let logs = log_dir();
+    let config = config_for(root.path(), one("runtime", "codex"), Map::new());
+    let _ = drive(args(FAILURE, "1", logs.path()), &config).await;
+
+    let record = run_record(root.path());
+    assert_eq!(record["outcome"], "failed", "{record}");
+    let records = journal_records(root.path());
+    assert!(
+        records
+            .iter()
+            .any(|r| r["kind"] == "exec_event" && r["stream"] == "codex:error"),
+        "the top-level error line is journaled"
+    );
+}
+
+#[tokio::test]
+async fn a_goal_only_drive_of_a_codex_project_is_refused_without_spawning() {
+    let root = project_root();
+    let logs = log_dir();
+    let config = config_for(root.path(), one("runtime", "codex"), Map::new());
+    let mut drive_args = args(SUCCESS, "0", logs.path());
+    drive_args.command = None;
+    drive_args.goal = Some(nonblank("get phase 3 to verified"));
+
+    let err = drive(drive_args, &config)
+        .await
+        .expect_err("the model seam is not available under codex");
+    assert!(
+        matches!(
+            err,
+            gsd_meta_manager::error::DriveError::GoalSeamUnusable { .. }
+        ),
+        "got {err:?}"
+    );
+    assert!(
+        !logs.path().join("argv").exists(),
+        "zero spawns: the refusal happened before any process existed, and \
+         nothing silently fell back to Claude"
+    );
+}
+
+#[tokio::test]
+async fn the_codex_child_inherits_codex_home_and_no_other_agent_variable() {
+    let root = project_root();
+    let logs = log_dir();
+    let config = config_for(root.path(), one("runtime", "codex"), Map::new());
+    drive(args(SUCCESS, "0", logs.path()), &config)
+        .await
+        .expect("the run completes");
+
+    let env = logged(logs.path(), "env");
+    assert!(env.iter().any(|name| name == "CODEX_HOME"), "{env:?}");
+    for scrubbed in [
+        "CODEX_THREAD_ID",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+        "CLAUDECODE",
+    ] {
+        assert!(
+            !env.iter().any(|name| name == scrubbed),
+            "{scrubbed} leaked: {env:?}"
+        );
+    }
+    assert!(
+        !env.iter().any(|name| name.starts_with("CLAUDE")),
+        "no CLAUDE* variable reaches a codex child: {env:?}"
     );
 }

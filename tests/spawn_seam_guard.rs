@@ -4477,3 +4477,75 @@ fn every_census_row_names_a_variant_that_still_exists() {
         "a row naming a declared variant with a named judge must not be reported"
     );
 }
+
+/// The Codex agent spawn must take the capability type, exactly as the Claude
+/// one does (260922-hdj). A sibling of the assertion at the end of
+/// `every_process_spawn_site_in_src_is_on_the_allowlist`, kept as its own test
+/// so that one stays byte-identical.
+#[test]
+fn the_codex_spawn_seam_takes_the_capability_type() {
+    let files = source_files();
+    let codex = files
+        .iter()
+        .find(|(path, _)| path == "src/executor/codex.rs")
+        .expect("the codex spawn seam must exist");
+    assert!(
+        executable_lines(codex).any(|(_, line)| line.contains("project: &DrivableProject")),
+        "the codex spawn seam must take the capability type and never a bare path — \
+         that signature is what makes the opt-in gate a compile-time property (D-16)"
+    );
+}
+
+/// Codex's permission-bypass flag family and its full-access sandbox value,
+/// assembled at RUNTIME from halves so no line of any file — this one included
+/// — carries them (the idiom `REJECT_HEAD`/`REJECT_TAIL` above uses).
+fn codex_bypass_needles() -> Vec<String> {
+    vec![
+        format!("{}{}", "--dangerously", "-bypass-approvals-and-sandbox"),
+        format!("{}{}", "--dangerously", "-bypass-hook-trust"),
+        format!("{}{}", "danger-full", "-access"),
+        format!("{}{}", "--yo", "lo"),
+    ]
+}
+
+/// Every executable line in `files` carrying one of [`codex_bypass_needles`].
+fn codex_bypass_hits(files: &[SourceFile]) -> Vec<(String, usize, String)> {
+    codex_bypass_needles()
+        .iter()
+        .flat_map(|needle| executable_hits(files, needle))
+        .collect()
+}
+
+#[test]
+fn no_executable_line_in_src_carries_a_codex_bypass_flag_or_the_full_access_sandbox() {
+    let hits = codex_bypass_hits(&source_files());
+    assert!(
+        hits.is_empty(),
+        "a Codex permission-bypass flag or the full-access sandbox value appeared on an \
+         executable line under src/. The driven agent must never run with approvals or \
+         the sandbox switched off (D-15 house rule, T-hdj-02). Offending lines:{}",
+        render(&hits)
+    );
+}
+
+#[test]
+fn the_codex_bypass_scan_fires_on_code_and_not_on_a_comment() {
+    // The planted positive control: without it, a scan whose needles had
+    // drifted into matching nothing would pass the test above for the wrong
+    // reason.
+    for needle in codex_bypass_needles() {
+        let planted: SourceFile = (
+            "src/planted.rs".to_string(),
+            vec![
+                (1, format!("    push(&mut argv, \"{needle}\");")),
+                (2, format!("    // never emit {needle}")),
+            ],
+        );
+        let hits = codex_bypass_hits(std::slice::from_ref(&planted));
+        assert_eq!(
+            hits.iter().map(|hit| hit.1).collect::<Vec<_>>(),
+            vec![1],
+            "the scan must report the code line and only the code line for {needle:?}"
+        );
+    }
+}

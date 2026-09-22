@@ -329,4 +329,39 @@ mod tests {
             assert!(err.to_string().contains("`runtime`"), "{err}");
         }
     }
+
+    #[test]
+    fn nothing_configured_resolves_to_claude_and_the_entry_outranks_the_preference() {
+        assert_eq!(resolve(None, None), AgentRuntime::Claude);
+        assert_eq!(resolve(None, Some(AgentRuntime::Codex)), AgentRuntime::Codex);
+        assert_eq!(
+            resolve(Some(AgentRuntime::Claude), Some(AgentRuntime::Codex)),
+            AgentRuntime::Claude
+        );
+    }
+
+    #[test]
+    fn a_gsd_command_becomes_a_codex_skill_mention() {
+        for (canonical, expected) in [
+            ("/gsd-progress", "$gsd-progress"),
+            ("/GSD:Plan-Phase 3 --X", "$gsd-plan-phase 3 --X"),
+            ("gsd:execute-phase 4", "$gsd-execute-phase 4"),
+            ("$gsd-progress", "$gsd-progress"),
+            ("hello world", "hello world"),
+            ("/gsd-", "/gsd-"),
+            ("/gsd- tail", "/gsd- tail"),
+            ("", ""),
+            ("/g", "/g"),
+        ] {
+            assert_eq!(codex_command(canonical), expected, "{canonical:?}");
+        }
+    }
+
+    #[test]
+    fn the_argument_tail_is_kept_byte_for_byte() {
+        assert_eq!(
+            codex_command("/gsd-plan-phase  Ünïcode\targ \"Q\""),
+            "$gsd-plan-phase  Ünïcode\targ \"Q\""
+        );
+    }
 }
