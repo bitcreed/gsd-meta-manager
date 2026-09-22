@@ -13554,4 +13554,191 @@ mod tests {
              leaves the class unset, so this test is not testing it"
         );
     }
+
+    // --- quick 260922-hdi: `/` filters the Config Settings tab -------------
+
+    /// Every Defaults row's value, in UNDERLYING order.
+    fn config_row_values(ctx: &AppContext) -> Vec<String> {
+        entries_for_cache(&ctx.view_cache[TEST_ALIAS])
+            .into_iter()
+            .map(|e| e.value)
+            .collect()
+    }
+
+    /// `/` then each char of `text`, through the real `handle_key`.
+    fn type_config_filter(screen: &mut DetailScreen, ctx: &mut AppContext, text: &str) {
+        press(screen, ctx, KeyCode::Char('/'));
+        for c in text.chars() {
+            press(screen, ctx, KeyCode::Char(c));
+        }
+    }
+
+    /// The Defaults tab drawn into a `width`x`height` TestBackend, one String
+    /// per screen row.
+    fn draw_config_tab(
+        screen: &DetailScreen,
+        ctx: &AppContext,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render_defaults_tab(frame, frame.area(), ctx))
+            .expect("draw the Defaults tab");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Underlying indices of the rows whose key contains "drift", computed
+    /// here and NOT through the production filter helper.
+    fn drift_row_indices() -> Vec<usize> {
+        build_defaults_entries(&sparse_gsd_config(), None)
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.key.to_lowercase().contains("drift"))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The tracer: `/`, a query full of shortcut letters (x, d, r, ...), Enter
+    /// to confirm, Enter to open — the chooser that opens is the FILTERED
+    /// row's, by its underlying index, and the pick lands on that key only.
+    /// Re-proves the Unset Enter-opens-chooser fix through the filter.
+    #[test]
+    fn config_filter_enter_on_a_filtered_unset_row_opens_that_rows_chooser() {
+        let key = "workflow.context_drift_action";
+        let entries = build_defaults_entries(&sparse_gsd_config(), None);
+        let target_idx = entries
+            .iter()
+            .position(|e| e.key.as_ref() == key)
+            .expect("the Defaults tab has a context_drift_action row");
+        let (mut ctx, mode_idx) = ctx_on_config_row(sparse_gsd_config(), "mode");
+        assert_ne!(target_idx, mode_idx, "precondition: the cursor starts elsewhere");
+        assert_eq!(entries[target_idx].value, "(unset)", "precondition: an UNSET row");
+        let before = config_row_values(&ctx);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        type_config_filter(&mut screen, &mut ctx, "context_drift_action");
+        {
+            let cache = &ctx.view_cache[TEST_ALIAS];
+            assert_eq!(cache.defaults_filter, "context_drift_action");
+            assert!(cache.defaults_filter_typing, "the input still has focus");
+            assert_eq!(cache.defaults_selected, target_idx, "the cursor follows the match");
+            assert!(cache.defaults_editing.is_none());
+            assert!(matches!(
+                cache.defaults_edit_target,
+                super::super::DefaultsEditTarget::Project
+            ));
+        }
+        assert_eq!(config_row_values(&ctx), before, "a typed char fired its shortcut");
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Defaults)
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        {
+            let cache = &ctx.view_cache[TEST_ALIAS];
+            assert!(!cache.defaults_filter_typing, "Enter while typing confirms");
+            assert_eq!(cache.defaults_filter, "context_drift_action", "and keeps the filter");
+            assert_eq!(cache.defaults_editing, None, "confirming opens nothing");
+        }
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(target_idx),
+            "Enter on the filtered row must open THAT row's chooser"
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let after = config_row_values(&ctx);
+        let pick = dropdown_options(&entries[target_idx].kind)[1].clone();
+        assert_eq!(after[target_idx], pick, "the pick lands on the filtered key");
+        for (i, (b, a)) in before.iter().zip(&after).enumerate() {
+            if i != target_idx {
+                assert_eq!(b, a, "row {i} ({}) changed", entries[i].key);
+            }
+        }
+    }
+
+    #[test]
+    fn config_filter_arrows_move_only_among_matching_rows() {
+        let expected = drift_row_indices();
+        assert_eq!(expected.len(), 5, "precondition: five drift rows");
+        for query in ["drift", "DRIFT"] {
+            let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            let sel = |ctx: &AppContext| ctx.view_cache[TEST_ALIAS].defaults_selected;
+
+            type_config_filter(&mut screen, &mut ctx, query);
+            assert_eq!(sel(&ctx), expected[0], "{query}: typing selects the first match");
+            for want in &expected[1..=4] {
+                press(&mut screen, &mut ctx, KeyCode::Down);
+                assert_eq!(sel(&ctx), *want, "{query}: Down skips hidden rows");
+            }
+            press(&mut screen, &mut ctx, KeyCode::Down);
+            assert_eq!(sel(&ctx), expected[4], "{query}: Down clamps at the last match");
+            press(&mut screen, &mut ctx, KeyCode::Up);
+            assert_eq!(sel(&ctx), expected[3]);
+            press(&mut screen, &mut ctx, KeyCode::PageUp);
+            assert_eq!(sel(&ctx), expected[0]);
+            press(&mut screen, &mut ctx, KeyCode::PageDown);
+            assert_eq!(sel(&ctx), expected[4]);
+
+            press(&mut screen, &mut ctx, KeyCode::Enter);
+            assert!(!ctx.view_cache[TEST_ALIAS].defaults_filter_typing);
+            press(&mut screen, &mut ctx, KeyCode::Char('k'));
+            assert_eq!(sel(&ctx), expected[3], "{query}: k navigates once confirmed");
+            press(&mut screen, &mut ctx, KeyCode::Char('k'));
+            assert_eq!(sel(&ctx), expected[2]);
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+            assert_eq!(sel(&ctx), expected[3]);
+            assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_filter, query, "j/k are not text");
+        }
+    }
+
+    #[test]
+    fn config_filter_render_shows_only_matches_and_count() {
+        let entries = build_defaults_entries(&sparse_gsd_config(), None);
+        let total = entries.len();
+        let drift_keys: Vec<String> = drift_row_indices()
+            .into_iter()
+            .map(|i| entries[i].key.to_string())
+            .collect();
+        assert_eq!(drift_keys.len(), 5);
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.key.as_ref() == "granularity" && !e.key.contains("drift")),
+            "precondition: a non-matching `granularity` row exists"
+        );
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        type_config_filter(&mut screen, &mut ctx, "drift");
+        let text = draw_config_tab(&screen, &ctx, 160, 45).join("\n");
+        for key in &drift_keys {
+            assert!(text.contains(key.as_str()), "matching row `{key}` not drawn");
+        }
+        assert!(!text.contains("granularity"), "a non-matching row was drawn");
+        assert!(text.contains("/drift_"), "the typing echo is missing");
+        assert!(text.contains(&format!("({}/{total})", 5)), "the count is missing");
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = draw_config_tab(&screen, &ctx, 160, 45).join("\n");
+        assert!(!text.contains("/drift_"), "the cursor mark outlived the input focus");
+        assert!(text.contains("/drift"), "the confirmed filter is no longer echoed");
+        assert!(text.contains(&format!("(5/{total})")));
+    }
 }
