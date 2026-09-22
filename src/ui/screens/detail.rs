@@ -13379,4 +13379,150 @@ mod tests {
             "the index must round-trip back to the tab that was asked for"
         );
     }
+
+    // --- debug enter-on-unset-config-row: Enter opens the chooser ---------
+
+    /// A Defaults-tab context parked on `key`'s row of `config`, plus that
+    /// row's index. Driven through the real `handle_key` by the callers, never
+    /// through the helpers the arm calls: the defect was an arm that reached
+    /// no branch, and only the key path can see that.
+    fn ctx_on_config_row(
+        config: crate::state_reader::config_json::GsdConfig,
+        key: &str,
+    ) -> (AppContext, usize) {
+        let idx = build_defaults_entries(&config, None)
+            .iter()
+            .position(|e| e.key.as_ref() == key)
+            .unwrap_or_else(|| panic!("the Defaults tab has no `{key}` row"));
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Defaults);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.defaults_config = Some(config);
+        cache.defaults_selected = idx;
+        (ctx, idx)
+    }
+
+    fn sparse_gsd_config() -> crate::state_reader::config_json::GsdConfig {
+        crate::state_reader::config_json::parse_gsd_config(r#"{"mode":"yolo"}"#)
+            .expect("the sparse fixture parses")
+    }
+
+    /// The reported symptom, end to end: Enter on an enum row the project's
+    /// `config.json` leaves unset drew nothing, because an unset row carried
+    /// no kind for the Enter arm to open a chooser for.
+    #[test]
+    fn enter_on_an_unset_enum_row_opens_its_chooser_and_applies_the_pick() {
+        let key = "workflow.context_drift_action";
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), key);
+        assert_eq!(
+            build_defaults_entries(&sparse_gsd_config(), None)[idx].value,
+            "(unset)",
+            "precondition: the row under test must be an UNSET row"
+        );
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "Enter on an unset enum row must open its chooser"
+        );
+
+        // ARRIVAL: the popup is drawn, titled with the key, not merely flagged.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (width, height) = (160u16, 45u16);
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render_defaults_tab(frame, frame.area(), &ctx))
+            .expect("draw the Defaults tab");
+        let buffer = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..height)
+            .map(|y| {
+                (0..width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect()
+            })
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains(&format!("┌ {key} "))),
+            "the chooser popup for `{key}` was not drawn"
+        );
+
+        // `warn` is offered first; Down then Enter picks `block`.
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.defaults_editing, None, "applying closes the chooser");
+        let applied = cache
+            .defaults_config
+            .as_ref()
+            .and_then(|c| c.workflow.as_ref())
+            .and_then(|w| w.context_drift_action.clone());
+        assert_eq!(applied.as_deref(), Some("block"));
+    }
+
+    /// The whole class, not the one row: every row that is a bool or an enum
+    /// when SET must still open a chooser when UNSET, and every option that
+    /// chooser offers must land on the key it is drawn under.
+    ///
+    /// The expected kind comes from [`all_config_entries`] (every key set),
+    /// so this cannot pass by the sparse fixture happening to leave few rows
+    /// unset: the count of unset choice rows is asserted non-trivial.
+    #[test]
+    fn every_unset_choice_row_opens_a_chooser_whose_options_all_apply() {
+        let populated = all_config_entries();
+        let sparse = build_defaults_entries(&sparse_gsd_config(), None);
+        let mut checked = 0usize;
+        for (idx, entry) in sparse.iter().enumerate() {
+            if entry.value != "(unset)" {
+                continue;
+            }
+            let Some(set_kind) = populated
+                .iter()
+                .find(|p| p.key.as_ref() == entry.key.as_ref())
+                .map(|p| p.kind.clone())
+            else {
+                continue;
+            };
+            let options = dropdown_options(&set_kind);
+            if options.is_empty() {
+                continue;
+            }
+            checked += 1;
+
+            let (mut ctx, row) = ctx_on_config_row(sparse_gsd_config(), entry.key.as_ref());
+            assert_eq!(row, idx);
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            press(&mut screen, &mut ctx, KeyCode::Enter);
+            assert_eq!(
+                ctx.view_cache[TEST_ALIAS].defaults_editing,
+                Some(idx),
+                "Enter on unset `{}` opened no chooser",
+                entry.key
+            );
+
+            for option in &options {
+                let mut config = sparse_gsd_config();
+                assert!(
+                    set_config_value(&mut config, entry.key.as_ref(), option),
+                    "`{}` offers {option:?} but applying it changes nothing",
+                    entry.key
+                );
+                let after = build_defaults_entries(&config, None);
+                assert_eq!(
+                    &after[idx].value, option,
+                    "`{}`: picked {option:?}, the row now reads {:?}",
+                    entry.key, after[idx].value
+                );
+            }
+        }
+        assert!(
+            checked >= 20,
+            "only {checked} unset choice rows exercised — the fixture no longer \
+             leaves the class unset, so this test is not testing it"
+        );
+    }
 }
