@@ -2471,7 +2471,11 @@ mod tests {
     /// Cells, not a joined string: the border glyph is multi-byte, so a byte
     /// offset into a joined row would not be a column. Text is located by cell
     /// column with [`find_in_row`].
-    fn render_dashboard_cells(ctx: &AppContext, width: u16, height: u16) -> Vec<Vec<(String, Color)>> {
+    fn render_dashboard_cells(
+        ctx: &AppContext,
+        width: u16,
+        height: u16,
+    ) -> Vec<Vec<(String, Color)>> {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -2506,9 +2510,15 @@ mod tests {
 
     /// The single rendered row holding `text`, as its cells.
     fn row_with<'a>(rows: &'a [Vec<(String, Color)>], text: &str) -> &'a [(String, Color)] {
-        let hits: Vec<&Vec<(String, Color)>> =
-            rows.iter().filter(|r| find_in_row(r, text).is_some()).collect();
-        assert_eq!(hits.len(), 1, "expected exactly one rendered row holding {text:?}");
+        let hits: Vec<&Vec<(String, Color)>> = rows
+            .iter()
+            .filter(|r| find_in_row(r, text).is_some())
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected exactly one rendered row holding {text:?}"
+        );
         hits[0]
     }
 
@@ -2593,8 +2603,7 @@ mod tests {
     #[test]
     fn folder_presence_filter_slash_missing_lists_only_missing_rows() {
         let mut ctx = ctx_with_aliases(&["vanished", "intact"]);
-        ctx.project_states.get_mut("vanished").unwrap().presence =
-            ProjectPresence::FolderMissing;
+        ctx.project_states.get_mut("vanished").unwrap().presence = ProjectPresence::FolderMissing;
         ctx.recompute_filtered_aliases();
 
         search(&mut NormalScreen::new(), &mut ctx, "missing");
