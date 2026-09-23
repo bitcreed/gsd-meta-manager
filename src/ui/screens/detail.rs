@@ -1430,9 +1430,12 @@ crate::ui::screens::adjudicate_screen!(
     "The widest identity surface in the tree. Draws the registry key in its \
      tab-bar title, and in its eleven tabs the values parsed out of the \
      project's `.planning/`. Per tab, the values and where their bytes come \
-     from: PhaseList and RoadmapViz draw each `RoadmapPhase`'s number, name \
-     and description plus the status and milestone, all parsed from \
-     `ROADMAP.md`/`STATE.md`; Pipeline draws the current phase name, status \
+     from: PhaseList draws each `RoadmapPhase`'s number, name and \
+     description plus the status and milestone, all parsed from \
+     `ROADMAP.md`/`STATE.md`; RoadmapViz's default graph draws phase ids, \
+     dependency ids and milestone labels parsed from `ROADMAP.md` plus the \
+     current phase's name, and its box list draws number, name and \
+     description; Pipeline draws the current phase name, status \
      and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
      from `queue.md`; Backlog draws a `999.*` directory's number and \
      description in its collapsed state and that directory's NAME (through \

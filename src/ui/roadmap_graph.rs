@@ -22,7 +22,7 @@
 //! records.
 
 use crate::state_reader::phase_num::phase_key;
-use crate::state_reader::roadmap_md::RoadmapPhase;
+use crate::state_reader::roadmap_md::{self, RoadmapMilestone, RoadmapPhase};
 use crate::state_reader::{PhaseMarker, ProjectState};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -742,7 +742,6 @@ pub fn layout_graph(
     milestones: &[MilestoneTag],
     current: Option<usize>,
 ) -> GraphLayout {
-    let _ = milestones;
     let n = nodes.len();
     let labels: Vec<String> = nodes.iter().map(|node| esc(node.id)).collect();
 
@@ -814,6 +813,8 @@ pub fn layout_graph(
         });
     }
 
+    let header = milestone_decorations(nodes, milestones, &mut rows, placement.rows.len());
+
     // Notes: one external line, then the cycle notes.
     let mut notes = Vec::new();
     let groups: Vec<String> = externals
@@ -840,12 +841,90 @@ pub fn layout_graph(
     };
 
     GraphLayout {
-        header: Vec::new(),
+        header,
         rows,
         notes,
         detail,
         current: current_span,
     }
+}
+
+/// The milestone header band and row-end labels (D4).
+///
+/// The header lists, in roadmap order, every milestone with at least one
+/// member node plus the active one (PI-4). Each of the first `node_rows` rows
+/// gets a row-end label naming the milestones of its nodes left to right,
+/// consecutive repeats collapsed, aligned at the widest row + 2 (PI-3).
+/// Reference rows carry no label. No milestones: no decorations.
+fn milestone_decorations(
+    nodes: &[GraphNode<'_>],
+    milestones: &[MilestoneTag],
+    rows: &mut [GraphRow],
+    node_rows: usize,
+) -> Vec<HeaderItem> {
+    let header: Vec<HeaderItem> = milestones
+        .iter()
+        .enumerate()
+        .filter(|(i, tag)| tag.active || nodes.iter().any(|n| n.milestone == Some(*i)))
+        .map(|(_, tag)| HeaderItem {
+            text: tag.label.clone(),
+            active: tag.active,
+        })
+        .collect();
+    if milestones.is_empty() {
+        return header;
+    }
+
+    let row_width =
+        |row: &GraphRow| -> usize { row.segments.iter().map(|s| width_of(s.text())).sum() };
+    let widest = rows.iter().map(row_width).max().unwrap_or(0);
+    for row in rows.iter_mut().take(node_rows) {
+        let mut seq: Vec<usize> = Vec::new();
+        for segment in &row.segments {
+            if let Segment::Node { idx, .. } = segment {
+                let tag = nodes
+                    .get(*idx)
+                    .and_then(|n| n.milestone)
+                    .filter(|&m| m < milestones.len());
+                if let Some(m) = tag {
+                    if seq.last() != Some(&m) {
+                        seq.push(m);
+                    }
+                }
+            }
+        }
+        let Some(&last) = seq.last() else { continue };
+        let shorts: Vec<&str> = seq.iter().map(|&m| milestones[m].short.as_str()).collect();
+        let name = &milestones[last].name;
+        let label = if name.is_empty() {
+            format!("({})", shorts.join(" → "))
+        } else {
+            format!("({}: {})", shorts.join(" → "), name)
+        };
+        let pad = (widest + 2).saturating_sub(row_width(row));
+        row.segments.push(Segment::Space(" ".repeat(pad)));
+        row.segments.push(Segment::Milestone(label));
+    }
+    header
+}
+
+/// Graph tags for a roadmap's milestones. Every text is escaped through
+/// `Untrusted::shown()` first; short id and name are split from that
+/// ESCAPED label.
+pub fn milestone_tags(ms: &[RoadmapMilestone], active: Option<usize>) -> Vec<MilestoneTag> {
+    ms.iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let label = String::from(m.label.shown());
+            let (short, name) = roadmap_md::split_milestone_label(&label);
+            MilestoneTag {
+                label,
+                short,
+                name,
+                active: Some(i) == active,
+            }
+        })
+        .collect()
 }
 
 /// The layout as plain text lines: header, rows, notes, detail (in order).
@@ -905,11 +984,18 @@ pub fn phase_markers(state: &ProjectState) -> Vec<PhaseMarker> {
         .collect()
 }
 
-/// The graph for a project state. `current` is the first `Current` marker.
+/// The graph for a project state. `current` is the first `Current` marker;
+/// the active milestone is STATE.md's (with ROADMAP's in-progress fallback
+/// already folded in by the reader), else the first in-progress one.
 pub fn layout_for_state(state: &ProjectState, markers: &[PhaseMarker]) -> GraphLayout {
-    let nodes = nodes_from_phases(&state.phases);
+    let active = roadmap_md::active_milestone_index(&state.milestones, &state.milestone);
+    let tags = milestone_tags(&state.milestones, active);
+    let mut nodes = nodes_from_phases(&state.phases);
+    for (node, phase) in nodes.iter_mut().zip(&state.phases) {
+        node.milestone = roadmap_md::milestone_index_of(&state.milestones, &phase.number);
+    }
     let current = markers.iter().position(|m| *m == PhaseMarker::Current);
-    layout_graph(&nodes, &[], current)
+    layout_graph(&nodes, &tags, current)
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,6 +1284,99 @@ mod tests {
                 "       3 ───► 4",
             ]
         );
+    }
+
+    /// The O7 topology as a ROADMAP.md, with milestones M3/M4/M5.
+    fn o10_roadmap() -> String {
+        let mut s = String::from(
+            "# Roadmap\n\n## Milestones\n\n\
+             - 🚧 **M3 live booking** - Phases 8-15 (in progress)\n\
+             - 📋 **M4 support chat** - Phases 16-17 (planned)\n\
+             - 📋 **M5 web** - Phase 18 (planned)\n\n## Phase Details\n\n",
+        );
+        for (id, _, deps) in O7 {
+            let name = if *id == "12" {
+                "Booking core".to_string()
+            } else {
+                format!("Step {id}")
+            };
+            s.push_str(&format!("### Phase {id}: {name}\n"));
+            if !deps.is_empty() {
+                let list: Vec<String> = deps.iter().map(|d| format!("Phase {d}")).collect();
+                s.push_str(&format!("**Depends on**: {}\n", list.join(", ")));
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    #[test]
+    fn roadmap_graph_o10_example_with_milestones_end_to_end() {
+        use crate::state_reader::roadmap_md;
+        let content = o10_roadmap();
+        let phases = roadmap_md::parse_roadmap_phases(&content);
+        let ms = roadmap_md::roadmap_milestones(&content);
+        let active = roadmap_md::active_milestone_index(&ms, "");
+        let tags = milestone_tags(&ms, active);
+        let mut nodes = nodes_from_phases(&phases);
+        for (node, phase) in nodes.iter_mut().zip(&phases) {
+            node.milestone = roadmap_md::milestone_index_of(&ms, &phase.number);
+        }
+        let current = phases.iter().position(|p| p.number == "12");
+        let lines = render_text(&layout_graph(&nodes, &tags, current));
+        assert_eq!(
+            lines,
+            vec![
+                "Milestones: ◆ M3 live booking  ◇ M4 support chat  ◇ M5 web".to_string(),
+                "8 ─► 9 ─┬─► 10 ─┬─► 12 ─┬─► 13 ─┬─► 14 ─► 15  (M3: live booking)".to_string(),
+                "        └─► 11 ─┘       │       └─► 16 ─► 17  (M3 → M4: support chat)".to_string(),
+                format!("{}└─► 18{}(M5: web)", " ".repeat(24), " ".repeat(16)),
+                "▶ P12: Booking core".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn roadmap_graph_o7_without_milestones_has_no_decorations() {
+        let layout = lay(O7, None);
+        assert!(layout.header.is_empty());
+        assert!(layout
+            .rows
+            .iter()
+            .flat_map(|r| &r.segments)
+            .all(|s| !matches!(s, Segment::Milestone(_))));
+    }
+
+    #[test]
+    fn roadmap_graph_escapes_milestone_labels_in_header_and_row_end() {
+        use crate::state_reader::roadmap_md::RoadmapMilestone;
+        let raw = "v1.0 Evil\u{1b}[31m \u{202E}name";
+        let ms = [RoadmapMilestone {
+            label: crate::text::Untrusted::from_untrusted_source(raw.to_string()),
+            first: crate::state_reader::phase_num::PhaseNum::parse("1"),
+            last: crate::state_reader::phase_num::PhaseNum::parse("1"),
+            scoped_phases: Vec::new(),
+            in_progress: true,
+        }];
+        let tags = milestone_tags(&ms, Some(0));
+        let deps: Vec<String> = Vec::new();
+        let nodes = [GraphNode {
+            id: "1",
+            name: "x",
+            deps: &deps,
+            milestone: Some(0),
+        }];
+        let lines = render_text(&layout_graph(&nodes, &tags, None));
+        let shown = String::from(crate::text::render_for_terminal(raw));
+        assert_eq!(lines[0], format!("Milestones: ◆ {shown}"));
+        let (short, name) = crate::state_reader::roadmap_md::split_milestone_label(&shown);
+        assert_eq!(lines[1], format!("1  ({short}: {name})"));
+        for line in &lines {
+            assert!(
+                !line.contains('\u{1b}') && !line.contains('\u{202E}'),
+                "{line:?}"
+            );
+        }
     }
 
     #[test]

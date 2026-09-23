@@ -926,6 +926,16 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
         milestone: identity.to_string(),
         backlog_count: 1,
         phases,
+        // The Roadmap graph's header band and row-end label (quick
+        // 260923-md1). Covering phase 1, and active because `milestone`
+        // above names it, so both decorations draw the label.
+        milestones: vec![crate::state_reader::roadmap_md::RoadmapMilestone {
+            label: crate::text::Untrusted::from_untrusted_source(identity.to_string()),
+            first: crate::state_reader::phase_num::PhaseNum::parse("1"),
+            last: crate::state_reader::phase_num::PhaseNum::parse("1"),
+            scoped_phases: Vec::new(),
+            in_progress: true,
+        }],
         phase_disk_statuses,
         queued_actions: vec![QueuedAction {
             command: identity.to_string(),
@@ -1376,8 +1386,9 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         "RoadmapViz tab",
         true,
         "The default graph view draws each `RoadmapPhase` id, its declared dependency \
-         ids (external ones in the `external deps` note line) and the current phase's \
-         name through `ui::roadmap_graph`.",
+         ids (external ones in the `external deps` note line), the current phase's \
+         name, and each `RoadmapMilestone` label in the `Milestones:` header band and \
+         the row-end labels, all through `ui::roadmap_graph`.",
     ),
     (
         "Backlog tab",

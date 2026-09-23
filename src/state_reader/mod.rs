@@ -56,6 +56,12 @@ pub struct ProjectState {
     pub milestone: String,
     pub backlog_count: u32,
     pub phases: Vec<roadmap_md::RoadmapPhase>,
+    /// The milestones ROADMAP.md names, with their phase membership
+    /// ([`roadmap_md::roadmap_milestones`]); drawn by the Roadmap graph.
+    ///
+    /// Their labels are `Untrusted`, which is why this is not a free-string
+    /// field: third-party text reaches a cell only through `shown()`.
+    pub milestones: Vec<roadmap_md::RoadmapMilestone>,
     pub queued_actions: Vec<queue_md::QueuedAction>,
     /// Per-phase disk inference keyed by phase number (e.g., "01", "05")
     pub phase_disk_statuses: HashMap<String, disk_status::DiskInference>,
@@ -590,6 +596,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     let roadmap_path = planning_dir.join("ROADMAP.md");
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
+        state.milestones = roadmap_md::roadmap_milestones(&content);
         // STATE.md is the milestone's primary source; a project whose STATE.md
         // carries no `milestone:` key still names it in ROADMAP's
         // `## Milestones` list, and an empty `Milestone:` field is worse than
@@ -803,6 +810,22 @@ mod tests {
         assert_eq!(state.completed_phases, 1);
         assert_eq!(state.total_plans, 5);
         assert_eq!(state.completed_plans, 3);
+    }
+
+    /// Quick 260923-md1: ROADMAP.md milestones reach `ProjectState`.
+    #[test]
+    fn parse_project_state_reads_roadmap_milestones() {
+        let roadmap = "# Roadmap\n\n## Milestones\n\n\
+            - 🚧 **v2.0 Next** - Phases 1-3 (in progress)\n\n\
+            ## Phases\n\n- [ ] **Phase 1: Alpha** - a\n";
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            ("ROADMAP.md", roadmap),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.milestones.len(), 1);
+        assert_eq!(state.milestones[0].label.as_raw_for_logic_only(), "v2.0 Next");
+        assert!(state.milestones[0].contains("1"));
     }
 
     #[test]
