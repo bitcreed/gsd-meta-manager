@@ -95,7 +95,8 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     "src/main.rs",
     // `git init` and the project-creation hook shell-out. No agent.
     "src/project_creator.rs",
-    // `pgrep -x claude` for session detection. Reads only, spawns no agent.
+    // `pgrep -x claude` / `pgrep -x codex` for session detection. Reads only,
+    // spawns no agent.
     "src/session_detector.rs",
     // Git reads that back project state. No agent.
     "src/state_reader/git_ops.rs",

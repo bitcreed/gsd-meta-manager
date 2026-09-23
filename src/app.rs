@@ -998,7 +998,7 @@ impl App {
         }
     }
 
-    /// Auto-register any active Claude sessions whose working_dir is an
+    /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
     /// unregistered GSD project. Persists config, starts the file watcher,
     /// loads initial project state, and surfaces a status message per
     /// newly-added project.
@@ -1041,7 +1041,7 @@ impl App {
             tracing::info!(
                 alias = %alias,
                 path = %path.display(),
-                "Auto-registered GSD project from active Claude session",
+                "Auto-registered GSD project from active agent session",
             );
             self.ctx.status_message = Some((
                 format!("Auto-registered: {}", alias),
@@ -1079,7 +1079,7 @@ impl App {
                     self.needs_redraw = true;
                 }
 
-                // Poll for Claude sessions every 20 ticks (~5s at 250ms interval)
+                // Poll for Claude and Codex sessions every 20 ticks (~5s at 250ms interval)
                 self.session_poll_counter += 1;
                 if self.session_poll_counter >= 20 {
                     self.session_poll_counter = 0;

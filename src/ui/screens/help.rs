@@ -81,7 +81,7 @@ const BADGE_LEGEND: [(&str, &str); 5] = [
     (BADGE_NEEDS_HUMAN, "waiting on a human"),
     (BADGE_PAUSED, "paused - a non-empty HANDOFF"),
     (BADGE_EXTERNAL_JOB, "blocked on an external job, not stuck"),
-    (BADGE_SESSION, "an active Claude session in this directory"),
+    (BADGE_SESSION, "an active Claude or Codex session in this directory"),
 ];
 
 /// The four states an injected message can be in, with the honest gloss.
@@ -528,6 +528,15 @@ mod tests {
         assert!(
             text.contains("/term/h") && text.contains("//h"),
             "both needs-a-human filter forms must be documented:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_session_badge_legend_names_both_agents() {
+        // 260923-lr9: a Codex session lights the same badge as a Claude one.
+        assert!(
+            flowed().contains("Claude or Codex session"),
+            "the session badge legend must name both agents"
         );
     }
 
