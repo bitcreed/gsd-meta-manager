@@ -130,8 +130,8 @@ type ExternalLists = Vec<Vec<String>>;
 
 /// Resolve every node's declared deps against the node index (D1).
 ///
-/// Returns the in-graph parents, the external deps, and one self-cycle note per
-/// node that names itself.
+/// Returns the in-graph parents, the external deps, and one self-cycle path
+/// (the node's escaped label) per node that names itself.
 fn resolve_deps(
     nodes: &[GraphNode<'_>],
     labels: &[String],
@@ -143,7 +143,7 @@ fn resolve_deps(
 
     let mut parents: ParentLists = vec![Vec::new(); nodes.len()];
     let mut externals: ExternalLists = vec![Vec::new(); nodes.len()];
-    let mut self_notes = Vec::new();
+    let mut self_cycles = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
         let own = phase_key(node.id);
         let mut seen: HashSet<String> = HashSet::new();
@@ -166,19 +166,20 @@ fn resolve_deps(
             }
         }
         if self_cycle {
-            self_notes.push(format!("dependency cycle: {} (edges ignored)", labels[i]));
+            self_cycles.push(labels[i].clone());
         }
     }
-    (parents, externals, self_notes)
+    (parents, externals, self_cycles)
 }
 
 /// Drop every edge that closes a cycle (D2, T-md1-02).
 ///
 /// Iterative DFS with white/gray/black colouring and an explicit
 /// `(node, next-dep cursor)` stack: never recursion on third-party depth. An
-/// edge to a GRAY node is a back edge; it is dropped and a note names the
-/// stack path from the gray target up to the current node.
-fn break_cycles(parents: &mut ParentLists, labels: &[String], notes: &mut Vec<String>) {
+/// edge to a GRAY node is a back edge; it is dropped and `cycles` gains the
+/// stack path from the gray target up to the current node (escaped labels,
+/// comma-joined). [`cycle_note`] folds the paths into one footer line.
+fn break_cycles(parents: &mut ParentLists, labels: &[String], cycles: &mut Vec<String>) {
     const WHITE: u8 = 0;
     const GRAY: u8 = 1;
     const BLACK: u8 = 2;
@@ -205,10 +206,7 @@ fn break_cycles(parents: &mut ParentLists, labels: &[String], notes: &mut Vec<St
                             .iter()
                             .map(|&(w, _)| labels[w].as_str())
                             .collect();
-                        notes.push(format!(
-                            "dependency cycle: {} (edges ignored)",
-                            path.join(", ")
-                        ));
+                        cycles.push(path.join(", "));
                     }
                     WHITE => {
                         color[v] = GRAY;
@@ -227,6 +225,39 @@ fn break_cycles(parents: &mut ParentLists, labels: &[String], notes: &mut Vec<St
     if !dropped.is_empty() {
         for (u, list) in parents.iter_mut().enumerate() {
             list.retain(|&v| !dropped.contains(&(u, v)));
+        }
+    }
+}
+
+/// Most cycle paths [`cycle_note`] spells out before a `+K more` suffix.
+const MAX_CYCLES_SHOWN: usize = 3;
+
+/// ONE footer line for every broken cycle (WR-01), so a malformed roadmap with
+/// many back edges cannot grow the footer over the graph body. A single cycle
+/// keeps the singular form; several collapse into a count, the first
+/// [`MAX_CYCLES_SHOWN`] paths and a `+K more` suffix.
+fn cycle_note(cycles: &[String]) -> Option<String> {
+    match cycles {
+        [] => None,
+        [only] => Some(format!("dependency cycle: {only} (edges ignored)")),
+        _ => {
+            let shown: Vec<&str> = cycles
+                .iter()
+                .take(MAX_CYCLES_SHOWN)
+                .map(String::as_str)
+                .collect();
+            let more = cycles.len() - shown.len();
+            let suffix = if more > 0 {
+                format!("; +{more} more")
+            } else {
+                String::new()
+            };
+            Some(format!(
+                "dependency cycles: {} (edges ignored): {}{}",
+                cycles.len(),
+                shown.join("; "),
+                suffix
+            ))
         }
     }
 }
@@ -745,9 +776,8 @@ pub fn layout_graph(
     let n = nodes.len();
     let labels: Vec<String> = nodes.iter().map(|node| esc(node.id)).collect();
 
-    let (mut parents, externals, self_notes) = resolve_deps(nodes, &labels);
-    let mut cycle_notes = self_notes;
-    break_cycles(&mut parents, &labels, &mut cycle_notes);
+    let (mut parents, externals, mut cycles) = resolve_deps(nodes, &labels);
+    break_cycles(&mut parents, &labels, &mut cycles);
     let layer = longest_path_layers(&parents);
     let layers = layer.iter().copied().max().map_or(0, |m| m + 1);
 
@@ -815,7 +845,7 @@ pub fn layout_graph(
 
     let header = milestone_decorations(nodes, milestones, &mut rows, placement.rows.len());
 
-    // Notes: one external line, then the cycle notes.
+    // Notes: at most two lines, one external line, then one cycle line.
     let mut notes = Vec::new();
     let groups: Vec<String> = externals
         .iter()
@@ -826,7 +856,7 @@ pub fn layout_graph(
     if !groups.is_empty() {
         notes.push(format!("external deps: {}", groups.join("; ")));
     }
-    notes.extend(cycle_notes);
+    notes.extend(cycle_note(&cycles));
 
     let (detail, current_span) = match current.filter(|&i| i < n) {
         Some(i) => (
@@ -949,10 +979,24 @@ pub fn render_text(layout: &GraphLayout) -> Vec<String> {
 }
 
 /// Split `area` into (header band, graph body, footer) for `layout`.
+///
+/// The body has priority (WR-01): whenever the graph has rows, it keeps at
+/// least half the height below the header (rounded up, and never more than
+/// it has rows), and the footer takes at most what is left. A one-line area
+/// drops the header band for the body.
 pub fn split_areas(layout: &GraphLayout, area: Rect) -> [Rect; 3] {
-    let header_h: u16 = if layout.header.is_empty() { 0 } else { 1 };
+    let rows_h = u16::try_from(layout.rows.len()).unwrap_or(u16::MAX);
+    let header_h: u16 = if layout.header.is_empty() || (area.height < 2 && rows_h > 0) {
+        0
+    } else {
+        1
+    };
+    let avail = area.height.saturating_sub(header_h);
+    let body_floor = rows_h.min(avail.div_ceil(2));
     let footer_lines = layout.notes.len() + usize::from(layout.detail.is_some());
-    let footer_h = u16::try_from(footer_lines).unwrap_or(u16::MAX);
+    let footer_h = u16::try_from(footer_lines)
+        .unwrap_or(u16::MAX)
+        .min(avail.saturating_sub(body_floor));
     Layout::vertical([
         Constraint::Length(header_h),
         Constraint::Min(0),
@@ -1084,10 +1128,15 @@ impl Widget for RoadmapGraphWidget<'_> {
         }
 
         if footer.height > 0 && footer.width > 0 {
+            // A capped footer keeps the detail line (the current phase) and
+            // drops notes from the end.
+            let note_rows = usize::from(footer.height)
+                .saturating_sub(usize::from(self.layout.detail.is_some()));
             let mut lines: Vec<Line> = self
                 .layout
                 .notes
                 .iter()
+                .take(note_rows)
                 .map(|n| {
                     Line::from(Span::styled(
                         n.clone(),
@@ -1174,6 +1223,88 @@ mod tests {
             text(&[("1", "", &["1"])], None),
             vec!["1", "dependency cycle: 1 (edges ignored)"]
         );
+    }
+
+    /// Five disjoint two-node cycles and a detail line: a malformed roadmap
+    /// with many back edges.
+    fn many_cycles() -> GraphLayout {
+        lay(
+            &[
+                ("1", "", &["2"]),
+                ("2", "", &["1"]),
+                ("3", "", &["4"]),
+                ("4", "", &["3"]),
+                ("5", "", &["6"]),
+                ("6", "", &["5"]),
+                ("7", "", &["8"]),
+                ("8", "", &["7"]),
+                ("9", "", &["9", "99"]),
+            ],
+            Some(0),
+        )
+    }
+
+    #[test]
+    fn roadmap_graph_wr01_cycle_notes_collapse_into_one_line() {
+        let layout = many_cycles();
+        assert_eq!(
+            layout.notes,
+            vec![
+                "external deps: 9 ◄ 99".to_string(),
+                "dependency cycles: 5 (edges ignored): 9; 1, 2; 3, 4; +2 more".to_string(),
+            ]
+        );
+        assert_eq!(cycle_note(&[]), None);
+        assert_eq!(
+            cycle_note(&["1, 2".to_string(), "3".to_string()]).as_deref(),
+            Some("dependency cycles: 2 (edges ignored): 1, 2; 3")
+        );
+    }
+
+    #[test]
+    fn roadmap_graph_wr01_footer_never_takes_the_whole_body() {
+        let layout = many_cycles();
+        let footer_lines = layout.notes.len() + 1;
+        assert!(layout.rows.len() >= 4, "{:?}", render_text(&layout));
+
+        // Roomy: the full footer fits alongside the body.
+        let [_, body, footer] = split_areas(&layout, Rect::new(0, 0, 40, 20));
+        assert_eq!(usize::from(footer.height), footer_lines);
+        assert_eq!(body.height, 20 - footer.height);
+
+        // Short: the body keeps half the height, the footer the rest.
+        for h in 1..=6u16 {
+            let [_, body, footer] = split_areas(&layout, Rect::new(0, 0, 40, h));
+            assert!(body.height >= h.div_ceil(2), "h={h} body={body:?}");
+            assert_eq!(body.height + footer.height, h, "h={h}");
+        }
+
+        // Header present and a single row: the body wins the row.
+        let mut with_header = layout.clone();
+        with_header.header.push(HeaderItem {
+            text: "v1".to_string(),
+            active: true,
+        });
+        let [header, body, footer] = split_areas(&with_header, Rect::new(0, 0, 40, 1));
+        assert_eq!((header.height, body.height, footer.height), (0, 1, 0));
+
+        // Rendered on a short area: graph rows and the detail line both show.
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        RoadmapGraphWidget {
+            layout: &layout,
+            markers: &[],
+            scroll_offset: 0,
+        }
+        .render(area, &mut buf);
+        let line = |y: u16| -> String {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
+        assert!(line(0).contains('1'), "{:?}", line(0));
+        assert!(line(1).contains('3'), "{:?}", line(1));
+        assert!(line(2).starts_with("▶ P1"), "{:?}", line(2));
     }
 
     #[test]
