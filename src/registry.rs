@@ -864,8 +864,9 @@ fn unique_alias(config: &Config, base: &str) -> String {
     format!("{}-{}", base, chrono::Utc::now().timestamp())
 }
 
-/// Scan active Claude sessions and auto-register any whose `working_dir` is a
-/// GSD project (contains `.planning/`) and is not already in the registry.
+/// Scan active agent sessions (Claude or Codex) and auto-register any whose
+/// `working_dir` is a GSD project (contains `.planning/`) and is not already in
+/// the registry.
 ///
 /// Returns the list of `(alias, canonical_path)` pairs that were newly added.
 /// Callers are responsible for persisting the config and starting file
@@ -948,6 +949,7 @@ mod tests {
     fn make_session(working_dir: PathBuf) -> ClaudeSession {
         ClaudeSession {
             pid: 1,
+            kind: crate::session_detector::SessionKind::Claude,
             session_id: None,
             working_dir,
             start_time: None,

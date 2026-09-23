@@ -1611,6 +1611,25 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_session_lights_the_session_badge() {
+        // 260923-lr9: a Codex session arrives through the same
+        // `ctx.active_sessions` as a Claude one and badges its project alike.
+        let mut ctx = ctx_with_aliases(&["alpha"]);
+        ctx.active_sessions = vec![crate::session_detector::ClaudeSession {
+            pid: 4242,
+            kind: crate::session_detector::SessionKind::Codex,
+            session_id: None,
+            working_dir: PathBuf::from("/nonexistent").join("alpha"),
+            start_time: None,
+            tty: Some("pts/3".to_string()),
+        }];
+        assert_eq!(
+            row_badge(&ctx, "alpha").map(|b| b.glyph),
+            Some(BADGE_SESSION)
+        );
+    }
+
+    #[test]
     fn the_driven_badge_is_wired_to_liveness_not_to_the_mere_presence_of_a_run() {
         // T-18-33: a badge claiming an agent is driving the repo when the run is
         // gone is the spoofing failure this rank exists to avoid. `is_live()`

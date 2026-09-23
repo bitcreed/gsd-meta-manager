@@ -3,7 +3,34 @@ use std::process::Command;
 
 use crate::text::Untrusted;
 
-/// One live `claude` process, as seen through `/proc`.
+/// Which agent CLI a [`ClaudeSession`] is.
+///
+/// **A [`SessionKind::Codex`] session is never resumable from this build**: the
+/// only resume producer (`crate::ui::screens::detail`) spells a `claude` argv,
+/// so a Codex thread id must never reach it. The Sessions tab's resume gate
+/// matches on this enum exhaustively, so a new kind is a compile error there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    Claude,
+    Codex,
+}
+
+impl SessionKind {
+    /// The agent's display name, as shown in the Sessions tab.
+    pub fn label(self) -> &'static str {
+        match self {
+            SessionKind::Claude => "Claude",
+            SessionKind::Codex => "Codex",
+        }
+    }
+}
+
+/// One live interactive agent process — `claude` or `codex` — as seen through
+/// `/proc`. `kind` says which. The struct keeps its historical name.
+///
+/// For a Claude session the id is read out of argv ([`read_session_id`]); for
+/// a Codex session it is the name of an OPEN thread-lock file
+/// ([`codex_thread_id_from_fd_targets`]), never argv.
 ///
 /// **`session_id` is [`Untrusted`]** (D-21-19). It is scraped verbatim out of
 /// another process's `--resume` argument in [`read_session_id`], so nothing
@@ -17,6 +44,8 @@ use crate::text::Untrusted;
 #[derive(Debug, Clone)]
 pub struct ClaudeSession {
     pub pid: u32,
+    /// Which agent this process is. Only [`SessionKind::Claude`] is resumable.
+    pub kind: SessionKind,
     pub session_id: Option<Untrusted>,
     pub working_dir: PathBuf,
     pub start_time: Option<u64>,
@@ -28,22 +57,57 @@ pub struct ClaudeSession {
     pub tty: Option<String>,
 }
 
-/// Detect active Claude Code sessions by inspecting the Linux /proc filesystem.
+/// Detect active interactive agent sessions — Claude Code and OpenAI Codex CLI —
+/// by inspecting the Linux /proc filesystem.
 ///
-/// Uses `pgrep -x claude` to find PIDs, then reads /proc entries for each.
-/// Silently skips any PID where reads fail (stale/exited processes).
+/// Uses `pgrep -x claude` and `pgrep -x codex` to find PIDs, then reads /proc
+/// entries for each. Claude sessions come first, then Codex sessions. Codex
+/// processes that are not interactive TUIs (see [`build_codex_session`]) are
+/// dropped. Silently skips any PID where reads fail (stale/exited processes),
+/// and a missing `pgrep` yields no sessions of that kind.
 /// Uses std::process::Command (not tokio) — called from spawn_blocking.
 pub fn detect_sessions() -> Vec<ClaudeSession> {
-    let pids = match get_claude_pids() {
-        Some(pids) => pids,
-        None => return Vec::new(),
-    };
-
-    pids.into_iter().filter_map(build_session).collect()
+    let claude = pgrep_exact(CLAUDE_PROGRAM)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(build_session);
+    let codex = pgrep_exact(CODEX_PROGRAM)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(build_codex_session);
+    claude.chain(codex).collect()
 }
 
-fn get_claude_pids() -> Option<Vec<u32>> {
-    let output = Command::new("pgrep").args(["-x", "claude"]).output().ok()?;
+/// The process name `pgrep -x` matches for a Claude Code session.
+const CLAUDE_PROGRAM: &str = "claude";
+
+/// The process name `pgrep -x` matches for a Codex CLI session, and the exact
+/// argv[0] basename [`codex_cmdline_is_interactive`] requires.
+const CODEX_PROGRAM: &str = "codex";
+
+/// Codex subcommands that never run the interactive TUI. `e` is `exec`'s
+/// visible alias. This build's own executor runs `codex exec --json …`.
+const NON_INTERACTIVE_CODEX_SUBCOMMANDS: [&str; 6] = [
+    "exec",
+    "e",
+    "app-server",
+    "exec-server",
+    "mcp",
+    "mcp-server",
+];
+
+/// The directory name Codex keeps its per-thread writer locks in (under
+/// `$CODEX_HOME`, `~/.codex` by default). Matched by name, not by location.
+const CODEX_THREAD_LOCK_DIR: &str = "thread-writer-locks";
+
+/// At most this many `/proc/<pid>/fd` entries are readlinked per Codex
+/// process, bounding the per-poll work a process named `codex` can cause.
+const CODEX_FD_SCAN_LIMIT: usize = 4096;
+
+/// PIDs of processes whose name is exactly `name`. `None` when `pgrep` could
+/// not be run; an empty list when it ran and matched nothing.
+fn pgrep_exact(name: &str) -> Option<Vec<u32>> {
+    let output = Command::new("pgrep").args(["-x", name]).output().ok()?;
 
     if !output.status.success() {
         return Some(Vec::new());
@@ -76,11 +140,121 @@ fn build_session(pid: u32) -> Option<ClaudeSession> {
 
     Some(ClaudeSession {
         pid,
+        kind: SessionKind::Claude,
         session_id,
         working_dir,
         start_time,
         tty,
     })
+}
+
+/// A Codex session for `pid`, or `None` unless it is an interactive TUI:
+/// its argv passes [`codex_cmdline_is_interactive`], its stdin is a terminal
+/// device ([`is_terminal_device`]) and its cwd is readable.
+///
+/// The id comes only from the lock files the process holds OPEN, read by
+/// readlink over `/proc/<pid>/fd`. No lock file is ever opened, stat'ed or
+/// locked here: that could interfere with Codex's own locking.
+fn build_codex_session(pid: u32) -> Option<ClaudeSession> {
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    if !codex_cmdline_is_interactive(&cmdline) {
+        return None;
+    }
+    let tty = read_tty(pid).filter(|tty| is_terminal_device(tty))?;
+    let working_dir = std::fs::read_link(format!("/proc/{}/cwd", pid)).ok()?;
+
+    Some(ClaudeSession {
+        pid,
+        kind: SessionKind::Codex,
+        session_id: codex_thread_id_from_fd_targets(&read_fd_targets(pid)),
+        working_dir,
+        start_time: read_start_time(pid),
+        tty: Some(tty),
+    })
+}
+
+/// The readlink targets of `pid`'s open file descriptors, at most
+/// [`CODEX_FD_SCAN_LIMIT`] of them. Every error is skipped silently.
+fn read_fd_targets(pid: u32) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(format!("/proc/{}/fd", pid)) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .take(CODEX_FD_SCAN_LIMIT)
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+        .collect()
+}
+
+/// Is this `/proc/<pid>/cmdline` an interactive `codex` TUI?
+///
+/// True only when argv[0]'s basename is exactly `codex` (so the
+/// `codex-linux-sandbox` helper, which shares the comm, is refused) and no
+/// element before the first `--` is one of
+/// [`NON_INTERACTIVE_CODEX_SUBCOMMANDS`] — anywhere, not only at argv[1], so
+/// `codex -m gpt-5 exec …` is refused too. After `--` everything is a prompt.
+/// Only whole elements match: a prompt `execute the plan` is not `exec`.
+/// Total: an empty or non-UTF-8 cmdline is simply not interactive.
+pub(crate) fn codex_cmdline_is_interactive(cmdline: &[u8]) -> bool {
+    let mut args = cmdline.split(|&b| b == 0);
+    let program = match args.next() {
+        Some(program) => program,
+        None => return false,
+    };
+    let basename = program.rsplit(|&b| b == b'/').next().unwrap_or(program);
+    if basename != CODEX_PROGRAM.as_bytes() {
+        return false;
+    }
+    !args.take_while(|element| *element != b"--").any(|element| {
+        NON_INTERACTIVE_CODEX_SUBCOMMANDS
+            .iter()
+            .any(|sub| element == sub.as_bytes())
+    })
+}
+
+/// Is `tty` (as [`read_tty`] reports it, `/dev/` stripped) a terminal device?
+/// `pts/3` and `tty1` are; `null`, `pipe:[…]` and `socket:[…]` are not.
+pub(crate) fn is_terminal_device(tty: &str) -> bool {
+    tty.starts_with("pts/") || tty.starts_with("tty")
+}
+
+/// The Codex thread id among a process's open-fd readlink `targets`: the
+/// lexicographically lowest `<uuid>` of any `…/thread-writer-locks/<uuid>.lock`.
+///
+/// An idle TUI can hold two such locks (its main thread and a later review
+/// thread); for lowercase canonical UUIDv7 stems lexicographic order is
+/// creation order, so the lowest is the main thread (an inferred heuristic).
+/// A stem that is not a lowercase canonical UUID is ignored, so an odd or
+/// hostile path yields `None` rather than a fabricated id. A ` (deleted)`
+/// target fails the extension test and is ignored. Paths are compared by
+/// component only — nothing is opened.
+pub(crate) fn codex_thread_id_from_fd_targets(targets: &[PathBuf]) -> Option<Untrusted> {
+    targets
+        .iter()
+        .filter_map(|target| {
+            let parent = target.parent()?.file_name()?;
+            if parent != CODEX_THREAD_LOCK_DIR {
+                return None;
+            }
+            if target.extension()? != "lock" {
+                return None;
+            }
+            let stem = target.file_stem()?.to_str()?;
+            is_lowercase_canonical_uuid(stem).then_some(stem)
+        })
+        .min()
+        .map(|stem| Untrusted::from_untrusted_source(stem.to_string()))
+}
+
+/// 36 bytes, hyphens at byte offsets 8, 13, 18 and 23, every other byte in
+/// `[0-9a-f]`. The version nibble is not checked.
+fn is_lowercase_canonical_uuid(stem: &str) -> bool {
+    stem.len() == 36
+        && stem.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 fn read_tty(pid: u32) -> Option<String> {
@@ -641,6 +815,183 @@ mod tests {
     #[test]
     fn test_read_start_time_nonexistent_pid() {
         assert!(read_start_time(999_999_999).is_none());
+    }
+
+    // --- Codex detection (260923-lr9) ---------------------------------------
+
+    /// Realistic UUIDv7 thread ids; `CODEX_THREAD_LOW` sorts before `_HIGH`.
+    const CODEX_THREAD_LOW: &str = "0199a3f2-7c4e-7a10-8b2c-1d2e3f405162";
+    const CODEX_THREAD_HIGH: &str = "0199a3f2-9d00-7b11-9c3d-2e3f40516273";
+
+    fn codex_interactive(elements: &[&str]) -> bool {
+        codex_cmdline_is_interactive(&cmdline(elements))
+    }
+
+    fn lock(dir: &str, stem: &str) -> PathBuf {
+        PathBuf::from(format!("{dir}/{stem}.lock"))
+    }
+
+    fn thread_id(targets: &[PathBuf]) -> Option<String> {
+        codex_thread_id_from_fd_targets(targets).map(|id| id.as_raw_for_logic_only().to_string())
+    }
+
+    #[test]
+    fn session_kind_labels_name_the_agent() {
+        assert_eq!(SessionKind::Claude.label(), "Claude");
+        assert_eq!(SessionKind::Codex.label(), "Codex");
+    }
+
+    #[test]
+    fn an_interactive_codex_tui_is_recognised() {
+        assert!(codex_interactive(&["codex"]));
+        assert!(codex_interactive(&[
+            "/usr/local/bin/codex",
+            "fix the tests"
+        ]));
+        assert!(codex_interactive(&["codex", "resume", CODEX_THREAD_LOW]));
+        assert!(
+            codex_interactive(&["codex", "execute the plan"]),
+            "only WHOLE elements match a subcommand; a prompt starting with `exec` is a prompt"
+        );
+        assert!(
+            codex_interactive(&["codex", "--", "exec"]),
+            "after `--` every element is a prompt"
+        );
+    }
+
+    #[test]
+    fn non_interactive_codex_processes_are_refused() {
+        for argv in [
+            &["codex", "exec", "--json", "hi"][..],
+            &["codex", "e", "hi"],
+            &["codex", "app-server"],
+            &["codex", "exec-server"],
+            &["codex", "mcp"],
+            &["codex", "mcp-server"],
+            &["codex", "-m", "gpt-5", "exec", "x"],
+            &["codex-linux-sandbox", "--", "sh"],
+            &["/opt/x/codex-linux-sandbox"],
+            &["claude"],
+        ] {
+            assert!(!codex_interactive(argv), "{argv:?} must not be a session");
+        }
+        assert!(
+            !codex_cmdline_is_interactive(b""),
+            "an empty cmdline is not a session"
+        );
+        assert!(
+            !codex_cmdline_is_interactive(b"\xff\xfe\0hi\0"),
+            "a non-UTF-8 argv[0] is not `codex`"
+        );
+        assert!(
+            !codex_cmdline_is_interactive(b"/\0"),
+            "a bare `/` argv[0] is not `codex`"
+        );
+    }
+
+    /// This build's own executor argv must never look like an interactive
+    /// session, whatever `pgrep -x codex` makes of it. The argv comes from the
+    /// real producer and is encoded byte-exact, as the kernel would present it.
+    #[cfg(unix)]
+    #[test]
+    fn the_executors_own_codex_argv_is_never_an_interactive_session() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let argv = crate::executor::codex::build_codex_argv(
+            &crate::executor::ExecutionOptions::default(),
+            std::path::Path::new("/tmp/project"),
+            "do the thing",
+        )
+        .expect("the default options must build a codex argv");
+        assert!(
+            !argv.is_empty(),
+            "an empty argv would make this check vacuous"
+        );
+
+        let mut wire = CODEX_PROGRAM.as_bytes().to_vec();
+        wire.push(0);
+        for element in &argv {
+            wire.extend_from_slice(element.as_bytes());
+            wire.push(0);
+        }
+        assert!(
+            !codex_cmdline_is_interactive(&wire),
+            "the executor's `codex {argv:?}` was classified as an interactive session"
+        );
+    }
+
+    #[test]
+    fn only_terminal_devices_count_as_a_codex_stdin() {
+        assert!(is_terminal_device("pts/3"));
+        assert!(is_terminal_device("tty1"));
+        for not_a_tty in ["null", "pipe:[123]", "socket:[9]", ""] {
+            assert!(!is_terminal_device(not_a_tty), "{not_a_tty:?}");
+        }
+    }
+
+    #[test]
+    fn the_codex_thread_id_is_the_lowest_open_thread_lock() {
+        let dir = "/home/u/.codex/thread-writer-locks";
+        let low = lock(dir, CODEX_THREAD_LOW);
+        let high = lock(dir, CODEX_THREAD_HIGH);
+        assert_eq!(
+            thread_id(&[high.clone(), low.clone()]).as_deref(),
+            Some(CODEX_THREAD_LOW)
+        );
+        assert_eq!(thread_id(&[low, high]).as_deref(), Some(CODEX_THREAD_LOW));
+        assert_eq!(thread_id(&[]), None);
+        assert_eq!(
+            thread_id(&[lock(
+                "/custom/codex-home/thread-writer-locks",
+                CODEX_THREAD_HIGH
+            )])
+            .as_deref(),
+            Some(CODEX_THREAD_HIGH),
+            "a $CODEX_HOME outside ~/.codex is matched by directory name"
+        );
+    }
+
+    #[test]
+    fn nothing_but_an_open_canonical_thread_lock_yields_a_codex_id() {
+        let dir = "/home/u/.codex/thread-writer-locks";
+        let ignored = [
+            PathBuf::from(format!(
+                "/home/u/.codex/sessions/rollout-{CODEX_THREAD_LOW}.jsonl"
+            )),
+            PathBuf::from("/dev/pts/3"),
+            PathBuf::from("/home/u/.codex/state_5.sqlite"),
+            PathBuf::from("socket:[1]"),
+            lock("/home/u/.codex/other-locks", CODEX_THREAD_LOW),
+            lock(dir, "notauuid"),
+            lock(dir, &CODEX_THREAD_LOW[..35]),
+            lock(dir, &CODEX_THREAD_LOW.to_uppercase()),
+            lock(dir, ".."),
+            PathBuf::from(format!("{dir}/{CODEX_THREAD_LOW}.lock (deleted)")),
+        ];
+        for target in &ignored {
+            assert_eq!(thread_id(std::slice::from_ref(target)), None, "{target:?}");
+        }
+        assert_eq!(
+            thread_id(&[&ignored[..], &[lock(dir, CODEX_THREAD_HIGH)]].concat()).as_deref(),
+            Some(CODEX_THREAD_HIGH),
+            "ignored targets do not hide a real lock"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_lock_name_is_ignored_without_panic() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut bytes = b"/home/u/.codex/thread-writer-locks/".to_vec();
+        bytes.extend_from_slice(b"\xff\xfe.lock");
+        let target = PathBuf::from(std::ffi::OsStr::from_bytes(&bytes));
+        assert_eq!(thread_id(&[target]), None);
+    }
+
+    #[test]
+    fn codex_io_glue_is_silent_for_a_missing_process() {
+        assert!(build_codex_session(999_999_999).is_none());
+        assert!(read_fd_targets(999_999_999).is_empty());
     }
 
     /// NUL-join argv elements into the `/proc/<pid>/cmdline` encoding, with the

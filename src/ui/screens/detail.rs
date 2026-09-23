@@ -11451,6 +11451,7 @@ mod tests {
             .insert(TEST_ALIAS.to_string(), DetailSubView::Sessions);
         ctx.active_sessions = vec![ClaudeSession {
             pid: 4242,
+            kind: crate::session_detector::SessionKind::Claude,
             session_id: Some(Untrusted::from_untrusted_source(session_id.to_string())),
             working_dir: project_path,
             start_time: Some(1),

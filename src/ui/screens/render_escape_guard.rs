@@ -1045,6 +1045,7 @@ fn probe_ctx(identity: &str) -> AppContext {
     // sessions" — the empty branch this fixture exists to leave.
     ctx.active_sessions = vec![crate::session_detector::ClaudeSession {
         pid: 4242,
+        kind: crate::session_detector::SessionKind::Claude,
         session_id: Some(Untrusted::from_untrusted_source(identity.to_string())),
         working_dir: project_path.clone(),
         start_time: Some(1),
