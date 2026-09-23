@@ -1,3 +1,4 @@
+use super::phase_num::{phase_key, PhaseNum};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -475,6 +476,305 @@ pub fn active_milestone(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// One milestone a ROADMAP.md names, with the phases it covers (quick
+/// 260923-md1). Display-only: the Roadmap graph's header band and row-end
+/// labels read it; no gate or action does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoadmapMilestone {
+    /// The label as written, e.g. `v2.0 Autonomous Orchestration`.
+    ///
+    /// **`Untrusted`, not `String`**: it is third-party text out of the
+    /// project's ROADMAP.md, so it reaches a cell only through `shown()`, and
+    /// `ProjectState` gains no free-string field (`THIRD_PARTY_STRINGS`).
+    pub label: crate::text::Untrusted,
+    /// Inclusive declared range (`Phases A-B`), when numeric.
+    pub first: Option<PhaseNum>,
+    pub last: Option<PhaseNum>,
+    /// `phase_key`s of phases nested under the milestone's heading. Generated
+    /// by the reader for logic only; never rendered.
+    pub scoped_phases: Vec<String>,
+    /// A `🚧` or `in progress` marker was seen on one of its lines.
+    pub in_progress: bool,
+}
+
+impl RoadmapMilestone {
+    /// Whether `phase_id` lies within the declared inclusive range exactly,
+    /// without the inserted-decimal extension `range_contains` adds.
+    fn strict_range_contains(&self, phase_id: &str) -> bool {
+        match (&self.first, &self.last, PhaseNum::parse(phase_id)) {
+            (Some(first), Some(last), Some(p)) => *first <= p && p <= *last,
+            _ => false,
+        }
+    }
+
+    /// Whether the declared range covers `phase_id`. Numeric, and an inserted
+    /// decimal belongs to its integer's milestone: `Phases 1-7` holds `7.1`.
+    fn range_contains(&self, phase_id: &str) -> bool {
+        match (&self.first, &self.last, PhaseNum::parse(phase_id)) {
+            (Some(first), Some(last), Some(p)) => {
+                *first <= p && (p <= *last || p.major() == last.major())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether this milestone holds `phase_id`, by range or heading scope.
+    pub fn contains(&self, phase_id: &str) -> bool {
+        self.range_contains(phase_id) || self.scoped_phases.contains(&phase_key(phase_id))
+    }
+}
+
+/// The index of the milestone holding `phase_id`: the first whose declared
+/// range covers it exactly, else the first whose range covers it through the
+/// inserted-decimal rule, else the first whose heading scope does.
+///
+/// The exact pass comes first so an overlap resolves to the declared range:
+/// with `Phases 1-7` and `Phases 7.1-12`, `7.1` belongs to the second.
+pub fn milestone_index_of(ms: &[RoadmapMilestone], phase_id: &str) -> Option<usize> {
+    ms.iter()
+        .position(|m| m.strict_range_contains(phase_id))
+        .or_else(|| ms.iter().position(|m| m.range_contains(phase_id)))
+        .or_else(|| {
+            let key = phase_key(phase_id);
+            ms.iter().position(|m| m.scoped_phases.contains(&key))
+        })
+}
+
+/// The active milestone: the one STATE.md names (full label, or its first
+/// token such as `v2.0`), else the first in-progress one, else `None`.
+pub fn active_milestone_index(ms: &[RoadmapMilestone], state_milestone: &str) -> Option<usize> {
+    let wanted = state_milestone.trim();
+    if !wanted.is_empty() {
+        let hit = ms.iter().position(|m| {
+            let label = m.label.as_raw_for_logic_only().trim();
+            label.eq_ignore_ascii_case(wanted)
+                || label
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|tok| tok.eq_ignore_ascii_case(wanted))
+        });
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    ms.iter().position(|m| m.in_progress)
+}
+
+/// Split a milestone label into a short id and a name: `Milestone 1: Foo` →
+/// (`M1`, `Foo`), `v7.0 — Foundation` → (`v7.0`, `Foundation`). Pure text:
+/// the reader uses it on raw text for logic, the graph on ESCAPED text.
+pub fn split_milestone_label(label: &str) -> (String, String) {
+    static NUMBERED: OnceLock<Regex> = OnceLock::new();
+    let numbered = NUMBERED.get_or_init(|| Regex::new(r"(?i)^Milestone\s+(\d+)").unwrap());
+    let t = label.trim();
+    let (short, rest) = match numbered.captures(t) {
+        Some(caps) => {
+            let end = caps.get(0).map_or(0, |m| m.end());
+            (format!("M{}", &caps[1]), &t[end..])
+        }
+        None => match t.split_once(char::is_whitespace) {
+            Some((head, tail)) => (head.to_string(), tail),
+            None => (t.to_string(), ""),
+        },
+    };
+    let rest = rest
+        .trim()
+        .trim_start_matches([':', '-', '\u{2013}', '\u{2014}'])
+        .trim();
+    let unquoted = [('"', '"'), ('\u{201C}', '\u{201D}')]
+        .iter()
+        .find_map(|&(open, close)| {
+            rest.strip_prefix(open)
+                .and_then(|r| r.strip_suffix(close))
+        })
+        .unwrap_or(rest);
+    (short, unquoted.to_string())
+}
+
+/// A short id two spellings of one milestone share: `v2.0`, `M3`.
+fn is_version_like(short: &str) -> bool {
+    let mut chars = short.chars();
+    match chars.next() {
+        Some('v' | 'V') => chars.next().is_some_and(|c| c.is_ascii_digit()),
+        Some('M' | 'm') => {
+            let rest: Vec<char> = chars.collect();
+            !rest.is_empty() && rest.iter().all(char::is_ascii_digit)
+        }
+        _ => false,
+    }
+}
+
+/// Whether two raw labels name the same milestone (PI-7).
+fn same_milestone(a: &str, b: &str) -> bool {
+    if a.trim().eq_ignore_ascii_case(b.trim()) {
+        return true;
+    }
+    let (sa, _) = split_milestone_label(a);
+    let (sb, _) = split_milestone_label(b);
+    is_version_like(&sa) && is_version_like(&sb) && sa.eq_ignore_ascii_case(&sb)
+}
+
+/// Every milestone a ROADMAP.md names, in roadmap order, deduped. Never fails;
+/// empty when nothing matches.
+///
+/// Sources (research §1): `## Milestones` bullets (label = the bold text),
+/// `<summary>` lines, and `##`-`####` headings that carry a version token or
+/// `Milestone <n>`. Each may declare `Phases A-B`; a `## Milestones` bullet
+/// may also declare a single `Phase N`. A milestone heading additionally
+/// opens a scope that collects the phase headers nested beneath it, closed by
+/// the next heading of the same or a higher level.
+pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
+    let ms_heading = Regex::new(r"(?i)^##[ \t]+Milestones\b").unwrap();
+    let ms_boundary = Regex::new(r"^#{1,2}[ \t]").unwrap();
+    let bold = Regex::new(r"\*\*(.+?)\*\*").unwrap();
+    let range = Regex::new(&format!(
+        r"(?i)\bphases?\s+({id})\s*[-\x{{2013}}\x{{2014}}]\s*({id})",
+        id = PHASE_ID
+    ))
+    .unwrap();
+    let single = Regex::new(&format!(r"(?i)\bphase\s+({id})", id = PHASE_ID)).unwrap();
+    let any_heading = Regex::new(r"^\s*(#{1,6})[ \t]+(.*?)\s*$").unwrap();
+    let phase_heading = Regex::new(&format!(
+        r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?:",
+        id = PHASE_ID
+    ))
+    .unwrap();
+    let phase_checklist = Regex::new(&format!(
+        r"^\s*- \[[ xX]\] (?:~~)?\*\*Phase ({id})",
+        id = PHASE_ID
+    ))
+    .unwrap();
+    let version = Regex::new(r"\bv\d+(\.\d+)*\b").unwrap();
+    let numbered = Regex::new(r"(?i)\bMilestone\s+\d").unwrap();
+    let tags = Regex::new(r"<[^>]*>").unwrap();
+
+    let endpoint = |text: &str| extract_phase_id(text).and_then(|id| PhaseNum::parse(&id));
+    let cut_label = |text: &str| -> String {
+        let t = text.trim().trim_start_matches(|c: char| !c.is_alphanumeric());
+        let t = match t.find(" (") {
+            Some(at) => &t[..at],
+            None => t,
+        };
+        t.trim().to_string()
+    };
+    let marks_progress =
+        |line: &str| line.contains('\u{1F6A7}') || line.to_ascii_lowercase().contains("in progress");
+
+    let mut raw: Vec<(String, RoadmapMilestone)> = Vec::new();
+    let mut push = |label: String, line: &str, singular: bool| -> usize {
+        let (mut first, mut last) = match range.captures(line) {
+            Some(caps) => (endpoint(&caps[1]), endpoint(&caps[2])),
+            None => (None, None),
+        };
+        if first.is_none() && singular {
+            if let Some(caps) = single.captures(line) {
+                first = endpoint(&caps[1]);
+                last = first.clone();
+            }
+        }
+        if first.is_none() || last.is_none() {
+            first = None;
+            last = None;
+        }
+        raw.push((
+            label.clone(),
+            RoadmapMilestone {
+                label: crate::text::Untrusted::from_untrusted_source(label),
+                first,
+                last,
+                scoped_phases: Vec::new(),
+                in_progress: marks_progress(line),
+            },
+        ));
+        raw.len() - 1
+    };
+
+    let mut in_ms_section = false;
+    // The open heading scope: (heading level, index into `raw`).
+    let mut scope: Option<(usize, usize)> = None;
+    let mut scoped: Vec<(usize, String)> = Vec::new();
+    for line in content.lines() {
+        if let Some(caps) = any_heading.captures(line) {
+            let level = caps[1].len();
+            if scope.is_some_and(|(open, _)| level <= open) {
+                scope = None;
+            }
+            if in_ms_section && ms_boundary.is_match(line) {
+                in_ms_section = false;
+            }
+            if ms_heading.is_match(line) {
+                in_ms_section = true;
+                continue;
+            }
+            let text = &caps[2];
+            let is_phase = phase_heading.is_match(line);
+            if !is_phase && (2..=4).contains(&level) && (version.is_match(text) || numbered.is_match(text)) {
+                let label = cut_label(text);
+                if !label.is_empty() {
+                    let at = push(label, line, false);
+                    scope = Some((level, at));
+                }
+                continue;
+            }
+        }
+
+        let phase_id = phase_heading
+            .captures(line)
+            .or_else(|| phase_checklist.captures(line))
+            .map(|caps| caps[1].trim_end_matches(['.', ',']).to_string());
+        if let (Some(id), Some((_, at))) = (&phase_id, scope) {
+            scoped.push((at, super::phase_num::phase_key(id)));
+        }
+
+        if in_ms_section {
+            let t = line.trim_start();
+            if t.starts_with("- ") || t.starts_with("* ") {
+                if let Some(caps) = bold.captures(line) {
+                    let label = caps[1].trim().to_string();
+                    if !label.is_empty() {
+                        push(label, line, true);
+                    }
+                }
+            }
+            continue;
+        }
+        if line.contains("<summary>") {
+            let label = cut_label(&tags.replace_all(line, " "));
+            if !label.is_empty() {
+                push(label, line, false);
+            }
+        }
+    }
+    for (at, key) in scoped {
+        if let Some((_, m)) = raw.get_mut(at) {
+            if !m.scoped_phases.contains(&key) {
+                m.scoped_phases.push(key);
+            }
+        }
+    }
+
+    // Dedupe (PI-7): keep the first entry's label and position.
+    let mut out: Vec<(String, RoadmapMilestone)> = Vec::new();
+    for (label, m) in raw {
+        match out.iter_mut().find(|(seen, _)| same_milestone(seen, &label)) {
+            Some((_, kept)) => {
+                kept.in_progress |= m.in_progress;
+                if kept.first.is_none() {
+                    kept.first = m.first;
+                    kept.last = m.last;
+                }
+                for key in m.scoped_phases {
+                    if !kept.scoped_phases.contains(&key) {
+                        kept.scoped_phases.push(key);
+                    }
+                }
+            }
+            None => out.push((label, m)),
+        }
+    }
+    out.into_iter().map(|(_, m)| m).collect()
 }
 
 #[cfg(test)]
@@ -1089,5 +1389,138 @@ Plans:
 | a | b |
 "#;
         assert_eq!(roadmap_progress(content), None);
+    }
+
+    // ── quick 260923-md1: milestone membership ─────────────────────────────
+
+    fn labels(ms: &[RoadmapMilestone]) -> Vec<&str> {
+        ms.iter().map(|m| m.label.as_raw_for_logic_only()).collect()
+    }
+
+    const REPO_SHAPED: &str = "# Roadmap\n\n## Milestones\n\n\
+        - ✅ **v7.0 MVP** - Phases 1-4 (shipped 2026-01-01)\n\
+        - ✅ **v8.0 Config** - 10 quick tasks (shipped 2026-02-01)\n\
+        - 🚧 **v9.0 Autonomous Orchestration** - Phases 14-23 (in progress)\n\n\
+        ## Phases\n\n<details>\n\
+        <summary>v7.0 MVP (Phases 01-04) - SHIPPED 2026-01-01</summary>\n\n\
+        - [x] **Phase 1: A** - a\n</details>\n\n\
+        ### v9.0 Autonomous Orchestration (Phases 14-23)\n\n\
+        - [ ] **Phase 14: X** - x\n\n\
+        ## Phase Details\n\n### Phase 14: X\n**Depends on**: Nothing\n";
+
+    #[test]
+    fn roadmap_milestones_parses_and_dedupes_a_repo_shaped_roadmap() {
+        let ms = roadmap_milestones(REPO_SHAPED);
+        assert_eq!(
+            labels(&ms),
+            vec!["v7.0 MVP", "v8.0 Config", "v9.0 Autonomous Orchestration"]
+        );
+        assert_eq!(ms[0].first, PhaseNum::parse("1"));
+        assert_eq!(ms[0].last, PhaseNum::parse("4"));
+        assert_eq!(ms[1].first, None, "a bullet without a range still lists");
+        assert_eq!(
+            ms.iter().map(|m| m.in_progress).collect::<Vec<_>>(),
+            vec![false, false, true]
+        );
+        assert_eq!(milestone_index_of(&ms, "3"), Some(0));
+        assert_eq!(milestone_index_of(&ms, "14"), Some(2));
+        assert_eq!(milestone_index_of(&ms, "23.1"), Some(2), "decimal rule");
+        assert_eq!(milestone_index_of(&ms, "24"), None);
+        assert_eq!(milestone_index_of(&ms, "07.5"), None);
+    }
+
+    #[test]
+    fn roadmap_milestones_heading_scope_covers_the_gsd_template_shape() {
+        let content = "## Phases\n\n### 🚧 v8.1 Core (In Progress)\n\n\
+            #### Phase 5: Alpha\n#### Phase 6: Beta\n\n\
+            ### 📋 v9.2 Next (Planned)\n\n#### Phase 7: Gamma\n";
+        let ms = roadmap_milestones(content);
+        assert_eq!(labels(&ms), vec!["v8.1 Core", "v9.2 Next"]);
+        assert_eq!(milestone_index_of(&ms, "5"), Some(0));
+        assert_eq!(milestone_index_of(&ms, "06"), Some(0));
+        assert_eq!(milestone_index_of(&ms, "7"), Some(1));
+        assert!(ms[0].in_progress);
+        assert!(!ms[1].in_progress);
+    }
+
+    #[test]
+    fn roadmap_milestones_range_includes_inserted_decimals_and_skips_false_headings() {
+        let content = "## Milestones\n\n\
+            - 🚧 **Milestone 1: Reassessment** - Phases 1-7 (in progress)\n\n\
+            ## Notes\n\n### Milestone mapping (decision D10)\n\n- [ ] **Phase 8: Z** - z\n";
+        let ms = roadmap_milestones(content);
+        assert_eq!(labels(&ms), vec!["Milestone 1: Reassessment"]);
+        assert!(ms[0].contains("7.1"));
+        assert!(ms[0].contains("07"));
+        assert!(!ms[0].contains("8"));
+    }
+
+    #[test]
+    fn milestone_index_of_prefers_an_exact_range_over_the_decimal_rule() {
+        let content = "## Milestones\n\n\
+            - ✅ **v1.0 Base** - Phases 1-7 (shipped)\n\
+            - 🚧 **v2.0 Next** - Phases 7.1-12 (in progress)\n";
+        let ms = roadmap_milestones(content);
+        assert_eq!(labels(&ms), vec!["v1.0 Base", "v2.0 Next"]);
+        assert_eq!(milestone_index_of(&ms, "7"), Some(0));
+        assert_eq!(milestone_index_of(&ms, "7.1"), Some(1), "exact range wins");
+        assert_eq!(milestone_index_of(&ms, "7.2"), Some(1));
+        assert_eq!(milestone_index_of(&ms, "12"), Some(1));
+        assert_eq!(milestone_index_of(&ms, "12.1"), Some(1), "decimal rule still applies");
+        assert_eq!(milestone_index_of(&ms, "13"), None);
+    }
+
+    #[test]
+    fn roadmap_milestones_singular_phase_only_on_milestone_bullets() {
+        let ms = roadmap_milestones("## Milestones\n\n- 📋 **M5 web** - Phase 18 (planned)\n");
+        assert_eq!(ms[0].first, PhaseNum::parse("18"));
+        assert_eq!(ms[0].last, PhaseNum::parse("18"));
+        let ms = roadmap_milestones("## Plan\n\n### v2.0 Launch - see Phase 9\n");
+        assert_eq!(labels(&ms), vec!["v2.0 Launch - see Phase 9"]);
+        assert_eq!(ms[0].first, None);
+    }
+
+    #[test]
+    fn split_milestone_label_splits_short_id_from_name() {
+        let s = |l: &str| {
+            let (a, b) = split_milestone_label(l);
+            (a, b)
+        };
+        assert_eq!(
+            s("Milestone 1: Reassessment and decision records"),
+            ("M1".into(), "Reassessment and decision records".into())
+        );
+        assert_eq!(
+            s("Milestone 3 \"Supervised live booking\""),
+            ("M3".into(), "Supervised live booking".into())
+        );
+        assert_eq!(s("v7.0 — Foundation"), ("v7.0".into(), "Foundation".into()));
+        assert_eq!(s("v8.1"), ("v8.1".into(), String::new()));
+        assert_eq!(s("M3 live booking"), ("M3".into(), "live booking".into()));
+    }
+
+    #[test]
+    fn active_milestone_index_matches_state_then_falls_back_to_in_progress() {
+        let ms = roadmap_milestones(REPO_SHAPED);
+        assert_eq!(active_milestone_index(&ms, "v9.0"), Some(2));
+        assert_eq!(active_milestone_index(&ms, "v7.0 MVP"), Some(0));
+        assert_eq!(active_milestone_index(&ms, ""), Some(2));
+        assert_eq!(active_milestone_index(&ms, "v1.7.2"), Some(2));
+        let shipped = roadmap_milestones("## Milestones\n\n- ✅ **v1.0** - Phases 1-2 (shipped)\n");
+        assert_eq!(active_milestone_index(&shipped, ""), None);
+    }
+
+    #[test]
+    fn roadmap_milestones_never_fails_on_garbage() {
+        for junk in [
+            "",
+            "\u{0}###\n<summary></summary>\n## Milestones\n- **\n",
+            "### v\n#### Phase 5:\n- 🚧 **x** - Phases 9-\n",
+            "## Milestones\n- **v1** - Phases ab-cd\n### v1 (Phases 3-1)\n",
+        ] {
+            let _ = roadmap_milestones(junk);
+        }
+        assert!(roadmap_milestones("").is_empty());
+        assert!(roadmap_milestones("# Roadmap\n\nJust prose.\n").is_empty());
     }
 }

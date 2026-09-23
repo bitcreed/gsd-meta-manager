@@ -933,6 +933,10 @@ pub struct ProjectViewCache {
     pub loading_git: bool,
     pub loading_commit_detail: bool,
     pub pipeline_selected: usize,
+    /// The Roadmap tab's view: `false` (the default) draws the dependency
+    /// graph (`ui::roadmap_graph`), `true` draws the box list
+    /// (`ui::roadmap_widget`). Toggled per project by `v` on that tab.
+    pub roadmap_box_view: bool,
     pub queue_selected: usize,
     pub sessions_selected: usize,
     pub archive_depth: crate::archive::ArchiveDepth,

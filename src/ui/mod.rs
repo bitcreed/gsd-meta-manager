@@ -1,4 +1,5 @@
 pub mod roadmap_widget;
+pub mod roadmap_graph;
 pub mod screens;
 
 use crate::app::App;
@@ -969,5 +970,64 @@ mod tests {
             !prompt_text(hostile).contains('\u{9b}'),
             "no C1 control may survive into the prompt a human confirms"
         );
+    }
+
+    /// The same two directions at `roadmap_graph.rs` (quick 260923-md1), the
+    /// Roadmap tab's default view: a clean current-phase name reaches the
+    /// CELLS verbatim, and one carrying ESC / U+202E reaches them as its
+    /// `render_for_terminal` form, which differs from the raw.
+    #[test]
+    fn the_roadmap_graph_renders_a_clean_phase_name_unchanged_and_a_control_one_differently() {
+        use super::roadmap_graph::{layout_graph, GraphNode, RoadmapGraphWidget};
+        use crate::state_reader::PhaseMarker;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        fn rendered(name: &str) -> String {
+            let deps: Vec<String> = Vec::new();
+            let nodes = [GraphNode {
+                id: "1",
+                name,
+                deps: &deps,
+                milestone: None,
+            }];
+            let layout = layout_graph(&nodes, &[], Some(0));
+            let area = Rect::new(0, 0, 60, 8);
+            let mut buffer = Buffer::empty(area);
+            RoadmapGraphWidget {
+                layout: &layout,
+                markers: &[PhaseMarker::Current],
+                scroll_offset: 0,
+            }
+            .render(area, &mut buffer);
+            buffer
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect()
+        }
+
+        // Direction 1 — a clean name reaches the cells exactly as written.
+        let clean = "Injection Hardening";
+        assert_eq!(String::from(render_for_terminal(clean)), clean);
+        let clean_text = rendered(clean);
+        assert!(
+            clean_text.contains(&format!("▶ P1: {clean}")),
+            "a clean phase name must reach the cells verbatim; got {clean_text:?}"
+        );
+
+        // Direction 2 — a hostile name reaches them escaped, not raw.
+        let hostile = "Injection\u{1b}[31m \u{202E}Hardening";
+        let shown = String::from(render_for_terminal(hostile));
+        assert_ne!(shown, hostile, "the fixture must need escaping");
+        let hostile_text = rendered(hostile);
+        assert!(
+            hostile_text.contains(&format!("▶ P1: {shown}")),
+            "the hostile name must arrive as its render_for_terminal form; got \
+             {hostile_text:?}"
+        );
+        assert!(!hostile_text.contains('\u{1b}') && !hostile_text.contains('\u{202E}'));
+        assert_ne!(hostile_text, clean_text);
     }
 }
