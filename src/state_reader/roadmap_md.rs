@@ -500,6 +500,15 @@ pub struct RoadmapMilestone {
 }
 
 impl RoadmapMilestone {
+    /// Whether `phase_id` lies within the declared inclusive range exactly,
+    /// without the inserted-decimal extension `range_contains` adds.
+    fn strict_range_contains(&self, phase_id: &str) -> bool {
+        match (&self.first, &self.last, PhaseNum::parse(phase_id)) {
+            (Some(first), Some(last), Some(p)) => *first <= p && p <= *last,
+            _ => false,
+        }
+    }
+
     /// Whether the declared range covers `phase_id`. Numeric, and an inserted
     /// decimal belongs to its integer's milestone: `Phases 1-7` holds `7.1`.
     fn range_contains(&self, phase_id: &str) -> bool {
@@ -517,11 +526,16 @@ impl RoadmapMilestone {
     }
 }
 
-/// The index of the milestone holding `phase_id`: the first whose RANGE
-/// covers it, else the first whose heading scope does.
+/// The index of the milestone holding `phase_id`: the first whose declared
+/// range covers it exactly, else the first whose range covers it through the
+/// inserted-decimal rule, else the first whose heading scope does.
+///
+/// The exact pass comes first so an overlap resolves to the declared range:
+/// with `Phases 1-7` and `Phases 7.1-12`, `7.1` belongs to the second.
 pub fn milestone_index_of(ms: &[RoadmapMilestone], phase_id: &str) -> Option<usize> {
     ms.iter()
-        .position(|m| m.range_contains(phase_id))
+        .position(|m| m.strict_range_contains(phase_id))
+        .or_else(|| ms.iter().position(|m| m.range_contains(phase_id)))
         .or_else(|| {
             let key = phase_key(phase_id);
             ms.iter().position(|m| m.scoped_phases.contains(&key))
@@ -1439,6 +1453,21 @@ Plans:
         assert!(ms[0].contains("7.1"));
         assert!(ms[0].contains("07"));
         assert!(!ms[0].contains("8"));
+    }
+
+    #[test]
+    fn milestone_index_of_prefers_an_exact_range_over_the_decimal_rule() {
+        let content = "## Milestones\n\n\
+            - ✅ **v1.0 Base** - Phases 1-7 (shipped)\n\
+            - 🚧 **v2.0 Next** - Phases 7.1-12 (in progress)\n";
+        let ms = roadmap_milestones(content);
+        assert_eq!(labels(&ms), vec!["v1.0 Base", "v2.0 Next"]);
+        assert_eq!(milestone_index_of(&ms, "7"), Some(0));
+        assert_eq!(milestone_index_of(&ms, "7.1"), Some(1), "exact range wins");
+        assert_eq!(milestone_index_of(&ms, "7.2"), Some(1));
+        assert_eq!(milestone_index_of(&ms, "12"), Some(1));
+        assert_eq!(milestone_index_of(&ms, "12.1"), Some(1), "decimal rule still applies");
+        assert_eq!(milestone_index_of(&ms, "13"), None);
     }
 
     #[test]
