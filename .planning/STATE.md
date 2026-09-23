@@ -411,7 +411,8 @@ Recent decisions affecting current work:
 - [2026-08-19] [driver] The verify-work gate policy must be configurable — skip | defer | auto-validate — [todo file](.planning/todos/pending/2026-08-19-verify-work-gate-policy-configurable.md)
 - [2026-08-22] [ui] Phases panel marker/grey disagrees with the disk-inferred stage — [todo file](.planning/todos/pending/2026-08-22-phase-list-grey-marker-disagrees-with-disk-inferred-stage.md)
 - [2026-09-15] [ui] Make queue input truly multi-line — [todo file](.planning/todos/pending/2026-09-15-make-queue-input-truly-multi-line.md) — Needs TBD — this todo's deliverable is a **UX proposal**, not a fix. Whoever picks.
-- [2026-09-22] [driver] Codex runtime: remainder after the MVP slice (260922-hdj) [AUDIT] — [todo file](.planning/todos/pending/2026-09-22-codex-runtime-remainder-after-mvp.md)
+- [2026-09-22] [driver] "Codex runtime: remainder after the MVP slice (260922-hdj) [AUDIT]" — [todo file](.planning/todos/pending/2026-09-22-codex-runtime-remainder-after-mvp.md)
+- [2026-09-23] [ui] Add a global settings editor with unambiguous scope — [todo file](.planning/todos/pending/2026-09-23-add-a-global-settings-editor-with-unambiguous-scope.md)
 
 ### Blockers/Concerns
 
