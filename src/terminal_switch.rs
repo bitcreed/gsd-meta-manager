@@ -224,6 +224,46 @@ pub fn open_new_window(cwd: &Path, program_argv: &[String]) -> Result<(), String
     Ok(())
 }
 
+/// Remove exactly one leading `/dev/` from a TTY path, if present.
+fn strip_dev_prefix(tty: &str) -> &str {
+    tty.strip_prefix("/dev/").unwrap_or(tty)
+}
+
+/// Does a tmux pane's `#{pane_tty}` belong to the session with `session_tty`?
+///
+/// tmux prints `#{pane_tty}` as "/dev/pts/N"; the session detector stores
+/// "pts/N". Both sides have one leading "/dev/" stripped and then must be
+/// EXACTLY equal — no prefix, suffix or substring relation counts. A substring
+/// test would let a session on "pts/1" focus the pane on "/dev/pts/12" (or
+/// "/dev/pts/10", "/dev/pts/100"), sending the operator's keystrokes to an
+/// unrelated session. An empty session TTY matches nothing.
+fn pane_tty_matches(pane_tty: &str, session_tty: &str) -> bool {
+    let session = strip_dev_prefix(session_tty);
+    if session.is_empty() {
+        return false;
+    }
+    strip_dev_prefix(pane_tty) == session
+}
+
+/// Pick the `session:window.pane` target of the first `tmux list-panes -a`
+/// line (format `#{pane_tty} <target>`) whose pane TTY matches `session_tty`.
+/// The target is the rest of the line after the first space, so a session
+/// name containing spaces is kept whole. Lines without a target are skipped.
+fn find_pane_target<'a>(list_panes_stdout: &'a str, session_tty: &str) -> Option<&'a str> {
+    for line in list_panes_stdout.lines() {
+        let mut parts = line.splitn(2, ' ');
+        let pane_tty = parts.next().unwrap_or("");
+        let target = match parts.next() {
+            Some(t) => t,
+            None => continue,
+        };
+        if pane_tty_matches(pane_tty, session_tty) {
+            return Some(target);
+        }
+    }
+    None
+}
+
 /// Switch the focused terminal to the given Claude session. Returns
 /// Ok on success or a human-readable error string suitable for the
 /// status bar.
@@ -258,24 +298,16 @@ pub fn switch_to_session(session: &ClaudeSession) -> Result<(), String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let mut parts = line.splitn(2, ' ');
-        let pane_tty = parts.next().unwrap_or("");
-        let target = match parts.next() {
-            Some(t) => t,
-            None => continue,
-        };
-        if pane_tty.contains(tty) {
-            // Best-effort: even if select-pane errors, select-window
-            // is the primary effect the user notices.
-            let _ = Command::new("tmux")
-                .args(["select-window", "-t", target])
-                .output();
-            let _ = Command::new("tmux")
-                .args(["select-pane", "-t", target])
-                .output();
-            return Ok(());
-        }
+    if let Some(target) = find_pane_target(&stdout, tty) {
+        // Best-effort: even if select-pane errors, select-window
+        // is the primary effect the user notices.
+        let _ = Command::new("tmux")
+            .args(["select-window", "-t", target])
+            .output();
+        let _ = Command::new("tmux")
+            .args(["select-pane", "-t", target])
+            .output();
+        return Ok(());
     }
 
     Err(format!(
@@ -431,6 +463,41 @@ mod tests {
         assert!(
             err.contains("option"),
             "the refusal must name tmux's own option parser as the reason; got {err:?}"
+        );
+    }
+
+    /// **The reported pane-misfocus bug, pinned** (T-LR8-01). tmux prints
+    /// `#{pane_tty}` as "/dev/pts/N"; the detector stores "pts/N". A substring
+    /// test lets a session on pts/1 match the pane on /dev/pts/12.
+    #[test]
+    fn pane_tty_match_is_exact_not_substring() {
+        assert!(
+            !pane_tty_matches("/dev/pts/12", "pts/1"),
+            "session TTY pts/1 matched the pane on /dev/pts/12: Tab-switch would \
+             focus an unrelated pane and send the operator's keystrokes there"
+        );
+        assert!(
+            pane_tty_matches("/dev/pts/1", "pts/1"),
+            "session TTY pts/1 did not match its own pane /dev/pts/1: Tab-switch \
+             would report the session as gone instead of focusing it"
+        );
+    }
+
+    /// **The end-to-end shape of the bug**: the longer TTY is listed FIRST, so
+    /// the old first-substring-hit rule returned the wrong target.
+    #[test]
+    fn pane_tty_find_target_skips_a_longer_tty_listed_first() {
+        assert_eq!(
+            find_pane_target("/dev/pts/12 work:1.0\n/dev/pts/1 main:0.0\n", "pts/1"),
+            Some("main:0.0"),
+            "with /dev/pts/12 listed before /dev/pts/1, the session on pts/1 must \
+             focus main:0.0; any other target misfocuses the operator's input"
+        );
+        assert_eq!(
+            find_pane_target("/dev/pts/12 work:1.0\n", "pts/1"),
+            None,
+            "only /dev/pts/12 is listed, so pts/1 must find no pane (and reach the \
+             not-found error) instead of focusing the unrelated work:1.0 pane"
         );
     }
 
