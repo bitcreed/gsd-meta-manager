@@ -96,6 +96,7 @@ pub fn extract_phase_id(text: &str) -> Option<String> {
 /// Sentinels: `Phase 0` (pre-milestone) and `Phase 999` / `999.x` (backlog).
 /// A leading alphabetic project-code prefix (`M-`, `AB-`) is stripped first so
 /// only the numeric body is inspected. Ordinary decimals like `0.3` are kept.
+/// Numeric, so GSD's padded spellings (`00`, `0999.1`) are sentinels too.
 fn is_sentinel_phase(number: &str) -> bool {
     let n = match number.split_once('-') {
         Some((prefix, rest)) if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphabetic()) => {
@@ -103,7 +104,10 @@ fn is_sentinel_phase(number: &str) -> bool {
         }
         _ => number,
     };
-    n == "0" || n == "999" || n.starts_with("999.")
+    match super::phase_num::PhaseNum::parse(n) {
+        Some(num) => num == 0 || num.major() == 999,
+        None => n == "0" || n == "999" || n.starts_with("999."),
+    }
 }
 
 /// Extract the phase identifiers declared by a `**Depends on**:` line's text.
@@ -955,6 +959,16 @@ Plans:
         assert!(!numbers.contains(&"0"));
         assert!(!numbers.contains(&"999"));
         assert!(!numbers.contains(&"999.2"));
+    }
+
+    #[test]
+    fn padded_backlog_sentinels_are_excluded_too() {
+        let content = "### Phase 00: Pre-milestone\n### Phase 01: Real\n### Phase 0999.1: Later\n### Phase 00.3: Spike\n";
+        let numbers: Vec<String> = parse_roadmap_phases(content)
+            .into_iter()
+            .map(|p| p.number)
+            .collect();
+        assert_eq!(numbers, ["01", "00.3"]);
     }
 
     #[test]

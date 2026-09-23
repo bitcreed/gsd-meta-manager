@@ -57,7 +57,12 @@ impl ChangeTracker {
                 let was_completed = old
                     .phases
                     .iter()
-                    .find(|p| p.number == new_phase.number)
+                    // Pad-insensitive: the merged row keeps the roadmap's
+                    // first-seen spelling, which moves (`07.1` → `7.1`) when a
+                    // checklist entry is added above a details heading.
+                    .find(|p| {
+                        crate::state_reader::phase_num::same_phase(&p.number, &new_phase.number)
+                    })
                     .map(|p| p.completed)
                     .unwrap_or(false);
 
@@ -155,6 +160,18 @@ mod tests {
 
         let latest = tracker.latest_change("proj").unwrap();
         assert!(latest.description.contains("Phase Core completed"));
+    }
+
+    #[test]
+    fn a_respelled_completed_phase_is_not_reported_as_newly_completed() {
+        let mut tracker = ChangeTracker::new();
+        let old = make_state("active", 0, vec![("07.1", "Inserted", true)]);
+        let new = make_state("active", 0, vec![("7.1", "Inserted", true)]);
+        tracker.detect_changes("proj", &old, &new);
+        assert!(
+            tracker.latest_change("proj").is_none(),
+            "07.1 and 7.1 are one phase that was already complete"
+        );
     }
 
     #[test]
