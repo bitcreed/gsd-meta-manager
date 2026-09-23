@@ -2,7 +2,8 @@
 //!
 //! Tmux-first implementation modeled on `claudectl`'s tmux switcher:
 //! we list every pane on the running tmux server, find the one whose
-//! `#{pane_tty}` matches our session's TTY, then `select-window` +
+//! `#{pane_tty}`, with its leading "/dev/" stripped, EQUALS our session's
+//! TTY (exact equality, never a substring match), then `select-window` +
 //! `select-pane` onto that target.
 //!
 //! Outside tmux this is a no-op that returns a clear error so callers
@@ -499,6 +500,89 @@ mod tests {
             "only /dev/pts/12 is listed, so pts/1 must find no pane (and reach the \
              not-found error) instead of focusing the unrelated work:1.0 pane"
         );
+    }
+
+    /// **The exact-match contract, row by row** (T-LR8-01, T-LR8-02). Only
+    /// equality after one "/dev/" strip on each side counts.
+    #[test]
+    fn pane_tty_match_edge_cases() {
+        let rows: Vec<(&str, &str, &str, bool)> = vec![
+            ("tmux form vs detector form", "/dev/pts/1", "pts/1", true),
+            ("a pane printed without /dev/", "pts/1", "pts/1", true),
+            (
+                "a session side carrying /dev/ is normalized",
+                "/dev/pts/1",
+                "/dev/pts/1",
+                true,
+            ),
+            ("a non-pts console TTY", "/dev/tty1", "tty1", true),
+            ("pts/10 is not pts/1", "/dev/pts/10", "pts/1", false),
+            ("pts/100 is not pts/1", "/dev/pts/100", "pts/1", false),
+            ("tty10 is not tty1", "/dev/tty10", "tty1", false),
+            ("a suffix only is not a match", "/dev/pts/1", "ts/1", false),
+            (
+                "a longer session TTY is not a match",
+                "/dev/pts/1",
+                "pts/12",
+                false,
+            ),
+            (
+                "an empty session TTY matches nothing",
+                "/dev/pts/1",
+                "",
+                false,
+            ),
+            ("empty against empty is not a match", "", "", false),
+            (
+                "a bare /dev/ on both sides is empty",
+                "/dev/",
+                "/dev/",
+                false,
+            ),
+        ];
+
+        for (label, pane_tty, session_tty, expected) in rows {
+            assert_eq!(
+                pane_tty_matches(pane_tty, session_tty),
+                expected,
+                "pane_tty_matches({pane_tty:?}, {session_tty:?}) wrong for the case: \
+                 {label}. A false match focuses an unrelated pane"
+            );
+        }
+    }
+
+    /// **`list-panes` line parsing** around the exact-match predicate.
+    #[test]
+    fn pane_tty_find_target_parsing_edge_cases() {
+        let rows: Vec<(&str, &str, &str, Option<&str>)> = vec![
+            (
+                "a target containing spaces is kept whole",
+                "/dev/pts/1 my session:0.1\n",
+                "pts/1",
+                Some("my session:0.1"),
+            ),
+            (
+                "a line without a target is skipped",
+                "/dev/pts/1\n/dev/pts/1 main:0.0\n",
+                "pts/1",
+                Some("main:0.0"),
+            ),
+            ("empty list-panes output finds nothing", "", "pts/1", None),
+            (
+                "an empty session TTY focuses no pane",
+                "/dev/pts/3 a:0.0\n/dev/pts/4 b:0.0\n",
+                "",
+                None,
+            ),
+        ];
+
+        for (label, stdout, session_tty, expected) in rows {
+            assert_eq!(
+                find_pane_target(stdout, session_tty),
+                expected,
+                "find_pane_target wrong for the case: {label}"
+            );
+        }
     }
 
     /// **The direct-exec boundary against a LIVE tmux**, on a private socket.

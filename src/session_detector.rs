@@ -21,8 +21,10 @@ pub struct ClaudeSession {
     pub working_dir: PathBuf,
     pub start_time: Option<u64>,
     /// Controlling TTY in tmux-friendly form (e.g. "pts/3"). The leading
-    /// "/dev/" is stripped so a `contains()` match against tmux's
-    /// `#{pane_tty}` (which prints "/dev/pts/3") still hits.
+    /// "/dev/" is stripped, and `crate::terminal_switch` strips the same
+    /// prefix from tmux's `#{pane_tty}` (which prints "/dev/pts/3") and
+    /// requires exact equality, because a substring test would let "pts/1"
+    /// select the pane on "/dev/pts/12".
     pub tty: Option<String>,
 }
 
