@@ -13,9 +13,10 @@ use crate::state_reader::git_ops;
 use crate::state_reader::queue_md;
 use crate::state_reader::{self, backlog, PhaseMarker};
 use crate::text::Untrusted;
+use crate::ui::roadmap_graph;
 use crate::ui::roadmap_widget::RoadmapWidget;
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap};
@@ -3366,6 +3367,15 @@ impl Screen for DetailScreen {
                     ScreenAction::Push(Box::new(EnqueueScreen::new(alias)))
                 }
             }
+            // Roadmap tab only: flip between the dependency graph (default) and
+            // the box list. `v` is bound nowhere else on this screen.
+            KeyCode::Char('v') if current_view == DetailSubView::RoadmapViz => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                cache.roadmap_box_view = !cache.roadmap_box_view;
+                self.scroll_offset = 0;
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
             KeyCode::Char('?') => {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(HelpScreen::new()))
@@ -3839,30 +3849,55 @@ impl DetailScreen {
             let header_paragraph = Paragraph::new(header_lines).block(header_block);
             frame.render_widget(header_paragraph, header_area);
 
-            let current_phase_num = state.active_phase_number();
-            // Clamp roadmap scroll — estimate content height from phase count
-            let phase_block_h: u16 = 5; // BOX_HEIGHT(3) + connector(1) + spacing(1)
-            let total_content = if state.phases.is_empty() {
-                0
-            } else {
-                3 + (state.phases.len() as u16 - 1) * phase_block_h
-            };
-            let viewport_h = roadmap_area.height;
-            // Record for the `_ =>` scroll handlers, which cannot see this pass.
-            self.generic_viewport.set(ViewportMetrics {
-                total_lines: total_content,
-                visible_height: viewport_h,
-            });
-            let max_scroll = total_content.saturating_sub(viewport_h);
-            let clamped_offset = self.scroll_offset.min(max_scroll);
+            if ctx.view_cache.get(alias).is_some_and(|c| c.roadmap_box_view) {
+                let current_phase_num = state.active_phase_number();
+                // Clamp roadmap scroll — estimate content height from phase count
+                let phase_block_h: u16 = 5; // BOX_HEIGHT(3) + connector(1) + spacing(1)
+                let total_content = if state.phases.is_empty() {
+                    0
+                } else {
+                    3 + (state.phases.len() as u16 - 1) * phase_block_h
+                };
+                let viewport_h = roadmap_area.height;
+                // Record for the `_ =>` scroll handlers, which cannot see this pass.
+                self.generic_viewport.set(ViewportMetrics {
+                    total_lines: total_content,
+                    visible_height: viewport_h,
+                });
+                let max_scroll = total_content.saturating_sub(viewport_h);
+                let clamped_offset = self.scroll_offset.min(max_scroll);
 
-            let roadmap_widget = RoadmapWidget {
-                phases: &state.phases,
-                current_phase_num,
-                disk_statuses: &state.phase_disk_statuses,
-                scroll_offset: clamped_offset,
-            };
-            frame.render_widget(roadmap_widget, roadmap_area);
+                let roadmap_widget = RoadmapWidget {
+                    phases: &state.phases,
+                    current_phase_num,
+                    disk_statuses: &state.phase_disk_statuses,
+                    scroll_offset: clamped_offset,
+                };
+                frame.render_widget(roadmap_widget, roadmap_area);
+            } else {
+                // The default: the dependency graph (quick 260923-md1). Its
+                // rows are what the `_ =>` j/k/PageUp/PageDown arms scroll.
+                let markers = roadmap_graph::phase_markers(state);
+                let layout = roadmap_graph::layout_for_state(state, &markers);
+                let graph_area = roadmap_area.inner(Margin::new(2, 0));
+                let [_, graph_rect, _] = roadmap_graph::split_areas(&layout, graph_area);
+                let total = u16::try_from(layout.rows.len()).unwrap_or(u16::MAX);
+                self.generic_viewport.set(ViewportMetrics {
+                    total_lines: total,
+                    visible_height: graph_rect.height,
+                });
+                let clamped = self
+                    .scroll_offset
+                    .min(total.saturating_sub(graph_rect.height));
+                frame.render_widget(
+                    roadmap_graph::RoadmapGraphWidget {
+                        layout: &layout,
+                        markers: &markers,
+                        scroll_offset: clamped,
+                    },
+                    graph_area,
+                );
+            }
         } else {
             let block = Block::default().borders(Borders::ALL);
             let paragraph = Paragraph::new("  No state data available for roadmap.").block(block);
@@ -6156,6 +6191,12 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("eload  "));
             spans.push(Span::styled("[/]", b));
             spans.push(Span::raw("filter  "));
+        }
+        DetailSubView::RoadmapViz => {
+            spans.push(Span::styled("[v]", b));
+            spans.push(Span::raw("iew  "));
+            spans.push(Span::styled("[e]", b));
+            spans.push(Span::raw("nqueue  "));
         }
         _ => {
             spans.push(Span::styled("[e]", b));
@@ -14275,5 +14316,81 @@ mod tests {
             rows.join("\n").contains(&format!("(0/{total})")),
             "the count is missing"
         );
+    }
+
+    // ── quick 260923-md1: Roadmap tab dependency graph + `v` toggle ──────
+
+    /// A DetailScreen on the Roadmap tab of a project whose roadmap is the
+    /// chain 1 → 2 → 3.
+    fn roadmap_graph_fixture() -> (DetailScreen, AppContext) {
+        use crate::state_reader::roadmap_md::RoadmapPhase;
+        let phase = |n: &str, deps: &[&str]| RoadmapPhase {
+            number: n.to_string(),
+            name: format!("Name {n}"),
+            description: String::new(),
+            completed: false,
+            total_plans: 0,
+            completed_plans: 0,
+            depends_on: deps.iter().map(|d| d.to_string()).collect(),
+        };
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState {
+                phases: vec![phase("1", &[]), phase("2", &["1"]), phase("3", &["2"])],
+                ..Default::default()
+            },
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    fn roadmap_box_flag(ctx: &AppContext) -> bool {
+        ctx.view_cache
+            .get(TEST_ALIAS)
+            .is_some_and(|c| c.roadmap_box_view)
+    }
+
+    #[test]
+    fn roadmap_graph_tab_draws_the_graph_by_default_and_v_toggles_the_box_list() {
+        let (mut screen, mut ctx) = roadmap_graph_fixture();
+        let graph = render_detail_to_text(&screen, &ctx);
+        assert!(graph.contains("1 ─► 2 ─► 3"), "{graph}");
+        assert_eq!(screen.generic_viewport.get().total_lines, 1);
+
+        screen.scroll_offset = 2;
+        press(&mut screen, &mut ctx, KeyCode::Char('v'));
+        assert!(roadmap_box_flag(&ctx), "v did not select the box list");
+        assert_eq!(screen.scroll_offset, 0, "v must reset the scroll offset");
+        let boxes = render_detail_to_text(&screen, &ctx);
+        assert!(
+            boxes.matches('┌').count() > graph.matches('┌').count(),
+            "the box list draws a box border per phase: {boxes}"
+        );
+        assert!(!boxes.contains("1 ─► 2"), "{boxes}");
+
+        press(&mut screen, &mut ctx, KeyCode::Char('v'));
+        assert!(!roadmap_box_flag(&ctx));
+        assert!(render_detail_to_text(&screen, &ctx).contains("1 ─► 2 ─► 3"));
+    }
+
+    #[test]
+    fn roadmap_graph_tab_v_is_inert_on_other_tabs() {
+        let (mut screen, mut ctx) = roadmap_graph_fixture();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::PhaseList);
+        press(&mut screen, &mut ctx, KeyCode::Char('v'));
+        assert!(!roadmap_box_flag(&ctx));
+    }
+
+    #[test]
+    fn roadmap_graph_tab_footer_advertises_v() {
+        let footer: String = footer_spans(&DetailSubView::RoadmapViz, 200, false)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(footer.contains("[v]"), "{footer}");
+        assert!(footer.contains("[e]"), "{footer}");
     }
 }

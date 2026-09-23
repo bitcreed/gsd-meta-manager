@@ -1,4 +1,5 @@
 pub mod roadmap_widget;
+pub mod roadmap_graph;
 pub mod screens;
 
 use crate::app::App;

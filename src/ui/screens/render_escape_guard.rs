@@ -1375,7 +1375,9 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
         "RoadmapViz tab",
         true,
-        "Draws the same `RoadmapPhase` names through `ui::roadmap_widget`.",
+        "The default graph view draws each `RoadmapPhase` id, its declared dependency \
+         ids (external ones in the `external deps` note line) and the current phase's \
+         name through `ui::roadmap_graph`.",
     ),
     (
         "Backlog tab",
@@ -1450,6 +1452,12 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         true,
         "The split pane: `Block::title` draws `item.dir_name` and the `Paragraph` below \
          draws `item.content`. Neither value is drawn at all in the collapsed state.",
+    ),
+    (
+        "RoadmapViz tab, box view",
+        true,
+        "With `roadmap_box_view` set, the box list draws each `RoadmapPhase` number and \
+         name through `ui::roadmap_widget`.",
     ),
     (
         "Archive tab, phase list",
@@ -1631,6 +1639,15 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
             .insert(identity.to_string(), crate::app::DetailSubView::Backlog);
         let cache = ctx.view_cache.entry(identity.to_string()).or_default();
         cache.backlog_expanded = true;
+    }),
+    // The Roadmap tab's BOX LIST (quick 260923-md1). The default render is
+    // now the dependency graph, so without this state `ui::roadmap_widget`
+    // would drop out of the probe entirely. The arrange sets only a flag.
+    ("RoadmapViz tab, box view", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::RoadmapViz);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        cache.roadmap_box_view = true;
     }),
     ("Archive tab, phase list", |identity, ctx| {
         ctx.detail_sub_view_per_project
