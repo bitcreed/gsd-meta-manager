@@ -227,6 +227,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
     lines.extend([
         row("e", "Enqueue next action (detail view)"),
         row("r", "Toggle roadmap visualization (detail view)"),
+        row("v", "Roadmap tab: graph / box view (detail view)"),
         row("q / Esc", "Quit / Back"),
         row("Ctrl+C", "Force quit"),
         Line::from(""),
@@ -868,6 +869,20 @@ mod tests {
             total > 19,
             "the help body is {total} rows; the 80x24 popup shows 19, so the \
              popup must scroll"
+        );
+    }
+
+    /// Quick 260923-md1: the Roadmap tab's `v` toggle is documented as a
+    /// WHOLE row (a one-letter substring check would be vacuous).
+    #[test]
+    fn the_roadmap_graph_toggle_key_is_documented() {
+        let text = body();
+        let expected = row("v", "Roadmap tab: graph / box view (detail view)").spans[0]
+            .content
+            .to_string();
+        assert!(
+            text.lines().any(|line| line == expected),
+            "the row {expected:?} is missing:\n{text}"
         );
     }
 }

@@ -260,14 +260,79 @@ fn longest_path_layers(parents: &ParentLists) -> Vec<usize> {
 // Row placement
 // ---------------------------------------------------------------------------
 
+/// Which junction group owns a gap's junction cell (PI-9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Group {
+    /// A parent fanning out to its non-first primary children.
+    FanOut(usize),
+    /// Secondary parents fanning in to one target.
+    FanIn(usize),
+}
+
 /// One gap cell of one row: what occupies the space between layer `k` and
-/// `k + 1` on that row.
+/// `k + 1` on that row. The junction cell sits at gap offset 2.
 #[derive(Debug, Clone, Default)]
 struct GapCell {
     /// A horizontal edge `(src, tgt)` crossing this gap on this row.
     straight: Option<(usize, usize)>,
     /// Reserved by a chain's last node, so a later edge from it may use it.
     reserved: Option<usize>,
+    /// The junction group that claimed this row's junction cell.
+    group: Option<Group>,
+    /// A fan-in stub: the source node on this row whose edge ends at the
+    /// junction cell (it arrives from the left and turns vertically).
+    stub: Option<usize>,
+    /// Vertical connection bits of the junction cell.
+    up: bool,
+    down: bool,
+}
+
+impl GapCell {
+    /// Nothing at all occupies this gap on this row.
+    fn is_unused(&self) -> bool {
+        self.straight.is_none()
+            && self.reserved.is_none()
+            && self.group.is_none()
+            && self.stub.is_none()
+    }
+
+    /// Whether `want` may claim this junction cell (PI-9). An endpoint cell
+    /// may carry a straight edge that belongs to the group (source `P` for a
+    /// fan-out, target `T` for a fan-in); a pass-through cell must carry none
+    /// unless the group already owns it.
+    fn claimable(&self, want: Group, pass_through: bool) -> bool {
+        match self.group {
+            Some(owner) => owner == want,
+            None if pass_through => self.straight.is_none() && self.stub.is_none(),
+            None => match (want, self.straight) {
+                (_, None) => true,
+                (Group::FanOut(p), Some((s, _))) => s == p,
+                (Group::FanIn(t), Some((_, x))) => x == t,
+            },
+        }
+    }
+
+    fn has_vertical(&self) -> bool {
+        self.up || self.down
+    }
+}
+
+/// The glyph of a junction cell from its four connection bits.
+fn junction_glyph(left: bool, right: bool, up: bool, down: bool) -> char {
+    match (left, right, up, down) {
+        (true, true, true, true) => '┼',
+        (true, true, false, true) => '┬',
+        (true, true, true, false) => '┴',
+        (false, true, true, true) => '├',
+        (true, false, true, true) => '┤',
+        (false, true, false, true) => '┌',
+        (true, false, false, true) => '┐',
+        (false, true, true, false) => '└',
+        (true, false, true, false) => '┘',
+        (true, _, false, false) | (false, true, false, false) => '─',
+        (false, false, _, _) if up || down => '│',
+        _ => ' ',
+    }
 }
 
 /// The logical occupancy of one node row: a node slot per layer and a gap
@@ -345,6 +410,122 @@ impl Placement {
             }
         }
     }
+
+    /// Claim gap `gap`'s junction cells on rows `a..=b` (either order) for
+    /// `group`, setting the vertical bits of the run.
+    fn claim_vertical(&mut self, gap: usize, a: usize, b: usize, group: Group) {
+        let (lo, hi) = (a.min(b), a.max(b));
+        for m in lo..=hi {
+            if let Some(cell) = self.rows.get_mut(m).and_then(|row| row.gaps.get_mut(gap)) {
+                cell.group = Some(group);
+                if m > lo {
+                    cell.up = true;
+                }
+                if m < hi {
+                    cell.down = true;
+                }
+            }
+        }
+    }
+
+    /// Whether gap `gap`'s junction cells on rows `a..=b` can all be claimed
+    /// by `group`; `a` and `b` are endpoints, the rows between pass through.
+    fn run_claimable(&self, gap: usize, a: usize, b: usize, group: Group) -> bool {
+        let (lo, hi) = (a.min(b), a.max(b));
+        (lo..=hi).all(|m| {
+            let pass_through = m != a && m != b;
+            self.rows
+                .get(m)
+                .and_then(|row| row.gaps.get(gap))
+                .is_none_or(|cell| cell.claimable(group, pass_through))
+        })
+    }
+
+    /// The row a branch `p → c` can join with a junction, if any (PI-9).
+    ///
+    /// Rows are searched downward from just below the parent's row through one
+    /// past the lowest used row. A row qualifies when it is unused from the
+    /// junction gap through the chain's nodes and trailing gap, and every row
+    /// between it and the parent's row lets the `│` pass.
+    fn branch_row(&self, g: &Graph<'_>, p: usize, c: usize) -> Option<usize> {
+        let gap = g.layer[p];
+        let rp = self.row_of[p];
+        // The chain `c` would bring along: its last node's layer bounds it.
+        let mut last = c;
+        while let Some(&next) = g.primary_children[last].first() {
+            last = next;
+        }
+        let last_layer = g.layer[last];
+        let gap_count = g.layers.saturating_sub(1);
+        let row_fits = |row: &RowSlots| {
+            let nodes_free =
+                (gap + 1..=last_layer).all(|k| row.nodes.get(k).is_none_or(|slot| slot.is_none()));
+            let gaps_free = (gap..=last_layer.min(gap_count.saturating_sub(1)))
+                .all(|k| row.gaps.get(k).is_none_or(GapCell::is_unused));
+            nodes_free && gaps_free
+        };
+        let group = Group::FanOut(p);
+        (rp + 1..=self.rows.len()).find(|&r| {
+            self.rows.get(r).is_none_or(&row_fits) && self.run_claimable(gap, rp, r, group)
+        })
+    }
+
+    /// Place a pending branch `p → c`: joined by a junction when a row
+    /// qualifies, otherwise on a fresh bottom row plus a reference row.
+    fn place_branch(
+        &mut self,
+        g: &Graph<'_>,
+        p: usize,
+        c: usize,
+        pending: &mut Vec<(usize, usize)>,
+    ) {
+        match self.branch_row(g, p, c) {
+            Some(r) => {
+                if r == self.rows.len() {
+                    self.fresh_row(g.layers);
+                }
+                let gap = g.layer[p];
+                self.claim_vertical(gap, self.row_of[p], r, Group::FanOut(p));
+                if let Some(cell) = self.rows[r].gaps.get_mut(gap) {
+                    cell.straight = Some((p, c));
+                }
+                self.place_chain(g, c, r, pending);
+            }
+            None => {
+                let r = self.fresh_row(g.layers);
+                self.place_chain(g, c, r, pending);
+                self.refs.push((p, c));
+            }
+        }
+    }
+
+    /// Draw a secondary edge `s → t` as a fan-in into `t`'s junction when the
+    /// edge spans one layer and the junction column is free; otherwise it
+    /// becomes a reference row.
+    fn place_secondary(&mut self, g: &Graph<'_>, s: usize, t: usize) {
+        let joined = g.layer[s] + 1 == g.layer[t] && {
+            let gap = g.layer[s];
+            let (rs, rt) = (self.row_of[s], self.row_of[t]);
+            // The source's own gap: unused, or reserved by the source itself.
+            let source_free = self.rows[rs].gaps.get(gap).is_some_and(|cell| {
+                cell.straight.is_none()
+                    && cell.group.is_none()
+                    && cell.stub.is_none()
+                    && cell.reserved.is_none_or(|owner| owner == s)
+            });
+            let ok = rs != rt && source_free && self.run_claimable(gap, rs, rt, Group::FanIn(t));
+            if ok {
+                self.claim_vertical(gap, rs, rt, Group::FanIn(t));
+                if let Some(cell) = self.rows[rs].gaps.get_mut(gap) {
+                    cell.stub = Some(s);
+                }
+            }
+            ok
+        };
+        if !joined {
+            self.refs.push((s, t));
+        }
+    }
 }
 
 /// Pick the next pending branch: deepest child layer first, ties to the lower
@@ -358,8 +539,11 @@ fn take_next(pending: &mut Vec<(usize, usize)>, layer: &[usize]) -> Option<(usiz
     Some(pending.remove(best))
 }
 
-/// Place every node on a row (D2 rule 5). Branches whose child cannot join
-/// its parent's row go on a fresh bottom row plus a reference row.
+/// Place every node on a row (D2 rule 5), then route the secondary edges.
+///
+/// Branches join their parent with a junction where a row qualifies; the rest
+/// go on a fresh bottom row plus a reference row. Secondary edges become
+/// fan-ins where the junction column is free, reference rows otherwise.
 fn place_rows(g: &Graph<'_>, n: usize) -> Placement {
     let mut pl = Placement {
         rows: Vec::new(),
@@ -371,17 +555,14 @@ fn place_rows(g: &Graph<'_>, n: usize) -> Placement {
         let mut pending = Vec::new();
         pl.place_chain(g, root, r, &mut pending);
         while let Some((p, c)) = take_next(&mut pending, g.layer) {
-            let r = pl.fresh_row(g.layers);
-            pl.place_chain(g, c, r, &mut pending);
-            pl.refs.push((p, c));
+            pl.place_branch(g, p, c, &mut pending);
         }
     }
-    // Every secondary edge is a reference row.
+    // Secondary edges: target roadmap order, then source declaration order.
     for (t, list) in g.parents.iter().enumerate() {
         for &s in list {
-            let primary = g.primary_children[s].contains(&t);
-            if !primary {
-                pl.refs.push((s, t));
+            if !g.primary_children[s].contains(&t) {
+                pl.place_secondary(g, s, t);
             }
         }
     }
@@ -442,22 +623,28 @@ fn to_segments(mut cells: Cells) -> Vec<Segment> {
     out
 }
 
-/// Column geometry: per-layer label width and layer start column.
+/// Width of a gap without a junction: ` ─► `.
+const PLAIN_GAP: usize = 4;
+/// Width of a gap holding a junction: ` ─┬─► `.
+const JUNCTION_GAP: usize = 6;
+
+/// Column geometry: per-layer label width, per-gap width, layer start column.
 struct Columns {
     width: Vec<usize>,
+    gap: Vec<usize>,
     start: Vec<usize>,
 }
 
 impl Columns {
     /// `gap[k]` is the width of the gap after layer `k`.
-    fn new(width: Vec<usize>, gap: &[usize]) -> Self {
+    fn new(width: Vec<usize>, gap: Vec<usize>) -> Self {
         let mut start = Vec::with_capacity(width.len());
         let mut col = 0usize;
         for (k, w) in width.iter().enumerate() {
             start.push(col);
             col += w + gap.get(k).copied().unwrap_or(0);
         }
-        Columns { width, start }
+        Columns { width, gap, start }
     }
 }
 
@@ -466,13 +653,20 @@ fn paint_node_row(row: &RowSlots, cols: &Columns, labels: &[String]) -> Cells {
     let mut cells: Cells = Vec::new();
     for (k, slot) in row.nodes.iter().enumerate() {
         let base = cols.start[k];
+        let gap = row.gaps.get(k);
+        // L: this row's node at layer k sends an edge into gap k.
+        let left = match (*slot, gap) {
+            (Some(u), Some(cell)) => {
+                cell.straight.is_some_and(|(s, _)| s == u) || cell.stub == Some(u)
+            }
+            _ => false,
+        };
         let mut padded = false;
         if let Some(u) = *slot {
             let label = &labels[u];
             let lw = width_of(label);
             put_text(&mut cells, base, label, Kind::Node(u));
-            let gap = row.gaps.get(k);
-            let left = gap.is_some_and(|g| g.straight.is_some_and(|(s, _)| s == u));
+            // One space, then dashes through the padding (PI-2).
             if left && lw < cols.width[k] {
                 padded = true;
                 put(&mut cells, base + lw, ' ', Kind::Space);
@@ -481,19 +675,30 @@ fn paint_node_row(row: &RowSlots, cols: &Columns, labels: &[String]) -> Cells {
                 }
             }
         }
-        let Some(gap) = row.gaps.get(k) else { continue };
+        let Some(cell) = gap else { continue };
+        let right = cell.straight.is_some();
         let g0 = base + cols.width[k];
-        if gap.straight.is_some() {
-            let lead = if padded { '─' } else { ' ' };
-            put(
-                &mut cells,
-                g0,
+        let lead = if left && padded { '─' } else { ' ' };
+        let glyphs: Vec<char> = if cols.gap.get(k).copied() == Some(JUNCTION_GAP) {
+            let junction = junction_glyph(left, right, cell.up, cell.down);
+            vec![
                 lead,
-                if padded { Kind::Edge } else { Kind::Space },
-            );
-            put(&mut cells, g0 + 1, '─', Kind::Edge);
-            put(&mut cells, g0 + 2, '►', Kind::Edge);
-            put(&mut cells, g0 + 3, ' ', Kind::Space);
+                if left { '─' } else { ' ' },
+                junction,
+                if right { '─' } else { ' ' },
+                if right { '►' } else { ' ' },
+                ' ',
+            ]
+        } else if right {
+            vec![lead, '─', '►', ' ']
+        } else {
+            Vec::new()
+        };
+        // Blanks need no write: missing cells are filled with spaces anyway.
+        for (i, ch) in glyphs.into_iter().enumerate() {
+            if ch != ' ' {
+                put(&mut cells, g0 + i, ch, Kind::Edge);
+            }
         }
     }
     cells
@@ -571,8 +776,21 @@ pub fn layout_graph(
     for u in 0..n {
         width[layer[u]] = width[layer[u]].max(width_of(&labels[u]));
     }
-    let gap = vec![4usize; layers.saturating_sub(1)];
-    let cols = Columns::new(width, &gap);
+    // A gap is 6 cells wide when any row runs a vertical through its junction.
+    let gap: Vec<usize> = (0..layers.saturating_sub(1))
+        .map(|k| {
+            let vertical = placement
+                .rows
+                .iter()
+                .any(|row| row.gaps.get(k).is_some_and(GapCell::has_vertical));
+            if vertical {
+                JUNCTION_GAP
+            } else {
+                PLAIN_GAP
+            }
+        })
+        .collect();
+    let cols = Columns::new(width, gap);
 
     let mut rows: Vec<GraphRow> = placement
         .rows
@@ -915,6 +1133,76 @@ mod tests {
             ),
             vec!["1 ─► 2 ─► 3", "▶ P2: Build"]
         );
+    }
+
+    /// The CONTEXT example topology (O7): 8→9→{10,11}→12→13→{14→15,16→17}, 12→18.
+    const O7: Spec<'static> = &[
+        ("8", "", &[]),
+        ("9", "", &["8"]),
+        ("10", "", &["9"]),
+        ("11", "", &["9"]),
+        ("12", "", &["10", "11"]),
+        ("13", "", &["12"]),
+        ("14", "", &["13"]),
+        ("15", "", &["14"]),
+        ("16", "", &["13"]),
+        ("17", "", &["16"]),
+        ("18", "", &["12"]),
+    ];
+
+    #[test]
+    fn roadmap_graph_o7_context_example() {
+        assert_eq!(
+            text(O7, None),
+            vec![
+                "8 ─► 9 ─┬─► 10 ─┬─► 12 ─┬─► 13 ─┬─► 14 ─► 15".to_string(),
+                "        └─► 11 ─┘       │       └─► 16 ─► 17".to_string(),
+                format!("{}└─► 18", " ".repeat(24)),
+            ]
+        );
+    }
+
+    #[test]
+    fn roadmap_graph_o8_mixed_width_layer_pads_with_dashes_and_fans_in() {
+        assert_eq!(
+            text(
+                &[
+                    ("1", "", &[]),
+                    ("2", "", &["1"]),
+                    ("2.1", "", &["1"]),
+                    ("3", "", &["2", "2.1"])
+                ],
+                None
+            ),
+            vec!["1 ─┬─► 2 ───┬─► 3", "   └─► 2.1 ─┘"]
+        );
+    }
+
+    #[test]
+    fn roadmap_graph_o9_blocked_fan_in_becomes_a_reference_row() {
+        assert_eq!(
+            text(
+                &[
+                    ("1", "", &[]),
+                    ("2", "", &["1"]),
+                    ("3", "", &["1"]),
+                    ("4", "", &["2", "3"]),
+                    ("5", "", &["2"]),
+                ],
+                None
+            ),
+            vec![
+                "1 ─┬─► 2 ─┬─► 4",
+                "   │      └─► 5",
+                "   └─► 3",
+                "       3 ───► 4",
+            ]
+        );
+    }
+
+    #[test]
+    fn roadmap_graph_example_never_panics_at_tiny_sizes() {
+        assert_no_panic_at_tiny_sizes(&lay(O7, Some(4)));
     }
 
     #[test]
