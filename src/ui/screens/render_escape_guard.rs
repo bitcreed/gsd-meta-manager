@@ -1270,7 +1270,7 @@ fn hostile_milestone_archive(identity: &str) -> crate::archive::MilestoneArchive
         version: identity.to_string(),
         top_level_files: vec![file(identity)],
         phases: vec![PhaseArchive {
-            number: 1,
+            number: crate::state_reader::phase_num::PhaseNum::from(1),
             name: Untrusted::from_untrusted_source(identity.to_string()),
             display_name: Untrusted::from_untrusted_source(format!("Phase 01: {identity}")),
             files: vec![file(identity)],

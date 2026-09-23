@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::state_reader::phase_num::PhaseNum;
 use crate::text::Untrusted;
 
 /// Depth levels for archive drill-down navigation.
@@ -35,13 +36,15 @@ pub struct MilestoneArchive {
 /// slug half of a directory name under `.planning/archive/`, and
 /// `display_name` is a `format!` over a Title-Cased rendering of that same
 /// slug — so the untrusted bytes are in both, and the authored half of
-/// `display_name` (`"Phase {:02}: "`) is escaped harmlessly along with them.
+/// `display_name` (`"Phase {padded}: "`) is escaped harmlessly along with them.
 ///
-/// `number` stays a `u32`: it survived a `parse::<u32>()`, which is a stronger
-/// guarantee than any carrier could give it.
+/// `number` is a [`PhaseNum`]: it survived [`PhaseNum::parse`] (digits and dots
+/// only), which is a stronger guarantee than any carrier could give it. It was a
+/// `u32`, which silently dropped every archived inserted phase (`07.1-…`) from
+/// the Archive tab.
 #[derive(Debug, Clone)]
 pub struct PhaseArchive {
-    pub number: u32,
+    pub number: PhaseNum,
     pub name: Untrusted,
     pub display_name: Untrusted,
     pub files: Vec<ArchiveFile>,
@@ -149,7 +152,7 @@ pub fn load_milestone_archive(milestones_dir: &Path, version: &str) -> Milestone
     } else {
         Vec::new()
     };
-    phases.sort_by_key(|p| p.number);
+    phases.sort_by(|a, b| a.number.cmp(&b.number));
 
     MilestoneArchive {
         version: version.to_string(),
@@ -165,7 +168,7 @@ fn parse_phase_dir(dir_name: &str, dir_path: &Path) -> Option<PhaseArchive> {
         return None;
     }
 
-    let number: u32 = parts[0].parse().ok()?;
+    let number = PhaseNum::parse(parts[0])?;
     let slug = parts[1];
 
     // Convert kebab-case to Title Case
@@ -184,7 +187,7 @@ fn parse_phase_dir(dir_name: &str, dir_path: &Path) -> Option<PhaseArchive> {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let display_name = format!("Phase {:02}: {}", number, title);
+    let display_name = format!("Phase {}: {}", number.padded(), title);
 
     // List .md files in the phase directory
     let mut files: Vec<ArchiveFile> = std::fs::read_dir(dir_path)
@@ -214,7 +217,7 @@ fn parse_phase_dir(dir_name: &str, dir_path: &Path) -> Option<PhaseArchive> {
         name: Untrusted::from_untrusted_source(slug.to_string()),
         // Wrapped at the END of the construction, once, rather than wrapping
         // `title` and re-interpolating: `display_name` is a single string whose
-        // untrusted half is `title` and whose authored half is `"Phase {:02}: "`,
+        // untrusted half is `title` and whose authored half is `"Phase {padded}: "`,
         // and escaping the whole thing leaves the authored half unchanged
         // (the invisible class contains no ASCII).
         display_name: Untrusted::from_untrusted_source(display_name),
@@ -377,4 +380,36 @@ fn parse_inline_styles(line: &str) -> Line<'static> {
     }
 
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An archived inserted phase (`07.1-…`) is listed, ordered between its
+    /// neighbours, and labelled with GSD's padded spelling. A `u32` parse
+    /// dropped it from the Archive tab entirely.
+    #[test]
+    fn archived_decimal_phases_are_listed_in_numeric_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let phases = dir.path().join("v1.0-phases");
+        for name in ["08-next", "07.1-inserted-fix", "07-consolidation", "10-later"] {
+            std::fs::create_dir_all(phases.join(name)).unwrap();
+        }
+        let archive = load_milestone_archive(dir.path(), "v1.0");
+        let labels: Vec<&str> = archive
+            .phases
+            .iter()
+            .map(|p| p.display_name.as_raw_for_logic_only())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Phase 07: Consolidation",
+                "Phase 07.1: Inserted Fix",
+                "Phase 08: Next",
+                "Phase 10: Later",
+            ]
+        );
+    }
 }
