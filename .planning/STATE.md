@@ -479,6 +479,9 @@ Recent decisions affecting current work:
 | 260922-hdh | Show registered projects whose folder is missing in red | 2026-09-22 | 0e112b2 | .planning/quick/260922-hdh-show-registered-projects-whose-folder-is-missing-in-red-todo |
 | 260922-hdi | Filter the config screen by typing slash | 2026-09-22 | b90ef32 | .planning/quick/260922-hdi-filter-the-config-screen-by-typing-slash-todo-planning-todos |
 | 260922-hdj | Support Codex as well as Claude as the agent runtime (MVP slice) | 2026-09-22 | 862c038 | .planning/quick/260922-hdj-support-codex-as-well-as-claude-as-the-agent-runtime-todo-pl |
+| 260923-lr8 | Fix tmux pane TTY match bug (exact match) | 2026-09-23 | 7cf6910 | .planning/quick/260923-lr8-fix-tmux-pane-tty-match-bug-in-src-terminal-switch-rs-exact |
+| 260923-lr9 | Detect interactive Codex CLI sessions (detection + badge + tmux switch, no resume) | 2026-09-23 | 45c2138 | .planning/quick/260923-lr9-detect-interactive-codex-cli-sessions-detection-badge-tmux-s |
+| 260923-lra | README macOS note: /proc-based session detection, best-effort Codex | 2026-09-23 | 25dce1e | .planning/quick/260923-lra-readme-macos-note-live-session-detection-claude-and-codex-re |
 
 ## Session Continuity
 

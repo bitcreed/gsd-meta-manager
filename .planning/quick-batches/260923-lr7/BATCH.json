@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "batch_id": "260923-lr7",
+  "created_at": "2026-09-23T20:39:51.789Z",
+  "options": {},
+  "base_revision": "de81754be0386a314228cccd108f70613b09d979",
+  "items": [
+    {
+      "quick_id": "260923-lr8",
+      "client_id": null,
+      "description": "Fix tmux pane TTY match bug in src/terminal_switch.rs: exact match (strip leading /dev/ from pane_tty, compare equal) instead of contains; regression test pts/1 vs /dev/pts/12 must not match, pts/1 vs /dev/pts/1 must match",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/terminal_switch.rs",
+        "src/session_detector.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "7cf6910",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260923-lr9",
+      "client_id": null,
+      "description": "Detect interactive Codex CLI sessions (detection + badge + tmux switch, no resume): SessionKind {Claude, Codex} on ClaudeSession, pgrep -x codex, exclude non-interactive argv/non-tty, session id from open thread-writer-locks fds (lowest UUIDv7), agent-neutral help/badge text, resume disabled for Codex",
+      "status": "complete",
+      "depends_on": [
+        "260923-lr8"
+      ],
+      "planned_files": [
+        "src/session_detector.rs",
+        "src/registry.rs",
+        "src/ui/screens/detail.rs",
+        "src/ui/screens/render_escape_guard.rs",
+        "src/ui/screens/normal.rs",
+        "src/ui/screens/help.rs",
+        "src/app.rs",
+        "tests/spawn_seam_guard.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "45c2138",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260923-lra",
+      "client_id": null,
+      "description": "README macOS note: live session detection (Claude and Codex) relies on Linux /proc and does not work on macOS; mention best-effort Codex detection with no resume",
+      "status": "complete",
+      "depends_on": [
+        "260923-lr9"
+      ],
+      "planned_files": [
+        "README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 2,
+      "commit": "25dce1e",
+      "failure_reason": null
+    }
+  ]
+}
