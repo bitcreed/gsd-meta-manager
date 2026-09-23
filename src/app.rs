@@ -465,7 +465,7 @@ fn phase_display_label(state: &ProjectState) -> String {
     let phase_name = state
         .phases
         .iter()
-        .find(|p| p.number.parse::<u32>() == Ok(phase_num))
+        .find(|p| crate::state_reader::phase_num::PhaseNum::parse(&p.number).as_ref() == Some(&phase_num))
         .map(|p| p.name.as_str())
         .unwrap_or("Unknown");
     format!("P{}: {}", phase_num, phase_name)

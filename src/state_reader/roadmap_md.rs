@@ -163,7 +163,9 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
         id = PHASE_ID
     ))
     .unwrap();
-    let plan_re = Regex::new(r"^\s*- \[([ xX])\] (?:\d+-\d+-)?PLAN\.md").unwrap();
+    // The phase part of a plan filename may be decimal: an inserted phase's
+    // plans are `07.1-01-PLAN.md`, and `\d+-` alone never counted them.
+    let plan_re = Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap();
     // `**Depends on**: …`, with the emphasis markers optional.
     let depends_re = Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap();
 
@@ -271,12 +273,19 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
 ///   `**Depends on**:` line)
 ///
 /// First-seen order is preserved, and the pass is O(n) — no nested scan.
+///
+/// **Keyed pad-insensitively** ([`super::phase_num::phase_key`]): GSD writes an
+/// inserted phase as `Phase 7.1` in the checklist and `### Phase 07.1:` in its
+/// details heading, and keying on the raw text listed it twice — one row with
+/// the checklist's name and no directory, one with the detail's plans. The
+/// first-seen spelling is kept as the row's `number`.
 fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
     let mut merged: Vec<RoadmapPhase> = Vec::with_capacity(phases.len());
     let mut index: HashMap<String, usize> = HashMap::new();
 
     for phase in phases {
-        match index.get(&phase.number) {
+        let key = super::phase_num::phase_key(&phase.number);
+        match index.get(&key) {
             Some(&at) => {
                 let existing = &mut merged[at];
                 existing.completed |= phase.completed;
@@ -296,7 +305,7 @@ fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
                 }
             }
             None => {
-                index.insert(phase.number.clone(), merged.len());
+                index.insert(key, merged.len());
                 merged.push(phase);
             }
         }
@@ -422,9 +431,92 @@ pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
     Some(progress)
 }
 
+/// The in-progress milestone named in ROADMAP.md's `## Milestones` list.
+///
+/// GSD writes that list as `- 🚧 **<name>** - Phases 1-7 (in progress)`, with
+/// `✅` / `📋` for shipped and planned ones. The bold text of the first entry
+/// marked `🚧` or `(in progress)` is returned; `None` when the section is
+/// absent or nothing in it is marked in progress.
+///
+/// The fallback for a STATE.md without a `milestone:` key — a project whose
+/// roadmap names its milestone should not render an empty `Milestone:` field.
+pub fn active_milestone(content: &str) -> Option<String> {
+    let heading = Regex::new(r"(?i)^##[ \t]+Milestones\b").unwrap();
+    let boundary = Regex::new(r"^#{1,2}[ \t]").unwrap();
+    let bold = Regex::new(r"\*\*(.+?)\*\*").unwrap();
+
+    let mut in_section = false;
+    for line in content.lines() {
+        if heading.is_match(line) {
+            in_section = true;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if boundary.is_match(line) {
+            break;
+        }
+        let t = line.trim_start();
+        if !(t.starts_with("- ") || t.starts_with("* ")) {
+            continue;
+        }
+        if line.contains('\u{1F6A7}') || line.to_ascii_lowercase().contains("(in progress)") {
+            if let Some(caps) = bold.captures(line) {
+                let name = caps[1].trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_milestone_is_the_in_progress_entry_of_the_milestones_list() {
+        let roadmap = "# Roadmap\n\n## Milestones\n\n\
+            - ✅ **v1.0 MVP** - Phases 1-3 (shipped 2026-01-01)\n\
+            - 🚧 **Milestone 1: Reassessment and decision records** - Phases 1-7 (in progress)\n\
+            - 📋 **Milestones 2-5: Build milestones** - build phases 8-18\n\n\
+            ## Phases\n\n- [ ] **Phase 1: A** - a\n";
+        assert_eq!(
+            active_milestone(roadmap).as_deref(),
+            Some("Milestone 1: Reassessment and decision records")
+        );
+        // No section, or nothing in progress: no guess.
+        assert_eq!(active_milestone("# Roadmap\n\n- 🚧 **Stray** - x\n"), None);
+        assert_eq!(
+            active_milestone("## Milestones\n\n- ✅ **v1.0** - shipped\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_zero_padded_detail_heading_merges_with_its_checklist_entry() {
+        // ttbook's shape: checklist `Phase 7.1`, details heading `Phase 07.1`.
+        let roadmap = "## Phases\n\n\
+            - [x] **Phase 7: Consolidation** - c\n\
+            - [ ] **Phase 7.1: Apply rulings (INSERTED)** - apply\n\n\
+            ## Phase Details\n\n\
+            ### Phase 07: Consolidation\n\n\
+            - [x] 07-01-PLAN.md — one\n\n\
+            ### Phase 07.1: Apply rulings (INSERTED)\n\n\
+            **Depends on**: Phase 7\n\n\
+            - [ ] 07.1-01-PLAN.md — a\n\
+            - [ ] 07.1-02-PLAN.md — b\n";
+        let phases = parse_roadmap_phases(roadmap);
+        let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, ["7", "7.1"], "one row per phase, first spelling kept");
+        assert_eq!(phases[0].total_plans, 1);
+        assert!(phases[0].completed);
+        assert_eq!(phases[1].total_plans, 2);
+        assert_eq!(phases[1].depends_on, ["7"]);
+    }
 
     #[test]
     fn a_phase_reference_reduces_to_its_identifier_in_every_written_form() {

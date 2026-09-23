@@ -833,7 +833,7 @@ mod tests {
             let disk_statuses = std::collections::HashMap::new();
             super::roadmap_widget::RoadmapWidget {
                 phases: &phases,
-                current_phase_num: 21,
+                current_phase_num: 21.into(),
                 disk_statuses: &disk_statuses,
                 scroll_offset: 0,
             }

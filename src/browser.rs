@@ -109,7 +109,7 @@ pub fn resolve_active_phase_dir(planning_dir: &Path, state: &ProjectState) -> Pa
     let phase_number = state
         .phases
         .iter()
-        .find(|p| p.number.parse::<u32>().ok() == Some(active_num))
+        .find(|p| crate::state_reader::phase_num::PhaseNum::parse(&p.number).as_ref() == Some(&active_num))
         .map(|p| p.number.clone());
 
     match phase_number {

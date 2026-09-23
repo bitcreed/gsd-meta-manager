@@ -18,7 +18,7 @@ pub struct RoadmapWidget<'a> {
     /// [`crate::state_reader::ProjectState::active_phase_number`] — the
     /// disk-inferred frontier — rather than `completed_phases + 1`, which
     /// tracks the roadmap's completion count and lags behind the disk.
-    pub current_phase_num: u32,
+    pub current_phase_num: crate::state_reader::phase_num::PhaseNum,
     /// Per-phase disk inference, keyed exactly as `RoadmapPhase::number` is
     /// written — [`crate::state_reader::ProjectState::phase_disk_statuses`].
     ///
@@ -42,7 +42,7 @@ impl<'a> RoadmapWidget<'a> {
             &phase.number,
             phase.completed,
             self.disk_statuses,
-            self.current_phase_num,
+            &self.current_phase_num,
         )
     }
 
@@ -119,11 +119,11 @@ impl<'a> Widget for RoadmapWidget<'a> {
             // --- Content line ---
             if let Some(screen_y) = self.screen_y(y_logical, scroll_skip, area) {
                 let icon = marker.glyph();
-                let plan_display = if phase.total_plans == 0 {
-                    "0/?".to_string()
-                } else {
-                    format!("{}/{}", phase.completed_plans, phase.total_plans)
-                };
+                let plan_display =
+                    match crate::state_reader::phase_plan_counts(phase, self.disk_statuses) {
+                        Some((done, total)) => format!("{}/{}", done, total),
+                        None => "0/?".to_string(),
+                    };
 
                 // The identity split at this site (CR-01): `phase.number` is
                 // COMPARED raw by `Self::marker` above and only READ here,
@@ -323,7 +323,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         RoadmapWidget {
             phases: &phases,
-            current_phase_num: 4,
+            current_phase_num: 4.into(),
             disk_statuses: &disk,
             scroll_offset: 0,
         }
@@ -350,7 +350,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         RoadmapWidget {
             phases: &phases,
-            current_phase_num: 2,
+            current_phase_num: 2.into(),
             disk_statuses: &disk,
             scroll_offset: 0,
         }

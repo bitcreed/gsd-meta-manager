@@ -3661,10 +3661,12 @@ impl DetailScreen {
                     let icon = marker.glyph();
                     let is_current = marker == PhaseMarker::Current;
 
-                    let plan_display = if phase.total_plans == 0 {
-                        "0/? plans".to_string()
-                    } else {
-                        format!("{}/{} plans", phase.completed_plans, phase.total_plans)
+                    let plan_display = match crate::state_reader::phase_plan_counts(
+                        phase,
+                        &state.phase_disk_statuses,
+                    ) {
+                        Some((done, total)) => format!("{}/{} plans", done, total),
+                        None => "0/? plans".to_string(),
                     };
 
                     let show_badges = ctx.config.preferences.gsd_integration;

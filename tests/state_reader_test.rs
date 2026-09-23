@@ -1109,7 +1109,7 @@ fn a_repairable_state_md_reads_and_reports_that_it_was_repaired() {
     // And the values the unreadable path would have lost:
     assert_eq!(state.status, "planning");
     assert_eq!(state.current_phase, "Routine Event Logging");
-    assert_eq!(state.state_md_phase_number, Some(9));
+    assert_eq!(state.state_md_phase_number, Some(9.into()));
 }
 
 /// The three outcomes are mutually exclusive by construction — a file is clean,
@@ -1273,7 +1273,7 @@ fn the_active_phase_is_the_disk_frontier_not_the_completion_count() {
     // What the disk actually says.
     assert_eq!(
         state.current_phase_number,
-        Some(4),
+        Some(4.into()),
         "phase 4 is planned but not executed — it is the frontier"
     );
     assert_eq!(state.active_phase_number(), 4);
@@ -1337,10 +1337,10 @@ fn state_md_phase_number_wins_when_it_leads_the_disk_frontier() {
     let state = parse_project_state(planning);
     assert_eq!(
         state.current_phase_number,
-        Some(2),
+        Some(2.into()),
         "the frontier is the first phase below Executed"
     );
-    assert_eq!(state.state_md_phase_number, Some(4));
+    assert_eq!(state.state_md_phase_number, Some(4.into()));
     assert_eq!(
         state.active_phase_number(),
         4,
@@ -1512,21 +1512,21 @@ fn without_disk_inference_the_marker_falls_back_to_the_roadmap_checkbox() {
     let empty = HashMap::new();
 
     assert_eq!(
-        PhaseMarker::decide("1", true, &empty, 3),
+        PhaseMarker::decide("1", true, &empty, &3.into()),
         PhaseMarker::Done,
         "checked box, nothing on disk to contradict it"
     );
     assert_eq!(
-        PhaseMarker::decide("3", false, &empty, 3),
+        PhaseMarker::decide("3", false, &empty, &3.into()),
         PhaseMarker::Current
     );
     assert_eq!(
-        PhaseMarker::decide("7", false, &empty, 3),
+        PhaseMarker::decide("7", false, &empty, &3.into()),
         PhaseMarker::Future
     );
     // Zero-padded roadmap entries still match a bare active number.
     assert_eq!(
-        PhaseMarker::decide("04", false, &empty, 4),
+        PhaseMarker::decide("04", false, &empty, &4.into()),
         PhaseMarker::Current
     );
 }
@@ -1555,7 +1555,7 @@ fn the_active_phase_keeps_the_current_glyph_even_when_it_is_finished() {
         },
     );
     assert_eq!(
-        PhaseMarker::decide("19", false, &disk, 19),
+        PhaseMarker::decide("19", false, &disk, &19.into()),
         PhaseMarker::Current,
         "implementation done, verification awaiting a human, and named as current"
     );
@@ -1563,7 +1563,7 @@ fn the_active_phase_keeps_the_current_glyph_even_when_it_is_finished() {
     // Same order with the checkbox as the only witness.
     let empty = HashMap::new();
     assert_eq!(
-        PhaseMarker::decide("5", true, &empty, 5),
+        PhaseMarker::decide("5", true, &empty, &5.into()),
         PhaseMarker::Current
     );
 }
@@ -1596,10 +1596,10 @@ fn phases_past_the_named_current_one_read_done_not_future() {
         );
     }
 
-    assert_eq!(PhaseMarker::decide("19", false, &disk, 19), PhaseMarker::Current);
-    assert_eq!(PhaseMarker::decide("20", false, &disk, 19), PhaseMarker::Done);
-    assert_eq!(PhaseMarker::decide("21", false, &disk, 19), PhaseMarker::Done);
-    assert_eq!(PhaseMarker::decide("22", false, &disk, 19), PhaseMarker::Future);
+    assert_eq!(PhaseMarker::decide("19", false, &disk, &19.into()), PhaseMarker::Current);
+    assert_eq!(PhaseMarker::decide("20", false, &disk, &19.into()), PhaseMarker::Done);
+    assert_eq!(PhaseMarker::decide("21", false, &disk, &19.into()), PhaseMarker::Done);
+    assert_eq!(PhaseMarker::decide("22", false, &disk, &19.into()), PhaseMarker::Future);
 }
 
 // ============================================================================
@@ -1623,12 +1623,12 @@ fn state_md_behind_the_disk_frontier_is_clamped_up_to_it() {
 
     assert_eq!(
         state.state_md_phase_number,
-        Some(3),
+        Some(3.into()),
         "STATE.md's own number, one behind the frontier"
     );
     assert_eq!(
         state.current_phase_number,
-        Some(4),
+        Some(4.into()),
         "phase 4 is planned but not executed — it is the frontier"
     );
     assert_eq!(
@@ -1743,12 +1743,12 @@ fn zero_padded_phase_ids_clamp_and_mark_like_bare_ones() {
     let state = parse_project_state(planning);
     assert_eq!(
         state.state_md_phase_number,
-        Some(3),
+        Some(3.into()),
         "`03` is the integer 3, not a string"
     );
     assert_eq!(
         state.current_phase_number,
-        Some(4),
+        Some(4.into()),
         "the frontier, from `04`"
     );
     assert_eq!(state.active_phase_number(), 4);
@@ -1773,8 +1773,8 @@ fn the_clamp_compares_numerically_not_lexically() {
     use gsd_meta_manager::state_reader::ProjectState;
 
     let state = ProjectState {
-        state_md_phase_number: Some(9),
-        current_phase_number: Some(10),
+        state_md_phase_number: Some(9.into()),
+        current_phase_number: Some(10.into()),
         ..Default::default()
     };
     assert_eq!(
@@ -1785,16 +1785,16 @@ fn the_clamp_compares_numerically_not_lexically() {
 
     // And the same the other way: a leading STATE.md still leads.
     let state = ProjectState {
-        state_md_phase_number: Some(10),
-        current_phase_number: Some(9),
+        state_md_phase_number: Some(10.into()),
+        current_phase_number: Some(9.into()),
         ..Default::default()
     };
     assert_eq!(state.active_phase_number(), 10);
 
     // Equal sources are a no-op, not a bump.
     let state = ProjectState {
-        state_md_phase_number: Some(7),
-        current_phase_number: Some(7),
+        state_md_phase_number: Some(7.into()),
+        current_phase_number: Some(7.into()),
         ..Default::default()
     };
     assert_eq!(state.active_phase_number(), 7);
@@ -1808,7 +1808,7 @@ fn the_clamp_degrades_when_a_source_is_missing() {
 
     // Only STATE.md (no parsable roadmap phases, so no frontier).
     let state = ProjectState {
-        state_md_phase_number: Some(6),
+        state_md_phase_number: Some(6.into()),
         current_phase_number: None,
         completed_phases: 1,
         ..Default::default()
@@ -1822,7 +1822,7 @@ fn the_clamp_degrades_when_a_source_is_missing() {
     // Only the frontier (no STATE.md, or an unreadable one).
     let state = ProjectState {
         state_md_phase_number: None,
-        current_phase_number: Some(4),
+        current_phase_number: Some(4.into()),
         completed_phases: 1,
         ..Default::default()
     };
@@ -1842,10 +1842,11 @@ fn the_clamp_degrades_when_a_source_is_missing() {
     assert_eq!(ProjectState::default().active_phase_number(), 1);
 }
 
-/// A roadmap of non-numeric / prefixed ids (`M-2`, `0.3`, `4a`) must not panic
-/// and must not collapse to phase 0. Both clamp sources parse with
-/// `parse::<u32>().ok()`, so such an id arrives as `None` and simply does not
-/// participate — the tolerance that already existed upstream, preserved.
+/// A roadmap of non-numeric / prefixed ids (`M-2`, `4a`) must not panic and
+/// must not collapse to phase 0. Both clamp sources parse with
+/// `PhaseNum::parse`, so such an id arrives as `None` and simply does not
+/// participate — the tolerance that already existed upstream, preserved. (A
+/// decimal like `0.3` does parse now; here it is not the frontier, `M-1` is.)
 #[test]
 fn non_numeric_phase_ids_do_not_panic_or_become_zero() {
     let tmp = TempDir::new().unwrap();
@@ -1884,4 +1885,236 @@ fn non_numeric_phase_ids_do_not_panic_or_become_zero() {
             "no non-numeric id can match a numeric active phase"
         );
     }
+}
+
+// ============================================================================
+// ttbook-shaped roadmap: an inserted decimal phase (7.1) written `7.1` in the
+// checklist and `07.1` in its details heading and directory, a STATE.md naming
+// it, phases whose ROADMAP entry never listed its plans (`**Plans**: TBD`), and
+// a STATE.md with no `milestone:` key. Mirrors /home/blk/projects/python/ttbook.
+// ============================================================================
+
+fn ttbook_shaped_planning_dir() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+
+    fs::write(
+        planning.join("STATE.md"),
+        "---\ngsd_state_version: \"1.0\"\ncurrent_phase: \"7.1\"\n\
+         current_phase_name: Apply owner rulings\nstatus: executing\n\
+         progress:\n  total_phases: 4\n  completed_phases: 2\n---\n",
+    )
+    .unwrap();
+
+    fs::write(
+        planning.join("ROADMAP.md"),
+        "# Roadmap\n\n## Milestones\n\n\
+         - 🚧 **Milestone 1: Reassessment and decision records** - Phases 1-7 (in progress)\n\
+         - 📋 **Milestones 2-5: Build milestones** - build phases 8-18\n\n\
+         ## Phases\n\n\
+         - [ ] **Phase 1: WAF and session (R1)** - one\n\
+         - [x] **Phase 5: Chat module redesign (R5)** - five\n\
+         - [x] **Phase 7: Consolidation** - seven\n\
+         - [ ] **Phase 7.1: Apply owner rulings (INSERTED)** - apply\n\n\
+         ## Phase Details\n\n\
+         ### Phase 1: WAF and session (R1)\n\n**Plans**: TBD\n\n\
+         ### Phase 5: Chat module redesign (R5)\n\n**Plans**: TBD\n\n\
+         ### Phase 7: Consolidation\n\n**Plans**: 2/2 plans executed\n\n\
+         - [x] 07-01-PLAN.md — a\n- [x] 07-02-PLAN.md — b\n\n\
+         ### Phase 07.1: Apply owner rulings (INSERTED)\n\n\
+         **Depends on**: Phase 7\n**Plans**: 3 plans\n\n\
+         - [ ] 07.1-01-PLAN.md — a\n- [ ] 07.1-02-PLAN.md — b\n- [ ] 07.1-03-PLAN.md — c\n\n\
+         ## Progress\n\n\
+         | Phase | Plans Complete | Status | Completed |\n\
+         |-------|----------------|--------|-----------|\n\
+         | 1. WAF and session (R1) | 0/TBD | Not started | - |\n\
+         | 5. Chat module redesign (R5) | 3/3 | Complete | 2026-09-22 |\n\
+         | 7. Consolidation | 2/2 | Complete | 2026-09-23 |\n\
+         | 7.1. Apply owner rulings | 0/3 | Planned | - |\n",
+    )
+    .unwrap();
+
+    let phases = planning.join("phases");
+    // Phase 1: executed, verification awaiting a human => Executed.
+    let p1 = phases.join("01-waf-and-session-r1");
+    fs::create_dir_all(&p1).unwrap();
+    for i in 1..=2 {
+        fs::write(p1.join(format!("01-0{i}-PLAN.md")), "# Plan").unwrap();
+        fs::write(p1.join(format!("01-0{i}-SUMMARY.md")), "# Summary").unwrap();
+    }
+    fs::write(p1.join("01-VERIFICATION.md"), "---\nstatus: human_needed\n---\n").unwrap();
+    // Phases 5 and 7: executed and verified => Complete.
+    for (n, count, slug) in [("05", 3, "chat-module-redesign-r5"), ("07", 2, "consolidation")] {
+        let dir = phases.join(format!("{n}-{slug}"));
+        fs::create_dir_all(&dir).unwrap();
+        for i in 1..=count {
+            fs::write(dir.join(format!("{n}-0{i}-PLAN.md")), "# Plan").unwrap();
+            fs::write(dir.join(format!("{n}-0{i}-SUMMARY.md")), "# Summary").unwrap();
+        }
+        fs::write(dir.join(format!("{n}-VERIFICATION.md")), "---\nstatus: passed\n---\n").unwrap();
+    }
+    // Phase 7.1: planned, not executed, directory zero-padded.
+    let p71 = phases.join("07.1-apply-owner-rulings");
+    fs::create_dir_all(&p71).unwrap();
+    for i in 1..=3 {
+        fs::write(p71.join(format!("07.1-0{i}-PLAN.md")), "# Plan").unwrap();
+    }
+
+    tmp
+}
+
+/// Symptom 2: `Phase 7.1` (checklist) and `### Phase 07.1:` (details) are one
+/// phase — one row, carrying the directory's `Planned` inference.
+#[test]
+fn a_decimal_phase_written_padded_and_unpadded_is_one_row_with_its_disk_data() {
+    use gsd_meta_manager::state_reader::disk_status::DiskStatus;
+
+    let tmp = ttbook_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+
+    let numbers: Vec<&str> = state.phases.iter().map(|p| p.number.as_str()).collect();
+    assert_eq!(numbers, ["1", "5", "7", "7.1"], "no separate `07.1` row");
+
+    let inf = &state.phase_disk_statuses["7.1"];
+    assert_eq!(inf.status, DiskStatus::Planned, "the `07.1-…` directory is found for `7.1`");
+    assert_eq!(inf.plan_count, 3);
+    let p71 = state.phases.iter().find(|p| p.number == "7.1").unwrap();
+    assert_eq!((p71.completed_plans, p71.total_plans), (0, 3));
+}
+
+/// Symptom 1: STATE.md's `current_phase: "7.1"` and the disk frontier (7.1) both
+/// name the inserted phase. With `u32`-only parsing both abstained and the
+/// active phase fell to `completed_phases + 1` = 3 here (5 on ttbook), drawing
+/// `*` on a phase whose badge says `[Complete]`.
+#[test]
+fn a_decimal_current_phase_is_the_active_phase_not_the_count_fallback() {
+    let tmp = ttbook_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+
+    assert_eq!(state.state_md_phase_number.as_ref().map(ToString::to_string).as_deref(), Some("7.1"));
+    assert_eq!(state.current_phase_number.as_ref().map(ToString::to_string).as_deref(), Some("7.1"));
+    assert_eq!(state.active_phase_number().to_string(), "7.1");
+
+    let markers: Vec<(String, PhaseMarker)> = state
+        .phases
+        .iter()
+        .map(|p| (p.number.clone(), state.phase_marker(p)))
+        .collect();
+    assert_eq!(
+        markers,
+        [
+            ("1".to_string(), PhaseMarker::Done),
+            ("5".to_string(), PhaseMarker::Done),
+            ("7".to_string(), PhaseMarker::Done),
+            ("7.1".to_string(), PhaseMarker::Current),
+        ]
+    );
+}
+
+/// A decimal STATE.md phase still clamps against the frontier numerically:
+/// `7.1` leads a frontier on 7, and never drags a frontier on 8 back.
+#[test]
+fn the_clamp_orders_decimal_phases_between_their_neighbours() {
+    use gsd_meta_manager::state_reader::phase_num::PhaseNum;
+    use gsd_meta_manager::state_reader::ProjectState;
+
+    let p = |s: &str| PhaseNum::parse(s);
+    let leads = ProjectState {
+        state_md_phase_number: p("7.1"),
+        current_phase_number: p("7"),
+        ..Default::default()
+    };
+    assert_eq!(leads.active_phase_number().to_string(), "7.1");
+    let lags = ProjectState {
+        state_md_phase_number: p("07.1"),
+        current_phase_number: p("8"),
+        ..Default::default()
+    };
+    assert_eq!(lags.active_phase_number(), 8);
+}
+
+/// The rendered Roadmap tab: one `P7.1` box, carrying `*` and its disk plan
+/// count, and no `P07.1` box at all.
+#[test]
+fn the_rendered_roadmap_marks_the_decimal_phase_current_once() {
+    use gsd_meta_manager::ui::roadmap_widget::RoadmapWidget;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    let tmp = ttbook_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+
+    let area = Rect::new(0, 0, 80, 30);
+    let mut buf = Buffer::empty(area);
+    RoadmapWidget {
+        phases: &state.phases,
+        current_phase_num: state.active_phase_number(),
+        disk_statuses: &state.phase_disk_statuses,
+        scroll_offset: 0,
+    }
+    .render(area, &mut buf);
+
+    assert_eq!(rendered_glyph_column(&buf, area), vec!['+', '+', '+', '*']);
+    let text: String = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<Vec<_>>()
+                .concat()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.contains("P07.1"), "no duplicate row:\n{text}");
+    assert!(!text.contains("0/?"), "every phase here has plans on disk:\n{text}");
+}
+
+/// Symptom 3a: a roadmap that never back-filled a phase's plan list
+/// (`**Plans**: TBD`) falls back to the phase directory's PLAN/SUMMARY counts
+/// rather than reading `0/?` beside an `[Executed]` badge.
+#[test]
+fn plan_counts_fall_back_to_disk_when_the_roadmap_lists_no_plans() {
+    use gsd_meta_manager::state_reader::phase_plan_counts;
+
+    let tmp = ttbook_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+    let counts = |n: &str| {
+        let phase = state.phases.iter().find(|p| p.number == n).unwrap();
+        phase_plan_counts(phase, &state.phase_disk_statuses)
+    };
+
+    assert_eq!(counts("1"), Some((2, 2)), "roadmap TBD, disk 2 PLAN + 2 SUMMARY");
+    assert_eq!(counts("5"), Some((3, 3)));
+    assert_eq!(counts("7"), Some((2, 2)), "roadmap list wins when present");
+    assert_eq!(counts("7.1"), Some((0, 3)));
+
+    // Neither source knows of a plan: still unknown, not 0/0.
+    let bare = gsd_meta_manager::state_reader::roadmap_md::RoadmapPhase {
+        number: "9".into(),
+        name: "Nine".into(),
+        description: String::new(),
+        completed: false,
+        total_plans: 0,
+        completed_plans: 0,
+        depends_on: Vec::new(),
+    };
+    assert_eq!(phase_plan_counts(&bare, &state.phase_disk_statuses), None);
+}
+
+/// Symptom 3b: STATE.md carries no `milestone:` key; ROADMAP's `## Milestones`
+/// list marks the in-progress one, and the field shows it instead of nothing.
+#[test]
+fn milestone_falls_back_to_the_roadmaps_in_progress_milestone() {
+    let tmp = ttbook_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+    assert_eq!(state.milestone, "Milestone 1: Reassessment and decision records");
+
+    // STATE.md's own key still wins when present.
+    let state_md = fs::read_to_string(tmp.path().join("STATE.md")).unwrap();
+    fs::write(
+        tmp.path().join("STATE.md"),
+        state_md.replacen("status: executing", "milestone: v1.0\nstatus: executing", 1),
+    )
+    .unwrap();
+    assert_eq!(parse_project_state(tmp.path()).milestone, "v1.0");
 }

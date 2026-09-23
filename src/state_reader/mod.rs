@@ -2,6 +2,7 @@ pub mod backlog;
 pub mod config_json;
 pub mod disk_status;
 pub mod git_ops;
+pub mod phase_num;
 pub mod plan_waves;
 pub mod queue_md;
 pub mod roadmap_md;
@@ -76,9 +77,10 @@ pub struct ProjectState {
     /// said 2 complete while its phase 4 was already planned on disk, so the
     /// dashboard said P3 and the disk scanner, correctly, said 4.
     ///
-    /// `None` only when the roadmap has no phases, or its phase numbers do not
-    /// parse as integers.
-    pub current_phase_number: Option<u32>,
+    /// `None` only when the roadmap has no phases, or the frontier phase's id
+    /// is not numeric (`M-2`). Decimal (inserted) phases such as `7.1` parse —
+    /// see [`phase_num::PhaseNum`].
+    pub current_phase_number: Option<phase_num::PhaseNum>,
     /// The numeric `current_phase` STATE.md declares, when it declares one.
     ///
     /// Kept separately from [`Self::current_phase`], which resolves to a
@@ -87,7 +89,7 @@ pub struct ProjectState {
     /// the one source that can say a phase is active before any artifact of it
     /// exists — [`Self::active_phase_number`] lets it lead the disk frontier,
     /// but clamps it up to that frontier rather than below it.
-    pub state_md_phase_number: Option<u32>,
+    pub state_md_phase_number: Option<phase_num::PhaseNum>,
     /// Whether the project has a non-empty HANDOFF.md or HANDOFF.json in .planning/
     pub paused: bool,
     /// Extracted context from HANDOFF file (next_action from JSON, or first content line from MD)
@@ -220,17 +222,24 @@ impl ProjectState {
     /// phase 4 was already planned, so the arithmetic produced P3 for a project
     /// whose STATE.md and whose phase directories both said more.
     ///
-    /// The comparison is numeric because both sources are already `u32` — each
-    /// is parsed with `parse::<u32>().ok()` at its own site, so a zero-padded
-    /// `04` and a bare `4` are the same number here, and a non-numeric or
-    /// prefixed id (`M-2`, `0.3`) arrives as `None` and simply does not
-    /// participate rather than collapsing to 0.
-    pub fn active_phase_number(&self) -> u32 {
-        match (self.state_md_phase_number, self.current_phase_number) {
-            (Some(declared), Some(frontier)) => declared.max(frontier),
-            (Some(declared), None) => declared,
-            (None, Some(frontier)) => frontier,
-            (None, None) => self.completed_phases + 1,
+    /// The comparison is numeric because both sources are
+    /// [`phase_num::PhaseNum`]s — a zero-padded `04` and a bare `4` are the
+    /// same number, an inserted `7.1` orders between `7` and `8`, and a
+    /// prefixed id (`M-2`) arrives as `None` and simply does not participate
+    /// rather than collapsing to 0.
+    ///
+    /// **Decimals are sources, not noise.** Both sources used to be
+    /// `parse::<u32>()`, so an inserted phase abstained from both: ttbook's
+    /// STATE.md said `current_phase: "7.1"` and its frontier was phase 7.1,
+    /// yet the active phase fell through to the arithmetic — 4 phases marked
+    /// `Complete` in the Progress table, so phase 5, a `[Complete]` phase,
+    /// drew `*` while the phase actually being executed drew `o`.
+    pub fn active_phase_number(&self) -> phase_num::PhaseNum {
+        match (&self.state_md_phase_number, &self.current_phase_number) {
+            (Some(declared), Some(frontier)) => declared.max(frontier).clone(),
+            (Some(declared), None) => declared.clone(),
+            (None, Some(frontier)) => frontier.clone(),
+            (None, None) => phase_num::PhaseNum::from(self.completed_phases + 1),
         }
     }
 
@@ -242,7 +251,7 @@ impl ProjectState {
             &phase.number,
             phase.completed,
             &self.phase_disk_statuses,
-            self.active_phase_number(),
+            &self.active_phase_number(),
         )
     }
 }
@@ -331,11 +340,12 @@ impl PhaseMarker {
         phase_number: &str,
         roadmap_completed: bool,
         disk_statuses: &HashMap<String, disk_status::DiskInference>,
-        active_phase_number: u32,
+        active_phase_number: &phase_num::PhaseNum,
     ) -> PhaseMarker {
-        // Numeric comparison, so a zero-padded roadmap entry (`04`) matches
-        // phase 4 — the same parse `active_phase_number`'s own sources use.
-        if phase_number.parse::<u32>() == Ok(active_phase_number) {
+        // Numeric comparison, so a zero-padded roadmap entry (`04`, `07.1`)
+        // matches phase 4 / 7.1 — the same parse `active_phase_number`'s own
+        // sources use.
+        if phase_num::PhaseNum::parse(phase_number).as_ref() == Some(active_phase_number) {
             return PhaseMarker::Current;
         }
         let done = match disk_statuses.get(phase_number) {
@@ -349,6 +359,27 @@ impl PhaseMarker {
         }
         PhaseMarker::Future
     }
+}
+
+/// One phase's `(completed, total)` plan counts, for display.
+///
+/// ROADMAP's plan checklist under the phase comes first — it is what both
+/// render sites always showed. When the roadmap lists no plans (GSD leaves
+/// `**Plans**: TBD` in place for phases planned without the list being
+/// back-filled), the phase directory's own PLAN/SUMMARY counts answer instead,
+/// so a phase with six executed plans on disk does not read `0/?` beside an
+/// `[Executed]` badge. `None` only when neither source knows of any plan.
+pub fn phase_plan_counts(
+    phase: &roadmap_md::RoadmapPhase,
+    disk_statuses: &HashMap<String, disk_status::DiskInference>,
+) -> Option<(u32, u32)> {
+    if phase.total_plans > 0 {
+        return Some((phase.completed_plans, phase.total_plans));
+    }
+    disk_statuses
+        .get(&phase.number)
+        .filter(|inf| inf.plan_count > 0)
+        .map(|inf| (inf.summary_count.min(inf.plan_count), inf.plan_count))
 }
 
 /// Detect HANDOFF.md or HANDOFF.json in a planning directory.
@@ -472,7 +503,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
             state.state_md_phase_number = fm
                 .current_phase
                 .as_deref()
-                .and_then(|p| p.trim().parse::<u32>().ok());
+                .and_then(phase_num::PhaseNum::parse);
             state.current_phase_name = fm.current_phase_name.clone().unwrap_or_default();
             state.current_plan = fm.current_plan.clone().unwrap_or_default();
 
@@ -531,6 +562,15 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     let roadmap_path = planning_dir.join("ROADMAP.md");
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
+        // STATE.md is the milestone's primary source; a project whose STATE.md
+        // carries no `milestone:` key still names it in ROADMAP's
+        // `## Milestones` list, and an empty `Milestone:` field is worse than
+        // the roadmap's own words.
+        if state.milestone.is_empty() {
+            if let Some(name) = roadmap_md::active_milestone(&content) {
+                state.milestone = name;
+            }
+        }
         if let Some(prog) = roadmap_md::roadmap_progress(&content) {
             state.total_phases = prog.total_phases;
             state.completed_phases = prog.completed_phases;
@@ -541,7 +581,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
 
     // Run disk inference for each phase
     let mut current_phase_inference: Option<disk_status::DiskInference> = None;
-    let mut current_phase_number: Option<u32> = None;
+    let mut current_phase_number: Option<phase_num::PhaseNum> = None;
     for phase in &state.phases {
         let inference = disk_status::infer_phase_status(planning_dir, &phase.number);
         // Track the first phase whose IMPLEMENTATION is not finished as the
@@ -573,7 +613,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
         if current_phase_inference.is_none() && inference.status < disk_status::DiskStatus::Executed
         {
             current_phase_inference = Some(inference.clone());
-            current_phase_number = phase.number.parse::<u32>().ok();
+            current_phase_number = phase_num::PhaseNum::parse(&phase.number);
         }
         state
             .phase_disk_statuses
@@ -585,7 +625,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     if current_phase_inference.is_none() && !state.phases.is_empty() {
         if let Some(last) = state.phases.last() {
             current_phase_inference = state.phase_disk_statuses.get(&last.number).cloned();
-            current_phase_number = last.number.parse::<u32>().ok();
+            current_phase_number = phase_num::PhaseNum::parse(&last.number);
         }
     }
     state.current_phase_status = current_phase_inference;

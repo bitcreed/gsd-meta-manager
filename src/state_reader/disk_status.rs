@@ -1041,6 +1041,19 @@ fn phase_dir_matches(dir_name: &str, phase_number: &str) -> bool {
         } else {
             stripped.to_string()
         });
+    } else if let Some(num) = super::phase_num::PhaseNum::parse(phase_number) {
+        // A decimal (inserted) phase: ROADMAP's checklist writes `7.1`, GSD
+        // names the directory `07.1-slug`. Both the canonical spelling and the
+        // one with its integer part padded to 2 are candidates, so `7.1` finds
+        // `07.1-foo` and `07.1` finds `7.1-foo`. The `-` boundary still keeps
+        // `7.1` off `7.10-foo`.
+        let canonical = num.to_string();
+        let padded = match canonical.split_once('.') {
+            Some((major, rest)) => format!("{major:0>2}.{rest}"),
+            None => format!("{canonical:0>2}"),
+        };
+        candidates.push(canonical);
+        candidates.push(padded);
     }
     candidates
         .iter()
@@ -2216,6 +2229,17 @@ mod tests {
     #[test]
     fn test_phase_dir_matches_rejects_decimal_boundary() {
         assert!(!phase_dir_matches("1.2-foo", "1"));
+    }
+
+    /// ttbook: ROADMAP's checklist says `7.1`, the directory is `07.1-slug`.
+    #[test]
+    fn test_phase_dir_matches_decimal_pad_insensitive() {
+        assert!(phase_dir_matches("07.1-apply-owner-rulings", "7.1"));
+        assert!(phase_dir_matches("07.1-apply-owner-rulings", "07.1"));
+        assert!(phase_dir_matches("7.1-apply", "07.1"));
+        assert!(!phase_dir_matches("07.10-foo", "7.1"));
+        assert!(!phase_dir_matches("07-consolidation", "7.1"));
+        assert!(!phase_dir_matches("07.1-apply", "7"));
     }
 
     #[test]
