@@ -21,7 +21,8 @@ all of them:
   disk. No Claude run, no `/gsd:progress`, no API cost required to see status.
 - **Claude session awareness** -- detects which projects have a live `claude`
   instance, launches or resumes a session on any of them, and auto-registers new
-  projects from active sessions.
+  projects from active sessions (Linux only -- see
+  [Platform support](#platform-support)).
 - **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
   session without hunting through terminal tabs.
 - **Milestone archive browsing** -- read shipped-milestone artifacts with inline
@@ -48,7 +49,9 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   browser rooted at the active phase, with quick jumps to `.planning/` and back)
 - Queue management: create, edit, delete, and reorder items
 - New project creation from within the TUI
-- Claude session detection (shows which projects have active Claude instances)
+- Session detection -- shows which projects have a live Claude instance;
+  interactive Codex sessions are detected best-effort, without resume. Linux
+  only -- see [Platform support](#platform-support)
 - Auto-registration of GSD projects from active Claude sessions -- any running
   `claude` whose working directory contains `.planning/` is added to the
   registry automatically
@@ -185,6 +188,21 @@ terminal support.
 
 - **Rust 1.88+** (for building from source)
 - Produces a single static binary with no runtime dependencies
+
+### Platform support
+
+Live session detection, for both Claude and Codex, reads the Linux `/proc`
+filesystem, so it works on Linux only. On macOS no running sessions are
+detected: the Sessions tab stays empty, and auto-registration from running
+sessions, tmux `Tab`-to-switch, and resuming a detected session have nothing to
+act on. The rest of the TUI -- everything read from `.planning/` -- works
+normally.
+
+Codex session detection is best-effort: it relies on Codex CLI process details
+that may change between releases. Interactive `codex` sessions are shown
+alongside Claude sessions and can be reached with `Tab` under tmux;
+non-interactive runs such as `codex exec` are not shown. Codex sessions cannot
+be resumed from the TUI -- resume is Claude-only.
 
 ### Compatibility
 
