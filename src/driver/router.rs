@@ -65,6 +65,7 @@
 
 use crate::state_reader::disk_status::{DiskInference, DiskStatus};
 use crate::state_reader::state_md;
+use crate::state_reader::phase_num::same_phase;
 use crate::state_reader::ProjectState;
 
 /// The rules do not cover the observed state.
@@ -658,8 +659,16 @@ fn gate_for(
 /// of accepted spellings maintained here. Text that names no identifier at all
 /// keeps its own bytes, so two unparseable cells still compare as themselves and
 /// nothing is silently equated with a guess.
+///
+/// The extracted id is then reduced to its pad-insensitive
+/// [`phase_key`](crate::state_reader::phase_num::phase_key), so a table cell
+/// `07.1` gates a `7.1` target (and `05` a `5`) — GSD pads the phase directory
+/// and details heading, so a padded cell is the ordinary case, not a typo.
 fn phase_identity(text: &str) -> String {
-    crate::state_reader::roadmap_md::extract_phase_id(text).unwrap_or_else(|| text.to_string())
+    match crate::state_reader::roadmap_md::extract_phase_id(text) {
+        Some(id) => crate::state_reader::phase_num::phase_key(&id),
+        None => text.to_string(),
+    }
 }
 
 /// The verification gate for an `executed` target, or `None` when its status is
@@ -720,14 +729,17 @@ fn verification_gate(inference: &DiskInference) -> Option<RouterReason> {
 /// here for the same reason upstream reads both — an archived or hand-ticked
 /// phase has no artifacts left to infer completion from, and treating it as
 /// unfinished would make every dependent phase permanently unroutable.
+///
+/// Pad-insensitive: a `Depends on: Phase 07.1` reference finds the roadmap's
+/// `7.1` row and its disk inference ([`ProjectState::roadmap_phase`]). Raw `==`
+/// left such a dependency permanently unsatisfied — fail-closed, but a phase
+/// that could never be routed.
 fn phase_is_complete(state: &ProjectState, number: &str) -> bool {
     let ticked = state
-        .phases
-        .iter()
-        .any(|phase| phase.number == number && phase.completed);
+        .roadmap_phase(number)
+        .is_some_and(|phase| phase.completed);
     let inferred = state
-        .phase_disk_statuses
-        .get(number)
+        .disk_status_for(number)
         .is_some_and(|inference| inference.status == DiskStatus::Complete);
     ticked || inferred
 }
@@ -749,10 +761,7 @@ fn phase_is_complete(state: &ProjectState, number: &str) -> bool {
 /// Walks `phases` (a `Vec`, in roadmap order) and indexes the status map, so the
 /// answer does not depend on `HashMap` iteration order.
 fn unsatisfied_dependency(state: &ProjectState, target_phase: &str) -> Option<String> {
-    let target = state
-        .phases
-        .iter()
-        .find(|phase| phase.number == target_phase)?;
+    let target = state.roadmap_phase(target_phase)?;
 
     target
         .depends_on
@@ -768,15 +777,15 @@ fn unsatisfied_dependency(state: &ProjectState, target_phase: &str) -> Option<St
 /// hand-written prose and two phases naming each other is a typo away. Upstream
 /// carries the identical guard (`init.cjs:1971-1985`).
 fn reaches(state: &ProjectState, from: &str, to: &str, visited: &mut Vec<String>) -> bool {
-    if visited.iter().any(|seen| seen == from) {
+    if visited.iter().any(|seen| same_phase(seen, from)) {
         return false;
     }
     visited.push(from.to_string());
 
-    let Some(phase) = state.phases.iter().find(|phase| phase.number == from) else {
+    let Some(phase) = state.roadmap_phase(from) else {
         return false;
     };
-    if phase.depends_on.iter().any(|dependency| dependency == to) {
+    if phase.depends_on.iter().any(|dependency| same_phase(dependency, to)) {
         return true;
     }
     phase
@@ -827,7 +836,7 @@ fn colliding_partial_phase(state: &ProjectState, target_phase: &str) -> Option<S
         .phases
         .iter()
         .find(|phase| {
-            phase.number != target_phase
+            !same_phase(&phase.number, target_phase)
                 && state
                     .phase_disk_statuses
                     .get(&phase.number)
@@ -869,11 +878,9 @@ fn colliding_partial_phase(state: &ProjectState, target_phase: &str) -> Option<S
 /// asserts that rather than this sentence claiming it.
 pub fn decide(state: &ProjectState, target_phase: &str) -> Decision {
     // 1. The roadmap is the corroborating source.
-    if !state
-        .phases
-        .iter()
-        .any(|phase| phase.number == target_phase)
-    {
+    // Pad-insensitive (`07.1` on argv names the roadmap's `7.1`); the detail
+    // and the command below keep the argv spelling.
+    if state.roadmap_phase(target_phase).is_none() {
         return Decision::Park {
             reason: RouterReason::StateUnverified,
             // The phase number, which arrived on argv and was validated as a
@@ -884,7 +891,7 @@ pub fn decide(state: &ProjectState, target_phase: &str) -> Decision {
 
     // 2. Indexed, never iterated — and an absent entry is the absence of an
     //    observation rather than an observation of absence.
-    let Some(inference) = state.phase_disk_statuses.get(target_phase) else {
+    let Some(inference) = state.disk_status_for(target_phase) else {
         return Decision::NoRule {
             observed: OBSERVED_NO_INFERENCE.to_string(),
         };
@@ -1276,6 +1283,74 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// Decimal and zero-padded spellings name one phase everywhere the router
+    /// looks a phase up: the argv target, a `Depends on` reference and the
+    /// roadmap row it resolves to. Raw `==` parked `07.1` on argv as
+    /// `StateUnverified` against a roadmap row `7.1`, and left
+    /// `Depends on: Phase 07` unsatisfied forever against a completed `7`.
+    #[test]
+    fn decimal_and_padded_phase_ids_resolve_pad_insensitively() {
+        let mut state = state_with(&[], &[]);
+        state.phases = vec![phase("7", &[]), phase("7.1", &["07"])];
+        state.phase_disk_statuses.insert(
+            "7".to_string(),
+            DiskInference {
+                status: DiskStatus::Complete,
+                verification_status: VerificationStatus::Passed,
+                ..Default::default()
+            },
+        );
+        state.phase_disk_statuses.insert(
+            "7.1".to_string(),
+            DiskInference {
+                status: DiskStatus::Planned,
+                ..Default::default()
+            },
+        );
+        for target in ["7.1", "07.1"] {
+            match decide(&state, target) {
+                Decision::Run { command, .. } => {
+                    assert_eq!(command, format!("/gsd-execute-phase {target}"))
+                }
+                other => panic!("target {target:?} must route, got {other:?}"),
+            }
+        }
+
+        // A padded `Depends on` that is NOT complete still parks, naming the
+        // dependency as written — normalising must not satisfy it for free.
+        state.phase_disk_statuses.insert("7".to_string(), DiskInference::default());
+        assert_eq!(
+            decide(&state, "07.1"),
+            Decision::Park {
+                reason: RouterReason::DependencyUnsatisfied,
+                detail: "07".to_string(),
+            }
+        );
+
+        // And 7.1 is not 7: a decimal phase is not its integer parent.
+        assert!(state.roadmap_phase("7").is_some_and(|p| p.number == "7"));
+        assert!(state.roadmap_phase("7.2").is_none());
+    }
+
+    #[test]
+    fn the_deferred_verification_gate_is_pad_insensitive_for_decimal_phases() {
+        for (cell, target) in [("07.1", "7.1"), ("Phase 7.1", "07.1"), ("05", "5")] {
+            let mut state = state_with(&[target], &[(target, DiskStatus::Discussed)]);
+            state.deferred_verification_phases = vec![cell.to_string()];
+            assert_eq!(
+                park_reason(&decide(&state, target)),
+                RouterReason::GateDeferredVerification,
+                "a G15 row `{cell}` names phase {target}"
+            );
+        }
+        let mut parent = state_with(&["7.1"], &[("7.1", DiskStatus::Discussed)]);
+        parent.deferred_verification_phases = vec!["07".to_string()];
+        assert!(
+            matches!(decide(&parent, "7.1"), Decision::Run { .. }),
+            "phase 7's row is not inserted phase 7.1's gate"
+        );
     }
 
     #[test]

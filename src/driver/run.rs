@@ -1929,7 +1929,8 @@ fn iteration_options(
 /// Values are enum names and counts — never artifact content — so this record
 /// cannot carry agent-authored text (T-20-05).
 fn drpev_stages(state: &crate::state_reader::ProjectState, target_phase: &str) -> Vec<String> {
-    let inference = state.phase_disk_statuses.get(target_phase);
+    // Pad-insensitive: an argv `07.1` reads the roadmap's `7.1` inference.
+    let inference = state.disk_status_for(target_phase);
     let flag = |present: bool| if present { "yes" } else { "no" }.to_string();
     vec![
         flag(inference.is_some_and(|found| found.has_context)),

@@ -174,6 +174,34 @@ pub struct ProjectState {
 }
 
 impl ProjectState {
+    /// The roadmap entry a written phase id names, pad-insensitively: `07.1`,
+    /// `7.1` and `Phase 7.1`'s id all find the one merged `7.1` row
+    /// ([`phase_num::same_phase`]). Walks `phases` in roadmap order, so the
+    /// answer never depends on map iteration order.
+    ///
+    /// Every lookup keyed by an id that did NOT come from `phases` itself — an
+    /// argv target, a `**Depends on**:` reference, a STATE.md table cell —
+    /// goes through this rather than `==` on `RoadmapPhase::number`, which is
+    /// the roadmap's first-seen spelling and nothing more.
+    pub fn roadmap_phase(&self, id: &str) -> Option<&roadmap_md::RoadmapPhase> {
+        self.phases
+            .iter()
+            .find(|phase| phase_num::same_phase(&phase.number, id))
+    }
+
+    /// The disk inference for a written phase id, pad-insensitively.
+    ///
+    /// `phase_disk_statuses` is keyed by the roadmap's own spelling of each
+    /// phase, so the id is first resolved to that spelling through
+    /// [`Self::roadmap_phase`]; an exact key hit is taken as-is (a caller that
+    /// already holds `phase.number`, or a map populated directly).
+    pub fn disk_status_for(&self, id: &str) -> Option<&disk_status::DiskInference> {
+        self.phase_disk_statuses.get(id).or_else(|| {
+            self.roadmap_phase(id)
+                .and_then(|phase| self.phase_disk_statuses.get(&phase.number))
+        })
+    }
+
     /// The phase number to treat as active — the phase a label names, a
     /// roadmap highlights, a suggested command targets, and a browser opens
     /// into.
