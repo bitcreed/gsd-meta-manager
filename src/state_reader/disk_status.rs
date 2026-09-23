@@ -217,7 +217,7 @@ impl PlanTokens {
     /// would otherwise be blank.
     pub fn label(&self) -> String {
         if let Some((phase, plan)) = plan_index(&self.id) {
-            return format!("{phase:02}-{plan:02}");
+            return format!("{}-{plan:02}", phase.padded());
         }
         if self.id.is_empty() {
             return "PLAN".to_string();
@@ -384,17 +384,21 @@ pub(crate) fn leading_frontmatter_value(content: &str, key: &str) -> Option<Stri
 /// emits, which collapses a finished phase to `Planned`. Pairing on this index
 /// derives the same key from both sides.
 ///
-/// Parsed as two `u32`s rather than compared as text, because `13-1` and `13-01`
+/// Parsed as numbers rather than compared as text, because `13-1` and `13-01`
 /// are one index and a lexical compare says otherwise — a bug class this
-/// codebase has already paid for once in phase-number handling.
+/// codebase has already paid for once in phase-number handling. The phase half
+/// is a [`PhaseNum`](super::phase_num::PhaseNum), so an inserted phase's
+/// `07.1-01-slug-PLAN.md` pairs with its `07.1-01-SUMMARY.md` (a `u32` parse
+/// rejected `07.1` and left the pair to the exact-stem rule, which cannot match
+/// a slugged plan).
 ///
 /// Returns `None` for anything that is not `digits-digits[-…]`: a phase-level
 /// `13-SUMMARY.md` (stem `13`) has no plan index and so pairs with no plan, a
 /// standalone `SUMMARY.md` (stem ``) likewise, and `14-REMEDIATION-SUMMARY.md`
 /// likewise. Those fall back to the exact-stem rule, which is what they want.
-fn plan_index(stem: &str) -> Option<(u32, u32)> {
+fn plan_index(stem: &str) -> Option<(super::phase_num::PhaseNum, u32)> {
     let mut parts = stem.splitn(3, '-');
-    let phase = parts.next()?.parse::<u32>().ok()?;
+    let phase = super::phase_num::PhaseNum::parse(parts.next()?)?;
     let plan = parts.next()?.parse::<u32>().ok()?;
     Some((phase, plan))
 }
@@ -692,7 +696,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // plans a descriptive slug and summaries none. `plan_indices` therefore
     // carries the second, shared key (see [`plan_index`]) alongside it.
     let mut plan_ids: HashSet<String> = HashSet::new();
-    let mut plan_indices: HashMap<(u32, u32), Vec<String>> = HashMap::new();
+    let mut plan_indices: HashMap<(super::phase_num::PhaseNum, u32), Vec<String>> =
+        HashMap::new();
     let mut summary_names: Vec<String> = Vec::new();
     // `estimate.tokens` per surviving plan, read out of the SAME plan-file read
     // the superseded check already performs, so it costs no extra I/O. Only a
@@ -948,9 +953,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         })
         .collect();
     plan_tokens.sort_by(|a, b| {
-        let key_a = plan_index(&a.id).unwrap_or((u32::MAX, u32::MAX));
-        let key_b = plan_index(&b.id).unwrap_or((u32::MAX, u32::MAX));
-        (key_a, &a.id).cmp(&(key_b, &b.id))
+        // `None` sorts last: an id with no plan index follows every indexed one.
+        let key_a = plan_index(&a.id);
+        let key_b = plan_index(&b.id);
+        (key_a.is_none(), key_a, &a.id).cmp(&(key_b.is_none(), key_b, &b.id))
     });
 
     // Waves, from the `wave:` key each surviving plan's own frontmatter carries.
@@ -1966,6 +1972,27 @@ mod tests {
             "a slugless summary must pair with the slugged plan sharing its index"
         );
         assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    /// An inserted (decimal) phase pairs the same way: `07.1-01-slug-PLAN.md`
+    /// with `07.1-01-SUMMARY.md`, and pad-insensitively (`7.1-2`/`07.1-02`).
+    /// A `u32` phase parse rejected `07.1`, so these fell to the exact-stem
+    /// rule and a fully executed inserted phase read `Planned`.
+    #[test]
+    fn slugged_decimal_phase_plans_pair_with_their_summaries() {
+        let dir = tempdir().unwrap();
+        for (plan, summary) in [
+            ("07.1-01-apply-owner-rulings-PLAN.md", "07.1-01-SUMMARY.md"),
+            ("07.1-02-booking-har-PLAN.md", "7.1-2-SUMMARY.md"),
+        ] {
+            fs::write(dir.path().join(plan), "---\nestimate:\n  tokens: 5\n---\n").unwrap();
+            fs::write(dir.path().join(summary), "summary").unwrap();
+        }
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(result.summary_count, 2);
+        let labels: Vec<String> = result.plan_tokens.iter().map(PlanTokens::label).collect();
+        assert_eq!(labels, ["07.1-01", "07.1-02"]);
     }
 
     /// wordoclock phase 16: same shape, verification found gaps. The phase is

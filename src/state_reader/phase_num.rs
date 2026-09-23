@@ -42,6 +42,23 @@ impl PhaseNum {
         }
         Some(PhaseNum(segments))
     }
+
+    /// The integer part: `7` for `7.1`, `999` for `999.2`.
+    pub fn major(&self) -> u32 {
+        self.0[0]
+    }
+
+    /// GSD's directory/file-prefix spelling: the integer part zero-padded to
+    /// two digits, any decimal tail as written canonically — `7.1` → `07.1`,
+    /// `5` → `05`, `13` → `13`.
+    pub fn padded(&self) -> String {
+        let mut out = format!("{:02}", self.0[0]);
+        for seg in &self.0[1..] {
+            out.push('.');
+            out.push_str(&seg.to_string());
+        }
+        out
+    }
 }
 
 impl From<u32> for PhaseNum {
@@ -125,5 +142,14 @@ mod tests {
         assert!(PhaseNum::parse("7.1").unwrap() != 7);
         assert_eq!(PhaseNum::from(7).to_string(), "7");
         assert_eq!(PhaseNum::parse("07.01").unwrap().to_string(), "7.1");
+    }
+
+    #[test]
+    fn padded_is_the_directory_prefix_spelling() {
+        let p = |s| PhaseNum::parse(s).unwrap();
+        assert_eq!(p("7.1").padded(), "07.1");
+        assert_eq!(p("5").padded(), "05");
+        assert_eq!(p("13").padded(), "13");
+        assert_eq!(p("999.2").major(), 999);
     }
 }
