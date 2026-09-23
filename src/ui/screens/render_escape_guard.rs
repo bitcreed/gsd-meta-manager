@@ -1042,7 +1042,7 @@ fn probe_ctx(identity: &str) -> AppContext {
 
     // The Sessions tab: a session whose `working_dir` matches the registered
     // project, or the tab's filter drops it and it renders "No active Claude
-    // sessions" — the empty branch this fixture exists to leave.
+    // or Codex sessions" — the empty branch this fixture exists to leave.
     ctx.active_sessions = vec![crate::session_detector::ClaudeSession {
         pid: 4242,
         kind: crate::session_detector::SessionKind::Claude,
@@ -1409,7 +1409,7 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         true,
         "Draws the session id of a `ClaudeSession` whose `working_dir` matches the \
          registered project — populated by 21-25 T2; before that the tab's filter \
-         admitted nothing and it rendered `No active Claude sessions`.",
+         admitted nothing and it rendered `No active Claude or Codex sessions`.",
     ),
     (
         "Archive tab",

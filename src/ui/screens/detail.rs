@@ -135,6 +135,30 @@ fn recovered_state_line(state: &state_reader::ProjectState) -> Option<Line<'stat
     )))
 }
 
+/// The Sessions tab's answer to Enter on a Codex row (260923-lr9).
+const CODEX_RESUME_UNSUPPORTED: &str =
+    "Resume is not supported for Codex sessions — press Tab to switch to it";
+
+/// The Sessions tab's answer to Enter on a Claude row with no session id.
+const NO_SESSION_ID_TO_RESUME: &str = "No session ID to resume";
+
+/// The id Enter may resume, or the status message saying why it may not.
+///
+/// **The resume gate (T-lr9-01).** This build's only resume producer spells a
+/// `claude` argv, so a Codex thread id must never reach it: every
+/// [`SessionKind::Codex`](crate::session_detector::SessionKind::Codex) session
+/// is refused, whatever its id. The match is exhaustive with no wildcard, so a
+/// new kind is a compile error here rather than a silent resume.
+fn resumable_session_id(
+    session: &crate::session_detector::ClaudeSession,
+) -> Result<&Untrusted, &'static str> {
+    use crate::session_detector::SessionKind;
+    match session.kind {
+        SessionKind::Codex => Err(CODEX_RESUME_UNSUPPORTED),
+        SessionKind::Claude => session.session_id.as_ref().ok_or(NO_SESSION_ID_TO_RESUME),
+    }
+}
+
 /// How many CHARACTERS of a session id the Sessions tab and the resume toast
 /// show.
 const SESSION_ID_DISPLAY_CHARS: usize = 8;
@@ -2375,112 +2399,110 @@ impl Screen for DetailScreen {
                             .unwrap_or_default();
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(session) = filtered_sessions.get(cache.sessions_selected) {
-                            if let Some(ref sid) = session.session_id {
-                                // READ BY A HUMAN (it lands in a status message
-                                // below), and shortened by CHARACTERS — see
-                                // `shorten_session_id`'s doc for why the byte
-                                // slice this replaced was a panic.
-                                let short_id = shorten_session_id(sid);
-                                let plan = resolve_launch_plan();
-                                let mut tmux_err: Option<String> = None;
-                                if plan.try_tmux {
-                                    // D-01: the session should appear WHERE THE
-                                    // USER IS. `$TERMINAL` says which GUI
-                                    // emulator they prefer, not where a session
-                                    // belongs, and it is usually exported once
-                                    // from a shell profile rather than meant
-                                    // per invocation.
-                                    match crate::terminal_switch::open_new_window(
-                                        &session.working_dir,
-                                        &tmux_resume_argv(sid),
-                                    ) {
-                                        Ok(()) => {
+                            // The resume gate runs BEFORE resolve_launch_plan,
+                            // so a Codex row reaches neither tmux nor a
+                            // terminal spawn (260923-lr9, T-lr9-01).
+                            let sid = match resumable_session_id(session) {
+                                Ok(sid) => sid,
+                                Err(msg) => return ScreenAction::SetStatusMessage(msg.to_string()),
+                            };
+                            // READ BY A HUMAN (it lands in a status message
+                            // below), and shortened by CHARACTERS — see
+                            // `shorten_session_id`'s doc for why the byte
+                            // slice this replaced was a panic.
+                            let short_id = shorten_session_id(sid);
+                            let plan = resolve_launch_plan();
+                            let mut tmux_err: Option<String> = None;
+                            if plan.try_tmux {
+                                // D-01: the session should appear WHERE THE
+                                // USER IS. `$TERMINAL` says which GUI
+                                // emulator they prefer, not where a session
+                                // belongs, and it is usually exported once
+                                // from a shell profile rather than meant
+                                // per invocation.
+                                match crate::terminal_switch::open_new_window(
+                                    &session.working_dir,
+                                    &tmux_resume_argv(sid),
+                                ) {
+                                    Ok(()) => {
+                                        return ScreenAction::SetStatusMessage(format!(
+                                            "Resumed session {}",
+                                            short_id
+                                        ))
+                                    }
+                                    // Fall through to the GUI rather than
+                                    // failing: no reachable tmux server is
+                                    // exactly when `$TERMINAL` should win.
+                                    Err(e) => tmux_err = Some(e),
+                                }
+                            }
+                            match plan.gui {
+                                Some(term) => {
+                                    // ARGV ELEMENTS, every one of them —
+                                    // the kernel hands them to `execve`
+                                    // unparsed. NOT program fragments,
+                                    // which is what round 9's comment here
+                                    // wrongly claimed they already were:
+                                    // "A SUBPROCESS ARGUMENT: the raw id is
+                                    // what `claude --resume` must receive,
+                                    // and an escaped one would resume
+                                    // nothing." (round 9). The value was a
+                                    // fragment of a program handed to an
+                                    // interpreter through `-c`, so a quote
+                                    // in it ran arbitrary code (CR-01).
+                                    // The INTERPRETER is gone; a parser is
+                                    // not. `claude`'s own option parser
+                                    // reads this argv, and `--resume`
+                                    // takes an OPTIONAL value — so the id
+                                    // travels FUSED as `--resume=<id>`,
+                                    // which binds it as that option's
+                                    // value instead of letting a leading
+                                    // `-` make it an option of its own
+                                    // (CWE-88). The working directory
+                                    // travels through `current_dir`, not
+                                    // as a `cd` written into a program.
+                                    // See `resume_terminal_argv`'s doc for
+                                    // the measurement that chose fusion
+                                    // over a `--` separator.
+                                    match std::process::Command::new(&term)
+                                        .args(resume_terminal_argv(&term, sid))
+                                        .current_dir(&session.working_dir)
+                                        .spawn()
+                                    {
+                                        Ok(_) => {
+                                            // A fall-through is REPORTED
+                                            // rather than silent: the user
+                                            // asked for a session where
+                                            // they are, and got one
+                                            // somewhere else.
+                                            return ScreenAction::SetStatusMessage(
+                                                match tmux_err {
+                                                    Some(e) => {
+                                                        format!("tmux: {} — opened in {}", e, term)
+                                                    }
+                                                    None => format!("Resumed session {}", short_id),
+                                                },
+                                            );
+                                        }
+                                        Err(e) => {
                                             return ScreenAction::SetStatusMessage(format!(
-                                                "Resumed session {}",
-                                                short_id
+                                                "Failed to launch: {}",
+                                                e
                                             ))
                                         }
-                                        // Fall through to the GUI rather than
-                                        // failing: no reachable tmux server is
-                                        // exactly when `$TERMINAL` should win.
-                                        Err(e) => tmux_err = Some(e),
                                     }
                                 }
-                                match plan.gui {
-                                    Some(term) => {
-                                        // ARGV ELEMENTS, every one of them —
-                                        // the kernel hands them to `execve`
-                                        // unparsed. NOT program fragments,
-                                        // which is what round 9's comment here
-                                        // wrongly claimed they already were:
-                                        // "A SUBPROCESS ARGUMENT: the raw id is
-                                        // what `claude --resume` must receive,
-                                        // and an escaped one would resume
-                                        // nothing." (round 9). The value was a
-                                        // fragment of a program handed to an
-                                        // interpreter through `-c`, so a quote
-                                        // in it ran arbitrary code (CR-01).
-                                        // The INTERPRETER is gone; a parser is
-                                        // not. `claude`'s own option parser
-                                        // reads this argv, and `--resume`
-                                        // takes an OPTIONAL value — so the id
-                                        // travels FUSED as `--resume=<id>`,
-                                        // which binds it as that option's
-                                        // value instead of letting a leading
-                                        // `-` make it an option of its own
-                                        // (CWE-88). The working directory
-                                        // travels through `current_dir`, not
-                                        // as a `cd` written into a program.
-                                        // See `resume_terminal_argv`'s doc for
-                                        // the measurement that chose fusion
-                                        // over a `--` separator.
-                                        match std::process::Command::new(&term)
-                                            .args(resume_terminal_argv(&term, sid))
-                                            .current_dir(&session.working_dir)
-                                            .spawn()
-                                        {
-                                            Ok(_) => {
-                                                // A fall-through is REPORTED
-                                                // rather than silent: the user
-                                                // asked for a session where
-                                                // they are, and got one
-                                                // somewhere else.
-                                                return ScreenAction::SetStatusMessage(
-                                                    match tmux_err {
-                                                        Some(e) => format!(
-                                                            "tmux: {} — opened in {}",
-                                                            e, term
-                                                        ),
-                                                        None => format!(
-                                                            "Resumed session {}",
-                                                            short_id
-                                                        ),
-                                                    },
-                                                );
-                                            }
-                                            Err(e) => {
-                                                return ScreenAction::SetStatusMessage(format!(
-                                                    "Failed to launch: {}",
-                                                    e
-                                                ))
-                                            }
+                                None => {
+                                    return ScreenAction::SetStatusMessage(match tmux_err {
+                                        Some(e) => format!(
+                                            "tmux: {e}; no terminal emulator found (set \
+                                             $TERMINAL)"
+                                        ),
+                                        None => {
+                                            "No terminal emulator found (set $TERMINAL)".to_string()
                                         }
-                                    }
-                                    None => {
-                                        return ScreenAction::SetStatusMessage(match tmux_err {
-                                            Some(e) => format!(
-                                                "tmux: {e}; no terminal emulator found (set \
-                                                 $TERMINAL)"
-                                            ),
-                                            None => "No terminal emulator found (set $TERMINAL)"
-                                                .to_string(),
-                                        })
-                                    }
+                                    })
                                 }
-                            } else {
-                                return ScreenAction::SetStatusMessage(
-                                    "No session ID to resume".to_string(),
-                                );
                             }
                         }
                         ScreenAction::None
@@ -2801,7 +2823,7 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
-            // Tab: switch the host terminal to a Claude session for this project.
+            // Tab: switch the host terminal to a Claude or Codex session for this project.
             // From the Sessions tab, jump to the highlighted session.
             // From any other tab, jump to the first session matching the project's path.
             KeyCode::Tab => {
@@ -2836,7 +2858,7 @@ impl Screen for DetailScreen {
                         Ok(()) => format!("Switched to {}", self.alias),
                         Err(e) => e,
                     },
-                    None => format!("No active Claude session for {}", self.alias),
+                    None => super::normal::no_active_session_status(&self.alias),
                 };
                 ctx.status_message = Some((msg, std::time::Instant::now()));
                 ctx.needs_redraw = true;
@@ -4459,7 +4481,8 @@ impl DetailScreen {
         }
     }
 
-    /// Render the sessions tab listing active Claude sessions for this project.
+    /// Render the sessions tab listing active agent sessions (Claude or Codex)
+    /// for this project. Each row names its agent.
     ///
     /// The session id is drawn through [`shorten_session_id`], which is a
     /// CHARACTER operation. See its doc for the byte-slice panic it replaced.
@@ -4490,7 +4513,7 @@ impl DetailScreen {
         if filtered_sessions.is_empty() {
             let lines = vec![
                 Line::from(""),
-                Line::from("  No active Claude sessions"),
+                Line::from("  No active Claude or Codex sessions"),
                 Line::from(""),
                 Line::from(Span::styled(
                     "  [n] Launch new session",
@@ -4511,23 +4534,28 @@ impl DetailScreen {
             })
             .unwrap_or(0);
 
+        use crate::session_detector::SessionKind;
         let items: Vec<ListItem> = filtered_sessions
             .iter()
             .map(|session| {
                 // READ BY A HUMAN, so escaped — and shortened by CHARACTERS,
                 // never by bytes (T-21-25-05).
-                let sid_display = session
-                    .session_id
-                    .as_ref()
-                    .map(shorten_session_id)
-                    .unwrap_or_else(|| "new session".to_string());
+                let sid_display = match (&session.session_id, session.kind) {
+                    (Some(sid), _) => shorten_session_id(sid),
+                    (None, SessionKind::Claude) => "new session".to_string(),
+                    // A Codex session cannot be resumed or "new" from here.
+                    (None, SessionKind::Codex) => "unknown".to_string(),
+                };
                 let time_display = session
                     .start_time
                     .map(|_| "active".to_string())
                     .unwrap_or_else(|| "active".to_string());
                 ListItem::new(Line::from(format!(
-                    "  PID {} | Session: {} | {}",
-                    session.pid, sid_display, time_display
+                    "  PID {} | {} | Session: {} | {}",
+                    session.pid,
+                    session.kind.label(),
+                    sid_display,
+                    time_display
                 )))
             })
             .collect();
@@ -11459,6 +11487,98 @@ mod tests {
         }];
 
         (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    /// The resume gate (260923-lr9, T-lr9-01): a Codex session is refused
+    /// WHATEVER its id, so a Codex thread id can never reach the `claude`
+    /// resume argv. A Claude session behaves exactly as before.
+    #[test]
+    fn resumable_session_id_refuses_every_codex_session() {
+        use crate::session_detector::{ClaudeSession, SessionKind};
+
+        let session = |kind, id: Option<&str>| ClaudeSession {
+            pid: 1,
+            kind,
+            session_id: id.map(|id| Untrusted::from_untrusted_source(id.to_string())),
+            working_dir: std::path::PathBuf::from("/nonexistent"),
+            start_time: None,
+            tty: None,
+        };
+        let codex_id = "0199a3f2-7c4e-7a10-8b2c-1d2e3f405162";
+
+        assert_eq!(
+            resumable_session_id(&session(SessionKind::Codex, Some(codex_id))).err(),
+            Some(CODEX_RESUME_UNSUPPORTED)
+        );
+        assert_eq!(
+            resumable_session_id(&session(SessionKind::Codex, None)).err(),
+            Some(CODEX_RESUME_UNSUPPORTED)
+        );
+        assert_eq!(
+            resumable_session_id(&session(SessionKind::Claude, None)).err(),
+            Some(NO_SESSION_ID_TO_RESUME)
+        );
+        let claude = session(SessionKind::Claude, Some("abc"));
+        assert_eq!(
+            resumable_session_id(&claude).map(|id| id.as_raw_for_logic_only()),
+            Ok("abc")
+        );
+    }
+
+    /// Enter on a Codex row reports the refusal and launches nothing.
+    ///
+    /// **The fixture id is `None` deliberately.** A regressed gate must fail
+    /// here by MESSAGE (the Claude no-id text) and must never reach a tmux or
+    /// terminal spawn, which an id of `Some` would. The `Some(id)` case is
+    /// certified by the pure `resumable_session_id_refuses_every_codex_session`.
+    #[test]
+    fn enter_on_a_codex_session_reports_resume_unsupported_and_launches_nothing() {
+        let (mut screen, mut ctx) = sessions_fixture("unused");
+        ctx.active_sessions[0].kind = crate::session_detector::SessionKind::Codex;
+        ctx.active_sessions[0].session_id = None;
+
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        let ScreenAction::SetStatusMessage(message) = action else {
+            panic!("expected the Codex refusal as a status message, got another action");
+        };
+        assert_eq!(message, CODEX_RESUME_UNSUPPORTED);
+    }
+
+    /// Every Sessions row names its agent; a Codex row with no id says
+    /// `unknown`, never Claude's `new session`.
+    #[test]
+    fn the_sessions_tab_labels_each_row_with_its_agent() {
+        let (screen, mut ctx) = sessions_fixture("abc12345");
+        let mut codex = ctx.active_sessions[0].clone();
+        codex.kind = crate::session_detector::SessionKind::Codex;
+        codex.pid = 5151;
+        codex.session_id = None;
+        ctx.active_sessions.push(codex);
+
+        let text = render_detail_to_text(&screen, &ctx);
+        let claude_row = text
+            .lines()
+            .find(|line| line.contains("PID 4242"))
+            .expect("the Claude row renders");
+        assert!(claude_row.contains("Claude"), "{claude_row}");
+        let codex_row = text
+            .lines()
+            .find(|line| line.contains("PID 5151"))
+            .expect("the Codex row renders");
+        assert!(codex_row.contains("Codex"), "{codex_row}");
+        assert!(codex_row.contains("unknown"), "{codex_row}");
+        assert!(!codex_row.contains("new session"), "{codex_row}");
+    }
+
+    #[test]
+    fn the_sessions_tab_empty_state_names_both_agents() {
+        let (screen, mut ctx) = sessions_fixture("unused");
+        ctx.active_sessions.clear();
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(
+            text.contains("No active Claude or Codex sessions"),
+            "{text}"
+        );
     }
 
     /// Render the detail screen into a `TestBackend` and join the cells.

@@ -99,7 +99,7 @@ pub(super) const BADGE_PAUSED: &str = "\u{23F8} ";
 /// Shipped in GSD 1.8.0.
 pub(super) const BADGE_EXTERNAL_JOB: &str = "\u{23F3} ";
 
-/// Rank 5 — an active Claude session in this project's directory. `▶`.
+/// Rank 5 — an active Claude or Codex session in this project's directory. `▶`.
 /// Shipped in v1.0.
 pub(super) const BADGE_SESSION: &str = "\u{25b6} ";
 
@@ -133,7 +133,7 @@ struct BadgeInputs {
     is_paused: bool,
     /// `ProjectState::external_job_waiting`.
     external_job_waiting: bool,
-    /// An active Claude session whose working dir is this project.
+    /// An active Claude or Codex session whose working dir is this project.
     has_session: bool,
 }
 
@@ -146,7 +146,7 @@ struct BadgeInputs {
 /// 2. needs a human — `BADGE_NEEDS_HUMAN`, Red + BOLD
 /// 3. paused — `BADGE_PAUSED`, Cyan
 /// 4. external job waiting — `BADGE_EXTERNAL_JOB`, Yellow
-/// 5. active Claude session — `BADGE_SESSION`, Green
+/// 5. active Claude or Codex session — `BADGE_SESSION`, Green
 /// 6. none of the above — no badge; the alias renders flush
 ///
 /// **Driven-and-live outranks everything, and the reason is the whole point of
@@ -274,6 +274,12 @@ fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
         external_job_waiting: state.map(|s| s.external_job_waiting).unwrap_or(false),
         has_session,
     })
+}
+
+/// The status message when Tab finds no session for `alias`. The single
+/// construction site of this text, shared by the dashboard and detail screens.
+pub(super) fn no_active_session_status(alias: &str) -> String {
+    format!("No active Claude or Codex session for {alias}")
 }
 
 /// Render the compact D-R-P-E-V pipeline for unfocused dashboard rows.
@@ -615,7 +621,7 @@ impl Screen for NormalScreen {
                         Ok(()) => format!("Switched to {}", alias),
                         Err(e) => e,
                     },
-                    None => format!("No active Claude session for {}", alias),
+                    None => no_active_session_status(&alias),
                 };
                 ctx.status_message = Some((msg, std::time::Instant::now()));
                 ctx.needs_redraw = true;
@@ -1607,6 +1613,14 @@ mod tests {
         assert!(
             row_badge(&never_driven, "alpha").is_none(),
             "a registered project that has never been driven renders flush"
+        );
+    }
+
+    #[test]
+    fn the_tab_miss_status_names_both_agents() {
+        assert_eq!(
+            no_active_session_status("alpha"),
+            "No active Claude or Codex session for alpha"
         );
     }
 
