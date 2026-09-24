@@ -236,6 +236,9 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
         row("Enter", "Roadmap tab: open the phase in Phases (detail view)"),
         row("v", "Roadmap tab: graph / box view (detail view)"),
+        // Phase 24-07 (D-B04): the archive is the Docs tab's Milestones
+        // sub-tab, and `m` is the only key that reaches it from Files.
+        row("m", "Docs tab: switch Files / Milestones (detail view)"),
         row("q / Esc", "Quit / Back"),
         row("Ctrl+C", "Force quit"),
         Line::from(""),
@@ -924,6 +927,25 @@ mod tests {
                      exactly once:\n{text}"
                 );
             }
+        }
+    }
+
+    /// Phase 24-07 (D-B04): the Docs tab's `m` sub-tab switch is documented
+    /// as a WHOLE row, exactly once, with the flag on and off (it is not a
+    /// driver key).
+    #[test]
+    fn the_docs_milestones_switch_is_documented() {
+        let expected = row("m", "Docs tab: switch Files / Milestones (detail view)").spans[0]
+            .content
+            .to_string();
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            assert_eq!(
+                text.lines().filter(|line| *line == expected).count(),
+                1,
+                "experimental={experimental}: the row {expected:?} must appear \
+                 exactly once:\n{text}"
+            );
         }
     }
 

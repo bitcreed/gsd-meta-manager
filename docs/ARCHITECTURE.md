@@ -162,9 +162,10 @@ src/
     └── screens/
         ├── mod.rs           Screen trait, ScreenAction, AppContext, ProjectViewCache
         ├── normal.rs        Project list (default screen)
-        ├── detail.rs        Per-project detail with sub-views (PhaseList, Roadmap,
-        │                    Backlog, GitHistory, Pipeline, Queue, Sessions, Archive,
-        │                    Defaults, Browse)
+        ├── detail.rs        Per-project detail with sub-views (RoadmapViz,
+        │                    Pipeline (Phases), Backlog, GitHistory, Queue, Sessions,
+        │                    Defaults, Browse + Archive (Docs: Files / Milestones),
+        │                    Driver)
         ├── add_project.rs   Add existing project to the registry
         ├── create_project.rs Bootstrap a new GSD project
         ├── delete_confirm.rs Confirm project removal

@@ -4,6 +4,8 @@ title: Phases panel marker/grey disagrees with the disk-inferred stage
 area: ui
 severity: major
 source: user observation on the Detail > Phases panel, 2026-08-22
+completed: 2026-09-24
+resolved_by: phase 24 (24-03 f977153 removed the PhaseList panel; 24-06 6d99b66/9753069 draw the Roadmap's glyphs from ProjectState::phase_marker, D-B12); folded and closed by 24-07
 files:
   - src/ui/screens/detail.rs:2604-2652
   - src/state_reader/roadmap_md.rs:150-250
@@ -180,3 +182,28 @@ that skipped the ROADMAP write for P20. Unless fix 2 lands (or the operator runs
 `o … [Complete]` un-greyed exactly like P20 does now. Phase 19 will additionally
 stay unchecked until its deferred human verification is actually run — that one
 is correct and should not be "fixed" by ticking the box.
+
+## Resolution
+
+Folded into phase 24 and closed by 24-07.
+
+- **The panel is gone.** The PhaseList tab — the panel whose `+`/`o` marker read
+  only the ROADMAP.md checkbox — was removed in 24-03 (`f977153`, D-B02); the
+  Roadmap tab supersedes it.
+- **One marker rule.** The Roadmap's glyphs are derived from
+  `ProjectState::phase_marker` (`src/state_reader/mod.rs`, D-B12). Its
+  `PhaseMarker::decide` answers "done?" from the disk-inferred stage whenever the
+  phase has a directory (`Executed` or later draws done, whatever the checkbox
+  says) and falls back to the ROADMAP.md checkbox only when it has none; "current?"
+  comes from `active_phase_number()` (max of STATE.md's `current_phase` and the
+  disk frontier), not the `completed_phases + 1` arithmetic the secondary defect
+  above describes. So the marker and the `[stage]` badge now read one source and
+  can no longer disagree. Note this goes further than fix 3's narrow proposal:
+  `Executed` draws done too, so a phase like P19 (plans finished, verification
+  deferred) is no longer shown as future.
+- **Pinned** by `a_disk_complete_phase_with_an_unticked_box_draws_done`
+  (`src/ui/screens/detail.rs`, added in 24-06, `6d99b66`).
+
+Fixes 1 and 2 above (the stale ROADMAP.md data and the close-out process gap) are
+tracking-file hygiene in this repo's own `.planning/`, not renderer work, and are
+not part of this resolution.

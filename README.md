@@ -26,7 +26,8 @@ all of them:
 - **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
   session without hunting through terminal tabs.
 - **Milestone archive browsing** -- read shipped-milestone artifacts with inline
-  markdown rendering, without leaving the dashboard.
+  markdown rendering in a project's Docs › Milestones sub-tab, without leaving
+  the dashboard.
 
 ### Not the same as GSD's claude-orchestration backend
 
@@ -44,9 +45,12 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
 - Unified dashboard with color-coded project status (active, paused, idle)
 - Live filesystem watching -- auto-refreshes when `.planning/` files change
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
-- 10-tab detail view: Phases, Roadmap (ASCII DAG), Backlog, Git History,
-  Pipeline, Queue, Sessions, Archive, Config, Docs (rendered `.planning/`
-  browser rooted at the active phase, with quick jumps to `.planning/` and back)
+- 8-tab detail view (plus the experimental Driver tab): Roadmap (phase list
+  with git-log-style dependency lanes and a detail pane showing each phase's
+  goal, needs, unblocks and parallel phases), Phases, Backlog, Git History,
+  Queue, Sessions, Config, Docs (Files: rendered `.planning/` browser rooted at
+  the active phase, with quick jumps to `.planning/` and back; Milestones: the
+  shipped-milestone archive)
 - Queue management: create, edit, delete, and reorder items
 - New project creation from within the TUI
 - Session detection -- shows which projects have a live Claude instance;
@@ -56,7 +60,8 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   `claude` whose working directory contains `.planning/` is added to the
   registry automatically
 - Paused project detection (parses HANDOFF files)
-- Milestone archive browser with inline markdown rendering
+- Milestone archive browser with inline markdown rendering, in the Docs tab's
+  Milestones sub-tab (`m` switches Files / Milestones)
 - Search and filter across projects
 
 ## Installation
@@ -133,7 +138,8 @@ Options:
 |------------------|-------------------------|
 | `j` / `k`        | Navigate up/down        |
 | `Enter`          | Open project detail     |
-| `Tab` / `S-Tab`  | Switch detail tabs      |
+| `1`-`8` / `←` `→` | Switch detail tabs     |
+| `m`              | Docs tab: Files / Milestones |
 | `/`              | Search / filter         |
 | `a`              | Add existing project    |
 | `n`              | Create new project      |
