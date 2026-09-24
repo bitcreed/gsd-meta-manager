@@ -856,6 +856,10 @@ type Fixture = fn(&str) -> Vec<ProbeState>;
 /// in exactly the way a registry key is. Putting the identity in all of them at
 /// once means the probe's invisible-class assertion goes red for whichever one a
 /// screen renders raw, without the probe having to know which.
+/// The id of `hostile_project_state`'s one planned build phase — an id no GSD
+/// phase in that fixture uses. Not third-party text: the fixture authored it.
+const PROBE_PLANNED_PHASE_ID: &str = "90";
+
 fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
     use crate::state_reader::disk_status::{DiskInference, DiskStatus, PlanTokens};
     use crate::state_reader::queue_md::QueuedAction;
@@ -914,6 +918,32 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
         })
         .collect();
 
+    // Phase 24's three new reader fields (24-01), each a text path the
+    // Roadmap tab draws: the goal in the detail pane, a planned build phase's
+    // name as a list row and a detail-pane head, and `milestone_name` in the
+    // header and the synthetic STATE.md band (the "RoadmapViz tab, synthetic
+    // band" sub-state reaches that one). The build phase's id is one no GSD
+    // phase uses, so the adapter keeps it as its own row.
+    let planned_phases = vec![RoadmapPhase {
+        number: PROBE_PLANNED_PHASE_ID.to_string(),
+        name: identity.to_string(),
+        description: identity.to_string(),
+        completed: false,
+        total_plans: 0,
+        completed_plans: 0,
+        depends_on: Vec::new(),
+    }];
+    let phase_goals = phases
+        .iter()
+        .chain(&planned_phases)
+        .map(|phase| {
+            (
+                crate::state_reader::phase_num::phase_key(&phase.number),
+                crate::text::Untrusted::from_untrusted_source(identity.to_string()),
+            )
+        })
+        .collect();
+
     ProjectState {
         status: identity.to_string(),
         current_phase: "1".to_string(),
@@ -937,6 +967,11 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
             in_progress: true,
         }],
         phase_disk_statuses,
+        planned_phases,
+        phase_goals,
+        milestone_name: Some(crate::text::Untrusted::from_untrusted_source(
+            identity.to_string(),
+        )),
         queued_actions: vec![QueuedAction {
             command: identity.to_string(),
         }],
@@ -1387,12 +1422,14 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
         "RoadmapViz tab",
         true,
-        "The header draws the status and milestone out of `hostile_project_state` (the \
-         lines the removed PhaseList tab also drew, D-B02). The default graph view draws \
-         each `RoadmapPhase` id, its declared dependency ids (external ones in the \
-         `external deps` note line), the current phase's name, and each \
-         `RoadmapMilestone` label in the `Milestones:` header band and the row-end \
-         labels, all through `ui::roadmap_graph`.",
+        "The header's summary line draws the alias, the active `RoadmapMilestone` label \
+         and the status, then `Path:` and the Paused line with `pause_context` (the \
+         lines the removed PhaseList tab also drew, D-B02/D-B08). The default list \
+         view (`ui::roadmap_view::RoadmapView` over `roadmap_model_for`) draws each \
+         phase row's id and name — truncatable with `…` — and the milestone label once, \
+         on its band row; the detail pane, on the active phase by default, draws that \
+         phase's name and `phase_goals` goal whole (wrapped, never cut at the probe's \
+         width) and its external dependency ids under Needs.",
     ),
     (
         "Backlog tab",
@@ -1473,6 +1510,24 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         true,
         "With `roadmap_box_view` set, the box list draws each `RoadmapPhase` number and \
          name through `ui::roadmap_widget`.",
+    ),
+    (
+        "RoadmapViz tab, cursor on the planned phase",
+        true,
+        "With `roadmap_cursor` on `planned_phases[0]` (a ttbook-style build phase, \
+         D-A12), the detail pane draws that planned phase's `name` as its head line and \
+         its `phase_goals` goal, both whole at the probe's width, beside the list row \
+         that draws the same name truncatable. The header lines draw as in the default \
+         state.",
+    ),
+    (
+        "RoadmapViz tab, synthetic band",
+        true,
+        "With the roadmap's milestones removed, no roadmap milestone is active, so the \
+         summary line draws `{milestone} {milestone_name}` from STATE.md and \
+         `roadmap_model_for` names the synthetic band row after the same two values \
+         (sentriq's case) — the one render of `milestone_name`. The phase rows and the \
+         detail pane draw as in the default state.",
     ),
     (
         "Archive tab, phase list",
@@ -1647,6 +1702,11 @@ type SubStateArrange = fn(&str, &mut AppContext);
 ///   (FileList).
 /// * **Browse, file view** — `browser_depth` selects between the entry list and
 ///   the file view, and only the file view draws `browser_file_name`.
+/// * **RoadmapViz, box view / cursor on the planned phase / synthetic band** —
+///   `roadmap_box_view` selects the legacy box list; `roadmap_cursor` selects
+///   whose detail pane draws (the planned build phase's name and goal are
+///   drawn whole only there); and an absent active roadmap milestone is the
+///   only render of `milestone_name` (header and synthetic band row).
 const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
     ("Backlog tab, expanded", |identity, ctx| {
         ctx.detail_sub_view_per_project
@@ -1662,6 +1722,37 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
             .insert(identity.to_string(), crate::app::DetailSubView::RoadmapViz);
         let cache = ctx.view_cache.entry(identity.to_string()).or_default();
         cache.roadmap_box_view = true;
+    }),
+    // The planned build phase's detail pane (24-06). The default cursor rests
+    // on the active phase, so without this state the planned phase's name is
+    // drawn only as a truncatable list row and its goal not at all. The key is
+    // DERIVED from the fixture's own planned phase, never respelled;
+    // `chrome_ctx` has no project state, so the arrange returns early there.
+    ("RoadmapViz tab, cursor on the planned phase", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::RoadmapViz);
+        let Some(planned) = ctx
+            .project_states
+            .get(identity)
+            .and_then(|state| state.planned_phases.first())
+        else {
+            return;
+        };
+        let key = crate::state_reader::phase_num::phase_key(&planned.number);
+        ctx.view_cache
+            .entry(identity.to_string())
+            .or_default()
+            .roadmap_cursor = Some(crate::ui::roadmap_graph::CursorTarget::Phase(key));
+    }),
+    // The synthetic STATE.md band (24-05's adapter, sentriq's shape): only a
+    // project with no active roadmap milestone draws `milestone_name`, so the
+    // arrange removes the fixture's milestones. Nothing is spelled here.
+    ("RoadmapViz tab, synthetic band", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::RoadmapViz);
+        if let Some(state) = ctx.project_states.get_mut(identity) {
+            state.milestones.clear();
+        }
     }),
     ("Archive tab, phase list", |identity, ctx| {
         ctx.detail_sub_view_per_project
@@ -3395,5 +3486,51 @@ mod tests {
                 .find(|line| line.contains("Enqueue>"))
                 .unwrap_or("<no footer line found>")
         );
+    }
+
+    /// The planned-phase sub-state's detail pane draws the planned phase's
+    /// name and goal WHOLE at the probe's width, clean and hostile alike — the
+    /// arrival the "RoadmapViz tab, cursor on the planned phase" row claims.
+    /// The escaped hostile form is narrower than the side-by-side pane's name
+    /// line at 200 columns, so the name line needs no wrap there (24-06).
+    #[test]
+    fn the_planned_phase_arrives_whole_in_the_roadmap_detail_pane() {
+        let arrange = DETAIL_SUB_STATES
+            .iter()
+            .find(|(label, _)| *label == "RoadmapViz tab, cursor on the planned phase")
+            .map(|(_, arrange)| *arrange)
+            .expect("the planned-phase sub-state exists");
+        for identity in [clean_identity(), hostile_identity()] {
+            let mut ctx = probe_ctx(&identity);
+            arrange(&identity, &mut ctx);
+            let screen = super::super::detail::DetailScreen::new(identity.clone());
+            let text = render_to_text(&screen, &ctx);
+            let lines: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+            let title: Vec<char> = format!("┌ Phase {PROBE_PLANNED_PHASE_ID} ").chars().collect();
+            let (top, left) = lines
+                .iter()
+                .enumerate()
+                .find_map(|(y, l)| {
+                    l.windows(title.len())
+                        .position(|w| w == title.as_slice())
+                        .map(|x| (y, x))
+                })
+                .unwrap_or_else(|| panic!("no planned-phase detail pane:\n{text}"));
+            let pane: Vec<String> = lines[top + 1..]
+                .iter()
+                .take_while(|l| l.get(left) == Some(&'│'))
+                .map(|l| l[left..].iter().collect())
+                .collect();
+            let shown = crate::text::render_for_terminal(&identity).to_string();
+            assert!(pane[0].contains(&shown), "name line cut: {:?}\n{text}", pane[0]);
+            assert!(
+                pane.iter().skip(1).any(|l| l.contains(&shown)),
+                "goal not drawn whole:\n{text}"
+            );
+            assert!(
+                pane.iter().any(|l| l.contains("planned (not a GSD phase)")),
+                "{text}"
+            );
+        }
     }
 }

@@ -794,7 +794,7 @@ impl DetailScreen {
         ctx.needs_redraw = true;
     }
 
-    /// Whether the Roadmap tab is showing its cursor list (the default graph
+    /// Whether the Roadmap tab is showing its cursor list (the default
     /// view) rather than the box view, where the old scroll keys still scroll.
     fn roadmap_list_active(&self, ctx: &AppContext) -> bool {
         !ctx
@@ -1819,11 +1819,12 @@ crate::ui::screens::adjudicate_screen!(
     "The widest identity surface in the tree. Draws the registry key in its \
      tab-bar title, and in its ten tabs the values parsed out of the \
      project's `.planning/`. Per tab, the values and where their bytes come \
-     from: RoadmapViz's header draws the status and milestone parsed from \
-     `ROADMAP.md`/`STATE.md`, its default graph draws phase ids, \
-     dependency ids and milestone labels parsed from `ROADMAP.md` plus the \
-     current phase's name, and its box list draws each `RoadmapPhase`'s \
-     number, name and description; Pipeline (the tab labelled Phases) \
+     from: RoadmapViz's header draws the status, milestone and \
+     `milestone_name` parsed from `ROADMAP.md`/`STATE.md` and the pause \
+     context, its default list draws phase and build-phase ids and names and \
+     milestone labels parsed from `ROADMAP.md`, its detail pane draws the \
+     selected phase's name, goal and external dependency ids, and its box \
+     list draws each `RoadmapPhase`'s number, name and description; Pipeline (the tab labelled Phases) \
      draws the current phase name, status \
      and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
      from `queue.md`; Backlog draws a `999.*` directory's number and \
@@ -3793,7 +3794,7 @@ impl Screen for DetailScreen {
                     ScreenAction::Push(Box::new(EnqueueScreen::new(alias)))
                 }
             }
-            // Roadmap tab only: flip between the dependency graph (default) and
+            // Roadmap tab only: flip between the cursor list (default) and
             // the box list. `v` is bound nowhere else on this screen.
             KeyCode::Char('v') if current_view == DetailSubView::RoadmapViz => {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();

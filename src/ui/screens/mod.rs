@@ -933,8 +933,8 @@ pub struct ProjectViewCache {
     pub loading_git: bool,
     pub loading_commit_detail: bool,
     pub pipeline_selected: usize,
-    /// The Roadmap tab's view: `false` (the default) draws the dependency
-    /// graph (`ui::roadmap_graph`), `true` draws the box list
+    /// The Roadmap tab's view: `false` (the default) draws the cursor list
+    /// (`ui::roadmap_view` over `ui::roadmap_graph`'s model), `true` draws the box list
     /// (`ui::roadmap_widget`). Toggled per project by `v` on that tab.
     pub roadmap_box_view: bool,
     /// What the Roadmap tab's cursor rests on: a phase (by `phase_key`) or a

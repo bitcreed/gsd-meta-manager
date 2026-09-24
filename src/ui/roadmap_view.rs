@@ -1641,6 +1641,50 @@ mod tests {
         assert_eq!(panes_for(wide, 40), panes(wide), "side by side ignores it");
     }
 
+    /// WR-01 in the widget (ported from the removed legacy layout's
+    /// `roadmap_graph_wr01_footer_never_takes_the_whole_body`): the cycle note
+    /// takes the list pane's last row only, and not at all when the pane has
+    /// no row to spare for it.
+    #[test]
+    fn the_cycle_note_takes_one_list_row_and_never_the_list() {
+        let model = build(
+            &[
+                ("1", "One", &["2"], F, None),
+                ("2", "Two", &["1"], F, None),
+                ("3", "Three", &["4"], F, None),
+                ("4", "Four", &["3"], F, None),
+            ],
+            &[],
+            &Extras::default(),
+        );
+        assert_eq!(model.notes.len(), 1, "{:?}", model.notes);
+
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, None, 80, 24, &mut state);
+        let want = u16::try_from(model.rows.len() + 5).unwrap();
+        let (list, _) = panes_for(Rect::new(0, 0, 80, 24), want);
+        let lines = rect_text(&buf, list);
+        let notes: Vec<&String> = lines.iter().filter(|l| l.contains("Notes")).collect();
+        assert_eq!(notes.len(), 1, "{lines:#?}");
+        assert!(notes[0].contains("dependency cycles: 2"), "{}", notes[0]);
+        assert!(lines[usize::from(list.height) - 2].contains("Notes"), "{lines:#?}");
+        for name in ["One", "Two", "Three", "Four"] {
+            assert!(lines.iter().any(|l| l.contains(name)), "{name}: {lines:#?}");
+        }
+
+        // A list pane of at most two inner rows (Start now and the header)
+        // has no row for the note: at 80 columns that is every height to 9.
+        for h in 1..=9u16 {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, None, 80, h, &mut state);
+            let (list, _) = panes_for(Rect::new(0, 0, 80, h), want);
+            if list.height <= 4 {
+                let text = rect_text(&buf, list).join("\n");
+                assert!(!text.contains("Notes"), "h={h}:\n{text}");
+            }
+        }
+    }
+
     #[test]
     fn mockup_c_stacked_at_80_columns() {
         let model = build(
