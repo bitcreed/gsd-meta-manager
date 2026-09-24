@@ -489,6 +489,11 @@ pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
     merge_duplicate_phases(phases)
 }
 
+/// Every phase's `**Goal**:` line, keyed by `phase_key` (D-A03).
+pub fn parse_phase_goals(_content: &str) -> HashMap<String, crate::text::Untrusted> {
+    HashMap::new()
+}
+
 /// Returns true when a `## Progress` table Phase cell is a backlog sentinel
 /// (`Phase 0` / `Phase 999` / `999.x`) that must not be counted. The cell may
 /// carry a trailing label (e.g. `999. Backlog`), so only the leading token is
@@ -1830,5 +1835,67 @@ Plans:
             parse_roadmap_phases(roadmap).is_empty(),
             "GSD's grammar does not see a build heading"
         );
+    }
+
+    const DAILY_VOW_ROADMAP: &str =
+        include_str!("../../tests/fixtures/roadmaps/daily-vow-ROADMAP.md");
+    const SENTRIQ_ROADMAP: &str = include_str!("../../tests/fixtures/roadmaps/sentriq-ROADMAP.md");
+
+    fn goal_of(goals: &HashMap<String, crate::text::Untrusted>, key: &str) -> Option<String> {
+        goals.get(key).map(|g| g.as_raw_for_logic_only().to_string())
+    }
+
+    #[test]
+    fn a_goal_is_read_in_both_bold_forms() {
+        let roadmap = "### Phase 1: Colon outside\n\n**Goal**: first form\n\n\
+            ### Phase 2: Colon inside\n\n**Goal:** second form\n\n\
+            ### Phase 3: Lower case\n\n**goal**:   third form  \n";
+        let goals = parse_phase_goals(roadmap);
+        assert_eq!(goal_of(&goals, "1").as_deref(), Some("first form"));
+        assert_eq!(goal_of(&goals, "2").as_deref(), Some("second form"));
+        assert_eq!(goal_of(&goals, "3").as_deref(), Some("third form"));
+    }
+
+    #[test]
+    fn the_first_goal_in_an_entry_wins_and_a_padded_heading_keys_unpadded() {
+        let roadmap = "- [ ] **Phase 7: Seven** - s\n\n## Phase Details\n\n\
+            ### Phase 07: Seven\n\n**Goal**: the first goal\n**Goal**: a second goal\n\n\
+            ### Phase 8: Empty goal\n\n**Goal**:   \n";
+        let goals = parse_phase_goals(roadmap);
+        assert_eq!(
+            goal_of(&goals, "7").as_deref(),
+            Some("the first goal"),
+            "`### Phase 07:` and checklist `Phase 7` share one key"
+        );
+        assert!(!goals.contains_key("07"));
+        assert!(!goals.contains_key("8"), "an empty goal is skipped");
+    }
+
+    #[test]
+    fn a_goal_after_the_next_heading_is_not_attributed_upward() {
+        let roadmap = "### Phase 1: No goal here\n\n**Depends on**: Nothing\n\n\
+            ## Notes\n\n**Goal**: belongs to no phase\n\n\
+            #### Build phase 2 (Milestone 2): Planned\n\n**Goal**: a build goal\n";
+        let goals = parse_phase_goals(roadmap);
+        assert!(!goals.contains_key("1"), "the Goal line sits after `## Notes`");
+        assert_eq!(goal_of(&goals, "2").as_deref(), Some("a build goal"));
+        assert_eq!(goals.len(), 1);
+    }
+
+    #[test]
+    fn fixture_goals_cover_every_detailed_phase() {
+        for (name, content, keys) in [
+            ("daily-vow", DAILY_VOW_ROADMAP, (18..=23).collect::<Vec<u32>>()),
+            ("sentriq", SENTRIQ_ROADMAP, (9..=12).collect()),
+            ("ttbook", TTBOOK_ROADMAP, (8..=18).collect()),
+        ] {
+            let goals = parse_phase_goals(content);
+            assert_eq!(goals.len(), keys.len(), "{name}: one goal per detailed phase");
+            for key in keys {
+                let goal = goal_of(&goals, &key.to_string())
+                    .unwrap_or_else(|| panic!("{name}: phase {key} has a goal"));
+                assert!(goal.starts_with("(sanitised)"), "{name} {key}: {goal}");
+            }
+        }
     }
 }

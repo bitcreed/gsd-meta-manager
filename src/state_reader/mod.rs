@@ -72,6 +72,11 @@ pub struct ProjectState {
     /// frontier read `phases`: merging would let them target a phase GSD does
     /// not know exists.
     pub planned_phases: Vec<roadmap_md::RoadmapPhase>,
+    /// Each phase's `**Goal**:` line ([`roadmap_md::parse_phase_goals`]),
+    /// keyed by `phase_key`.
+    pub phase_goals: HashMap<String, crate::text::Untrusted>,
+    /// STATE.md's `milestone_name`.
+    pub milestone_name: Option<crate::text::Untrusted>,
     pub queued_actions: Vec<queue_md::QueuedAction>,
     /// Per-phase disk inference keyed by phase number (e.g., "01", "05")
     pub phase_disk_statuses: HashMap<String, disk_status::DiskInference>,
@@ -852,6 +857,39 @@ mod tests {
         assert_eq!(gsd, ["8", "9", "10", "11", "12", "13"]);
         let planned: Vec<&str> = state.planned_phases.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(planned, ["14", "15", "16", "17", "18"]);
+    }
+
+    /// Phase 24-01: sentriq writes `milestone_name` AFTER the `progress:`
+    /// block; it still reaches `ProjectState` for the synthetic band.
+    #[test]
+    fn parse_project_state_reads_milestone_name_after_progress() {
+        let td = make_planning(&[
+            ("STATE.md", include_str!("../../tests/fixtures/roadmaps/sentriq-STATE.md")),
+            ("ROADMAP.md", include_str!("../../tests/fixtures/roadmaps/sentriq-ROADMAP.md")),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.milestone, "v0.12");
+        assert_eq!(
+            state.milestone_name.as_ref().map(|m| m.as_raw_for_logic_only()),
+            Some("Actuation Routines")
+        );
+
+        let td = make_planning(&[("STATE.md", "---\nstatus: executing\nmilestone_name: \n---\n")]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.milestone_name, None, "an empty value is no name");
+    }
+
+    /// Phase 24-01: goals reach `ProjectState`, keyed by phase.
+    #[test]
+    fn parse_project_state_reads_phase_goals() {
+        let td = make_planning(&[
+            ("STATE.md", include_str!("../../tests/fixtures/roadmaps/daily-vow-STATE.md")),
+            ("ROADMAP.md", include_str!("../../tests/fixtures/roadmaps/daily-vow-ROADMAP.md")),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        let goal = state.phase_goals.get("23").expect("phase 23 has a goal");
+        assert!(goal.as_raw_for_logic_only().starts_with("(sanitised) The user can see"));
+        assert_eq!(state.phase_goals.len(), 6);
     }
 
     #[test]
