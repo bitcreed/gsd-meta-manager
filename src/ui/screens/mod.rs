@@ -937,6 +937,21 @@ pub struct ProjectViewCache {
     /// graph (`ui::roadmap_graph`), `true` draws the box list
     /// (`ui::roadmap_widget`). Toggled per project by `v` on that tab.
     pub roadmap_box_view: bool,
+    /// What the Roadmap tab's cursor rests on: a phase (by `phase_key`) or a
+    /// band row. `None` means "resolve to the default" (the active phase,
+    /// else the first phase not done). A reader-generated key, not
+    /// third-party prose, and never an index: it survives ROADMAP reloads and
+    /// folds (D-A05). The Phases tab writes it back when its selection moves,
+    /// so the two tabs share one selected phase (D-B03).
+    pub roadmap_cursor: Option<crate::ui::roadmap_graph::CursorTarget>,
+    /// The Roadmap bands whose fold state differs from the default (the
+    /// shipped summary folded, every other band open). Toggled per project by
+    /// `Space` / `Enter` on that tab; in memory only (D-B09).
+    pub roadmap_fold_toggles:
+        std::collections::HashSet<crate::ui::roadmap_graph::BandKey>,
+    /// The `h` / `l` edge walk in progress: repeating the key cycles the
+    /// ORIGIN phase's edges. Cleared by every other Roadmap key.
+    pub roadmap_edge_walk: Option<crate::ui::roadmap_graph::EdgeWalk>,
     pub queue_selected: usize,
     pub sessions_selected: usize,
     pub archive_depth: crate::archive::ArchiveDepth,

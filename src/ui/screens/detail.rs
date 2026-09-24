@@ -675,6 +675,22 @@ pub struct DetailScreen {
     /// clamp through the same [`clamp_scroll`] formula, so UIFIX-04 cannot come
     /// back here in a new spelling.
     git_commit_viewport: Cell<ViewportMetrics>,
+    /// First visible row of the Roadmap tab's phase list, kept across frames
+    /// so the list does not jump when the cursor moves inside the viewport.
+    ///
+    /// Same interior-mutability reason as the viewports above: the render
+    /// pass (plan 24-06) writes it through `&self`.
+    ///
+    /// Unread until plan 24-06's render lands; allowed rather than deferred so
+    /// the field exists once, with the viewport beside it.
+    #[allow(dead_code)]
+    roadmap_list_offset: Cell<usize>,
+    /// Last-rendered height, in rows, of the Roadmap tab's phase list — the
+    /// page size `PageUp` / `PageDown` move the cursor by. Written by the
+    /// render pass (plan 24-06); `0` until the first frame, which the key
+    /// handler treats as a one-row page.
+    #[allow(dead_code)] // read by the PageUp/PageDown arms (24-05 Task 2)
+    roadmap_list_viewport: Cell<u16>,
 }
 
 impl DetailScreen {
@@ -697,6 +713,8 @@ impl DetailScreen {
             generic_viewport: Cell::default(),
             driver_viewport: Cell::default(),
             git_commit_viewport: Cell::default(),
+            roadmap_list_offset: Cell::new(0),
+            roadmap_list_viewport: Cell::new(0),
         }
     }
 
@@ -777,6 +795,56 @@ impl DetailScreen {
             }
         }
         ctx.needs_redraw = true;
+    }
+
+    /// Whether the Roadmap tab is showing its cursor list (the default graph
+    /// view) rather than the box view, where the old scroll keys still scroll.
+    fn roadmap_list_active(&self, ctx: &AppContext) -> bool {
+        !ctx
+            .view_cache
+            .get(&self.alias)
+            .is_some_and(|c| c.roadmap_box_view)
+    }
+
+    /// `Enter` on the Roadmap tab: a GSD phase opens in the Phases tab with
+    /// that phase selected — one shared selection (D-B03). The index written
+    /// to `pipeline_selected` is found by `phase_key`, never assumed, and the
+    /// tab by [`tab_index`], never a literal (T-24-15).
+    fn roadmap_enter(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        if !self.roadmap_list_active(ctx) {
+            return ScreenAction::None;
+        }
+        let Some(state) = ctx.project_states.get(&self.alias) else {
+            return ScreenAction::None;
+        };
+        let show_badges = ctx.config.preferences.gsd_integration;
+        let model = roadmap_model_for(state, ctx.view_cache.get(&self.alias), show_badges);
+        let stored = ctx
+            .view_cache
+            .get(&self.alias)
+            .and_then(|c| c.roadmap_cursor.clone());
+        let Some(cursor) = model.resolve_cursor(stored.as_ref()) else {
+            return ScreenAction::None;
+        };
+        let roadmap_graph::CursorTarget::Phase(key) = &cursor else {
+            return ScreenAction::None;
+        };
+        let Some(index) = state
+            .phases
+            .iter()
+            .position(|p| crate::state_reader::phase_num::phase_key(&p.number) == *key)
+        else {
+            return ScreenAction::None;
+        };
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        cache.pipeline_selected = index;
+        cache.roadmap_cursor = Some(cursor);
+        switch_to_tab(
+            &self.alias,
+            tab_index(&DetailSubView::Pipeline),
+            &mut self.scroll_offset,
+            ctx,
+        )
     }
 }
 
@@ -1210,11 +1278,9 @@ fn status_color(category: &StatusCategory) -> Color {
 /// Compute disk-inferred status suffix spans for a phase line, e.g. " [Executing 2/3]".
 /// When `show_badges` is true, appends a [verified] or [inferred] badge based on artifact presence.
 ///
-/// **Unreferenced between plans 24-03 and 24-06, kept on purpose.** Its only
-/// caller was the removed PhaseList tab (D-B02); plan 24-06 re-wires it as the
-/// per-phase `[stage]` badge in the Roadmap tab's detail pane (D-B08). Deleting
-/// it here would only make that plan re-create it.
-#[allow(dead_code)]
+/// Its only caller since the PhaseList tab was removed (D-B02) is
+/// [`roadmap_model_for`], which turns these spans into the Roadmap tab's
+/// per-phase `[stage]` badge (D-B08).
 fn disk_suffix_spans(
     phase_number: &str,
     phase_disk_statuses: &std::collections::HashMap<
@@ -1289,6 +1355,125 @@ fn disk_suffix_spans(
     }
 
     spans
+}
+
+/// The Roadmap tab's list model for one project state (phase 24-05): the ONE
+/// adapter from [`state_reader::ProjectState`] to
+/// [`roadmap_graph::layout_list`]'s input, so the key handler and the render
+/// (24-06) can never lay out two different lists.
+///
+/// * **Nodes:** `state.phases` in roadmap order, then `state.planned_phases`
+///   (ttbook's build-phase placeholders, D-A12) whose `phase_key` no GSD phase
+///   already holds — a GSD phase wins a duplicate.
+/// * **Bands:** every roadmap milestone, shipped flags from
+///   `shipped_milestones`, plus — only when some phase belongs to no milestone
+///   AND no roadmap milestone is active — a synthetic band named from STATE.md
+///   (`{milestone} {milestone_name}`, sentriq's `v0.12 Actuation Routines`).
+///   A phase no milestone holds joins the active milestone when there is one.
+/// * **Per phase:** the marker from [`state_reader::ProjectState::phase_marker`]
+///   (D-B12, the single source of done/current), plan counts from
+///   `phase_plan_counts`, the goal from `phase_goals`, and the `[stage]` badge
+///   from [`disk_suffix_spans`] (D-B08).
+///
+/// In-memory state only — no I/O — because the render loop calls it
+/// (CLAUDE.md: never block the render loop). Fold toggles come from `cache`
+/// (none when the project has no cache yet).
+pub(crate) fn roadmap_model_for(
+    state: &state_reader::ProjectState,
+    cache: Option<&super::ProjectViewCache>,
+    show_badges: bool,
+) -> roadmap_graph::RoadmapModel {
+    use crate::state_reader::phase_num::phase_key;
+    use crate::state_reader::roadmap_md;
+
+    let shipped = roadmap_md::shipped_milestones(&state.milestones, &state.milestone);
+    let mut bands: Vec<roadmap_graph::BandInput> = state
+        .milestones
+        .iter()
+        .enumerate()
+        .map(|(i, m)| roadmap_graph::BandInput {
+            label: m.label.clone(),
+            shipped: shipped.get(i).copied().unwrap_or(false),
+            declared_phases: roadmap_md::declared_phase_count(m),
+        })
+        .collect();
+
+    // GSD phases first, then build phases no GSD phase already holds.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let entries: Vec<(&roadmap_md::RoadmapPhase, bool)> = state
+        .phases
+        .iter()
+        .map(|p| (p, false))
+        .chain(state.planned_phases.iter().map(|p| (p, true)))
+        .filter(|(p, _)| seen.insert(phase_key(&p.number)))
+        .collect();
+
+    let active = roadmap_md::active_milestone_index(&state.milestones, &state.milestone);
+    let own_band = |p: &roadmap_md::RoadmapPhase| {
+        roadmap_md::milestone_index_of(&state.milestones, &p.number)
+    };
+    let milestone = state.milestone.trim();
+    // [INFERRED — audit] No active milestone and no STATE.md milestone either:
+    // an orphan phase stays band-less rather than joining an unnamed band.
+    let synthetic = (active.is_none()
+        && !milestone.is_empty()
+        && entries.iter().any(|(p, _)| own_band(p).is_none()))
+    .then(|| {
+        let label = match &state.milestone_name {
+            Some(name) => format!("{} {}", milestone, name.as_raw_for_logic_only().trim()),
+            None => milestone.to_string(),
+        };
+        bands.push(roadmap_graph::BandInput {
+            label: Untrusted::from_untrusted_source(label.trim().to_string()),
+            shipped: false,
+            declared_phases: 0,
+        });
+        bands.len() - 1
+    });
+
+    let nodes = entries
+        .into_iter()
+        .map(|(p, planned)| {
+            let badge: String = disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            let badge = badge.trim();
+            roadmap_graph::ListNode {
+                id: &p.number,
+                name: &p.name,
+                deps: &p.depends_on,
+                band: own_band(p).or(active).or(synthetic),
+                marker: state.phase_marker(p),
+                plans: state_reader::phase_plan_counts(p, &state.phase_disk_statuses),
+                goal: state.phase_goals.get(&phase_key(&p.number)),
+                planned,
+                badge: (!badge.is_empty()).then(|| badge.to_string()),
+            }
+        })
+        .collect();
+
+    let no_toggles = std::collections::HashSet::new();
+    let toggles = cache.map_or(&no_toggles, |c| &c.roadmap_fold_toggles);
+    roadmap_graph::layout_list(&roadmap_graph::ListInput { nodes, bands }, toggles)
+}
+
+/// Point the Roadmap cursor at the Phases tab's selected phase (D-B03): the
+/// two tabs share one selected phase, so moving it on Phases moves it on the
+/// Roadmap too. `pipeline_selected` is clamped here the same way
+/// `render_pipeline_tab` clamps it, so a stale index still names a phase.
+fn share_pipeline_selection(
+    cache: &mut super::ProjectViewCache,
+    state: Option<&state_reader::ProjectState>,
+) {
+    let Some(state) = state else { return };
+    let Some(last) = state.phases.len().checked_sub(1) else {
+        return;
+    };
+    let phase = &state.phases[cache.pipeline_selected.min(last)];
+    cache.roadmap_cursor = Some(roadmap_graph::CursorTarget::Phase(
+        crate::state_reader::phase_num::phase_key(&phase.number),
+    ));
 }
 
 /// Switch to a new tab, handling scroll reset and data loading for backlog/git tabs.
@@ -1691,6 +1876,7 @@ impl Screen for DetailScreen {
                                 cache.pipeline_selected = (cache.pipeline_selected + 1).min(max);
                             }
                         }
+                        share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Queue => {
@@ -1840,6 +2026,7 @@ impl Screen for DetailScreen {
                     DetailSubView::Pipeline => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         cache.pipeline_selected = cache.pipeline_selected.saturating_sub(1);
+                        share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Queue => {
@@ -1971,6 +2158,7 @@ impl Screen for DetailScreen {
                                 cache.pipeline_selected = (cache.pipeline_selected + PAGE_SCROLL_LINES as usize).min(max);
                             }
                         }
+                        share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Queue => {
@@ -2130,6 +2318,7 @@ impl Screen for DetailScreen {
                     DetailSubView::Pipeline => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         cache.pipeline_selected = cache.pipeline_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Queue => {
@@ -2728,6 +2917,7 @@ impl Screen for DetailScreen {
                         }
                         ScreenAction::None
                     }
+                    DetailSubView::RoadmapViz if code == KeyCode::Enter => self.roadmap_enter(ctx),
                     _ => ScreenAction::None,
                 }
             }
@@ -14408,5 +14598,186 @@ mod tests {
             .collect();
         assert!(footer.contains("[v]"), "{footer}");
         assert!(footer.contains("[e]"), "{footer}");
+    }
+
+    // ── Phase 24-05: Roadmap cursor, adapter and shared selection ────────
+
+    /// A `ProjectState` parsed from one vendored real-roadmap fixture
+    /// (`tests/fixtures/roadmaps/{name}-ROADMAP.md` / `-STATE.md`), written
+    /// into a temp `.planning/` and read by the real reader — never a path
+    /// on the developer's machine (portability constraint).
+    fn fixture_state(name: &str) -> crate::state_reader::ProjectState {
+        let (roadmap, state) = match name {
+            "daily-vow" => (
+                include_str!("../../../tests/fixtures/roadmaps/daily-vow-ROADMAP.md"),
+                include_str!("../../../tests/fixtures/roadmaps/daily-vow-STATE.md"),
+            ),
+            "sentriq" => (
+                include_str!("../../../tests/fixtures/roadmaps/sentriq-ROADMAP.md"),
+                include_str!("../../../tests/fixtures/roadmaps/sentriq-STATE.md"),
+            ),
+            "ttbook" => (
+                include_str!("../../../tests/fixtures/roadmaps/ttbook-ROADMAP.md"),
+                include_str!("../../../tests/fixtures/roadmaps/ttbook-STATE.md"),
+            ),
+            other => panic!("no roadmap fixture named {other}"),
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        std::fs::create_dir_all(&planning).expect("create .planning");
+        std::fs::write(planning.join("ROADMAP.md"), roadmap).expect("write ROADMAP.md");
+        std::fs::write(planning.join("STATE.md"), state).expect("write STATE.md");
+        crate::state_reader::parse_project_state(&planning)
+    }
+
+    /// A DetailScreen on the Roadmap tab (graph view) of a fixture project.
+    fn roadmap_fixture(name: &str) -> (DetailScreen, AppContext) {
+        let mut ctx = test_ctx();
+        ctx.project_states
+            .insert(TEST_ALIAS.to_string(), fixture_state(name));
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    fn phase_target(key: &str) -> roadmap_graph::CursorTarget {
+        roadmap_graph::CursorTarget::Phase(key.to_string())
+    }
+
+    fn stored_view(ctx: &AppContext) -> DetailSubView {
+        ctx.detail_sub_view_per_project
+            .get(TEST_ALIAS)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn set_roadmap_cursor(ctx: &mut AppContext, target: roadmap_graph::CursorTarget) {
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .roadmap_cursor = Some(target);
+    }
+
+    /// The model the key handler sees, with the project's fold toggles.
+    fn fixture_model(ctx: &AppContext) -> roadmap_graph::RoadmapModel {
+        roadmap_model_for(
+            &ctx.project_states[TEST_ALIAS],
+            ctx.view_cache.get(TEST_ALIAS),
+            false,
+        )
+    }
+
+    /// Where the stored cursor resolves on the current model.
+    fn resolved_cursor(ctx: &AppContext) -> Option<roadmap_graph::CursorTarget> {
+        let stored = ctx
+            .view_cache
+            .get(TEST_ALIAS)
+            .and_then(|c| c.roadmap_cursor.clone());
+        fixture_model(ctx).resolve_cursor(stored.as_ref())
+    }
+
+    /// The ids of every visible phase row, in row order.
+    fn phase_row_ids(model: &roadmap_graph::RoadmapModel) -> Vec<String> {
+        model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                roadmap_graph::ListRow::Phase { node, .. } => Some(model.phases[*node].id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn roadmap_model_for_daily_vow_has_one_row_for_phase_20() {
+        let model = roadmap_model_for(&fixture_state("daily-vow"), None, false);
+        let ids = phase_row_ids(&model);
+        assert_eq!(ids.iter().filter(|id| *id == "20").count(), 1, "{ids:?}");
+
+        let text = roadmap_graph::lane_text(&model);
+        let mut seen = std::collections::HashSet::new();
+        for line in &text {
+            if let Some(id) = line.split_whitespace().last().filter(|t| !t.starts_with('[')) {
+                assert!(seen.insert(id.to_string()), "id {id} drawn twice:\n{}", text.join("\n"));
+            }
+        }
+        assert!(seen.contains("20"), "{}", text.join("\n"));
+    }
+
+    #[test]
+    fn roadmap_model_for_sentriq_uses_a_synthetic_band() {
+        let model = roadmap_model_for(&fixture_state("sentriq"), None, false);
+        let bands: Vec<&str> = model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                roadmap_graph::ListRow::Band { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bands, ["v0.12 Actuation Routines"], "{:?}", model.rows);
+        let summary = model.rows.iter().find_map(|row| match row {
+            roadmap_graph::ListRow::ShippedSummary { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+        assert!(
+            summary.as_deref().is_some_and(|t| t.contains("v0.11")),
+            "{summary:?}"
+        );
+        assert_eq!(phase_row_ids(&model), ["9", "10", "11", "12"]);
+    }
+
+    #[test]
+    fn roadmap_model_for_ttbook_lists_build_phases_as_phases() {
+        let model = roadmap_model_for(&fixture_state("ttbook"), None, false);
+        let ids = phase_row_ids(&model);
+        for n in 8..=18 {
+            let id = n.to_string();
+            assert_eq!(ids.iter().filter(|i| **i == id).count(), 1, "{id}: {ids:?}");
+            let facts = &model.phases[model.phase_index(&id).expect("listed")];
+            assert_eq!(facts.planned, n >= 14, "phase {id}");
+        }
+    }
+
+    #[test]
+    fn roadmap_enter_opens_the_selected_phase_in_phases() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        set_roadmap_cursor(&mut ctx, phase_target("22"));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
+        let expected = ctx.project_states[TEST_ALIAS]
+            .phases
+            .iter()
+            .position(|p| p.number == "22")
+            .expect("22 is a GSD phase");
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, expected);
+    }
+
+    #[test]
+    fn phases_selection_is_shared_back_to_the_roadmap() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .pipeline_selected = 0;
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let state = &ctx.project_states[TEST_ALIAS];
+        let selected = ctx.view_cache[TEST_ALIAS].pipeline_selected;
+        assert_eq!(selected, 1);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(phase_target(&crate::state_reader::phase_num::phase_key(
+                &state.phases[selected].number
+            )))
+        );
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(phase_target(&crate::state_reader::phase_num::phase_key(
+                &ctx.project_states[TEST_ALIAS].phases[0].number
+            )))
+        );
     }
 }
