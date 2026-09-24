@@ -4,11 +4,11 @@ milestone: v1.7.2
 current_phase: 24
 current_phase_name: Roadmap Tab Redesign & Detail-Tab Consolidation
 status: executing
-stopped_at: Completed 24-03-PLAN.md
-last_updated: "2026-09-24T03:36:23.009Z"
+stopped_at: Completed 24-04-PLAN.md
+last_updated: "2026-09-24T03:56:40.512Z"
 last_activity: 2026-09-23
 last_activity_desc: Phase 24 execution started
-state_head: 1e288442e4c17bafb262c959bce8d297ca380d93
+state_head: a39feeb77d2bfdf62f99f24ed5dc92db370e9786
 progress:
   total_phases: 10
   completed_phases: 6
@@ -97,7 +97,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
 Phase: 24 (Roadmap Tab Redesign & Detail-Tab Consolidation) — EXECUTING
-Plan: 4 of 7
+Plan: 5 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -307,6 +307,7 @@ verify-phase if the gate is fixed.
 | Phase 24 P01 | 12 min | 3 tasks | 9 files |
 | Phase 24 P02 | 14 min | 3 tasks | 1 files |
 | Phase 24 P03 | 9min | 2 tasks | 3 files |
+| Phase 24 P04 | 18 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -411,6 +412,9 @@ Recent decisions affecting current work:
 - [Phase 24]: 24-02: Ready/Blocked judged over acyclic unreduced in-graph parents; external deps satisfied
 - [Phase 24]: 24-03: disk_suffix_spans kept under allow(dead_code) for 24-06's [stage] badge (D-B08); PhaseList-only empty-state wording also re-covered in 24-06
 - [Phase 24]: 24-03: tab tests made count-agnostic (visible_tab_count, DRIVER_TAB_INDEX - 1); Archive interim at 9:Arch until 24-07
+- [Phase 24]: 24-04: RoadmapView resolves its cursor via RoadmapModel::resolve_cursor (None selects the active phase)
+- [Phase 24]: 24-04: a planned phase shows 'planned (not a GSD phase)' in place of 'plans TBD'; side-by-side no-deps note wraps under Parallel
+- [Phase 24]: 24-04: lanes past the 4/6 cap collapse to one ┆ column; a node past the cap keeps its glyph there
 
 ### Roadmap Evolution
 
@@ -500,8 +504,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-24T03:36:22.556Z
-Stopped at: Completed 24-03-PLAN.md
+Last session: 2026-09-24T03:56:40.080Z
+Stopped at: Completed 24-04-PLAN.md
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0
