@@ -14,9 +14,10 @@ use crate::state_reader::queue_md;
 use crate::state_reader::{self, backlog};
 use crate::text::Untrusted;
 use crate::ui::roadmap_graph;
+use crate::ui::roadmap_view;
 use crate::ui::roadmap_widget::RoadmapWidget;
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap};
@@ -679,11 +680,8 @@ pub struct DetailScreen {
     /// so the list does not jump when the cursor moves inside the viewport.
     ///
     /// Same interior-mutability reason as the viewports above: the render
-    /// pass (plan 24-06) writes it through `&self`.
-    ///
-    /// Unread until plan 24-06's render lands; allowed rather than deferred so
-    /// the field exists once, with the viewport beside it.
-    #[allow(dead_code)]
+    /// pass writes it through `&self`, seeding `RoadmapViewState` with it and
+    /// storing the widget's clamped offset back.
     roadmap_list_offset: Cell<usize>,
     /// Last-rendered height, in rows, of the Roadmap tab's phase list — the
     /// page size `PageUp` / `PageDown` move the cursor by. Written by the
@@ -1573,6 +1571,59 @@ pub(crate) fn roadmap_model_for(
     let no_toggles = std::collections::HashSet::new();
     let toggles = cache.map_or(&no_toggles, |c| &c.roadmap_fold_toggles);
     roadmap_graph::layout_list(&roadmap_graph::ListInput { nodes, bands }, toggles)
+}
+
+/// The Roadmap tab's first line (Mockups A/B/C, D-B02):
+/// `{alias} · {milestone} · phase {n} {status} · {k} of {n} phases done`.
+///
+/// The milestone is the active roadmap milestone's label, else STATE.md's
+/// `{milestone} {milestone_name}` (sentriq, whose roadmap has no heading for
+/// its milestone), else it is left out. `k`/`n` are the model's own counts,
+/// so every listed phase — GSD and planned build phases alike — is counted
+/// (RESEARCH Pattern 5). Every third-party string goes through `shown()` /
+/// `Untrusted::shown()`.
+fn roadmap_summary_line(
+    alias: &str,
+    state: &state_reader::ProjectState,
+    model: &roadmap_graph::RoadmapModel,
+) -> Line<'static> {
+    use crate::state_reader::roadmap_md;
+
+    let sep = || Span::styled(" \u{00B7} ", Style::default().fg(Color::DarkGray));
+    let milestone = roadmap_md::active_milestone_index(&state.milestones, &state.milestone)
+        .and_then(|i| state.milestones.get(i))
+        .map(|m| m.label.shown().to_string())
+        .or_else(|| {
+            let id = state.milestone.trim();
+            (!id.is_empty()).then(|| match &state.milestone_name {
+                Some(name) => format!("{} {}", shown(id), name.shown()),
+                None => shown(id),
+            })
+        });
+
+    let mut spans = vec![Span::styled(
+        format!(" {}", shown(alias)),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    if let Some(label) = milestone {
+        spans.push(sep());
+        spans.push(Span::raw(label.trim().to_string()));
+    }
+    spans.push(sep());
+    spans.push(Span::raw(format!(
+        "phase {}",
+        shown(&state.active_phase_number().to_string())
+    )));
+    if !state.status.trim().is_empty() {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            shown(state.status.trim()),
+            Style::default().fg(status_color(&classify_status(&state.status))),
+        ));
+    }
+    spans.push(sep());
+    spans.push(Span::raw(format!("{} of {} phases done", model.done, model.total)));
+    Line::from(spans)
 }
 
 /// Point the Roadmap cursor at the Phases tab's selected phase (D-B03): the
@@ -3978,21 +4029,24 @@ impl DetailScreen {
             .unwrap_or_else(|| "unknown".to_string());
 
         if let Some(state) = state {
-            let mut header_lines: Vec<Line> = Vec::new();
-            header_lines.push(Line::from(vec![
-                Span::styled("  Path: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(shown(&project_path)),
-            ]));
+            let cache = ctx.view_cache.get(alias);
+            let box_view = cache.is_some_and(|c| c.roadmap_box_view);
+            // The same adapter the keys use (24-05), so the list drawn is the
+            // list the cursor moves over. In-memory only: no I/O here.
+            let model =
+                roadmap_model_for(state, cache, ctx.config.preferences.gsd_integration);
 
-            let cat = classify_status(&state.status);
-            let color = status_color(&cat);
-            header_lines.push(Line::from(vec![
-                Span::styled("  Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(shown(&state.status), Style::default().fg(color)),
-                Span::raw("    "),
-                Span::styled("Milestone: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(shown(&state.milestone)),
-            ]));
+            // The former PhaseList header (D-B02, D-B08), borderless: the list
+            // and detail blocks carry their own borders, and 80×24 has no row
+            // to spare. The summary line and `Path:` always; every other line
+            // only when it has something to say.
+            let mut header_lines: Vec<Line> = vec![
+                roadmap_summary_line(alias, state, &model),
+                Line::from(vec![
+                    Span::styled(" Path: ", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(shown(&project_path)),
+                ]),
+            ];
 
             if let Some(line) = unreadable_state_line(state) {
                 header_lines.push(line);
@@ -4021,36 +4075,24 @@ impl DetailScreen {
                 header_lines.push(pause_line);
             }
 
-            header_lines.push(Line::from(""));
-
             if let Some(event) = ctx.change_tracker.latest_change(alias) {
                 let elapsed = ChangeTracker::format_elapsed(event.timestamp);
-                let banner = format!("  [ {} -- {} ]", shown(&event.description), elapsed);
+                let banner = format!(" [ {} -- {} ]", shown(&event.description), elapsed);
                 header_lines.push(Line::from(Span::styled(
                     banner,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )));
-                header_lines.push(Line::from(""));
             }
 
-            let header_height = header_lines.len() as u16 + 2;
-
-            let content_chunks =
+            let header_height = u16::try_from(header_lines.len()).unwrap_or(u16::MAX);
+            let [header_area, roadmap_area] =
                 Layout::vertical([Constraint::Length(header_height), Constraint::Min(0)])
-                    .split(area);
+                    .areas(area);
+            frame.render_widget(Paragraph::new(header_lines), header_area);
 
-            let header_area = content_chunks[0];
-            let roadmap_area = content_chunks[1];
-
-            let header_block =
-                Block::default().borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
-
-            let header_paragraph = Paragraph::new(header_lines).block(header_block);
-            frame.render_widget(header_paragraph, header_area);
-
-            if ctx.view_cache.get(alias).is_some_and(|c| c.roadmap_box_view) {
+            if box_view {
                 let current_phase_num = state.active_phase_number();
                 // Clamp roadmap scroll — estimate content height from phase count
                 let phase_block_h: u16 = 5; // BOX_HEIGHT(3) + connector(1) + spacing(1)
@@ -4076,32 +4118,30 @@ impl DetailScreen {
                 };
                 frame.render_widget(roadmap_widget, roadmap_area);
             } else {
-                // The default: the dependency graph (quick 260923-md1). Its
-                // rows are what the `_ =>` j/k/PageUp/PageDown arms scroll.
-                let markers = roadmap_graph::phase_markers(state);
-                let layout = roadmap_graph::layout_for_state(state, &markers);
-                let graph_area = roadmap_area.inner(Margin::new(2, 0));
-                let [_, graph_rect, _] = roadmap_graph::split_areas(&layout, graph_area);
-                let total = u16::try_from(layout.rows.len()).unwrap_or(u16::MAX);
-                self.generic_viewport.set(ViewportMetrics {
-                    total_lines: total,
-                    visible_height: graph_rect.height,
-                });
-                let clamped = self
-                    .scroll_offset
-                    .min(total.saturating_sub(graph_rect.height));
-                frame.render_widget(
-                    roadmap_graph::RoadmapGraphWidget {
-                        layout: &layout,
-                        markers: &markers,
-                        scroll_offset: clamped,
+                // The default (D-A01): the master/detail list over the stored
+                // cursor (24-05). The widget resolves the cursor itself; render
+                // takes `&self`, so the resolved form is never written back —
+                // only the scroll offset and the page size the keys read.
+                let cursor = cache.and_then(|c| c.roadmap_cursor.as_ref());
+                let mut view_state = roadmap_view::RoadmapViewState {
+                    offset: self.roadmap_list_offset.get(),
+                    list_rows: 0,
+                };
+                frame.render_stateful_widget(
+                    roadmap_view::RoadmapView {
+                        model: &model,
+                        cursor,
                     },
-                    graph_area,
+                    roadmap_area,
+                    &mut view_state,
                 );
+                self.roadmap_list_offset.set(view_state.offset);
+                self.roadmap_list_viewport.set(view_state.list_rows);
             }
         } else {
             let block = Block::default().borders(Borders::ALL);
-            let paragraph = Paragraph::new("  No state data available for roadmap.").block(block);
+            let paragraph =
+                Paragraph::new("  No state data available for this project.").block(block);
             frame.render_widget(paragraph, area);
         }
     }
@@ -11881,12 +11921,22 @@ mod tests {
         );
     }
 
-    /// Render the detail screen into a `TestBackend` and join the cells.
+    /// Render the detail screen into a 120×30 `TestBackend` and join the cells.
     fn render_detail_to_text(screen: &DetailScreen, ctx: &AppContext) -> String {
+        render_detail_to_text_at(screen, ctx, 120, 30)
+    }
+
+    /// Render the detail screen into a `width`×`height` `TestBackend` and
+    /// join the cells, one line per terminal row.
+    fn render_detail_to_text_at(
+        screen: &DetailScreen,
+        ctx: &AppContext,
+        width: u16,
+        height: u16,
+    ) -> String {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let (width, height) = (120u16, 30u16);
         let mut terminal =
             Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
         terminal
@@ -14735,9 +14785,14 @@ mod tests {
     #[test]
     fn roadmap_graph_tab_draws_the_graph_by_default_and_v_toggles_the_box_list() {
         let (mut screen, mut ctx) = roadmap_graph_fixture();
-        let graph = render_detail_to_text(&screen, &ctx);
-        assert!(graph.contains("1 ─► 2 ─► 3"), "{graph}");
-        assert_eq!(screen.generic_viewport.get().total_lines, 1);
+        let list = render_detail_to_text(&screen, &ctx);
+        assert!(list.contains("┌ Roadmap "), "{list}");
+        assert!(list.contains("Start now:"), "{list}");
+        assert!(!list.contains("─►"), "no legacy arrow: {list}");
+        assert!(
+            screen.roadmap_list_viewport.get() > 0,
+            "the render records the list's page size"
+        );
 
         screen.scroll_offset = 2;
         press(&mut screen, &mut ctx, KeyCode::Char('v'));
@@ -14745,14 +14800,17 @@ mod tests {
         assert_eq!(screen.scroll_offset, 0, "v must reset the scroll offset");
         let boxes = render_detail_to_text(&screen, &ctx);
         assert!(
-            boxes.matches('┌').count() > graph.matches('┌').count(),
-            "the box list draws a box border per phase: {boxes}"
+            ["P1: Name 1", "P2: Name 2", "P3: Name 3"]
+                .iter()
+                .all(|b| boxes.contains(b)),
+            "the box list draws a box per phase: {boxes}"
         );
-        assert!(!boxes.contains("1 ─► 2"), "{boxes}");
+        assert!(!boxes.contains("Start now:"), "{boxes}");
 
         press(&mut screen, &mut ctx, KeyCode::Char('v'));
         assert!(!roadmap_box_flag(&ctx));
-        assert!(render_detail_to_text(&screen, &ctx).contains("1 ─► 2 ─► 3"));
+        let back = render_detail_to_text(&screen, &ctx);
+        assert!(back.contains("┌ Roadmap ") && back.contains("Start now:"), "{back}");
     }
 
     #[test]
@@ -15246,5 +15304,92 @@ mod tests {
                 "{code:?}"
             );
         }
+    }
+
+    // ── Phase 24-06: the Roadmap tab on screen ───────────────────────────
+
+    /// The rows inside the ` Roadmap ` list block's borders, located by its
+    /// title and its bottom-left corner. The right edge is the block's own
+    /// top-right corner, so at ≥ 100 columns only the columns left of the
+    /// ` Phase ` block are returned.
+    fn roadmap_list_pane(text: &str) -> Vec<String> {
+        let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+        let title: Vec<char> = "┌ Roadmap ".chars().collect();
+        let (top, left) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(y, r)| {
+                r.windows(title.len())
+                    .position(|w| w == title.as_slice())
+                    .map(|x| (y, x))
+            })
+            .unwrap_or_else(|| panic!("no Roadmap block:\n{text}"));
+        let right = rows[top][left + 1..]
+            .iter()
+            .position(|&c| c == '┐')
+            .map(|p| left + 1 + p)
+            .unwrap_or_else(|| panic!("no top-right corner:\n{text}"));
+        rows[top + 1..]
+            .iter()
+            .take_while(|r| r.get(left) == Some(&'│'))
+            .map(|r| r[left + 1..right.min(r.len())].iter().collect())
+            .collect()
+    }
+
+    /// The first alphanumeric token of a list row: a phase row's number
+    /// column (after the lane and marker glyphs), a band row's short id.
+    fn number_column(row: &str) -> Option<&str> {
+        row.split_whitespace()
+            .find(|t| t.chars().next().is_some_and(char::is_alphanumeric))
+    }
+
+    /// How many list rows carry `id` in their number column.
+    fn rows_numbered(pane: &[String], id: &str) -> usize {
+        pane.iter().filter(|r| number_column(r) == Some(id)).count()
+    }
+
+    /// The list row numbered `id` (exactly one must exist).
+    fn row_numbered<'a>(pane: &'a [String], id: &str) -> &'a str {
+        let rows: Vec<&String> = pane.iter().filter(|r| number_column(r) == Some(id)).collect();
+        assert_eq!(rows.len(), 1, "rows numbered {id}: {pane:#?}");
+        rows[0]
+    }
+
+    /// The screen line carrying the Roadmap summary.
+    fn summary_line(text: &str) -> &str {
+        text.lines()
+            .find(|l| l.contains("phases done"))
+            .unwrap_or_else(|| panic!("no summary line:\n{text}"))
+    }
+
+    #[test]
+    fn daily_vow_roadmap_renders_phase_20_once_at_120() {
+        let (screen, mut ctx) = roadmap_fixture("daily-vow");
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let pane = roadmap_list_pane(&text);
+
+        assert_eq!(rows_numbered(&pane, "20"), 1, "{text}");
+        assert_eq!(
+            pane.iter().filter(|r| r.contains("v1.5 Closing the Loop")).count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(
+            pane.iter()
+                .filter(|r| r.contains("5 milestones · 17 phases shipped"))
+                .count(),
+            1,
+            "{text}"
+        );
+        assert!(!text.contains("─►"), "{text}");
+        let summary = summary_line(&text);
+        assert!(summary.contains("v1.5 Closing the Loop · phase 23"), "{summary}");
+        assert!(summary.contains("5 of 6 phases done"), "{summary}");
+
+        set_roadmap_cursor(&mut ctx, phase_target("23"));
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let pane = roadmap_list_pane(&text);
+        assert!(row_numbered(&pane, "20").contains('·'), "{text}");
+        assert!(text.contains("(implied via 21)"), "{text}");
     }
 }
