@@ -2578,4 +2578,265 @@ mod tests {
         assert!(facts(&model, "9").no_deps && !facts(&model, "9").no_edges);
         assert_eq!(ids(&model, &model.start_now), vec!["9", "12"]);
     }
+
+    /// Mockup A's invented `bookly` roadmap.
+    const BOOKLY: LSpec<'static> = &[
+        ("8", "Booking data model", &[], D),
+        ("9", "Availability API", &["8"], D),
+        ("10", "Slot picker UI", &["9"], C),
+        ("11", "Calendar sync", &["9"], F),
+        ("12", "Checkout & payments", &["10", "11"], F),
+        ("13", "Confirmation flow", &["12"], F),
+        ("14", "Reminders & notifications", &["13"], F),
+        ("15", "Live booking launch", &["14"], F),
+        ("16", "Chat backend", &["13"], F),
+        ("17", "Chat UI", &["16"], F),
+        ("18", "Web booking portal", &["12"], F),
+    ];
+
+    const BOOKLY_BANDS: BSpec<'static> = &[
+        (
+            "M3 Live booking",
+            false,
+            8,
+            &["8", "9", "10", "11", "12", "13", "14", "15"],
+        ),
+        ("M4 Support chat", false, 2, &["16", "17"]),
+        ("M5 Web", false, 1, &["18"]),
+    ];
+
+    const MOCKUP_A_LANES: &[&str] = &[
+        "          [M3]",
+        "o         8",
+        "o         9",
+        "├─┐",
+        "o │       10",
+        "│ o       11",
+        "├─┘",
+        "o         12",
+        "├─┐",
+        "o │       13",
+        "├─┼─┐",
+        "o │ │     14",
+        "o │ │     15",
+        "  │ │     [M4]",
+        "  │ o     16",
+        "  │ o     17",
+        "  │       [M5]",
+        "  o       18",
+    ];
+
+    /// daily-vow's five shipped milestones (no listed phases) and v1.5.
+    const DAILY_VOW_BANDS: BSpec<'static> = &[
+        ("v1.0 MVP", true, 3, &[]),
+        ("v1.1 Daily Rhythm", true, 2, &[]),
+        ("v1.2 Learning", true, 4, &[]),
+        ("v1.3 Adaptive Timing", true, 4, &[]),
+        ("v1.4 Probes", true, 4, &[]),
+        (
+            "v1.5 Closing the Loop",
+            false,
+            6,
+            &["18", "19", "20", "21", "22", "23"],
+        ),
+        ("Requirement Coverage", false, 0, &[]),
+    ];
+
+    const SENTRIQ_BANDS: BSpec<'static> = &[
+        ("v0.11 Phases", true, 4, &[]),
+        ("v0.12 Actuation Routines", false, 4, &["9", "10", "11", "12"]),
+        ("Scope Explicitly Excluded from v0.12", false, 0, &[]),
+    ];
+
+    fn toggles(keys: &[BandKey]) -> HashSet<BandKey> {
+        keys.iter().cloned().collect()
+    }
+
+    fn band_rows(model: &RoadmapModel) -> Vec<&ListRow> {
+        model
+            .rows
+            .iter()
+            .filter(|row| matches!(row, ListRow::Band { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn is_folded_defaults_and_toggles() {
+        let none = HashSet::new();
+        let named = BandKey::Named("m4 support chat".to_string());
+        assert!(is_folded(&BandKey::Shipped, &none));
+        assert!(!is_folded(&named, &none));
+        assert!(!is_folded(&BandKey::Shipped, &toggles(&[BandKey::Shipped])));
+        assert!(is_folded(&named, &toggles(&[named.clone()])));
+    }
+
+    #[test]
+    fn lanes_mockup_a_with_bands() {
+        let model = build(BOOKLY, BOOKLY_BANDS, &HashSet::new());
+        assert_eq!(lane_text(&model), MOCKUP_A_LANES.to_vec());
+
+        let p = facts(&model, "12");
+        assert_eq!(ids(&model, &p.needs), vec!["10", "11"]);
+        assert_eq!(ids(&model, &p.unblocks), vec!["13", "18"]);
+        assert!(p.parallel.is_empty());
+        assert_eq!(p.wave, 4);
+        assert_eq!(ids(&model, &model.start_now), vec!["10", "11"]);
+        assert_eq!((model.bands[0].done, model.bands[0].total), (2, 8));
+        assert_eq!(model.bands[0].short, "M3");
+        assert_eq!(
+            model.bands[0].key,
+            BandKey::Named("m3 live booking".to_string())
+        );
+        for id in ["15", "17", "18"] {
+            assert!(facts(&model, id).last_in_band, "{id}");
+        }
+        assert!(!facts(&model, "14").last_in_band);
+        match band_rows(&model)[0] {
+            ListRow::Band {
+                label,
+                short,
+                done,
+                total,
+                folded,
+                ..
+            } => {
+                assert_eq!(
+                    (label.as_str(), short.as_str(), *done, *total, *folded),
+                    ("M3 Live booking", "M3", 2, 8, false)
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn lanes_mockup_b_with_shipped_summary() {
+        let model = build(DAILY_VOW, DAILY_VOW_BANDS, &HashSet::new());
+        let text = lane_text(&model);
+        assert_eq!(
+            text[..3].to_vec(),
+            vec!["          [shipped]", "          [v1.5]", "o         18"]
+        );
+        assert_eq!(text.len(), 2 + 7, "{text:?}");
+        assert_eq!(
+            model.rows[0],
+            ListRow::ShippedSummary {
+                text: "v1.0 \u{2026} v1.4".to_string(),
+                milestones: 5,
+                phases: 17,
+                folded: true,
+                lanes: String::new(),
+            }
+        );
+        let v15: Vec<&ListRow> = band_rows(&model)
+            .into_iter()
+            .filter(|row| matches!(row, ListRow::Band { label, .. } if label == "v1.5 Closing the Loop"))
+            .collect();
+        assert_eq!(v15.len(), 1);
+        assert_eq!(band_rows(&model).len(), 1);
+        assert!(facts(&model, "23").last_in_band);
+        assert!(!facts(&model, "22").last_in_band);
+        assert_eq!(model.bands.len(), DAILY_VOW_BANDS.len());
+        assert_eq!(model.bands[0].key, BandKey::Named("v1.0 mvp".to_string()));
+    }
+
+    #[test]
+    fn unfolding_the_shipped_summary_reveals_one_row_per_shipped_milestone() {
+        let folded = lane_text(&build(DAILY_VOW, DAILY_VOW_BANDS, &HashSet::new()));
+        let model = build(DAILY_VOW, DAILY_VOW_BANDS, &toggles(&[BandKey::Shipped]));
+        let open = lane_text(&model);
+        let mut expected = vec!["          [shipped]".to_string()];
+        for short in ["v1.0", "v1.1", "v1.2", "v1.3", "v1.4"] {
+            expected.push(format!("          [{short}]"));
+        }
+        expected.extend(folded[1..].iter().cloned());
+        assert_eq!(open, expected);
+        assert!(matches!(
+            model.rows[0],
+            ListRow::ShippedSummary { folded: false, .. }
+        ));
+    }
+
+    #[test]
+    fn lanes_sentriq_with_synthetic_band() {
+        let model = build(SENTRIQ, SENTRIQ_BANDS, &HashSet::new());
+        assert_eq!(
+            lane_text(&model),
+            vec![
+                "          [shipped]",
+                "          [v0.12]",
+                "o         9",
+                "o         10",
+                "o         11",
+                "  o       12",
+            ]
+        );
+        assert!(matches!(
+            &model.rows[0],
+            ListRow::ShippedSummary { text, milestones: 1, phases: 4, folded: true, .. } if text == "v0.11"
+        ));
+    }
+
+    #[test]
+    fn folding_a_band_hides_its_rows_but_not_the_lanes_elsewhere() {
+        let m4 = BandKey::Named("m4 support chat".to_string());
+        let model = build(BOOKLY, BOOKLY_BANDS, &toggles(&[m4]));
+        let expected: Vec<&str> = MOCKUP_A_LANES
+            .iter()
+            .copied()
+            .filter(|line| !line.ends_with(" 16") && !line.ends_with(" 17"))
+            .collect();
+        assert_eq!(lane_text(&model), expected);
+        assert!(model.rows.iter().any(|row| matches!(
+            row,
+            ListRow::Band { short, folded: true, lanes, .. } if short == "M4" && lanes == "  │ │"
+        )));
+        // The facts still cover every phase.
+        assert_eq!(model.phases.len(), BOOKLY.len());
+    }
+
+    #[test]
+    fn empty_bands_never_draw() {
+        for model in [
+            build(SENTRIQ, SENTRIQ_BANDS, &HashSet::new()),
+            build(DAILY_VOW, DAILY_VOW_BANDS, &HashSet::new()),
+        ] {
+            let text = lane_text(&model);
+            for line in &text {
+                assert!(!line.contains("[Scope"), "{text:?}");
+                assert!(!line.contains("[Requirement"), "{text:?}");
+            }
+            assert_eq!(band_rows(&model).len(), 1, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn band_labels_appear_on_exactly_one_row() {
+        for model in [
+            build(BOOKLY, BOOKLY_BANDS, &HashSet::new()),
+            build(DAILY_VOW, DAILY_VOW_BANDS, &HashSet::new()),
+        ] {
+            let text = lane_text(&model);
+            assert!(!band_rows(&model).is_empty(), "{text:?}");
+            for band in band_rows(&model) {
+                let ListRow::Band { label, short, .. } = band else {
+                    unreachable!()
+                };
+                let with_label = model
+                    .rows
+                    .iter()
+                    .filter(|row| match row {
+                        ListRow::Band { label: l, .. } => l == label,
+                        ListRow::ShippedSummary { text, .. } => text.contains(label.as_str()),
+                        ListRow::Connector { lanes } | ListRow::Phase { lanes, .. } => {
+                            lanes.contains(label.as_str())
+                        }
+                    })
+                    .count();
+                assert_eq!(with_label, 1, "{label}");
+                let tag = format!("[{short}]");
+                assert_eq!(text.iter().filter(|l| l.contains(&tag)).count(), 1);
+            }
+        }
+    }
 }
