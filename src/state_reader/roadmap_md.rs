@@ -597,13 +597,28 @@ pub fn parse_phase_goals(content: &str) -> HashMap<String, crate::text::Untruste
 /// matching entry wins. The heading suffix is not inspected — a delivered item
 /// reads `(PROMOTED AND DELIVERED)`, not `(BACKLOG)`, and is still its entry.
 pub fn phase_section(content: &str, phase_id: &str) -> Option<String> {
+    locate_phase_section(content, phase_id).map(|(_, text)| text)
+}
+
+/// The 1-based line of the heading [`phase_section`] would open on — the line
+/// an editor jumps to when the Backlog tab's edit key opens ROADMAP.md
+/// (quick-260924-drx). The SAME locator as [`phase_section`], so the line and
+/// the displayed section cannot disagree about which entry is meant.
+pub fn phase_section_line(content: &str, phase_id: &str) -> Option<usize> {
+    locate_phase_section(content, phase_id).map(|(line, _)| line)
+}
+
+/// `(1-based heading line, section text)` for [`phase_section`] and
+/// [`phase_section_line`].
+fn locate_phase_section(content: &str, phase_id: &str) -> Option<(usize, String)> {
     let want = phase_key(phase_id);
     let mut in_fence = false;
-    // (the entry's heading level, its lines) once the entry has opened.
-    let mut section: Option<(usize, Vec<&str>)> = None;
-    for line in content.lines() {
+    // (the entry's heading level, its 1-based heading line, its lines) once
+    // the entry has opened.
+    let mut section: Option<(usize, usize, Vec<&str>)> = None;
+    for (idx, line) in content.lines().enumerate() {
         if !in_fence {
-            if let Some((level, _)) = &section {
+            if let Some((level, _, _)) = &section {
                 let ends_entry = thematic_break_re().is_match(line)
                     || (any_heading_re().is_match(line) && heading_level(line) <= *level);
                 if ends_entry {
@@ -611,22 +626,22 @@ pub fn phase_section(content: &str, phase_id: &str) -> Option<String> {
                 }
             } else if let Some(caps) = phase_heading_re().captures(line) {
                 if phase_key(caps[1].trim_end_matches(['.', ','])) == want {
-                    section = Some((heading_level(line), Vec::new()));
+                    section = Some((heading_level(line), idx + 1, Vec::new()));
                 }
             }
         }
         if is_fence_line(line) {
             in_fence = !in_fence;
         }
-        if let Some((_, lines)) = &mut section {
+        if let Some((_, _, lines)) = &mut section {
             lines.push(line);
         }
     }
-    let (_, mut lines) = section?;
+    let (_, heading_line, mut lines) = section?;
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
-    Some(lines.join("\n"))
+    Some((heading_line, lines.join("\n")))
 }
 
 /// Returns true when a `## Progress` table Phase cell is a backlog sentinel
@@ -2316,5 +2331,23 @@ Plans:
         assert_eq!(phase_section(roadmap, "999.10"), None);
         assert_eq!(phase_section(roadmap, "999.2"), None);
         assert_eq!(phase_section("", "999.1"), None);
+    }
+
+    /// quick-260924-drx: the editor jumps to the heading the pane displays —
+    /// 1-based, fence-aware, and by phase key like `phase_section`.
+    #[test]
+    fn a_phase_section_line_is_the_one_based_line_of_its_heading() {
+        let roadmap = "# Roadmap\n\n## Backlog\n\n\
+                       ```\n### Phase 999.1: inside a fence\n```\n\n\
+                       ### Phase 999.10: Ten (BACKLOG)\n\nTen.\n\n\
+                       ### Phase 999.1: One (BACKLOG)\n\nOne.\n";
+        assert_eq!(phase_section_line(roadmap, "999.1"), Some(13));
+        assert_eq!(phase_section_line(roadmap, "999.10"), Some(9));
+        assert_eq!(phase_section_line(roadmap, "999.2"), None);
+        assert_eq!(
+            roadmap.lines().nth(12),
+            Some("### Phase 999.1: One (BACKLOG)"),
+            "fixture self-check: line 13 is the 999.1 heading"
+        );
     }
 }

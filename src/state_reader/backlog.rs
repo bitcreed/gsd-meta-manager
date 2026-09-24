@@ -284,6 +284,34 @@ pub fn load_backlog_content(planning_dir: &Path, dir_name: &str) -> Option<Strin
     }
 }
 
+/// The file the Backlog tab's edit key opens for one item, and the 1-based
+/// line to open it at (quick-260924-drx).
+///
+/// **Where the item actually lives wins:** GSD's backlog capture writes the
+/// item into ROADMAP.md (see [`load_backlog_content`]), so when that section
+/// exists the target is `ROADMAP.md` at the section's heading line. Only an
+/// item with no ROADMAP.md entry falls back to `md_path` — the first `.md` in
+/// its directory — opened at the top. `None` when there is neither.
+///
+/// INFERRED: ROADMAP.md is preferred even when a directory `.md` also exists;
+/// those files are secondary `/gsd-discuss-phase` / research artifacts, and the
+/// content pane shows the ROADMAP.md section first.
+pub fn backlog_edit_target(
+    planning_dir: &Path,
+    dir_name: &str,
+    md_path: Option<&Path>,
+) -> Option<(PathBuf, Option<usize>)> {
+    let roadmap_path = planning_dir.join("ROADMAP.md");
+    let roadmap_line = parse_backlog_dir_name(dir_name).and_then(|(number, _)| {
+        let roadmap = std::fs::read_to_string(&roadmap_path).ok()?;
+        super::roadmap_md::phase_section_line(&roadmap, &number)
+    });
+    match roadmap_line {
+        Some(line) => Some((roadmap_path, Some(line))),
+        None => md_path.map(|p| (p.to_path_buf(), None)),
+    }
+}
+
 /// Find the first .md file in a directory and extract its first `# heading`.
 fn find_first_heading(dir: &Path) -> Option<String> {
     let md_path = find_first_md_file(dir)?;
@@ -709,6 +737,43 @@ Plans:
         }
         std::fs::write(planning.join("ROADMAP.md"), FIXTURE_ROADMAP).unwrap();
         (td, planning)
+    }
+
+    /// quick-260924-drx: the edit key opens ROADMAP.md at the item's heading —
+    /// the file the item lives in — even when a directory `.md` also exists.
+    #[test]
+    fn the_edit_target_is_the_roadmap_section_line_when_one_exists() {
+        let (_td, planning) = backlog_fixture();
+        let dir = "999.2-desktop-notification-live-progress";
+        let dir_md = planning.join("phases").join(dir).join("999.2-CONTEXT.md");
+        std::fs::write(&dir_md, "# Context\n").unwrap();
+
+        let (path, line) = backlog_edit_target(&planning, dir, Some(&dir_md))
+            .expect("the item has a ROADMAP.md section");
+        assert_eq!(path, planning.join("ROADMAP.md"));
+        let line = line.expect("a heading line");
+        assert!(
+            FIXTURE_ROADMAP
+                .lines()
+                .nth(line - 1)
+                .is_some_and(|l| l.starts_with("### Phase 999.2")),
+            "line {line} is not the 999.2 heading"
+        );
+    }
+
+    /// No ROADMAP.md entry: the directory `.md` at the top; neither: `None`.
+    #[test]
+    fn the_edit_target_falls_back_to_the_dir_md_then_to_none() {
+        let (_td, planning) = backlog_fixture();
+        std::fs::write(planning.join("ROADMAP.md"), "# Roadmap\n").unwrap();
+        let dir = "999.1-alternate-transport-fallback";
+        let dir_md = planning.join("phases").join(dir).join("999.1-CONTEXT.md");
+
+        assert_eq!(
+            backlog_edit_target(&planning, dir, Some(&dir_md)),
+            Some((dir_md.clone(), None))
+        );
+        assert_eq!(backlog_edit_target(&planning, dir, None), None);
     }
 
     /// The reported symptom: a `.gitkeep`-only backlog directory loaded
