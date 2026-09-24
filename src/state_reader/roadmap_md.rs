@@ -816,6 +816,16 @@ pub fn split_milestone_label(label: &str) -> (String, String) {
     (short, unquoted.to_string())
 }
 
+/// Which milestones are shipped, one flag per milestone (D-A07).
+pub fn shipped_milestones(ms: &[RoadmapMilestone], _state_milestone: &str) -> Vec<bool> {
+    vec![false; ms.len()]
+}
+
+/// How many phases a milestone declares.
+pub fn declared_phase_count(_m: &RoadmapMilestone) -> u32 {
+    0
+}
+
 /// A short id two spellings of one milestone share: `v2.0`, `M3`.
 fn is_version_like(short: &str) -> bool {
     let mut chars = short.chars();
@@ -1945,5 +1955,100 @@ Plans:
                 assert!(goal.starts_with("(sanitised)"), "{name} {key}: {goal}");
             }
         }
+    }
+
+    // ── Phase 24-01 Task 3: shipped-milestone facts ──
+
+    #[test]
+    fn daily_vow_shipped_milestones_are_the_five_before_v1_5() {
+        let ms = roadmap_milestones(DAILY_VOW_ROADMAP);
+        assert_eq!(
+            labels(&ms),
+            [
+                "v1.0 MVP",
+                "v1.1 Hardening & Polish",
+                "v1.2 Depth & Intentionality",
+                "v1.3 Polish & Follow-through",
+                "v1.4 Assessment & Insight",
+                "v1.5 Closing the Loop",
+                "Requirement Coverage",
+            ]
+        );
+        let shipped = shipped_milestones(&ms, "v1.5");
+        assert_eq!(shipped, [true, true, true, true, true, false, false]);
+        let declared: u32 = ms
+            .iter()
+            .zip(&shipped)
+            .filter(|(_, s)| **s)
+            .map(|(m, _)| declared_phase_count(m))
+            .sum();
+        assert_eq!(declared, 17, "Mockup B: `5 milestones · 17 phases shipped`");
+    }
+
+    #[test]
+    fn sentriq_v0_11_is_shipped_by_version_order() {
+        let ms = roadmap_milestones(SENTRIQ_ROADMAP);
+        assert_eq!(labels(&ms), ["v0.11 Phases", "Scope Explicitly Excluded from v0.12"]);
+        assert_eq!(ms[0].first, PhaseNum::parse("4"), "`Phases (4-7)` range is read");
+        assert_eq!(ms[0].last, PhaseNum::parse("7"));
+        assert_eq!(
+            active_milestone_index(&ms, "v0.12"),
+            None,
+            "no roadmap milestone is v0.12, so shipped-ness comes from version order"
+        );
+        assert_eq!(shipped_milestones(&ms, "v0.12"), [true, false]);
+        assert_eq!(declared_phase_count(&ms[0]), 4);
+    }
+
+    #[test]
+    fn ttbook_v1_is_shipped() {
+        let ms = roadmap_milestones(TTBOOK_ROADMAP);
+        assert_eq!(shipped_milestones(&ms, "v2"), [true, false, false, false, false]);
+        assert_eq!(
+            declared_phase_count(&ms[0]),
+            7,
+            "`Phases 1-7.1` counts the integer majors 1..7"
+        );
+    }
+
+    #[test]
+    fn a_milestone_without_range_or_members_is_never_shipped() {
+        let ms = roadmap_milestones(
+            "## Milestones\n\n\
+             - ✅ **v1.0 Old** - shipped long ago\n\
+             - ✅ **v1.1 Ranged** - Phases 1-2 (shipped)\n\
+             - 🚧 **v2.0 Now** - Phases 3-4 (in progress)\n",
+        );
+        assert_eq!(shipped_milestones(&ms, "v2.0"), [false, true, false]);
+        assert_eq!(shipped_milestones(&ms, ""), [false, true, false], "in-progress fallback");
+
+        // Version order is numeric by segment, never lexicographic.
+        let ms = roadmap_milestones(
+            "## Plan\n\n### v0.9 Early (Phases 1-2)\n\n### v0.11 Later (Phases 3-4)\n\n\
+             ### v0.20 Future (Phases 9-10)\n\n### v0.10 Loose\n",
+        );
+        assert_eq!(labels(&ms), ["v0.9 Early", "v0.11 Later", "v0.20 Future", "v0.10 Loose"]);
+        assert_eq!(shipped_milestones(&ms, "v0.12"), [true, true, false, false]);
+        assert_eq!(shipped_milestones(&ms, "v0.9 Early"), [false, false, false, false]);
+        assert_eq!(shipped_milestones(&ms, "v0.10"), [true, false, false, false]);
+        assert_eq!(
+            shipped_milestones(&ms, "Closing the loop"),
+            [false; 4],
+            "a non-version STATE milestone ships nothing"
+        );
+    }
+
+    #[test]
+    fn declared_phase_count_counts_integer_majors() {
+        let ms = roadmap_milestones(
+            "## Milestones\n\n\
+             - **v1 A** - Phases 1-7.1\n\
+             - **v2 B** - Phases 08-13\n\
+             - **v3 C** - Phase 14\n\
+             - **v4 D** - no phases\n\n\
+             ## Later\n\n### Milestone 5 \"E\"\n\n#### Build phase 20: X\n#### Build phase 21: Y\n",
+        );
+        let counts: Vec<u32> = ms.iter().map(declared_phase_count).collect();
+        assert_eq!(counts, [7, 6, 1, 0, 2], "range majors, else scoped members, else 0");
     }
 }
