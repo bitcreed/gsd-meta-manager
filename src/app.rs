@@ -5049,4 +5049,64 @@ mod tests {
         assert!(after.contains(">   v1.2-ROADMAP.md"), "{after}");
         assert!(!after.contains("Core Flow"), "{after}");
     }
+
+    /// `Enter` on the Roadmap's collapsed shipped-milestones row lands on Docs
+    /// › Milestones with milestone discovery scheduled on the real channel
+    /// (D-B04) — driven through `App::update`, like the archive tests above.
+    #[tokio::test]
+    async fn enter_on_the_shipped_milestones_row_opens_docs_milestones() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        archive_fixture(dir.path(), "01-core-flow");
+        let planning = dir.path().join(".planning");
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "# Roadmap\n\n\
+             ## Milestones\n\n\
+             - \u{2705} **v1.1 First** -- Phases 1-2 (shipped 2026-01-10)\n\
+             - \u{2705} **v1.2 Second** -- Phases 3-4 (shipped 2026-02-10)\n\
+             - \u{1F6A7} **v1.3 Third** -- Phases 5-6 (in progress)\n\n\
+             ## Phases\n\n\
+             - [x] **Phase 1: One** - first\n\
+             - [x] **Phase 2: Two** - second\n\
+             - [x] **Phase 3: Three** - third\n\
+             - [x] **Phase 4: Four** - fourth\n\
+             - [ ] **Phase 5: Five** - fifth\n\
+             - [ ] **Phase 6: Six** - sixth\n\n\
+             ### Phase 5: Five\n**Goal**: the fifth\n\n\
+             ### Phase 6: Six\n**Goal**: the sixth\n**Depends on**: Phase 5\n",
+        )
+        .expect("ROADMAP.md");
+        std::fs::write(
+            planning.join("STATE.md"),
+            "---\nmilestone: v1.3\nmilestone_name: Third\ncurrent_phase: 5\nstatus: planning\n---\n\n# Project State\n",
+        )
+        .expect("STATE.md");
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx.project_states.insert(
+            OBS_ALIAS.to_string(),
+            crate::state_reader::parse_project_state(&planning),
+        );
+
+        let screen = crate::ui::screens::detail::DetailScreen::opened_on(
+            OBS_ALIAS.to_string(),
+            DetailSubView::RoadmapViz,
+            &mut app.ctx,
+        );
+        app.screen_stack.push(Box::new(screen));
+        // `g` puts the cursor on the first row: the shipped summary.
+        press(&mut app, KeyCode::Char('g'));
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.ctx.detail_sub_view_per_project.get(OBS_ALIAS),
+            Some(&DetailSubView::Archive)
+        );
+        assert!(
+            pump_archive_until(&mut app, &mut rx, is_discovery_for(OBS_ALIAS)).await,
+            "milestone discovery for {OBS_ALIAS} never arrived"
+        );
+        let after = render_top_screen(&app);
+        assert!(after.contains("[Milestones]"), "{after}");
+        assert!(after.contains("v1.2"), "{after}");
+    }
 }

@@ -10083,11 +10083,11 @@ mod tests {
     fn test_other_footers_unchanged_by_browse_edit_hint() {
         assert_eq!(
             footer_text(&DetailSubView::Backlog),
-            "  [Esc]back  [1-9/D]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
+            "  [Esc]back  [1-8/D]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
         );
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
-            "  [Esc]back  [1-9/D]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
+            "  [Esc]back  [1-8/D]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
              [r]eload  [/]filter  [?]help"
         );
     }
@@ -10104,11 +10104,11 @@ mod tests {
         for sub_view in (0..DRIVER_TAB_INDEX).map(|index| sub_view_from_index(index, true)) {
             let text = footer_text(&sub_view);
             assert!(
-                text.contains("[1-9/D]tabs"),
+                text.contains("[1-8/D]tabs"),
                 "{sub_view:?} footer must advertise the Driver tab: {text}"
             );
             assert!(
-                !text.contains("[1-9]tabs"),
+                !text.contains("[1-8]tabs"),
                 "{sub_view:?} shows the flag-off digits-only hint with the flag on: {text}"
             );
         }
@@ -10128,12 +10128,12 @@ mod tests {
         {
             let text = footer_text_at(&sub_view, 120, false);
             assert!(
-                text.starts_with("  [Esc]back  [1-9]tabs  "),
+                text.starts_with("  [Esc]back  [1-8]tabs  "),
                 "{sub_view:?} must not advertise a Driver tab the user cannot \
                  reach: {text}"
             );
             assert!(
-                !text.contains("[1-9/D]"),
+                !text.contains("[1-8/D]"),
                 "{sub_view:?} still leaks the Driver tab into its tabs hint: {text}"
             );
         }
@@ -10143,7 +10143,7 @@ mod tests {
     fn the_driver_footer_has_three_measured_width_forms() {
         assert_eq!(
             footer_text_at(&DetailSubView::Driver, 120, true),
-            "  [Esc]back  [1-9/D]tabs  [j/k]runs  [PgUp/PgDn]output  [f]ollow  [i]nject  \
+            "  [Esc]back  [1-8/D]tabs  [j/k]runs  [PgUp/PgDn]output  [f]ollow  [i]nject  \
              [s]tart  [x]stop  [?]help"
         );
         assert_eq!(
@@ -10835,6 +10835,91 @@ mod tests {
                 .insert(TEST_ALIAS.to_string(), view.clone());
             press(&mut screen, &mut ctx, KeyCode::Char('m'));
             assert_eq!(stored_view(&ctx), view, "`m` moved {view:?}");
+        }
+    }
+
+    /// Eight tabs, eight digits (D-B10): `9` and `0` name no tab and fall
+    /// through to the no-op arm, and `8` is Docs, landing on its Files
+    /// sub-view.
+    #[test]
+    fn nine_and_zero_are_inert_in_the_detail_view() {
+        for experimental in [true, false] {
+            let mut ctx = test_ctx().with_experimental(experimental);
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            ctx.detail_sub_view_per_project
+                .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+
+            for key in ['9', '0'] {
+                press(&mut screen, &mut ctx, KeyCode::Char(key));
+                assert_eq!(
+                    stored_view(&ctx),
+                    DetailSubView::Queue,
+                    "`{key}` moved the view (experimental {experimental})"
+                );
+            }
+
+            press(&mut screen, &mut ctx, KeyCode::Char('8'));
+            assert_eq!(stored_view(&ctx), DetailSubView::Browse);
+        }
+    }
+
+    /// A stored `DetailSubView::Archive` — in-memory per-project view state,
+    /// so there is nothing on disk to migrate (D-B05, D-B09) — simply renders
+    /// the Docs tab with its Milestones sub-tab active.
+    #[test]
+    fn a_stored_archive_view_is_the_docs_tab_with_milestones_active() {
+        let mut ctx = test_ctx();
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Archive);
+        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+
+        assert_eq!(active_tab_text(&screen, &ctx), "8:Docs");
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(text.contains("Files \u{2502} [Milestones]"), "{text}");
+        assert!(!text.contains("[Files]"), "{text}");
+    }
+
+    /// Both Docs footers advertise `m`, each naming where it goes, over the
+    /// final `[1-8/D]` / `[1-8]` tabs hint.
+    #[test]
+    fn the_docs_footers_advertise_the_milestones_switch() {
+        let files = footer_text(&DetailSubView::Browse);
+        assert!(files.contains("[m]ilestones  "), "{files}");
+        let milestones = footer_text(&DetailSubView::Archive);
+        assert!(milestones.contains("[m] files  "), "{milestones}");
+
+        for view in [DetailSubView::Browse, DetailSubView::Archive] {
+            assert!(
+                footer_text_at(&view, 120, true).starts_with("  [Esc]back  [1-8/D]tabs  "),
+                "{view:?}"
+            );
+            assert!(
+                footer_text_at(&view, 120, false).starts_with("  [Esc]back  [1-8]tabs  "),
+                "{view:?}"
+            );
+        }
+        // `m` is the Docs tab's key only.
+        assert!(!footer_text(&DetailSubView::RoadmapViz).contains("[m]"));
+    }
+
+    /// From either Docs sub-tab, `Right` reaches the Driver tab with the
+    /// experimental surfaces on, and stays put with them off.
+    #[test]
+    fn right_from_docs_reaches_the_driver_tab_only_with_the_flag_on() {
+        for docs in [DetailSubView::Browse, DetailSubView::Archive] {
+            let mut ctx = test_ctx().with_experimental(true);
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            ctx.detail_sub_view_per_project
+                .insert(TEST_ALIAS.to_string(), docs.clone());
+            press(&mut screen, &mut ctx, KeyCode::Right);
+            assert_eq!(stored_view(&ctx), DetailSubView::Driver, "from {docs:?}");
+
+            let mut ctx = test_ctx().with_experimental(false);
+            ctx.detail_sub_view_per_project
+                .insert(TEST_ALIAS.to_string(), docs.clone());
+            press(&mut screen, &mut ctx, KeyCode::Right);
+            assert_eq!(stored_view(&ctx), docs, "from {docs:?}, flag off");
         }
     }
 
@@ -15377,6 +15462,9 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('g'));
         press(&mut screen, &mut ctx, KeyCode::Enter);
         assert_eq!(stored_view(&ctx), DetailSubView::Archive);
+        // Docs › Milestones, with the strip marking it (D-B04).
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(text.contains("[Milestones]"), "{text}");
     }
 
     #[test]
