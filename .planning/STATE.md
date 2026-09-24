@@ -132,7 +132,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-23 — Phase 24 complete, transitioned to Phase 19
+Last activity: 2026-09-24 - Completed quick task 260924-drx: Backlog tab Enter-to-focus scrollable content pane + edit opens ROADMAP.md section
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -502,6 +502,7 @@ Recent decisions affecting current work:
 | 260923-lr9 | Detect interactive Codex CLI sessions (detection + badge + tmux switch, no resume) | 2026-09-23 | 45c2138 | .planning/quick/260923-lr9-detect-interactive-codex-cli-sessions-detection-badge-tmux-s |
 | 260923-lra | README macOS note: /proc-based session detection, best-effort Codex | 2026-09-23 | 25dce1e | .planning/quick/260923-lra-readme-macos-note-live-session-detection-claude-and-codex-re |
 | 260923-md1 | Roadmap tab renders phases as a left-to-right dependency graph (pure layout in `src/ui/roadmap_graph.rs`: longest-path layering, chain rows, ┬/└/┘ fan-out/fan-in junctions, reference rows for undrawable edges, cycle/unknown-dep notes) with milestone boundaries (ROADMAP `Phases A-B` ranges → header band + row-end `(M3 → M4: name)` labels, active milestone highlighted); graph default, `v` toggles the old box list | 2026-09-23 | 10a0bf3 | [260923-md1-roadmap-dependency-graph-view-with-miles](./quick/260923-md1-roadmap-dependency-graph-view-with-miles/) |
+| 260924-drx | Backlog tab: Enter focuses a scrollable content pane (side-by-side at >=100 cols), j/k PgUp/PgDn scroll it, Enter/Esc close; `e` opens ROADMAP.md at the item's heading line (`$EDITOR +N`) | 2026-09-24 | a723b3a | [260924-drx-backlog-tab-enter-to-focus-scrollable-co](./quick/260924-drx-backlog-tab-enter-to-focus-scrollable-co/) |
 
 ## Session Continuity
 

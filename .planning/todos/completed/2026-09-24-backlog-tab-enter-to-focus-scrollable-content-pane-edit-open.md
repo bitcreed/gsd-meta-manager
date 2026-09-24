@@ -3,6 +3,8 @@ created: 2026-09-24T06:14:50.145Z
 title: "Backlog tab: Enter-to-focus scrollable content pane + edit opens ROADMAP.md section"
 area: ui
 severity: major
+completed: 2026-09-24
+resolved_by: quick 260924-drx (67e318a..a723b3a)
 files:
   - src/ui/screens/detail.rs:2743-2745
   - src/ui/screens/detail.rs:3796-3808
