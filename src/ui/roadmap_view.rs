@@ -112,6 +112,12 @@ pub fn panes(area: Rect) -> (Rect, Rect) {
     }
 }
 
+/// The first visible row that keeps `row` inside a window of `visible` rows
+/// starting near `offset`. (RED stub: returns `offset` unchanged.)
+pub fn keep_visible(offset: usize, _row: usize, _visible: usize) -> usize {
+    offset
+}
+
 // ---------------------------------------------------------------------------
 // Char-based text helpers
 // ---------------------------------------------------------------------------
@@ -882,7 +888,9 @@ mod tests {
     use super::*;
     use crate::state_reader::PhaseMarker;
     use crate::text::Untrusted;
-    use crate::ui::roadmap_graph::{layout_list, BandInput, ListInput, ListNode};
+    use crate::ui::roadmap_graph::{
+        self, layout_list, BandInput, ListInput, ListNode, BAND_FILL, BAND_FOLDED, BAND_OPEN,
+    };
     use std::collections::HashSet;
 
     const D: PhaseMarker = PhaseMarker::Done;
@@ -1102,6 +1110,445 @@ mod tests {
             .expect("a Start now line");
         for needle in ["Slot picker UI (active)", PARALLEL_SEP, "Calendar sync"] {
             assert!(start.contains(needle), "{needle:?} missing: {start}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2: stacked layout, bands, lane cap, scrolling, empty states
+    // -----------------------------------------------------------------------
+
+    /// sentriq (Mockup C): the synthetic `v0.12` band and a shipped `v0.11`.
+    const SENTRIQ: Spec<'static> = &[
+        ("9", "Routine Event Logging (Schema v18)", &[], C, Some(1)),
+        (
+            "10",
+            "The Air Box Test on a Fake Transport",
+            &["9"],
+            F,
+            Some(1),
+        ),
+        (
+            "11",
+            "First Supervised On-Vehicle Run",
+            &["10", "9"],
+            F,
+            Some(1),
+        ),
+        ("12", "Two-Truck Hardware Validation", &[], F, Some(1)),
+    ];
+
+    const SENTRIQ_BANDS: Bands<'static> = &[
+        ("v0.11 Phases", true, 4),
+        ("v0.12 Actuation Routines", false, 4),
+    ];
+
+    const SENTRIQ_GOALS: &[(&str, &str)] = &[(
+        "12",
+        "On real hardware, both trucks work from one phone with separately scoped data, and a first real F350 drive produces a logged session and a completed DTC scan.",
+    )];
+
+    /// daily-vow v1.5 (Mockup B): five shipped milestones listing no phases.
+    const DAILY_VOW: Spec<'static> = &[
+        ("18", "Calibration Foundation", &["17"], D, Some(5)),
+        ("19", "Effective Profile Resolution", &["18"], D, Some(5)),
+        (
+            "20",
+            "Notification Scheduling Extraction & Detection",
+            &["19"],
+            D,
+            Some(5),
+        ),
+        ("21", "Probes End-to-End", &["20"], D, Some(5)),
+        (
+            "22",
+            "Response-Weighted Nudge Selection",
+            &["21"],
+            D,
+            Some(5),
+        ),
+        (
+            "23",
+            "Transparency, Reset & History",
+            &["21", "20"],
+            C,
+            Some(5),
+        ),
+    ];
+
+    const DAILY_VOW_BANDS: Bands<'static> = &[
+        ("v1.0 MVP", true, 3),
+        ("v1.1 Daily Rhythm", true, 2),
+        ("v1.2 Learning", true, 4),
+        ("v1.3 Adaptive Timing", true, 4),
+        ("v1.4 Probes", true, 4),
+        ("v1.5 Closing the Loop", false, 6),
+        ("Requirement Coverage", false, 0),
+    ];
+
+    fn daily_vow(toggles: HashSet<BandKey>) -> RoadmapModel {
+        build(
+            DAILY_VOW,
+            DAILY_VOW_BANDS,
+            &Extras {
+                plans: &[
+                    ("18", (8, 8)),
+                    ("19", (6, 6)),
+                    ("20", (5, 5)),
+                    ("21", (5, 5)),
+                    ("22", (5, 5)),
+                ],
+                toggles,
+                ..Extras::default()
+            },
+        )
+    }
+
+    /// Lane glyphs and status glyphs: what must never appear past the cap.
+    const LANE_GLYPHS: &str = "│─├┤┬┴┐┌┘└┼●◉○◌";
+
+    /// A row's cells after the list border and padding.
+    fn body(row: &str) -> Vec<char> {
+        row.chars().skip(2).collect()
+    }
+
+    #[test]
+    fn mockup_c_stacked_at_80_columns() {
+        let model = build(
+            SENTRIQ,
+            SENTRIQ_BANDS,
+            &Extras {
+                plans: &[("9", (0, 2))],
+                goals: SENTRIQ_GOALS,
+                ..Extras::default()
+            },
+        );
+        let cursor = phase("12");
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, Some(&cursor), 80, 20, &mut state);
+        let (list, detail) = panes(Rect::new(0, 0, 80, 20));
+        assert!(detail.y > list.y, "{list:?} {detail:?}");
+        assert_eq!((list.width, detail.width), (80, 80));
+
+        let joined = rect_text(&buf, detail).join("\n");
+        for needle in [
+            "Two-Truck Hardware Validation",
+            "nothing declared",
+            "no edge either way; can run any time",
+            "j/k move",
+        ] {
+            assert!(joined.contains(needle), "{needle:?} missing:\n{joined}");
+        }
+        let list_text = rect_text(&buf, list).join("\n");
+        assert!(
+            list_text.contains("Two-Truck Hardware Validation"),
+            "{list_text}"
+        );
+    }
+
+    #[test]
+    fn mockup_b_implied_dep_and_shipped_summary_at_120() {
+        let model = daily_vow(HashSet::new());
+        let cursor = phase("23");
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, Some(&cursor), 120, 28, &mut state);
+        let (list, detail) = panes(Rect::new(0, 0, 120, 28));
+
+        let detail_text = rect_text(&buf, detail);
+        let joined = detail_text.join("\n");
+        for needle in ["(implied via 21)", "nothing (last in v1.5)"] {
+            assert!(joined.contains(needle), "{needle:?} missing:\n{joined}");
+        }
+        let parallel = between(&detail_text, "Parallel", "\u{23CE}");
+        assert!(parallel.contains("22"), "{parallel}");
+
+        let list_text = rect_text(&buf, list);
+        let row_20: Vec<&String> = list_text
+            .iter()
+            .filter(|l| l.contains(" 20 ") && l.contains("Notification"))
+            .collect();
+        assert_eq!(row_20.len(), 1, "{list_text:#?}");
+        assert!(row_20[0].contains(MARK_IMPLIED), "{}", row_20[0]);
+        let name_end = row_20[0]
+            .trim_end_matches('│')
+            .trim_end()
+            .split("  ")
+            .find(|part| part.contains("Notification"))
+            .unwrap_or_default()
+            .to_string();
+        assert!(name_end.ends_with(ELLIPSIS), "{name_end:?}");
+
+        let summary: Vec<&String> = list_text
+            .iter()
+            .filter(|l| l.contains("5 milestones \u{00B7} 17 phases shipped"))
+            .collect();
+        assert_eq!(summary.len(), 1, "{list_text:#?}");
+        assert!(summary[0].contains(BAND_FOLDED), "{}", summary[0]);
+    }
+
+    #[test]
+    fn band_labels_are_drawn_once() {
+        let m4 = BandKey::Named("m4 support chat".to_string());
+        let model = build(
+            BOOKLY,
+            BOOKLY_BANDS,
+            &Extras {
+                toggles: std::iter::once(m4).collect(),
+                ..Extras::default()
+            },
+        );
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, Some(&phase("12")), 120, 28, &mut state);
+        let (list, _) = panes(Rect::new(0, 0, 120, 28));
+        let list_text = rect_text(&buf, list);
+        for (label, glyph) in [
+            ("M3 Live booking", BAND_OPEN),
+            ("M4 Support chat", BAND_FOLDED),
+            ("M5 Web", BAND_OPEN),
+        ] {
+            let rows: Vec<&String> = list_text.iter().filter(|l| l.contains(label)).collect();
+            assert_eq!(rows.len(), 1, "{label}: {list_text:#?}");
+            assert!(rows[0].contains(glyph), "{label}: {}", rows[0]);
+            assert!(rows[0].contains(BAND_FILL), "{label}: {}", rows[0]);
+        }
+
+        // The unfolded shipped summary: every shipped label on one row too.
+        let model = daily_vow(std::iter::once(BandKey::Shipped).collect());
+        let buf = render(&model, Some(&phase("23")), 120, 28, &mut state);
+        let list_text = rect_text(&buf, list);
+        for (label, ..) in DAILY_VOW_BANDS.iter().filter(|b| b.1) {
+            let rows = list_text.iter().filter(|l| l.contains(label)).count();
+            assert_eq!(rows, 1, "{label}: {list_text:#?}");
+        }
+        let summary = list_text
+            .iter()
+            .find(|l| l.contains("phases shipped"))
+            .expect("the shipped summary row");
+        assert!(summary.contains(BAND_OPEN), "{summary}");
+    }
+
+    /// `1` forks into eight children that all merge into `10`: eight lanes
+    /// run side by side.
+    fn eight_lanes() -> RoadmapModel {
+        const WIDE: Spec<'static> = &[
+            ("1", "Root", &[], C, None),
+            ("2", "Alpha", &["1"], F, None),
+            ("3", "Bravo", &["1"], F, None),
+            ("4", "Charlie", &["1"], F, None),
+            ("5", "Delta", &["1"], F, None),
+            ("6", "Echo", &["1"], F, None),
+            ("7", "Foxtrot", &["1"], F, None),
+            ("8", "Golf", &["1"], F, None),
+            ("9", "Hotel", &["1"], F, None),
+            (
+                "10",
+                "Merge",
+                &["2", "3", "4", "5", "6", "7", "8", "9"],
+                F,
+                None,
+            ),
+        ];
+        build(WIDE, &[], &Extras::default())
+    }
+
+    #[test]
+    fn lanes_past_the_cap_collapse_into_one_overflow_column() {
+        let model = eight_lanes();
+        let widest = model
+            .rows
+            .iter()
+            .map(|r| lanes_of(r).chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest >= 15,
+            "the fixture must draw 8 lanes: {:#?}",
+            roadmap_graph::lane_text(&model)
+        );
+        for (w, cap) in [(80u16, LANE_CAP_NARROW), (120, LANE_CAP_WIDE)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&phase("1")), w, 40, &mut state);
+            let (list, _) = panes(Rect::new(0, 0, w, 40));
+            let list_text = rect_text(&buf, list);
+            // Skip the top border, Start-now and header rows and the bottom border.
+            let rows: Vec<Vec<char>> = list_text[3..list_text.len() - 1]
+                .iter()
+                .map(|r| body(r))
+                .collect();
+            assert!(
+                rows.iter().any(|r| r.contains(&'\u{2506}')),
+                "{w}: no overflow column in {list_text:#?}"
+            );
+            for row in &rows {
+                let past: String = row.iter().skip(2 * cap + 1).collect();
+                assert!(
+                    !past.chars().any(|c| LANE_GLYPHS.contains(c)),
+                    "{w}: lane glyph past the cap in {:?}",
+                    row.iter().collect::<String>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keep_visible_clamps_both_ways() {
+        assert_eq!(keep_visible(0, 30, 10), 21);
+        assert_eq!(keep_visible(25, 3, 10), 3);
+        assert_eq!(keep_visible(5, 8, 10), 5);
+    }
+
+    #[test]
+    fn the_cursor_row_is_scrolled_into_view() {
+        let ids: Vec<String> = (1..=30).map(|i| i.to_string()).collect();
+        let names: Vec<String> = (1..=30).map(|i| format!("Step {i}")).collect();
+        let deps: Vec<Vec<&str>> = (1..=30)
+            .map(|i| {
+                if i == 1 {
+                    Vec::new()
+                } else {
+                    vec![ids[i - 2].as_str()]
+                }
+            })
+            .collect();
+        let spec: Vec<(&str, &str, &[&str], PhaseMarker, Option<usize>)> = (0..30)
+            .map(|i| {
+                let marker = if i == 29 { C } else { D };
+                (
+                    ids[i].as_str(),
+                    names[i].as_str(),
+                    deps[i].as_slice(),
+                    marker,
+                    None,
+                )
+            })
+            .collect();
+        let model = build(&spec, &[], &Extras::default());
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, Some(&phase("30")), 120, 12, &mut state);
+        let (list, _) = panes(Rect::new(0, 0, 120, 12));
+        assert_eq!(state.list_rows, 8);
+        assert_eq!(state.offset, 22);
+        let list_text = rect_text(&buf, list);
+        let row = rows_naming(&list_text, "Step 30");
+        assert!(row[0].contains(MARK_SELECTED), "{list_text:#?}");
+    }
+
+    #[test]
+    fn an_empty_model_explains_itself() {
+        let model = RoadmapModel::default();
+        for (w, h) in [(80u16, 20u16), (120, 28)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, None, w, h, &mut state);
+            let text = rect_text(&buf, Rect::new(0, 0, w, h)).join("\n");
+            assert!(text.contains("No roadmap data available"), "{text}");
+            assert_eq!(state.list_rows, 0);
+        }
+    }
+
+    #[test]
+    fn a_planned_phase_says_so() {
+        let spec: Spec<'_> = &[("14", "Supervised first live booking", &[], F, None)];
+        let model = build(
+            spec,
+            &[],
+            &Extras {
+                planned: &["14"],
+                ..Extras::default()
+            },
+        );
+        for (w, h) in [(120u16, 28u16), (80, 20)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&phase("14")), w, h, &mut state);
+            let (_, detail) = panes(Rect::new(0, 0, w, h));
+            let joined = rect_text(&buf, detail).join("\n");
+            assert!(
+                joined.contains("planned (not a GSD phase)"),
+                "{w}:\n{joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stage_badge_is_in_the_status_line() {
+        let spec: Spec<'_> = &[("7", "Queue", &[], C, None)];
+        let model = build(
+            spec,
+            &[],
+            &Extras {
+                plans: &[("7", (2, 3))],
+                badges: &[("7", "[Executing 2/3]")],
+                ..Extras::default()
+            },
+        );
+        for (w, h) in [(120u16, 28u16), (80, 20)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&phase("7")), w, h, &mut state);
+            let (_, detail) = panes(Rect::new(0, 0, w, h));
+            let text = rect_text(&buf, detail);
+            let status = text
+                .iter()
+                .find(|l| l.contains("active"))
+                .unwrap_or_else(|| panic!("{w}: no status line in {text:#?}"));
+            assert!(status.contains("[Executing 2/3]"), "{w}: {status}");
+            assert!(!status.contains("[["), "{w}: {status}");
+        }
+    }
+
+    #[test]
+    fn a_band_cursor_has_its_own_detail_pane() {
+        let model = bookly();
+        let key = model.bands[0].key.clone();
+        let cursor = CursorTarget::Band(key);
+        for (w, h) in [(120u16, 28u16), (80, 30)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&cursor), w, h, &mut state);
+            let (list, detail) = panes(Rect::new(0, 0, w, h));
+            let joined = rect_text(&buf, detail).join("\n");
+            for needle in [
+                " M3 ",
+                "M3 Live booking",
+                "2/8 phases done",
+                "Space fold/unfold",
+            ] {
+                assert!(
+                    joined.contains(needle),
+                    "{w}: {needle:?} missing:\n{joined}"
+                );
+            }
+            let list_text = rect_text(&buf, list);
+            let band_row = list_text
+                .iter()
+                .find(|l| l.contains("M3 Live booking"))
+                .expect("the M3 band row");
+            assert!(
+                buf.cell((list.x + 3, list.y + 3))
+                    .is_some_and(|c| c.modifier.contains(Modifier::REVERSED)),
+                "{w}: the band row under the cursor is drawn reversed: {band_row}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shipped_summary_cursor_lists_its_milestones() {
+        let model = daily_vow(HashSet::new());
+        let cursor = CursorTarget::Band(BandKey::Shipped);
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, Some(&cursor), 120, 28, &mut state);
+        let (_, detail) = panes(Rect::new(0, 0, 120, 28));
+        let text = rect_text(&buf, detail);
+        let joined = text.join("\n");
+        assert!(joined.contains(" Shipped "), "{joined}");
+        assert!(joined.contains("\u{23CE} open milestones"), "{joined}");
+        for (label, _, declared) in DAILY_VOW_BANDS.iter().filter(|b| b.1) {
+            let line = text
+                .iter()
+                .find(|l| l.contains(label))
+                .unwrap_or_else(|| panic!("{label} missing:\n{joined}"));
+            let count = if *declared == 1 {
+                "1 phase".to_string()
+            } else {
+                format!("{declared} phases")
+            };
+            assert!(line.contains(&count), "{label}: {line}");
         }
     }
 }
