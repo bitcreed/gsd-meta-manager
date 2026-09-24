@@ -973,62 +973,84 @@ mod tests {
         );
     }
 
-    /// The same two directions at `roadmap_graph.rs` (quick 260923-md1), the
-    /// Roadmap tab's default view: a clean current-phase name reaches the
-    /// CELLS verbatim, and one carrying ESC / U+202E reaches them as its
-    /// `render_for_terminal` form, which differs from the raw.
+    /// The same two directions at `roadmap_view.rs` (phase 24), the Roadmap
+    /// tab's master/detail widget: a clean current-phase name reaches the
+    /// CELLS of the detail pane's name line verbatim, and one carrying ESC /
+    /// U+202E reaches them as its `render_for_terminal` form, which differs
+    /// from the raw.
     #[test]
-    fn the_roadmap_graph_renders_a_clean_phase_name_unchanged_and_a_control_one_differently() {
-        use super::roadmap_graph::{layout_graph, GraphNode, RoadmapGraphWidget};
+    fn the_roadmap_view_renders_a_clean_phase_name_unchanged_and_a_control_one_differently() {
+        use super::roadmap_graph::{layout_list, CursorTarget, ListInput, ListNode};
+        use super::roadmap_view::{panes, RoadmapView, RoadmapViewState};
         use crate::state_reader::PhaseMarker;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
-        use ratatui::widgets::Widget;
+        use ratatui::widgets::StatefulWidget;
+        use std::collections::HashSet;
 
-        fn rendered(name: &str) -> String {
+        /// `(the detail pane's name line inside its border, every cell)`.
+        fn rendered(name: &str) -> (String, String) {
             let deps: Vec<String> = Vec::new();
-            let nodes = [GraphNode {
-                id: "1",
-                name,
-                deps: &deps,
-                milestone: None,
-            }];
-            let layout = layout_graph(&nodes, &[], Some(0));
-            let area = Rect::new(0, 0, 60, 8);
+            let input = ListInput {
+                nodes: vec![ListNode {
+                    id: "1",
+                    name,
+                    deps: &deps,
+                    band: None,
+                    marker: PhaseMarker::Current,
+                    plans: None,
+                    goal: None,
+                    planned: false,
+                    badge: None,
+                }],
+                bands: Vec::new(),
+            };
+            let model = layout_list(&input, &HashSet::new());
+            let cursor = CursorTarget::Phase("1".to_string());
+            let area = Rect::new(0, 0, 120, 20);
             let mut buffer = Buffer::empty(area);
-            RoadmapGraphWidget {
-                layout: &layout,
-                markers: &[PhaseMarker::Current],
-                scroll_offset: 0,
-            }
-            .render(area, &mut buffer);
-            buffer
+            StatefulWidget::render(
+                RoadmapView {
+                    model: &model,
+                    cursor: Some(&cursor),
+                },
+                area,
+                &mut buffer,
+                &mut RoadmapViewState::default(),
+            );
+            let (_, detail) = panes(area);
+            // Row 0 is the border; row 1 the name line, between `│ ` and ` │`.
+            let name_line: String = (detail.x + 2..detail.right() - 2)
+                .map(|x| buffer.cell((x, detail.y + 1)).map_or(" ", |c| c.symbol()))
+                .collect();
+            let all = buffer
                 .content()
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
-                .collect()
+                .collect();
+            (name_line.trim_end().to_string(), all)
         }
 
         // Direction 1 — a clean name reaches the cells exactly as written.
         let clean = "Injection Hardening";
         assert_eq!(String::from(render_for_terminal(clean)), clean);
-        let clean_text = rendered(clean);
-        assert!(
-            clean_text.contains(&format!("▶ P1: {clean}")),
-            "a clean phase name must reach the cells verbatim; got {clean_text:?}"
+        let (clean_line, clean_text) = rendered(clean);
+        assert_eq!(
+            clean_line, clean,
+            "a clean phase name must reach the cells verbatim"
         );
 
         // Direction 2 — a hostile name reaches them escaped, not raw.
         let hostile = "Injection\u{1b}[31m \u{202E}Hardening";
         let shown = String::from(render_for_terminal(hostile));
         assert_ne!(shown, hostile, "the fixture must need escaping");
-        let hostile_text = rendered(hostile);
-        assert!(
-            hostile_text.contains(&format!("▶ P1: {shown}")),
-            "the hostile name must arrive as its render_for_terminal form; got \
-             {hostile_text:?}"
+        let (hostile_line, hostile_text) = rendered(hostile);
+        assert_eq!(
+            hostile_line, shown,
+            "the hostile name must arrive as its render_for_terminal form"
         );
         assert!(!hostile_text.contains('\u{1b}') && !hostile_text.contains('\u{202E}'));
+        assert_ne!(hostile_line, clean_line);
         assert_ne!(hostile_text, clean_text);
     }
 }

@@ -1897,4 +1897,159 @@ mod tests {
             assert!(line.contains(&count), "{label}: {line}");
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Task 3: escaping, tiny sizes, no bleed, multibyte truncation
+    // -----------------------------------------------------------------------
+
+    /// Every cell's symbol, row by row.
+    fn buffer_text(buf: &Buffer) -> String {
+        rect_text(buf, buf.area).join("\n")
+    }
+
+    fn escaped(raw: &str) -> String {
+        String::from(crate::text::render_for_terminal(raw))
+    }
+
+    const HOSTILE_ID: &str = "7\u{202E}";
+    const HOSTILE_NAME: &str = "Evil\u{1b}[31m \u{202E}name";
+    const HOSTILE_GOAL: &str = "Goal\u{1b}[2J \u{202E}text";
+    const HOSTILE_LABEL: &str = "M9\u{1b}[31m \u{202E}Hostile";
+
+    fn hostile() -> RoadmapModel {
+        let spec: Spec<'_> = &[
+            ("6", "Clean", &[], D, Some(0)),
+            (HOSTILE_ID, HOSTILE_NAME, &["6"], C, Some(0)),
+        ];
+        build(
+            spec,
+            &[(HOSTILE_LABEL, false, 2)],
+            &Extras {
+                goals: &[(HOSTILE_ID, HOSTILE_GOAL)],
+                badges: &[(HOSTILE_ID, "[Exec\u{1b}[31m 1/2]")],
+                ..Extras::default()
+            },
+        )
+    }
+
+    #[test]
+    fn roadmap_view_stores_and_draws_only_escaped_text() {
+        for raw in [HOSTILE_ID, HOSTILE_NAME, HOSTILE_GOAL, HOSTILE_LABEL] {
+            assert_ne!(escaped(raw), raw, "the fixture {raw:?} must need escaping");
+        }
+        let model = hostile();
+        let key = model.phases[1].key.clone();
+        let band = CursorTarget::Band(model.bands[0].key.clone());
+        let on_phase = CursorTarget::Phase(key);
+        for (w, h) in [(120u16, 28u16), (80, 20)] {
+            for cursor in [&on_phase, &band] {
+                let mut state = RoadmapViewState::default();
+                let buf = render(&model, Some(cursor), w, h, &mut state);
+                for cell in buf.content() {
+                    let symbol = cell.symbol();
+                    assert!(
+                        !symbol.contains('\u{1b}') && !symbol.contains('\u{202E}'),
+                        "{w}x{h}: raw control in a cell: {symbol:?}"
+                    );
+                }
+                let text = buffer_text(&buf);
+                assert!(text.contains(&escaped(HOSTILE_NAME)), "{w}:\n{text}");
+                assert!(text.contains(&escaped(HOSTILE_LABEL)), "{w}:\n{text}");
+            }
+        }
+        // The side-by-side phase pane shows the escaped id, goal and badge.
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, Some(&on_phase), 120, 28, &mut state);
+        let text = buffer_text(&buf);
+        for raw in [HOSTILE_ID, HOSTILE_GOAL, "[Exec\u{1b}[31m 1/2]"] {
+            assert!(text.contains(&escaped(raw)), "{raw:?}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn roadmap_view_never_panics_at_tiny_sizes() {
+        let models = [
+            bookly(),
+            daily_vow(HashSet::new()),
+            eight_lanes(),
+            hostile(),
+            RoadmapModel::default(),
+        ];
+        for model in &models {
+            let mut cursors = vec![None];
+            cursors.extend(model.visible_targets().into_iter().take(3).map(Some));
+            if let Some(band) = model.bands.first() {
+                cursors.push(Some(CursorTarget::Band(band.key.clone())));
+            }
+            cursors.push(Some(CursorTarget::Band(BandKey::Shipped)));
+            for cursor in &cursors {
+                for (w, h) in [(1u16, 1u16), (5, 3), (10, 3), (20, 5), (40, 8)] {
+                    let mut state = RoadmapViewState {
+                        offset: 99,
+                        list_rows: 0,
+                    };
+                    render(model, cursor.as_ref(), w, h, &mut state);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn roadmap_view_never_draws_outside_its_rect() {
+        let model = bookly();
+        let cursor = phase("12");
+        for (full, inner) in [
+            (Rect::new(0, 0, 20, 10), Rect::new(3, 2, 5, 3)),
+            (Rect::new(0, 0, 140, 40), Rect::new(5, 3, 120, 30)),
+            (Rect::new(0, 0, 100, 30), Rect::new(7, 4, 85, 22)),
+        ] {
+            let mut buf = Buffer::empty(full);
+            for y in full.y..full.bottom() {
+                buf.set_string(0, y, "x".repeat(usize::from(full.width)), Style::default());
+            }
+            let before = buf.clone();
+            let mut state = RoadmapViewState::default();
+            StatefulWidget::render(
+                RoadmapView {
+                    model: &model,
+                    cursor: Some(&cursor),
+                },
+                inner,
+                &mut buf,
+                &mut state,
+            );
+            for y in full.y..full.bottom() {
+                for x in full.x..full.right() {
+                    if !inner.contains(ratatui::layout::Position { x, y }) {
+                        assert_eq!(
+                            buf.cell((x, y)),
+                            before.cell((x, y)),
+                            "bled at ({x},{y}) rendering into {inner:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_multibyte_name_truncates_on_char_boundaries() {
+        let name: String = "\u{00DC}berpr\u{00FC}fung \u{65E5}\u{672C}\u{8A9E} \u{2713} "
+            .chars()
+            .cycle()
+            .take(70)
+            .collect();
+        assert_eq!(name.chars().count(), 70);
+        assert!(name.len() > 70, "the fixture must be multibyte");
+        let spec: Vec<Row<'_>> = vec![("1", name.as_str(), &[], C, None)];
+        let model = build(&spec, &[], &Extras::default());
+        for (w, h) in [(80u16, 20u16), (120, 28), (61, 12)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&phase("1")), w, h, &mut state);
+            let (list, _) = panes(Rect::new(0, 0, w, h));
+            let list_text = rect_text(&buf, list);
+            let rows = rows_naming(&list_text, "\u{00DC}berpr\u{00FC}fung");
+            assert!(rows[0].contains(ELLIPSIS), "{w}: {}", rows[0]);
+        }
+    }
 }
