@@ -755,7 +755,27 @@ Plans:
   - The Archive → Docs move touches `render_archive_tab`, which a concurrent `/gsd-debug` session is fixing (Archive "Loading..." bug). That work is sequenced last and must re-read `detail.rs` at execution time
   - Tab renumbering is a wide, mechanical change across tests and help text; a missed consumer is a silent wrong-tab bug
 
-**Plans**: TBD
+**Plans**: 7 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 24-01-PLAN.md — Parser: Goal lines, `#### Build phase N` placeholder phases, shipped-milestone facts, sanitised real-roadmap fixtures (wave 1)
+- [ ] 24-02-PLAN.md — Layout engine: transitive reduction, git-log lanes, milestone bands, per-phase facts and cursor navigation (wave 1)
+- [ ] 24-03-PLAN.md — Tab renumber: Roadmap first, Pipeline→Phases at 2, PhaseList removed, Archive at an interim ninth slot (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 24-04-PLAN.md — Master/detail widget: list + detail pane, side-by-side ≥100 cols, stacked below (wave 2)
+- [ ] 24-05-PLAN.md — Roadmap cursor and keys, ProjectState adapter, selection shared with Phases (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 24-06-PLAN.md — Render wiring, PhaseList header content, fixture defect pins, escape probe, legacy graph removed (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 24-07-PLAN.md — Archive folded into Docs › Milestones, final eight tabs, five archive tests ported, docs (wave 4, last per D-B06)
 
 ## Progress
 
@@ -771,7 +791,7 @@ Plans:
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
-| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 0/? | Not started | - |
+| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 0/7 | Planned | - |
 
 ## Backlog
 

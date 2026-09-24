@@ -1,21 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.7.2
-milestone_name: Release Gate Repair
-current_phase: 22
-current_phase_name: container-execution-target
+current_phase: 24
+current_phase_name: Roadmap Tab Redesign & Detail-Tab Consolidation
 status: shipped
 stopped_at: Phase 24 context gathered
-last_updated: "2026-09-24T01:42:24.087Z"
+last_updated: "2026-09-24T02:52:01.883Z"
 last_activity: 2026-09-23
 last_activity_desc: "Cut v1.7.2 (Release Gate Repair): Cargo.toml 1.7.1 -> 1.7.2, cargo update relocked only this crate, and ./scripts/pre-tag-check.sh --container v1.7.2 exited 0 with all five gates PASS (48 suites / 2121 passed / 0 failed / 15 ignored, git 2.55.0 MATCH) — the first time the local gate and the runner agree."
-state_head: 8d243189d754d8e8b6ee6ea149b9ec7e7c60e14f
+state_head: 46d7e82756b7f3b6f206fe4e143359a5ebf77fa4
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 116
+  total_plans: 7
   completed_plans: 112
-  percent: 60
+milestone_name: Release Gate Repair
 ---
 
 # Project State
@@ -97,7 +96,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
-Phase: 22 (container-execution-target) — READY TO EXECUTE
+Phase: 24 (Roadmap Tab Redesign & Detail-Tab Consolidation) — READY TO EXECUTE
 Plan: 12 of 12 (12 summaries on disk)
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).

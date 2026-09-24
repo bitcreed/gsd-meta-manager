@@ -24,7 +24,7 @@ Out of scope: mouse click-to-select (deferred), any change to Phase 21 or other 
 - **D-A01: Left pane is a phase list** with a narrow git-log-style graph column on the left. One row per phase: status glyph, lane lines, phase number, full name (truncated with `…`), plans done/total, wave `W<n>`.
 - **D-A02: Right pane is a detail pane** for the selected phase: name, milestone, wave, status, a **Goal** paragraph, **Needs** (deps, each with its status glyph), **Unblocks**, and **Parallel** (other phases in the same wave).
 - **D-A03: Goal parsing is new** — parse `**Goal**:` in `src/state_reader/roadmap_md.rs`. **[INFERRED — audit]** Also accept the `**Goal:**` form (colon inside the bold), because `gsd phase.add` writes that form (see this repo's own ROADMAP history) while hand-written phases use `**Goal**:`.
-- **D-A04: Status glyphs:**
+- **D-A04:** Status glyphs:
 
   | Glyph | Meaning | Colour |
   |---|---|---|
@@ -36,7 +36,7 @@ Out of scope: mouse click-to-select (deferred), any change to Phase 21 or other 
 - **D-A05: Selection markers** — the selected row is reverse video with `▶`. Deps of the selection get `↑` (cyan); phases it unblocks get `↓` (magenta).
 - **D-A06: "Start now" line** at the top lists ready and active phases, with `║` meaning they can run in parallel.
 - **D-A07: Milestones** appear exactly once each, as a foldable header band (`▾ name done/total ━━━`). Shipped milestones start collapsed into one row (`▸ v1.0 … v1.4  N milestones · M phases shipped`).
-- **D-A08: Graph rules:**
+- **D-A08:** Graph rules:
   - Transitive reduction before layout. An implied dep is shown as a dim `·` marker, never as a duplicated node row.
   - Never place an unrelated node under a lane; give it a new lane.
   - Wave = longest dep path + 1.
@@ -46,7 +46,7 @@ Out of scope: mouse click-to-select (deferred), any change to Phase 21 or other 
 - **D-A11: Mouse click-to-select is OUT of scope** — deferred to a later follow-up.
 - **D-A12: Parser fix in scope** — the parser must also recognise `#### Build phase N` style headings. **[INFERRED — audit]** The brief placed ttbook at `/home/blk/projects/flutter/ttbook` using them for phases 8–18; the repo actually lives at `/home/blk/projects/python/ttbook`, where phases 8–13 use ordinary `### Phase N:` headings and phases **14–18** use `#### Build phase N (Milestone M): Title` under `### 📋 Milestone M "..." (planned)` headers. The parser must handle the `(Milestone M)` parenthetical between the number and the colon, and those phases belong to the milestone named by the enclosing `### 📋 Milestone` header.
 - **D-A13: No separate horizontal scrolling** — the list design covers the horizontal-scroll problem.
-- **D-A14: The redesign must eliminate these current bugs:**
+- **D-A14:** The redesign must eliminate these current bugs:
   - duplicated source nodes on long-edge rows (daily-vow `20` twice; sentriq `9 ─► 11` dim row);
   - the milestone label repeated on every row;
   - no selection cursor (the current highlight only marks the current phase);
@@ -56,10 +56,10 @@ Out of scope: mouse click-to-select (deferred), any change to Phase 21 or other 
 ### B. Detail-tab consolidation (LOCKED, user-approved)
 
 - **D-B01: New tab order** — `1:Roadmap · 2:Phases · 3:Backlog · 4:Git · 5:Queue · 6:Sess · 7:Cfg · 8:Docs`, plus the Driver tab (currently `DRIVER_TAB_INDEX`, reached via `Shift+D` and `←`/`→`). — **Reversibility:** costly — undo touches every tab-index consumer (label arrays, `tab_index`/`sub_view_from_index`, digit-key handlers, round-trip tests, help text, escape-guard tests, README).
-- **D-B02: Remove the old 1:Phases (PhaseList) tab.** The Roadmap supersedes it. Move its header (Path / Status / Milestone, plus the unreadable-state and recovered-state lines) to the top of the Roadmap tab. Audit PhaseList for anything else unique and preserve it (see D-B08 for the audit result).
-- **D-B03: Rename 5:Pipe (Pipeline) to "Phases"** and put it at position 2. Roadmap and Phases share the selected phase: `Enter` on a Roadmap row opens that phase in Phases.
-- **D-B04: Fold 8:Arch (Archive) into 0:Docs (Browse) as a sub-tab.** Docs gets sub-tabs "Files | Milestones"; Milestones is the existing archive drill-down. In the Roadmap, `Enter` on the collapsed shipped-milestones row jumps to Docs › Milestones.
-- **D-B05: Update every tab-index/number dependent:** the `tab_index` / `sub_view_from_index` round-trip tests; help text in `src/ui/screens/help.rs`; `render_escape_guard` tests; README (it lists tabs — `README.md:47-48` "10-tab detail view: Phases, Roadmap (ASCII DAG), Backlog, Git History, Pipeline, Queue, Sessions, Archive, Config, Docs"); persisted per-project view state (see D-B09).
+- **D-B02:** Remove the old 1:Phases (PhaseList) tab. The Roadmap supersedes it. Move its header (Path / Status / Milestone, plus the unreadable-state and recovered-state lines) to the top of the Roadmap tab. Audit PhaseList for anything else unique and preserve it (see D-B08 for the audit result).
+- **D-B03:** Rename 5:Pipe (Pipeline) to "Phases" and put it at position 2. Roadmap and Phases share the selected phase: `Enter` on a Roadmap row opens that phase in Phases.
+- **D-B04:** Fold 8:Arch (Archive) into 0:Docs (Browse) as a sub-tab. Docs gets sub-tabs "Files | Milestones"; Milestones is the existing archive drill-down. In the Roadmap, `Enter` on the collapsed shipped-milestones row jumps to Docs › Milestones.
+- **D-B05:** Update every tab-index/number dependent: the `tab_index` / `sub_view_from_index` round-trip tests; help text in `src/ui/screens/help.rs`; `render_escape_guard` tests; README (it lists tabs — `README.md:47-48` "10-tab detail view: Phases, Roadmap (ASCII DAG), Backlog, Git History, Pipeline, Queue, Sessions, Archive, Config, Docs"); persisted per-project view state (see D-B09).
 - **D-B06: Sequencing** — the Archive→Docs move must land AFTER the debug fix for the Archive "Loading..." bug (a concurrent `/gsd-debug` session is committing it to master; see `.planning/debug/archive-milestone-view-loading.md`). Plans must sequence that work **last** and **re-read `src/ui/screens/detail.rs` at execution time** rather than trusting line numbers captured during planning.
 
 ### Agent-inferred detail (audit these)
