@@ -1055,59 +1055,227 @@ pub struct EdgeWalk {
     pub target: String,
 }
 
+/// `t` with a phase key normalised through [`phase_key`] (`07` → `7`).
+fn normalized(t: &CursorTarget) -> CursorTarget {
+    match t {
+        CursorTarget::Phase(key) => CursorTarget::Phase(phase_key(key)),
+        CursorTarget::Band(_) => t.clone(),
+    }
+}
+
+/// Open `key` if `fold_toggles` folds it.
+fn open_band(key: &BandKey, fold_toggles: &mut HashSet<BandKey>) {
+    if is_folded(key, fold_toggles) && !fold_toggles.remove(key) {
+        fold_toggles.insert(key.clone());
+    }
+}
+
+/// Cursor navigation (D-A05, D-A10). Pure: targets are keys, never row
+/// indices, so a ROADMAP reload or a fold never moves the selection to a
+/// different phase (RESEARCH Pitfall 7). A returned target may be a
+/// fold-hidden phase (`h`/`l`, `[`/`]`); the caller then calls
+/// [`RoadmapModel::unfold_for`].
 impl RoadmapModel {
+    /// The cursor target a row stands for; connectors stand for none.
+    fn target_of(&self, row: &ListRow) -> Option<CursorTarget> {
+        match row {
+            ListRow::ShippedSummary { .. } => Some(CursorTarget::Band(BandKey::Shipped)),
+            ListRow::Band { key, .. } => Some(CursorTarget::Band(key.clone())),
+            ListRow::Phase { node, .. } => self
+                .phases
+                .get(*node)
+                .map(|p| CursorTarget::Phase(p.key.clone())),
+            ListRow::Connector { .. } => None,
+        }
+    }
+
+    /// Every phase in list order, hidden ones included: shipped bands, then
+    /// the other bands, each in band order, then band-less phases — the
+    /// order `layout_list` lays them out in.
+    fn list_order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.phases.len()).collect();
+        order.sort_by_key(|&u| match self.phases[u].band {
+            Some(b) => (usize::from(!self.bands[b].shipped), b, u),
+            None => (2, 0, u),
+        });
+        order
+    }
+
     /// Every row the cursor can rest on, in row order (connectors excluded).
     pub fn visible_targets(&self) -> Vec<CursorTarget> {
-        Vec::new()
+        self.rows
+            .iter()
+            .filter_map(|row| self.target_of(row))
+            .collect()
     }
 
-    /// The target a stored cursor resolves to.
-    pub fn resolve_cursor(&self, _stored: Option<&CursorTarget>) -> Option<CursorTarget> {
-        None
+    /// Where `t` can be shown: itself when visible; a fold-hidden phase or a
+    /// hidden shipped band resolves to the row that folds it.
+    fn settle(&self, t: &CursorTarget) -> Option<CursorTarget> {
+        let t = normalized(t);
+        if self.row_of(&t).is_some() {
+            return Some(t);
+        }
+        let band = match &t {
+            CursorTarget::Phase(key) => self.phases[self.phase_index(key)?].band?,
+            CursorTarget::Band(key) => self.bands.iter().position(|b| b.key == *key)?,
+        };
+        let own = CursorTarget::Band(self.bands.get(band)?.key.clone());
+        if own != t && self.row_of(&own).is_some() {
+            return Some(own);
+        }
+        let summary = CursorTarget::Band(BandKey::Shipped);
+        (self.bands[band].shipped && self.row_of(&summary).is_some()).then_some(summary)
     }
 
-    /// The visible row index of `t`.
-    pub fn row_of(&self, _t: &CursorTarget) -> Option<usize> {
-        None
+    /// The target a stored cursor resolves to: the stored target when the
+    /// model still has it (a fold-hidden phase → its band row, or the shipped
+    /// summary); otherwise the active phase, else the first phase not done,
+    /// else the first visible target. `None` only for an empty model.
+    pub fn resolve_cursor(&self, stored: Option<&CursorTarget>) -> Option<CursorTarget> {
+        if let Some(t) = stored.and_then(|t| self.settle(t)) {
+            return Some(t);
+        }
+        let order = self.list_order();
+        let pick = order
+            .iter()
+            .copied()
+            .find(|&u| self.phases[u].status == PhaseStatus::Active)
+            .or_else(|| {
+                order
+                    .iter()
+                    .copied()
+                    .find(|&u| self.phases[u].status != PhaseStatus::Done)
+            });
+        pick.and_then(|u| self.settle(&CursorTarget::Phase(self.phases[u].key.clone())))
+            .or_else(|| self.first_target())
     }
 
-    /// Move `delta` targets from `from`, clamped at both ends.
-    pub fn step(&self, from: &CursorTarget, _delta: isize) -> CursorTarget {
-        from.clone()
+    /// The visible row index of `t`, `None` when it is hidden or unknown.
+    pub fn row_of(&self, t: &CursorTarget) -> Option<usize> {
+        let t = normalized(t);
+        self.rows
+            .iter()
+            .position(|row| self.target_of(row).as_ref() == Some(&t))
     }
 
-    /// The first visible target.
+    /// Move `delta` targets from `from` (resolved first), clamped at both
+    /// ends; connector rows are never targets.
+    pub fn step(&self, from: &CursorTarget, delta: isize) -> CursorTarget {
+        let targets = self.visible_targets();
+        let Some(current) = self.resolve_cursor(Some(from)) else {
+            return from.clone();
+        };
+        let at = targets.iter().position(|t| *t == current).unwrap_or(0);
+        let to = at
+            .saturating_add_signed(delta)
+            .min(targets.len().saturating_sub(1));
+        targets.get(to).cloned().unwrap_or(current)
+    }
+
+    /// The first visible target (`g`).
     pub fn first_target(&self) -> Option<CursorTarget> {
-        None
+        self.visible_targets().into_iter().next()
     }
 
-    /// The last visible target.
+    /// The last visible target (`G`).
     pub fn last_target(&self) -> Option<CursorTarget> {
-        None
+        self.visible_targets().pop()
     }
 
-    /// The index in [`RoadmapModel::phases`] of the phase with `key`.
-    pub fn phase_index(&self, _key: &str) -> Option<usize> {
-        None
+    /// The index in [`RoadmapModel::phases`] of the phase with `key`
+    /// (matched through [`phase_key`], so `07` finds `7`).
+    pub fn phase_index(&self, key: &str) -> Option<usize> {
+        let key = phase_key(key);
+        self.phases.iter().position(|p| p.key == key)
     }
 
-    /// Follow an edge from `from` (`h` / `l`).
+    /// Follow an edge from `from` (`h`: needs then implied deps; `l`: the
+    /// phases it unblocks). Repeating with the returned walk while the cursor
+    /// still sits on `walk.target` cycles the ORIGIN's edges, wrapping; any
+    /// other walk restarts at the cursor. `None` when there is no edge.
     pub fn edge_jump(
         &self,
-        _from: &CursorTarget,
-        _walk: Option<&EdgeWalk>,
-        _dir: EdgeDir,
+        from: &CursorTarget,
+        walk: Option<&EdgeWalk>,
+        dir: EdgeDir,
     ) -> Option<(CursorTarget, EdgeWalk)> {
-        None
+        let CursorTarget::Phase(key) = from else {
+            return None;
+        };
+        let at = self.phase_index(key)?;
+        let continued = walk.and_then(|w| {
+            let on_target = self.phase_index(&w.target) == Some(at);
+            let origin = self.phase_index(&w.origin)?;
+            (w.dir == dir && on_target).then_some((origin, w.index.wrapping_add(1)))
+        });
+        let (origin, index) = continued.unwrap_or((at, 0));
+        let p = &self.phases[origin];
+        let candidates: Vec<usize> = match dir {
+            EdgeDir::Needs => p
+                .needs
+                .iter()
+                .copied()
+                .chain(p.implied.iter().map(|&(dep, _)| dep))
+                .collect(),
+            EdgeDir::Unblocks => p.unblocks.clone(),
+        };
+        if candidates.is_empty() {
+            return None;
+        }
+        let index = index % candidates.len();
+        let target = self.phases[candidates[index]].key.clone();
+        Some((
+            CursorTarget::Phase(target.clone()),
+            EdgeWalk {
+                origin: p.key.clone(),
+                dir,
+                index,
+                target,
+            },
+        ))
     }
 
-    /// The next / previous phase of the same wave (`]` / `[`).
-    pub fn wave_step(&self, _from: &CursorTarget, _forward: bool) -> Option<CursorTarget> {
-        None
+    /// The next (`forward`) or previous phase of the same wave in list
+    /// order, wrapping; `None` for a band row or a phase alone in its wave.
+    pub fn wave_step(&self, from: &CursorTarget, forward: bool) -> Option<CursorTarget> {
+        let CursorTarget::Phase(key) = from else {
+            return None;
+        };
+        let at = self.phase_index(key)?;
+        let wave = self.phases[at].wave;
+        let same: Vec<usize> = self
+            .list_order()
+            .into_iter()
+            .filter(|&u| self.phases[u].wave == wave)
+            .collect();
+        if same.len() < 2 {
+            return None;
+        }
+        let pos = same.iter().position(|&u| u == at)?;
+        let next = if forward {
+            (pos + 1) % same.len()
+        } else {
+            (pos + same.len() - 1) % same.len()
+        };
+        Some(CursorTarget::Phase(self.phases[same[next]].key.clone()))
     }
 
-    /// Unfold whatever hides the phase `phase_key`.
-    pub fn unfold_for(&self, _phase_key: &str, _fold_toggles: &mut HashSet<BandKey>) {}
+    /// Edit `fold_toggles` so the phase `phase_key` is visible: its band is
+    /// unfolded and, for a shipped band, so is the shipped summary.
+    pub fn unfold_for(&self, phase_key: &str, fold_toggles: &mut HashSet<BandKey>) {
+        let Some(band) = self
+            .phase_index(phase_key)
+            .and_then(|u| self.phases[u].band)
+            .and_then(|b| self.bands.get(b))
+        else {
+            return;
+        };
+        open_band(&band.key, fold_toggles);
+        if band.shipped {
+            open_band(&BandKey::Shipped, fold_toggles);
+        }
+    }
 }
 
 /// The model as plain text, one line per visible row: the lane column padded
@@ -2868,7 +3036,7 @@ mod tests {
         assert!(is_folded(&BandKey::Shipped, &none));
         assert!(!is_folded(&named, &none));
         assert!(!is_folded(&BandKey::Shipped, &toggles(&[BandKey::Shipped])));
-        assert!(is_folded(&named, &toggles(&[named.clone()])));
+        assert!(is_folded(&named, &toggles(std::slice::from_ref(&named))));
     }
 
     #[test]
@@ -3363,7 +3531,7 @@ mod tests {
     #[test]
     fn a_folded_phase_resolves_to_its_band_row() {
         let m4 = BandKey::Named("m4 support chat".to_string());
-        let model = build(BOOKLY, BOOKLY_BANDS, &toggles(&[m4.clone()]));
+        let model = build(BOOKLY, BOOKLY_BANDS, &toggles(std::slice::from_ref(&m4)));
         assert_eq!(model.row_of(&phase("16")), None);
         assert_eq!(
             model.resolve_cursor(Some(&phase("16"))),
