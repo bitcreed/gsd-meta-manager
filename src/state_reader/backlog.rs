@@ -7,8 +7,9 @@ use crate::text::Untrusted;
 /// **Every text field is [`Untrusted`]** (D-21-19). Each of them is read off
 /// disk from a repository the user cloned: `dir_name` is a directory name,
 /// `number` and `description` are parsed out of it and out of the first
-/// heading of a `.md` file inside it, and `content` is that file's body. None
-/// of it was authored by this build, which is SAFE-07's own trust boundary.
+/// heading of a `.md` file inside it, and `content` is the item's ROADMAP.md
+/// entry plus any `.md` bodies ([`load_backlog_content`]). None of it was
+/// authored by this build, which is SAFE-07's own trust boundary.
 ///
 /// The carrier is what makes that checkable rather than remembered: it
 /// implements no `Display`, no `AsRef<str>`, no `Into<Cow<str>>`, so a render
@@ -233,11 +234,54 @@ fn backlog_number_ordering(a: &str, b: &str) -> std::cmp::Ordering {
         .then_with(|| a.cmp(b))
 }
 
-/// Load the full content of a backlog item's first .md file.
+/// Load what the Backlog tab's content pane shows for one item: its
+/// ROADMAP.md entry, followed by every `.md` file in its directory.
+///
+/// # Where a backlog item's content actually lives (debug backlog-content-empty)
+///
+/// GSD's backlog capture (`gsd-core/workflows/add-backlog.md`, run by
+/// `/gsd-capture --backlog`) writes the item ONLY into ROADMAP.md — a
+/// `### Phase 999.N: <description> (BACKLOG)` section under `## Backlog`
+/// carrying `**Goal:**`, `**Requirements:**`, `**Plans:**` and any prose — and
+/// creates `.planning/phases/999.N-<slug>/` holding nothing but `.gitkeep`, so
+/// that `/gsd-discuss-phase` and `/gsd-plan-phase` have somewhere to write.
+/// Measured 2026-09-24 over every registered project: 11 of 11 `999.*`
+/// directories hold only `.gitkeep`. This used to read the directory alone, so
+/// every item in every project drew "Empty — no .md files".
+///
+/// So the ROADMAP.md section ([`super::roadmap_md::phase_section`], matched on
+/// the item's `999.N`) comes first; then each `.md` file the directory has
+/// accumulated (a `/gsd-discuss-phase` CONTEXT.md, a RESEARCH.md, a
+/// hand-written note), in name order, each under a `── <file name> ──` label
+/// so the reader can tell the sources apart. `None` only when there is neither.
+///
+/// The result is raw text read off disk; the caller wraps it as untrusted.
 pub fn load_backlog_content(planning_dir: &Path, dir_name: &str) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+
+    let roadmap_entry = parse_backlog_dir_name(dir_name).and_then(|(number, _)| {
+        let roadmap = std::fs::read_to_string(planning_dir.join("ROADMAP.md")).ok()?;
+        super::roadmap_md::phase_section(&roadmap, &number)
+    });
+    parts.extend(roadmap_entry);
+
     let item_dir = planning_dir.join("phases").join(dir_name);
-    let md_path = find_first_md_file(&item_dir)?;
-    std::fs::read_to_string(md_path).ok()
+    for md_path in md_files(&item_dir) {
+        let Ok(body) = std::fs::read_to_string(&md_path) else {
+            continue;
+        };
+        let name = md_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        parts.push(format!("── {name} ──\n\n{}", body.trim_end()));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 /// Find the first .md file in a directory and extract its first `# heading`.
@@ -255,13 +299,21 @@ fn find_first_heading(dir: &Path) -> Option<String> {
 
 /// Find the first .md file in a directory (alphabetically).
 fn find_first_md_file(dir: &Path) -> Option<std::path::PathBuf> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .ok()?
+    md_files(dir).into_iter().next()
+}
+
+/// Every `.md` file in a directory, sorted by name. Empty when the directory
+/// cannot be read.
+fn md_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<_> = read
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
         .collect();
     entries.sort_by_key(|e| e.file_name());
-    entries.first().map(|e| e.path())
+    entries.into_iter().map(|e| e.path()).collect()
 }
 
 /// Convert a slug like "queue-editor-and-reorder" to "Queue editor and reorder".
@@ -579,5 +631,230 @@ mod tests {
         }
         assert_eq!(backlog_sort_key("999.7"), 7.0);
         assert_eq!(backlog_sort_key("999.10"), 10.0);
+    }
+
+    // --- debug backlog-content-empty: where a backlog item's content lives ---
+    //
+    // GSD's `/gsd-capture --backlog` (`gsd-core/workflows/add-backlog.md`)
+    // writes the item as a `### Phase 999.N: … (BACKLOG)` section under
+    // ROADMAP.md's `## Backlog` and creates `.planning/phases/999.N-<slug>/`
+    // holding ONLY `.gitkeep`. Measured 2026-09-24 across every registered
+    // project: 11 of 11 `999.*` directories hold only `.gitkeep`, so a loader
+    // that reads the directory alone shows every item as empty.
+
+    /// The ROADMAP.md of [`backlog_fixture`] — sanitized text, shaped like a
+    /// real GSD roadmap: an ordinary phase, a Progress table, a `## Backlog`
+    /// section whose second entry carries a non-`(BACKLOG)` suffix and a
+    /// blockquote, and a `---` footer after the last entry.
+    const FIXTURE_ROADMAP: &str = "\
+# Roadmap: sample
+
+## Phases
+
+- [x] **Phase 1: Foundation** - base
+
+### Phase 1: Foundation
+
+**Goal:** Build the base.
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 1. Foundation | 1/1 | Complete | 2026-01-01 |
+
+## Backlog
+
+### Phase 999.1: Alternate transport fallback (BACKLOG)
+
+**Goal:** [Captured for future planning] Read the device another way when the
+primary transport is unavailable.
+**Requirements:** REQ-05, REQ-06
+**Plans:** 0 plans
+
+**Why deferred:** measure the primary path first.
+
+- **Slower.** The fallback reads at a fraction of the primary rate.
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.2: Desktop notification with live progress (PROMOTED AND DELIVERED)
+
+> **DELIVERED by a quick task.** Kept as the capture that was acted on.
+
+**Goal:** [Captured for future planning] Show one notification that updates in place.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+---
+*Roadmap created: 2026-01-01*
+*Phase 999.2 added: 2026-01-02*
+";
+
+    /// A `.planning/` mirroring a real project's backlog layout: two `999.x`
+    /// directories each holding only `.gitkeep`, and their content in
+    /// ROADMAP.md. Returns the `TempDir` (hold it) and the planning dir.
+    fn backlog_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let td = tempfile::TempDir::new().expect("temp dir");
+        let planning = td.path().join(".planning");
+        for dir in [
+            "999.1-alternate-transport-fallback",
+            "999.2-desktop-notification-live-progress",
+        ] {
+            let item = planning.join("phases").join(dir);
+            std::fs::create_dir_all(&item).unwrap();
+            std::fs::write(item.join(".gitkeep"), "").unwrap();
+        }
+        std::fs::write(planning.join("ROADMAP.md"), FIXTURE_ROADMAP).unwrap();
+        (td, planning)
+    }
+
+    /// The reported symptom: a `.gitkeep`-only backlog directory loaded
+    /// nothing, and the pane drew "Empty — no .md files in this backlog
+    /// directory" for every item in every project.
+    #[test]
+    fn a_gitkeep_only_backlog_item_loads_its_roadmap_section() {
+        let (_td, planning) = backlog_fixture();
+
+        let content = load_backlog_content(&planning, "999.1-alternate-transport-fallback")
+            .expect("the item's ROADMAP.md section is its content");
+
+        assert!(
+            content.starts_with("### Phase 999.1: Alternate transport fallback (BACKLOG)"),
+            "the section opens with its own heading: {content:?}"
+        );
+        for body in [
+            "**Goal:** [Captured for future planning] Read the device another way",
+            "**Requirements:** REQ-05, REQ-06",
+            "**Why deferred:** measure the primary path first.",
+            "- [ ] TBD (promote with /gsd-review-backlog when ready)",
+        ] {
+            assert!(content.contains(body), "missing {body:?} in {content:?}");
+        }
+        assert!(
+            !content.contains("Phase 999.2") && !content.contains("## Backlog"),
+            "the section ends at the next heading: {content:?}"
+        );
+    }
+
+    /// The heading suffix is not always `(BACKLOG)` — a delivered item keeps
+    /// its section with another marker — and the last entry must stop at the
+    /// thematic break, not run into the document footer.
+    #[test]
+    fn the_last_backlog_section_stops_before_the_document_footer() {
+        let (_td, planning) = backlog_fixture();
+
+        let content = load_backlog_content(&planning, "999.2-desktop-notification-live-progress")
+            .expect("a PROMOTED-AND-DELIVERED item still has its section");
+
+        assert!(content.contains("(PROMOTED AND DELIVERED)"), "{content:?}");
+        assert!(
+            content.contains("> **DELIVERED by a quick task.**"),
+            "{content:?}"
+        );
+        assert!(content.contains("**Plans:** 0 plans"), "{content:?}");
+        assert!(
+            !content.contains("Roadmap created") && !content.contains("---"),
+            "the footer after the thematic break is not part of the item: {content:?}"
+        );
+    }
+
+    /// Accumulated artifacts — what `/gsd-discuss-phase 999.N` writes into the
+    /// directory — follow the ROADMAP section, each under its file name, in
+    /// name order.
+    #[test]
+    fn md_files_in_the_backlog_dir_follow_the_roadmap_section_in_name_order() {
+        let (_td, planning) = backlog_fixture();
+        let item = planning.join("phases/999.1-alternate-transport-fallback");
+        std::fs::write(
+            item.join("999.1-RESEARCH.md"),
+            "# Research\n\nMeasured rates.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            item.join("999.1-CONTEXT.md"),
+            "# Context\n\nDecisions so far.\n",
+        )
+        .unwrap();
+
+        let content = load_backlog_content(&planning, "999.1-alternate-transport-fallback")
+            .expect("section plus files");
+
+        let at = |needle: &str| {
+            content
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle:?} in {content:?}"))
+        };
+        assert!(at("### Phase 999.1:") < at("999.1-CONTEXT.md"));
+        assert!(at("999.1-CONTEXT.md") < at("Decisions so far."));
+        assert!(at("Decisions so far.") < at("999.1-RESEARCH.md"));
+        assert!(at("999.1-RESEARCH.md") < at("Measured rates."));
+        assert!(!content.contains(".gitkeep"), "only .md files are content");
+    }
+
+    /// A directory holding a `.md` file still shows it when ROADMAP.md has no
+    /// entry for the item (or no ROADMAP.md exists at all).
+    #[test]
+    fn md_files_alone_load_when_the_roadmap_has_no_entry() {
+        let (_td, planning) = backlog_fixture();
+        std::fs::remove_file(planning.join("ROADMAP.md")).unwrap();
+        let item = planning.join("phases/999.1-alternate-transport-fallback");
+        std::fs::write(
+            item.join("999.1-BACKLOG.md"),
+            "# Queue editor\n\nMake it reorderable.\n",
+        )
+        .unwrap();
+
+        let content = load_backlog_content(&planning, "999.1-alternate-transport-fallback")
+            .expect("the .md file is content on its own");
+        assert!(content.contains("Make it reorderable."), "{content:?}");
+        assert!(content.contains("999.1-BACKLOG.md"), "{content:?}");
+    }
+
+    /// Truly empty — no ROADMAP entry (e.g. the entry was removed on promotion
+    /// and the directory left behind) and no `.md` file — stays `None`, so the
+    /// pane's empty state is still reachable.
+    #[test]
+    fn an_item_with_neither_a_roadmap_entry_nor_md_files_is_empty() {
+        let (_td, planning) = backlog_fixture();
+        let orphan = planning.join("phases/999.3-left-behind-after-promotion");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join(".gitkeep"), "").unwrap();
+
+        assert_eq!(
+            load_backlog_content(&planning, "999.3-left-behind-after-promotion"),
+            None
+        );
+    }
+
+    /// Boundary neighbours of the number match: `999.1` must not take
+    /// `999.10`'s section, nor `999.10` take `999.1`'s — whichever is written
+    /// first.
+    #[test]
+    fn a_backlog_number_matches_its_own_section_not_a_numeric_neighbour() {
+        let td = tempfile::TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        for dir in ["999.1-one", "999.10-ten"] {
+            std::fs::create_dir_all(planning.join("phases").join(dir)).unwrap();
+        }
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Backlog\n\n### Phase 999.10: Ten (BACKLOG)\n\nTEN BODY\n\n\
+             ### Phase 999.1: One (BACKLOG)\n\nONE BODY\n",
+        )
+        .unwrap();
+
+        let one = load_backlog_content(&planning, "999.1-one").expect("999.1 has a section");
+        assert!(
+            one.contains("ONE BODY") && !one.contains("TEN BODY"),
+            "{one:?}"
+        );
+        let ten = load_backlog_content(&planning, "999.10-ten").expect("999.10 has a section");
+        assert!(
+            ten.contains("TEN BODY") && !ten.contains("ONE BODY"),
+            "{ten:?}"
+        );
     }
 }

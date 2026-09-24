@@ -346,6 +346,41 @@ fn any_heading_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^\s*#{1,6}[ \t]").unwrap())
 }
 
+/// An ordinary GSD phase-entry heading, `## / ### / #### Phase N: Title`, with
+/// an optional parenthetical tag before the colon. Group 1 is the id, group 2
+/// the title. **One grammar** shared by [`parse_phase_goals`] and
+/// [`phase_section`], so the Roadmap tab's goals and the Backlog tab's content
+/// cannot disagree about which lines open an entry.
+fn phase_heading_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    })
+}
+
+/// A markdown thematic break (`---`, `***`, `___`, spaced or not).
+fn thematic_break_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$").unwrap()
+    })
+}
+
+/// The number of leading `#` of a heading line.
+fn heading_level(line: &str) -> usize {
+    line.trim_start().bytes().take_while(|b| *b == b'#').count()
+}
+
+/// A fenced-code-block delimiter line (```` ``` ```` or `~~~`).
+fn is_fence_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
 /// Extract the phase identifiers a build-phase entry's `**Depends on**:` line
 /// declares. Applied ONLY inside a build-phase entry; [`parse_depends_on`]
 /// stays the grammar for every GSD phase (its plural-range test pins that).
@@ -502,15 +537,8 @@ pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
 /// **`Untrusted` values**: the text is the project's own prose and reaches a
 /// cell only through `shown()`.
 pub fn parse_phase_goals(content: &str) -> HashMap<String, crate::text::Untrusted> {
-    static PHASE_HEADING: OnceLock<Regex> = OnceLock::new();
     static GOAL: OnceLock<Regex> = OnceLock::new();
-    let phase_heading = PHASE_HEADING.get_or_init(|| {
-        Regex::new(&format!(
-            r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
-            id = PHASE_ID
-        ))
-        .unwrap()
-    });
+    let phase_heading = phase_heading_re();
     let goal = GOAL.get_or_init(|| Regex::new(r"(?i)^\s*\*\*Goal(?:\*\*\s*:|:\*\*)\s*(.*)$").unwrap());
     let build_heading = build_heading_re();
     let any_heading = any_heading_re();
@@ -540,6 +568,65 @@ pub fn parse_phase_goals(content: &str) -> HashMap<String, crate::text::Untruste
         }
     }
     goals
+}
+
+/// The full text of the roadmap entry for `phase_id` — its `Phase N:` heading
+/// line and everything under it — or `None` when the roadmap has no such entry.
+/// Display-only; the caller wraps the result as untrusted text.
+///
+/// **Why this exists (debug backlog-content-empty).** GSD's backlog capture
+/// (`gsd-core/workflows/add-backlog.md`) writes an item's content ONLY here, as
+/// `### Phase 999.N: … (BACKLOG)` under `## Backlog`, and gives its
+/// `.planning/phases/999.N-<slug>/` directory nothing but a `.gitkeep`. So the
+/// Backlog tab's content pane must read this section, not only the directory.
+///
+/// # Where the entry ends
+///
+/// At the first of, outside a fenced code block:
+///
+/// * a heading of the SAME or a HIGHER level than the entry's own (a deeper
+///   `####` sub-heading inside a `###` entry is part of it), or
+/// * a thematic break (`---`). Measured 2026-09-24 over every registered
+///   project's ROADMAP.md: all six breaks inside a `Phase` entry sit directly
+///   before the next entry or the document footer (`*Roadmap created: …*`),
+///   none mid-body — so ending there keeps a footer out of the LAST entry
+///   without truncating any real one.
+///
+/// Trailing blank lines are dropped. The id is matched by [`phase_key`], so
+/// `999.1` never takes `999.10`'s entry and `0999.1` names `999.1`; the first
+/// matching entry wins. The heading suffix is not inspected — a delivered item
+/// reads `(PROMOTED AND DELIVERED)`, not `(BACKLOG)`, and is still its entry.
+pub fn phase_section(content: &str, phase_id: &str) -> Option<String> {
+    let want = phase_key(phase_id);
+    let mut in_fence = false;
+    // (the entry's heading level, its lines) once the entry has opened.
+    let mut section: Option<(usize, Vec<&str>)> = None;
+    for line in content.lines() {
+        if !in_fence {
+            if let Some((level, _)) = &section {
+                let ends_entry = thematic_break_re().is_match(line)
+                    || (any_heading_re().is_match(line) && heading_level(line) <= *level);
+                if ends_entry {
+                    break;
+                }
+            } else if let Some(caps) = phase_heading_re().captures(line) {
+                if phase_key(caps[1].trim_end_matches(['.', ','])) == want {
+                    section = Some((heading_level(line), Vec::new()));
+                }
+            }
+        }
+        if is_fence_line(line) {
+            in_fence = !in_fence;
+        }
+        if let Some((_, lines)) = &mut section {
+            lines.push(line);
+        }
+    }
+    let (_, mut lines) = section?;
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    Some(lines.join("\n"))
 }
 
 /// Returns true when a `## Progress` table Phase cell is a backlog sentinel
@@ -2174,5 +2261,60 @@ Plans:
             }
         }
         assert_eq!(goal_lines, 6 + 4 + 11, "the guard saw every fixture goal");
+    }
+
+    // --- phase_section (debug backlog-content-empty) -----------------------
+
+    #[test]
+    fn a_phase_section_keeps_deeper_sub_headings_and_ends_at_a_sibling() {
+        let roadmap = "## Backlog\n\n### Phase 999.1: One (BACKLOG)\n\nBody one.\n\n\
+                       #### Notes\n\nA sub-heading is part of the entry.\n\n\
+                       ### Phase 999.2: Two (BACKLOG)\n\nBody two.\n";
+        let one = phase_section(roadmap, "999.1").expect("999.1 has an entry");
+        assert!(one.starts_with("### Phase 999.1: One (BACKLOG)"), "{one:?}");
+        assert!(
+            one.contains("#### Notes") && one.contains("part of the entry"),
+            "{one:?}"
+        );
+        assert!(!one.contains("Body two"), "{one:?}");
+        assert!(
+            one.ends_with("A sub-heading is part of the entry."),
+            "trailing blanks dropped: {one:?}"
+        );
+    }
+
+    #[test]
+    fn a_phase_section_ends_at_a_higher_heading_and_at_a_thematic_break() {
+        let roadmap = "### Phase 999.1: One (BACKLOG)\n\nBody one.\n\n## Progress\n\nnot it\n\n\
+                       ### Phase 999.2: Two (BACKLOG)\n\nBody two.\n\n* * *\n*footer*\n";
+        let one = phase_section(roadmap, "999.1").unwrap();
+        assert!(!one.contains("Progress"), "{one:?}");
+        let two = phase_section(roadmap, "999.2").unwrap();
+        assert!(
+            two.contains("Body two.") && !two.contains("footer"),
+            "{two:?}"
+        );
+    }
+
+    #[test]
+    fn a_heading_or_break_inside_a_code_fence_does_not_end_the_section() {
+        let roadmap = "### Phase 999.1: One (BACKLOG)\n\n```bash\n# a shell comment\n---\n```\n\n\
+                       After the fence.\n\n### Phase 999.2: Two (BACKLOG)\n";
+        let one = phase_section(roadmap, "999.1").unwrap();
+        assert!(
+            one.contains("# a shell comment") && one.contains("After the fence."),
+            "{one:?}"
+        );
+        assert!(!one.contains("Phase 999.2"), "{one:?}");
+    }
+
+    #[test]
+    fn a_phase_section_matches_by_phase_key_and_reports_an_absent_entry_as_none() {
+        let roadmap = "### Phase 0999.1: Padded (PROMOTED → v2.0)\n\nPadded body.\n";
+        let padded = phase_section(roadmap, "999.1").expect("0999.1 names 999.1");
+        assert!(padded.contains("Padded body."), "{padded:?}");
+        assert_eq!(phase_section(roadmap, "999.10"), None);
+        assert_eq!(phase_section(roadmap, "999.2"), None);
+        assert_eq!(phase_section("", "999.1"), None);
     }
 }
