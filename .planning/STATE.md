@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.7.2
 current_phase: 24
 current_phase_name: Roadmap Tab Redesign & Detail-Tab Consolidation
-status: executing
-stopped_at: Completed 24-06-PLAN.md
-last_updated: "2026-09-24T04:30:51.196Z"
+status: verifying
+stopped_at: Completed 24-07-PLAN.md
+last_updated: "2026-09-24T04:46:45.185Z"
 last_activity: 2026-09-23
 last_activity_desc: Phase 24 execution started
-state_head: f69f152bfaea1d843d6582485ba88740679b6b28
+state_head: 8e212f7ed6314b12ee19d7dc6d69b0687faa1fc3
 progress:
   total_phases: 10
   completed_phases: 6
@@ -31,7 +31,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   `--container` gate.** It supersedes and carries the contents of v1.7.0 and v1.7.1, NEITHER OF
   WHICH EVER PUBLISHED: for anyone installing from crates.io this is the jump from **1.6.0**.
   `Cargo.toml` moved 1.7.1 -> 1.7.2; `cargo update` relocked only this crate's own entry, with
@@ -310,6 +310,7 @@ verify-phase if the gate is fixed.
 | Phase 24 P04 | 18 min | 3 tasks | 2 files |
 | Phase 24 P05 | 12 min | 3 tasks | 3 files |
 | Phase 24 P06 | 16 min | 3 tasks | 5 files |
+| Phase 24 P07 | 13min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -422,6 +423,9 @@ Recent decisions affecting current work:
 - [Phase 24]: 24-06: stacked Roadmap detail pane shrinks 9->6 rows for a list that needs them (panes_for); goal shortened before edge lines
 - [Phase 24]: 24-06: summary line falls back to k/n done when wider than the terminal
 - [Phase 24]: 24-06: escape probe reaches milestone_name via a synthetic-band sub-state (milestones cleared)
+- [Phase 24]: 24-07: Archive kept as the Docs › Milestones sub-view sharing Docs' index 7; switch_to_sub_view is the one arrival rule; opened_on bypasses the index [INFERRED — audit]
+- [Phase 24]: 24-07: Docs sub-tab switch key is m; digits 1-8 only (9/0 inert); footer [1-8/D] / [1-8]
+- [Phase 24]: 24-07: Roadmap footer left at 91/87 cols (over 80) — trimming hints is a scope change, deferred
 
 ### Roadmap Evolution
 
@@ -511,8 +515,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-24T04:30:50.749Z
-Stopped at: Completed 24-06-PLAN.md
+Last session: 2026-09-24T04:46:44.731Z
+Stopped at: Completed 24-07-PLAN.md
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0
