@@ -319,6 +319,176 @@ fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
     merged
 }
 
+/// The `#### Build phase N (Milestone M): Title` heading a roadmap uses for a
+/// placeholder phase of a planned milestone (ttbook's shape). Groups: 1=id,
+/// 2=title. Level 2-4, case-insensitive, the parenthetical optional.
+///
+/// **Not a GSD phase heading.** GSD's recogniser wants `Phase` right after the
+/// hashes (an optional `[...]` tag aside), so `Build ` in between keeps these
+/// out of every count GSD makes — which is why [`parse_roadmap_phases`] must not
+/// match them either and they are returned by [`parse_planned_build_phases`]
+/// instead.
+fn build_heading_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)^\s*#{{2,4}}\s+Build\s+phase\s+({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    })
+}
+
+/// Any markdown heading line (level 1-6): the end of a phase entry for the
+/// readers that scope "inside the entry" by heading.
+fn any_heading_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\s*#{1,6}[ \t]").unwrap())
+}
+
+/// Extract the phase identifiers a build-phase entry's `**Depends on**:` line
+/// declares. Applied ONLY inside a build-phase entry; [`parse_depends_on`]
+/// stays the grammar for every GSD phase (its plural-range test pins that).
+///
+/// Parentheticals are stripped first, as [`parse_depends_on`] does. Then four
+/// forms are accepted: `Build phase N`, `Build phases A, B[, C]`,
+/// `Build phases A-B` (hyphen, en or em dash) and the ordinary `Phase N`. A
+/// range expands to every id in `known_ids` whose [`PhaseNum`] lies inside it
+/// inclusively, in numeric order — **bounded by the known ids, never by the
+/// numeric span**, so `Build phases 1-999999999` invents nothing and allocates
+/// nothing extra (T-24-02). A repeated id (pad-insensitively) appears once, in
+/// first-written order.
+fn parse_build_depends_on(text: &str, known_ids: &[String]) -> Vec<String> {
+    static REF: OnceLock<Regex> = OnceLock::new();
+    static RANGE: OnceLock<Regex> = OnceLock::new();
+    static SINGLE: OnceLock<Regex> = OnceLock::new();
+    let reference = REF.get_or_init(|| {
+        let item = format!(r"{id}(?:\s*[-\x{{2013}}\x{{2014}}]\s*{id})?", id = PHASE_ID);
+        Regex::new(&format!(
+            r"(?:(?i:build\s+phases?)|Phase)\s+({item}(?:\s*,\s*{item})*)",
+            item = item
+        ))
+        .unwrap()
+    });
+    let range = RANGE.get_or_init(|| {
+        Regex::new(&format!(
+            r"^({id})\s*[-\x{{2013}}\x{{2014}}]\s*({id})$",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    });
+    let single = SINGLE.get_or_init(|| Regex::new(&format!(r"^({id})$", id = PHASE_ID)).unwrap());
+
+    let without_qualifiers = Regex::new(r"\([^)]*\)").unwrap().replace_all(text, " ");
+    let mut out: Vec<String> = Vec::new();
+    fn push(id: String, out: &mut Vec<String>) {
+        if !id.is_empty() && !out.iter().any(|seen| phase_key(seen) == phase_key(&id)) {
+            out.push(id);
+        }
+    }
+    for caps in reference.captures_iter(&without_qualifiers) {
+        for item in caps[1].split(',') {
+            let item = item.trim().trim_end_matches(['.', ',']);
+            if let Some(r) = range.captures(item) {
+                let (Some(lo), Some(hi)) = (PhaseNum::parse(&r[1]), PhaseNum::parse(&r[2])) else {
+                    continue;
+                };
+                let mut inside: Vec<(PhaseNum, &String)> = known_ids
+                    .iter()
+                    .filter_map(|k| PhaseNum::parse(k).map(|n| (n, k)))
+                    .filter(|(n, _)| lo <= *n && *n <= hi)
+                    .collect();
+                inside.sort_by(|a, b| a.0.cmp(&b.0));
+                for (_, k) in inside {
+                    push(k.clone(), &mut out);
+                }
+            } else if let Some(s) = single.captures(item) {
+                push(s[1].to_string(), &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// The placeholder phases a roadmap declares as `#### Build phase N
+/// (Milestone M): Title` headings (D-A12), one [`RoadmapPhase`] per heading.
+///
+/// Each entry runs to the next markdown heading of any level; inside it,
+/// plan-checklist lines count toward `total_plans` / `completed_plans` and the
+/// first `**Depends on**:` line is read by the build-phase dependency grammar
+/// (`Build phases 8-13` expands against the ids [`parse_roadmap_phases`] and
+/// this function see). `completed` is always `false` and `description` empty.
+///
+/// **Display-only, kept apart from [`parse_roadmap_phases`].** GSD does not
+/// count these headings, so merging them into the GSD phase list would let the
+/// driver router and the frontier target a phase GSD does not know exists.
+pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
+    let plan_re = Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap();
+    let depends_re = Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap();
+    let heading = build_heading_re();
+    let any_heading = any_heading_re();
+
+    let lines: Vec<&str> = content.lines().collect();
+    // (phase, its dependency-line text) — resolved once every id is known.
+    let mut entries: Vec<(RoadmapPhase, Option<String>)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(caps) = heading.captures(line) else {
+            continue;
+        };
+        let number = caps[1].trim_end_matches(['.', ',']).to_string();
+        if line.contains("~~") || is_sentinel_phase(&number) {
+            continue;
+        }
+        let mut phase = RoadmapPhase {
+            number,
+            name: caps[2].trim().to_string(),
+            description: String::new(),
+            completed: false,
+            total_plans: 0,
+            completed_plans: 0,
+            depends_on: Vec::new(),
+        };
+        let mut depends: Option<String> = None;
+        for l in lines.iter().skip(i + 1) {
+            if any_heading.is_match(l) {
+                break;
+            }
+            if let Some(plan_caps) = plan_re.captures(l) {
+                phase.total_plans += 1;
+                if &plan_caps[1] != " " {
+                    phase.completed_plans += 1;
+                }
+            }
+            if depends.is_none() {
+                if let Some(dep_caps) = depends_re.captures(l) {
+                    depends = Some(dep_caps[1].to_string());
+                }
+            }
+        }
+        entries.push((phase, depends));
+    }
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut known_ids: Vec<String> = parse_roadmap_phases(content)
+        .into_iter()
+        .map(|p| p.number)
+        .collect();
+    known_ids.extend(entries.iter().map(|(p, _)| p.number.clone()));
+
+    let phases = entries
+        .into_iter()
+        .map(|(mut phase, depends)| {
+            if let Some(text) = depends {
+                phase.depends_on = parse_build_depends_on(&text, &known_ids);
+            }
+            phase
+        })
+        .collect();
+    merge_duplicate_phases(phases)
+}
+
 /// Returns true when a `## Progress` table Phase cell is a backlog sentinel
 /// (`Phase 0` / `Phase 999` / `999.x`) that must not be counted. The cell may
 /// carry a trailing label (e.g. `999. Backlog`), so only the leading token is
@@ -636,8 +806,11 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
     .unwrap();
     let single = Regex::new(&format!(r"(?i)\bphase\s+({id})", id = PHASE_ID)).unwrap();
     let any_heading = Regex::new(r"^\s*(#{1,6})[ \t]+(.*?)\s*$").unwrap();
+    // A build-phase heading (`#### Build phase 14 (Milestone 3): …`) counts as
+    // a phase heading here: otherwise its `(Milestone 3)` reads as a milestone
+    // of its own, and its id never joins the enclosing milestone's scope.
     let phase_heading = Regex::new(&format!(
-        r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?:",
+        r"^\s*#{{2,4}}\s+(?:(?i:build)\s+)?[Pp]hase ({id})(?:\s*\([^)]*\))?:",
         id = PHASE_ID
     ))
     .unwrap();
@@ -1522,5 +1695,140 @@ Plans:
         }
         assert!(roadmap_milestones("").is_empty());
         assert!(roadmap_milestones("# Roadmap\n\nJust prose.\n").is_empty());
+    }
+
+    // ── Phase 24-01: vendored real-roadmap fixtures ─────────────────────────
+
+    const TTBOOK_ROADMAP: &str = include_str!("../../tests/fixtures/roadmaps/ttbook-ROADMAP.md");
+
+    /// Characterisation guard (Pitfall 1): GSD's own heading grammar does not
+    /// recognise `#### Build phase N` headings, so the GSD-facing phase list
+    /// must not either. Pinned against the parser as it stood BEFORE build-phase
+    /// support landed; it must stay byte-identical.
+    #[test]
+    fn ttbook_fixture_gsd_phase_list_is_unchanged_by_build_phase_support() {
+        let phases = parse_roadmap_phases(TTBOOK_ROADMAP);
+        let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, ["8", "9", "10", "11", "12", "13"]);
+        let deps: Vec<Vec<&str>> = phases
+            .iter()
+            .map(|p| p.depends_on.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            deps,
+            vec![
+                vec![],
+                vec!["8"],
+                vec!["8", "9"],
+                vec!["8", "9"],
+                vec!["9", "10", "11"],
+                vec!["12"],
+            ]
+        );
+        let plans: Vec<(u32, u32)> = phases
+            .iter()
+            .map(|p| (p.total_plans, p.completed_plans))
+            .collect();
+        assert_eq!(plans, [(9, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]);
+    }
+
+    #[test]
+    fn ttbook_build_phase_headings_parse_as_planned_phases() {
+        let planned = parse_planned_build_phases(TTBOOK_ROADMAP);
+        let numbers: Vec<&str> = planned.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, ["14", "15", "16", "17", "18"]);
+        let names: Vec<&str> = planned.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Guided first run",
+                "Scheduled window runs",
+                "Messaging client and transcript store",
+                "Autonomous responder, staged hold and remote control",
+                "Browser frontend",
+            ]
+        );
+        let deps: Vec<Vec<&str>> = planned
+            .iter()
+            .map(|p| p.depends_on.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            deps,
+            vec![
+                vec!["8", "9", "10", "11", "12", "13"],
+                vec!["14"],
+                vec!["12", "13"],
+                vec!["12", "13", "16"],
+                vec!["12"],
+            ],
+            "`Build phases 8-13` expands to the known ids inside the range; \
+             lists and singles read as written"
+        );
+        assert!(planned.iter().all(|p| !p.completed && p.description.is_empty()));
+        assert!(planned.iter().all(|p| p.total_plans == 0));
+    }
+
+    #[test]
+    fn build_phase_headings_are_not_milestones() {
+        let ms = roadmap_milestones(TTBOOK_ROADMAP);
+        let shorts: Vec<String> = ms
+            .iter()
+            .map(|m| split_milestone_label(m.label.as_raw_for_logic_only()).0)
+            .collect();
+        assert_eq!(shorts, ["v1", "v2", "M3", "M4", "M5"]);
+        assert!(
+            ms.iter().all(|m| !m.label.as_raw_for_logic_only().starts_with("Build phase")),
+            "`#### Build phase 14 (Milestone 3): …` is a phase heading, not a milestone"
+        );
+        for (phase, milestone) in [("14", 2), ("15", 2), ("16", 3), ("17", 3), ("18", 4)] {
+            assert_eq!(milestone_index_of(&ms, phase), Some(milestone), "phase {phase}");
+        }
+        // The heading scope collects them too, independent of the bullet ranges.
+        assert_eq!(ms[2].scoped_phases, ["14", "15"]);
+        assert_eq!(ms[3].scoped_phases, ["16", "17"]);
+        assert_eq!(ms[4].scoped_phases, ["18"]);
+    }
+
+    #[test]
+    fn a_build_dependency_range_expands_only_to_known_ids() {
+        let roadmap = "## Phases\n\n\
+            - [ ] **Phase 1: One** - a\n\
+            - [ ] **Phase 2: Two** - b\n\
+            - [ ] **Phase 4: Four** - d\n\n\
+            #### Build phase 5 (Milestone 2): Five\n\n\
+            **Depends on**: Build phases 1-4\n\n\
+            #### Build phase 6: Six\n\n\
+            **Depends on**: Build phases 1-999999999 (and Phase 3 as prose)\n";
+        let planned = parse_planned_build_phases(roadmap);
+        assert_eq!(planned.len(), 2);
+        assert_eq!(
+            planned[0].depends_on,
+            ["1", "2", "4"],
+            "the gap id 3 is not invented from the numeric span"
+        );
+        assert_eq!(
+            planned[1].depends_on,
+            ["1", "2", "4", "5", "6"],
+            "a huge span is bounded by the known ids; the parenthetical is prose"
+        );
+    }
+
+    #[test]
+    fn a_build_heading_with_no_parenthetical_parses() {
+        let roadmap = "### Build phase 3: Plain title\n\n\
+            **Depends on**: Phase 2\n\n\
+            - [x] 03-01-PLAN.md — a\n\
+            - [ ] 03-02-PLAN.md — b\n\n\
+            ## Next\n\n- [ ] 03-03-PLAN.md — outside the entry\n";
+        let planned = parse_planned_build_phases(roadmap);
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].number, "3");
+        assert_eq!(planned[0].name, "Plain title");
+        assert_eq!(planned[0].depends_on, ["2"]);
+        assert_eq!((planned[0].total_plans, planned[0].completed_plans), (2, 1));
+        assert!(
+            parse_roadmap_phases(roadmap).is_empty(),
+            "GSD's grammar does not see a build heading"
+        );
     }
 }

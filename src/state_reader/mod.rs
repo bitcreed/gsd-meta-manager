@@ -62,6 +62,16 @@ pub struct ProjectState {
     /// Their labels are `Untrusted`, which is why this is not a free-string
     /// field: third-party text reaches a cell only through `shown()`.
     pub milestones: Vec<roadmap_md::RoadmapMilestone>,
+    /// The placeholder phases ROADMAP.md declares as `#### Build phase N
+    /// (Milestone M): Title` headings
+    /// ([`roadmap_md::parse_planned_build_phases`]); listed by the Roadmap
+    /// after [`Self::phases`]. Display-only.
+    ///
+    /// **Deliberately NOT merged into `phases`.** GSD's own heading grammar
+    /// does not count a `Build phase` heading, and the driver router and the
+    /// frontier read `phases`: merging would let them target a phase GSD does
+    /// not know exists.
+    pub planned_phases: Vec<roadmap_md::RoadmapPhase>,
     pub queued_actions: Vec<queue_md::QueuedAction>,
     /// Per-phase disk inference keyed by phase number (e.g., "01", "05")
     pub phase_disk_statuses: HashMap<String, disk_status::DiskInference>,
@@ -596,6 +606,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     let roadmap_path = planning_dir.join("ROADMAP.md");
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
+        state.planned_phases = roadmap_md::parse_planned_build_phases(&content);
         state.milestones = roadmap_md::roadmap_milestones(&content);
         // STATE.md is the milestone's primary source; a project whose STATE.md
         // carries no `milestone:` key still names it in ROADMAP's
@@ -826,6 +837,21 @@ mod tests {
         assert_eq!(state.milestones.len(), 1);
         assert_eq!(state.milestones[0].label.as_raw_for_logic_only(), "v2.0 Next");
         assert!(state.milestones[0].contains("1"));
+    }
+
+    /// Phase 24-01: ttbook's `#### Build phase N` headings reach
+    /// `planned_phases`, and the GSD-facing `phases` list is untouched.
+    #[test]
+    fn parse_project_state_reads_planned_build_phases() {
+        let td = make_planning(&[
+            ("STATE.md", include_str!("../../tests/fixtures/roadmaps/ttbook-STATE.md")),
+            ("ROADMAP.md", include_str!("../../tests/fixtures/roadmaps/ttbook-ROADMAP.md")),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        let gsd: Vec<&str> = state.phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(gsd, ["8", "9", "10", "11", "12", "13"]);
+        let planned: Vec<&str> = state.planned_phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(planned, ["14", "15", "16", "17", "18"]);
     }
 
     #[test]
