@@ -1,25 +1,35 @@
-//! The Roadmap tab's left-to-right phase dependency graph (quick 260923-md1).
+//! The Roadmap tab's phase dependency model (phase 24) and the legacy
+//! left-to-right graph it replaces (quick 260923-md1).
 //!
 //! Two halves, deliberately separated:
 //!
-//! * A **pure layout** ([`layout_graph`]) that turns an ordered list of phases
-//!   and their DECLARED dependencies into a [`GraphLayout`]: rows of typed
-//!   [`Segment`]s, note lines and a current-phase detail line. No ratatui type
-//!   appears in it, so [`render_text`] can pin exact output in unit tests.
-//! * A **widget** ([`RoadmapGraphWidget`]) that styles those same segments and
-//!   draws them through `Paragraph::scroll`, never through raw buffer index
-//!   math, so it clips to its own `Rect` at every size.
+//! * **The vertical list model** ([`layout_list`], phase 24). An ordered list
+//!   of phases ([`ListNode`]) and milestone bands ([`BandInput`]) becomes a
+//!   [`RoadmapModel`]: one [`ListRow::Phase`] per phase (no phase ever appears
+//!   in two rows), one band row per milestone, one collapsed shipped-summary
+//!   row, and connector rows drawn with git-log-style lanes. Dependencies are
+//!   transitively reduced first; each dropped edge is kept as an `implied`
+//!   pair `(dep, via)`. Per-phase facts (needs, unblocks, parallel, status,
+//!   wave) and cursor navigation are pure functions on the model, so exact
+//!   text ([`lane_text`]) and every Roadmap key are pinned without a terminal.
+//!   No ratatui type appears in it; the widget is `ui::roadmap_view`.
+//! * **The legacy left-to-right layout** ([`layout_graph`],
+//!   [`RoadmapGraphWidget`], [`layout_for_state`], …). Kept ONLY until plan
+//!   24-06 removes its last caller (`ui::screens::detail`); do not build on it.
 //!
-//! Edges come only from `RoadmapPhase::depends_on`. Ids are matched through
+//! Both halves share the dependency pipeline (D-A15): `resolve_deps` →
+//! `break_cycles` → `longest_path_layers` (a wave is `layer + 1`). Edges
+//! come only from declared dependencies. Ids are matched through
 //! [`phase_key`], never by raw string equality, so `07` and `7` are one phase.
 //!
-//! **Every phase id, dependency id, phase name and milestone label is
+//! **Every phase id, dependency id, phase name, goal and milestone label is
 //! third-party text** read out of a project's `.planning/ROADMAP.md`. Each one
 //! is escaped through `crate::text::render_for_terminal` (or
 //! `Untrusted::shown()`) BEFORE it is measured, and only the escaped form is
-//! ever stored in a [`GraphLayout`]. Widths are `chars().count()` of the
-//! escaped text, the same deliberate IN-02/IN-03 deferral the box widget
-//! records.
+//! ever stored for display in a [`RoadmapModel`] or a [`GraphLayout`]. The
+//! raw text is used only for matching ([`phase_key`], [`BandKey`]), never
+//! drawn. Widths are `chars().count()` of the escaped text, the same
+//! deliberate IN-02/IN-03 deferral the box widget records.
 
 use crate::state_reader::phase_num::phase_key;
 use crate::state_reader::roadmap_md::{self, RoadmapMilestone, RoadmapPhase};
@@ -130,25 +140,27 @@ type ExternalLists = Vec<Vec<String>>;
 
 /// Resolve every node's declared deps against the node index (D1).
 ///
-/// Returns the in-graph parents, the external deps, and one self-cycle path
-/// (the node's escaped label) per node that names itself.
+/// `nodes` is `(raw id, raw declared deps)` per node, in list order, so both
+/// the list model and the legacy layout feed it. Returns the in-graph parents,
+/// the external deps, and one self-cycle path (the node's escaped label) per
+/// node that names itself.
 fn resolve_deps(
-    nodes: &[GraphNode<'_>],
+    nodes: &[(&str, &[String])],
     labels: &[String],
 ) -> (ParentLists, ExternalLists, Vec<String>) {
     let mut index: HashMap<String, usize> = HashMap::new();
-    for (i, node) in nodes.iter().enumerate() {
-        index.entry(phase_key(node.id)).or_insert(i);
+    for (i, &(id, _)) in nodes.iter().enumerate() {
+        index.entry(phase_key(id)).or_insert(i);
     }
 
     let mut parents: ParentLists = vec![Vec::new(); nodes.len()];
     let mut externals: ExternalLists = vec![Vec::new(); nodes.len()];
     let mut self_cycles = Vec::new();
-    for (i, node) in nodes.iter().enumerate() {
-        let own = phase_key(node.id);
+    for (i, &(id, deps)) in nodes.iter().enumerate() {
+        let own = phase_key(id);
         let mut seen: HashSet<String> = HashSet::new();
         let mut self_cycle = false;
-        for dep in node.deps {
+        for dep in deps {
             let key = phase_key(dep);
             if !seen.insert(key.clone()) {
                 continue;
@@ -286,6 +298,664 @@ fn longest_path_layers(parents: &ParentLists) -> Vec<usize> {
     }
     layer
 }
+
+// ---------------------------------------------------------------------------
+// The vertical list model (phase 24)
+// ---------------------------------------------------------------------------
+
+/// Status glyph: done (drawn dim).
+pub const GLYPH_DONE: &str = "\u{25CF}";
+/// Status glyph: the active phase (yellow, bold).
+pub const GLYPH_ACTIVE: &str = "\u{25C9}";
+/// Status glyph: ready — not done, every in-graph dependency done (green).
+pub const GLYPH_READY: &str = "\u{25CB}";
+/// Status glyph: blocked on an unfinished dependency.
+pub const GLYPH_BLOCKED: &str = "\u{25CC}";
+/// Marker of the selected row (the row is also drawn reversed).
+pub const MARK_SELECTED: &str = "\u{25B6}";
+/// Marker of a dependency of the selection (cyan).
+pub const MARK_DEP: &str = "\u{2191}";
+/// Marker of a phase the selection unblocks (magenta).
+pub const MARK_UNBLOCKS: &str = "\u{2193}";
+/// Marker of an implied (transitively reduced) dependency (dim).
+pub const MARK_IMPLIED: &str = "\u{00B7}";
+/// An unfolded band.
+pub const BAND_OPEN: &str = "\u{25BE}";
+/// A folded band.
+pub const BAND_FOLDED: &str = "\u{25B8}";
+/// A band row's trailing fill.
+pub const BAND_FILL: &str = "\u{2501}";
+/// Separator between phases that can run in parallel (the Start-now line).
+pub const PARALLEL_SEP: &str = "\u{2551}";
+/// Lane: a pass-through vertical.
+pub const LANE_VERTICAL: &str = "\u{2502}";
+/// Lane: a horizontal run.
+pub const LANE_HORIZONTAL: &str = "\u{2500}";
+/// Lane junction `├`: a node's lane forking or merging to the right.
+pub const LANE_TEE_RIGHT: &str = "\u{251C}";
+/// Lane junction `┤`: a node's lane forking to the left.
+pub const LANE_TEE_LEFT: &str = "\u{2524}";
+/// Lane junction `┬`: an intermediate forked lane.
+pub const LANE_TEE_DOWN: &str = "\u{252C}";
+/// Lane junction `┴`: an intermediate merged lane.
+pub const LANE_TEE_UP: &str = "\u{2534}";
+/// Lane junction `┐`: the far right end of a fork.
+pub const LANE_DOWN_LEFT: &str = "\u{2510}";
+/// Lane junction `┌`: the far left end of a fork.
+pub const LANE_DOWN_RIGHT: &str = "\u{250C}";
+/// Lane junction `┘`: the far right end of a merge.
+pub const LANE_UP_LEFT: &str = "\u{2518}";
+/// Lane junction `└`: a merge ending to the right (not produced by the
+/// assigner, which always merges into the lowest lane; kept for totality).
+pub const LANE_UP_RIGHT: &str = "\u{2514}";
+/// Lane junction `┼`: a horizontal crossing an unrelated active lane.
+pub const LANE_CROSS: &str = "\u{253C}";
+
+/// Width of the lane column in [`lane_text`].
+const LANE_TEXT_COLUMN: usize = 10;
+
+/// One phase as the list model sees it. `id`, `name` and `deps` are RAW
+/// third-party text, used for matching and escaped before anything is stored.
+#[derive(Debug, Clone)]
+pub struct ListNode<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub deps: &'a [String],
+    /// Index into [`ListInput::bands`]; `None` (or out of range) is band-less.
+    pub band: Option<usize>,
+    /// The caller's done/current decision (D-B12).
+    pub marker: PhaseMarker,
+    /// Plans done / total, when known.
+    pub plans: Option<(u32, u32)>,
+    pub goal: Option<&'a crate::text::Untrusted>,
+    /// A planned (placeholder, non-GSD) phase.
+    pub planned: bool,
+    /// Reader-generated stage text carrying its own brackets
+    /// (e.g. `[Executing 16/18] [verified]`).
+    pub badge: Option<String>,
+}
+
+/// One milestone band as the list model sees it.
+#[derive(Debug, Clone)]
+pub struct BandInput {
+    pub label: crate::text::Untrusted,
+    pub shipped: bool,
+    /// The phase count the roadmap declares for this milestone (it may list
+    /// fewer phases than it shipped).
+    pub declared_phases: u32,
+}
+
+/// Everything [`layout_list`] reads: the phases in list order and the bands.
+#[derive(Debug, Clone, Default)]
+pub struct ListInput<'a> {
+    pub nodes: Vec<ListNode<'a>>,
+    pub bands: Vec<BandInput>,
+}
+
+/// A band's identity for folding and the cursor.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BandKey {
+    /// The one collapsed row standing for every shipped milestone.
+    Shipped,
+    /// A milestone band: the lower-cased trimmed RAW label (logic only,
+    /// never drawn).
+    Named(String),
+}
+
+/// What the Roadmap cursor rests on.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CursorTarget {
+    /// A phase, by `phase_key`.
+    Phase(String),
+    /// A band row or the shipped-summary row.
+    Band(BandKey),
+}
+
+/// A phase's status (D-A04), decided from the caller's [`PhaseMarker`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseStatus {
+    Done,
+    Active,
+    Ready,
+    Blocked,
+}
+
+impl PhaseStatus {
+    /// The status glyph (`●` `◉` `○` `◌`).
+    pub fn glyph(self) -> &'static str {
+        match self {
+            PhaseStatus::Done => GLYPH_DONE,
+            PhaseStatus::Active => GLYPH_ACTIVE,
+            PhaseStatus::Ready => GLYPH_READY,
+            PhaseStatus::Blocked => GLYPH_BLOCKED,
+        }
+    }
+}
+
+/// One visible row of the list. Every string is already escaped; `lanes` is
+/// the lane column, two cells per lane, trailing blanks trimmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListRow {
+    /// Every shipped milestone, collapsed into one row (D-A07).
+    ShippedSummary {
+        /// First and last shipped short ids (`v1.0 … v1.4`).
+        text: String,
+        milestones: usize,
+        phases: u32,
+        folded: bool,
+        lanes: String,
+    },
+    /// A milestone band header.
+    Band {
+        band: usize,
+        key: BandKey,
+        label: String,
+        short: String,
+        done: usize,
+        total: usize,
+        folded: bool,
+        lanes: String,
+    },
+    /// A fork or merge between lanes.
+    Connector { lanes: String },
+    /// A phase; `lanes` carries its status glyph at cell `2 * lane`.
+    Phase {
+        node: usize,
+        lane: usize,
+        lanes: String,
+    },
+}
+
+/// Everything the Roadmap knows about one phase. Display strings are escaped;
+/// indices point into [`RoadmapModel::phases`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseFacts {
+    /// `phase_key` of the raw id (logic only).
+    pub key: String,
+    pub id: String,
+    pub name: String,
+    pub goal: Option<String>,
+    pub band: Option<usize>,
+    pub wave: usize,
+    pub status: PhaseStatus,
+    pub planned: bool,
+    pub plans: Option<(u32, u32)>,
+    pub badge: Option<String>,
+    /// Transitively reduced dependencies, declared order.
+    pub needs: Vec<usize>,
+    /// Dropped dependencies: `(dep, via)`.
+    pub implied: Vec<(usize, usize)>,
+    /// Dependencies that name no listed phase (escaped).
+    pub external: Vec<String>,
+    /// Phases whose reduced dependencies include this one, list order.
+    pub unblocks: Vec<usize>,
+    /// The other phases of the same wave, list order (D-A02).
+    pub parallel: Vec<usize>,
+    /// No needs, no implied and no external dependencies.
+    pub no_deps: bool,
+    /// `no_deps`, and no phase depends on this one either.
+    pub no_edges: bool,
+    /// The last phase row of its band.
+    pub last_in_band: bool,
+}
+
+/// Everything the Roadmap knows about one band (escaped display strings).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BandFacts {
+    pub key: BandKey,
+    pub label: String,
+    pub short: String,
+    pub shipped: bool,
+    pub done: usize,
+    pub total: usize,
+    pub declared_phases: u32,
+}
+
+/// The laid-out Roadmap list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoadmapModel {
+    /// Visible rows only (folded rows dropped).
+    pub rows: Vec<ListRow>,
+    /// One per input node, input order.
+    pub phases: Vec<PhaseFacts>,
+    /// One per input band, input order.
+    pub bands: Vec<BandFacts>,
+    /// Active and ready phases, list order (D-A06).
+    pub start_now: Vec<usize>,
+    pub max_wave: usize,
+    pub done: usize,
+    pub total: usize,
+    /// At most one bounded cycle line (WR-01).
+    pub notes: Vec<String>,
+}
+
+/// Whether `key` is folded: only the shipped summary is folded by default,
+/// and a toggle flips the default.
+pub fn is_folded(key: &BandKey, fold_toggles: &HashSet<BandKey>) -> bool {
+    (*key == BandKey::Shipped) != fold_toggles.contains(key)
+}
+
+/// Drop every declared parent that another declared parent already implies
+/// (D-A08, RESEARCH Pattern 1), over ACYCLIC parents.
+///
+/// Returns the reduced parents (declared order kept) and, per node, the
+/// dropped edges as `(implied parent, via)`. The witness `via` is the first
+/// KEPT parent whose ancestry contains the dropped one, else the first other
+/// declared parent that does. Ancestor sets are built in layer order (a
+/// parent always sits on a lower layer), iteratively: O(n·e), no recursion.
+fn transitive_reduction(
+    parents: &ParentLists,
+    layer: &[usize],
+) -> (ParentLists, Vec<Vec<(usize, usize)>>) {
+    let n = parents.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&u| layer[u]);
+    let mut anc: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    for &u in &order {
+        let mut set: HashSet<usize> = HashSet::new();
+        for &p in &parents[u] {
+            set.insert(p);
+            set.extend(anc[p].iter().copied());
+        }
+        anc[u] = set;
+    }
+
+    let mut reduced: ParentLists = vec![Vec::new(); n];
+    let mut implied: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for u in 0..n {
+        let declared = &parents[u];
+        let implies = |q: usize, p: usize| q != p && anc[q].contains(&p);
+        let kept: Vec<usize> = declared
+            .iter()
+            .copied()
+            .filter(|&p| !declared.iter().any(|&q| implies(q, p)))
+            .collect();
+        for &p in declared {
+            if kept.contains(&p) {
+                reduced[u].push(p);
+                continue;
+            }
+            let via = kept
+                .iter()
+                .copied()
+                .find(|&q| implies(q, p))
+                .or_else(|| declared.iter().copied().find(|&q| implies(q, p)));
+            if let Some(via) = via {
+                implied[u].push((p, via));
+            }
+        }
+    }
+    (reduced, implied)
+}
+
+/// One entry of the unfolded row sequence the lane assigner walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Summary,
+    Band(usize),
+    Phase(usize),
+}
+
+/// What a laid-out row is, before folding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneKind {
+    Summary,
+    Band(usize),
+    /// A fork or merge belonging to this node's row.
+    Connector(usize),
+    /// A node on a lane.
+    Phase(usize, usize),
+}
+
+#[derive(Debug, Clone)]
+struct LaneRow {
+    kind: LaneKind,
+    lanes: String,
+}
+
+/// A lane junction from its four connections.
+fn junction(left: bool, right: bool, up: bool, down: bool) -> &'static str {
+    match (left, right, up, down) {
+        (true, true, true, true) => LANE_CROSS,
+        (true, true, false, true) => LANE_TEE_DOWN,
+        (true, true, true, false) => LANE_TEE_UP,
+        (false, true, true, true) => LANE_TEE_RIGHT,
+        (true, false, true, true) => LANE_TEE_LEFT,
+        (false, true, false, true) => LANE_DOWN_RIGHT,
+        (true, false, false, true) => LANE_DOWN_LEFT,
+        (false, true, true, false) => LANE_UP_RIGHT,
+        (true, false, true, false) => LANE_UP_LEFT,
+        (_, _, true, _) | (_, _, _, true) => LANE_VERTICAL,
+        _ => LANE_HORIZONTAL,
+    }
+}
+
+/// The lowest free lane, never `avoid` (the previous phase row's lane, so an
+/// unrelated root never stacks under it as if chained — D-A08).
+fn free_lane(active: &[Option<usize>], avoid: Option<usize>) -> usize {
+    (0..)
+        .find(|&l| active.get(l).is_none_or(Option::is_none) && Some(l) != avoid)
+        .unwrap_or(0)
+}
+
+fn claim(active: &mut Vec<Option<usize>>, lane: usize, target: Option<usize>) {
+    if active.len() <= lane {
+        active.resize(lane + 1, None);
+    }
+    active[lane] = target;
+}
+
+/// Join per-lane cells into a lane string: each lane is its glyph plus the
+/// cell to its right (`─` inside a horizontal span, else blank), trimmed.
+fn join_cells(cells: &[&str], span: Option<(usize, usize)>) -> String {
+    let mut out = String::new();
+    for (l, cell) in cells.iter().enumerate() {
+        out.push_str(cell);
+        let inside = span.is_some_and(|(lo, hi)| l >= lo && l < hi);
+        out.push_str(if inside { LANE_HORIZONTAL } else { " " });
+    }
+    out.trim_end().to_string()
+}
+
+/// A row that only passes active lanes through (band rows, phase rows' other
+/// lanes).
+fn pass_through(active: &[Option<usize>], node: Option<(usize, &str)>) -> String {
+    let width = active.len().max(node.map_or(0, |(l, _)| l + 1));
+    let cells: Vec<&str> = (0..width)
+        .map(|l| match node {
+            Some((lane, glyph)) if lane == l => glyph,
+            _ if active.get(l).is_some_and(Option::is_some) => LANE_VERTICAL,
+            _ => " ",
+        })
+        .collect();
+    join_cells(&cells, None)
+}
+
+/// A fork (`fork`, `others` are the new lanes opening below) or merge
+/// (`others` are the lanes closing into `lane`) connector row around `lane`.
+fn connector_row(active: &[Option<usize>], lane: usize, others: &[usize], fork: bool) -> String {
+    let lo = others.iter().copied().fold(lane, usize::min);
+    let hi = others.iter().copied().fold(lane, usize::max);
+    let width = active.len().max(hi + 1);
+    let cells: Vec<&str> = (0..width)
+        .map(|l| {
+            let inside = l > lo && l < hi;
+            if l == lane {
+                junction(lo < lane, hi > lane, true, true)
+            } else if others.contains(&l) {
+                junction(l > lo, l < hi, !fork, fork)
+            } else if active.get(l).is_some_and(Option::is_some) {
+                if inside {
+                    LANE_CROSS
+                } else {
+                    LANE_VERTICAL
+                }
+            } else if inside {
+                LANE_HORIZONTAL
+            } else {
+                " "
+            }
+        })
+        .collect();
+    join_cells(&cells, Some((lo, hi)))
+}
+
+/// Assign git-log lanes over the unfolded row sequence (RESEARCH Pattern 2).
+///
+/// Edges run only from an earlier row to a later one along REDUCED parents.
+/// A node sits on its lowest incoming lane (several → one merge connector
+/// before it); a root takes the lowest free lane that is not the previous
+/// phase row's (a band row resets that). After a node, its first later child
+/// continues its lane and every further child takes the lowest free lane
+/// (one fork connector after it).
+fn assign_lanes(seq: &[Slot], reduced: &ParentLists, glyphs: &[&str]) -> Vec<LaneRow> {
+    let n = reduced.len();
+    let mut pos = vec![usize::MAX; n];
+    for (r, slot) in seq.iter().enumerate() {
+        if let Slot::Phase(u) = *slot {
+            pos[u] = r;
+        }
+    }
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (c, list) in reduced.iter().enumerate() {
+        for &p in list {
+            if pos[p] != usize::MAX && pos[c] != usize::MAX && pos[p] < pos[c] {
+                children[p].push(c);
+            }
+        }
+    }
+    for list in &mut children {
+        list.sort_by_key(|&c| pos[c]);
+    }
+
+    let mut active: Vec<Option<usize>> = Vec::new();
+    let mut prev: Option<usize> = None;
+    let mut out: Vec<LaneRow> = Vec::with_capacity(seq.len());
+    for slot in seq {
+        let u = match *slot {
+            Slot::Summary | Slot::Band(_) => {
+                let kind = match *slot {
+                    Slot::Band(b) => LaneKind::Band(b),
+                    _ => LaneKind::Summary,
+                };
+                out.push(LaneRow {
+                    kind,
+                    lanes: pass_through(&active, None),
+                });
+                prev = None;
+                continue;
+            }
+            Slot::Phase(u) => u,
+        };
+        let incoming: Vec<usize> = (0..active.len())
+            .filter(|&l| active[l] == Some(u))
+            .collect();
+        let lane = match incoming.split_first() {
+            Some((&first, rest)) => {
+                if !rest.is_empty() {
+                    out.push(LaneRow {
+                        kind: LaneKind::Connector(u),
+                        lanes: connector_row(&active, first, rest, false),
+                    });
+                    for &l in rest {
+                        active[l] = None;
+                    }
+                }
+                first
+            }
+            None => free_lane(&active, prev),
+        };
+        claim(&mut active, lane, None);
+        out.push(LaneRow {
+            kind: LaneKind::Phase(u, lane),
+            lanes: pass_through(&active, Some((lane, glyphs.get(u).copied().unwrap_or(" ")))),
+        });
+        match children[u].split_first() {
+            Some((&first, rest)) => {
+                claim(&mut active, lane, Some(first));
+                let mut forked = Vec::with_capacity(rest.len());
+                for &c in rest {
+                    let l = free_lane(&active, None);
+                    claim(&mut active, l, Some(c));
+                    forked.push(l);
+                }
+                if !forked.is_empty() {
+                    out.push(LaneRow {
+                        kind: LaneKind::Connector(u),
+                        lanes: connector_row(&active, lane, &forked, true),
+                    });
+                }
+            }
+            None => claim(&mut active, lane, None),
+        }
+        while active.last().is_some_and(Option::is_none) {
+            active.pop();
+        }
+        prev = Some(lane);
+    }
+    out
+}
+
+/// Lay out `input` as the vertical Roadmap list (D-A01, D-A07, D-A08).
+///
+/// Pure: no ratatui types, no I/O. Lanes are computed on the unfolded list,
+/// then rows hidden by `fold_toggles` (see [`is_folded`]) are dropped.
+pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> RoadmapModel {
+    let nodes = &input.nodes;
+    let n = nodes.len();
+    let labels: Vec<String> = nodes.iter().map(|node| esc(node.id)).collect();
+
+    // The kept D-A15 pipeline.
+    let pairs: Vec<(&str, &[String])> = nodes.iter().map(|node| (node.id, node.deps)).collect();
+    let (mut parents, externals, mut cycles) = resolve_deps(&pairs, &labels);
+    break_cycles(&mut parents, &labels, &mut cycles);
+    let layer = longest_path_layers(&parents);
+    let (reduced, implied) = transitive_reduction(&parents, &layer);
+
+    // Status (D-B12): an external dependency counts as satisfied (A12).
+    let status: Vec<PhaseStatus> = (0..n)
+        .map(|u| match nodes[u].marker {
+            PhaseMarker::Done => PhaseStatus::Done,
+            PhaseMarker::Current => PhaseStatus::Active,
+            PhaseMarker::Future => {
+                if parents[u]
+                    .iter()
+                    .all(|&p| nodes[p].marker == PhaseMarker::Done)
+                {
+                    PhaseStatus::Ready
+                } else {
+                    PhaseStatus::Blocked
+                }
+            }
+        })
+        .collect();
+
+    let seq: Vec<Slot> = (0..n).map(Slot::Phase).collect();
+    let glyphs: Vec<&str> = status.iter().map(|s| s.glyph()).collect();
+    let laid = assign_lanes(&seq, &reduced, &glyphs);
+
+    // List order of the nodes.
+    let order: Vec<usize> = seq
+        .iter()
+        .filter_map(|slot| match *slot {
+            Slot::Phase(u) => Some(u),
+            _ => None,
+        })
+        .collect();
+    let mut pos = vec![usize::MAX; n];
+    for (i, &u) in order.iter().enumerate() {
+        pos[u] = i;
+    }
+
+    let mut unblocks: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut declared_by_any = vec![false; n];
+    for c in 0..n {
+        for &p in &reduced[c] {
+            unblocks[p].push(c);
+        }
+        for &p in &parents[c] {
+            declared_by_any[p] = true;
+        }
+    }
+    for list in &mut unblocks {
+        list.sort_by_key(|&c| pos[c]);
+    }
+
+    let phases: Vec<PhaseFacts> = (0..n)
+        .map(|u| {
+            let node = &nodes[u];
+            let no_deps = reduced[u].is_empty() && implied[u].is_empty() && externals[u].is_empty();
+            PhaseFacts {
+                key: phase_key(node.id),
+                id: labels[u].clone(),
+                name: esc(node.name),
+                goal: node.goal.map(|g| String::from(g.shown())),
+                band: node.band.filter(|&b| b < input.bands.len()),
+                wave: layer[u] + 1,
+                status: status[u],
+                planned: node.planned,
+                plans: node.plans,
+                badge: node.badge.as_deref().map(esc),
+                needs: reduced[u].clone(),
+                implied: implied[u].clone(),
+                external: externals[u].clone(),
+                unblocks: unblocks[u].clone(),
+                parallel: order
+                    .iter()
+                    .copied()
+                    .filter(|&v| v != u && layer[v] == layer[u])
+                    .collect(),
+                no_deps,
+                no_edges: no_deps && !declared_by_any[u],
+                last_in_band: false,
+            }
+        })
+        .collect();
+
+    let rows: Vec<ListRow> = laid
+        .into_iter()
+        .filter_map(|row| match row.kind {
+            LaneKind::Connector(_) => Some(ListRow::Connector { lanes: row.lanes }),
+            LaneKind::Phase(node, lane) => Some(ListRow::Phase {
+                node,
+                lane,
+                lanes: row.lanes,
+            }),
+            LaneKind::Summary | LaneKind::Band(_) => None,
+        })
+        .collect();
+
+    RoadmapModel {
+        rows,
+        start_now: order
+            .iter()
+            .copied()
+            .filter(|&u| matches!(status[u], PhaseStatus::Active | PhaseStatus::Ready))
+            .collect(),
+        max_wave: layer.iter().map(|l| l + 1).max().unwrap_or(0),
+        done: status.iter().filter(|&&s| s == PhaseStatus::Done).count(),
+        total: n,
+        notes: cycle_note(&cycles).into_iter().collect(),
+        phases,
+        bands: Vec::new(),
+    }
+}
+
+/// The model as plain text, one line per visible row: the lane column padded
+/// to ten cells (the node cell drawn `o`), then the phase id, `[short]` for a
+/// band, `[shipped]` for the shipped summary, nothing for a connector.
+pub fn lane_text(model: &RoadmapModel) -> Vec<String> {
+    model
+        .rows
+        .iter()
+        .map(|row| {
+            let (lanes, label) = match row {
+                ListRow::Phase { node, lane, lanes } => (
+                    lanes
+                        .chars()
+                        .enumerate()
+                        .map(|(i, c)| if i == 2 * lane { 'o' } else { c })
+                        .collect::<String>(),
+                    model
+                        .phases
+                        .get(*node)
+                        .map_or(String::new(), |p| p.id.clone()),
+                ),
+                ListRow::Band { lanes, short, .. } => (lanes.clone(), format!("[{short}]")),
+                ListRow::ShippedSummary { lanes, .. } => (lanes.clone(), "[shipped]".to_string()),
+                ListRow::Connector { lanes } => (lanes.clone(), String::new()),
+            };
+            format!("{lanes:<LANE_TEXT_COLUMN$}{label}")
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Legacy left-to-right layout — kept only until plan 24-06 removes its last
+// caller (`ui::screens::detail`). Do not build on it.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Row placement
@@ -776,7 +1446,8 @@ pub fn layout_graph(
     let n = nodes.len();
     let labels: Vec<String> = nodes.iter().map(|node| esc(node.id)).collect();
 
-    let (mut parents, externals, mut cycles) = resolve_deps(nodes, &labels);
+    let pairs: Vec<(&str, &[String])> = nodes.iter().map(|node| (node.id, node.deps)).collect();
+    let (mut parents, externals, mut cycles) = resolve_deps(&pairs, &labels);
     break_cycles(&mut parents, &labels, &mut cycles);
     let layer = longest_path_layers(&parents);
     let layers = layer.iter().copied().max().map_or(0, |m| m + 1);
@@ -1663,5 +2334,248 @@ mod tests {
         let row0 = &buffer_rows(&buf)[0];
         assert!(row0.contains("30"), "{row0:?}");
         assert!(!row0.starts_with("1 ─►"), "{row0:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // The vertical list model (phase 24)
+    // -----------------------------------------------------------------------
+
+    const D: PhaseMarker = PhaseMarker::Done;
+    const C: PhaseMarker = PhaseMarker::Current;
+    const F: PhaseMarker = PhaseMarker::Future;
+
+    /// A list spec: `(id, name, deps, marker)`.
+    type LSpec<'a> = &'a [(&'a str, &'a str, &'a [&'a str], PhaseMarker)];
+    /// Bands: `(label, shipped, declared phases, member ids)`.
+    type BSpec<'a> = &'a [(&'a str, bool, u32, &'a [&'a str])];
+
+    fn build(spec: LSpec<'_>, bands: BSpec<'_>, toggles: &HashSet<BandKey>) -> RoadmapModel {
+        let deps: Vec<Vec<String>> = spec
+            .iter()
+            .map(|(_, _, deps, _)| deps.iter().map(|d| d.to_string()).collect())
+            .collect();
+        let input = ListInput {
+            nodes: spec
+                .iter()
+                .zip(&deps)
+                .map(|(&(id, name, _, marker), deps)| ListNode {
+                    id,
+                    name,
+                    deps,
+                    band: bands.iter().position(|(_, _, _, ids)| ids.contains(&id)),
+                    marker,
+                    plans: None,
+                    goal: None,
+                    planned: false,
+                    badge: None,
+                })
+                .collect(),
+            bands: bands
+                .iter()
+                .map(|&(label, shipped, declared, _)| BandInput {
+                    label: crate::text::Untrusted::from_untrusted_source(label.to_string()),
+                    shipped,
+                    declared_phases: declared,
+                })
+                .collect(),
+        };
+        layout_list(&input, toggles)
+    }
+
+    fn plain(spec: LSpec<'_>) -> RoadmapModel {
+        build(spec, &[], &HashSet::new())
+    }
+
+    fn idx(model: &RoadmapModel, id: &str) -> usize {
+        model
+            .phases
+            .iter()
+            .position(|p| p.id == id)
+            .unwrap_or_else(|| panic!("no phase {id}"))
+    }
+
+    fn facts<'m>(model: &'m RoadmapModel, id: &str) -> &'m PhaseFacts {
+        &model.phases[idx(model, id)]
+    }
+
+    fn ids(model: &RoadmapModel, list: &[usize]) -> Vec<String> {
+        list.iter().map(|&i| model.phases[i].id.clone()).collect()
+    }
+
+    fn implied_ids(model: &RoadmapModel, id: &str) -> Vec<(String, String)> {
+        facts(model, id)
+            .implied
+            .iter()
+            .map(|&(dep, via)| (model.phases[dep].id.clone(), model.phases[via].id.clone()))
+            .collect()
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
+    /// daily-vow v1.5 (Mockup B): 18 depends on the external 17.
+    const DAILY_VOW: LSpec<'static> = &[
+        ("18", "Calibration Foundation", &["17"], D),
+        ("19", "Effective Profile Resolution", &["18"], D),
+        ("20", "Notification Scheduling Extraction", &["19"], D),
+        ("21", "Probes End-to-End", &["20"], D),
+        ("22", "Response-Weighted Nudge Selection", &["21"], D),
+        ("23", "Transparency, Reset & History", &["21", "20"], C),
+    ];
+
+    /// sentriq v0.12 (Mockup C).
+    const SENTRIQ: LSpec<'static> = &[
+        ("9", "Routine Event Logging", &[], C),
+        ("10", "The Air Box Test", &["9"], F),
+        ("11", "First Supervised On-Vehicle Run", &["10", "9"], F),
+        ("12", "Two-Truck Hardware Validation", &[], F),
+    ];
+
+    /// ttbook's v2 phases plus build phases 14-18.
+    const TTBOOK: LSpec<'static> = &[
+        ("8", "", &[], F),
+        ("9", "", &["8"], F),
+        ("10", "", &["8", "9"], F),
+        ("11", "", &["8", "9"], F),
+        ("12", "", &["9", "10", "11"], F),
+        ("13", "", &["12"], F),
+        ("14", "", &["8", "9", "10", "11", "12", "13"], F),
+        ("15", "", &["14"], F),
+        ("16", "", &["12", "13"], F),
+        ("17", "", &["12", "13", "16"], F),
+        ("18", "", &["12"], F),
+    ];
+
+    const ROOTS: LSpec<'static> = &[
+        ("1", "", &[], F),
+        ("2", "", &[], F),
+        ("3", "", &[], F),
+        ("4", "", &[], F),
+    ];
+
+    #[test]
+    fn reduction_daily_vow_23_implies_20_via_21() {
+        let model = plain(DAILY_VOW);
+        assert_eq!(implied_ids(&model, "23"), pairs(&[("20", "21")]));
+        assert_eq!(ids(&model, &facts(&model, "23").needs), vec!["21"]);
+    }
+
+    #[test]
+    fn reduction_sentriq_11_implies_9_via_10() {
+        let model = plain(SENTRIQ);
+        assert_eq!(implied_ids(&model, "11"), pairs(&[("9", "10")]));
+        assert_eq!(ids(&model, &facts(&model, "11").needs), vec!["10"]);
+    }
+
+    #[test]
+    fn reduction_ttbook_shape() {
+        let model = plain(TTBOOK);
+        assert_eq!(implied_ids(&model, "10"), pairs(&[("8", "9")]));
+        assert_eq!(implied_ids(&model, "11"), pairs(&[("8", "9")]));
+        assert_eq!(implied_ids(&model, "12"), pairs(&[("9", "10")]));
+        assert_eq!(ids(&model, &facts(&model, "12").needs), vec!["10", "11"]);
+        assert_eq!(ids(&model, &facts(&model, "14").needs), vec!["13"]);
+        assert_eq!(facts(&model, "14").implied.len(), 5);
+        assert_eq!(ids(&model, &facts(&model, "17").needs), vec!["16"]);
+    }
+
+    #[test]
+    fn waves_are_longest_path_plus_one() {
+        let model = plain(DAILY_VOW);
+        let waves: Vec<usize> = model.phases.iter().map(|p| p.wave).collect();
+        assert_eq!(waves, vec![1, 2, 3, 4, 5, 5]);
+        assert_eq!(model.max_wave, 5);
+
+        let model = plain(SENTRIQ);
+        let waves: Vec<usize> = model.phases.iter().map(|p| p.wave).collect();
+        assert_eq!(waves, vec![1, 2, 3, 1]);
+    }
+
+    #[test]
+    fn lanes_daily_vow_without_bands() {
+        assert_eq!(
+            lane_text(&plain(DAILY_VOW)),
+            vec![
+                "o         18",
+                "o         19",
+                "o         20",
+                "o         21",
+                "├─┐",
+                "o │       22",
+                "  o       23",
+            ]
+        );
+    }
+
+    #[test]
+    fn lanes_sentriq_without_bands() {
+        assert_eq!(
+            lane_text(&plain(SENTRIQ)),
+            vec!["o         9", "o         10", "o         11", "  o       12"]
+        );
+    }
+
+    #[test]
+    fn lanes_roots_zig_zag() {
+        assert_eq!(
+            lane_text(&plain(ROOTS)),
+            vec!["o         1", "  o       2", "o         3", "  o       4"]
+        );
+    }
+
+    #[test]
+    fn daily_vow_phase_20_has_exactly_one_row() {
+        let model = plain(DAILY_VOW);
+        let rows_of_20 = model
+            .rows
+            .iter()
+            .filter(|row| matches!(row, ListRow::Phase { node, .. } if model.phases[*node].id == "20"))
+            .count();
+        assert_eq!(rows_of_20, 1);
+        // Every phase has exactly one row.
+        let mut seen: Vec<usize> = model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                ListRow::Phase { node, .. } => Some(*node),
+                _ => None,
+            })
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..model.phases.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn facts_for_mockup_b_phase_23() {
+        let model = plain(DAILY_VOW);
+        let p = facts(&model, "23");
+        assert_eq!(ids(&model, &p.needs), vec!["21"]);
+        assert_eq!(implied_ids(&model, "23"), pairs(&[("20", "21")]));
+        assert_eq!(ids(&model, &p.parallel), vec!["22"]);
+        assert!(p.unblocks.is_empty());
+        assert_eq!(p.status, PhaseStatus::Active);
+        assert_eq!(p.wave, 5);
+        assert!(!p.no_deps && !p.no_edges);
+        // The external 17 counts as satisfied; 18 is done anyway.
+        assert_eq!(facts(&model, "18").external, vec!["17".to_string()]);
+        assert_eq!(ids(&model, &model.start_now), vec!["23"]);
+        assert_eq!((model.done, model.total), (5, 6));
+    }
+
+    #[test]
+    fn facts_for_mockup_c_phase_12() {
+        let model = plain(SENTRIQ);
+        let p = facts(&model, "12");
+        assert!(p.no_deps);
+        assert!(p.no_edges);
+        assert_eq!(ids(&model, &p.parallel), vec!["9"]);
+        assert_eq!(p.status, PhaseStatus::Ready);
+        assert_eq!(facts(&model, "10").status, PhaseStatus::Blocked);
+        // 9 has no deps but 10 depends on it: it has edges.
+        assert!(facts(&model, "9").no_deps && !facts(&model, "9").no_edges);
+        assert_eq!(ids(&model, &model.start_now), vec!["9", "12"]);
     }
 }
