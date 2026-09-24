@@ -21,8 +21,8 @@
 //!   sub-rect of it.
 
 use crate::ui::roadmap_graph::{
-    BandKey, CursorTarget, ListRow, PhaseFacts, PhaseStatus, RoadmapModel, MARK_DEP, MARK_IMPLIED,
-    MARK_SELECTED, MARK_UNBLOCKS, PARALLEL_SEP,
+    BandFacts, BandKey, CursorTarget, ListRow, PhaseFacts, PhaseStatus, RoadmapModel, BAND_FILL,
+    BAND_FOLDED, BAND_OPEN, MARK_DEP, MARK_IMPLIED, MARK_SELECTED, MARK_UNBLOCKS, PARALLEL_SEP,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -62,6 +62,18 @@ const GAP: &str = "  ";
 const LABEL_CELLS: usize = 10;
 /// Footer hint of the side-by-side phase detail pane.
 const HINT_WIDE: &str = "\u{23CE} open in Phases   h/l follow edge";
+/// Footer hint of the stacked phase detail pane (Mockup C).
+const HINT_STACKED: &str = "\u{23CE} open in Phases   h/l follow edge   j/k move";
+/// Footer hint of a band's detail pane.
+const HINT_BAND: &str = "Space fold/unfold";
+/// Footer hint of the shipped summary's detail pane.
+const HINT_SHIPPED: &str = "\u{23CE} open milestones   Space fold/unfold";
+/// Appended to a stacked pane's hint.
+const HINT_MOVE: &str = "   j/k move";
+/// The hanging indent under a section label.
+const INDENT: &str = "          ";
+/// What an empty model draws.
+const EMPTY: &str = "No roadmap data available";
 /// Marks the cut in truncated text.
 const ELLIPSIS: char = '\u{2026}';
 /// The plans column when the count is unknown.
@@ -112,10 +124,28 @@ pub fn panes(area: Rect) -> (Rect, Rect) {
     }
 }
 
-/// The first visible row that keeps `row` inside a window of `visible` rows
-/// starting near `offset`. (RED stub: returns `offset` unchanged.)
-pub fn keep_visible(offset: usize, _row: usize, _visible: usize) -> usize {
-    offset
+/// `word` or `words` for `n`.
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
+}
+
+/// The first visible row that keeps `row` inside a window of `visible` rows:
+/// `offset` itself when `row` is already inside it, else the nearest offset
+/// that shows `row` (at the top when scrolling up, at the bottom when
+/// scrolling down). A zero-row window counts as one row.
+pub fn keep_visible(offset: usize, row: usize, visible: usize) -> usize {
+    let visible = visible.max(1);
+    if row < offset {
+        row
+    } else if row >= offset.saturating_add(visible) {
+        row + 1 - visible
+    } else {
+        offset
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +285,33 @@ fn lane_spans(
     let fill = width.saturating_sub(chars.len());
     spans.push(Span::styled(" ".repeat(fill), base));
     spans
+}
+
+/// `lanes` with every lane past `cap` collapsed into one [`LANE_OVERFLOW`]
+/// cell (T-24-14), and where the node glyph at `glyph_at` now sits. A node
+/// whose own lane is past the cap takes the overflow cell itself, so its
+/// status glyph stays visible.
+fn cap_lanes(lanes: &str, glyph_at: Option<usize>, cap: usize) -> (String, Option<usize>) {
+    let keep = cap.saturating_mul(2);
+    let chars: Vec<char> = lanes.chars().collect();
+    if chars.len() <= keep {
+        return (lanes.to_string(), glyph_at);
+    }
+    let mut out: String = chars[..keep].iter().collect();
+    match glyph_at {
+        Some(g) if g >= keep => {
+            if let Some(glyph) = chars.get(g) {
+                out.push(*glyph);
+            }
+            (out, Some(keep))
+        }
+        _ => {
+            if chars[keep..].iter().any(|c| *c != ' ') {
+                out.push_str(LANE_OVERFLOW);
+            }
+            (out.trim_end().to_string(), glyph_at)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +457,8 @@ struct Cols {
     lane: usize,
     id: usize,
     name: usize,
+    /// Lanes drawn before the overflow column.
+    cap: usize,
 }
 
 impl RoadmapView<'_> {
@@ -407,12 +466,18 @@ impl RoadmapView<'_> {
         self.model.phases.get(node)
     }
 
-    fn columns(&self, w: usize) -> Cols {
+    fn columns(&self, w: usize, cap: usize) -> Cols {
         let lane = self
             .model
             .rows
             .iter()
-            .map(|row| cells(lanes_of(row)))
+            .map(|row| {
+                let glyph_at = match row {
+                    ListRow::Phase { lane, .. } => lane.checked_mul(2),
+                    _ => None,
+                };
+                cells(&cap_lanes(lanes_of(row), glyph_at, cap).0)
+            })
             .max()
             .unwrap_or(0)
             .max(MIN_LANE_CELLS);
@@ -429,6 +494,7 @@ impl RoadmapView<'_> {
             lane,
             id,
             name: w.saturating_sub(fixed),
+            cap,
         }
     }
 
@@ -440,6 +506,7 @@ impl RoadmapView<'_> {
         buf: &mut Buffer,
         state: &mut RoadmapViewState,
         cursor: Option<&CursorTarget>,
+        cap: usize,
     ) {
         let block = pane_block()
             .title_top(Line::from(" Roadmap "))
@@ -451,30 +518,49 @@ impl RoadmapView<'_> {
             return;
         }
         let w = usize::from(inner.width);
-        let cols = self.columns(w);
+        let cols = self.columns(w, cap);
         let selected_phase = match cursor {
             Some(CursorTarget::Phase(key)) => self.model.phase_index(key),
             _ => None,
         };
         let selected_row = cursor.and_then(|c| self.model.row_of(c));
 
-        let body = usize::from(inner.height).saturating_sub(2);
+        // The Start-now and header lines never scroll; a Notes line, when
+        // there is one, takes the pane's last row.
+        let note = self.model.notes.first().filter(|_| inner.height > 2);
+        let body = usize::from(inner.height).saturating_sub(2 + usize::from(note.is_some()));
         state.list_rows = u16::try_from(body).unwrap_or(u16::MAX);
-        state.offset = state.offset.min(self.model.rows.len().saturating_sub(1));
+        // The `clamp_scroll` idiom: never past the tail, then the cursor row.
+        let mut offset = state.offset.min(self.model.rows.len().saturating_sub(body));
+        if let Some(row) = selected_row {
+            offset = keep_visible(offset, row, body);
+        }
+        state.offset = offset;
+
+        if let Some(note) = note {
+            let y = inner.bottom() - 1;
+            Paragraph::new(fit(
+                vec![
+                    Span::styled("Notes  ", bold()),
+                    Span::styled(note.clone(), dim()),
+                ],
+                w,
+            ))
+            .render(Rect::new(inner.x, y, inner.width, 1), buf);
+        }
+        let list_area = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height - u16::from(note.is_some()),
+        );
 
         let mut lines = vec![self.start_now_line(w), self.header_line(&cols, w)];
-        for (i, row) in self
-            .model
-            .rows
-            .iter()
-            .enumerate()
-            .skip(state.offset)
-            .take(body)
-        {
+        for (i, row) in self.model.rows.iter().enumerate().skip(offset).take(body) {
             let selected = selected_row == Some(i);
             lines.push(self.row_line(row, selected, selected_phase, &cols, w));
         }
-        Paragraph::new(lines).render(inner, buf);
+        Paragraph::new(lines).render(list_area, buf);
     }
 
     /// `Start now: ◉10 Slot picker UI (active) ║ ○11 Calendar sync` (D-A06).
@@ -524,24 +610,59 @@ impl RoadmapView<'_> {
         cols: &Cols,
         w: usize,
     ) -> Line<'static> {
+        let plain = Style::default();
         let spans = match row {
             ListRow::Phase { node, lane, lanes } => {
                 self.phase_spans(*node, *lane, lanes, selected, selected_phase, cols)
             }
-            ListRow::Band { label, lanes, .. } => {
-                let mut spans =
-                    lane_spans(lanes, None, Style::default(), Style::default(), cols.lane);
-                spans.push(Span::styled(label.clone(), bold()));
+            // `{lanes}{▾|▸} {label}  {done}/{total} ━━━…` (D-A07).
+            ListRow::Band {
+                label,
+                done,
+                total,
+                folded,
+                lanes,
+                ..
+            } => {
+                let (lanes, _) = cap_lanes(lanes, None, cols.cap);
+                let mut spans = lane_spans(&lanes, None, plain, plain, cols.lane);
+                let glyph = if *folded { BAND_FOLDED } else { BAND_OPEN };
+                let tail = format!("{GAP}{done}/{total} ");
+                let used = cols.lane + 2 + cells(&tail);
+                let label = truncate(label, w.saturating_sub(used));
+                let fill = w.saturating_sub(used + cells(&label));
+                spans.push(Span::styled(format!("{glyph} "), bold()));
+                spans.push(Span::styled(label, bold()));
+                spans.push(Span::styled(tail, dim()));
+                spans.push(Span::styled(BAND_FILL.repeat(fill), dim()));
                 spans
             }
-            ListRow::ShippedSummary { text, lanes, .. } => {
-                let mut spans =
-                    lane_spans(lanes, None, Style::default(), Style::default(), cols.lane);
-                spans.push(Span::raw(text.clone()));
+            // `{▸|▾} v1.0 … v1.4   5 milestones · 17 phases shipped`.
+            ListRow::ShippedSummary {
+                text,
+                milestones,
+                phases,
+                folded,
+                lanes,
+            } => {
+                let (lanes, _) = cap_lanes(lanes, None, cols.cap);
+                let glyph = if *folded { BAND_FOLDED } else { BAND_OPEN };
+                let count = format!(
+                    "   {milestones} {}{DOT}{phases} {} shipped",
+                    plural(*milestones, "milestone"),
+                    plural(usize::try_from(*phases).unwrap_or(usize::MAX), "phase"),
+                );
+                let mut spans = vec![Span::styled(lanes, plain)];
+                spans.push(Span::styled(format!("{glyph} "), bold()));
+                spans.push(Span::styled(text.clone(), bold()));
+                spans.push(Span::styled(count, dim()));
+                let used: usize = spans.iter().map(|s| cells(&s.content)).sum();
+                spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
                 spans
             }
             ListRow::Connector { lanes } => {
-                lane_spans(lanes, None, Style::default(), Style::default(), cols.lane)
+                let (lanes, _) = cap_lanes(lanes, None, cols.cap);
+                lane_spans(&lanes, None, plain, plain, cols.lane)
             }
         };
         let spans = if selected {
@@ -595,13 +716,8 @@ impl RoadmapView<'_> {
         } else {
             Style::default()
         };
-        let mut spans = lane_spans(
-            lanes,
-            lane.checked_mul(2),
-            glyph_style(p.status),
-            base,
-            cols.lane,
-        );
+        let (lanes, glyph_at) = cap_lanes(lanes, lane.checked_mul(2), cols.cap);
+        let mut spans = lane_spans(&lanes, glyph_at, glyph_style(p.status), base, cols.lane);
         let (mark, mark_style) = self.mark_for(node, selected, selected_phase);
         spans.push(Span::styled(format!(" {mark} "), mark_style));
         let plans = p
@@ -622,56 +738,128 @@ impl RoadmapView<'_> {
 
     // --- detail pane ------------------------------------------------------
 
-    fn render_detail(&self, area: Rect, buf: &mut Buffer, cursor: Option<&CursorTarget>) {
+    /// The detail pane for whatever the cursor rests on: a phase (side-by-side
+    /// or stacked form), a band, or the shipped summary (D-A02, D-A07).
+    fn render_detail(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        cursor: Option<&CursorTarget>,
+        stacked: bool,
+    ) {
         if area.is_empty() {
             return;
         }
-        let phase = match cursor {
+        let w = usize::from(pane_block().inner(area).width);
+        let (title, items) = match cursor {
             Some(CursorTarget::Phase(key)) => {
-                self.model.phase_index(key).and_then(|u| self.phase(u))
+                match self.model.phase_index(key).and_then(|u| self.phase(u)) {
+                    Some(p) if stacked => (format!(" Phase {} ", p.id), self.stacked_items(p, w)),
+                    Some(p) => (format!(" Phase {} ", p.id), self.phase_items(p, w)),
+                    None => (String::new(), Vec::new()),
+                }
             }
-            _ => None,
+            Some(CursorTarget::Band(BandKey::Shipped)) => {
+                (" Shipped ".to_string(), self.shipped_items(w, stacked))
+            }
+            Some(CursorTarget::Band(key)) => {
+                match self.model.bands.iter().find(|b| b.key == *key) {
+                    Some(b) => (format!(" {} ", b.short), Self::band_items(b, w, stacked)),
+                    None => (String::new(), Vec::new()),
+                }
+            }
+            None => (String::new(), Vec::new()),
         };
-        if let Some(p) = phase {
-            let block = pane_block().title_top(Line::from(format!(" Phase {} ", p.id)));
-            let inner = block.inner(area);
-            block.render(area, buf);
-            let items = self.phase_items(p, usize::from(inner.width));
-            draw_items(items, inner, buf);
-            return;
-        }
-        let band = match cursor {
-            Some(CursorTarget::Band(BandKey::Named(_))) => cursor.and_then(|c| match c {
-                CursorTarget::Band(key) => self.model.bands.iter().find(|b| b.key == *key),
-                CursorTarget::Phase(_) => None,
-            }),
-            _ => None,
-        };
-        let block = pane_block();
+        let block = pane_block().title_top(Line::from(title));
         let inner = block.inner(area);
         block.render(area, buf);
-        if let Some(b) = band {
-            draw_items(
-                vec![Item::Line(fit(
-                    vec![Span::styled(b.label.clone(), bold())],
-                    usize::from(inner.width),
-                ))],
-                inner,
-                buf,
-            );
+        draw_items(items, inner, buf);
+    }
+
+    /// A band under the cursor: its label, progress and the fold key.
+    fn band_items(b: &BandFacts, w: usize, stacked: bool) -> Vec<Item> {
+        let mut progress = format!("{}/{} phases done", b.done, b.total);
+        if b.shipped {
+            progress.push_str(DOT);
+            progress.push_str("shipped");
         }
+        vec![
+            Item::Line(fit(vec![Span::styled(b.label.clone(), bold())], w)),
+            Item::Line(fit(vec![Span::raw(progress)], w)),
+            Item::blank(),
+            Item::Hint(fit(
+                vec![Span::styled(
+                    format!("{HINT_BAND}{}", if stacked { HINT_MOVE } else { "" }),
+                    dim(),
+                )],
+                w,
+            )),
+        ]
+    }
+
+    /// The shipped summary under the cursor: every shipped milestone with the
+    /// phase count it declares.
+    fn shipped_items(&self, w: usize, stacked: bool) -> Vec<Item> {
+        let mut items = Vec::new();
+        if let Some(ListRow::ShippedSummary {
+            milestones, phases, ..
+        }) = self
+            .model
+            .rows
+            .iter()
+            .find(|r| matches!(r, ListRow::ShippedSummary { .. }))
+        {
+            items.push(Item::Line(fit(
+                vec![Span::styled(
+                    format!(
+                        "{milestones} {}{DOT}{phases} {} shipped",
+                        plural(*milestones, "milestone"),
+                        plural(usize::try_from(*phases).unwrap_or(usize::MAX), "phase"),
+                    ),
+                    bold(),
+                )],
+                w,
+            )));
+            items.push(Item::blank());
+        }
+        for b in self.model.bands.iter().filter(|b| b.shipped) {
+            let declared = usize::try_from(b.declared_phases)
+                .unwrap_or(usize::MAX)
+                .max(b.total);
+            items.push(Item::Line(fit(
+                vec![
+                    Span::raw(b.label.clone()),
+                    Span::styled(
+                        format!("{GAP}{declared} {}", plural(declared, "phase")),
+                        dim(),
+                    ),
+                ],
+                w,
+            )));
+        }
+        items.push(Item::blank());
+        items.push(Item::Hint(fit(
+            vec![Span::styled(
+                format!("{HINT_SHIPPED}{}", if stacked { HINT_MOVE } else { "" }),
+                dim(),
+            )],
+            w,
+        )));
+        items
     }
 
     /// `{glyph} {word} · {d}/{t} plans  {badge} · planned (not a GSD phase)`.
+    /// A planned phase says so instead of its plan count: it has no GSD plans.
     fn status_spans(p: &PhaseFacts) -> Vec<Span<'static>> {
         let mut spans = vec![
             Span::styled(p.status.glyph(), glyph_style(p.status)),
             Span::raw(format!(" {}", status_word(p.status))),
         ];
-        spans.push(Span::raw(match p.plans {
-            Some((d, t)) => format!("{DOT}{d}/{t} plans"),
-            None => format!("{DOT}plans TBD"),
-        }));
+        match p.plans {
+            Some((d, t)) => spans.push(Span::raw(format!("{DOT}{d}/{t} plans"))),
+            None if !p.planned => spans.push(Span::raw(format!("{DOT}plans TBD"))),
+            None => {}
+        }
         if let Some(badge) = &p.badge {
             spans.push(Span::styled(
                 format!("{GAP}{badge}"),
@@ -805,7 +993,7 @@ impl RoadmapView<'_> {
 
     /// Parallel: the other phases of the same wave (D-A02).
     fn parallel_rows(&self, p: &PhaseFacts, avail: usize) -> Vec<Vec<Span<'static>>> {
-        let mut rows = if p.parallel.is_empty() {
+        if p.parallel.is_empty() {
             vec![vec![Span::styled(
                 format!("none in wave {}", p.wave),
                 dim(),
@@ -825,11 +1013,7 @@ impl RoadmapView<'_> {
                 })
                 .collect();
             self.entry_rows(&entries, avail)
-        };
-        if let Some(note) = Self::no_deps_note(p) {
-            rows.push(vec![Span::styled(note, dim())]);
         }
-        rows
     }
 
     /// The side-by-side phase detail pane (Mockups A and B).
@@ -861,8 +1045,152 @@ impl RoadmapView<'_> {
         items.extend(section("Needs", self.needs_rows(p, avail), w));
         items.extend(section("Unblocks", self.unblocks_rows(p, avail), w));
         items.extend(section("Parallel", self.parallel_rows(p, avail), w));
+        if let Some(note) = Self::no_deps_note(p) {
+            items.push(Item::Wrapped {
+                label: INDENT,
+                text: note.to_string(),
+                style: dim(),
+            });
+        }
         items.push(Item::blank());
         items.push(Item::Hint(fit(vec![Span::styled(HINT_WIDE, dim())], w)));
+        items
+    }
+
+    /// `{glyph} {id}{tail}` for the compact (stacked) form.
+    fn compact_entry(&self, node: usize, tail: &str) -> Vec<Span<'static>> {
+        let Some(q) = self.phase(node) else {
+            return Vec::new();
+        };
+        vec![
+            Span::styled(q.status.glyph(), glyph_style(q.status)),
+            Span::raw(format!(" {}{tail}", q.id)),
+        ]
+    }
+
+    /// Entries two cells apart.
+    fn join_compact(groups: Vec<Vec<Span<'static>>>) -> Vec<Span<'static>> {
+        let mut out = Vec::new();
+        for (i, group) in groups.into_iter().filter(|g| !g.is_empty()).enumerate() {
+            if i > 0 {
+                out.push(Span::raw(GAP));
+            }
+            out.extend(group);
+        }
+        out
+    }
+
+    fn label(text: &str) -> Span<'static> {
+        Span::styled(pad_right(text, LABEL_CELLS), bold())
+    }
+
+    /// The stacked phase detail pane (Mockup C): one head line, the goal with
+    /// a hanging indent, Needs and Unblocks (one line when both fit),
+    /// Parallel, and the hint.
+    fn stacked_items(&self, p: &PhaseFacts, w: usize) -> Vec<Item> {
+        let mut place = String::from("   ");
+        if let Some(short) = self.band_short(p.band) {
+            place.push_str(short);
+            place.push_str(DOT);
+        }
+        place.push_str(&format!("wave {}{DOT}", p.wave));
+        let mut head = vec![Span::styled(p.name.clone(), bold()), Span::raw(place)];
+        head.extend(Self::status_spans(p));
+
+        let goal = match &p.goal {
+            Some(goal) => Item::Wrapped {
+                label: "Goal  ",
+                text: goal.clone(),
+                style: Style::default(),
+            },
+            None => Item::Wrapped {
+                label: "Goal  ",
+                text: "no goal in ROADMAP.md".to_string(),
+                style: dim(),
+            },
+        };
+
+        let needs = if p.no_deps {
+            vec![Span::styled("nothing declared", dim())]
+        } else {
+            let mut groups: Vec<Vec<Span<'static>>> =
+                p.needs.iter().map(|&u| self.compact_entry(u, "")).collect();
+            groups.extend(p.implied.iter().map(|&(dep, via)| {
+                let via = self.phase(via).map_or(String::new(), |v| v.id.clone());
+                self.compact_entry(dep, &format!(" (implied via {via})"))
+            }));
+            groups.extend(
+                p.external
+                    .iter()
+                    .map(|id| vec![Span::styled(format!("{id} (outside this roadmap)"), dim())]),
+            );
+            Self::join_compact(groups)
+        };
+        let unblocks = if p.unblocks.is_empty() {
+            let text = match self.band_short(p.band) {
+                Some(short) if p.last_in_band => format!("nothing (last in {short})"),
+                _ => "nothing".to_string(),
+            };
+            vec![Span::styled(text, dim())]
+        } else {
+            Self::join_compact(
+                p.unblocks
+                    .iter()
+                    .map(|&u| {
+                        let other = self.phase(u).and_then(|q| q.band);
+                        let tail = match other {
+                            Some(_) if other != p.band => {
+                                format!(" {}", self.band_short(other).unwrap_or(""))
+                            }
+                            _ => String::new(),
+                        };
+                        self.compact_entry(u, &tail)
+                    })
+                    .collect(),
+            )
+        };
+        let width_of =
+            |spans: &[Span<'static>]| spans.iter().map(|s| cells(&s.content)).sum::<usize>();
+        let one_line = 2 * LABEL_CELLS + 3 + width_of(&needs) + width_of(&unblocks) <= w;
+        let mut deps_lines = Vec::new();
+        if one_line {
+            let mut line = vec![Self::label("Needs")];
+            line.extend(needs);
+            line.push(Span::raw("   "));
+            line.push(Self::label("Unblocks"));
+            line.extend(unblocks);
+            deps_lines.push(Item::Line(fit(line, w)));
+        } else {
+            let mut line = vec![Self::label("Needs")];
+            line.extend(needs);
+            deps_lines.push(Item::Line(fit(line, w)));
+            let mut line = vec![Self::label("Unblocks")];
+            line.extend(unblocks);
+            deps_lines.push(Item::Line(fit(line, w)));
+        }
+
+        let mut parallel = vec![Self::label("Parallel")];
+        if p.parallel.is_empty() {
+            parallel.push(Span::styled(format!("none in wave {}", p.wave), dim()));
+        } else {
+            parallel.extend(Self::join_compact(
+                p.parallel
+                    .iter()
+                    .map(|&u| {
+                        let done = self.phase(u).is_some_and(|q| q.status == PhaseStatus::Done);
+                        self.compact_entry(u, if done { " done" } else { "" })
+                    })
+                    .collect(),
+            ));
+        }
+        if let Some(note) = Self::no_deps_note(p) {
+            parallel.push(Span::styled(format!("   {note}"), dim()));
+        }
+
+        let mut items = vec![Item::Line(fit(head, w)), goal];
+        items.extend(deps_lines);
+        items.push(Item::Line(fit(parallel, w)));
+        items.push(Item::Hint(fit(vec![Span::styled(HINT_STACKED, dim())], w)));
         items
     }
 }
@@ -876,10 +1204,25 @@ impl StatefulWidget for RoadmapView<'_> {
             state.list_rows = 0;
             return;
         }
+        if self.model.rows.is_empty() {
+            state.offset = 0;
+            state.list_rows = 0;
+            let block = pane_block().title_top(Line::from(" Roadmap "));
+            let inner = block.inner(area);
+            block.render(area, buf);
+            Paragraph::new(Span::styled(EMPTY, dim())).render(inner, buf);
+            return;
+        }
         let cursor = self.model.resolve_cursor(self.cursor);
+        let stacked = area.width < ROADMAP_SIDE_BY_SIDE_MIN_COLS;
+        let cap = if stacked {
+            LANE_CAP_NARROW
+        } else {
+            LANE_CAP_WIDE
+        };
         let (list, detail) = panes(area);
-        self.render_list(list, buf, state, cursor.as_ref());
-        self.render_detail(detail, buf, cursor.as_ref());
+        self.render_list(list, buf, state, cursor.as_ref(), cap);
+        self.render_detail(detail, buf, cursor.as_ref(), stacked);
     }
 }
 
@@ -898,7 +1241,9 @@ mod tests {
     const F: PhaseMarker = PhaseMarker::Future;
 
     /// `(id, name, deps, marker, band)`.
-    type Spec<'a> = &'a [(&'a str, &'a str, &'a [&'a str], PhaseMarker, Option<usize>)];
+    type Row<'a> = (&'a str, &'a str, &'a [&'a str], PhaseMarker, Option<usize>);
+    /// A list spec.
+    type Spec<'a> = &'a [Row<'a>];
     /// `(label, shipped, declared phases)`.
     type Bands<'a> = &'a [(&'a str, bool, u32)];
 
@@ -1206,9 +1551,10 @@ mod tests {
     /// Lane glyphs and status glyphs: what must never appear past the cap.
     const LANE_GLYPHS: &str = "│─├┤┬┴┐┌┘└┼●◉○◌";
 
-    /// A row's cells after the list border and padding.
+    /// A row's cells inside the list border and padding (both sides).
     fn body(row: &str) -> Vec<char> {
-        row.chars().skip(2).collect()
+        let chars: Vec<char> = row.chars().collect();
+        chars[2..chars.len().saturating_sub(2).max(2)].to_vec()
     }
 
     #[test]
@@ -1409,7 +1755,7 @@ mod tests {
                 }
             })
             .collect();
-        let spec: Vec<(&str, &str, &[&str], PhaseMarker, Option<usize>)> = (0..30)
+        let spec: Vec<Row<'_>> = (0..30)
             .map(|i| {
                 let marker = if i == 29 { C } else { D };
                 (
