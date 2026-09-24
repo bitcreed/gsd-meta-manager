@@ -755,7 +755,7 @@ Plans:
   - The Archive → Docs move touches `render_archive_tab`, which a concurrent `/gsd-debug` session is fixing (Archive "Loading..." bug). That work is sequenced last and must re-read `detail.rs` at execution time
   - Tab renumbering is a wide, mechanical change across tests and help text; a missed consumer is a silent wrong-tab bug
 
-**Plans**: 4/7 plans executed
+**Plans**: 5/7 plans executed
 
 Plans:
 **Wave 1**
@@ -767,7 +767,7 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 24-04-PLAN.md — Master/detail widget: list + detail pane, side-by-side ≥100 cols, stacked below (wave 2)
-- [ ] 24-05-PLAN.md — Roadmap cursor and keys, ProjectState adapter, selection shared with Phases (wave 2)
+- [x] 24-05-PLAN.md — Roadmap cursor and keys, ProjectState adapter, selection shared with Phases (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -791,7 +791,7 @@ Plans:
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
-| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 4/7 | In Progress|  |
+| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 5/7 | In Progress|  |
 
 ## Backlog
 
