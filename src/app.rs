@@ -4255,15 +4255,16 @@ mod tests {
     fn the_driver_sub_view_is_the_last_tab_index_in_both_directions() {
         use crate::ui::screens::detail::{sub_view_from_index, tab_index};
 
-        // Index 9 (the last tab, after the Phase 24 renumber), and the two
-        // mappings must agree — a tab whose index does not round-trip lands on
-        // a different tab than the one the user asked for. The literal is the
-        // point: it pins the index the key map and the tab bar both assume.
-        assert_eq!(tab_index(&DetailSubView::Driver), 9);
-        assert_eq!(sub_view_from_index(9, true), DetailSubView::Driver);
+        // Index 8 (the last tab, after the Phase 24 consolidation to eight
+        // tabs plus the Driver), and the two mappings must agree — a tab whose
+        // index does not round-trip lands on a different tab than the one the
+        // user asked for. The literal is the point: it pins the index the key
+        // map and the tab bar both assume.
+        assert_eq!(tab_index(&DetailSubView::Driver), 8);
+        assert_eq!(sub_view_from_index(8, true), DetailSubView::Driver);
         // The fallback: an out-of-range index lands on the default Roadmap tab
         // and never on the newest one.
-        assert_eq!(sub_view_from_index(10, true), DetailSubView::RoadmapViz);
+        assert_eq!(sub_view_from_index(9, true), DetailSubView::RoadmapViz);
     }
 
     /// A stop with nowhere to report its outcome refuses **visibly** (WR-11).
@@ -4751,15 +4752,19 @@ mod tests {
         std::fs::write(phase.join("01-PLAN.md"), "plan\n").expect("phase plan");
     }
 
-    /// Push a detail screen already on the Archive tab, the way the dashboard's
-    /// `8` does, so its milestone discovery is scheduled on the real channel.
-    fn open_archive_tab(app: &mut App, alias: &str) {
+    /// Open the milestone archive the way a user does: `8` for Docs, then `m`
+    /// for its Milestones sub-tab (D-B04). The detail screen is pushed already
+    /// on Docs › Files, and a real `m` key goes through `App::update`, so the
+    /// milestone discovery is scheduled on the real channel by the Docs sub-tab
+    /// switch itself.
+    fn open_docs_milestones(app: &mut App, alias: &str) {
         let screen = crate::ui::screens::detail::DetailScreen::opened_on(
             alias.to_string(),
-            DetailSubView::Archive,
+            DetailSubView::Browse,
             &mut app.ctx,
         );
         app.screen_stack.push(Box::new(screen));
+        press(app, KeyCode::Char('m'));
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -4848,14 +4853,14 @@ mod tests {
             .join("\n")
     }
 
-    /// Open the Archive tab for `alias` and drill into `v1.2` (second in the
-    /// list), exactly as a user does: `8`, `Down`, `Enter`.
+    /// Open Docs › Milestones for `alias` and drill into `v1.2` (second in the
+    /// list), exactly as a user does: `8`, `m`, `Down`, `Enter`.
     async fn drill_into_v1_2(
         app: &mut App,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
         alias: &'static str,
     ) -> bool {
-        open_archive_tab(app, alias);
+        open_docs_milestones(app, alias);
         assert!(
             pump_archive_until(app, rx, is_discovery_for(alias)).await,
             "milestone discovery for {alias} never arrived"
@@ -4988,7 +4993,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         archive_fixture(dir.path(), "01-core-flow");
         let (mut app, mut rx) = obs_app(dir.path());
-        open_archive_tab(&mut app, OBS_ALIAS);
+        open_docs_milestones(&mut app, OBS_ALIAS);
         assert!(pump_archive_until(&mut app, &mut rx, is_discovery_for(OBS_ALIAS)).await);
         assert!(!render_top_screen(&app).contains("v1.3"));
 

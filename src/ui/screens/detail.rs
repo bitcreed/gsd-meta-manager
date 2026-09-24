@@ -353,10 +353,10 @@ pub(super) fn driver_offset_now(stored: u16, following: bool, vp: ViewportMetric
 /// so the bound every loop, clamp and navigation guard needs is
 /// [`visible_tab_count`], not this. This constant survives as the label arrays'
 /// length and as the index the Driver entry sits at the end of.
-pub(crate) const TAB_COUNT: usize = 10;
+pub(crate) const TAB_COUNT: usize = 9;
 
-/// How many tabs the detail view actually shows: 10 with the experimental
-/// surfaces on, 9 without.
+/// How many tabs the detail view actually shows: 9 with the experimental
+/// surfaces on, 8 without.
 ///
 /// The one bound. A second `TAB_COUNT - 1` left behind anywhere is how the
 /// Right arrow would walk onto a tab that does not render (260917-fko D2).
@@ -373,8 +373,9 @@ pub(crate) fn visible_tab_count(experimental: bool) -> usize {
 /// [`DRIVER_LIVE_MARKER`]).
 ///
 /// The Phase 24 order (D-B01, D-B11): Roadmap first, the Pipeline sub-view
-/// labelled `Phases` second. `9:Arch` is an **interim** ninth tab — plan 24-07
-/// folds the milestone archive into Docs and drops it.
+/// labelled `Phases` second, eight tabs plus the Driver. The milestone archive
+/// is not a tab of its own: it is the Docs tab's `Milestones` sub-view
+/// (D-B04), sharing Docs' index — see [`tab_index`].
 const TAB_LABELS_FULL: [&str; TAB_COUNT] = [
     "1:Roadmap",
     "2:Phases",
@@ -384,7 +385,6 @@ const TAB_LABELS_FULL: [&str; TAB_COUNT] = [
     "6:Sess",
     "7:Cfg",
     "8:Docs",
-    "9:Arch",
     "D:Drive",
 ];
 
@@ -392,46 +392,47 @@ const TAB_LABELS_FULL: [&str; TAB_COUNT] = [
 /// so a two-letter mnemonic loses nothing that matters; the pairs are mutually
 /// unambiguous.
 const TAB_LABELS_COMPACT: [&str; TAB_COUNT] = [
-    "1:Rd", "2:Ph", "3:Bk", "4:Gt", "5:Qu", "6:Ss", "7:Cf", "8:Dc", "9:Ar", "D:Dr",
+    "1:Rd", "2:Ph", "3:Bk", "4:Gt", "5:Qu", "6:Ss", "7:Cf", "8:Dc", "D:Dr",
 ];
 
 /// The Driver tab's index. Named because five sites compare against it.
-pub(crate) const DRIVER_TAB_INDEX: usize = 9;
+pub(crate) const DRIVER_TAB_INDEX: usize = 8;
 
 /// Rendered width of the full label set, in terminal cells.
 ///
 /// **Derived from the render, not chosen:** `Tabs` draws `1 pad + label + 1 pad`
 /// per tab and a one-cell `"|"` divider between adjacent tabs, so the bar costs
 /// `Σ(len + 2) + (n − 1)`. For [`TAB_LABELS_FULL`] plus the Driver tab's
-/// always-present marker cell that is `68 + 1 + 20 + 9 = 98`.
+/// always-present marker cell that is `62 + 1 + 18 + 8 = 89`.
 ///
-/// The number matters because **the shipped tabs have never fitted 80 columns
-/// whole in the full tier**: before tiering, the last two labels (config and
+/// The number matters because **the shipped tabs did not fit 80 columns whole
+/// in the full tier until Phase 24's eight-tab layout** (whose flag-off full
+/// bar, [`TAB_BAR_FULL_CELLS_NO_DRIVER`], is 78): before tiering, the last two labels (config and
 /// docs) were silently dropped off the right edge at an 80-column terminal,
 /// which is the "tab bar overflow at 80 columns" defect carried in `STATE.md`
 /// since Phase 12. Appending the Driver tab at the end without tiering would
 /// have made it the one that never renders, at every common width.
-pub(crate) const TAB_BAR_FULL_CELLS: u16 = 98;
+pub(crate) const TAB_BAR_FULL_CELLS: u16 = 89;
 
 /// Rendered width of the compact label set, by the same arithmetic:
-/// `40 + 1 + 20 + 9 = 70`.
-pub(crate) const TAB_BAR_COMPACT_CELLS: u16 = 70;
+/// `36 + 1 + 18 + 8 = 63`.
+pub(crate) const TAB_BAR_COMPACT_CELLS: u16 = 63;
 
 /// Rendered width of the full label set **without** the Driver tab, by the same
-/// `Σ(len + 2) + (n − 1)` formula: `61 + 18 + 8 = 87`.
+/// `Σ(len + 2) + (n − 1)` formula: `55 + 16 + 7 = 78`.
 ///
 /// Dropping the Driver tab costs four things and the arithmetic has to lose
 /// all four: its 7-cell label, its reserved marker cell, its two pads and the
-/// one divider that joined it to the tab before it — `98 − 7 − 1 − 2 − 1 = 87`.
+/// one divider that joined it to the tab before it — `89 − 7 − 1 − 2 − 1 = 78`.
 /// `the_tab_bar_widths_are_the_label_arrays_own_arithmetic` re-derives it from
 /// [`TAB_LABELS_FULL`] so a renamed label cannot leave this number behind
 /// (260917-fko).
-pub(crate) const TAB_BAR_FULL_CELLS_NO_DRIVER: u16 = 87;
+pub(crate) const TAB_BAR_FULL_CELLS_NO_DRIVER: u16 = 78;
 
 /// Rendered width of the compact label set without the Driver tab:
-/// `36 + 18 + 8 = 62`. The same four deductions as above, against a 4-cell
-/// compact label: `70 − 4 − 1 − 2 − 1 = 62`.
-pub(crate) const TAB_BAR_COMPACT_CELLS_NO_DRIVER: u16 = 62;
+/// `32 + 16 + 7 = 55`. The same four deductions as above, against a 4-cell
+/// compact label: `63 − 4 − 1 − 2 − 1 = 55`.
+pub(crate) const TAB_BAR_COMPACT_CELLS_NO_DRIVER: u16 = 55;
 
 /// The full tier's threshold for this session's tab count.
 pub(crate) fn tab_bar_full_cells(experimental: bool) -> u16 {
@@ -718,34 +719,35 @@ impl DetailScreen {
     /// A detail screen that is ALREADY on `sub_view`, with that tab's arrival
     /// work done — so the first paint shows loaded content, not an empty pane.
     ///
-    /// # Why this goes through `switch_to_tab`
+    /// # Why this goes through `switch_to_sub_view`
     ///
     /// Landing on a tab is not the same as rendering it. Every tab that needs
     /// anything on arrival has that work in exactly one place —
-    /// [`switch_to_tab`]: the Backlog parse, the git-log spawn, the defaults
-    /// load, the browser's lazy init, the Driver run scan. A caller that wanted
-    /// to open the screen pre-parked on a tab and set
-    /// `detail_sub_view_per_project` itself would render a blank tab on first
-    /// paint AND would be a second copy of the arrival rule, free to drift from
-    /// the one the digit keys use. 260916-vr0 is the standing example of what
-    /// two rules kept in agreement by care actually do: the overview counted
-    /// backlog items by one rule and the tab drew them by another, and they
-    /// disagreed totally.
+    /// [`switch_to_sub_view`]: the Backlog parse, the git-log spawn, the
+    /// defaults load, the browser's lazy init, the archive's milestone
+    /// discovery, the Driver run scan. A caller that wanted to open the screen
+    /// pre-parked on a tab and set `detail_sub_view_per_project` itself would
+    /// render a blank tab on first paint AND would be a second copy of the
+    /// arrival rule, free to drift from the one the digit keys use. 260916-vr0
+    /// is the standing example of what two rules kept in agreement by care
+    /// actually do: the overview counted backlog items by one rule and the tab
+    /// drew them by another, and they disagreed totally.
     ///
-    /// The index comes from [`tab_index`] rather than from a literal at the
-    /// call site. That is the whole reason `tab_index`/[`sub_view_from_index`]
-    /// are `pub(crate)` and round-trip-asserted: a hand-written index is a
-    /// second mapping, and a wrong one lands the user on a tab they did not ask
-    /// for.
+    /// The sub-view is passed through as-is, **not** round-tripped through an
+    /// index. Since the archive became the Docs tab's Milestones sub-tab
+    /// (D-B04) two sub-views share Docs' index, so an index can no longer name
+    /// a sub-tab: `opened_on(.., Archive, ..)` resolved through [`tab_index`]
+    /// would land on Docs › Files and skip milestone discovery. The sub-view
+    /// form is the one entry point; [`tab_index`] stays the index authority
+    /// for the digits and arrows, which only ever name a tab.
     ///
-    /// `switch_to_tab`'s `ScreenAction` is discarded because a screen under
-    /// construction has no stack to act on. That discard is pinned by
+    /// `switch_to_sub_view`'s `ScreenAction` is discarded because a screen
+    /// under construction has no stack to act on. That discard is pinned by
     /// `switching_to_the_backlog_tab_returns_no_screen_action`, which goes red
     /// if the function ever returns anything but `None`.
     pub(crate) fn opened_on(alias: String, sub_view: DetailSubView, ctx: &mut AppContext) -> Self {
         let mut screen = Self::new(alias);
-        let index = tab_index(&sub_view);
-        let _ = switch_to_tab(&screen.alias, index, &mut screen.scroll_offset, ctx);
+        let _ = switch_to_sub_view(&screen.alias, sub_view, &mut screen.scroll_offset, ctx);
         screen
     }
 
@@ -865,8 +867,9 @@ impl DetailScreen {
     ///   phase's own band — a fold that hides the cursor's phase leaves the
     ///   cursor on that band row (D-A05).
     /// * `Enter` on a band toggles its fold like `Space`; on the collapsed
-    ///   shipped-milestones row it opens the Archive view (plan 24-07
-    ///   re-routes this to Docs › Milestones); on a build phase it explains
+    ///   shipped-milestones row it opens Docs › Milestones (the `Archive`
+    ///   sub-view, through [`switch_to_sub_view`] — an index would name only
+    ///   the Docs tab, D-B04); on a build phase it explains
     ///   that the phase is a planned placeholder with no Phases entry; on a
     ///   GSD phase it opens the Phases tab with that phase selected — the
     ///   index found by `phase_key`, the tab by [`tab_index`], never a literal
@@ -909,10 +912,12 @@ impl DetailScreen {
         }
         let key = match cursor {
             CursorTarget::Band(_) => {
-                // Only the shipped summary reaches here (named bands fold above).
-                return switch_to_tab(
+                // Only the shipped summary reaches here (named bands fold
+                // above). It opens Docs › Milestones by sub-view: Docs' index
+                // alone would land on Files and skip milestone discovery.
+                return switch_to_sub_view(
                     &self.alias,
-                    tab_index(&DetailSubView::Archive),
+                    DetailSubView::Archive,
                     &mut self.scroll_offset,
                     ctx,
                 );
@@ -978,10 +983,11 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Queue => 4,
         DetailSubView::Sessions => 5,
         DetailSubView::Defaults => 6,
-        DetailSubView::Browse => 7,
-        // Interim ninth tab until plan 24-07 folds it into Docs.
-        DetailSubView::Archive => 8,
-        // Index 9 — the last tab, reachable by `Left`/`Right`, by `Shift+D`,
+        // Docs has two sub-views sharing one index (D-B04): `Browse` is its
+        // Files sub-tab and `Archive` its Milestones sub-tab. The index is the
+        // tab, so digits and arrows land on Docs; `m` picks the sub-tab.
+        DetailSubView::Browse | DetailSubView::Archive => 7,
+        // Index 8 — the last tab, reachable by `Left`/`Right`, by `Shift+D`,
         // and rendered by `tab_titles` at every width.
         DetailSubView::Driver => DRIVER_TAB_INDEX,
     }
@@ -990,10 +996,15 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
 /// `pub(crate)` for the same reason as [`tab_index`]: the round trip is the
 /// property worth asserting, and it takes both halves.
 ///
-/// With `experimental` off, index 9 ([`DRIVER_TAB_INDEX`]) is **not a tab**, so
+/// With `experimental` off, index 8 ([`DRIVER_TAB_INDEX`]) is **not a tab**, so
 /// it falls through to the same default-tab fallback an out-of-range index
 /// already took. That is what makes `Shift+D` and a stored Driver index land
 /// somewhere real instead of on a tab the bar does not draw (260917-fko D2).
+///
+/// Index 7 is the Docs tab and resolves to its Files sub-view (`Browse`); the
+/// Milestones sub-view (`Archive`) shares that index and is reached only by
+/// [`switch_to_sub_view`] — the Docs tab's `m` key, the Roadmap's shipped row
+/// and [`DetailScreen::opened_on`].
 pub(crate) fn sub_view_from_index(index: usize, experimental: bool) -> DetailSubView {
     if index == DRIVER_TAB_INDEX && !experimental {
         return DetailSubView::RoadmapViz;
@@ -1007,7 +1018,6 @@ pub(crate) fn sub_view_from_index(index: usize, experimental: bool) -> DetailSub
         5 => DetailSubView::Sessions,
         6 => DetailSubView::Defaults,
         7 => DetailSubView::Browse,
-        8 => DetailSubView::Archive,
         DRIVER_TAB_INDEX => DetailSubView::Driver,
         // Fallback: an out-of-range index lands on the default (Roadmap) tab
         // rather than on the newest one (D-B07).
@@ -1644,14 +1654,33 @@ fn share_pipeline_selection(
     ));
 }
 
-/// Switch to a new tab, handling scroll reset and data loading for backlog/git tabs.
+/// Switch to the tab at `new_index` — a thin adapter over
+/// [`switch_to_sub_view`] for the digit and arrow keys, which name a tab by
+/// its index. An index names a tab, not a sub-tab: Docs' index resolves to its
+/// Files sub-view.
 fn switch_to_tab(
     alias: &str,
     new_index: usize,
     scroll_offset: &mut u16,
     ctx: &mut AppContext,
 ) -> ScreenAction {
-    let new_view = sub_view_from_index(new_index, ctx.experimental);
+    switch_to_sub_view(
+        alias,
+        sub_view_from_index(new_index, ctx.experimental),
+        scroll_offset,
+        ctx,
+    )
+}
+
+/// Switch to `new_view`: the ONE arrival rule (scroll reset plus each tab's
+/// data loading). Every way onto a tab — digits, arrows, `Shift+D`, the Docs
+/// tab's `m`, the Roadmap's `Enter`, [`DetailScreen::opened_on`] — ends here.
+fn switch_to_sub_view(
+    alias: &str,
+    new_view: DetailSubView,
+    scroll_offset: &mut u16,
+    ctx: &mut AppContext,
+) -> ScreenAction {
     ctx.detail_sub_view_per_project
         .insert(alias.to_string(), new_view.clone());
     *scroll_offset = 0;
@@ -3147,6 +3176,22 @@ impl Screen for DetailScreen {
                     ctx.needs_redraw = true;
                 }
                 ScreenAction::None
+            }
+            // Docs tab: 'm' switches between its two sub-tabs, Files (`Browse`)
+            // and Milestones (`Archive`) (D-B04). Guarded so it is inert on every
+            // other tab; neither Docs sub-view has a text-input mode that could
+            // want the letter (T-24-25). Through `switch_to_sub_view`, so
+            // arriving on Milestones schedules milestone discovery exactly as
+            // every other way onto it does.
+            KeyCode::Char('m')
+                if matches!(current_view, DetailSubView::Browse | DetailSubView::Archive) =>
+            {
+                let other = if current_view == DetailSubView::Browse {
+                    DetailSubView::Archive
+                } else {
+                    DetailSubView::Browse
+                };
+                switch_to_sub_view(&self.alias, other, &mut self.scroll_offset, ctx)
             }
             // '/' key: open the Config tab's filter input (quick 260922-hdi),
             // seeded with the current filter so it can be refined ([INFERRED A4]).
@@ -4839,10 +4884,12 @@ impl DetailScreen {
         frame.render_stateful_widget(list, inner, &mut list_state);
     }
 
-    /// Render the archive tab with 4-level drill-down navigation.
+    /// Render the Docs tab's Milestones sub-tab: the archive with 4-level
+    /// drill-down navigation, under the Docs sub-tab strip.
     fn render_archive_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         use crate::archive::ArchiveDepth;
 
+        let area = docs_sub_tab_row(frame, area, &DetailSubView::Archive);
         let cache = if let Some(c) = ctx.view_cache.get(&self.alias) {
             c
         } else {
@@ -5028,6 +5075,7 @@ impl DetailScreen {
     fn render_browser_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         use crate::browser::BrowserDepth;
 
+        let area = docs_sub_tab_row(frame, area, &DetailSubView::Browse);
         let cache = match ctx.view_cache.get(&self.alias) {
             Some(c) => c,
             None => {
@@ -6290,6 +6338,42 @@ fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::Path
     }
 
     Ok(candidate)
+}
+
+/// The Docs tab's sub-tab strip (D-B04): `[Files] │ Milestones   m switch` on
+/// the Files sub-view (`Browse`), `Files │ [Milestones]   m switch` on the
+/// Milestones sub-view (`Archive`). The active sub-tab is bracketed AND
+/// reversed, so it reads in a monochrome terminal and in a text scrape alike.
+///
+/// Static, authored text only — no project value reaches it (T-24-24). Any
+/// other sub-view is treated as Files, the Docs tab's default.
+pub(crate) fn docs_sub_tab_strip(active: &DetailSubView) -> Line<'static> {
+    let on_milestones = *active == DetailSubView::Archive;
+    let active_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    let dim = Style::default().fg(Color::DarkGray);
+    let label = |name: &'static str, is_active: bool| -> Span<'static> {
+        if is_active {
+            Span::styled(format!("[{name}]"), active_style)
+        } else {
+            Span::raw(name)
+        }
+    };
+    Line::from(vec![
+        label("Files", !on_milestones),
+        Span::styled(" \u{2502} ", dim),
+        label("Milestones", on_milestones),
+        Span::styled("   m switch", dim),
+    ])
+}
+
+/// Draw [`docs_sub_tab_strip`] in the first row of `area` and return the rest,
+/// so both Docs sub-view renders shrink their body by exactly that one row.
+fn docs_sub_tab_row(frame: &mut Frame, area: Rect, active: &DetailSubView) -> Rect {
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(docs_sub_tab_strip(active)), chunks[0]);
+    chunks[1]
 }
 
 /// Width at or above which the Driver footer shows every hint.
@@ -10109,6 +10193,14 @@ mod tests {
         }
         assert_eq!(sub_view_from_index(DRIVER_TAB_INDEX, true), DetailSubView::Driver);
         assert_eq!(tab_index(&DetailSubView::Driver), DRIVER_TAB_INDEX);
+        // Docs › Milestones is a sub-view of the Docs tab, not a tab of its
+        // own: it shares Docs' index, and that index resolves to Docs › Files
+        // (D-B04).
+        assert_eq!(tab_index(&DetailSubView::Archive), tab_index(&DetailSubView::Browse));
+        assert_eq!(
+            sub_view_from_index(tab_index(&DetailSubView::Archive), true),
+            DetailSubView::Browse
+        );
         // The out-of-range fallback lands on the default (Roadmap) tab, not the
         // newest.
         assert_eq!(sub_view_from_index(TAB_COUNT, true), DetailSubView::RoadmapViz);
@@ -10634,8 +10726,7 @@ mod tests {
             Some(&DetailSubView::Driver)
         );
 
-        // Walk right from the last pre-Driver tab (Archive, in the interim
-        // before plan 24-07 folds it into Docs) into the Driver tab.
+        // Walk right from the last pre-Driver tab (Docs) into the Driver tab.
         ctx.detail_sub_view_per_project.insert(
             "meta-mgr".to_string(),
             sub_view_from_index(DRIVER_TAB_INDEX - 1, true),
@@ -10652,6 +10743,99 @@ mod tests {
             ctx.detail_sub_view_per_project.get("meta-mgr"),
             Some(&DetailSubView::Driver)
         );
+    }
+
+    // ── 24-07: the Docs tab's Files | Milestones sub-tabs (D-B04) ─────────
+
+    /// The text of the active tab in the rendered tab bar: the row-1 cells
+    /// drawn in the bar's cyan highlight, trimmed.
+    fn active_tab_text(screen: &DetailScreen, ctx: &AppContext) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width = 120u16;
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, 30)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), ctx))
+            .expect("draw the detail screen");
+        let buffer = terminal.backend().buffer().clone();
+        (0..width)
+            .filter_map(|x| buffer.cell((x, 1)))
+            .filter(|cell| cell.fg == Color::Cyan && cell.modifier.contains(Modifier::BOLD))
+            .map(|cell| cell.symbol().to_string())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// `opened_on(.., Archive, ..)` must land on Docs › Milestones — the
+    /// sub-view itself, not Docs' index, which would resolve to Files and skip
+    /// milestone discovery (T-24-22).
+    #[test]
+    fn opened_on_archive_lands_on_docs_milestones() {
+        let mut ctx = test_ctx();
+        let screen = DetailScreen::opened_on(TEST_ALIAS.to_string(), DetailSubView::Archive, &mut ctx);
+
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Archive)
+        );
+        // The arrival work ran: milestone discovery is in flight.
+        assert!(ctx.view_cache[TEST_ALIAS].archive_loading);
+
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(text.contains("Files \u{2502} [Milestones]"), "{text}");
+        assert!(text.contains("Archive"), "the breadcrumb keeps its title: {text}");
+        assert_eq!(active_tab_text(&screen, &ctx), "8:Docs");
+    }
+
+    /// `m` flips the Docs tab between Files and Milestones, and the strip
+    /// marks whichever is active.
+    #[test]
+    fn m_switches_docs_between_files_and_milestones() {
+        let mut ctx = test_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Browse);
+        let files = render_detail_to_text(&screen, &ctx);
+        assert!(files.contains("[Files] \u{2502} Milestones   m switch"), "{files}");
+
+        press(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Archive)
+        );
+        assert!(
+            ctx.view_cache[TEST_ALIAS].archive_loading,
+            "arriving on Milestones by `m` schedules milestone discovery"
+        );
+        let milestones = render_detail_to_text(&screen, &ctx);
+        assert!(milestones.contains("Files \u{2502} [Milestones]   m switch"), "{milestones}");
+        assert_eq!(active_tab_text(&screen, &ctx), "8:Docs");
+
+        press(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Browse)
+        );
+    }
+
+    /// `m` is the Docs tab's key only: on every other tab it changes nothing.
+    #[test]
+    fn m_is_inert_outside_docs() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        press(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+
+        let docs = tab_index(&DetailSubView::Browse);
+        for index in (0..TAB_COUNT).filter(|index| *index != docs) {
+            let view = sub_view_from_index(index, true);
+            ctx.detail_sub_view_per_project
+                .insert(TEST_ALIAS.to_string(), view.clone());
+            press(&mut screen, &mut ctx, KeyCode::Char('m'));
+            assert_eq!(stored_view(&ctx), view, "`m` moved {view:?}");
+        }
     }
 
     // ── UIFIX-04: stored scroll offset is clamped to the rendered viewport ──
