@@ -11503,12 +11503,15 @@ mod tests {
 
     // --- CD-03 / IN-07 closure: the generic `_ =>` fallback ---------------
     //
-    // Reached by exactly one sub-view since the PhaseList tab was removed
-    // (D-B02) — RoadmapViz. Every other sub-view has an explicit match arm. See plan 14-04 decision GD-01, which
-    // corrects CD-03's "seven non-file tabs" cost estimate.
+    // Reached by exactly one sub-view state since the PhaseList tab was
+    // removed (D-B02) and the Roadmap list gained its cursor (24-05) — the
+    // Roadmap tab's BOX view. Every other sub-view has an explicit match arm.
+    // See plan 14-04 decision GD-01, which corrects CD-03's "seven non-file
+    // tabs" cost estimate.
 
     /// A DetailScreen and AppContext parked on a tab that reaches the generic
-    /// `_ =>` scroll fallback, with recorded metrics and a stored offset.
+    /// `_ =>` scroll fallback (the Roadmap box view), with recorded metrics
+    /// and a stored offset.
     fn generic_fixture(
         total_lines: u16,
         visible_height: u16,
@@ -11524,6 +11527,12 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        // The graph view's j/k/PageUp/PageDown move the Roadmap cursor
+        // (24-05); the box view keeps the generic scroll these tests pin.
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .roadmap_box_view = true;
 
         (screen, ctx)
     }
@@ -14779,5 +14788,285 @@ mod tests {
                 &ctx.project_states[TEST_ALIAS].phases[0].number
             )))
         );
+    }
+
+    // ── Phase 24-05 Task 2: every Roadmap key (D-A10) ─────────────────────
+
+    fn edge_walk(ctx: &AppContext) -> Option<roadmap_graph::EdgeWalk> {
+        ctx.view_cache
+            .get(TEST_ALIAS)
+            .and_then(|c| c.roadmap_edge_walk.clone())
+    }
+
+    fn fold_toggles(ctx: &AppContext) -> std::collections::HashSet<roadmap_graph::BandKey> {
+        ctx.view_cache
+            .get(TEST_ALIAS)
+            .map(|c| c.roadmap_fold_toggles.clone())
+            .unwrap_or_default()
+    }
+
+    /// The band key whose short id is `short` (`v1.5`, `v2`, …).
+    fn band_key(model: &roadmap_graph::RoadmapModel, short: &str) -> roadmap_graph::BandKey {
+        model
+            .bands
+            .iter()
+            .find(|b| b.short == short)
+            .map(|b| b.key.clone())
+            .unwrap_or_else(|| panic!("no band {short}"))
+    }
+
+    fn band_target_count(model: &roadmap_graph::RoadmapModel) -> usize {
+        model
+            .visible_targets()
+            .iter()
+            .filter(|t| matches!(t, roadmap_graph::CursorTarget::Band(_)))
+            .count()
+    }
+
+    #[test]
+    fn roadmap_j_k_g_capital_g_move_the_cursor() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")), "default = active");
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")));
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")), "clamped at the end");
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert_eq!(
+            resolved_cursor(&ctx),
+            Some(roadmap_graph::CursorTarget::Band(roadmap_graph::BandKey::Shipped))
+        );
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")));
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")));
+
+        // PageUp / PageDown move by the last rendered list height minus one.
+        screen.roadmap_list_viewport.set(3);
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        let targets = fixture_model(&ctx).visible_targets();
+        let last = targets.len() - 1;
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(resolved_cursor(&ctx).as_ref(), Some(&targets[last - 2]));
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(resolved_cursor(&ctx).as_ref(), Some(&targets[last]));
+        // Before the first frame the page is one row.
+        screen.roadmap_list_viewport.set(0);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(resolved_cursor(&ctx).as_ref(), Some(&targets[last - 1]));
+    }
+
+    #[test]
+    fn roadmap_h_cycles_needs_then_implied() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        set_roadmap_cursor(&mut ctx, phase_target("23"));
+        press(&mut screen, &mut ctx, KeyCode::Char('h'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("21")));
+        press(&mut screen, &mut ctx, KeyCode::Char('h'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("20")), "implied via 21");
+        press(&mut screen, &mut ctx, KeyCode::Char('h'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("21")), "wraps");
+    }
+
+    #[test]
+    fn roadmap_l_and_brackets_follow_edges_and_waves() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        set_roadmap_cursor(&mut ctx, phase_target("21"));
+        press(&mut screen, &mut ctx, KeyCode::Char('l'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")));
+        press(&mut screen, &mut ctx, KeyCode::Char('l'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")));
+
+        set_roadmap_cursor(&mut ctx, phase_target("22"));
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")));
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")), "wraps");
+        press(&mut screen, &mut ctx, KeyCode::Char('['));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")), "wraps backwards");
+    }
+
+    #[test]
+    fn roadmap_space_folds_and_the_cursor_moves_to_the_band() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        let folded_bands = band_target_count(&fixture_model(&ctx));
+
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert_eq!(
+            band_target_count(&fixture_model(&ctx)),
+            folded_bands + 5,
+            "unfolding the summary reveals the five shipped milestones"
+        );
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert_eq!(band_target_count(&fixture_model(&ctx)), folded_bands);
+
+        set_roadmap_cursor(&mut ctx, phase_target("19"));
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        let model = fixture_model(&ctx);
+        let v15 = band_key(&model, "v1.5");
+        assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
+        assert_eq!(model.row_of(&phase_target("19")), None, "19 is hidden");
+        assert_eq!(
+            resolved_cursor(&ctx),
+            Some(roadmap_graph::CursorTarget::Band(v15.clone())),
+            "the cursor rests on the v1.5 band row"
+        );
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(!roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)), "Space unfolds it again");
+    }
+
+    #[test]
+    fn roadmap_jump_into_a_folded_band_unfolds_it() {
+        let (mut screen, mut ctx) = roadmap_fixture("ttbook");
+        let v2 = band_key(&fixture_model(&ctx), "v2");
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .roadmap_fold_toggles
+            .insert(v2.clone());
+        assert!(roadmap_graph::is_folded(&v2, &fold_toggles(&ctx)));
+
+        set_roadmap_cursor(&mut ctx, phase_target("14"));
+        press(&mut screen, &mut ctx, KeyCode::Char('h'));
+        let model = fixture_model(&ctx);
+        let target = resolved_cursor(&ctx).expect("a target");
+        let roadmap_graph::CursorTarget::Phase(key) = &target else {
+            panic!("h landed on {target:?}");
+        };
+        let band = model.phases[model.phase_index(key).expect("listed")].band;
+        assert_eq!(band.map(|b| model.bands[b].key.clone()), Some(v2.clone()));
+        assert!(!roadmap_graph::is_folded(&v2, &fold_toggles(&ctx)), "v2 was unfolded");
+        assert!(model.row_of(&target).is_some(), "the target is visible");
+    }
+
+    #[test]
+    fn roadmap_enter_on_the_shipped_row_opens_the_archive_view() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(stored_view(&ctx), DetailSubView::Archive);
+    }
+
+    #[test]
+    fn roadmap_enter_on_a_band_toggles_its_fold() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        let v15 = band_key(&fixture_model(&ctx), "v1.5");
+        set_roadmap_cursor(&mut ctx, roadmap_graph::CursorTarget::Band(v15.clone()));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(!roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+    }
+
+    #[test]
+    fn roadmap_enter_on_a_build_phase_explains_itself() {
+        let (mut screen, mut ctx) = roadmap_fixture("ttbook");
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("18")));
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        match action {
+            ScreenAction::SetStatusMessage(msg) => {
+                assert!(msg.contains("planned placeholder"), "{msg}");
+                assert!(msg.contains("18"), "{msg}");
+            }
+            _ => panic!("Enter on a build phase must explain itself"),
+        }
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+    }
+
+    #[test]
+    fn roadmap_box_view_keeps_generic_scroll() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .roadmap_box_view = true;
+        screen.generic_viewport.set(ViewportMetrics {
+            total_lines: 100,
+            visible_height: 60,
+        });
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(screen.scroll_offset, 1, "j scrolls the box view");
+        for code in [
+            KeyCode::Char('g'),
+            KeyCode::Char('G'),
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Char('['),
+            KeyCode::Char(']'),
+            KeyCode::Char(' '),
+            KeyCode::Enter,
+        ] {
+            press(&mut screen, &mut ctx, code);
+            assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz, "{code:?}");
+        }
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.roadmap_cursor, None);
+        assert_eq!(cache.roadmap_edge_walk, None);
+        assert!(cache.roadmap_fold_toggles.is_empty());
+    }
+
+    #[test]
+    fn other_roadmap_keys_end_the_edge_walk() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        for other in [
+            KeyCode::Char('k'),
+            KeyCode::Char('G'),
+            KeyCode::Char(']'),
+            KeyCode::Char(' '),
+            KeyCode::Char('v'),
+        ] {
+            set_roadmap_cursor(&mut ctx, phase_target("23"));
+            press(&mut screen, &mut ctx, KeyCode::Char('h'));
+            assert!(edge_walk(&ctx).is_some(), "h starts a walk");
+            press(&mut screen, &mut ctx, other);
+            assert_eq!(edge_walk(&ctx), None, "{other:?} must end the walk");
+            // Undo the side effects that would change the next round.
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.roadmap_box_view = false;
+            cache.roadmap_fold_toggles.clear();
+        }
+    }
+
+    #[test]
+    fn roadmap_keys_are_inert_without_project_state() {
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::Char('k'),
+            KeyCode::Up,
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::Char('g'),
+            KeyCode::Char('G'),
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Char('['),
+            KeyCode::Char(']'),
+            KeyCode::Char(' '),
+            KeyCode::Enter,
+        ] {
+            let action = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::None), "{code:?}");
+            assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz, "{code:?}");
+            assert_eq!(screen.scroll_offset, 0, "{code:?}");
+            assert!(
+                ctx.view_cache
+                    .get(TEST_ALIAS)
+                    .is_none_or(|c| c.roadmap_cursor.is_none()
+                        && c.roadmap_edge_walk.is_none()
+                        && c.roadmap_fold_toggles.is_empty()),
+                "{code:?}"
+            );
+        }
     }
 }
