@@ -835,7 +835,8 @@ fn zero_width_only_identity() -> String {
 
 /// One render state a probe run puts a screen in.
 ///
-/// A screen is not one picture. `DetailScreen` has ten tabs;
+/// A screen is not one picture. `DetailScreen` has nine tabs, one of which
+/// (Docs) has two sub-views, so ten sub-view renders;
 /// `DriverStartScreen` has two steps; `DriverConfirmScreen` has four prompts.
 /// The probe renders EACH, and the `label` is what a failure names — so a
 /// failure says which state leaked rather than only which screen.
@@ -1388,9 +1389,10 @@ fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntr
 /// Every detail sub-view, so a tab is a render state rather than a place the
 /// probe never looked.
 ///
-/// In tab order since Phase 24 (D-B01): the PhaseList tab is gone (D-B02), and
-/// `Archive` stays a sub-view state of its own — an interim ninth tab until plan
-/// 24-07, and the Docs tab's Milestones view after it.
+/// In tab order since Phase 24 (D-B01): nine tabs, eight plus the Driver. The
+/// PhaseList tab is gone (D-B02), and `Archive` stays a sub-view state of its
+/// own — the Docs tab's Milestones sub-view (D-B04), which shares Docs' index
+/// with `Browse` (Files) but is a different render, so both are probed.
 const ALL_SUB_VIEWS: [crate::app::DetailSubView; 10] = {
     use crate::app::DetailSubView::*;
     [
@@ -1467,8 +1469,10 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
         "Archive tab",
         true,
-        "At its default `MilestoneList` depth, draws `archive_milestones` — populated \
-         by 21-25 T2; before that it rendered `No archived milestones found.`",
+        "Docs › Milestones (the `Archive` sub-view, D-B04). At its default \
+         `MilestoneList` depth, draws `archive_milestones` — populated by 21-25 T2; \
+         before that it rendered `No archived milestones found.` The Docs sub-tab \
+         strip above it is authored text and draws no identity.",
     ),
     (
         "Defaults tab",
@@ -1532,14 +1536,15 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
         "Archive tab, phase list",
         true,
-        "Draws `archive_cache[..].top_level_files[..].name` and `phases[..].display_name`, \
+        "Docs › Milestones drilled into a milestone. Draws \
+         `archive_cache[..].top_level_files[..].name` and `phases[..].display_name`, \
          plus the milestone in the breadcrumb.",
     ),
     (
         "Archive tab, file list",
         true,
-        "Draws `phases[0].files[..].name`, plus the milestone and phase display name in \
-         the breadcrumb.",
+        "Docs › Milestones drilled into a phase. Draws `phases[0].files[..].name`, plus \
+         the milestone and phase display name in the breadcrumb.",
     ),
     (
         "Browse tab, file view",

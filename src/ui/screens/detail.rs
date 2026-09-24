@@ -1846,7 +1846,9 @@ crate::ui::screens::adjudicate_screen!(
     DetailScreen,
     crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
     "The widest identity surface in the tree. Draws the registry key in its \
-     tab-bar title, and in its ten tabs the values parsed out of the \
+     tab-bar title, and in its nine tabs (eight plus the Driver; Docs has \
+     two sub-views, Files = Browse and Milestones = Archive, so ten \
+     sub-views) the values parsed out of the \
      project's `.planning/`. Per tab, the values and where their bytes come \
      from: RoadmapViz's header draws the status, milestone and \
      `milestone_name` parsed from `ROADMAP.md`/`STATE.md` and the pause \
@@ -2643,10 +2645,11 @@ impl Screen for DetailScreen {
                 }
                 ScreenAction::None
             }
-            // Tab switching via number keys: `1`-`9` → indices 0-8 (D-B10).
-            // The zero key has no arm on purpose — it falls through to the
-            // no-op `_` arm at the bottom of this match, so it cannot land the
-            // user on a tab by an old habit.
+            // Tab switching via number keys: `1`-`8` → indices 0-7 (D-B10),
+            // one digit per tab. `9` and `0` have no arm on purpose — they fall
+            // through to the no-op `_` arm at the bottom of this match, so
+            // neither can land the user on a tab by an old habit (`9` was the
+            // interim Archive tab, `0` the old Docs tab).
             KeyCode::Char('1') => switch_to_tab(&self.alias, 0, &mut self.scroll_offset, ctx),
             KeyCode::Char('2') => switch_to_tab(&self.alias, 1, &mut self.scroll_offset, ctx),
             KeyCode::Char('3') => switch_to_tab(&self.alias, 2, &mut self.scroll_offset, ctx),
@@ -2655,7 +2658,6 @@ impl Screen for DetailScreen {
             KeyCode::Char('6') => switch_to_tab(&self.alias, 5, &mut self.scroll_offset, ctx),
             KeyCode::Char('7') => switch_to_tab(&self.alias, 6, &mut self.scroll_offset, ctx),
             KeyCode::Char('8') => switch_to_tab(&self.alias, 7, &mut self.scroll_offset, ctx),
-            KeyCode::Char('9') => switch_to_tab(&self.alias, 8, &mut self.scroll_offset, ctx),
             // The Driver tab (D-15), always the last. It has no digit, uppercase is
             // entirely unclaimed in the detail view, and `KeyCode::Char('D')`
             // arrives without needing the `_modifiers` parameter this handler
@@ -2679,8 +2681,8 @@ impl Screen for DetailScreen {
             }
             KeyCode::Right => {
                 // The visible count, not `TAB_COUNT - 1`: with the flag off the
-                // last tab is index 8, and walking to 9 (the Driver index) would
-                // park the user on a tab the bar does not draw.
+                // last tab is index 7 (Docs), and walking to 8 (the Driver
+                // index) would park the user on a tab the bar does not draw.
                 if current_idx < visible_tab_count(ctx.experimental) - 1 {
                     switch_to_tab(&self.alias, current_idx + 1, &mut self.scroll_offset, ctx)
                 } else {
@@ -6409,7 +6411,7 @@ fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
         spans.push(Span::raw("  "));
     }
     if width >= DRIVER_FOOTER_FULL_CELLS {
-        spans.push(Span::styled("[1-9/D]", b));
+        spans.push(Span::styled("[1-8/D]", b));
         spans.push(Span::raw("tabs  "));
     }
     spans.push(Span::styled("[j/k]", b));
@@ -6446,9 +6448,11 @@ fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
 ///
 /// `experimental` decides that shared hint. **It is the one string that would
 /// otherwise leak the Driver tab onto every other tab** (260917-fko D2): a
-/// user with the flag off who read `[1-9/D]` would have been told about a tab
+/// user with the flag off who read `[1-8/D]` would have been told about a tab
 /// that does not exist and a key that does nothing, which is the discovery this
 /// gate exists to prevent.
+///
+/// The digit range is the eight tabs' (D-B10): `9` and `0` are inert.
 fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec<Span<'static>> {
     if matches!(sub_view, DetailSubView::Driver) {
         return driver_footer_spans(width);
@@ -6459,7 +6463,7 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
         Span::raw("  "),
         Span::styled("[Esc]", b),
         Span::raw("back  "),
-        Span::styled(if experimental { "[1-9/D]" } else { "[1-9]" }, b),
+        Span::styled(if experimental { "[1-8/D]" } else { "[1-8]" }, b),
         Span::raw("tabs  "),
         Span::styled("[j/k]", b),
         Span::raw("scroll  "),
@@ -6502,11 +6506,15 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::styled("[n]", b));
             spans.push(Span::raw("ew session  "));
         }
+        // The Docs tab's two sub-views each advertise `m`, naming the other
+        // sub-tab it switches to (D-B04).
         DetailSubView::Archive => {
             spans.push(Span::styled("[Enter]", b));
             spans.push(Span::raw("open  "));
             spans.push(Span::styled("[e]", b));
             spans.push(Span::raw("dit  "));
+            spans.push(Span::styled("[m]", b));
+            spans.push(Span::raw(" files  "));
         }
         DetailSubView::Browse => {
             spans.push(Span::styled("[Enter]", b));
@@ -6519,6 +6527,8 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("root  "));
             spans.push(Span::styled("[p]", b));
             spans.push(Span::raw("hase  "));
+            spans.push(Span::styled("[m]", b));
+            spans.push(Span::raw("ilestones  "));
         }
         DetailSubView::Defaults => {
             spans.push(Span::styled("[Enter]", b));

@@ -25,15 +25,21 @@ pub enum DetailSubView {
     GitHistory,
     Queue,
     Sessions,
-    /// The milestone archive. It sits at an interim ninth tab (index 8) until
-    /// plan 24-07 folds it into Docs as the Milestones sub-view.
+    /// The milestone archive: the Docs tab's `Milestones` sub-view (D-B04),
+    /// not a tab of its own. It shares Docs' index with [`Self::Browse`], so a
+    /// digit or arrow never lands on it; it is reached with `m` on the Docs
+    /// tab or by `Enter` on the Roadmap's collapsed shipped-milestones row.
+    /// Per-project view state is in memory only, so a stored `Archive` needs
+    /// no migration: it renders as Docs with Milestones active.
     Archive,
     Defaults,
+    /// The Docs tab's `Files` sub-view (index 7) — the `.planning/` browser,
+    /// and what Docs' index resolves to.
     Browse,
     /// The Driver tab: run list, run detail, live output (D-15, OBS-04).
     ///
-    /// **Index 9, and fully reachable.** `TAB_COUNT` is 10, `TAB_LABELS_FULL`
-    /// has ten entries, `Left`/`Right` reach it, `Shift+D` jumps to it, the
+    /// **Index 8, and fully reachable.** `TAB_COUNT` is 9, `TAB_LABELS_FULL`
+    /// has nine entries, `Left`/`Right` reach it, `Shift+D` jumps to it, the
     /// footer tiers carry its hints, and both render dispatches call
     /// [`super::ui::screens::driver::render_driver_tab`].
     ///
