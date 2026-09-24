@@ -11,6 +11,10 @@ section "Real Fixtures".
 |---|---|---|---|---|
 | `ttbook-ROADMAP.md` | ttbook | `9b7b305` | 2026-09-24 | `#### Build phase N (Milestone M): Title` placeholder phases 14-18 under `### 📋 Milestone M "…" (planned)` headings; build-phase dependency lines (`Build phases 8-13`, `Build phases 12, 13`, `Build phase 14`); the old milestone detector read each build heading as a spurious milestone; shipped v1 phases written as non-bold lines inside `<details>` (not parsed as phases) |
 | `ttbook-STATE.md` | ttbook | `c71fcd0` | 2026-09-24 | `milestone: v2` names a roadmap milestone by its first token |
+| `daily-vow-ROADMAP.md` | daily-vow | `abc11af` | 2026-09-24 | `## Milestones` list with the `--` separator (v1.0-v1.4 shipped, v1.5 in progress); shipped phases 1-17 only in a `## Complete Phase History` table; phase 23 declares `Phase 21 (…), Phase 20 (…)`, so 20 is an implied dependency via 21 and the old graph drew `20` twice (a reference row); `## Requirement Coverage (v1.5)` reads as a spurious member-less milestone |
+| `daily-vow-STATE.md` | daily-vow | `abc11af` | 2026-09-24 | `milestone: v1.5` + `milestone_name` |
+| `sentriq-ROADMAP.md` | sentriq | `49533e9` | 2026-09-24 | no `## Milestones` list: the active milestone is only a bold `**v0.12 — Actuation Routines** (phases 9-12)` line, so no roadmap milestone holds phases 9-12 (a synthetic band is needed); `## v0.11 Phases (4-7)` carries its range in parentheses; phase 11 declares `Phase 10 (…), Phase 9 (…)`, so 9 is implied via 10 and the old graph drew `9` twice; phase 12 declares no dependency; `## Scope Explicitly Excluded from v0.12` reads as a spurious member-less milestone |
+| `sentriq-STATE.md` | sentriq | `dfc6d2c` | 2026-09-24 | `milestone_name` written AFTER the `progress:` block |
 
 ## These are SANITISED excerpts, not copies
 
@@ -27,7 +31,10 @@ The source repositories are **private**; this crate is public and publishes
   filler of roughly the original length), plan-line descriptions and every kept
   prose line (with `(sanitised)`), and — for ttbook, which does not appear in
   the public `MOCKUPS.md` — every phase title and milestone name (with neutral
-  titles of varied length).
+  titles of varied length). daily-vow's and sentriq's phase and milestone
+  titles are kept: they already appear in this repository's public
+  `.planning/phases/24-*/MOCKUPS.md`. daily-vow's shipped-phase history table
+  keeps only its shape (ids, milestone, plan counts, dates).
 - **Dropped:** requirement, gate and success-criteria lines and other prose
   sections the reader does not parse.
 - STATE.md fixtures are the frontmatter keys the reader uses, in source key

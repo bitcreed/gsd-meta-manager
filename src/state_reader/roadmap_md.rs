@@ -489,9 +489,57 @@ pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
     merge_duplicate_phases(phases)
 }
 
-/// Every phase's `**Goal**:` line, keyed by `phase_key` (D-A03).
-pub fn parse_phase_goals(_content: &str) -> HashMap<String, crate::text::Untrusted> {
-    HashMap::new()
+/// Every phase's goal, keyed by [`phase_key`] (D-A03). Display-only.
+///
+/// Walks every ordinary `## Phase N: Title` heading (the shape
+/// [`parse_roadmap_phases`] reads) and every `#### Build phase N` heading;
+/// inside each entry — up to the next markdown heading of any level — the first
+/// line reading `**Goal**: text` or `**Goal:** text` (case-insensitive) yields
+/// the trimmed text. An empty goal is skipped; the first entry for a key wins,
+/// so `### Phase 07:` and a later `### Phase 7:` do not overwrite each other.
+/// Single-line goals only: every roadmap seen writes the goal on one line.
+///
+/// **`Untrusted` values**: the text is the project's own prose and reaches a
+/// cell only through `shown()`.
+pub fn parse_phase_goals(content: &str) -> HashMap<String, crate::text::Untrusted> {
+    static PHASE_HEADING: OnceLock<Regex> = OnceLock::new();
+    static GOAL: OnceLock<Regex> = OnceLock::new();
+    let phase_heading = PHASE_HEADING.get_or_init(|| {
+        Regex::new(&format!(
+            r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    });
+    let goal = GOAL.get_or_init(|| Regex::new(r"(?i)^\s*\*\*Goal(?:\*\*\s*:|:\*\*)\s*(.*)$").unwrap());
+    let build_heading = build_heading_re();
+    let any_heading = any_heading_re();
+
+    let mut goals: HashMap<String, crate::text::Untrusted> = HashMap::new();
+    let mut open: Option<String> = None;
+    for line in content.lines() {
+        if any_heading.is_match(line) {
+            open = phase_heading
+                .captures(line)
+                .or_else(|| build_heading.captures(line))
+                .map(|caps| phase_key(caps[1].trim_end_matches(['.', ','])));
+            continue;
+        }
+        let Some(key) = &open else {
+            continue;
+        };
+        if let Some(caps) = goal.captures(line) {
+            let text = caps[1].trim();
+            if !text.is_empty() {
+                goals
+                    .entry(key.clone())
+                    .or_insert_with(|| crate::text::Untrusted::from_untrusted_source(text.to_string()));
+            }
+            // The first Goal line inside the entry wins, empty or not.
+            open = None;
+        }
+    }
+    goals
 }
 
 /// Returns true when a `## Progress` table Phase cell is a backlog sentinel

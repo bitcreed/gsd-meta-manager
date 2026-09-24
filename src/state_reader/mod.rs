@@ -72,10 +72,23 @@ pub struct ProjectState {
     /// frontier read `phases`: merging would let them target a phase GSD does
     /// not know exists.
     pub planned_phases: Vec<roadmap_md::RoadmapPhase>,
-    /// Each phase's `**Goal**:` line ([`roadmap_md::parse_phase_goals`]),
-    /// keyed by `phase_key`.
+    /// Each phase's and build phase's `**Goal**:` line
+    /// ([`roadmap_md::parse_phase_goals`]), keyed by `phase_key`; shown in the
+    /// Roadmap's detail pane. Display-only.
+    ///
+    /// **`Untrusted` values in a map keyed by a reader-generated phase key**,
+    /// so no free-string field joins `THIRD_PARTY_STRINGS`: a goal reaches a
+    /// cell only through `shown()`, and it is deliberately kept out of the
+    /// driver's model seam (widening the prose set would be a decision of its
+    /// own).
     pub phase_goals: HashMap<String, crate::text::Untrusted>,
-    /// STATE.md's `milestone_name`.
+    /// STATE.md's `milestone_name`, e.g. `Actuation Routines`; `None` when the
+    /// key is absent or empty. Names a milestone the roadmap itself does not
+    /// list (sentriq's `v0.12`), so the Roadmap can title a synthetic band.
+    ///
+    /// `Untrusted`, not `String`, for the same reason as
+    /// [`Self::milestones`]' labels: third-party text reaches a cell only
+    /// through `shown()`, and the free-string census stays unchanged.
     pub milestone_name: Option<crate::text::Untrusted>,
     pub queued_actions: Vec<queue_md::QueuedAction>,
     /// Per-phase disk inference keyed by phase number (e.g., "01", "05")
@@ -594,6 +607,9 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
             }
 
             state.milestone = fm.milestone;
+            let milestone_name = fm.milestone_name.trim();
+            state.milestone_name = (!milestone_name.is_empty())
+                .then(|| crate::text::Untrusted::from_untrusted_source(milestone_name.to_string()));
         }
         // G15 reads the document body, not the frontmatter, so it is parsed
         // from the same content regardless of whether the frontmatter parsed.
@@ -612,6 +628,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
         state.planned_phases = roadmap_md::parse_planned_build_phases(&content);
+        state.phase_goals = roadmap_md::parse_phase_goals(&content);
         state.milestones = roadmap_md::roadmap_milestones(&content);
         // STATE.md is the milestone's primary source; a project whose STATE.md
         // carries no `milestone:` key still names it in ROADMAP's
