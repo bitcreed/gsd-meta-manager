@@ -83,7 +83,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 
 </details>
 
-### v2.0 Autonomous Orchestration (Phases 14-23)
+### v2.0 Autonomous Orchestration (Phases 14-24)
 
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
 - [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
@@ -95,12 +95,15 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [ ] **Phase 21: LLM Goal Layer & Prompt-Injection Hardening** - One stated goal, model confined to two seams
 - [ ] **Phase 22: Container Execution Target** - Docker/podman parity with the host path
 - [ ] **Phase 23: Gate Policy & Auto-Validation** - The verify gate is a choice, not a law: skip, defer, or auto-validate
+- [ ] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
 Phase 22 depends only on Phase 15 and may run alongside Phases 17-21, but must land
 before Phase 20 closes so the router is never built against a stubbed target.
 Phase 23 depends on Phase 20's gate taxonomy and on Phase 22 (a containerized surface is
 one of the surfaces `auto` must be able to drive), so it runs last.
+Phase 24 is a TUI-only phase with no dependency on the orchestration work (Phases 15-23);
+like Phase 14 it is parallel-safe and can ship any time.
 
 ## Phase Details
 
@@ -734,6 +737,26 @@ Plans:
 **Research**: yes. No in-tree precedent for driving a UI surface; the recording-shape question in criterion 5 is a design artifact owed before implementation
 **Plans**: TBD
 
+### Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation
+
+**Goal**: The Roadmap tab becomes the primary per-project view — a master/detail phase list with a git-log-style dependency graph, a selection cursor and a detail pane that says what each phase needs, unblocks and can run alongside — and the detail tabs consolidate from ten to eight (Roadmap · Phases · Backlog · Git · Queue · Sess · Cfg · Docs, plus Driver)
+**Depends on**: Nothing (TUI-only; independent of the v2.0 orchestration phases 15-23 — parallel-safe, like Phase 14)
+**Requirements**: TBD (locked decisions in `24-CONTEXT.md`)
+**Success Criteria** (what must be TRUE):
+
+  1. Every phase renders exactly once, each milestone label appears exactly once (as a foldable header band), and implied deps (after transitive reduction) show as a dim marker rather than a duplicated node row — the daily-vow `20`-twice and sentriq `9 ─► 11` defects are gone
+  2. A selection cursor moves over every phase (j/k, g/G, h/l dep/unblock jumps, [/] same-wave steps, Space folds), and the detail pane shows the selected phase's Goal, Needs, Unblocks and Parallel set, explaining a no-deps phase instead of "Nothing in this milestone"
+  3. The layout works at 80 columns (detail pane stacks below the list) and side-by-side at ~100+ columns, with no horizontal scrolling
+  4. `#### Build phase N` headings (ttbook) parse as phases
+  5. The old PhaseList tab is gone with its unique content preserved in the Roadmap header; Pipeline is renamed Phases at position 2 and shares the selected phase with the Roadmap (Enter opens it); Archive lives in Docs as a "Milestones" sub-tab; every tab-index consumer (round-trip tests, help text, escape-guard tests, README, persisted view state) agrees with the new order
+
+**Phase risks**:
+
+  - The Archive → Docs move touches `render_archive_tab`, which a concurrent `/gsd-debug` session is fixing (Archive "Loading..." bug). That work is sequenced last and must re-read `detail.rs` at execution time
+  - Tab renumbering is a wide, mechanical change across tests and help text; a missed consumer is a silent wrong-tab bug
+
+**Plans**: TBD
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -748,6 +771,7 @@ Plans:
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
+| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 0/? | Not started | - |
 
 ## Backlog
 

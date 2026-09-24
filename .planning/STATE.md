@@ -5,11 +5,11 @@ milestone_name: Release Gate Repair
 current_phase: 22
 current_phase_name: container-execution-target
 status: shipped
-stopped_at: "Tagged and pushed v1.7.2 — the first release cut behind a green --container gate; supersedes the unpublished v1.7.0 and v1.7.1"
-last_updated: "2026-09-18T00:40:00.000Z"
-last_activity: 2026-09-18
+stopped_at: Phase 24 context gathered
+last_updated: "2026-09-24T01:42:24.087Z"
+last_activity: 2026-09-23
 last_activity_desc: "Cut v1.7.2 (Release Gate Repair): Cargo.toml 1.7.1 -> 1.7.2, cargo update relocked only this crate, and ./scripts/pre-tag-check.sh --container v1.7.2 exited 0 with all five gates PASS (48 suites / 2121 passed / 0 failed / 15 ignored, git 2.55.0 MATCH) — the first time the local gate and the runner agree."
-state_head: 5ce3dc33c33a663f82e2b69379615841c46a11e5
+state_head: 8d243189d754d8e8b6ee6ea149b9ec7e7c60e14f
 progress:
   total_phases: 10
   completed_phases: 6
@@ -402,6 +402,10 @@ Recent decisions affecting current work:
 - [Phase 19]: Both authorised cross-fence pin moves performed with each reasoning REWRITTEN under WR-02 rather than deleted, and a STOP row added beside each.
 - [Phase 19]: Audit 12's finish-line sentence is deliberately NOT written by plan 19-33; that is audit 13's judgement. /gsd-secure-phase 19 is NOT cleared.
 
+### Roadmap Evolution
+
+- Phase 24 added (2026-09-23): Roadmap tab redesign and detail-tab consolidation — TUI-only, no dependency on Phases 15-23; Phase 21 left untouched (stopped by user decision)
+
 ### Pending Todos
 
 - [2026-07-29] [ui] Badge glyphs may misalign by one cell across terminals — [todo file](.planning/todos/pending/2026-07-29-badge-glyph-display-width-alignment.md)
@@ -486,8 +490,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-18T00:40:00.000Z
-Stopped at: Tagged and pushed v1.7.2 — Release Gate Repair
+Last session: 2026-09-24T01:42:23.588Z
+Stopped at: Phase 24 context gathered
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0
@@ -543,7 +547,7 @@ re-run `/gsd-secure-phase 19` so 19/20/21 can move off "In Progress".
 Prior-session note, still live:
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
-Resume file: .planning/phases/22-container-execution-target/22-CONTEXT.md
+Resume file: .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-CONTEXT.md
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
