@@ -236,6 +236,9 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
         row("Enter", "Roadmap tab: open the phase in Phases (detail view)"),
         row("v", "Roadmap tab: graph / box view (detail view)"),
+        row("Enter", "Backlog tab: open / close the item's content pane (detail view)"),
+        row("j/k PgUp/PgDn", "Backlog tab: scroll the open content pane (detail view)"),
+        row("e", "Backlog tab: edit the open item where it lives, e.g. ROADMAP.md (detail view)"),
         // Phase 24-07 (D-B04): the archive is the Docs tab's Milestones
         // sub-tab, and `m` is the only key that reaches it from Files.
         row("m", "Docs tab: switch Files / Milestones (detail view)"),

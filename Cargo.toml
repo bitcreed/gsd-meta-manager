@@ -23,7 +23,10 @@ categories = ["command-line-utilities"]
 exclude = [".planning/", "CLAUDE.md"]
 
 [dependencies]
-ratatui = { version = "0.30", features = ["crossterm"] }
+# `unstable-rendered-line-info`: `Paragraph::line_count`, so the Backlog
+# content pane clamps its scroll against the WRAPPED row count it actually
+# draws (quick-260924-drx). A feature of the existing crate — no new crate.
+ratatui = { version = "0.30", features = ["crossterm", "unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

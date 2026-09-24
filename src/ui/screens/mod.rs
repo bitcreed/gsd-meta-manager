@@ -909,7 +909,14 @@ impl EditBuffer {
 pub struct ProjectViewCache {
     pub backlog_items: Vec<BacklogItem>,
     pub backlog_selected: usize,
+    /// The Backlog content pane is open AND focused: while set, j/k and
+    /// PgUp/PgDn scroll the pane instead of moving the selection
+    /// (quick-260924-drx). Enter or Esc clears it.
     pub backlog_expanded: bool,
+    /// First visible row of the open Backlog content pane. Reset whenever the
+    /// pane opens or closes; clamped through `clamp_scroll` against the
+    /// metrics the last render recorded.
+    pub backlog_scroll: u16,
     pub git_entries: Vec<GitLogEntry>,
     pub git_selected: usize,
     pub git_planning_only: bool,

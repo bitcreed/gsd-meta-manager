@@ -225,6 +225,20 @@ pub(super) fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -
     offset.min(total_lines.saturating_sub(visible_height))
 }
 
+/// Move the Backlog content pane's scroll by `delta` rows (quick-260924-drx).
+///
+/// The UIFIX-04 order in one place: down ADDS then clamps; up CLAMPS FIRST then
+/// subtracts, so a stale-high offset from a taller pane cannot swallow the
+/// first upward press.
+fn backlog_scroll_by(offset: u16, delta: i32, vp: ViewportMetrics) -> u16 {
+    let step = delta.unsigned_abs().min(u16::MAX as u32) as u16;
+    if delta >= 0 {
+        clamp_scroll(offset.saturating_add(step), vp.total_lines, vp.visible_height)
+    } else {
+        clamp_scroll(offset, vp.total_lines, vp.visible_height).saturating_sub(step)
+    }
+}
+
 /// The narrowest subject worth keeping a co-author column beside.
 ///
 /// Below this, the row is all attribution and no content, which inverts what a
@@ -677,6 +691,10 @@ pub struct DetailScreen {
     /// clamp through the same [`clamp_scroll`] formula, so UIFIX-04 cannot come
     /// back here in a new spelling.
     git_commit_viewport: Cell<ViewportMetrics>,
+    /// Last-rendered viewport metrics for the Backlog tab's content pane —
+    /// the same protocol as the Git commit pane above (quick-260924-drx).
+    /// `total_lines` counts WRAPPED rows, because the pane wraps.
+    backlog_viewport: Cell<ViewportMetrics>,
     /// First visible row of the Roadmap tab's phase list, kept across frames
     /// so the list does not jump when the cursor moves inside the viewport.
     ///
@@ -711,6 +729,7 @@ impl DetailScreen {
             generic_viewport: Cell::default(),
             driver_viewport: Cell::default(),
             git_commit_viewport: Cell::default(),
+            backlog_viewport: Cell::default(),
             roadmap_list_offset: Cell::new(0),
             roadmap_list_viewport: Cell::new(0),
         }
@@ -1998,6 +2017,17 @@ impl Screen for DetailScreen {
                         }
                     }
                 }
+                // An open Backlog content pane closes first (quick-260924-drx):
+                // Esc returns focus to the list rather than leaving the screen.
+                if current_view == DetailSubView::Backlog {
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    if cache.backlog_expanded {
+                        cache.backlog_expanded = false;
+                        cache.backlog_scroll = 0;
+                        ctx.needs_redraw = true;
+                        return ScreenAction::None;
+                    }
+                }
                 // If the commit pane is showing on Git tab, dismiss it first
                 if current_view == DetailSubView::GitHistory {
                     let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
@@ -2076,10 +2106,16 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Backlog => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        if !cache.backlog_items.is_empty() {
+                        if cache.backlog_expanded {
+                            // Focused pane: scroll it — add, then clamp.
+                            cache.backlog_scroll = backlog_scroll_by(
+                                cache.backlog_scroll,
+                                1,
+                                self.backlog_viewport.get(),
+                            );
+                        } else if !cache.backlog_items.is_empty() {
                             let max = cache.backlog_items.len().saturating_sub(1);
                             cache.backlog_selected = (cache.backlog_selected + 1).min(max);
-                            cache.backlog_expanded = false;
                         }
                         ctx.needs_redraw = true;
                     }
@@ -2239,8 +2275,15 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Backlog => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.backlog_selected = cache.backlog_selected.saturating_sub(1);
-                        cache.backlog_expanded = false;
+                        if cache.backlog_expanded {
+                            cache.backlog_scroll = backlog_scroll_by(
+                                cache.backlog_scroll,
+                                -1,
+                                self.backlog_viewport.get(),
+                            );
+                        } else {
+                            cache.backlog_selected = cache.backlog_selected.saturating_sub(1);
+                        }
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Pipeline => {
@@ -2366,10 +2409,15 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Backlog => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        if !cache.backlog_items.is_empty() {
+                        if cache.backlog_expanded {
+                            cache.backlog_scroll = backlog_scroll_by(
+                                cache.backlog_scroll,
+                                PAGE_SCROLL_LINES as i32,
+                                self.backlog_viewport.get(),
+                            );
+                        } else if !cache.backlog_items.is_empty() {
                             let max = cache.backlog_items.len().saturating_sub(1);
                             cache.backlog_selected = (cache.backlog_selected + PAGE_SCROLL_LINES as usize).min(max);
-                            cache.backlog_expanded = false;
                         }
                         ctx.needs_redraw = true;
                     }
@@ -2537,8 +2585,15 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Backlog => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.backlog_selected = cache.backlog_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
-                        cache.backlog_expanded = false;
+                        if cache.backlog_expanded {
+                            cache.backlog_scroll = backlog_scroll_by(
+                                cache.backlog_scroll,
+                                -(PAGE_SCROLL_LINES as i32),
+                                self.backlog_viewport.get(),
+                            );
+                        } else {
+                            cache.backlog_selected = cache.backlog_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        }
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Pipeline => {
@@ -2740,7 +2795,11 @@ impl Screen for DetailScreen {
                         }
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if !cache.backlog_items.is_empty() {
+                            // Enter opens AND focuses the pane; Enter again
+                            // (or Esc) closes it. The scroll starts at the top
+                            // either way (quick-260924-drx).
                             cache.backlog_expanded = !cache.backlog_expanded;
+                            cache.backlog_scroll = 0;
                             // Load content if expanding and not yet loaded
                             if cache.backlog_expanded {
                                 let selected = cache.backlog_selected;
@@ -3794,18 +3853,36 @@ impl Screen for DetailScreen {
                         ScreenAction::None
                     }
                 } else if current_view == DetailSubView::Backlog {
-                    // Backlog tab: if expanded, open file in $EDITOR; otherwise enqueue
+                    // Backlog tab: with the pane open, edit the file the item
+                    // lives in — its ROADMAP.md section at the heading line,
+                    // else its directory `.md` (quick-260924-drx); otherwise
+                    // enqueue.
+                    let planning_dir = ctx
+                        .config
+                        .projects
+                        .get(&alias)
+                        .map(|p| p.path.join(".planning"));
                     let cache = ctx.view_cache.entry(alias.clone()).or_default();
                     if cache.backlog_expanded {
-                        if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
-                            if let Some(ref path) = item.path {
-                                ctx.needs_redraw = true;
-                                return ScreenAction::SuspendAndEdit(path.clone(), None);
-                            }
-                        }
-                        return ScreenAction::SetStatusMessage(
-                            "No file found for this backlog item".to_string(),
-                        );
+                        let target = cache
+                            .backlog_items
+                            .get(cache.backlog_selected)
+                            .zip(planning_dir.as_deref())
+                            .and_then(|(item, planning_dir)| {
+                                // A PATH SEGMENT, like the content load above.
+                                backlog::backlog_edit_target(
+                                    planning_dir,
+                                    item.dir_name.as_raw_for_logic_only(),
+                                    item.path.as_deref(),
+                                )
+                            });
+                        ctx.needs_redraw = true;
+                        return match target {
+                            Some((path, line)) => ScreenAction::SuspendAndEdit(path, line),
+                            None => ScreenAction::SetStatusMessage(
+                                "No file found for this backlog item".to_string(),
+                            ),
+                        };
                     }
                     // Not expanded: enqueue as before
                     if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
@@ -3947,7 +4024,16 @@ impl Screen for DetailScreen {
         }
 
         // Render footer with tab-appropriate hints
-        let footer = build_footer(&sub_view, footer_area.width, ctx.experimental);
+        let backlog_focused = sub_view == DetailSubView::Backlog
+            && ctx
+                .view_cache
+                .get(&self.alias)
+                .is_some_and(|c| c.backlog_expanded);
+        let footer = if backlog_focused {
+            Paragraph::new(Line::from(backlog_focused_footer_spans()))
+        } else {
+            build_footer(&sub_view, footer_area.width, ctx.experimental)
+        };
         frame.render_widget(footer, footer_area);
     }
 
@@ -4266,9 +4352,17 @@ impl DetailScreen {
         list_state.select(Some(cache.backlog_selected));
 
         if cache.backlog_expanded {
-            // Split-pane: 50/50 list on top, content on bottom
-            let chunks = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(inner);
+            // Side-by-side when the tab is wide enough — the Roadmap tab's
+            // list+detail breakpoint, reused (INFERRED, quick-260924-drx) —
+            // with the content taking the larger share, as the Git commit pane
+            // does (QD-05). Narrower: stacked 50/50 under the list, as before.
+            let chunks = if inner.width >= roadmap_view::ROADMAP_SIDE_BY_SIDE_MIN_COLS {
+                Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                    .split(inner)
+            } else {
+                Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(inner)
+            };
 
             frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
@@ -4304,7 +4398,25 @@ impl DetailScreen {
                 )
                 .style(Style::default().fg(Color::DarkGray)),
             };
-            frame.render_widget(content_paragraph.block(content_block), chunks[1]);
+
+            // Recorded at render, read by the j/k and PgUp/PgDn arms — the Git
+            // commit pane's `Cell<ViewportMetrics>` protocol. The pane WRAPS
+            // (long roadmap Goal lines), so `total_lines` is the widget's own
+            // wrapped row count, not the source line count: anything else
+            // would lie to `clamp_scroll` about where the bottom is (QD-10).
+            let content_inner = content_block.inner(chunks[1]);
+            let total_lines = content_paragraph
+                .line_count(content_inner.width)
+                .min(u16::MAX as usize) as u16;
+            self.backlog_viewport.set(ViewportMetrics {
+                total_lines,
+                visible_height: content_inner.height,
+            });
+            let scroll = clamp_scroll(cache.backlog_scroll, total_lines, content_inner.height);
+            frame.render_widget(
+                content_paragraph.scroll((scroll, 0)).block(content_block),
+                chunks[1],
+            );
         } else {
             // Full-height list, no content pane
             frame.render_stateful_widget(list, inner, &mut list_state);
@@ -6472,7 +6584,7 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
     match sub_view {
         DetailSubView::Backlog => {
             spans.push(Span::styled("[Enter]", b));
-            spans.push(Span::raw("xpand  "));
+            spans.push(Span::raw("view  "));
             spans.push(Span::styled("[e]", b));
             spans.push(Span::raw("nqueue  "));
         }
@@ -6567,6 +6679,24 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
 }
 
 /// Build the footer line with tab-appropriate key hints.
+/// The Backlog tab's footer while its content pane is open and focused
+/// (quick-260924-drx): the keys now scroll the pane, Enter/Esc close it, and
+/// `e` edits the item where it lives instead of enqueueing it.
+fn backlog_focused_footer_spans() -> Vec<Span<'static>> {
+    let b = Style::default().add_modifier(Modifier::BOLD);
+    vec![
+        Span::raw("  "),
+        Span::styled("[j/k PgUp/PgDn]", b),
+        Span::raw("scroll content  "),
+        Span::styled("[Enter/Esc]", b),
+        Span::raw("close  "),
+        Span::styled("[e]", b),
+        Span::raw("dit in $EDITOR  "),
+        Span::styled("[?]", b),
+        Span::raw("help"),
+    ]
+}
+
 fn build_footer(sub_view: &DetailSubView, width: u16, experimental: bool) -> Paragraph<'static> {
     Paragraph::new(Line::from(footer_spans(sub_view, width, experimental)))
 }
@@ -10093,7 +10223,7 @@ mod tests {
     fn test_other_footers_unchanged_by_browse_edit_hint() {
         assert_eq!(
             footer_text(&DetailSubView::Backlog),
-            "  [Esc]back  [1-8/D]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
+            "  [Esc]back  [1-8/D]tabs  [j/k]scroll  [Enter]view  [e]nqueue  [?]help"
         );
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
@@ -14524,6 +14654,138 @@ mod tests {
             text.contains("WRAPPED_TAIL"),
             "the tail past the pane width was clipped:\n{text}"
         );
+    }
+
+    // --- quick-260924-drx: Enter focuses a scrollable pane; e edits in place --
+
+    /// The fixture plus a second item and a 60-line ROADMAP.md section for
+    /// 999.1 (`ROW_00` … `ROW_59`), on the Backlog tab with the pane open.
+    fn focused_long_backlog_fixture() -> (DetailScreen, AppContext, tempfile::TempDir) {
+        let (mut screen, mut ctx, td) = backlog_content_fixture();
+        let planning = td.path().join(".planning");
+        let second = planning.join("phases/999.2-second-item");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join(".gitkeep"), "").unwrap();
+        let body: String = (0..60).map(|i| format!("ROW_{i:02}\n")).collect();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            format!("## Backlog\n\n### Phase 999.1: Long (BACKLOG)\n\n{body}"),
+        )
+        .unwrap();
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_items.len(), 2, "precondition");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        // The first frame records the pane's viewport, as in the real loop.
+        render_detail_to_text_at(&screen, &ctx, 120, 30);
+        (screen, ctx, td)
+    }
+
+    /// While the pane is focused, j/k and PgUp/PgDn scroll the content, not
+    /// the selection — and PgDn stops at the content's end (the UIFIX-04
+    /// clamp), so the last row is on screen and one PgUp visibly moves.
+    #[test]
+    fn a_focused_backlog_pane_scrolls_with_j_k_and_pages_and_clamps_at_the_end() {
+        let (mut screen, mut ctx, _td) = focused_long_backlog_fixture();
+
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.backlog_selected, 0, "j must not move the selection");
+        assert!(cache.backlog_expanded, "j must not close the pane");
+        assert_eq!(cache.backlog_scroll, 2);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_scroll, 1);
+
+        for _ in 0..20 {
+            press(&mut screen, &mut ctx, KeyCode::PageDown);
+        }
+        let vp = screen.backlog_viewport.get();
+        assert!(vp.total_lines >= 60 && vp.visible_height > 0, "viewport recorded");
+        let max = vp.total_lines - vp.visible_height;
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_scroll, max, "clamped to the end");
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 0);
+
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        assert!(text.contains("ROW_59"), "the last row is visible:\n{text}");
+        assert!(!text.contains("ROW_00"), "the pane scrolled:\n{text}");
+
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].backlog_scroll,
+            max.saturating_sub(PAGE_SCROLL_LINES),
+            "the first PgUp from the end moves a full page"
+        );
+    }
+
+    /// Esc (and Enter again) returns focus to the list: the pane closes, the
+    /// screen stays, the scroll resets, and j moves the selection again.
+    #[test]
+    fn esc_or_enter_closes_the_focused_backlog_pane_and_returns_to_the_list() {
+        let (mut screen, mut ctx, _td) = focused_long_backlog_fixture();
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "Esc closes the pane, not the screen");
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert!(!cache.backlog_expanded);
+        assert_eq!(cache.backlog_scroll, 0);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 1, "j moves the list again");
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(!ctx.view_cache[TEST_ALIAS].backlog_expanded, "Enter again closes it");
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "with the pane closed Esc leaves");
+    }
+
+    /// Wide: the pane sits to the RIGHT of the list (same rows). Narrow: it
+    /// stacks underneath, as before.
+    #[test]
+    fn the_backlog_pane_is_beside_the_list_when_wide_and_under_it_when_narrow() {
+        let (screen, ctx, _td) = focused_long_backlog_fixture();
+
+        let wide = render_detail_to_text_at(&screen, &ctx, 140, 30);
+        assert!(
+            wide.lines().any(|l| l.contains("999.1 - ") && l.contains("Content: 999.1")),
+            "wide: a list row and a content row share a screen row:\n{wide}"
+        );
+
+        let narrow = render_detail_to_text_at(&screen, &ctx, 80, 30);
+        let list_row = narrow.lines().position(|l| l.contains("999.2 - ")).unwrap();
+        let content_row = narrow
+            .lines()
+            .position(|l| l.contains("Content: 999.1"))
+            .expect("pane title");
+        assert!(content_row > list_row, "narrow: the pane is under the list:\n{narrow}");
+    }
+
+    /// The edit key opens ROADMAP.md at the item's heading line — the file the
+    /// item lives in — instead of "No file found" for a `.gitkeep`-only dir.
+    #[test]
+    fn e_on_an_open_backlog_item_edits_its_roadmap_section_at_the_heading_line() {
+        let (mut screen, mut ctx, td) = focused_long_backlog_fixture();
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        match action {
+            ScreenAction::SuspendAndEdit(path, line) => {
+                assert_eq!(path, td.path().join(".planning/ROADMAP.md"));
+                assert_eq!(line, Some(3), "`### Phase 999.1` is line 3");
+            }
+            _ => panic!("expected SuspendAndEdit"),
+        }
+    }
+
+    /// The focused footer advertises what the keys now do.
+    #[test]
+    fn the_focused_backlog_footer_advertises_scroll_close_and_edit() {
+        let (screen, ctx, _td) = focused_long_backlog_fixture();
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
+        let footer = text.lines().last().unwrap_or_default();
+        for hint in ["scroll content", "[Enter/Esc]close", "[e]dit"] {
+            assert!(footer.contains(hint), "missing {hint:?} in footer {footer:?}");
+        }
     }
 
     /// Escaping still happens — per line, through the Archive/Browse markdown
