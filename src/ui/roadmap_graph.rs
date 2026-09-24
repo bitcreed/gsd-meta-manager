@@ -1033,6 +1033,83 @@ fn row_sequence(
     seq
 }
 
+/// Which edges `h` / `l` follow (D-A10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeDir {
+    /// Dependencies: reduced needs, then implied ones (`h`).
+    Needs,
+    /// Phases this one unblocks (`l`).
+    Unblocks,
+}
+
+/// An `h` / `l` walk in progress: repeating the key while the cursor still
+/// sits on `target` continues cycling the ORIGIN's edges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeWalk {
+    /// `phase_key` of the phase the walk started from.
+    pub origin: String,
+    pub dir: EdgeDir,
+    /// Index into the origin's candidate list.
+    pub index: usize,
+    /// `phase_key` of the phase the walk last jumped to.
+    pub target: String,
+}
+
+impl RoadmapModel {
+    /// Every row the cursor can rest on, in row order (connectors excluded).
+    pub fn visible_targets(&self) -> Vec<CursorTarget> {
+        Vec::new()
+    }
+
+    /// The target a stored cursor resolves to.
+    pub fn resolve_cursor(&self, _stored: Option<&CursorTarget>) -> Option<CursorTarget> {
+        None
+    }
+
+    /// The visible row index of `t`.
+    pub fn row_of(&self, _t: &CursorTarget) -> Option<usize> {
+        None
+    }
+
+    /// Move `delta` targets from `from`, clamped at both ends.
+    pub fn step(&self, from: &CursorTarget, _delta: isize) -> CursorTarget {
+        from.clone()
+    }
+
+    /// The first visible target.
+    pub fn first_target(&self) -> Option<CursorTarget> {
+        None
+    }
+
+    /// The last visible target.
+    pub fn last_target(&self) -> Option<CursorTarget> {
+        None
+    }
+
+    /// The index in [`RoadmapModel::phases`] of the phase with `key`.
+    pub fn phase_index(&self, _key: &str) -> Option<usize> {
+        None
+    }
+
+    /// Follow an edge from `from` (`h` / `l`).
+    pub fn edge_jump(
+        &self,
+        _from: &CursorTarget,
+        _walk: Option<&EdgeWalk>,
+        _dir: EdgeDir,
+    ) -> Option<(CursorTarget, EdgeWalk)> {
+        None
+    }
+
+    /// The next / previous phase of the same wave (`]` / `[`).
+    pub fn wave_step(&self, _from: &CursorTarget, _forward: bool) -> Option<CursorTarget> {
+        None
+    }
+
+    /// Unfold whatever hides the phase `phase_key`.
+    pub fn unfold_for(&self, _phase_key: &str, _fold_toggles: &mut HashSet<BandKey>) {}
+}
+
 /// The model as plain text, one line per visible row: the lane column padded
 /// to ten cells (the node cell drawn `o`), then the phase id, `[short]` for a
 /// band, `[shipped]` for the shipped summary, nothing for a connector.
@@ -2962,5 +3039,477 @@ mod tests {
                 assert_eq!(text.iter().filter(|l| l.contains(&tag)).count(), 1);
             }
         }
+    }
+
+    // ----- robustness -------------------------------------------------------
+
+    /// Each phase index appears in exactly one visible phase row.
+    fn assert_each_phase_once(model: &RoadmapModel) {
+        let mut seen: Vec<usize> = model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                ListRow::Phase { node, .. } => Some(*node),
+                _ => None,
+            })
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..model.phases.len()).collect::<Vec<_>>());
+    }
+
+    /// `count` phases `1..=count`; `chained` makes each depend on the last.
+    fn generated(count: usize, chained: bool) -> RoadmapModel {
+        let ids: Vec<String> = (1..=count).map(|i| i.to_string()).collect();
+        let deps: Vec<Vec<String>> = (1..=count)
+            .map(|i| {
+                if chained && i > 1 {
+                    vec![(i - 1).to_string()]
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let input = ListInput {
+            nodes: ids
+                .iter()
+                .zip(&deps)
+                .map(|(id, deps)| ListNode {
+                    id,
+                    name: "x",
+                    deps,
+                    band: None,
+                    marker: F,
+                    plans: None,
+                    goal: None,
+                    planned: false,
+                    badge: None,
+                })
+                .collect(),
+            bands: Vec::new(),
+        };
+        layout_list(&input, &HashSet::new())
+    }
+
+    fn phase_lanes(model: &RoadmapModel) -> Vec<usize> {
+        model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                ListRow::Phase { lane, .. } => Some(*lane),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn list_cycle_terminates_with_one_note() {
+        let model = plain(&[
+            ("1", "", &["2"], F),
+            ("2", "", &["1"], F),
+            ("3", "", &["5"], F),
+            ("4", "", &["3"], F),
+            ("5", "", &["4"], F),
+        ]);
+        assert_each_phase_once(&model);
+        assert_eq!(model.notes.len(), 1, "{:?}", model.notes);
+        assert!(
+            model.notes[0].starts_with("dependency cycles: 2"),
+            "{:?}",
+            model.notes
+        );
+    }
+
+    #[test]
+    fn list_self_dependency_is_noted() {
+        let model = plain(&[("1", "", &["1"], F)]);
+        assert_eq!(lane_text(&model), vec!["o         1"]);
+        assert_eq!(model.notes, vec!["dependency cycle: 1 (edges ignored)"]);
+        assert!(facts(&model, "1").needs.is_empty());
+    }
+
+    #[test]
+    fn list_external_dep_is_listed_not_drawn() {
+        let model = plain(&[("14", "", &["7"], F), ("15", "", &["14"], F)]);
+        assert_eq!(lane_text(&model), vec!["o         14", "o         15"]);
+        assert_eq!(facts(&model, "14").external, vec!["7".to_string()]);
+        assert!(!facts(&model, "14").no_deps);
+        // An external dependency counts as satisfied (RESEARCH A12).
+        assert_eq!(facts(&model, "14").status, PhaseStatus::Ready);
+        assert_eq!(facts(&model, "15").status, PhaseStatus::Blocked);
+    }
+
+    #[test]
+    fn list_padded_and_decimal_ids_match() {
+        let model = plain(&[
+            ("6", "", &[], F),
+            ("07", "", &["6"], F),
+            ("07.1", "", &["07"], F),
+        ]);
+        assert_eq!(ids(&model, &facts(&model, "07").needs), vec!["6"]);
+        assert_eq!(ids(&model, &facts(&model, "07.1").needs), vec!["07"]);
+        assert_eq!(
+            lane_text(&model),
+            vec!["o         6", "o         07", "o         07.1"]
+        );
+        assert_eq!(model.phase_index("7"), Some(1));
+        assert_eq!(model.phase_index("07.1"), Some(2));
+    }
+
+    #[test]
+    fn list_skip_layer_edge_is_implied_not_repeated() {
+        let model = plain(&[
+            ("1", "", &[], F),
+            ("2", "", &["1"], F),
+            ("3", "", &["2", "1"], F),
+        ]);
+        assert_eq!(
+            lane_text(&model),
+            vec!["o         1", "o         2", "o         3"]
+        );
+        assert_eq!(implied_ids(&model, "3"), pairs(&[("1", "2")]));
+        assert_each_phase_once(&model);
+    }
+
+    #[test]
+    fn list_fan_in_merges_once() {
+        let model = plain(&[
+            ("1", "", &[], F),
+            ("2", "", &[], F),
+            ("3", "", &[], F),
+            ("4", "", &["1", "2", "3"], F),
+        ]);
+        assert_eq!(
+            lane_text(&model),
+            vec![
+                "o         1",
+                "│ o       2",
+                "│ │ o     3",
+                "├─┴─┘",
+                "o         4",
+            ]
+        );
+        let connectors = model
+            .rows
+            .iter()
+            .filter(|row| matches!(row, ListRow::Connector { .. }))
+            .count();
+        assert_eq!(connectors, 1);
+    }
+
+    #[test]
+    fn list_large_chain_stays_one_lane() {
+        let model = generated(300, true);
+        assert_eq!(model.rows.len(), 300);
+        assert!(phase_lanes(&model).iter().all(|&l| l == 0));
+        assert_eq!(model.max_wave, 300);
+        assert_each_phase_once(&model);
+    }
+
+    #[test]
+    fn list_many_roots_zig_zag_within_two_lanes() {
+        let model = generated(60, false);
+        let lanes = phase_lanes(&model);
+        assert_eq!(lanes.len(), 60);
+        for (i, lane) in lanes.iter().enumerate() {
+            assert_eq!(*lane, i % 2, "row {i}");
+        }
+        assert_eq!(model.rows.len(), 60);
+    }
+
+    // ----- navigation -------------------------------------------------------
+
+    fn phase(key: &str) -> CursorTarget {
+        CursorTarget::Phase(key.to_string())
+    }
+
+    fn named(key: &str) -> CursorTarget {
+        CursorTarget::Band(BandKey::Named(key.to_string()))
+    }
+
+    fn mockup_a() -> RoadmapModel {
+        build(BOOKLY, BOOKLY_BANDS, &HashSet::new())
+    }
+
+    fn mockup_b() -> RoadmapModel {
+        build(DAILY_VOW, DAILY_VOW_BANDS, &HashSet::new())
+    }
+
+    #[test]
+    fn default_cursor_is_the_active_phase() {
+        assert_eq!(mockup_a().resolve_cursor(None), Some(phase("10")));
+        assert_eq!(mockup_b().resolve_cursor(None), Some(phase("23")));
+        // An unknown stored key falls back to the default.
+        assert_eq!(
+            mockup_a().resolve_cursor(Some(&phase("99"))),
+            Some(phase("10"))
+        );
+        // A known visible phase stays where it is.
+        assert_eq!(
+            mockup_a().resolve_cursor(Some(&phase("14"))),
+            Some(phase("14"))
+        );
+        // No active phase: the first phase that is not done.
+        let model = plain(&[("1", "", &[], D), ("2", "", &["1"], F)]);
+        assert_eq!(model.resolve_cursor(None), Some(phase("2")));
+        // Everything done: the first visible target.
+        let model = plain(&[("1", "", &[], D)]);
+        assert_eq!(model.resolve_cursor(None), Some(phase("1")));
+        assert_eq!(RoadmapModel::default().resolve_cursor(None), None);
+    }
+
+    #[test]
+    fn step_skips_connector_rows() {
+        let model = mockup_a();
+        let targets = model.visible_targets();
+        let connectors = model
+            .rows
+            .iter()
+            .filter(|row| matches!(row, ListRow::Connector { .. }))
+            .count();
+        assert_eq!(targets.len(), model.rows.len() - connectors);
+        assert_eq!(targets[0], named("m3 live booking"));
+        assert_eq!(model.first_target(), Some(named("m3 live booking")));
+        assert_eq!(model.last_target(), Some(phase("18")));
+
+        // 9 → 10 across the fork connector, and back.
+        assert_eq!(model.step(&phase("9"), 1), phase("10"));
+        assert_eq!(model.step(&phase("10"), -1), phase("9"));
+        assert_eq!(model.step(&phase("11"), 1), phase("12"));
+        // Band rows are targets; the ends clamp.
+        assert_eq!(model.step(&phase("15"), 1), named("m4 support chat"));
+        assert_eq!(model.step(&phase("8"), -1), named("m3 live booking"));
+        assert_eq!(
+            model.step(&named("m3 live booking"), -1),
+            named("m3 live booking")
+        );
+        assert_eq!(model.step(&phase("17"), 5), phase("18"));
+
+        assert_eq!(model.row_of(&phase("8")), Some(1));
+        assert_eq!(model.row_of(&phase("10")), Some(4));
+        assert_eq!(model.row_of(&named("m5 web")), Some(16));
+    }
+
+    #[test]
+    fn h_cycles_the_origin_needs_including_implied() {
+        let model = mockup_b();
+        let (t1, w1) = model
+            .edge_jump(&phase("23"), None, EdgeDir::Needs)
+            .expect("23 has needs");
+        assert_eq!(t1, phase("21"));
+        let (t2, w2) = model
+            .edge_jump(&t1, Some(&w1), EdgeDir::Needs)
+            .expect("cycle");
+        assert_eq!(t2, phase("20"));
+        assert_eq!(w2.origin, "23");
+        let (t3, _) = model
+            .edge_jump(&t2, Some(&w2), EdgeDir::Needs)
+            .expect("wrap");
+        assert_eq!(t3, phase("21"));
+
+        // A walk whose target is not the cursor restarts at the cursor.
+        let (t, w) = model
+            .edge_jump(&phase("22"), Some(&w2), EdgeDir::Needs)
+            .expect("22 needs 21");
+        assert_eq!((t, w.origin.as_str()), (phase("21"), "22"));
+        // Only an external dependency: nothing to jump to.
+        assert_eq!(model.edge_jump(&phase("18"), None, EdgeDir::Needs), None);
+        // A band row has no edges.
+        assert_eq!(
+            model.edge_jump(&CursorTarget::Band(BandKey::Shipped), None, EdgeDir::Needs),
+            None
+        );
+    }
+
+    #[test]
+    fn l_cycles_unblocks() {
+        let model = mockup_a();
+        let (t1, w1) = model
+            .edge_jump(&phase("12"), None, EdgeDir::Unblocks)
+            .expect("12 unblocks");
+        assert_eq!(t1, phase("13"));
+        let (t2, w2) = model
+            .edge_jump(&t1, Some(&w1), EdgeDir::Unblocks)
+            .expect("cycle");
+        assert_eq!(t2, phase("18"));
+        let (t3, _) = model
+            .edge_jump(&t2, Some(&w2), EdgeDir::Unblocks)
+            .expect("wrap");
+        assert_eq!(t3, phase("13"));
+        // A walk in the other direction restarts at the cursor.
+        let (t, _) = model
+            .edge_jump(&t2, Some(&w2), EdgeDir::Needs)
+            .expect("18 needs 12");
+        assert_eq!(t, phase("12"));
+        assert_eq!(model.edge_jump(&phase("15"), None, EdgeDir::Unblocks), None);
+    }
+
+    #[test]
+    fn bracket_steps_within_the_wave_and_wraps() {
+        let model = mockup_a();
+        assert_eq!(model.wave_step(&phase("13"), true), Some(phase("18")));
+        assert_eq!(model.wave_step(&phase("18"), true), Some(phase("13")));
+        assert_eq!(model.wave_step(&phase("13"), false), Some(phase("18")));
+        assert_eq!(model.wave_step(&phase("10"), true), Some(phase("11")));
+        // 12 is alone in wave 4.
+        assert_eq!(model.wave_step(&phase("12"), true), None);
+        assert_eq!(model.wave_step(&named("m3 live booking"), true), None);
+    }
+
+    /// Phase 1 in a shipped band, phase 2 in the open one.
+    const SHIPPED_SPEC: LSpec<'static> = &[("1", "", &[], D), ("2", "", &["1"], C)];
+    const SHIPPED_BANDS: BSpec<'static> =
+        &[("v1.0 MVP", true, 1, &["1"]), ("v2 Next", false, 1, &["2"])];
+
+    #[test]
+    fn a_folded_phase_resolves_to_its_band_row() {
+        let m4 = BandKey::Named("m4 support chat".to_string());
+        let model = build(BOOKLY, BOOKLY_BANDS, &toggles(&[m4.clone()]));
+        assert_eq!(model.row_of(&phase("16")), None);
+        assert_eq!(
+            model.resolve_cursor(Some(&phase("16"))),
+            Some(CursorTarget::Band(m4))
+        );
+        // A fold-hidden target is still a phase the model knows.
+        assert_eq!(model.phase_index("16"), Some(8));
+
+        // Under the folded shipped summary: the summary row.
+        let model = build(SHIPPED_SPEC, SHIPPED_BANDS, &HashSet::new());
+        assert_eq!(
+            model.resolve_cursor(Some(&phase("1"))),
+            Some(CursorTarget::Band(BandKey::Shipped))
+        );
+        assert_eq!(
+            model.resolve_cursor(Some(&named("v1.0 mvp"))),
+            Some(CursorTarget::Band(BandKey::Shipped))
+        );
+        assert_eq!(
+            model.visible_targets()[0],
+            CursorTarget::Band(BandKey::Shipped)
+        );
+    }
+
+    #[test]
+    fn unfold_for_reveals_a_hidden_phase() {
+        let m4 = BandKey::Named("m4 support chat".to_string());
+        let mut folds = toggles(&[m4]);
+        let model = build(BOOKLY, BOOKLY_BANDS, &folds);
+        model.unfold_for("16", &mut folds);
+        assert!(folds.is_empty());
+        let model = build(BOOKLY, BOOKLY_BANDS, &folds);
+        assert!(model.row_of(&phase("16")).is_some());
+        // Already visible: nothing changes.
+        model.unfold_for("16", &mut folds);
+        assert!(folds.is_empty());
+
+        // A phase under the folded shipped summary opens the summary.
+        let mut folds = HashSet::new();
+        let model = build(SHIPPED_SPEC, SHIPPED_BANDS, &folds);
+        model.unfold_for("1", &mut folds);
+        assert_eq!(folds, toggles(&[BandKey::Shipped]));
+        let model = build(SHIPPED_SPEC, SHIPPED_BANDS, &folds);
+        assert_eq!(model.row_of(&phase("1")), Some(2));
+    }
+
+    // ----- escaping (T-24-06) -----------------------------------------------
+
+    #[test]
+    fn list_model_stores_only_escaped_text() {
+        let id = "1\u{1b}[31m";
+        let name = "Evil\u{1b}[31m name \u{202E}rtl";
+        let goal_raw = "Goal\u{1b}]0;title\u{7} \u{202E}x";
+        let label = "v9 Bad\u{1b}[2J \u{202E}band";
+        let shipped_label = "v8\u{1b}[1m Old \u{202E}one";
+        let dep = "9\u{1b}[2J";
+        let badge = "[stage\u{1b}[5m]".to_string();
+        let goal = crate::text::Untrusted::from_untrusted_source(goal_raw.to_string());
+        let deps = vec![dep.to_string()];
+        let deps2 = vec![id.to_string(), "2\u{202E}".to_string()];
+        let input = ListInput {
+            nodes: vec![
+                ListNode {
+                    id,
+                    name,
+                    deps: &deps,
+                    band: Some(1),
+                    marker: C,
+                    plans: Some((1, 2)),
+                    goal: Some(&goal),
+                    planned: false,
+                    badge: Some(badge.clone()),
+                },
+                ListNode {
+                    id: "2\u{202E}",
+                    name,
+                    deps: &deps2,
+                    band: Some(0),
+                    marker: F,
+                    plans: None,
+                    goal: None,
+                    planned: true,
+                    badge: None,
+                },
+            ],
+            bands: vec![
+                BandInput {
+                    label: crate::text::Untrusted::from_untrusted_source(shipped_label.to_string()),
+                    shipped: true,
+                    declared_phases: 3,
+                },
+                BandInput {
+                    label: crate::text::Untrusted::from_untrusted_source(label.to_string()),
+                    shipped: false,
+                    declared_phases: 1,
+                },
+            ],
+        };
+        let model = layout_list(&input, &toggles(&[BandKey::Shipped]));
+
+        // Every DISPLAY string; `key`/`BandKey` are logic-only and never drawn.
+        let mut shown: Vec<String> = lane_text(&model);
+        shown.extend(model.notes.iter().cloned());
+        for row in &model.rows {
+            match row {
+                ListRow::ShippedSummary { text, lanes, .. } => {
+                    shown.extend([text.clone(), lanes.clone()])
+                }
+                ListRow::Band {
+                    label,
+                    short,
+                    lanes,
+                    ..
+                } => shown.extend([label.clone(), short.clone(), lanes.clone()]),
+                ListRow::Connector { lanes } | ListRow::Phase { lanes, .. } => {
+                    shown.push(lanes.clone())
+                }
+            }
+        }
+        for p in &model.phases {
+            shown.extend([p.id.clone(), p.name.clone()]);
+            shown.extend(p.goal.iter().cloned());
+            shown.extend(p.badge.iter().cloned());
+            shown.extend(p.external.iter().cloned());
+        }
+        for b in &model.bands {
+            shown.extend([b.label.clone(), b.short.clone()]);
+        }
+        for text in &shown {
+            assert!(
+                !text.contains('\u{1b}') && !text.contains('\u{202E}') && !text.contains('\u{7}'),
+                "raw control reached {text:?}"
+            );
+        }
+
+        let r = |s: &str| String::from(crate::text::render_for_terminal(s));
+        let p = &model.phases[0];
+        assert_eq!(p.id, r(id));
+        assert_eq!(p.name, r(name));
+        assert_eq!(p.goal.as_deref(), Some(r(goal_raw).as_str()));
+        assert_eq!(p.badge.as_deref(), Some(r(&badge).as_str()));
+        assert_eq!(p.external, vec![r(dep)]);
+        assert_eq!(model.bands[1].label, r(label));
+        assert_eq!(model.bands[0].label, r(shipped_label));
+        // Matching still works on the raw id: 2 depends on 1.
+        assert_eq!(ids(&model, &model.phases[1].needs), vec![r(id)]);
+        assert!(lane_text(&model).iter().any(|l| l.ends_with(&r(id))));
     }
 }
