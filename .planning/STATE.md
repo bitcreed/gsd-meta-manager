@@ -4,11 +4,11 @@ milestone: v1.7.2
 current_phase: 24
 current_phase_name: Roadmap Tab Redesign & Detail-Tab Consolidation
 status: executing
-stopped_at: Phase 24 context gathered
-last_updated: "2026-09-24T02:53:19.236Z"
+stopped_at: Completed 24-01-PLAN.md
+last_updated: "2026-09-24T03:09:07.316Z"
 last_activity: 2026-09-23
 last_activity_desc: Phase 24 execution started
-state_head: 5938178cc5b20c0570d85f73b9c3b1fa551171f5
+state_head: 2466e1d3a398c4ddf821c436cbf5c4e41b0fe33c
 progress:
   total_phases: 10
   completed_phases: 6
@@ -31,7 +31,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Executing Phase 24
+Status: Ready to execute
   `--container` gate.** It supersedes and carries the contents of v1.7.0 and v1.7.1, NEITHER OF
   WHICH EVER PUBLISHED: for anyone installing from crates.io this is the jump from **1.6.0**.
   `Cargo.toml` moved 1.7.1 -> 1.7.2; `cargo update` relocked only this crate's own entry, with
@@ -97,7 +97,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
 Phase: 24 (Roadmap Tab Redesign & Detail-Tab Consolidation) — EXECUTING
-Plan: 1 of 7
+Plan: 2 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -304,6 +304,7 @@ verify-phase if the gate is fixed.
 | Phase 19 P30 | 1 session | 3 tasks | 4 files |
 | Phase 19 P31 | one session | 4 tasks | 6 files |
 | Phase 19 P33 | one session | 5 tasks | 9 files |
+| Phase 24 P01 | 12 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -400,6 +401,9 @@ Recent decisions affecting current work:
 - [Phase 19]: T-19-124 NARROWED: the candidate scan's work is now LINEAR in the word's length via suffix folds with structure sharing, with a fail-closed CANDIDATE_SCAN_WORK_CEILING a test DRIVES. Task 3 was NOT severed.
 - [Phase 19]: Both authorised cross-fence pin moves performed with each reasoning REWRITTEN under WR-02 rather than deleted, and a STOP row added beside each.
 - [Phase 19]: Audit 12's finish-line sentence is deliberately NOT written by plan 19-33; that is audit 13's judgement. /gsd-secure-phase 19 is NOT cleared.
+- [Phase 24]: 24-01: Build phases live in ProjectState.planned_phases, never in phases (GSD does not count Build phase headings; router/frontier stay conformant)
+- [Phase 24]: 24-01: Phase goals and STATE milestone_name are stored as Untrusted (map / Option), keeping the free-string census unchanged
+- [Phase 24]: 24-01: shipped_milestones = ranged/scoped milestones before the active one, else lower by numeric version order
 
 ### Roadmap Evolution
 
@@ -489,8 +493,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-24T01:42:23.588Z
-Stopped at: Phase 24 context gathered
+Last session: 2026-09-24T03:09:06.896Z
+Stopped at: Completed 24-01-PLAN.md
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0
@@ -546,7 +550,7 @@ re-run `/gsd-secure-phase 19` so 19/20/21 can move off "In Progress".
 Prior-session note, still live:
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
-Resume file: .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-CONTEXT.md
+Resume file: None
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
