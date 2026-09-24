@@ -95,7 +95,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [ ] **Phase 21: LLM Goal Layer & Prompt-Injection Hardening** - One stated goal, model confined to two seams
 - [ ] **Phase 22: Container Execution Target** - Docker/podman parity with the host path
 - [ ] **Phase 23: Gate Policy & Auto-Validation** - The verify gate is a choice, not a law: skip, defer, or auto-validate
-- [ ] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten
+- [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
 Phase 22 depends only on Phase 15 and may run alongside Phases 17-21, but must land
@@ -791,7 +791,7 @@ Plans:
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
-| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | In Progress|  |
+| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 
 ## Backlog
 

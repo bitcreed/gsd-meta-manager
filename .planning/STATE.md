@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.7.2
-current_phase: 24
-current_phase_name: Roadmap Tab Redesign & Detail-Tab Consolidation
-status: verifying
-stopped_at: Completed 24-07-PLAN.md
-last_updated: "2026-09-24T04:46:45.185Z"
+current_phase: 19
+current_phase_name: GITSAFE — Git & Blast-Radius Envelope
+status: planning
+stopped_at: Phase 24 complete, ready to plan Phase 19
+last_updated: "2026-09-24T04:58:18.993Z"
 last_activity: 2026-09-23
-last_activity_desc: Phase 24 execution started
-state_head: 8e212f7ed6314b12ee19d7dc6d69b0687faa1fc3
+last_activity_desc: Phase 24 complete, transitioned to Phase 19
+state_head: 551ecc277ac30cb04836490571da6c0792d0c60c
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 7
   completed_plans: 112
+  percent: 55
 milestone_name: Release Gate Repair
 ---
 
@@ -31,7 +32,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Phase complete — ready for verification
+Status: Ready to plan
   `--container` gate.** It supersedes and carries the contents of v1.7.0 and v1.7.1, NEITHER OF
   WHICH EVER PUBLISHED: for anyone installing from crates.io this is the jump from **1.6.0**.
   `Cargo.toml` moved 1.7.1 -> 1.7.2; `cargo update` relocked only this crate's own entry, with
@@ -96,8 +97,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
-Phase: 24 (Roadmap Tab Redesign & Detail-Tab Consolidation) — EXECUTING
-Plan: 7 of 7
+Phase: 19 — GITSAFE — Git & Blast-Radius Envelope
+Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -131,7 +132,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-23 — Phase 24 execution started
+Last activity: 2026-09-23 — Phase 24 complete, transitioned to Phase 19
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -252,7 +253,7 @@ verify-phase if the gate is fixed.
 
 **Velocity:**
 
-- Total plans completed: 37
+- Total plans completed: 44
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -265,6 +266,7 @@ verify-phase if the gate is fixed.
 | 16 | 6 | - | - |
 | 17 | 8 | - | - |
 | 18 | 11 | - | - |
+| 24 | 7 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -516,7 +518,7 @@ Recent decisions affecting current work:
 ## Session Continuity
 
 Last session: 2026-09-24T04:46:44.731Z
-Stopped at: Completed 24-07-PLAN.md
+Stopped at: Phase 24 complete, ready to plan Phase 19
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0
