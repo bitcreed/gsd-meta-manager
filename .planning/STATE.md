@@ -4,11 +4,11 @@ milestone: v1.7.2
 current_phase: 24
 current_phase_name: Roadmap Tab Redesign & Detail-Tab Consolidation
 status: executing
-stopped_at: Completed 24-05-PLAN.md
-last_updated: "2026-09-24T04:10:54.742Z"
+stopped_at: Completed 24-06-PLAN.md
+last_updated: "2026-09-24T04:30:51.196Z"
 last_activity: 2026-09-23
 last_activity_desc: Phase 24 execution started
-state_head: 9cdd3a2586741a4b89dc66fc137e2ab5e66affbe
+state_head: f69f152bfaea1d843d6582485ba88740679b6b28
 progress:
   total_phases: 10
   completed_phases: 6
@@ -97,7 +97,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
 Phase: 24 (Roadmap Tab Redesign & Detail-Tab Consolidation) — EXECUTING
-Plan: 6 of 7
+Plan: 7 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -309,6 +309,7 @@ verify-phase if the gate is fixed.
 | Phase 24 P03 | 9min | 2 tasks | 3 files |
 | Phase 24 P04 | 18 min | 3 tasks | 2 files |
 | Phase 24 P05 | 12 min | 3 tasks | 3 files |
+| Phase 24 P06 | 16 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -418,6 +419,9 @@ Recent decisions affecting current work:
 - [Phase 24]: 24-04: lanes past the 4/6 cap collapse to one ┆ column; a node past the cap keeps its glyph there
 - [Phase 24]: 24-05: Space on a phase folds its band and parks the cursor on the band row (stored as the band target)
 - [Phase 24]: 24-05: orphan phases join the active milestone, else a synthetic STATE.md band; band-less when STATE.md names no milestone [INFERRED]
+- [Phase 24]: 24-06: stacked Roadmap detail pane shrinks 9->6 rows for a list that needs them (panes_for); goal shortened before edge lines
+- [Phase 24]: 24-06: summary line falls back to k/n done when wider than the terminal
+- [Phase 24]: 24-06: escape probe reaches milestone_name via a synthetic-band sub-state (milestones cleared)
 
 ### Roadmap Evolution
 
@@ -507,8 +511,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-24T04:10:54.299Z
-Stopped at: Completed 24-05-PLAN.md
+Last session: 2026-09-24T04:30:50.749Z
+Stopped at: Completed 24-06-PLAN.md
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0

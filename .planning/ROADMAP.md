@@ -755,7 +755,7 @@ Plans:
   - The Archive → Docs move touches `render_archive_tab`, which a concurrent `/gsd-debug` session is fixing (Archive "Loading..." bug). That work is sequenced last and must re-read `detail.rs` at execution time
   - Tab renumbering is a wide, mechanical change across tests and help text; a missed consumer is a silent wrong-tab bug
 
-**Plans**: 5/7 plans executed
+**Plans**: 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -771,7 +771,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 24-06-PLAN.md — Render wiring, PhaseList header content, fixture defect pins, escape probe, legacy graph removed (wave 3)
+- [x] 24-06-PLAN.md — Render wiring, PhaseList header content, fixture defect pins, escape probe, legacy graph removed (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -791,7 +791,7 @@ Plans:
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
-| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 5/7 | In Progress|  |
+| 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 6/7 | In Progress|  |
 
 ## Backlog
 
