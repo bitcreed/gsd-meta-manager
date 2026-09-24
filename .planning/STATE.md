@@ -4,11 +4,11 @@ milestone: v1.7.2
 current_phase: 24
 current_phase_name: Roadmap Tab Redesign & Detail-Tab Consolidation
 status: executing
-stopped_at: Completed 24-01-PLAN.md
-last_updated: "2026-09-24T03:09:07.316Z"
+stopped_at: Completed 24-02-PLAN.md
+last_updated: "2026-09-24T03:26:06.126Z"
 last_activity: 2026-09-23
 last_activity_desc: Phase 24 execution started
-state_head: 2466e1d3a398c4ddf821c436cbf5c4e41b0fe33c
+state_head: 28f14d535846387271ddec0aa37ec2636059f12b
 progress:
   total_phases: 10
   completed_phases: 6
@@ -97,7 +97,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
 Phase: 24 (Roadmap Tab Redesign & Detail-Tab Consolidation) — EXECUTING
-Plan: 2 of 7
+Plan: 3 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -305,6 +305,7 @@ verify-phase if the gate is fixed.
 | Phase 19 P31 | one session | 4 tasks | 6 files |
 | Phase 19 P33 | one session | 5 tasks | 9 files |
 | Phase 24 P01 | 12 min | 3 tasks | 9 files |
+| Phase 24 P02 | 14 min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -404,6 +405,9 @@ Recent decisions affecting current work:
 - [Phase 24]: 24-01: Build phases live in ProjectState.planned_phases, never in phases (GSD does not count Build phase headings; router/frontier stay conformant)
 - [Phase 24]: 24-01: Phase goals and STATE milestone_name are stored as Untrusted (map / Option), keeping the free-string census unchanged
 - [Phase 24]: 24-01: shipped_milestones = ranged/scoped milestones before the active one, else lower by numeric version order
+- [Phase 24]: 24-02: Parallel = same wave (plan-locked D-A02); list order = shipped bands, other bands, band-less
+- [Phase 24]: 24-02: RoadmapModel cursor targets are keys (phase_key/BandKey); keys are logic-only and never drawn
+- [Phase 24]: 24-02: Ready/Blocked judged over acyclic unreduced in-graph parents; external deps satisfied
 
 ### Roadmap Evolution
 
@@ -493,8 +497,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-24T03:09:06.896Z
-Stopped at: Completed 24-01-PLAN.md
+Last session: 2026-09-24T03:26:05.693Z
+Stopped at: Completed 24-02-PLAN.md
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0
