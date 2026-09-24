@@ -306,6 +306,12 @@ pub fn read_archive_file(path: &Path) -> String {
 /// the gap that leaves is this function**, which every byte of both bodies flows
 /// through.
 ///
+/// The Backlog tab's content pane is a third consumer (debug
+/// backlog-content-empty): its `BacklogItem::content` IS an `Untrusted`, and
+/// the pane hands this function `as_raw_for_logic_only()` precisely so the
+/// escape happens here, per line, rather than through `shown()` over the whole
+/// body — which turns every `\n` into a visible `·` and draws one row.
+///
 /// Found by POPULATING `browser_file_content` in the render probe (21-25 T2),
 /// not by reading. Verbatim, before this escape landed:
 ///

@@ -1860,8 +1860,9 @@ crate::ui::screens::adjudicate_screen!(
      and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
      from `queue.md`; Backlog draws a `999.*` directory's number and \
      description in its collapsed state and that directory's NAME (through \
-     `Block::title`) plus the BODY of the first `.md` file inside it when \
-     expanded; GitHistory draws a third-party repository's commit hash, \
+     `Block::title`) plus the item's `ROADMAP.md` entry and the BODY of every \
+     `.md` file inside it, per line through `archive::render_markdown_lines`, \
+     when expanded; GitHistory draws a third-party repository's commit hash, \
      date, author and subject; Sessions draws a session id scraped from \
      another process's `--resume` argument via `/proc`; Archive draws \
      milestone version strings, archive file names and phase display names \
@@ -4281,30 +4282,29 @@ impl DetailScreen {
                 .unwrap_or_else(|| " Content ".to_string());
             let content_block = Block::default().borders(Borders::ALL).title(title);
 
-            // READ BY A HUMAN: the body of a `.md` file inside a `999.*`
-            // backlog directory. It reaches a `Paragraph`, which drops the
-            // zero-width half of the class but passes the tag block through
-            // intact — so escaping here is load-bearing, not belt-and-braces.
-            let escaped_content = selected_item.and_then(|item| item.content.as_ref()).map(
-                |content| content.shown().to_string(),
-            );
-            let content_text = escaped_content
-                .as_deref()
-                .unwrap_or("  Empty — no .md files in this backlog directory");
-
-            let style = if selected_item
-                .and_then(|item| item.content.as_ref())
-                .is_none()
-            {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default()
+            // READ BY A HUMAN: the item's ROADMAP.md entry plus any `.md`
+            // bodies from its `999.*` directory (`backlog::load_backlog_content`).
+            // It reaches a `Paragraph`, which drops the zero-width half of the
+            // class but passes the tag block through intact — so escaping here
+            // is load-bearing, not belt-and-braces.
+            //
+            // ESCAPED PER LINE, through `archive::render_markdown_lines` — the
+            // one render both file viewers use, which escapes every line with
+            // `render_for_terminal`. NOT `content.shown()` over the whole body:
+            // that escapes `\n` (0x0A, a C0 control) into a visible `·` and
+            // collapsed every multi-line body into ONE clipped row (debug
+            // backlog-content-empty). The raw bytes are split here, never drawn.
+            let content_paragraph = match selected_item.and_then(|item| item.content.as_ref()) {
+                Some(content) => Paragraph::new(crate::archive::render_markdown_lines(
+                    content.as_raw_for_logic_only(),
+                ))
+                .wrap(Wrap { trim: false }),
+                None => Paragraph::new(
+                    "  Empty — no ROADMAP.md entry and no .md files for this backlog item",
+                )
+                .style(Style::default().fg(Color::DarkGray)),
             };
-
-            let content_paragraph = Paragraph::new(content_text)
-                .style(style)
-                .block(content_block);
-            frame.render_widget(content_paragraph, chunks[1]);
+            frame.render_widget(content_paragraph.block(content_block), chunks[1]);
         } else {
             // Full-height list, no content pane
             frame.render_stateful_widget(list, inner, &mut list_state);
@@ -14392,6 +14392,180 @@ mod tests {
             ctx.detail_sub_view_per_project.get(TEST_ALIAS),
             Some(&DetailSubView::Backlog),
             "the index must round-trip back to the tab that was asked for"
+        );
+    }
+
+    // --- debug backlog-content-empty: the Backlog content pane -------------
+
+    /// A registered project whose `.planning/` mirrors GSD's backlog layout:
+    /// `999.1-*/` holding ONLY `.gitkeep`, the item's content in ROADMAP.md's
+    /// `## Backlog` section. Sanitized text. Hold the returned `TempDir`.
+    fn backlog_content_fixture() -> (DetailScreen, AppContext, tempfile::TempDir) {
+        use crate::config::RegisteredProject;
+
+        let td = tempfile::TempDir::new().expect("temp dir");
+        let planning = td.path().join(".planning");
+        let item = planning.join("phases/999.1-alternate-transport-fallback");
+        std::fs::create_dir_all(&item).unwrap();
+        std::fs::write(item.join(".gitkeep"), "").unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "# Roadmap: sample\n\n## Backlog\n\n\
+             ### Phase 999.1: Alternate transport fallback (BACKLOG)\n\n\
+             **Goal:** [Captured for future planning] Read the device another way.\n\
+             **Requirements:** REQ-05, REQ-06\n\
+             **Plans:** 0 plans\n\n\
+             Plans:\n\n\
+             - [ ] TBD (promote with /gsd-review-backlog when ready)\n",
+        )
+        .unwrap();
+
+        let mut ctx = test_ctx();
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: td.path().to_path_buf(),
+                added: "2026-09-24".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx, td)
+    }
+
+    /// The reported symptom, end to end through the real keys: `3` opens the
+    /// Backlog tab, `Enter` expands the selected item, and the pane must draw
+    /// the item's ROADMAP.md section — not "Empty — no .md files in this
+    /// backlog directory", which is what every item in every project drew.
+    #[test]
+    fn enter_on_a_gitkeep_only_backlog_item_draws_its_roadmap_section() {
+        let (mut screen, mut ctx, _td) = backlog_content_fixture();
+
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].backlog_items.len(),
+            1,
+            "precondition: the .gitkeep-only directory is listed"
+        );
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded);
+
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(
+            !text.contains("Empty"),
+            "the pane drew its empty state:\n{text}"
+        );
+        for expected in [
+            "Content: 999.1-alternate-transport-fallback",
+            "Phase 999.1: Alternate transport fallback (BACKLOG)",
+            "Read the device another way.",
+            "Requirements: REQ-05, REQ-06",
+            "- [ ] TBD (promote with /gsd-review-backlog when ready)",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+        }
+    }
+
+    /// The latent co-defect: the body was escaped WHOLE through `shown()`,
+    /// which turns every `\n` into a visible `·`, so any multi-line content
+    /// collapsed into ONE clipped row. Each source line must get its own row.
+    ///
+    /// Driven through a `.md` file ALONE on purpose (the ROADMAP.md entry is
+    /// removed): the pre-fix loader DID read one, so this test isolates the
+    /// render defect from the loader defect — observed red pre-fix as the row
+    /// `│# Context··First decision line·Second decision line·Third decision line·`.
+    #[test]
+    fn a_multi_line_backlog_body_renders_one_row_per_line_not_one_joined_row() {
+        let (mut screen, mut ctx, td) = backlog_content_fixture();
+        std::fs::write(
+            td.path().join(".planning/ROADMAP.md"),
+            "# Roadmap: sample\n",
+        )
+        .unwrap();
+        std::fs::write(
+            td.path()
+                .join(".planning/phases/999.1-alternate-transport-fallback/999.1-CONTEXT.md"),
+            "# Context\n\nFirst decision line\nSecond decision line\nThird decision line\n",
+        )
+        .unwrap();
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(
+            !text.contains(crate::text::CONTROL_REPLACEMENT),
+            "a newline reached the pane as a visible marker:\n{text}"
+        );
+        let row_of = |needle: &str| {
+            text.lines()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle:?} in:\n{text}"))
+        };
+        assert!(row_of("First decision line") < row_of("Second decision line"));
+        assert!(row_of("Second decision line") < row_of("Third decision line"));
+    }
+
+    /// A roadmap Goal is routinely one long line; the pane wraps it rather than
+    /// clipping everything past its width.
+    #[test]
+    fn a_long_backlog_line_wraps_instead_of_being_clipped() {
+        let (mut screen, mut ctx, td) = backlog_content_fixture();
+        let long_goal = format!("**Goal:** {} WRAPPED_TAIL", "word ".repeat(40));
+        std::fs::write(
+            td.path().join(".planning/ROADMAP.md"),
+            format!("## Backlog\n\n### Phase 999.1: Long (BACKLOG)\n\n{long_goal}\n"),
+        )
+        .unwrap();
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(
+            text.contains("WRAPPED_TAIL"),
+            "the tail past the pane width was clipped:\n{text}"
+        );
+    }
+
+    /// Escaping still happens — per line, through the Archive/Browse markdown
+    /// render — so a hostile body cannot reach a cell raw.
+    #[test]
+    fn a_hostile_backlog_body_is_escaped_per_line() {
+        let (mut screen, mut ctx, td) = backlog_content_fixture();
+        std::fs::write(
+            td.path().join(".planning/ROADMAP.md"),
+            "## Backlog\n\n### Phase 999.1: Hostile (BACKLOG)\n\n\
+             **Goal:** a\u{202E}b\u{1b}[31m red\n",
+        )
+        .unwrap();
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(text.contains("Hostile"), "the section loaded:\n{text}");
+        assert!(
+            !text.contains('\u{202E}'),
+            "bidi override reached a cell:\n{text}"
+        );
+        assert!(!text.contains('\u{1b}'), "raw ESC reached a cell:\n{text}");
+    }
+
+    /// Truly empty still draws the empty state — with a message that names
+    /// both places content can come from.
+    #[test]
+    fn a_backlog_item_with_no_roadmap_entry_and_no_md_files_draws_the_empty_state() {
+        let (mut screen, mut ctx, td) = backlog_content_fixture();
+        std::fs::write(
+            td.path().join(".planning/ROADMAP.md"),
+            "# Roadmap: sample\n",
+        )
+        .unwrap();
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(
+            text.contains("Empty — no ROADMAP.md entry and no .md files for this backlog item"),
+            "{text}"
         );
     }
 
