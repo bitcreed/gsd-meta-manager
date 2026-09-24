@@ -333,8 +333,10 @@ pub enum ScreenAction {
     Pop,
     Quit,
     SetStatusMessage(String),
-    /// Suspend the TUI and open a file in $EDITOR.
-    SuspendAndEdit(std::path::PathBuf),
+    /// Suspend the TUI and open a file in $EDITOR — at a 1-based line when the
+    /// second field is set and the editor is one `editor_args` knows how to
+    /// position (quick-260924-drx).
+    SuspendAndEdit(std::path::PathBuf, Option<usize>),
     /// Used by archive browser (Phase 12) to dispatch async load actions.
     #[allow(dead_code)]
     DispatchAction(Box<Action>),

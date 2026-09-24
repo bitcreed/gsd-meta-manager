@@ -629,7 +629,7 @@ async fn run_tui_loop(
         }
 
         // Check if a screen action requested an editor launch
-        if let Some(path) = app.pending_editor.take() {
+        if let Some((path, line)) = app.pending_editor.take() {
             // Suspend the TUI
             ratatui::restore();
 
@@ -639,7 +639,9 @@ async fn run_tui_loop(
                 .unwrap_or_else(|_| "vi".to_string());
 
             // Spawn editor and wait for it to exit
-            let status = std::process::Command::new(&editor).arg(&path).status();
+            let status = std::process::Command::new(&editor)
+                .args(gsd_meta_manager::app::editor_args(&editor, &path, line))
+                .status();
 
             match status {
                 Ok(s) if s.success() => {

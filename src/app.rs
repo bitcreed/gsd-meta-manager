@@ -489,8 +489,44 @@ pub struct App {
     pub screen_stack: Vec<Box<dyn Screen>>,
     pub active_sessions: Vec<ClaudeSession>,
     pub session_poll_counter: u32,
-    /// When set, the main loop should suspend the TUI and open this file in $EDITOR.
-    pub pending_editor: Option<PathBuf>,
+    /// When set, the main loop should suspend the TUI and open this file in
+    /// $EDITOR, at the 1-based line when one is carried (see [`editor_args`]).
+    pub pending_editor: Option<(PathBuf, Option<usize>)>,
+}
+
+/// The argv (after the program name) that opens `path` in `editor`, positioned
+/// at the 1-based `line` when the editor is one whose line syntax is known
+/// (quick-260924-drx).
+///
+/// Keyed on the editor's file name, so `/usr/bin/nvim` and `nvim` agree.
+/// **An unknown editor gets the path alone** (INFERRED): a guessed `+N` handed
+/// to an editor that does not understand it would open a file literally named
+/// `+N` — worse than opening at the top.
+pub fn editor_args(editor: &str, path: &std::path::Path, line: Option<usize>) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    let Some(line) = line.filter(|n| *n > 0) else {
+        return vec![path.as_os_str().to_owned()];
+    };
+    let name = std::path::Path::new(editor)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let with_suffix = || {
+        let mut arg = path.as_os_str().to_owned();
+        arg.push(format!(":{line}"));
+        arg
+    };
+    match name.as_str() {
+        "vi" | "vim" | "nvim" | "view" | "gvim" | "vis" | "nano" | "pico" | "emacs"
+        | "emacsclient" | "kak" | "micro" | "joe" | "jed" | "ne" | "mg" => {
+            vec![OsString::from(format!("+{line}")), path.as_os_str().to_owned()]
+        }
+        "code" | "code-insiders" | "codium" | "vscodium" | "cursor" => {
+            vec![OsString::from("-g"), with_suffix()]
+        }
+        "hx" | "helix" | "subl" | "zed" => vec![with_suffix()],
+        _ => vec![path.as_os_str().to_owned()],
+    }
 }
 
 impl App {
@@ -2233,8 +2269,8 @@ impl App {
                 self.ctx.status_message = Some((msg, std::time::Instant::now()));
                 self.needs_redraw = true;
             }
-            ScreenAction::SuspendAndEdit(path) => {
-                self.pending_editor = Some(path);
+            ScreenAction::SuspendAndEdit(path, line) => {
+                self.pending_editor = Some((path, line));
             }
             ScreenAction::DispatchAction(action) => {
                 if let Some(tx) = &self.ctx.event_tx {
@@ -2249,6 +2285,30 @@ impl App {
 mod tests {
     use super::*;
     use crate::state_reader::roadmap_md::RoadmapPhase;
+
+    /// quick-260924-drx: the line reaches the editor in the syntax it reads.
+    #[test]
+    fn editor_args_positions_known_editors_and_leaves_unknown_ones_alone() {
+        use std::ffi::OsString;
+        let p = std::path::Path::new("/r/.planning/ROADMAP.md");
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(editor_args("nvim", p, Some(42)), os(&["+42", "/r/.planning/ROADMAP.md"]));
+        assert_eq!(
+            editor_args("/usr/bin/vim", p, Some(7)),
+            os(&["+7", "/r/.planning/ROADMAP.md"])
+        );
+        assert_eq!(editor_args("nano", p, Some(3)), os(&["+3", "/r/.planning/ROADMAP.md"]));
+        assert_eq!(
+            editor_args("code", p, Some(9)),
+            os(&["-g", "/r/.planning/ROADMAP.md:9"])
+        );
+        assert_eq!(editor_args("hx", p, Some(5)), os(&["/r/.planning/ROADMAP.md:5"]));
+        // Unknown editor: path only, never a guessed flag.
+        assert_eq!(editor_args("ed", p, Some(5)), os(&["/r/.planning/ROADMAP.md"]));
+        // No line (or a nonsensical 0): path only, whatever the editor.
+        assert_eq!(editor_args("nvim", p, None), os(&["/r/.planning/ROADMAP.md"]));
+        assert_eq!(editor_args("nvim", p, Some(0)), os(&["/r/.planning/ROADMAP.md"]));
+    }
 
     #[test]
     fn an_unreadable_state_md_is_admitted_not_guessed_around() {

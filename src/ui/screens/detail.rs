@@ -3714,7 +3714,7 @@ impl Screen for DetailScreen {
                                 );
                             }
                             ctx.needs_redraw = true;
-                            return ScreenAction::SuspendAndEdit(path);
+                            return ScreenAction::SuspendAndEdit(path, None);
                         }
                     }
                     // Not in FileView depth -- no-op for 'e'
@@ -3731,7 +3731,7 @@ impl Screen for DetailScreen {
                     };
                     ctx.needs_redraw = true;
                     return match target {
-                        Ok(path) => ScreenAction::SuspendAndEdit(path),
+                        Ok(path) => ScreenAction::SuspendAndEdit(path, None),
                         Err(msg) => ScreenAction::SetStatusMessage(msg.to_string()),
                     };
                 }
@@ -3800,7 +3800,7 @@ impl Screen for DetailScreen {
                         if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
                             if let Some(ref path) = item.path {
                                 ctx.needs_redraw = true;
-                                return ScreenAction::SuspendAndEdit(path.clone());
+                                return ScreenAction::SuspendAndEdit(path.clone(), None);
                             }
                         }
                         return ScreenAction::SetStatusMessage(
