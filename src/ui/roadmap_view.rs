@@ -46,6 +46,9 @@ const DETAIL_MIN_COLS: u16 = 40;
 const DETAIL_MAX_COLS: u16 = 56;
 /// Stacked detail pane height, borders included (Mockup C).
 const DETAIL_STACKED_ROWS: u16 = 9;
+/// The least the stacked detail pane shrinks to for a list that needs the
+/// rows: its head, one goal row, Needs and Parallel inside the borders.
+const DETAIL_STACKED_MIN_ROWS: u16 = 6;
 /// The narrowest lane column.
 const MIN_LANE_CELLS: usize = 8;
 /// The marker column (` ▶ `).
@@ -101,6 +104,16 @@ pub struct RoadmapViewState {
 /// [`ROADMAP_SIDE_BY_SIDE_MIN_COLS`] and above, stacked below that. A
 /// zero-size area yields two zero-size rects.
 pub fn panes(area: Rect) -> (Rect, Rect) {
+    panes_for(area, 0)
+}
+
+/// [`panes`] for a list that wants `list_rows` rows, borders included. Only
+/// the stacked form reads it: the detail pane gives up rows it would take
+/// (down to [`DETAIL_STACKED_MIN_ROWS`], never below [`panes`]' own share at
+/// a tiny height) so the list is not scrolled while the terminal still has
+/// the rows to show it whole — at 80×24 that is what keeps a milestone's band
+/// row on screen with its last phase selected. `0` is exactly [`panes`].
+pub fn panes_for(area: Rect, list_rows: u16) -> (Rect, Rect) {
     if area.is_empty() {
         let zero = Rect::new(area.x, area.y, 0, 0);
         return (zero, zero);
@@ -115,7 +128,10 @@ pub fn panes(area: Rect) -> (Rect, Rect) {
             Rect::new(area.x.saturating_add(list), area.y, detail, area.height),
         )
     } else {
-        let detail = DETAIL_STACKED_ROWS.min(area.height / 2);
+        let share = DETAIL_STACKED_ROWS.min(area.height / 2);
+        let detail = share
+            .min(area.height.saturating_sub(list_rows))
+            .max(share.min(DETAIL_STACKED_MIN_ROWS));
         let list = area.height - detail;
         (
             Rect::new(area.x, area.y, area.width, list),
@@ -352,7 +368,9 @@ impl Item {
         }
     }
 
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    /// Draw into `area`; `clipped` says wrapped text lost rows to the pane's
+    /// height, so its last drawn row ends in `…`.
+    fn render(self, area: Rect, buf: &mut Buffer, clipped: bool) {
         match self {
             Item::Line(line) | Item::Hint(line) => Paragraph::new(line).render(area, buf),
             Item::Wrapped { label, text, style } => {
@@ -366,6 +384,9 @@ impl Item {
                 Paragraph::new(Span::styled(text, style))
                     .wrap(Wrap { trim: true })
                     .render(body, buf);
+                if clipped && !body.is_empty() {
+                    mark_cut(body, buf, style);
+                }
             }
         }
     }
@@ -388,35 +409,70 @@ fn wrapped_height(text: &str, width: u16, max: u16) -> u16 {
         .map_or(1, |y| y + 1)
 }
 
+/// End the last row of wrapped text cut short in `body` with `…`: right
+/// after its last drawn character, or over it when the row is full.
+fn mark_cut(body: Rect, buf: &mut Buffer, style: Style) {
+    let y = body.bottom() - 1;
+    let last = (body.x..body.right())
+        .rev()
+        .find(|&x| buf.cell((x, y)).is_some_and(|c| c.symbol() != " "));
+    let x = match last {
+        Some(x) if x + 1 < body.right() => x + 1,
+        Some(x) => x,
+        None => body.x,
+    };
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        cell.set_symbol(&ELLIPSIS.to_string()).set_style(style);
+    }
+}
+
 /// Draw `items` top to bottom into `area`. When they do not fit, the hint is
-/// dropped first (with the blank rows before it), then rows are cut from the
-/// bottom.
+/// dropped first (with the blank rows before it), then wrapped text (the goal)
+/// is shortened — to one row at the least, its cut marked `…` — so the Needs,
+/// Unblocks and Parallel lines keep their rows, and only then are rows cut
+/// from the bottom.
 fn draw_items(mut items: Vec<Item>, area: Rect, buf: &mut Buffer) {
     if area.is_empty() {
         return;
     }
-    let total: u32 = items
-        .iter()
-        .map(|item| u32::from(item.height(area.width, area.height)))
-        .sum();
-    if total > u32::from(area.height) {
+    let heights = |items: &[Item]| -> Vec<u16> {
+        items
+            .iter()
+            .map(|item| item.height(area.width, area.height))
+            .collect()
+    };
+    let sum = |h: &[u16]| -> u32 { h.iter().map(|&r| u32::from(r)).sum() };
+    let mut full = heights(&items);
+    if sum(&full) > u32::from(area.height) {
         items.retain(|item| !matches!(item, Item::Hint(_)));
         while items.last().is_some_and(Item::is_blank) {
             items.pop();
         }
+        full = heights(&items);
+    }
+    let mut rows = full.clone();
+    let mut over = sum(&rows).saturating_sub(u32::from(area.height));
+    for (item, r) in items.iter().zip(rows.iter_mut()) {
+        if over == 0 {
+            break;
+        }
+        if matches!(item, Item::Wrapped { .. }) {
+            let cut = u16::try_from(over.min(u32::from(r.saturating_sub(1)))).unwrap_or(0);
+            *r -= cut;
+            over -= u32::from(cut);
+        }
     }
     let bottom = area.bottom();
     let mut y = area.y;
-    for item in items {
+    for ((item, want), whole) in items.into_iter().zip(rows).zip(full) {
         if y >= bottom {
             break;
         }
-        let left = bottom - y;
-        let h = item.height(area.width, left).min(left);
+        let h = want.min(bottom - y);
         if h == 0 {
             continue;
         }
-        item.render(Rect::new(area.x, y, area.width, h), buf);
+        item.render(Rect::new(area.x, y, area.width, h), buf, h < whole);
         y += h;
     }
 }
@@ -1046,8 +1102,12 @@ impl RoadmapView<'_> {
         items.extend(section("Unblocks", self.unblocks_rows(p, avail), w));
         items.extend(section("Parallel", self.parallel_rows(p, avail), w));
         if let Some(note) = Self::no_deps_note(p) {
+            // Under the Parallel label when it fits there whole; otherwise
+            // from the pane's left edge, so the phrase is not broken
+            // mid-sentence at the 40-56 column pane widths.
+            let indented = cells(note) + LABEL_CELLS <= w;
             items.push(Item::Wrapped {
-                label: INDENT,
+                label: if indented { INDENT } else { "" },
                 text: note.to_string(),
                 style: dim(),
             });
@@ -1220,7 +1280,10 @@ impl StatefulWidget for RoadmapView<'_> {
         } else {
             LANE_CAP_WIDE
         };
-        let (list, detail) = panes(area);
+        // Rows the list wants whole: its model rows, the Start-now and
+        // header lines, the Notes line and the two borders.
+        let want = self.model.rows.len() + 4 + usize::from(!self.model.notes.is_empty());
+        let (list, detail) = panes_for(area, u16::try_from(want).unwrap_or(u16::MAX));
         self.render_list(list, buf, state, cursor.as_ref(), cap);
         self.render_detail(detail, buf, cursor.as_ref(), stacked);
     }
@@ -1555,6 +1618,27 @@ mod tests {
     fn body(row: &str) -> Vec<char> {
         let chars: Vec<char> = row.chars().collect();
         chars[2..chars.len().saturating_sub(2).max(2)].to_vec()
+    }
+
+    #[test]
+    fn panes_for_gives_the_list_its_rows_before_the_detail_pane_shrinks() {
+        let area = Rect::new(0, 0, 80, 18);
+        let heights = |want: u16| {
+            let (list, detail) = panes_for(area, want);
+            assert_eq!(list.height + detail.height, area.height);
+            assert_eq!(detail.y, list.bottom());
+            (list.height, detail.height)
+        };
+        assert_eq!(heights(0), (9, 9), "0 is panes()");
+        assert_eq!(panes_for(area, 0), panes(area));
+        assert_eq!(heights(9), (9, 9), "a list that fits keeps Mockup C's split");
+        assert_eq!(heights(10), (10, 8));
+        assert_eq!(heights(13), (12, 6));
+        assert_eq!(heights(40), (12, 6), "never below six detail rows");
+        let tiny = Rect::new(0, 0, 80, 8);
+        assert_eq!(panes_for(tiny, 40), panes(tiny), "a tiny pane keeps its share");
+        let wide = Rect::new(0, 0, 120, 18);
+        assert_eq!(panes_for(wide, 40), panes(wide), "side by side ignores it");
     }
 
     #[test]

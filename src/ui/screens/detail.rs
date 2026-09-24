@@ -4040,8 +4040,16 @@ impl DetailScreen {
             // and detail blocks carry their own borders, and 80×24 has no row
             // to spare. The summary line and `Path:` always; every other line
             // only when it has something to say.
+            // Too wide for the terminal: the done count takes Mockup C's
+            // compact `k/n done` form rather than being cut mid-word.
+            let mut summary = roadmap_summary_line(alias, state, &model);
+            if summary.width() > usize::from(area.width) {
+                if let Some(count) = summary.spans.last_mut() {
+                    *count = Span::raw(format!("{}/{} done", model.done, model.total));
+                }
+            }
             let mut header_lines: Vec<Line> = vec![
-                roadmap_summary_line(alias, state, &model),
+                summary,
                 Line::from(vec![
                     Span::styled(" Path: ", Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw(shown(&project_path)),
@@ -15644,5 +15652,38 @@ mod tests {
             assert!(summary_line(&text).contains("phase 2 executing"), "{w}x{h}:\n{text}");
             assert!(text.contains("┌ Roadmap "), "the list still draws:\n{text}");
         }
+    }
+
+
+    #[test]
+    fn a_short_stacked_detail_pane_shortens_the_goal_not_the_edges() {
+        let (screen, ctx) = roadmap_fixture("daily-vow");
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        let detail_top = line_with(&text, "┌ Phase 23 ");
+        let detail: Vec<&str> = text.lines().skip(detail_top).collect();
+        let goal = detail
+            .iter()
+            .find(|l| l.contains("Goal"))
+            .unwrap_or_else(|| panic!("no Goal row:\n{text}"));
+        assert!(goal.contains('…'), "the cut goal is marked: {goal}");
+        for needle in ["Needs", "(implied via 21)", "Unblocks", "Parallel"] {
+            assert!(
+                detail.iter().any(|l| l.contains(needle)),
+                "{needle} lost to the goal:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_summary_line_compacts_its_count_when_too_wide() {
+        let (screen, ctx) = roadmap_fixture("ttbook");
+        let wide = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        assert!(summary_line(&wide).contains("0 of 11 phases done"), "{wide}");
+        let narrow = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        let line = narrow
+            .lines()
+            .find(|l| l.contains("phase 8 executing"))
+            .unwrap_or_else(|| panic!("no summary line:\n{narrow}"));
+        assert!(line.contains("· 0/11 done"), "{line}");
     }
 }
