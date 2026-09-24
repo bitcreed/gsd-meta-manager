@@ -9595,41 +9595,33 @@ mod tests {
     fn test_other_footers_unchanged_by_browse_edit_hint() {
         assert_eq!(
             footer_text(&DetailSubView::Backlog),
-            "  [Esc]back  [1-0/D]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
+            "  [Esc]back  [1-9/D]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
         );
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
-            "  [Esc]back  [1-0/D]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
+            "  [Esc]back  [1-9/D]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
              [r]eload  [/]filter  [?]help"
         );
     }
 
-    // ── Plan 18-09: the 11th tab, at all six sites ────────────────────────
+    // ── Plan 18-09: the Driver tab, at all six sites ─────────────────────
 
     /// The shared prefix's tabs hint changes **once, for every tab**, so
     /// `Shift+D` is discoverable from anywhere in the detail view — not only
     /// from the tab it opens, which the user has no reason to be on.
     #[test]
     fn the_tabs_hint_names_shift_d_on_every_tab() {
-        for sub_view in [
-            DetailSubView::RoadmapViz,
-            DetailSubView::Backlog,
-            DetailSubView::GitHistory,
-            DetailSubView::Pipeline,
-            DetailSubView::Queue,
-            DetailSubView::Sessions,
-            DetailSubView::Archive,
-            DetailSubView::Defaults,
-            DetailSubView::Browse,
-        ] {
+        // Every tab but the Driver's own, derived from the mapping so the list
+        // cannot fall behind a renumber.
+        for sub_view in (0..DRIVER_TAB_INDEX).map(|index| sub_view_from_index(index, true)) {
             let text = footer_text(&sub_view);
             assert!(
-                text.contains("[1-0/D]tabs"),
+                text.contains("[1-9/D]tabs"),
                 "{sub_view:?} footer must advertise the Driver tab: {text}"
             );
             assert!(
                 !text.contains("[1-9]tabs"),
-                "{sub_view:?} still shows the pre-18-09 digits-only hint: {text}"
+                "{sub_view:?} shows the flag-off digits-only hint with the flag on: {text}"
             );
         }
     }
@@ -9637,31 +9629,23 @@ mod tests {
     /// The flag-off half of the same shared prefix (260917-fko D2).
     ///
     /// Asserted as the **exact prefix string**, not as "the letter `D` is
-    /// absent": eight of the ten non-driver footers legitimately contain a `D`
+    /// absent": most of the non-driver footers legitimately contain a `D`
     /// (`[Enter]done`, `[d]el`, `[d] defaults`, `[PgUp/PgDn]`), so a
     /// letter-level negative check would be either falsely red or, restricted
     /// enough to pass, vacuous.
     #[test]
     fn the_tabs_hint_drops_shift_d_on_every_tab_when_experimental_is_off() {
-        for sub_view in [
-            DetailSubView::RoadmapViz,
-            DetailSubView::Backlog,
-            DetailSubView::GitHistory,
-            DetailSubView::Pipeline,
-            DetailSubView::Queue,
-            DetailSubView::Sessions,
-            DetailSubView::Archive,
-            DetailSubView::Defaults,
-            DetailSubView::Browse,
-        ] {
+        for sub_view in
+            (0..visible_tab_count(false)).map(|index| sub_view_from_index(index, false))
+        {
             let text = footer_text_at(&sub_view, 120, false);
             assert!(
-                text.starts_with("  [Esc]back  [1-0]tabs  "),
+                text.starts_with("  [Esc]back  [1-9]tabs  "),
                 "{sub_view:?} must not advertise a Driver tab the user cannot \
                  reach: {text}"
             );
             assert!(
-                !text.contains("[1-0/D]"),
+                !text.contains("[1-9/D]"),
                 "{sub_view:?} still leaks the Driver tab into its tabs hint: {text}"
             );
         }
@@ -9671,7 +9655,7 @@ mod tests {
     fn the_driver_footer_has_three_measured_width_forms() {
         assert_eq!(
             footer_text_at(&DetailSubView::Driver, 120, true),
-            "  [Esc]back  [1-0/D]tabs  [j/k]runs  [PgUp/PgDn]output  [f]ollow  [i]nject  \
+            "  [Esc]back  [1-9/D]tabs  [j/k]runs  [PgUp/PgDn]output  [f]ollow  [i]nject  \
              [s]tart  [x]stop  [?]help"
         );
         assert_eq!(
@@ -9705,8 +9689,8 @@ mod tests {
         }
     }
 
-    /// The tab index and the sub-view must agree in both directions, for all
-    /// eleven tabs: a tab whose index does not round-trip lands the user on a
+    /// The tab index and the sub-view must agree in both directions, for every
+    /// tab: a tab whose index does not round-trip lands the user on a
     /// different tab than the one they asked for.
     #[test]
     fn every_tab_index_round_trips_through_its_sub_view() {
@@ -9822,10 +9806,12 @@ mod tests {
     }
 
     #[test]
-    fn the_visible_tab_count_drops_the_eleventh_tab_when_experimental_is_off() {
+    fn the_visible_tab_count_drops_the_driver_tab_when_experimental_is_off() {
         assert_eq!(visible_tab_count(true), TAB_COUNT);
         assert_eq!(visible_tab_count(false), TAB_COUNT - 1);
-        assert_eq!(visible_tab_count(false), 10);
+        // The Driver tab is the last one, so dropping it leaves exactly the
+        // tabs before its index.
+        assert_eq!(visible_tab_count(false), DRIVER_TAB_INDEX);
     }
 
     /// The whole of D2's tab-bar half: at **every** tier, not just the one a
@@ -9844,7 +9830,7 @@ mod tests {
             40,
             20,
         ] {
-            for active in [0usize, 5, 9] {
+            for active in [0usize, 5, visible_tab_count(false) - 1] {
                 let text = bar_text(width, active, false);
                 for label in driver_labels() {
                     assert!(
@@ -9877,31 +9863,35 @@ mod tests {
         );
     }
 
-    /// Ten labels fit the compact bar in **69** cells, not the eleven-tab 77 —
-    /// so a flag-off session at 70 columns gets whole labels where an
-    /// eleven-tab one is pushed into the windowed tier. Reusing the eleven-tab
-    /// thresholds would have silently cost exactly that.
+    /// The flag-off labels fit the compact bar in
+    /// [`TAB_BAR_COMPACT_CELLS_NO_DRIVER`] cells, not the with-Driver
+    /// [`TAB_BAR_COMPACT_CELLS`] — so a flag-off session a few columns narrower
+    /// gets whole labels where a with-Driver one is pushed into the windowed
+    /// tier. Reusing the with-Driver thresholds would have silently cost
+    /// exactly that.
     #[test]
-    fn the_ten_tab_bar_renders_whole_at_its_own_re_derived_widths() {
-        let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS_NO_DRIVER, 9, false, false);
-        assert_eq!(titles.len(), 10);
-        assert_eq!(select, 9);
+    fn the_flag_off_bar_renders_whole_at_its_own_re_derived_widths() {
+        let visible = visible_tab_count(false);
+        let last = visible - 1;
+        let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS_NO_DRIVER, last, false, false);
+        assert_eq!(titles.len(), visible);
+        assert_eq!(select, last);
         assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_FULL_CELLS_NO_DRIVER));
 
         let (titles, select) = tab_titles(TAB_BAR_COMPACT_CELLS_NO_DRIVER, 4, false, false);
-        assert_eq!(titles.len(), 10);
+        assert_eq!(titles.len(), visible);
         assert_eq!(select, 4);
         assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER));
 
-        // One cell below the ten-tab full width is already the compact tier.
+        // One cell below the flag-off full width is already the compact tier.
         let (titles, _) = tab_titles(TAB_BAR_FULL_CELLS_NO_DRIVER - 1, 4, false, false);
         assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER));
     }
 
     /// **The anti-drift test.** All four cell constants re-derived from the
     /// label arrays themselves with the documented `Σ(len + 2) + (n − 1)`
-    /// formula, plus the Driver tab's reserved marker cell in the eleven-tab
-    /// cases. This is what keeps 107 / 96 / 77 / 69 honest when a label is
+    /// formula, plus the Driver tab's reserved marker cell in the with-Driver
+    /// cases. This is what keeps the four widths honest when a label is
     /// renamed — the numbers stop being four literals a reader has to trust.
     #[test]
     fn the_tab_bar_widths_are_the_label_arrays_own_arithmetic() {
@@ -9944,15 +9934,16 @@ mod tests {
     }
 
     #[test]
-    fn index_ten_is_not_a_tab_when_experimental_is_off() {
+    fn an_index_past_the_visible_tabs_is_not_a_tab_when_experimental_is_off() {
         assert_eq!(
             sub_view_from_index(DRIVER_TAB_INDEX, false),
             DetailSubView::RoadmapViz,
-            "index 10 must take the same first-tab fallback an out-of-range \
-             index already takes"
+            "the Driver index must take the same default-tab fallback an \
+             out-of-range index already takes"
         );
-        // The other ten still round-trip, so the fallback did not swallow them.
-        for index in 0..(TAB_COUNT - 1) {
+        // Every visible tab still round-trips, so the fallback did not swallow
+        // them.
+        for index in 0..visible_tab_count(false) {
             let view = sub_view_from_index(index, false);
             assert_eq!(tab_index(&view), index);
         }
@@ -9970,7 +9961,7 @@ mod tests {
         );
         // Identity on every other sub-view, in both states: the coercion is
         // the Driver tab's alone.
-        for index in 0..(TAB_COUNT - 1) {
+        for index in 0..visible_tab_count(false) {
             let view = sub_view_from_index(index, true);
             assert_eq!(effective_sub_view(view.clone(), false), view);
             assert_eq!(effective_sub_view(view.clone(), true), view);
@@ -10011,31 +10002,36 @@ mod tests {
         );
     }
 
-    /// The Right arrow is the other way onto tab 10, and it has its own bound.
+    /// The Right arrow is the other way onto the Driver tab, and it has its own
+    /// bound.
     #[test]
     fn right_from_the_last_visible_tab_stays_put_when_experimental_is_off() {
         let mut ctx = test_ctx().with_experimental(false);
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
-        // Tab 9 is `Browse`, the last tab a flag-off session has.
+        // The last tab a flag-off session has.
+        let last = sub_view_from_index(visible_tab_count(false) - 1, false);
+        assert_ne!(last, DetailSubView::Driver);
         ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), sub_view_from_index(9, false));
+            .insert(TEST_ALIAS.to_string(), last.clone());
 
         press(&mut screen, &mut ctx, KeyCode::Right);
 
         assert_eq!(
             ctx.detail_sub_view_per_project.get(TEST_ALIAS),
-            Some(&DetailSubView::Browse),
+            Some(&last),
             "walking right off the end must not park the user on a tab the \
              bar does not draw"
         );
     }
 
     #[test]
-    fn right_from_tab_nine_reaches_the_driver_tab_when_experimental_is_on() {
+    fn right_from_the_last_pre_driver_tab_reaches_the_driver_tab_when_experimental_is_on() {
         let mut ctx = test_ctx().with_experimental(true);
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
-        ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), sub_view_from_index(9, true));
+        ctx.detail_sub_view_per_project.insert(
+            TEST_ALIAS.to_string(),
+            sub_view_from_index(DRIVER_TAB_INDEX - 1, true),
+        );
 
         press(&mut screen, &mut ctx, KeyCode::Right);
 
@@ -10057,7 +10053,7 @@ mod tests {
     }
 
     #[test]
-    fn the_full_tier_renders_eleven_labels_at_its_measured_width() {
+    fn the_full_tier_renders_every_label_at_its_measured_width() {
         let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, false, true);
         assert_eq!(titles.len(), TAB_COUNT);
         assert_eq!(select, DRIVER_TAB_INDEX);
@@ -10065,7 +10061,7 @@ mod tests {
     }
 
     #[test]
-    fn the_compact_tier_renders_eleven_labels_at_its_measured_width() {
+    fn the_compact_tier_renders_every_label_at_its_measured_width() {
         let (titles, select) = tab_titles(TAB_BAR_COMPACT_CELLS, 4, false, true);
         assert_eq!(titles.len(), TAB_COUNT);
         assert_eq!(select, 4);
@@ -10081,7 +10077,8 @@ mod tests {
     #[test]
     fn the_windowed_tier_always_contains_the_active_tab() {
         for active in [0usize, 5, DRIVER_TAB_INDEX] {
-            for width in [20u16, 30, 40, 60, 76] {
+            // The widest windowed width is one cell under the compact tier.
+            for width in [20u16, 30, 40, 60, TAB_BAR_COMPACT_CELLS - 1] {
                 let (titles, select) = tab_titles(width, active, false, true);
                 assert!(
                     select < titles.len(),
@@ -10165,7 +10162,7 @@ mod tests {
     /// Held-out render-buffer backstop (UI-SPEC `## UI Considerations`,
     /// overflow row). Not a width calculation: the detail screen is rendered
     /// into a `TestBackend` and the resulting cells are scraped, because the
-    /// defect this guards — the tenth and eleventh tabs falling off the right
+    /// defect this guards — the last two tabs falling off the right
     /// edge at 80 columns — was invisible to every calculation the code had.
     #[test]
     fn the_active_tab_label_is_always_present_in_the_rendered_bar() {
@@ -10218,7 +10215,8 @@ mod tests {
     }
 
     /// `Shift+D` reaches the Driver tab from an arbitrary other tab, and
-    /// `Right` can now walk all the way to index 10 rather than stopping at 9.
+    /// `Right` can walk all the way to [`DRIVER_TAB_INDEX`] rather than stopping
+    /// one short of it.
     #[test]
     fn shift_d_and_right_both_reach_the_driver_tab() {
         let mut ctx = test_ctx();
@@ -10232,9 +10230,12 @@ mod tests {
             Some(&DetailSubView::Driver)
         );
 
-        // Walk right from the last pre-18-09 tab into the new one.
-        ctx.detail_sub_view_per_project
-            .insert("meta-mgr".to_string(), DetailSubView::Browse);
+        // Walk right from the last pre-Driver tab (Archive, in the interim
+        // before plan 24-07 folds it into Docs) into the Driver tab.
+        ctx.detail_sub_view_per_project.insert(
+            "meta-mgr".to_string(),
+            sub_view_from_index(DRIVER_TAB_INDEX - 1, true),
+        );
         screen.handle_key(KeyCode::Right, KeyModifiers::NONE, &mut ctx);
         assert_eq!(
             ctx.detail_sub_view_per_project.get("meta-mgr"),
