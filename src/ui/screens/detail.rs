@@ -689,7 +689,6 @@ pub struct DetailScreen {
     /// page size `PageUp` / `PageDown` move the cursor by. Written by the
     /// render pass (plan 24-06); `0` until the first frame, which the key
     /// handler treats as a one-row page.
-    #[allow(dead_code)] // read by the PageUp/PageDown arms (24-05 Task 2)
     roadmap_list_viewport: Cell<u16>,
 }
 
@@ -806,46 +805,164 @@ impl DetailScreen {
             .is_some_and(|c| c.roadmap_box_view)
     }
 
-    /// `Enter` on the Roadmap tab: a GSD phase opens in the Phases tab with
-    /// that phase selected — one shared selection (D-B03). The index written
-    /// to `pipeline_selected` is found by `phase_key`, never assumed, and the
-    /// tab by [`tab_index`], never a literal (T-24-15).
-    fn roadmap_enter(&mut self, ctx: &mut AppContext) -> ScreenAction {
-        if !self.roadmap_list_active(ctx) {
+    /// The Roadmap list model and the resolved cursor, or `None` when the
+    /// project has no state or an empty roadmap. The ONE place a Roadmap key
+    /// resolves the stored cursor, so every arm agrees on where it stands.
+    fn roadmap_model_and_cursor(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<(roadmap_graph::RoadmapModel, roadmap_graph::CursorTarget)> {
+        let state = ctx.project_states.get(&self.alias)?;
+        let cache = ctx.view_cache.get(&self.alias);
+        let model = roadmap_model_for(state, cache, ctx.config.preferences.gsd_integration);
+        let stored = cache.and_then(|c| c.roadmap_cursor.as_ref());
+        let cursor = model.resolve_cursor(stored)?;
+        Some((model, cursor))
+    }
+
+    /// One Roadmap cursor move (D-A10): resolve the stored cursor, apply
+    /// `nav`, unfold whatever fold hides the new target, store it (and the
+    /// edge walk, for `h`/`l`) and redraw. Every navigation arm is one call,
+    /// so the resolution rule exists once. Inert without project state.
+    fn roadmap_nav(&self, ctx: &mut AppContext, nav: RoadmapNav) -> ScreenAction {
+        let Some((model, current)) = self.roadmap_model_and_cursor(ctx) else {
+            return ScreenAction::None;
+        };
+        let walk = ctx
+            .view_cache
+            .get(&self.alias)
+            .and_then(|c| c.roadmap_edge_walk.clone());
+        let (next, walk) = match nav {
+            RoadmapNav::Step(delta) => (model.step(&current, delta), None),
+            RoadmapNav::Page(forward) => {
+                let rows = self.roadmap_list_viewport.get().saturating_sub(1).max(1);
+                let page = isize::try_from(rows).unwrap_or(1);
+                (model.step(&current, if forward { page } else { -page }), None)
+            }
+            RoadmapNav::First => (model.first_target().unwrap_or(current), None),
+            RoadmapNav::Last => (model.last_target().unwrap_or(current), None),
+            RoadmapNav::Edge(dir) => match model.edge_jump(&current, walk.as_ref(), dir) {
+                Some((target, walk)) => (target, Some(walk)),
+                None => (current, None),
+            },
+            RoadmapNav::Wave(forward) => {
+                (model.wave_step(&current, forward).unwrap_or(current), None)
+            }
+        };
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        if model.row_of(&next).is_none() {
+            if let roadmap_graph::CursorTarget::Phase(key) = &next {
+                model.unfold_for(key, &mut cache.roadmap_fold_toggles);
+            }
+        }
+        cache.roadmap_cursor = Some(next);
+        cache.roadmap_edge_walk = walk;
+        ctx.needs_redraw = true;
+        ScreenAction::None
+    }
+
+    /// `Enter` / `Space` on the Roadmap tab (D-A07, D-A10, D-A12, D-B03):
+    ///
+    /// * `Space` folds or unfolds the band under the cursor, or the cursor
+    ///   phase's own band — a fold that hides the cursor's phase leaves the
+    ///   cursor on that band row (D-A05).
+    /// * `Enter` on a band toggles its fold like `Space`; on the collapsed
+    ///   shipped-milestones row it opens the Archive view (plan 24-07
+    ///   re-routes this to Docs › Milestones); on a build phase it explains
+    ///   that the phase is a planned placeholder with no Phases entry; on a
+    ///   GSD phase it opens the Phases tab with that phase selected — the
+    ///   index found by `phase_key`, the tab by [`tab_index`], never a literal
+    ///   (T-24-15).
+    fn roadmap_activate(&mut self, code: KeyCode, ctx: &mut AppContext) -> ScreenAction {
+        use roadmap_graph::{BandKey, CursorTarget};
+        let Some((model, cursor)) = self.roadmap_model_and_cursor(ctx) else {
+            return ScreenAction::None;
+        };
+        let space = code == KeyCode::Char(' ');
+        // The band `Space` (or `Enter` on a band row) folds, if any.
+        let fold_band = match &cursor {
+            CursorTarget::Band(key) if space || *key != BandKey::Shipped => Some(key.clone()),
+            CursorTarget::Band(_) => None,
+            CursorTarget::Phase(key) if space => model
+                .phase_index(key)
+                .and_then(|u| model.phases[u].band)
+                .and_then(|b| model.bands.get(b))
+                .map(|b| b.key.clone()),
+            CursorTarget::Phase(_) => None,
+        };
+        if let Some(band) = fold_band {
+            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+            if !cache.roadmap_fold_toggles.remove(&band) {
+                cache.roadmap_fold_toggles.insert(band.clone());
+            }
+            // Folding a phase's band parks the cursor on that band row.
+            cache.roadmap_cursor = Some(if matches!(cursor, CursorTarget::Phase(_))
+                && roadmap_graph::is_folded(&band, &cache.roadmap_fold_toggles)
+            {
+                CursorTarget::Band(band)
+            } else {
+                cursor
+            });
+            ctx.needs_redraw = true;
             return ScreenAction::None;
         }
+        if space {
+            return ScreenAction::None;
+        }
+        let key = match cursor {
+            CursorTarget::Band(_) => {
+                // Only the shipped summary reaches here (named bands fold above).
+                return switch_to_tab(
+                    &self.alias,
+                    tab_index(&DetailSubView::Archive),
+                    &mut self.scroll_offset,
+                    ctx,
+                );
+            }
+            CursorTarget::Phase(key) => key,
+        };
         let Some(state) = ctx.project_states.get(&self.alias) else {
             return ScreenAction::None;
         };
-        let show_badges = ctx.config.preferences.gsd_integration;
-        let model = roadmap_model_for(state, ctx.view_cache.get(&self.alias), show_badges);
-        let stored = ctx
-            .view_cache
-            .get(&self.alias)
-            .and_then(|c| c.roadmap_cursor.clone());
-        let Some(cursor) = model.resolve_cursor(stored.as_ref()) else {
-            return ScreenAction::None;
-        };
-        let roadmap_graph::CursorTarget::Phase(key) = &cursor else {
-            return ScreenAction::None;
-        };
-        let Some(index) = state
-            .phases
-            .iter()
-            .position(|p| crate::state_reader::phase_num::phase_key(&p.number) == *key)
-        else {
-            return ScreenAction::None;
-        };
-        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-        cache.pipeline_selected = index;
-        cache.roadmap_cursor = Some(cursor);
-        switch_to_tab(
-            &self.alias,
-            tab_index(&DetailSubView::Pipeline),
-            &mut self.scroll_offset,
-            ctx,
-        )
+        let phase_key = crate::state_reader::phase_num::phase_key;
+        if let Some(index) = state.phases.iter().position(|p| phase_key(&p.number) == key) {
+            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+            cache.pipeline_selected = index;
+            cache.roadmap_cursor = Some(CursorTarget::Phase(key));
+            return switch_to_tab(
+                &self.alias,
+                tab_index(&DetailSubView::Pipeline),
+                &mut self.scroll_offset,
+                ctx,
+            );
+        }
+        match state.planned_phases.iter().find(|p| phase_key(&p.number) == key) {
+            // The id is third-party text: escaped before it reaches the
+            // status line (T-24-17).
+            Some(planned) => ScreenAction::SetStatusMessage(format!(
+                "Build phase {} is a planned placeholder, not a GSD phase — it has no Phases entry",
+                crate::text::render_for_terminal(&planned.number)
+            )),
+            None => ScreenAction::None,
+        }
     }
+}
+
+/// One Roadmap cursor move, applied by [`DetailScreen::roadmap_nav`].
+#[derive(Debug, Clone, Copy)]
+enum RoadmapNav {
+    /// `j`/`Down` (+1), `k`/`Up` (−1).
+    Step(isize),
+    /// `PageDown` (`true`) / `PageUp`: the last rendered list height minus one.
+    Page(bool),
+    /// `g`.
+    First,
+    /// `G`.
+    Last,
+    /// `h` (needs, then implied deps) / `l` (unblocks), cycling on repeat.
+    Edge(roadmap_graph::EdgeDir),
+    /// `]` (`true`) / `[`: the next / previous phase of the same wave.
+    Wave(bool),
 }
 
 /// `pub(crate)` so the index mapping is assertable from `app.rs`, which owns the
@@ -1704,6 +1821,20 @@ impl Screen for DetailScreen {
         );
         let current_idx = tab_index(&current_view);
 
+        // The Roadmap tab's cursor keys are live on its list (graph) view
+        // only; the box view keeps the old generic scroll (D-A10).
+        let roadmap_list =
+            current_view == DetailSubView::RoadmapViz && self.roadmap_list_active(ctx);
+        // An `h`/`l` edge walk continues only while `h`/`l` repeat: every
+        // other key on the Roadmap tab ends it (D-A05).
+        if current_view == DetailSubView::RoadmapViz
+            && !matches!(code, KeyCode::Char('h') | KeyCode::Char('l'))
+        {
+            if let Some(cache) = ctx.view_cache.get_mut(&self.alias) {
+                cache.roadmap_edge_walk = None;
+            }
+        }
+
         // Text-input intercept: when the Defaults tab has a String entry being
         // edited, route all keystrokes to the input buffer so character keys
         // ('q', 'x', 'r', etc.) don't trigger their global shortcuts.
@@ -1994,8 +2125,13 @@ impl Screen for DetailScreen {
                     DetailSubView::Driver => {
                         self.move_driver_selection(ctx, 1);
                     }
+                    // The Roadmap list moves its cursor; the box view falls
+                    // through to the generic scroll below.
+                    DetailSubView::RoadmapViz if roadmap_list => {
+                        self.roadmap_nav(ctx, RoadmapNav::Step(1));
+                    }
                     _ => {
-                        // Phases and Roadmap: add the delta, then clamp.
+                        // The Roadmap box view: add the delta, then clamp.
                         let vp = self.generic_viewport.get();
                         self.scroll_offset = clamp_scroll(
                             self.scroll_offset.saturating_add(1),
@@ -2106,8 +2242,11 @@ impl Screen for DetailScreen {
                     DetailSubView::Driver => {
                         self.move_driver_selection(ctx, -1);
                     }
+                    DetailSubView::RoadmapViz if roadmap_list => {
+                        self.roadmap_nav(ctx, RoadmapNav::Step(-1));
+                    }
                     _ => {
-                        // Phases and Roadmap: clamp FIRST, subtract second —
+                        // The Roadmap box view: clamp FIRST, subtract second —
                         // same load-bearing order as the file-view siblings.
                         let vp = self.generic_viewport.get();
                         self.scroll_offset =
@@ -2274,8 +2413,11 @@ impl Screen for DetailScreen {
                         cache.driver_follow = cache.driver_scroll_offset >= tail_offset(vp);
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::RoadmapViz if roadmap_list => {
+                        self.roadmap_nav(ctx, RoadmapNav::Page(true));
+                    }
                     _ => {
-                        // Phases and Roadmap: add the delta, then clamp.
+                        // The Roadmap box view: add the delta, then clamp.
                         let vp = self.generic_viewport.get();
                         self.scroll_offset = clamp_scroll(
                             self.scroll_offset.saturating_add(PAGE_SCROLL_LINES),
@@ -2405,8 +2547,11 @@ impl Screen for DetailScreen {
                         cache.driver_follow = false;
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::RoadmapViz if roadmap_list => {
+                        self.roadmap_nav(ctx, RoadmapNav::Page(false));
+                    }
                     _ => {
-                        // Phases and Roadmap: clamp FIRST, subtract second —
+                        // The Roadmap box view: clamp FIRST, subtract second —
                         // same load-bearing order as the file-view siblings.
                         let vp = self.generic_viewport.get();
                         self.scroll_offset =
@@ -2917,7 +3062,7 @@ impl Screen for DetailScreen {
                         }
                         ScreenAction::None
                     }
-                    DetailSubView::RoadmapViz if code == KeyCode::Enter => self.roadmap_enter(ctx),
+                    DetailSubView::RoadmapViz if roadmap_list => self.roadmap_activate(code, ctx),
                     _ => ScreenAction::None,
                 }
             }
@@ -3606,6 +3751,20 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
+            // Roadmap list cursor keys (D-A10), live on the list view only —
+            // the box view leaves them unbound, as they were before. `g` and
+            // `G` are also bound on Browse / Driver, behind their own guards;
+            // `h`, `l`, `[`, `]` are bound nowhere else on this screen.
+            KeyCode::Char('g') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::First),
+            KeyCode::Char('G') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::Last),
+            KeyCode::Char('h') if roadmap_list => {
+                self.roadmap_nav(ctx, RoadmapNav::Edge(roadmap_graph::EdgeDir::Needs))
+            }
+            KeyCode::Char('l') if roadmap_list => {
+                self.roadmap_nav(ctx, RoadmapNav::Edge(roadmap_graph::EdgeDir::Unblocks))
+            }
+            KeyCode::Char('[') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::Wave(false)),
+            KeyCode::Char(']') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::Wave(true)),
             KeyCode::Char('?') => {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(HelpScreen::new()))
