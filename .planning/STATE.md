@@ -22,10 +22,10 @@ milestone_name: Release Gate Repair
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-31)
+See: .planning/PROJECT.md (updated 2026-09-23)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 24 — Roadmap Tab Redesign & Detail-Tab Consolidation
+**Current focus:** Phase 24 complete (Roadmap Tab Redesign & Detail-Tab Consolidation). Router's next phase is 19 (GITSAFE), whose gap-closure loop is halted by user decision — awaiting user direction, do not auto-resume.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
 cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-target).
@@ -409,25 +409,11 @@ Recent decisions affecting current work:
 - [Phase 19]: T-19-124 NARROWED: the candidate scan's work is now LINEAR in the word's length via suffix folds with structure sharing, with a fail-closed CANDIDATE_SCAN_WORK_CEILING a test DRIVES. Task 3 was NOT severed.
 - [Phase 19]: Both authorised cross-fence pin moves performed with each reasoning REWRITTEN under WR-02 rather than deleted, and a STOP row added beside each.
 - [Phase 19]: Audit 12's finish-line sentence is deliberately NOT written by plan 19-33; that is audit 13's judgement. /gsd-secure-phase 19 is NOT cleared.
-- [Phase 24]: 24-01: Build phases live in ProjectState.planned_phases, never in phases (GSD does not count Build phase headings; router/frontier stay conformant)
-- [Phase 24]: 24-01: Phase goals and STATE milestone_name are stored as Untrusted (map / Option), keeping the free-string census unchanged
-- [Phase 24]: 24-01: shipped_milestones = ranged/scoped milestones before the active one, else lower by numeric version order
-- [Phase 24]: 24-02: Parallel = same wave (plan-locked D-A02); list order = shipped bands, other bands, band-less
-- [Phase 24]: 24-02: RoadmapModel cursor targets are keys (phase_key/BandKey); keys are logic-only and never drawn
-- [Phase 24]: 24-02: Ready/Blocked judged over acyclic unreduced in-graph parents; external deps satisfied
-- [Phase 24]: 24-03: disk_suffix_spans kept under allow(dead_code) for 24-06's [stage] badge (D-B08); PhaseList-only empty-state wording also re-covered in 24-06
-- [Phase 24]: 24-03: tab tests made count-agnostic (visible_tab_count, DRIVER_TAB_INDEX - 1); Archive interim at 9:Arch until 24-07
-- [Phase 24]: 24-04: RoadmapView resolves its cursor via RoadmapModel::resolve_cursor (None selects the active phase)
-- [Phase 24]: 24-04: a planned phase shows 'planned (not a GSD phase)' in place of 'plans TBD'; side-by-side no-deps note wraps under Parallel
-- [Phase 24]: 24-04: lanes past the 4/6 cap collapse to one ┆ column; a node past the cap keeps its glyph there
-- [Phase 24]: 24-05: Space on a phase folds its band and parks the cursor on the band row (stored as the band target)
-- [Phase 24]: 24-05: orphan phases join the active milestone, else a synthetic STATE.md band; band-less when STATE.md names no milestone [INFERRED]
-- [Phase 24]: 24-06: stacked Roadmap detail pane shrinks 9->6 rows for a list that needs them (panes_for); goal shortened before edge lines
-- [Phase 24]: 24-06: summary line falls back to k/n done when wider than the terminal
-- [Phase 24]: 24-06: escape probe reaches milestone_name via a synthetic-band sub-state (milestones cleared)
-- [Phase 24]: 24-07: Archive kept as the Docs › Milestones sub-view sharing Docs' index 7; switch_to_sub_view is the one arrival rule; opened_on bypasses the index [INFERRED — audit]
-- [Phase 24]: 24-07: Docs sub-tab switch key is m; digits 1-8 only (9/0 inert); footer [1-8/D] / [1-8]
-- [Phase 24]: 24-07: Roadmap footer left at 91/87 cols (over 80) — trimming hints is a scope change, deferred
+- [Phase 24]: ROADMAP `Build phase` headings live in ProjectState.planned_phases, never phases — router/frontier stay GSD-conformant
+- [Phase 24]: Roadmap list is a pure model (git-log lanes, transitive reduction with (implied via N), milestone bands with folds); cursor targets are keys, never row indices; Parallel = same wave
+- [Phase 24]: RoadmapView splits side-by-side at >=100 cols, stacked below; stacked detail pane shrinks 9->6 rows and shortens the goal before edge lines
+- [Phase 24]: Final tabs 1:Roadmap 2:Phases 3:Backlog 4:Git 5:Queue 6:Sess 7:Cfg 8:Docs + D:Drive; Archive is Docs › Milestones (`m`), switch_to_sub_view is the one arrival rule [INFERRED — audit]
+- [Phase 24]: Roadmap footer left at 91/87 cols — trimming hints is a scope change, deferred
 
 ### Roadmap Evolution
 
@@ -447,7 +433,6 @@ Recent decisions affecting current work:
 
 ### Blockers/Concerns
 
-- Tab bar overflow at 80 columns when adding 8th tab (Archive) -- resolve at Phase 12 design time
 - `--bare` is slated to become the `-p` default and is incompatible with subscription
   auth; Phase 15 ships a version gate and a regression guard against it
 
@@ -459,6 +444,9 @@ Recent decisions affecting current work:
 - 19-21: tests/envelope_callee_grammar.rs pins `git --super-prefix x push --force origin main` at force_push_blocked while pinning `git --super-prefix x status` at envelope_assertion_failed — identical leading tokens, so no rule obeying 19-21's prohibitions satisfies both. Row left RED. Both refuse at exit 2; only the identifier differs. **RESOLVED 2026-09-04 (989f21a)** — the 19-21 executor's analysis was verified by measurement against the built binary (fresh envelope root per row, root walked after) and HELD: both spellings refuse at exit 2 with an empty walk, `--super-prefix` is absent from GIT_GLOBAL_VALUE_OPTS after 19-21, and git 2.43.0 rejects it bare, separate and attached. `force_push_blocked` was a PRE-fix observation mislabelled as post-fix. Row 937 corrected to envelope_assertion_failed; exit code and empty walk still asserted; no `src/` change and no second reading site. All thirteen envelope_* binaries green; passed+failed = 1639, 0 failures. **This does NOT clear `/gsd-secure-phase 19`** — T-19-86 and T-19-91 remain OPEN at high, T-19-17r stays OUTSTANDING (no AR-19-13, not accepted), and only the WRAPPER-OPERAND sub-class of T-19-60 is closed.
 - T-19-110 (NEW, high): scan_config under-reads a dash-leading config value, so git config core.hooksPath -c and -- exit 0 while /dev/null and - are refused. Found by 19-25, deliberately not fixed — needs a RED corpus first.
 - 19-29 must add tests/envelope_control_carrier.rs to its files_modified: its direction_i_a_redirection_target_is_not_an_operand_and_stays_permitted pins three rows PERMITTED that 19-29's redirection rule refuses (19-28 finding)
+
+- [Phase 24] Advisory, not blocking: 24-REVIEW.md has 5 warnings / 6 info open — WR-01 colliding BandKeys deadlock j/k, WR-02 `declared_phase_count` u32 overflow on third-party input (roadmap_md.rs:898, debug-build panic), WR-03 build-phase range includes its own id (spurious cycles), WR-04 width measured in chars (wide glyphs overflow columns), WR-05 Roadmap cursor does not write back to Phases selection. Fix via `/gsd-code-review 24 --fix` or a quick task.
+- [Phase 24] Roadmap footer (91/87 cols) clips `[?]help` at 80 cols.
 
 ### Quick Tasks Completed
 
@@ -517,8 +505,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-24T04:46:44.731Z
-Stopped at: Phase 24 complete, ready to plan Phase 19
+Last session: 2026-09-23
+Stopped at: Phase 24 complete and transitioned (PROJECT.md evolved). Router names Phase 19 next, but its gap-closure loop is halted by user decision — do not resume without asking.
+Resume file: None
+
+Previous session (v1.7.2 release):
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
 (1.7.1 -> 1.7.2); no dependency moved. Still behind latest, unchanged from v1.7.0/v1.7.1 and not
 bumpable from this manifest: `generic-array` 0.14.7 (latest 0.14.9) and `unicode-width` 0.2.0

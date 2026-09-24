@@ -55,6 +55,9 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Git-based staleness — commit-time derived with mtime fallback — v1.6
 - ✓ CI release workflow — crates.io publish on version tags — v1.6
 
+- ✓ Roadmap tab redesign — dependency list with git-log lanes, transitive reduction (implied deps shown dim), milestone bands with folds, master-detail pane (side-by-side ≥100 cols, stacked below), build phases and goals read from ROADMAP.md — Phase 24
+- ✓ Detail-tab consolidation — eight tabs plus Driver (`1:Roadmap 2:Phases … 8:Docs`, `D:Drive`); PhaseList removed, Archive folded into Docs › Milestones; Roadmap/Phases share the selected phase — Phase 24
+
 ### Active
 
 **Milestone v2.0 — Autonomous Orchestration.** Requirements are defined in
@@ -98,7 +101,7 @@ in containers or on the host, watchable and interruptible from the TUI.
 
 - Shipped v1.6.0; ~7,000 LOC Rust across 7 milestones, distributed via crates.io
 - Tech stack: Rust, ratatui 0.30, crossterm 0.29, tokio, notify-debouncer-full
-- Screen trait architecture with 8 screen modules and 8-tab detail view (Archive added in v1.2)
+- Screen trait architecture; detail view is 8 tabs + Driver since Phase 24 (Archive lives under Docs › Milestones)
 - Disk-based phase inference via /proc-like directory scanning
 - Queue is fully managed (CRUD) with execution design ready for v1.3
 - Claude session detection via pgrep + /proc (Linux-only)
@@ -138,6 +141,10 @@ in containers or on the host, watchable and interruptible from the TUI.
 | Container runtime auto-detected (docker or podman) | Hardcoding either one contradicts the portability constraint; probing costs little | — Pending v2.0 |
 | 999.2 injection plumbing sequenced before 999.3 driver | The driver is a decision layer built on top of injection/monitoring — building it first would mean stubbing the transport twice | — Pending v2.0 |
 | Major version bump to v2.0 | The tool's category changes from passive dashboard to active orchestrator, and it narrows a stated constraint | — Pending v2.0 |
+| ROADMAP `Build phase` headings kept in `planned_phases`, never `phases` (Phase 24) | GSD's own heading grammar does not count them; keeping them out keeps the driver router/frontier GSD-conformant | ✓ Good — conformance test green, build phases still drawn |
+| Roadmap list as a pure model (no ratatui types) with key-based cursor targets (Phase 24) | Layout/lanes testable as exact strings; folding can't strand a row-index cursor | ✓ Good — mockups pinned by unit tests on real-roadmap fixtures |
+| Archive kept as a Docs sub-view sharing Docs' tab index; `switch_to_sub_view` is the single arrival rule (Phase 24) | Removing the variant would churn archive discovery; one arrival path covers digits, Enter and `m` | — Inferred during autonomous run, audit |
+| Roadmap footer left at 91/87 cols (Phase 24) | Fitting 80 cols means dropping or renaming hints — a scope change | ⚠️ Revisit — `[?]help` clips at 80 cols |
 
 ## Evolution
 
@@ -157,4 +164,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-28 — v2.0 milestone started; v1.4/v1.5.0/v1.6.0 backfilled*
+*Last updated: 2026-09-23 after Phase 24 (Roadmap tab redesign & detail-tab consolidation)*
