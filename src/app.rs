@@ -14,21 +14,26 @@ use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum DetailSubView {
+    /// The Roadmap tab — index 0 and the default the detail view opens on
+    /// (D-B07).
     #[default]
-    PhaseList,
     RoadmapViz,
+    /// The tab labelled `Phases` (index 1, D-B03). The variant keeps its old
+    /// name; only the label and block titles changed.
+    Pipeline,
     Backlog,
     GitHistory,
-    Pipeline,
     Queue,
     Sessions,
+    /// The milestone archive. It sits at an interim ninth tab (index 8) until
+    /// plan 24-07 folds it into Docs as the Milestones sub-view.
     Archive,
     Defaults,
     Browse,
     /// The Driver tab: run list, run detail, live output (D-15, OBS-04).
     ///
-    /// **Index 10, and fully reachable.** `TAB_COUNT` is 11, `TAB_LABELS_FULL`
-    /// has eleven entries, `Left`/`Right` reach it, `Shift+D` jumps to it, the
+    /// **Index 9, and fully reachable.** `TAB_COUNT` is 10, `TAB_LABELS_FULL`
+    /// has ten entries, `Left`/`Right` reach it, `Shift+D` jumps to it, the
     /// footer tiers carry its hints, and both render dispatches call
     /// [`super::ui::screens::driver::render_driver_tab`].
     ///
@@ -4247,17 +4252,18 @@ mod tests {
 
     /// The Driver sub-view round-trips through both `detail.rs` mappings.
     #[test]
-    fn the_driver_sub_view_is_index_ten_in_both_directions() {
+    fn the_driver_sub_view_is_the_last_tab_index_in_both_directions() {
         use crate::ui::screens::detail::{sub_view_from_index, tab_index};
 
-        // Index 10 per D-15, and the two mappings must agree — a tab whose
-        // index does not round-trip lands on a different tab than the one the
-        // user asked for.
-        assert_eq!(tab_index(&DetailSubView::Driver), 10);
-        assert_eq!(sub_view_from_index(10, true), DetailSubView::Driver);
-        // The fallback is unchanged: an out-of-range index still lands on the
-        // first tab and never on the newest one.
-        assert_eq!(sub_view_from_index(11, true), DetailSubView::PhaseList);
+        // Index 9 (the last tab, after the Phase 24 renumber), and the two
+        // mappings must agree — a tab whose index does not round-trip lands on
+        // a different tab than the one the user asked for. The literal is the
+        // point: it pins the index the key map and the tab bar both assume.
+        assert_eq!(tab_index(&DetailSubView::Driver), 9);
+        assert_eq!(sub_view_from_index(9, true), DetailSubView::Driver);
+        // The fallback: an out-of-range index lands on the default Roadmap tab
+        // and never on the newest one.
+        assert_eq!(sub_view_from_index(10, true), DetailSubView::RoadmapViz);
     }
 
     /// A stop with nowhere to report its outcome refuses **visibly** (WR-11).

@@ -11,7 +11,7 @@ use crate::change_tracker::ChangeTracker;
 use crate::state_reader::disk_status::{DiskInference, DiskStatus, VerificationStatus};
 use crate::state_reader::git_ops;
 use crate::state_reader::queue_md;
-use crate::state_reader::{self, backlog, PhaseMarker};
+use crate::state_reader::{self, backlog};
 use crate::text::Untrusted;
 use crate::ui::roadmap_graph;
 use crate::ui::roadmap_widget::RoadmapWidget;
@@ -352,10 +352,10 @@ pub(super) fn driver_offset_now(stored: u16, following: bool, vp: ViewportMetric
 /// so the bound every loop, clamp and navigation guard needs is
 /// [`visible_tab_count`], not this. This constant survives as the label arrays'
 /// length and as the index the Driver entry sits at the end of.
-pub(crate) const TAB_COUNT: usize = 11;
+pub(crate) const TAB_COUNT: usize = 10;
 
-/// How many tabs the detail view actually shows: 11 with the experimental
-/// surfaces on, 10 without.
+/// How many tabs the detail view actually shows: 10 with the experimental
+/// surfaces on, 9 without.
 ///
 /// The one bound. A second `TAB_COUNT - 1` left behind anywhere is how the
 /// Right arrow would walk onto a tab that does not render (260917-fko D2).
@@ -370,17 +370,20 @@ pub(crate) fn visible_tab_count(experimental: bool) -> usize {
 /// Full tab labels, one per index. The Driver entry omits its live-marker cell,
 /// which [`tab_titles`] always appends as a span of its own (see
 /// [`DRIVER_LIVE_MARKER`]).
+///
+/// The Phase 24 order (D-B01, D-B11): Roadmap first, the Pipeline sub-view
+/// labelled `Phases` second. `9:Arch` is an **interim** ninth tab — plan 24-07
+/// folds the milestone archive into Docs and drops it.
 const TAB_LABELS_FULL: [&str; TAB_COUNT] = [
-    "1:Phases",
-    "2:Roadmap",
+    "1:Roadmap",
+    "2:Phases",
     "3:Backlog",
     "4:Git",
-    "5:Pipe",
-    "6:Queue",
-    "7:Sess",
-    "8:Arch",
-    "9:Cfg",
-    "0:Docs",
+    "5:Queue",
+    "6:Sess",
+    "7:Cfg",
+    "8:Docs",
+    "9:Arch",
     "D:Drive",
 ];
 
@@ -388,46 +391,46 @@ const TAB_LABELS_FULL: [&str; TAB_COUNT] = [
 /// so a two-letter mnemonic loses nothing that matters; the pairs are mutually
 /// unambiguous.
 const TAB_LABELS_COMPACT: [&str; TAB_COUNT] = [
-    "1:Ph", "2:Rd", "3:Bk", "4:Gt", "5:Pp", "6:Qu", "7:Ss", "8:Ar", "9:Cf", "0:Dc", "D:Dr",
+    "1:Rd", "2:Ph", "3:Bk", "4:Gt", "5:Qu", "6:Ss", "7:Cf", "8:Dc", "9:Ar", "D:Dr",
 ];
 
 /// The Driver tab's index. Named because five sites compare against it.
-pub(crate) const DRIVER_TAB_INDEX: usize = 10;
+pub(crate) const DRIVER_TAB_INDEX: usize = 9;
 
 /// Rendered width of the full label set, in terminal cells.
 ///
 /// **Derived from the render, not chosen:** `Tabs` draws `1 pad + label + 1 pad`
 /// per tab and a one-cell `"|"` divider between adjacent tabs, so the bar costs
 /// `Σ(len + 2) + (n − 1)`. For [`TAB_LABELS_FULL`] plus the Driver tab's
-/// always-present marker cell that is `75 + 1 + 22 + 10 = 107`.
+/// always-present marker cell that is `68 + 1 + 20 + 9 = 98`.
 ///
-/// The number matters because **the ten shipped tabs already occupied 96 cells**:
-/// at an 80-column terminal `9:Cfg` and `0:Docs` were silently dropped off the
-/// right edge, which is the "tab bar overflow at 80 columns" defect carried in
-/// `STATE.md` since Phase 12. Appending an 11th tab at the end without tiering
-/// would have made the Driver tab the one that never renders, at every common
-/// width.
-pub(crate) const TAB_BAR_FULL_CELLS: u16 = 107;
+/// The number matters because **the shipped tabs have never fitted 80 columns
+/// whole in the full tier**: before tiering, the last two labels (config and
+/// docs) were silently dropped off the right edge at an 80-column terminal,
+/// which is the "tab bar overflow at 80 columns" defect carried in `STATE.md`
+/// since Phase 12. Appending the Driver tab at the end without tiering would
+/// have made it the one that never renders, at every common width.
+pub(crate) const TAB_BAR_FULL_CELLS: u16 = 98;
 
 /// Rendered width of the compact label set, by the same arithmetic:
-/// `45 + 1 + 22 + 10 = 77`.
-pub(crate) const TAB_BAR_COMPACT_CELLS: u16 = 77;
+/// `40 + 1 + 20 + 9 = 70`.
+pub(crate) const TAB_BAR_COMPACT_CELLS: u16 = 70;
 
 /// Rendered width of the full label set **without** the Driver tab, by the same
-/// `Σ(len + 2) + (n − 1)` formula: `67 + 20 + 9 = 96`.
+/// `Σ(len + 2) + (n − 1)` formula: `61 + 18 + 8 = 87`.
 ///
-/// Dropping the eleventh tab costs four things and the arithmetic has to lose
+/// Dropping the Driver tab costs four things and the arithmetic has to lose
 /// all four: its 7-cell label, its reserved marker cell, its two pads and the
-/// one divider that joined it to `0:Docs` — `107 − 7 − 1 − 2 − 1 = 96`.
+/// one divider that joined it to the tab before it — `98 − 7 − 1 − 2 − 1 = 87`.
 /// `the_tab_bar_widths_are_the_label_arrays_own_arithmetic` re-derives it from
 /// [`TAB_LABELS_FULL`] so a renamed label cannot leave this number behind
 /// (260917-fko).
-pub(crate) const TAB_BAR_FULL_CELLS_NO_DRIVER: u16 = 96;
+pub(crate) const TAB_BAR_FULL_CELLS_NO_DRIVER: u16 = 87;
 
 /// Rendered width of the compact label set without the Driver tab:
-/// `40 + 20 + 9 = 69`. The same four deductions as above, against a 4-cell
-/// compact label: `77 − 4 − 1 − 2 − 1 = 69`.
-pub(crate) const TAB_BAR_COMPACT_CELLS_NO_DRIVER: u16 = 69;
+/// `36 + 18 + 8 = 62`. The same four deductions as above, against a 4-cell
+/// compact label: `70 − 4 − 1 − 2 − 1 = 62`.
+pub(crate) const TAB_BAR_COMPACT_CELLS_NO_DRIVER: u16 = 62;
 
 /// The full tier's threshold for this session's tab count.
 pub(crate) fn tab_bar_full_cells(experimental: bool) -> u16 {
@@ -440,10 +443,12 @@ pub(crate) fn tab_bar_full_cells(experimental: bool) -> u16 {
 
 /// The compact tier's threshold for this session's tab count.
 ///
-/// Ten tabs fit the compact bar in 69 cells rather than 77, so a flag-off
-/// session at 70 columns gets whole compact labels where an eleven-tab session
-/// would have been pushed into the windowed tier. Reusing the eleven-tab
-/// numbers would have cost exactly that.
+/// Without the Driver tab the compact bar fits in
+/// [`TAB_BAR_COMPACT_CELLS_NO_DRIVER`] cells rather than
+/// [`TAB_BAR_COMPACT_CELLS`], so a flag-off session a few columns narrower gets
+/// whole compact labels where a with-Driver session would have been pushed into
+/// the windowed tier. Reusing the with-Driver numbers would have cost exactly
+/// that.
 pub(crate) fn tab_bar_compact_cells(experimental: bool) -> u16 {
     if experimental {
         TAB_BAR_COMPACT_CELLS
@@ -483,7 +488,7 @@ fn tab_entry_cells(label_cells: usize) -> usize {
 /// **A tab bar that silently drops the active tab is a defect, not a tier.** That
 /// sentence is the whole specification of this function; the three tiers below
 /// exist to honour it, and the windowed tier exists because at 40 columns no
-/// eleven-tab bar can be shown whole.
+/// whole tab bar can be shown.
 ///
 /// | Tier | Condition | Labels |
 /// |---|---|---|
@@ -502,9 +507,9 @@ fn tab_entry_cells(label_cells: usize) -> usize {
 /// present either way (see [`DRIVER_IDLE_MARKER`]).
 ///
 /// `experimental` decides whether the Driver label is in the set at all: with
-/// it off the labels are sliced to the first ten and the tier thresholds drop
-/// accordingly, so nothing about the bar tells the user an eleventh tab exists
-/// (260917-fko D2).
+/// it off the labels are sliced to the first [`visible_tab_count`] and the tier
+/// thresholds drop accordingly, so nothing about the bar tells the user a
+/// Driver tab exists (260917-fko D2).
 pub(crate) fn tab_titles(
     width: u16,
     active: usize,
@@ -537,8 +542,8 @@ pub(crate) fn tab_titles(
 /// One tab's `Line`. The Driver entry gets its marker cell as a second span so
 /// the label's width is identical live and idle.
 ///
-/// Takes a **slice** rather than a `[&str; TAB_COUNT]` so the flag-off ten-label
-/// view can be passed without copying: with the Driver label sliced away this
+/// Takes a **slice** rather than a `[&str; TAB_COUNT]` so the flag-off
+/// Driver-less view can be passed without copying: with the Driver label sliced away this
 /// function's `index == DRIVER_TAB_INDEX` branch — and therefore the magenta
 /// live marker — is simply never reached.
 fn tab_label_line(labels: &[&'static str], index: usize, driver_live: bool) -> Line<'static> {
@@ -780,19 +785,21 @@ impl DetailScreen {
 /// than the one they asked for, and that is a logic-level property rather than a
 /// rendering one.
 pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
+    // Exhaustive and wildcard-free on purpose (T-24-09): a new variant must be
+    // given an index here or the crate does not compile.
     match sub_view {
-        DetailSubView::PhaseList => 0,
-        DetailSubView::RoadmapViz => 1,
+        DetailSubView::RoadmapViz => 0,
+        DetailSubView::Pipeline => 1,
         DetailSubView::Backlog => 2,
         DetailSubView::GitHistory => 3,
-        DetailSubView::Pipeline => 4,
-        DetailSubView::Queue => 5,
-        DetailSubView::Sessions => 6,
-        DetailSubView::Archive => 7,
-        DetailSubView::Defaults => 8,
-        DetailSubView::Browse => 9,
-        // Index 10, per D-15 — the 11th tab, reachable by `Left`/`Right`, by
-        // `Shift+D`, and rendered by `tab_titles` at every width.
+        DetailSubView::Queue => 4,
+        DetailSubView::Sessions => 5,
+        DetailSubView::Defaults => 6,
+        DetailSubView::Browse => 7,
+        // Interim ninth tab until plan 24-07 folds it into Docs.
+        DetailSubView::Archive => 8,
+        // Index 9 — the last tab, reachable by `Left`/`Right`, by `Shift+D`,
+        // and rendered by `tab_titles` at every width.
         DetailSubView::Driver => DRIVER_TAB_INDEX,
     }
 }
@@ -800,29 +807,28 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
 /// `pub(crate)` for the same reason as [`tab_index`]: the round trip is the
 /// property worth asserting, and it takes both halves.
 ///
-/// With `experimental` off, index 10 is **not a tab**, so it falls through to
-/// the same first-tab fallback an out-of-range index already took. That is what
-/// makes `Shift+D` and a stored Driver index land somewhere real instead of on
-/// a tab the bar does not draw (260917-fko D2).
+/// With `experimental` off, index 9 ([`DRIVER_TAB_INDEX`]) is **not a tab**, so
+/// it falls through to the same default-tab fallback an out-of-range index
+/// already took. That is what makes `Shift+D` and a stored Driver index land
+/// somewhere real instead of on a tab the bar does not draw (260917-fko D2).
 pub(crate) fn sub_view_from_index(index: usize, experimental: bool) -> DetailSubView {
     if index == DRIVER_TAB_INDEX && !experimental {
-        return DetailSubView::PhaseList;
+        return DetailSubView::RoadmapViz;
     }
     match index {
-        0 => DetailSubView::PhaseList,
-        1 => DetailSubView::RoadmapViz,
+        0 => DetailSubView::RoadmapViz,
+        1 => DetailSubView::Pipeline,
         2 => DetailSubView::Backlog,
         3 => DetailSubView::GitHistory,
-        4 => DetailSubView::Pipeline,
-        5 => DetailSubView::Queue,
-        6 => DetailSubView::Sessions,
-        7 => DetailSubView::Archive,
-        8 => DetailSubView::Defaults,
-        9 => DetailSubView::Browse,
-        10 => DetailSubView::Driver,
-        // Unchanged fallback: an out-of-range index still lands on the first
-        // tab rather than on the newest one.
-        _ => DetailSubView::PhaseList,
+        4 => DetailSubView::Queue,
+        5 => DetailSubView::Sessions,
+        6 => DetailSubView::Defaults,
+        7 => DetailSubView::Browse,
+        8 => DetailSubView::Archive,
+        DRIVER_TAB_INDEX => DetailSubView::Driver,
+        // Fallback: an out-of-range index lands on the default (Roadmap) tab
+        // rather than on the newest one (D-B07).
+        _ => DetailSubView::RoadmapViz,
     }
 }
 
@@ -841,7 +847,7 @@ pub(crate) fn sub_view_from_index(index: usize, experimental: bool) -> DetailSub
 /// of a guard per arm, which is the version that cannot be half-applied.
 pub(crate) fn effective_sub_view(stored: DetailSubView, experimental: bool) -> DetailSubView {
     if !experimental && stored == DetailSubView::Driver {
-        return DetailSubView::PhaseList;
+        return DetailSubView::RoadmapViz;
     }
     stored
 }
@@ -1203,6 +1209,12 @@ fn status_color(category: &StatusCategory) -> Color {
 
 /// Compute disk-inferred status suffix spans for a phase line, e.g. " [Executing 2/3]".
 /// When `show_badges` is true, appends a [verified] or [inferred] badge based on artifact presence.
+///
+/// **Unreferenced between plans 24-03 and 24-06, kept on purpose.** Its only
+/// caller was the removed PhaseList tab (D-B02); plan 24-06 re-wires it as the
+/// per-phase `[stage]` badge in the Roadmap tab's detail pane (D-B08). Deleting
+/// it here would only make that plan re-create it.
+#[allow(dead_code)]
 fn disk_suffix_spans(
     phase_number: &str,
     phase_disk_statuses: &std::collections::HashMap<
@@ -1452,14 +1464,14 @@ crate::ui::screens::adjudicate_screen!(
     DetailScreen,
     crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
     "The widest identity surface in the tree. Draws the registry key in its \
-     tab-bar title, and in its eleven tabs the values parsed out of the \
+     tab-bar title, and in its ten tabs the values parsed out of the \
      project's `.planning/`. Per tab, the values and where their bytes come \
-     from: PhaseList draws each `RoadmapPhase`'s number, name and \
-     description plus the status and milestone, all parsed from \
-     `ROADMAP.md`/`STATE.md`; RoadmapViz's default graph draws phase ids, \
+     from: RoadmapViz's header draws the status and milestone parsed from \
+     `ROADMAP.md`/`STATE.md`, its default graph draws phase ids, \
      dependency ids and milestone labels parsed from `ROADMAP.md` plus the \
-     current phase's name, and its box list draws number, name and \
-     description; Pipeline draws the current phase name, status \
+     current phase's name, and its box list draws each `RoadmapPhase`'s \
+     number, name and description; Pipeline (the tab labelled Phases) \
+     draws the current phase name, status \
      and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
      from `queue.md`; Backlog draws a `999.*` directory's number and \
      description in its collapsed state and that directory's NAME (through \
@@ -1479,7 +1491,7 @@ crate::ui::screens::adjudicate_screen!(
      goal, `gsd_command` and run directory read back out of a run's \
      committed `run.json`. All of it is third-party text under SAFE-07 and \
      none of it was authored by this build. Fixture states: one per \
-     sub-view, all eleven, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
+     sub-view, all ten, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
      four within-tab states for the fields that dispatch to a different \
      render — Backlog expanded, Archive at its phase list and file list \
      depths, Browse at its file view. Arrival is recorded per state by \
@@ -2216,7 +2228,10 @@ impl Screen for DetailScreen {
                 }
                 ScreenAction::None
             }
-            // Tab switching via number keys
+            // Tab switching via number keys: `1`-`9` → indices 0-8 (D-B10).
+            // The zero key has no arm on purpose — it falls through to the
+            // no-op `_` arm at the bottom of this match, so it cannot land the
+            // user on a tab by an old habit.
             KeyCode::Char('1') => switch_to_tab(&self.alias, 0, &mut self.scroll_offset, ctx),
             KeyCode::Char('2') => switch_to_tab(&self.alias, 1, &mut self.scroll_offset, ctx),
             KeyCode::Char('3') => switch_to_tab(&self.alias, 2, &mut self.scroll_offset, ctx),
@@ -2226,8 +2241,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('7') => switch_to_tab(&self.alias, 6, &mut self.scroll_offset, ctx),
             KeyCode::Char('8') => switch_to_tab(&self.alias, 7, &mut self.scroll_offset, ctx),
             KeyCode::Char('9') => switch_to_tab(&self.alias, 8, &mut self.scroll_offset, ctx),
-            KeyCode::Char('0') => switch_to_tab(&self.alias, 9, &mut self.scroll_offset, ctx),
-            // The 11th tab (D-15). All ten digits are taken, uppercase is
+            // The Driver tab (D-15), always the last. It has no digit, uppercase is
             // entirely unclaimed in the detail view, and `KeyCode::Char('D')`
             // arrives without needing the `_modifiers` parameter this handler
             // ignores — so `Shift+D` costs no new plumbing and collides with
@@ -2250,8 +2264,8 @@ impl Screen for DetailScreen {
             }
             KeyCode::Right => {
                 // The visible count, not `TAB_COUNT - 1`: with the flag off the
-                // last tab is index 9, and walking to 10 would park the user on
-                // a tab the bar does not draw.
+                // last tab is index 8, and walking to 9 (the Driver index) would
+                // park the user on a tab the bar does not draw.
                 if current_idx < visible_tab_count(ctx.experimental) - 1 {
                     switch_to_tab(&self.alias, current_idx + 1, &mut self.scroll_offset, ctx)
                 } else {
@@ -3462,7 +3476,6 @@ impl Screen for DetailScreen {
 
         // Render content based on active tab
         match sub_view {
-            DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
             DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
@@ -3602,193 +3615,6 @@ impl DetailScreen {
             _ => {}
         }
         ScreenAction::None
-    }
-
-    /// Render the phase list tab content.
-    fn render_phase_list(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let alias = &self.alias;
-        let state = ctx.project_states.get(alias);
-        let project_path = ctx
-            .config
-            .projects
-            .get(alias)
-            .map(|p| p.path.display().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let mut lines: Vec<Line> = Vec::new();
-
-        lines.push(Line::from(vec![
-            Span::styled("  Path: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(shown(&project_path)),
-        ]));
-
-        if let Some(state) = state {
-            // `classify_status` reads the RAW status — it is a comparison, not
-            // a render — while the cell beside it carries the escaped form.
-            let cat = classify_status(&state.status);
-            let color = status_color(&cat);
-            lines.push(Line::from(vec![
-                Span::styled("  Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(shown(&state.status), Style::default().fg(color)),
-                Span::raw("    "),
-                Span::styled("Milestone: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(shown(&state.milestone)),
-            ]));
-
-            if let Some(line) = unreadable_state_line(state) {
-                lines.push(line);
-            }
-            if let Some(line) = recovered_state_line(state) {
-                lines.push(line);
-            }
-
-            if state.paused {
-                let pause_line = if let Some(ref ctx_text) = state.pause_context {
-                    Line::from(vec![
-                        Span::styled(
-                            "  Paused: ",
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(shown(ctx_text), Style::default().fg(Color::Cyan)),
-                    ])
-                } else {
-                    Line::from(Span::styled(
-                        "  Paused (HANDOFF file present)",
-                        Style::default().fg(Color::Cyan),
-                    ))
-                };
-                lines.push(pause_line);
-            }
-
-            lines.push(Line::from(""));
-
-            if let Some(event) = ctx.change_tracker.latest_change(alias) {
-                let elapsed = ChangeTracker::format_elapsed(event.timestamp);
-                let banner = format!("  [ {} -- {} ]", shown(&event.description), elapsed);
-                lines.push(Line::from(Span::styled(
-                    banner,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                lines.push(Line::from(""));
-            }
-
-            lines.push(Line::from(Span::styled(
-                "  Phases:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(Span::styled(
-                "  Legend: + done  * current  o future  [stage] = disk-inferred  (N plans) = plan count",
-                Style::default().fg(Color::DarkGray),
-            )));
-
-            if state.phases.is_empty() {
-                lines.push(Line::from("  No roadmap data available"));
-            } else {
-                for phase in &state.phases {
-                    // One decision, shared with the Roadmap tab's widget: `+`
-                    // from this phase's OWN disk inference, `*` from
-                    // `active_phase_number`, the ROADMAP checkbox only as the
-                    // fallback for a phase with no directory. See `PhaseMarker`.
-                    let marker = state.phase_marker(phase);
-                    let icon = marker.glyph();
-                    let is_current = marker == PhaseMarker::Current;
-
-                    let plan_display = match crate::state_reader::phase_plan_counts(
-                        phase,
-                        &state.phase_disk_statuses,
-                    ) {
-                        Some((done, total)) => format!("{}/{} plans", done, total),
-                        None => "0/? plans".to_string(),
-                    };
-
-                    let show_badges = ctx.config.preferences.gsd_integration;
-                    let badge_spans =
-                        disk_suffix_spans(&phase.number, &state.phase_disk_statuses, show_badges);
-
-                    // `phase.number` above is COMPARED raw against the active
-                    // phase number and looked up raw in `phase_disk_statuses`;
-                    // here it is read by a human.
-                    let line_text = format!(
-                        "  {} P{}: {}  {}",
-                        icon,
-                        shown(&phase.number),
-                        shown(&phase.name),
-                        plan_display
-                    );
-
-                    if is_current {
-                        let cat = classify_status(&state.status);
-                        let color = status_color(&cat);
-                        let mut spans = vec![Span::styled(
-                            line_text,
-                            Style::default().fg(color).add_modifier(Modifier::BOLD),
-                        )];
-                        spans.extend(badge_spans);
-                        lines.push(Line::from(spans));
-                    } else if marker == PhaseMarker::Done {
-                        let mut spans = vec![Span::styled(
-                            line_text,
-                            Style::default().fg(Color::DarkGray),
-                        )];
-                        spans.extend(badge_spans);
-                        lines.push(Line::from(spans));
-                    } else {
-                        let mut spans = vec![Span::raw(line_text)];
-                        spans.extend(badge_spans);
-                        lines.push(Line::from(spans));
-                    }
-                }
-            }
-
-            lines.push(Line::from(""));
-
-            if state.backlog_count > 0 {
-                lines.push(Line::from(format!(
-                    "  Backlog: {} items",
-                    state.backlog_count
-                )));
-            }
-
-            if !state.queued_actions.is_empty() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "  Queued:",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )));
-                for (i, action) in state.queued_actions.iter().enumerate() {
-                    lines.push(Line::from(vec![
-                        Span::raw(format!("    {}. ", i + 1)),
-                        Span::styled(shown(&action.command), Style::default().fg(Color::Cyan)),
-                    ]));
-                }
-            }
-        } else {
-            lines.push(Line::from(""));
-            lines.push(Line::from("  No state data available for this project."));
-        }
-
-        let block = Block::default().borders(Borders::ALL);
-        // Clamp scroll so content can't scroll past the end
-        let content_height = lines.len() as u16;
-        let viewport_height = area.height.saturating_sub(2); // borders
-
-        // Record for the `_ =>` scroll handlers, which cannot see this pass.
-        self.generic_viewport.set(ViewportMetrics {
-            total_lines: content_height,
-            visible_height: viewport_height,
-        });
-        let max_scroll = content_height.saturating_sub(viewport_height);
-        let clamped_offset = self.scroll_offset.min(max_scroll);
-
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .scroll((clamped_offset, 0));
-
-        frame.render_widget(paragraph, area);
     }
 
     /// Render the roadmap visualization tab content.
@@ -4306,7 +4132,7 @@ impl DetailScreen {
         let state = match state {
             Some(s) => s,
             None => {
-                let block = Block::default().borders(Borders::ALL).title(" Pipeline ");
+                let block = Block::default().borders(Borders::ALL).title(" Phases ");
                 let msg = Paragraph::new("  No state data available.").block(block);
                 frame.render_widget(msg, area);
                 return;
@@ -4314,7 +4140,7 @@ impl DetailScreen {
         };
 
         if state.phases.is_empty() {
-            let block = Block::default().borders(Borders::ALL).title(" Pipeline ");
+            let block = Block::default().borders(Borders::ALL).title(" Phases ");
             let msg = Paragraph::new("  No phases found").block(block);
             frame.render_widget(msg, area);
             return;
@@ -4362,7 +4188,7 @@ impl DetailScreen {
         let phase = &state.phases[selected];
         let inference = state.phase_disk_statuses.get(&phase.number);
 
-        let right_block = Block::default().borders(Borders::NONE).title(" Pipeline ");
+        let right_block = Block::default().borders(Borders::NONE).title(" Phases ");
         let inner = right_block.inner(right_area);
         frame.render_widget(right_block, right_area);
 
@@ -5073,7 +4899,6 @@ impl DetailScreen {
 
         // Render content based on active tab
         match sub_view {
-            DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
             DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
@@ -6102,7 +5927,7 @@ fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
         spans.push(Span::raw("  "));
     }
     if width >= DRIVER_FOOTER_FULL_CELLS {
-        spans.push(Span::styled("[1-0/D]", b));
+        spans.push(Span::styled("[1-9/D]", b));
         spans.push(Span::raw("tabs  "));
     }
     spans.push(Span::styled("[j/k]", b));
@@ -6133,13 +5958,13 @@ fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
 /// exposes no public text accessor, but a `Vec<Span>` concatenates cleanly.
 ///
 /// `width` is the footer row's width. Only the Driver tab tiers on it today; the
-/// other ten keep their single shipped form, with the shared prefix's tabs hint
+/// other tabs keep their single shipped form, with the shared prefix's tabs hint
 /// changed once, for every tab, so `Shift+D` is discoverable from anywhere in
 /// the detail view.
 ///
 /// `experimental` decides that shared hint. **It is the one string that would
-/// otherwise leak the Driver tab onto all ten other tabs** (260917-fko D2): a
-/// user with the flag off who read `[1-0/D]` would have been told about a tab
+/// otherwise leak the Driver tab onto every other tab** (260917-fko D2): a
+/// user with the flag off who read `[1-9/D]` would have been told about a tab
 /// that does not exist and a key that does nothing, which is the discovery this
 /// gate exists to prevent.
 fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec<Span<'static>> {
@@ -6152,7 +5977,7 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
         Span::raw("  "),
         Span::styled("[Esc]", b),
         Span::raw("back  "),
-        Span::styled(if experimental { "[1-0/D]" } else { "[1-0]" }, b),
+        Span::styled(if experimental { "[1-9/D]" } else { "[1-9]" }, b),
         Span::raw("tabs  "),
         Span::styled("[j/k]", b),
         Span::raw("scroll  "),
@@ -9787,7 +9612,6 @@ mod tests {
     #[test]
     fn the_tabs_hint_names_shift_d_on_every_tab() {
         for sub_view in [
-            DetailSubView::PhaseList,
             DetailSubView::RoadmapViz,
             DetailSubView::Backlog,
             DetailSubView::GitHistory,
@@ -9820,7 +9644,6 @@ mod tests {
     #[test]
     fn the_tabs_hint_drops_shift_d_on_every_tab_when_experimental_is_off() {
         for sub_view in [
-            DetailSubView::PhaseList,
             DetailSubView::RoadmapViz,
             DetailSubView::Backlog,
             DetailSubView::GitHistory,
@@ -9898,8 +9721,74 @@ mod tests {
         }
         assert_eq!(sub_view_from_index(DRIVER_TAB_INDEX, true), DetailSubView::Driver);
         assert_eq!(tab_index(&DetailSubView::Driver), DRIVER_TAB_INDEX);
-        // The out-of-range fallback still lands on the first tab, not the newest.
-        assert_eq!(sub_view_from_index(TAB_COUNT, true), DetailSubView::PhaseList);
+        // The out-of-range fallback lands on the default (Roadmap) tab, not the
+        // newest.
+        assert_eq!(sub_view_from_index(TAB_COUNT, true), DetailSubView::RoadmapViz);
+    }
+
+    /// Phase 24 end to end (D-B01, D-B03, D-B07, D-B10): a detail screen with no
+    /// stored view opens on the Roadmap tab, `2` reaches the tab labelled
+    /// Phases, and the zero key — which used to open the Docs tab — is inert.
+    ///
+    /// Driven through the real `handle_key` and the real render, because every
+    /// piece of this is a different consumer of the tab index: the enum's
+    /// `#[default]`, the digit arms, the dispatch and the block titles.
+    #[test]
+    fn a_fresh_detail_screen_opens_on_the_roadmap_and_two_reaches_phases() {
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState::default(),
+        );
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        assert!(
+            !ctx.detail_sub_view_per_project.contains_key(TEST_ALIAS),
+            "the fixture must start with no stored view"
+        );
+
+        // The view the key handler and both renders read when nothing is
+        // stored: the enum's default, through the same coercion they apply.
+        let stored = ctx
+            .detail_sub_view_per_project
+            .get(TEST_ALIAS)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            effective_sub_view(stored, ctx.experimental),
+            DetailSubView::RoadmapViz
+        );
+        let roadmap = render_detail_to_text(&screen, &ctx);
+        assert!(
+            roadmap.contains("Path:"),
+            "a fresh detail screen must render the Roadmap header: {roadmap}"
+        );
+        assert!(
+            !roadmap.contains(" Phases "),
+            "the Phases tab's block title is on screen before `2` was pressed: {roadmap}"
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Char('2'));
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Pipeline)
+        );
+        let phases = render_detail_to_text(&screen, &ctx);
+        assert!(
+            phases.contains(" Phases "),
+            "`2` must reach the tab titled Phases: {phases}"
+        );
+        assert!(
+            !phases.contains(" Pipeline "),
+            "the Phases tab still carries its old block title: {phases}"
+        );
+
+        // The zero key is not a tab any more: the user stays where they are.
+        press(&mut screen, &mut ctx, KeyCode::Char('0'));
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Pipeline),
+            "the zero key must fall through to the no-op arm"
+        );
     }
 
     // ── 260917-fko: the experimental flag, both states ────────────────────
@@ -10058,7 +9947,7 @@ mod tests {
     fn index_ten_is_not_a_tab_when_experimental_is_off() {
         assert_eq!(
             sub_view_from_index(DRIVER_TAB_INDEX, false),
-            DetailSubView::PhaseList,
+            DetailSubView::RoadmapViz,
             "index 10 must take the same first-tab fallback an out-of-range \
              index already takes"
         );
@@ -10073,7 +9962,7 @@ mod tests {
     fn a_stored_driver_sub_view_reads_as_the_default_tab_when_experimental_is_off() {
         assert_eq!(
             effective_sub_view(DetailSubView::Driver, false),
-            DetailSubView::PhaseList
+            DetailSubView::RoadmapViz
         );
         assert_eq!(
             effective_sub_view(DetailSubView::Driver, true),
@@ -10285,7 +10174,7 @@ mod tests {
 
         for width in [40u16, 60, 80, 120] {
             for (active, full, compact) in [
-                (0usize, "1:Phases", "1:Ph"),
+                (0usize, "1:Roadmap", "1:Rd"),
                 (DRIVER_TAB_INDEX, "D:Drive", "D:Dr"),
             ] {
                 let mut ctx = test_ctx();
@@ -11392,7 +11281,7 @@ mod tests {
     #[test]
     fn the_driver_action_keys_are_scoped_to_the_driver_tab() {
         for tab in [
-            DetailSubView::PhaseList,
+            DetailSubView::RoadmapViz,
             DetailSubView::Pipeline,
             DetailSubView::Defaults,
         ] {
@@ -11423,8 +11312,8 @@ mod tests {
 
     // --- CD-03 / IN-07 closure: the generic `_ =>` fallback ---------------
     //
-    // Reached by exactly two sub-views — PhaseList and RoadmapViz. Every other
-    // sub-view has an explicit match arm. See plan 14-04 decision GD-01, which
+    // Reached by exactly one sub-view since the PhaseList tab was removed
+    // (D-B02) — RoadmapViz. Every other sub-view has an explicit match arm. See plan 14-04 decision GD-01, which
     // corrects CD-03's "seven non-file tabs" cost estimate.
 
     /// A DetailScreen and AppContext parked on a tab that reaches the generic
@@ -11443,7 +11332,7 @@ mod tests {
 
         let mut ctx = test_ctx();
         ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), DetailSubView::PhaseList);
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
 
         (screen, ctx)
     }
@@ -14505,7 +14394,7 @@ mod tests {
     fn roadmap_graph_tab_v_is_inert_on_other_tabs() {
         let (mut screen, mut ctx) = roadmap_graph_fixture();
         ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), DetailSubView::PhaseList);
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
         press(&mut screen, &mut ctx, KeyCode::Char('v'));
         assert!(!roadmap_box_flag(&ctx));
     }

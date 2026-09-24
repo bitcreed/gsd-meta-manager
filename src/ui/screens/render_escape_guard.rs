@@ -114,8 +114,8 @@
 //!    **not** exercised by any committed control. That residual is disclosed,
 //!    not closed."*
 //!
-//!    Every one of those caches is now populated by [`probe_ctx`], so all
-//!    eleven tabs render a POPULATED branch on every run, and three of them are
+//!    Every one of those caches is now populated by [`probe_ctx`], so every
+//!    tab renders a POPULATED branch on every run, and three of them are
 //!    additionally probed in the second state their own dispatch field selects
 //!    (`backlog_expanded`, `archive_depth` at two further depths,
 //!    `browser_depth`). Populating them was not bookkeeping: it produced four
@@ -835,7 +835,7 @@ fn zero_width_only_identity() -> String {
 
 /// One render state a probe run puts a screen in.
 ///
-/// A screen is not one picture. `DetailScreen` has eleven tabs;
+/// A screen is not one picture. `DetailScreen` has ten tabs;
 /// `DriverStartScreen` has two steps; `DriverConfirmScreen` has four prompts.
 /// The probe renders EACH, and the `label` is what a failure names — so a
 /// failure says which state leaked rather than only which screen.
@@ -1009,8 +1009,8 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
 /// # The rest of the fixture hole, closed in 21-25 rather than re-disclosed
 ///
 /// 21-23 closed `git_entries`. The same hole was still open for five more of
-/// `DetailScreen`'s eleven tabs, and LIMIT 1 named them by name: **Backlog,
-/// Sessions, Archive, Browse and Defaults** all reached their caches only
+/// `DetailScreen`'s tabs (eleven at the time), and LIMIT 1 named them by name:
+/// **Backlog, Sessions, Archive, Browse and Defaults** all reached their caches only
 /// through `view_cache.entry(..).or_default()`, so each rendered its EMPTY
 /// branch under probe and every render site below that branch was exercised by
 /// no committed control. The Driver tab was in the same position through
@@ -1237,9 +1237,9 @@ fn status_message_like_app_builds_it(identity: &str) -> String {
 /// # Why a baseline is needed at all, and what it caught
 ///
 /// `DetailScreen` draws the registry key into its bordered block's title on
-/// EVERY tab. So `clean_text.contains(clean)` is true for all fifteen probe
-/// states whatever the tab body renders, and a per-tab arrival record built on
-/// it would be a table of fifteen `true`s that stays green when a cache is
+/// EVERY tab. So `clean_text.contains(clean)` is true for every probe state
+/// whatever the tab body renders, and a per-tab arrival record built on it
+/// would be a table of nothing but `true`s that stays green when a cache is
 /// emptied. **That was measured, not reasoned about**: with
 /// `probe_ctx`'s `backlog_items` cleared and nothing else changed, the naive
 /// containment check still reported the Backlog tab as arriving.
@@ -1252,8 +1252,8 @@ fn status_message_like_app_builds_it(identity: &str) -> String {
 /// Measured chrome counts at the time this landed, so a future reader can see
 /// the size of the effect rather than take it on trust: 1 occurrence for the
 /// Backlog, GitHistory, Pipeline, Queue, Sessions, Archive, Defaults and Browse
-/// tabs; 2 for PhaseList, RoadmapViz, Driver and the three states whose
-/// breadcrumb draws a depth-derived milestone. Against populated counts of 2 to
+/// tabs; 2 for RoadmapViz, Driver, the since-removed phase-list tab (D-B02) and
+/// the three states whose breadcrumb draws a depth-derived milestone. Against populated counts of 2 to
 /// 7. **These numbers are NOT pinned** — the assertion compares against the
 /// baseline it measures on the same run, so a chrome change moves both sides.
 fn chrome_ctx(identity: &str) -> AppContext {
@@ -1352,11 +1352,15 @@ fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntr
 
 /// Every detail sub-view, so a tab is a render state rather than a place the
 /// probe never looked.
-const ALL_SUB_VIEWS: [crate::app::DetailSubView; 11] = {
+///
+/// In tab order since Phase 24 (D-B01): the PhaseList tab is gone (D-B02), and
+/// `Archive` stays a sub-view state of its own — an interim ninth tab until plan
+/// 24-07, and the Docs tab's Milestones view after it.
+const ALL_SUB_VIEWS: [crate::app::DetailSubView; 10] = {
     use crate::app::DetailSubView::*;
     [
-        PhaseList, RoadmapViz, Backlog, GitHistory, Pipeline, Queue, Sessions, Archive, Defaults,
-        Browse, Driver,
+        RoadmapViz, Pipeline, Backlog, GitHistory, Queue, Sessions, Defaults, Browse, Archive,
+        Driver,
     ]
 };
 
@@ -1381,18 +1385,14 @@ const ALL_SUB_VIEWS: [crate::app::DetailSubView; 11] = {
 /// re-read rather than a happy accident.
 const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
-        "PhaseList tab",
-        true,
-        "Draws the phase number, name and description out of `hostile_project_state`'s \
-         `phases`, plus the status and milestone.",
-    ),
-    (
         "RoadmapViz tab",
         true,
-        "The default graph view draws each `RoadmapPhase` id, its declared dependency \
-         ids (external ones in the `external deps` note line), the current phase's \
-         name, and each `RoadmapMilestone` label in the `Milestones:` header band and \
-         the row-end labels, all through `ui::roadmap_graph`.",
+        "The header draws the status and milestone out of `hostile_project_state` (the \
+         lines the removed PhaseList tab also drew, D-B02). The default graph view draws \
+         each `RoadmapPhase` id, its declared dependency ids (external ones in the \
+         `external deps` note line), the current phase's name, and each \
+         `RoadmapMilestone` label in the `Milestones:` header band and the row-end \
+         labels, all through `ui::roadmap_graph`.",
     ),
     (
         "Backlog tab",
@@ -1523,7 +1523,7 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
 /// run rather than pinned as a number somebody wrote down.
 ///
 /// `None` for every screen but `DetailScreen`: the per-state arrival equality
-/// is scoped to that one, and building fifteen extra renders for screens the
+/// is scoped to that one, and building its extra renders for screens the
 /// equality does not consult would cost time for nothing.
 fn detail_chrome_baseline(
     type_name: &str,
@@ -1558,7 +1558,6 @@ fn detail_tabs_expected_to_arrive() -> std::collections::BTreeSet<String> {
 fn sub_view_label(view: &crate::app::DetailSubView) -> &'static str {
     use crate::app::DetailSubView::*;
     match view {
-        PhaseList => "PhaseList tab",
         RoadmapViz => "RoadmapViz tab",
         Backlog => "Backlog tab",
         GitHistory => "GitHistory tab",
@@ -1587,7 +1586,7 @@ fn states_over_sub_views(
 }
 
 /// [`states_over_sub_views`] with the context builder made a parameter, so the
-/// SAME fifteen states can be built against [`chrome_ctx`] to measure the
+/// SAME states can be built against [`chrome_ctx`] to measure the
 /// baseline the per-tab arrival record is compared against.
 ///
 /// Parameterised rather than duplicated: a second copy of this walk could
@@ -1614,7 +1613,7 @@ fn states_over_sub_views_with(
         })
         .collect();
 
-    // A TAB IS NOT ONE PICTURE EITHER (21-25). Three of the eleven dispatch on
+    // A TAB IS NOT ONE PICTURE EITHER (21-25). Several tabs dispatch on
     // a second field to a genuinely different render of a genuinely different
     // value, and probing only the default value of that field is the same hole
     // one level down from the one this fixture just closed.
@@ -2943,7 +2942,7 @@ mod tests {
 
             // 1b. ARRIVAL, PER STATE, for `DetailScreen` (D-21-23). The
             //     whole-screen arrival check below passes as soon as ONE of
-            //     fifteen states draws the identity, so it cannot tell a
+            //     the states draws the identity, so it cannot tell a
             //     fixture that reaches every tab from one that reaches one. A
             //     populated cache the render path never reads would otherwise
             //     make every assertion about that tab pass by silence, which is
