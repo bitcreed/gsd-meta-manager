@@ -15392,4 +15392,257 @@ mod tests {
         assert!(row_numbered(&pane, "20").contains('·'), "{text}");
         assert!(text.contains("(implied via 21)"), "{text}");
     }
+
+
+    /// The index of the screen line holding `title` (a block's top border).
+    fn line_with(text: &str, title: &str) -> usize {
+        text.lines()
+            .position(|l| l.contains(title))
+            .unwrap_or_else(|| panic!("no {title:?} on screen:\n{text}"))
+    }
+
+    /// How many list rows contain `needle`.
+    fn rows_containing(pane: &[String], needle: &str) -> usize {
+        pane.iter().filter(|r| r.contains(needle)).count()
+    }
+
+    #[test]
+    fn sentriq_roadmap_at_80_columns_is_stacked_and_shows_9_once() {
+        let (screen, ctx) = roadmap_fixture("sentriq");
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert_eq!(text.lines().count(), 24);
+        assert!(text.lines().all(|l| l.chars().count() == 80));
+
+        let list_top = line_with(&text, "┌ Roadmap ");
+        let detail_top = line_with(&text, "┌ Phase ");
+        let pane = roadmap_list_pane(&text);
+        assert!(
+            detail_top > list_top + pane.len(),
+            "the Phase block sits below the list block:\n{text}"
+        );
+        assert!(
+            text.lines().nth(detail_top).is_some_and(|l| l.starts_with("┌ Phase ")),
+            "stacked: the Phase block starts at column 0:\n{text}"
+        );
+        assert_eq!(rows_numbered(&pane, "9"), 1, "{text}");
+        assert_eq!(rows_containing(&pane, "v0.12 Actuation Routines"), 1, "{text}");
+        assert!(!text.contains("─►"), "{text}");
+    }
+
+    #[test]
+    fn sentriq_phase_12_explains_it_has_no_deps() {
+        let (screen, mut ctx) = roadmap_fixture("sentriq");
+        set_roadmap_cursor(&mut ctx, phase_target("12"));
+        for (w, h) in [(80, 24), (120, 30)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(text.contains("Phase 12 "), "{w}x{h}:\n{text}");
+            assert!(text.contains("nothing declared"), "{w}x{h}:\n{text}");
+            assert!(text.contains("can run any time"), "{w}x{h}:\n{text}");
+            assert!(!text.contains("Nothing in this milestone"), "{w}x{h}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn sentriq_implied_dep_is_a_dim_marker_not_a_row() {
+        let (screen, mut ctx) = roadmap_fixture("sentriq");
+        set_roadmap_cursor(&mut ctx, phase_target("11"));
+        for (w, h) in [(80, 24), (120, 30)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            let pane = roadmap_list_pane(&text);
+            assert!(row_numbered(&pane, "9").contains('·'), "{w}x{h}:\n{text}");
+            assert!(text.contains("(implied via 10)"), "{w}x{h}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn sentriq_and_daily_vow_hold_at_both_widths() {
+        for (name, id, band) in [
+            ("sentriq", "9", "v0.12 Actuation Routines"),
+            ("daily-vow", "20", "v1.5 Closing the Loop"),
+        ] {
+            let (screen, ctx) = roadmap_fixture(name);
+            for (w, h) in [(80, 24), (120, 30)] {
+                let text = render_detail_to_text_at(&screen, &ctx, w, h);
+                let pane = roadmap_list_pane(&text);
+                assert_eq!(rows_numbered(&pane, id), 1, "{name} {w}x{h}:\n{text}");
+                assert_eq!(rows_containing(&pane, band), 1, "{name} {w}x{h}:\n{text}");
+                assert!(!text.contains("─►"), "{name} {w}x{h}:\n{text}");
+                assert!(
+                    text.lines().all(|l| l.chars().count() == usize::from(w)),
+                    "no line wider than the terminal"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ttbook_build_phases_are_list_rows_not_bands() {
+        let (mut screen, mut ctx) = roadmap_fixture("ttbook");
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let pane = roadmap_list_pane(&text);
+        for id in ["14", "15", "16", "17", "18"] {
+            assert_eq!(rows_numbered(&pane, id), 1, "build phase {id}:\n{text}");
+        }
+
+        let model = fixture_model(&ctx);
+        let bands: Vec<(&str, &str)> = model
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                roadmap_graph::ListRow::Band { short, label, .. } => {
+                    Some((short.as_str(), label.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        for short in ["M3", "M4", "M5"] {
+            let named: Vec<&(&str, &str)> = bands.iter().filter(|(s, _)| *s == short).collect();
+            assert_eq!(named.len(), 1, "band {short}: {bands:?}");
+            assert_eq!(rows_containing(&pane, named[0].1), 1, "band {short} drawn once:\n{text}");
+        }
+        assert!(
+            bands.iter().all(|(_, label)| !label.contains("Build phase")),
+            "no band is named after a build phase: {bands:?}"
+        );
+        assert!(
+            pane.iter().all(|r| !r.contains("Build phase 14")),
+            "{text}"
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        assert!(text.contains("┌ Phase 18 "), "{text}");
+        let status = text
+            .lines()
+            .find(|l| l.contains("planned (not a GSD phase)"))
+            .unwrap_or_else(|| panic!("no planned status line:\n{text}"));
+        assert!(status.contains('○') || status.contains('◌'), "{status}");
+    }
+
+    /// A Roadmap-tab fixture over hand-built phases `1` and `2`, phase 2
+    /// active, with `disk` as phase 1's and 2's disk inference.
+    fn two_phase_roadmap(
+        disk: &[(&str, crate::state_reader::disk_status::DiskInference)],
+    ) -> (DetailScreen, AppContext) {
+        use crate::state_reader::roadmap_md::RoadmapPhase;
+        let phase = |n: &str, deps: &[&str]| RoadmapPhase {
+            number: n.to_string(),
+            name: format!("Name {n}"),
+            description: String::new(),
+            completed: false,
+            total_plans: 0,
+            completed_plans: 0,
+            depends_on: deps.iter().map(|d| d.to_string()).collect(),
+        };
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState {
+                phases: vec![phase("1", &[]), phase("2", &["1"]), phase("3", &["2"])],
+                phase_disk_statuses: disk
+                    .iter()
+                    .map(|(n, inf)| (n.to_string(), inf.clone()))
+                    .collect(),
+                current_phase_number: crate::state_reader::phase_num::PhaseNum::parse("2"),
+                ..Default::default()
+            },
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    #[test]
+    fn a_disk_complete_phase_with_an_unticked_box_draws_done() {
+        let complete = DiskInference {
+            status: DiskStatus::Complete,
+            plan_count: 2,
+            summary_count: 2,
+            has_plans: true,
+            has_summaries: true,
+            ..Default::default()
+        };
+        let (screen, ctx) = two_phase_roadmap(&[("1", complete)]);
+        assert!(!ctx.project_states[TEST_ALIAS].phases[0].completed, "the box is unticked");
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let pane = roadmap_list_pane(&text);
+        let row = row_numbered(&pane, "1");
+        assert!(row.contains('●'), "disk Complete draws done: {row}");
+        assert!(!row.contains('○') && !row.contains('◌'), "{row}");
+        assert!(summary_line(&text).contains("1 of 3 phases done"), "{text}");
+    }
+
+    #[test]
+    fn the_selected_phase_shows_its_stage_badge() {
+        let partial = DiskInference {
+            status: DiskStatus::Partial,
+            plan_count: 3,
+            summary_count: 2,
+            has_plans: true,
+            has_summaries: true,
+            ..Default::default()
+        };
+        let (screen, mut ctx) = two_phase_roadmap(&[("2", partial)]);
+        set_roadmap_cursor(&mut ctx, phase_target("2"));
+        for (w, h) in [(80, 24), (120, 30)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            let detail_top = line_with(&text, "┌ Phase 2 ");
+            let detail: String = text.lines().skip(detail_top).collect::<Vec<_>>().join("\n");
+            assert!(detail.contains("[Executing 2/3]"), "{w}x{h}:\n{text}");
+            assert!(
+                roadmap_list_pane(&text).iter().all(|r| !r.contains("[Executing")),
+                "the badge is in the detail pane, not the list:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn roadmap_empty_states_explain_themselves() {
+        let (screen, mut ctx) = two_phase_roadmap(&[]);
+        ctx.project_states.get_mut(TEST_ALIAS).unwrap().phases.clear();
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(text.contains("No roadmap data available"), "{text}");
+        assert!(text.contains("0 of 0 phases done"), "the header still draws:\n{text}");
+
+        ctx.project_states.clear();
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(text.contains("No state data available for this project."), "{text}");
+        assert!(!text.contains("No state data available for roadmap"), "{text}");
+    }
+
+    #[test]
+    fn roadmap_header_keeps_paused_and_change_banner() {
+        let (screen, mut ctx) = two_phase_roadmap(&[]);
+        let quiet = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        for absent in ["Paused", "STATE.md", "[ Status:"] {
+            assert!(!quiet.contains(absent), "{absent} drawn when not present:\n{quiet}");
+        }
+
+        {
+            let state = ctx.project_states.get_mut(TEST_ALIAS).unwrap();
+            state.paused = true;
+        }
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(text.contains("Paused (HANDOFF file present)"), "{text}");
+
+        let old = ctx.project_states[TEST_ALIAS].clone();
+        {
+            let state = ctx.project_states.get_mut(TEST_ALIAS).unwrap();
+            state.pause_context = Some("waiting on review".to_string());
+            state.status = "executing".to_string();
+            state.state_md_unreadable = true;
+            state.state_md_recovered = true;
+        }
+        let new = ctx.project_states[TEST_ALIAS].clone();
+        ctx.change_tracker.detect_changes(TEST_ALIAS, &old, &new);
+        for (w, h) in [(80, 24), (120, 30)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(text.contains("Paused: waiting on review"), "{w}x{h}:\n{text}");
+            assert!(text.contains("[ Status:  -> executing --"), "{w}x{h}:\n{text}");
+            assert!(text.contains("STATE.md unreadable"), "{w}x{h}:\n{text}");
+            assert!(text.contains("STATE.md repaired in memory"), "{w}x{h}:\n{text}");
+            assert!(summary_line(&text).contains("phase 2 executing"), "{w}x{h}:\n{text}");
+            assert!(text.contains("┌ Roadmap "), "the list still draws:\n{text}");
+        }
+    }
 }
