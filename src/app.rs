@@ -1181,6 +1181,18 @@ impl App {
                             self.schedule_journal_tail(&alias, &project_path, &run_id);
                         }
                         crate::journal::ChangeKind::Planning => {
+                            // The Archive tab reloads in place, and AHEAD of the
+                            // dedup below rather than behind it: the dedup drops
+                            // the last write of a burst that lands inside 500 ms
+                            // of the previous refresh, and for a milestone being
+                            // archived that last write is the one that matters.
+                            // The reload is a few `read_dir`s bounded by the
+                            // archives this alias has open — nothing at all for
+                            // an alias whose Archive tab was never visited — so
+                            // it does not need the throttle `parse_project_state`
+                            // does.
+                            self.ctx.schedule_archive_refresh(&alias, &project_path);
+
                             // Dedup: skip if last refresh was less than 500ms ago
                             let now = std::time::Instant::now();
                             if let Some(last) = self.ctx.last_refresh.get(&alias) {
@@ -1354,6 +1366,10 @@ impl App {
                     .into_iter()
                     .map(crate::text::Untrusted::from_untrusted_source)
                     .collect();
+                // An in-place refresh (`schedule_archive_refresh`) can shrink
+                // the list under the cursor; keep the cursor on a real row.
+                let last = cache.archive_milestones.len().saturating_sub(1);
+                cache.archive_selected[0] = cache.archive_selected[0].min(last);
                 cache.archive_loading = false;
                 self.needs_redraw = true;
             }
@@ -1363,6 +1379,26 @@ impl App {
                 data,
             } => {
                 let cache = self.ctx.view_cache.entry(alias.clone()).or_default();
+                // Same clamp as the milestone list above, for the listing this
+                // archive feeds if it is the one on screen.
+                match &cache.archive_depth {
+                    crate::archive::ArchiveDepth::PhaseList { milestone: open }
+                        if *open == milestone =>
+                    {
+                        let rows = data.top_level_files.len() + data.phases.len();
+                        cache.archive_selected[1] =
+                            cache.archive_selected[1].min(rows.saturating_sub(1));
+                    }
+                    crate::archive::ArchiveDepth::FileList {
+                        milestone: open,
+                        phase_idx,
+                    } if *open == milestone => {
+                        let rows = data.phases.get(*phase_idx).map_or(0, |p| p.files.len());
+                        cache.archive_selected[2] =
+                            cache.archive_selected[2].min(rows.saturating_sub(1));
+                    }
+                    _ => {}
+                }
                 cache.archive_loading = false;
                 self.ctx.archive_cache.insert(alias, milestone, data);
                 self.needs_redraw = true;
@@ -4893,5 +4929,113 @@ mod tests {
             "project `{OTHER}`'s Archive > v1.2 must show its own phases \
              (its load arrived: {loaded}):\n{second_view}"
         );
+    }
+
+    /// A change under `.planning/` reloads the open archive IN PLACE: the old
+    /// content stays on screen until the new listing lands, and nothing in
+    /// between is `Loading...`.
+    ///
+    /// The change is reported as `STATE.md`, not as a path under
+    /// `milestones/`, on purpose: the watcher sends one `Planning` event per
+    /// project per debounce batch carrying the FIRST path in the batch, so a
+    /// reload gated on the path naming `milestones/` would miss a
+    /// complete-milestone write that happened to share a batch with STATE.md.
+    #[tokio::test]
+    async fn archive_milestone_view_reloads_in_place_when_planning_files_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        archive_fixture(dir.path(), "01-core-flow");
+        let (mut app, mut rx) = obs_app(dir.path());
+        assert!(drill_into_v1_2(&mut app, &mut rx, OBS_ALIAS).await);
+
+        let late = dir
+            .path()
+            .join(".planning/milestones/v1.2-phases/02-late-addition");
+        std::fs::create_dir_all(&late).expect("late phase dir");
+        std::fs::write(late.join("02-PLAN.md"), "plan\n").expect("late plan");
+
+        app.update(Action::FileChanged {
+            project_path: dir.path().to_path_buf(),
+            changed_path: dir.path().join(".planning/STATE.md"),
+        });
+
+        let during = render_top_screen(&app);
+        assert!(
+            during.contains("Phase 01: Core Flow") && !during.contains("Loading..."),
+            "the open archive must keep its content while the reload is in flight:\n{during}"
+        );
+
+        assert!(
+            pump_archive_until(&mut app, &mut rx, is_load_for(OBS_ALIAS, "v1.2")).await,
+            "a planning change scheduled no reload of the open archive"
+        );
+        let after = render_top_screen(&app);
+        assert!(after.contains("Phase 02: Late Addition"), "{after}");
+        assert!(after.contains("Phase 01: Core Flow"), "{after}");
+        assert!(!after.contains("Loading..."), "{after}");
+    }
+
+    /// The milestone list (the Archive tab's top level) reloads in place too:
+    /// a milestone archived while the list is on screen appears without
+    /// leaving the tab.
+    #[tokio::test]
+    async fn the_archive_milestone_list_picks_up_a_newly_archived_milestone_in_place() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        archive_fixture(dir.path(), "01-core-flow");
+        let (mut app, mut rx) = obs_app(dir.path());
+        open_archive_tab(&mut app, OBS_ALIAS);
+        assert!(pump_archive_until(&mut app, &mut rx, is_discovery_for(OBS_ALIAS)).await);
+        assert!(!render_top_screen(&app).contains("v1.3"));
+
+        std::fs::write(
+            dir.path().join(".planning/milestones/v1.3-ROADMAP.md"),
+            "# v1.3\n",
+        )
+        .expect("archive v1.3");
+        app.update(Action::FileChanged {
+            project_path: dir.path().to_path_buf(),
+            changed_path: dir.path().join(".planning/STATE.md"),
+        });
+        assert!(
+            pump_archive_until(&mut app, &mut rx, is_discovery_for(OBS_ALIAS)).await,
+            "a planning change scheduled no re-discovery of the listed milestones"
+        );
+        let after = render_top_screen(&app);
+        assert!(after.contains("v1.3"), "{after}");
+        assert!(!after.contains("Loading..."), "{after}");
+    }
+
+    /// An in-place reload that SHRINKS the listing under the cursor leaves the
+    /// cursor on a row that exists, so `Enter` still opens something. The
+    /// neighbour of the reload test above: there the listing grew.
+    #[tokio::test]
+    async fn an_in_place_reload_that_shrinks_the_listing_keeps_the_cursor_on_a_row() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        archive_fixture(dir.path(), "01-core-flow");
+        let (mut app, mut rx) = obs_app(dir.path());
+        assert!(drill_into_v1_2(&mut app, &mut rx, OBS_ALIAS).await);
+
+        // Rows: [v1.2-ROADMAP.md, Phase 01]. Put the cursor on the phase, the
+        // last row, then archive-edit the phase away.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.ctx.view_cache[OBS_ALIAS].archive_selected[1], 1);
+        std::fs::remove_dir_all(
+            dir.path()
+                .join(".planning/milestones/v1.2-phases/01-core-flow"),
+        )
+        .expect("remove the phase");
+
+        app.update(Action::FileChanged {
+            project_path: dir.path().to_path_buf(),
+            changed_path: dir.path().join(".planning/STATE.md"),
+        });
+        assert!(pump_archive_until(&mut app, &mut rx, is_load_for(OBS_ALIAS, "v1.2")).await);
+
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS].archive_selected[1], 0,
+            "one row is left, so the cursor must be on row 0"
+        );
+        let after = render_top_screen(&app);
+        assert!(after.contains(">   v1.2-ROADMAP.md"), "{after}");
+        assert!(!after.contains("Core Flow"), "{after}");
     }
 }

@@ -91,6 +91,14 @@ impl ArchiveCache {
         self.0.entry(alias).or_default().insert(milestone, data);
     }
 
+    /// The milestones loaded for `alias` — what an in-place refresh re-reads.
+    pub fn loaded_milestones(&self, alias: &str) -> Vec<String> {
+        self.0
+            .get(alias)
+            .map(|by_milestone| by_milestone.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Whether anything is held for `alias`.
     pub fn has_alias(&self, alias: &str) -> bool {
         self.0.contains_key(alias)

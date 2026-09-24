@@ -1530,6 +1530,60 @@ impl AppContext {
         self
     }
 
+    /// Re-read `alias`'s Archive tab from disk **in place** after a change
+    /// under its `.planning/`.
+    ///
+    /// The milestone list is re-discovered if the tab has listed it, and every
+    /// milestone archive already loaded for the alias is re-loaded. Neither
+    /// sets `archive_loading`: the current listing stays on screen until the
+    /// new one lands through the same `ArchiveMilestonesDiscovered` /
+    /// `ArchiveLoaded` handlers the first load uses, which replace it whole.
+    ///
+    /// Not gated on the changed path naming `milestones/`. The watcher sends
+    /// one `Planning` event per project per debounce batch carrying the FIRST
+    /// path in the batch, so a complete-milestone write sharing a batch with a
+    /// `STATE.md` write would arrive named `STATE.md`. The cost is bounded by
+    /// what the user has opened: an alias whose Archive tab was never visited
+    /// schedules nothing.
+    ///
+    /// A missing channel returns silently rather than through
+    /// `error_message`: this runs on watcher events the user did not ask for,
+    /// and the view it would refresh is still correct as of its last load.
+    pub fn schedule_archive_refresh(&self, alias: &str, project_path: &std::path::Path) {
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+        let rediscover = self
+            .view_cache
+            .get(alias)
+            .is_some_and(|cache| !cache.archive_milestones.is_empty());
+        let loaded = self.archive_cache.loaded_milestones(alias);
+        if !rediscover && loaded.is_empty() {
+            return;
+        }
+
+        let tx = tx.clone();
+        let alias = alias.to_string();
+        let milestones_dir = project_path.join(".planning/milestones");
+        tokio::task::spawn_blocking(move || {
+            if rediscover {
+                let milestones = crate::archive::discover_milestones(&milestones_dir);
+                let _ = tx.send(Action::ArchiveMilestonesDiscovered {
+                    alias: alias.clone(),
+                    milestones,
+                });
+            }
+            for milestone in loaded {
+                let data = crate::archive::load_milestone_archive(&milestones_dir, &milestone);
+                let _ = tx.send(Action::ArchiveLoaded {
+                    alias: alias.clone(),
+                    milestone,
+                    data,
+                });
+            }
+        });
+    }
+
     /// Get sorted project aliases for consistent ordering in the table.
     ///
     /// Alphabetical order is computed first in **both** modes, which is what
