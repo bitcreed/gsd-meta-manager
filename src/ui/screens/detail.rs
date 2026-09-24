@@ -1720,7 +1720,7 @@ impl Screen for DetailScreen {
                                     (cache.archive_selected[0] + 1).min(max);
                             }
                             ArchiveDepth::PhaseList { milestone } => {
-                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                                     let total = data.top_level_files.len() + data.phases.len();
                                     let max = total.saturating_sub(1);
                                     cache.archive_selected[1] =
@@ -1728,7 +1728,7 @@ impl Screen for DetailScreen {
                                 }
                             }
                             ArchiveDepth::FileList { milestone, phase_idx } => {
-                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                                     if let Some(phase) = data.phases.get(*phase_idx) {
                                         let max = phase.files.len().saturating_sub(1);
                                         cache.archive_selected[2] =
@@ -2000,7 +2000,7 @@ impl Screen for DetailScreen {
                                     (cache.archive_selected[0] + PAGE_SCROLL_LINES as usize).min(max);
                             }
                             ArchiveDepth::PhaseList { milestone } => {
-                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                                     let total = data.top_level_files.len() + data.phases.len();
                                     let max = total.saturating_sub(1);
                                     cache.archive_selected[1] =
@@ -2008,7 +2008,7 @@ impl Screen for DetailScreen {
                                 }
                             }
                             ArchiveDepth::FileList { milestone, phase_idx } => {
-                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                                     if let Some(phase) = data.phases.get(*phase_idx) {
                                         let max = phase.files.len().saturating_sub(1);
                                         cache.archive_selected[2] =
@@ -2534,7 +2534,7 @@ impl Screen for DetailScreen {
                                     };
                                     cache.archive_selected[1] = 0;
                                     // Trigger async load if not cached
-                                    if !ctx.archive_cache.contains_key(&milestone) {
+                                    if ctx.archive_cache.get(&self.alias, &milestone).is_none() {
                                         cache.archive_loading = true;
                                         if let Some(project) = ctx.config.projects.get(&self.alias)
                                         {
@@ -2564,7 +2564,7 @@ impl Screen for DetailScreen {
                             }
                             ArchiveDepth::PhaseList { milestone } => {
                                 let selected = cache.archive_selected[1];
-                                if let Some(data) = ctx.archive_cache.get(&milestone) {
+                                if let Some(data) = ctx.archive_cache.get(&self.alias, &milestone) {
                                     let top_count = data.top_level_files.len();
                                     if selected < top_count {
                                         // Selected a top-level file
@@ -2596,7 +2596,7 @@ impl Screen for DetailScreen {
                                 phase_idx,
                             } => {
                                 let selected = cache.archive_selected[2];
-                                if let Some(data) = ctx.archive_cache.get(&milestone) {
+                                if let Some(data) = ctx.archive_cache.get(&self.alias, &milestone) {
                                     if let Some(phase) = data.phases.get(phase_idx) {
                                         if let Some(file) = phase.files.get(selected) {
                                             let path = file.path.clone();
@@ -3239,7 +3239,8 @@ impl Screen for DetailScreen {
                     } = &cache.archive_depth
                     {
                         // Resolve the file path from archive cache
-                        let file_path = ctx.archive_cache.get(milestone).and_then(|data| {
+                        let archive = ctx.archive_cache.get(&self.alias, milestone);
+                        let file_path = archive.and_then(|data| {
                             match phase_idx {
                                 None => {
                                     // Top-level file (entered from PhaseList)
@@ -4634,7 +4635,7 @@ impl DetailScreen {
         let content_area = chunks[1];
 
         // Render breadcrumb
-        let breadcrumb = Self::archive_breadcrumb(&cache.archive_depth, cache, ctx);
+        let breadcrumb = Self::archive_breadcrumb(&self.alias, &cache.archive_depth, cache, ctx);
         frame.render_widget(Paragraph::new(breadcrumb), breadcrumb_area);
 
         if cache.archive_loading {
@@ -4679,7 +4680,7 @@ impl DetailScreen {
                 frame.render_stateful_widget(list, content_area, &mut list_state);
             }
             ArchiveDepth::PhaseList { milestone } => {
-                if let Some(data) = ctx.archive_cache.get(milestone) {
+                if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                     let mut items: Vec<ListItem> = Vec::new();
                     // Top-level milestone files first
                     for f in &data.top_level_files {
@@ -4726,7 +4727,7 @@ impl DetailScreen {
                 milestone,
                 phase_idx,
             } => {
-                if let Some(data) = ctx.archive_cache.get(milestone) {
+                if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                     if let Some(phase) = data.phases.get(*phase_idx) {
                         if phase.files.is_empty() {
                             let empty = Paragraph::new("No files found for this phase.")
@@ -4954,6 +4955,7 @@ impl DetailScreen {
 
     /// Build breadcrumb line for the archive tab showing navigation path.
     fn archive_breadcrumb(
+        alias: &str,
         depth: &crate::archive::ArchiveDepth,
         cache: &super::ProjectViewCache,
         ctx: &AppContext,
@@ -4990,7 +4992,7 @@ impl DetailScreen {
                     shown(milestone),
                     Style::default().fg(Color::Yellow),
                 ));
-                if let Some(data) = ctx.archive_cache.get(milestone) {
+                if let Some(data) = ctx.archive_cache.get(alias, milestone) {
                     if let Some(phase) = data.phases.get(*phase_idx) {
                         spans.push(Span::raw(" > "));
                         spans.push(Span::raw(phase.display_name.shown()));
@@ -5008,7 +5010,7 @@ impl DetailScreen {
                     Style::default().fg(Color::Yellow),
                 ));
                 if let Some(idx) = phase_idx {
-                    if let Some(data) = ctx.archive_cache.get(milestone) {
+                    if let Some(data) = ctx.archive_cache.get(alias, milestone) {
                         if let Some(phase) = data.phases.get(*idx) {
                             spans.push(Span::raw(" > "));
                             spans.push(Span::raw(phase.display_name.shown()));
@@ -10449,7 +10451,7 @@ mod tests {
             input_buffer: String::new(),
             needs_redraw: false,
             active_sessions: Vec::new(),
-            archive_cache: HashMap::new(),
+            archive_cache: crate::archive::ArchiveCache::default(),
             // Fixtures default the experimental flag ON, so every driver test
             // written before 260917-fko keeps asserting what it always did;
             // the flag-off tests call `with_experimental(false)`.

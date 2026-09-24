@@ -548,7 +548,7 @@ impl App {
             input_buffer: String::new(),
             needs_redraw: true,
             active_sessions: Vec::new(),
-            archive_cache: HashMap::new(),
+            archive_cache: crate::archive::ArchiveCache::default(),
             // The ONE production read of `GSDMM_EXPERIMENTAL_FEATURES`, at
             // startup, resolved into the one field every gate point reads
             // (260917-fko D1, threat T-fko-02).
@@ -1362,9 +1362,9 @@ impl App {
                 milestone,
                 data,
             } => {
-                self.ctx.archive_cache.insert(milestone, data);
-                let cache = self.ctx.view_cache.entry(alias).or_default();
+                let cache = self.ctx.view_cache.entry(alias.clone()).or_default();
                 cache.archive_loading = false;
+                self.ctx.archive_cache.insert(alias, milestone, data);
                 self.needs_redraw = true;
             }
             // One tail read landed. **This is the seam Phase 16 left open, and
@@ -1884,9 +1884,14 @@ impl App {
         self.ctx
             .last_refresh
             .retain(|alias, _| registered.contains_key(alias));
+        // `archive_cache` was keyed by MILESTONE when this line first retained
+        // it by alias, so every archive went on every pass and the Archive
+        // tab's drill-in flipped to `Loading...` five seconds after it loaded
+        // (debug session `archive-milestone-view-loading`). It is now an
+        // `ArchiveCache`, keyed alias first, whose only prune names aliases.
         self.ctx
             .archive_cache
-            .retain(|alias, _| registered.contains_key(alias));
+            .retain_aliases(|alias| registered.contains_key(alias));
 
         let mut runs_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
         for (alias, run_id) in self.ctx.journal_cursors.keys() {
@@ -4510,8 +4515,12 @@ mod tests {
             app.ctx
                 .last_refresh
                 .insert(alias.to_string(), std::time::Instant::now());
+            // Keyed alias THEN milestone. This fixture used to insert the alias
+            // as the map's only key, which is how it passed while the real map
+            // was keyed by milestone and the prune emptied it every pass.
             app.ctx.archive_cache.insert(
                 alias.to_string(),
+                "v1.0".to_string(),
                 crate::archive::MilestoneArchive {
                     version: "v1.0".to_string(),
                     top_level_files: Vec::new(),
@@ -4584,7 +4593,7 @@ mod tests {
         assert!(!driver_output.contains_key(GONE), "driver_output leaked");
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
-        assert!(!archive_cache.contains_key(GONE), "archive_cache leaked");
+        assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
 
         // The control arm for all seven at once: the registered alias kept
         // everything, so none of the assertions above passed because the prune
@@ -4595,7 +4604,7 @@ mod tests {
         assert!(last_outcomes.contains_key(OBS_ALIAS));
         assert!(driver_output.contains_key(OBS_ALIAS));
         assert!(last_refresh.contains_key(OBS_ALIAS));
-        assert!(archive_cache.contains_key(OBS_ALIAS));
+        assert!(archive_cache.get(OBS_ALIAS, "v1.0").is_some());
         let kept = view_cache
             .get(OBS_ALIAS)
             .expect("a registered alias keeps its view cache");
@@ -4675,5 +4684,214 @@ mod tests {
             Some("== Push refspecs this state would produce =="),
         );
         assert!(app.needs_redraw);
+    }
+
+    // ── The Archive tab's drill-in view across refreshes ───────────────────
+    //
+    // Debug session `archive-milestone-view-loading`. `Archive > v1.2` showed
+    // its content and then, a few seconds later, flipped back to `Loading...`
+    // and stayed there until ESC + re-enter. The few seconds was the 20-tick
+    // block: `prune_driver_maps` retained `archive_cache` entries whose key was
+    // a registered ALIAS, but the map was keyed by MILESTONE, so every entry
+    // went on every pass. These tests drive the real `App` — key events,
+    // channel actions, ticks and a `TestBackend` render — because the defect
+    // lived in the seam between the drill-in, the tick and the render, and a
+    // test of any one of them alone passed.
+
+    /// Archive fixture: `v1.1` and `v1.2` archived, `v1.2` carrying one
+    /// top-level file and one phase directory named `phase_dir`.
+    fn archive_fixture(root: &std::path::Path, phase_dir: &str) {
+        let milestones = root.join(".planning/milestones");
+        let phase = milestones.join("v1.2-phases").join(phase_dir);
+        std::fs::create_dir_all(&phase).expect("phase dir");
+        std::fs::write(milestones.join("v1.1-ROADMAP.md"), "# v1.1\n").expect("v1.1 roadmap");
+        std::fs::write(milestones.join("v1.2-ROADMAP.md"), "# v1.2\n").expect("v1.2 roadmap");
+        std::fs::write(phase.join("01-PLAN.md"), "plan\n").expect("phase plan");
+    }
+
+    /// Push a detail screen already on the Archive tab, the way the dashboard's
+    /// `8` does, so its milestone discovery is scheduled on the real channel.
+    fn open_archive_tab(app: &mut App, alias: &str) {
+        let screen = crate::ui::screens::detail::DetailScreen::opened_on(
+            alias.to_string(),
+            DetailSubView::Archive,
+            &mut app.ctx,
+        );
+        app.screen_stack.push(Box::new(screen));
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.update(Action::RawKey(crossterm::event::KeyEvent::new(
+            code,
+            KeyModifiers::NONE,
+        )));
+    }
+
+    /// Apply archive actions from the channel until one satisfies `wanted`.
+    ///
+    /// Only the two archive actions are applied. Everything else (session
+    /// detection and reconciliation results scheduled by the tick) is dropped,
+    /// because `SessionsDetected` auto-registers whatever agent sessions happen
+    /// to be running on the test machine — a verdict that depends on the
+    /// machine. Returns `false` if nothing wanted arrives within two seconds.
+    async fn pump_archive_until(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        wanted: impl Fn(&Action) -> bool,
+    ) -> bool {
+        loop {
+            let next =
+                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
+            let Ok(Some(action)) = next else {
+                return false;
+            };
+            let is_wanted = wanted(&action);
+            if matches!(
+                action,
+                Action::ArchiveLoaded { .. } | Action::ArchiveMilestonesDiscovered { .. }
+            ) {
+                app.update(action);
+            }
+            if is_wanted {
+                return true;
+            }
+        }
+    }
+
+    fn is_discovery_for(alias: &'static str) -> impl Fn(&Action) -> bool {
+        move |action| {
+            matches!(action, Action::ArchiveMilestonesDiscovered { alias: a, .. } if a == alias)
+        }
+    }
+
+    fn is_load_for(alias: &'static str, milestone: &'static str) -> impl Fn(&Action) -> bool {
+        move |action| {
+            matches!(
+                action,
+                Action::ArchiveLoaded { alias: a, milestone: m, .. } if a == alias && m == milestone
+            )
+        }
+    }
+
+    /// Draw the top of the screen stack into a `TestBackend` and join the cells.
+    fn render_top_screen(app: &App) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (width, height) = (120u16, 30u16);
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| {
+                app.screen_stack
+                    .last()
+                    .expect("a screen on the stack")
+                    .render(frame, frame.area(), &app.ctx)
+            })
+            .expect("draw the top screen");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map(|cell| cell.symbol())
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Open the Archive tab for `alias` and drill into `v1.2` (second in the
+    /// list), exactly as a user does: `8`, `Down`, `Enter`.
+    async fn drill_into_v1_2(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        alias: &'static str,
+    ) -> bool {
+        open_archive_tab(app, alias);
+        assert!(
+            pump_archive_until(app, rx, is_discovery_for(alias)).await,
+            "milestone discovery for {alias} never arrived"
+        );
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Enter);
+        pump_archive_until(app, rx, is_load_for(alias, "v1.2")).await
+    }
+
+    /// The reported symptom, reproduced end to end: the drill-in view keeps its
+    /// content across the 20-tick block (~5 s) that runs detection,
+    /// reconciliation and the map prune.
+    #[tokio::test]
+    async fn archive_milestone_view_keeps_its_content_across_the_periodic_prune() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        archive_fixture(dir.path(), "01-core-flow");
+        let (mut app, mut rx) = obs_app(dir.path());
+
+        assert!(
+            drill_into_v1_2(&mut app, &mut rx, OBS_ALIAS).await,
+            "the v1.2 load never arrived"
+        );
+        let before = render_top_screen(&app);
+        assert!(before.contains("Archive > v1.2"), "{before}");
+        assert!(before.contains("Phase 01: Core Flow"), "{before}");
+        assert!(!before.contains("Loading..."), "{before}");
+
+        // Twenty ticks is one pass of the 20-tick block at 250 ms: the
+        // "after a few seconds" in the report. Two passes, so a fix that only
+        // survives the first prune does not pass.
+        for pass in 1..=2 {
+            for _ in 0..20 {
+                app.update(Action::Tick);
+            }
+            let after = render_top_screen(&app);
+            assert!(
+                !after.contains("Loading..."),
+                "Archive > v1.2 flipped back to Loading... after 20-tick pass {pass}:\n{after}"
+            );
+            assert!(after.contains("Phase 01: Core Flow"), "{after}");
+        }
+    }
+
+    /// Two projects that both archived a `v1.2` each see their OWN archive.
+    /// Keyed by milestone alone, the second drill-in found the first project's
+    /// entry, scheduled no load, and drew the other project's phases.
+    #[tokio::test]
+    async fn the_same_milestone_version_in_two_projects_does_not_share_a_cache_entry() {
+        use crate::config::RegisteredProject;
+        const OTHER: &str = "other";
+
+        let first = tempfile::tempdir().expect("temp dir");
+        let second = tempfile::tempdir().expect("temp dir");
+        archive_fixture(first.path(), "01-alpha-work");
+        archive_fixture(second.path(), "01-bravo-work");
+        let (mut app, mut rx) = obs_app(first.path());
+        app.ctx.config.projects.insert(
+            OTHER.to_string(),
+            RegisteredProject {
+                path: second.path().to_path_buf(),
+                added: "2026-09-23".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+
+        assert!(drill_into_v1_2(&mut app, &mut rx, OBS_ALIAS).await);
+        let first_view = render_top_screen(&app);
+        assert!(first_view.contains("Phase 01: Alpha Work"), "{first_view}");
+
+        app.screen_stack.pop();
+        let loaded = drill_into_v1_2(&mut app, &mut rx, OTHER).await;
+        let second_view = render_top_screen(&app);
+        assert!(
+            second_view.contains("Phase 01: Bravo Work")
+                && !second_view.contains("Alpha Work"),
+            "project `{OTHER}`'s Archive > v1.2 must show its own phases \
+             (its load arrived: {loaded}):\n{second_view}"
+        );
     }
 }

@@ -62,6 +62,48 @@ pub struct ArchiveFile {
     pub path: PathBuf,
 }
 
+/// Every parsed milestone archive the TUI holds, keyed **alias first,
+/// milestone second**.
+///
+/// A type rather than a bare map because the bare map's key was misread. It
+/// was a `HashMap<String, MilestoneArchive>` keyed by milestone (`"v1.2"`), and
+/// debug session `archive-milestone-view-loading` found both of the defects
+/// that key allowed: `App::prune_driver_maps` retained it by registered ALIAS,
+/// so every entry was dropped on every 20-tick pass and the Archive tab's
+/// drill-in flipped back to `Loading...` a few seconds after it loaded; and two
+/// projects that both archived a `v1.2` shared one entry, so the second project
+/// drew the first one's phases. Every method here names both halves of the key,
+/// and the only pruning primitive is [`ArchiveCache::retain_aliases`], so
+/// neither mistake can be spelled against this type.
+#[derive(Debug, Default)]
+pub struct ArchiveCache(
+    std::collections::HashMap<String, std::collections::HashMap<String, MilestoneArchive>>,
+);
+
+impl ArchiveCache {
+    /// `alias`'s archive of `milestone`, if it has been loaded.
+    pub fn get(&self, alias: &str, milestone: &str) -> Option<&MilestoneArchive> {
+        self.0.get(alias)?.get(milestone)
+    }
+
+    /// Store (or replace, on an in-place reload) `alias`'s archive of `milestone`.
+    pub fn insert(&mut self, alias: String, milestone: String, data: MilestoneArchive) {
+        self.0.entry(alias).or_default().insert(milestone, data);
+    }
+
+    /// Whether anything is held for `alias`.
+    pub fn has_alias(&self, alias: &str) -> bool {
+        self.0.contains_key(alias)
+    }
+
+    /// Keep only the aliases `keep` accepts, dropping each rejected alias's
+    /// archives whole. The prune's primitive: it is handed an ALIAS, never a
+    /// milestone.
+    pub fn retain_aliases(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.0.retain(|alias, _| keep(alias));
+    }
+}
+
 /// Discover milestones by scanning for `v*-ROADMAP.md` files.
 ///
 /// Returns sorted version strings like `["v1.0", "v1.1"]`.

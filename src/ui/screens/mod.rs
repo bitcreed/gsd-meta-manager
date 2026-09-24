@@ -1397,7 +1397,9 @@ pub struct AppContext {
     pub input_buffer: String,
     pub needs_redraw: bool,
     pub active_sessions: Vec<crate::session_detector::ClaudeSession>,
-    pub archive_cache: HashMap<String, crate::archive::MilestoneArchive>,
+    /// Parsed milestone archives, keyed alias first, milestone second — see
+    /// [`crate::archive::ArchiveCache`] for why that is a type.
+    pub archive_cache: crate::archive::ArchiveCache,
     /// Whether the experimental surfaces — today, every driver surface — exist
     /// at all in this TUI session (quick task 260917-fko, D1/D2).
     ///
@@ -2313,7 +2315,7 @@ mod tests {
             input_buffer: String::new(),
             needs_redraw: false,
             active_sessions: Vec::new(),
-            archive_cache: HashMap::new(),
+            archive_cache: crate::archive::ArchiveCache::default(),
             // Fixtures default the experimental flag ON so every driver test
             // written before 260917-fko keeps asserting what it always did;
             // the flag-off tests call `with_experimental(false)`.

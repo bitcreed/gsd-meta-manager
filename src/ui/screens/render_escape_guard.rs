@@ -1063,9 +1063,12 @@ fn probe_ctx(identity: &str) -> AppContext {
     }];
 
     // The Archive tab at its PhaseList and FileList depths: both read
-    // `ctx.archive_cache`, which is keyed by the RAW milestone string because
-    // that is what the navigation key is.
+    // `ctx.archive_cache`, which is keyed by the project's alias and then the
+    // RAW milestone string, because that is what the navigation key is. Both
+    // are `identity` here: the screen is opened on alias `identity` and the
+    // depth names milestone `identity`.
     ctx.archive_cache.insert(
+        identity.to_string(),
         identity.to_string(),
         hostile_milestone_archive(identity),
     );
