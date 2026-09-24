@@ -13,7 +13,7 @@ section "Real Fixtures".
 | `ttbook-STATE.md` | ttbook | `c71fcd0` | 2026-09-24 | `milestone: v2` names a roadmap milestone by its first token |
 | `daily-vow-ROADMAP.md` | daily-vow | `abc11af` | 2026-09-24 | `## Milestones` list with the `--` separator (v1.0-v1.4 shipped, v1.5 in progress); shipped phases 1-17 only in a `## Complete Phase History` table; phase 23 declares `Phase 21 (…), Phase 20 (…)`, so 20 is an implied dependency via 21 and the old graph drew `20` twice (a reference row); `## Requirement Coverage (v1.5)` reads as a spurious member-less milestone |
 | `daily-vow-STATE.md` | daily-vow | `abc11af` | 2026-09-24 | `milestone: v1.5` + `milestone_name` |
-| `sentriq-ROADMAP.md` | sentriq | `49533e9` | 2026-09-24 | no `## Milestones` list: the active milestone is only a bold `**v0.12 — Actuation Routines** (phases 9-12)` line, so no roadmap milestone holds phases 9-12 (a synthetic band is needed); `## v0.11 Phases (4-7)` carries its range in parentheses; phase 11 declares `Phase 10 (…), Phase 9 (…)`, so 9 is implied via 10 and the old graph drew `9` twice; phase 12 declares no dependency; `## Scope Explicitly Excluded from v0.12` reads as a spurious member-less milestone |
+| `sentriq-ROADMAP.md` | sentriq | `49533e9` | 2026-09-24 | no `## Milestones` list: the active milestone is only a bold `**v0.12 — Actuation Routines** (phases 9-12)` line, so no roadmap milestone holds phases 9-12 (a synthetic band is needed); `## v0.11 Phases (4-7)` carries its range in parentheses; phase 11 declares `Phase 10 (…), Phase 9 (…)`, so 9 is implied via 10 and the old graph drew `9` twice; phase 12 declares no dependency; `## Scope Explicitly Excluded from v0.12` reads as a spurious member-less milestone. Known difference from Mockup C: its "earlier" row also names `pre-GSD 1–3` and `TASK-111 (quick)`, but those are index-only table sections, not milestones under any detector the reader has, so only `v0.11` is reported shipped |
 | `sentriq-STATE.md` | sentriq | `dfc6d2c` | 2026-09-24 | `milestone_name` written AFTER the `progress:` block |
 
 ## These are SANITISED excerpts, not copies
@@ -42,3 +42,19 @@ The source repositories are **private**; this crate is public and publishes
 
 Tests read these files only through `include_str!`, never from the source
 projects' paths, so they run anywhere.
+
+## Rules for adding a fixture
+
+Two invariants hold for every file in this directory, and the unit test
+`state_reader::roadmap_md::tests::vendored_roadmap_fixtures_are_sanitised`
+enforces both (add a new file to its list):
+
+1. Every line containing `**Goal` also contains `(sanitised)` — a goal body is
+   always replaced, never copied.
+2. No file contains `/home/` — no absolute filesystem path of the machine the
+   excerpt was taken on.
+
+Beyond what the guard can check: replace every other prose line too, keep the
+structure byte-for-byte, and add a row to the table above with the source
+commit (`git log -1 --format=%h -- .planning/ROADMAP.md` in the source
+repository) and the shape or defect the fixture pins.

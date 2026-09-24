@@ -816,14 +816,89 @@ pub fn split_milestone_label(label: &str) -> (String, String) {
     (short, unquoted.to_string())
 }
 
-/// Which milestones are shipped, one flag per milestone (D-A07).
-pub fn shipped_milestones(ms: &[RoadmapMilestone], _state_milestone: &str) -> Vec<bool> {
-    vec![false; ms.len()]
+/// The numeric segments of a `v`-prefixed version token (`v0.11` → `[0, 11]`),
+/// or `None` when `token` is not one.
+fn version_segments(token: &str) -> Option<Vec<u64>> {
+    let rest = token.strip_prefix(['v', 'V'])?;
+    let segments = rest
+        .split('.')
+        .map(|seg| {
+            if !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()) {
+                seg.parse::<u64>().ok()
+            } else {
+                None
+            }
+        })
+        .collect::<Option<Vec<u64>>>()?;
+    (!segments.is_empty()).then_some(segments)
 }
 
-/// How many phases a milestone declares.
-pub fn declared_phase_count(_m: &RoadmapMilestone) -> u32 {
-    0
+/// Whether version `a` is strictly lower than `b`, segment by segment with a
+/// missing segment read as 0 (`v1` == `v1.0`, `v0.9 < v0.11 < v0.12`).
+fn version_lower(a: &[u64], b: &[u64]) -> bool {
+    let len = a.len().max(b.len());
+    let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+    (0..len)
+        .map(|i| at(a, i).cmp(&at(b, i)))
+        .find(|o| o.is_ne())
+        .is_some_and(|o| o.is_lt())
+}
+
+/// Which milestones are shipped, one flag per milestone — the input to the
+/// Roadmap's collapsed shipped-milestones row (D-A07). Display-only.
+///
+/// A milestone qualifies only when it declares something: a numeric range or
+/// scoped phases. A spurious heading like `## Requirement Coverage (v1.5)` is
+/// never shipped. Then:
+///
+/// 1. When [`active_milestone_index`] finds the active milestone at `a`, every
+///    qualifying milestone listed before it is shipped (roadmaps list in order).
+/// 2. Otherwise, when STATE.md's milestone starts with a version token
+///    (`v0.12`), a qualifying milestone whose short id is a version compared
+///    LOWER by numeric segments is shipped — never lexicographically, so
+///    `v0.9 < v0.11 < v0.12` (sentriq: no roadmap milestone is `v0.12`).
+/// 3. Otherwise nothing is.
+pub fn shipped_milestones(ms: &[RoadmapMilestone], state_milestone: &str) -> Vec<bool> {
+    let qualifies = |m: &RoadmapMilestone| {
+        (m.first.is_some() && m.last.is_some()) || !m.scoped_phases.is_empty()
+    };
+    if let Some(active) = active_milestone_index(ms, state_milestone) {
+        return ms
+            .iter()
+            .enumerate()
+            .map(|(i, m)| i < active && qualifies(m))
+            .collect();
+    }
+    let Some(current) = state_milestone
+        .split_whitespace()
+        .next()
+        .and_then(version_segments)
+    else {
+        return vec![false; ms.len()];
+    };
+    ms.iter()
+        .map(|m| {
+            let (short, _) = split_milestone_label(m.label.as_raw_for_logic_only());
+            qualifies(m)
+                && version_segments(&short).is_some_and(|own| version_lower(&own, &current))
+        })
+        .collect()
+}
+
+/// How many phases a milestone declares: with a numeric range, the count of
+/// integer majors `last.major() - first.major() + 1` (`Phases 1-7.1` → 7);
+/// else the number of scoped phases; else 0.
+///
+/// A display-only approximation: inserted decimal phases (`7.1`) are not
+/// counted on top of their integer, because a range cannot say how many were
+/// inserted.
+pub fn declared_phase_count(m: &RoadmapMilestone) -> u32 {
+    match (&m.first, &m.last) {
+        (Some(first), Some(last)) if last.major() >= first.major() => {
+            last.major() - first.major() + 1
+        }
+        _ => u32::try_from(m.scoped_phases.len()).unwrap_or(u32::MAX),
+    }
 }
 
 /// A short id two spellings of one milestone share: `v2.0`, `M3`.
@@ -862,8 +937,9 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
     let ms_heading = Regex::new(r"(?i)^##[ \t]+Milestones\b").unwrap();
     let ms_boundary = Regex::new(r"^#{1,2}[ \t]").unwrap();
     let bold = Regex::new(r"\*\*(.+?)\*\*").unwrap();
+    // The optional `(` reads sentriq's `## v0.11 Phases (4-7) — archived`.
     let range = Regex::new(&format!(
-        r"(?i)\bphases?\s+({id})\s*[-\x{{2013}}\x{{2014}}]\s*({id})",
+        r"(?i)\bphases?\s+\(?({id})\s*[-\x{{2013}}\x{{2014}}]\s*({id})",
         id = PHASE_ID
     ))
     .unwrap();
@@ -2030,7 +2106,16 @@ Plans:
         assert_eq!(labels(&ms), ["v0.9 Early", "v0.11 Later", "v0.20 Future", "v0.10 Loose"]);
         assert_eq!(shipped_milestones(&ms, "v0.12"), [true, true, false, false]);
         assert_eq!(shipped_milestones(&ms, "v0.9 Early"), [false, false, false, false]);
-        assert_eq!(shipped_milestones(&ms, "v0.10"), [true, false, false, false]);
+        assert_eq!(
+            shipped_milestones(&ms, "v0.10.1"),
+            [true, false, false, false],
+            "lexicographically `v0.11` < `v0.10.1`; numerically it is not"
+        );
+        assert_eq!(
+            shipped_milestones(&ms, "v0.20"),
+            [true, true, false, false],
+            "a STATE milestone the roadmap names ships what is listed before it"
+        );
         assert_eq!(
             shipped_milestones(&ms, "Closing the loop"),
             [false; 4],
@@ -2050,5 +2135,44 @@ Plans:
         );
         let counts: Vec<u32> = ms.iter().map(declared_phase_count).collect();
         assert_eq!(counts, [7, 6, 1, 0, 2], "range majors, else scoped members, else 0");
+    }
+
+    /// T-24-03: the fixtures are excerpts of PRIVATE roadmaps shipped in a
+    /// public crate. Every goal body must stay replaced, and no fixture may
+    /// carry an absolute home path (see `tests/fixtures/roadmaps/README.md`).
+    #[test]
+    fn vendored_roadmap_fixtures_are_sanitised() {
+        let fixtures = [
+            ("daily-vow-ROADMAP.md", DAILY_VOW_ROADMAP),
+            (
+                "daily-vow-STATE.md",
+                include_str!("../../tests/fixtures/roadmaps/daily-vow-STATE.md"),
+            ),
+            ("sentriq-ROADMAP.md", SENTRIQ_ROADMAP),
+            (
+                "sentriq-STATE.md",
+                include_str!("../../tests/fixtures/roadmaps/sentriq-STATE.md"),
+            ),
+            ("ttbook-ROADMAP.md", TTBOOK_ROADMAP),
+            (
+                "ttbook-STATE.md",
+                include_str!("../../tests/fixtures/roadmaps/ttbook-STATE.md"),
+            ),
+        ];
+        let mut goal_lines = 0;
+        for (name, content) in fixtures {
+            assert!(!content.contains("/home/"), "{name} carries an absolute home path");
+            for (no, line) in content.lines().enumerate() {
+                if line.contains("**Goal") {
+                    goal_lines += 1;
+                    assert!(
+                        line.contains("(sanitised)"),
+                        "{name}:{}: a Goal line lost its `(sanitised)` marker: {line}",
+                        no + 1
+                    );
+                }
+            }
+        }
+        assert_eq!(goal_lines, 6 + 4 + 11, "the guard saw every fixture goal");
     }
 }
