@@ -226,7 +226,15 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
 
     lines.extend([
         row("e", "Enqueue next action (detail view)"),
-        row("r", "Toggle roadmap visualization (detail view)"),
+        // The Roadmap tab's cursor keys (phase 24-05, D-A10). They replace a
+        // stale `r` row: `r` toggles nothing on the Roadmap and is bound only
+        // on the Config tab. Each wording is unique in this body, so the
+        // whole-row assertions can tell them from the dashboard's `Enter`.
+        row("j/k g/G", "Roadmap tab: move the phase cursor / top / bottom (detail view)"),
+        row("h / l", "Roadmap tab: jump to a dependency / to a phase it unblocks (detail view)"),
+        row("[ / ]", "Roadmap tab: previous / next phase in the same wave (detail view)"),
+        row("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
+        row("Enter", "Roadmap tab: open the phase in Phases (detail view)"),
         row("v", "Roadmap tab: graph / box view (detail view)"),
         row("q / Esc", "Quit / Back"),
         row("Ctrl+C", "Force quit"),
@@ -854,7 +862,7 @@ mod tests {
             ("j / Down", "Move down"),
             ("b", "Open project detail on the backlog tab"),
             ("e", "Enqueue next action (detail view)"),
-            ("r", "Toggle roadmap visualization (detail view)"),
+            ("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
             ("q / Esc", "Quit / Back"),
         ] {
             let expected = row(key, description).spans[0].content.to_string();
@@ -893,5 +901,46 @@ mod tests {
             text.lines().any(|line| line == expected),
             "the row {expected:?} is missing:\n{text}"
         );
+    }
+
+    /// Phase 24-05: every Roadmap cursor key is documented as a WHOLE row,
+    /// exactly once, with the flag on and off (they are not driver keys).
+    #[test]
+    fn the_roadmap_cursor_keys_are_documented_as_whole_rows() {
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            for (key, description) in [
+                ("j/k g/G", "Roadmap tab: move the phase cursor / top / bottom (detail view)"),
+                ("h / l", "Roadmap tab: jump to a dependency / to a phase it unblocks (detail view)"),
+                ("[ / ]", "Roadmap tab: previous / next phase in the same wave (detail view)"),
+                ("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
+                ("Enter", "Roadmap tab: open the phase in Phases (detail view)"),
+            ] {
+                let expected = row(key, description).spans[0].content.to_string();
+                assert_eq!(
+                    text.lines().filter(|line| *line == expected).count(),
+                    1,
+                    "experimental={experimental}: the row {expected:?} must appear \
+                     exactly once:\n{text}"
+                );
+            }
+        }
+    }
+
+    /// Phase 24-05: the stale `r` row ("Toggle roadmap visualization") is
+    /// gone — `r` toggles nothing on the Roadmap tab.
+    #[test]
+    fn the_stale_roadmap_toggle_row_is_gone() {
+        for line in help_lines(true) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let Some(rest) = text.strip_prefix("  r ") else {
+                continue;
+            };
+            assert!(
+                !rest.to_lowercase().contains("roadmap"),
+                "a stale `r` Roadmap row survives: {text:?}"
+            );
+        }
+        assert!(!body().contains("Toggle roadmap visualization"));
     }
 }

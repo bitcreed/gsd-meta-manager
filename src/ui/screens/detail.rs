@@ -6400,6 +6400,12 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("filter  "));
         }
         DetailSubView::RoadmapViz => {
+            // The Roadmap cursor keys (24-05, D-A10); `j/k`, `g/G`, `[ / ]`
+            // and `Enter` are documented in the help popup.
+            spans.push(Span::styled("[h/l]", b));
+            spans.push(Span::raw(" edge  "));
+            spans.push(Span::styled("[Space]", b));
+            spans.push(Span::raw(" fold  "));
             spans.push(Span::styled("[v]", b));
             spans.push(Span::raw("iew  "));
             spans.push(Span::styled("[e]", b));
@@ -14766,6 +14772,19 @@ mod tests {
             .collect();
         assert!(footer.contains("[v]"), "{footer}");
         assert!(footer.contains("[e]"), "{footer}");
+    }
+
+    #[test]
+    fn roadmap_footer_advertises_edges_and_fold() {
+        for experimental in [true, false] {
+            let footer: String = footer_spans(&DetailSubView::RoadmapViz, 200, experimental)
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect();
+            for hint in ["[h/l]", "[Space]", "[v]", "[e]"] {
+                assert!(footer.contains(hint), "{hint} missing: {footer}");
+            }
+        }
     }
 
     // ── Phase 24-05: Roadmap cursor, adapter and shared selection ────────
