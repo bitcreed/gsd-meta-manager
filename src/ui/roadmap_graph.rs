@@ -830,9 +830,49 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
         })
         .collect();
 
-    let seq: Vec<Slot> = (0..n).map(Slot::Phase).collect();
+    // Bands (D-A07): members in input order; an out-of-range band is none.
+    let band_of: Vec<Option<usize>> = nodes
+        .iter()
+        .map(|node| node.band.filter(|&b| b < input.bands.len()))
+        .collect();
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); input.bands.len()];
+    for (u, band) in band_of.iter().enumerate() {
+        if let Some(b) = *band {
+            members[b].push(u);
+        }
+    }
+    let bands: Vec<BandFacts> = input
+        .bands
+        .iter()
+        .enumerate()
+        .map(|(b, band)| {
+            let label = String::from(band.label.shown());
+            let (short, _) = roadmap_md::split_milestone_label(&label);
+            BandFacts {
+                key: band_key(band),
+                label,
+                short,
+                shipped: band.shipped,
+                done: members[b]
+                    .iter()
+                    .filter(|&&u| status[u] == PhaseStatus::Done)
+                    .count(),
+                total: members[b].len(),
+                declared_phases: band.declared_phases,
+            }
+        })
+        .collect();
+    let shipped: Vec<usize> = (0..bands.len()).filter(|&b| bands[b].shipped).collect();
+
+    let seq = row_sequence(&bands, &members, &band_of);
     let glyphs: Vec<&str> = status.iter().map(|s| s.glyph()).collect();
     let laid = assign_lanes(&seq, &reduced, &glyphs);
+
+    // Folding happens after layout, so rows outside a fold never move.
+    let summary_folded = is_folded(&BandKey::Shipped, fold_toggles);
+    let band_hidden = |b: usize| bands[b].shipped && summary_folded;
+    let phases_hidden = |b: usize| band_hidden(b) || is_folded(&bands[b].key, fold_toggles);
+    let node_hidden = |u: usize| band_of[u].is_some_and(phases_hidden);
 
     // List order of the nodes.
     let order: Vec<usize> = seq
@@ -870,7 +910,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 id: labels[u].clone(),
                 name: esc(node.name),
                 goal: node.goal.map(|g| String::from(g.shown())),
-                band: node.band.filter(|&b| b < input.bands.len()),
+                band: band_of[u],
                 wave: layer[u] + 1,
                 status: status[u],
                 planned: node.planned,
@@ -887,21 +927,55 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                     .collect(),
                 no_deps,
                 no_edges: no_deps && !declared_by_any[u],
-                last_in_band: false,
+                last_in_band: band_of[u].is_some_and(|b| members[b].last() == Some(&u)),
             }
         })
         .collect();
 
+    let summary_text = match (shipped.first(), shipped.last()) {
+        (Some(&first), Some(&last)) if first != last => {
+            format!("{} \u{2026} {}", bands[first].short, bands[last].short)
+        }
+        (Some(&only), _) => bands[only].short.clone(),
+        _ => String::new(),
+    };
+    let summary_phases: u32 = shipped
+        .iter()
+        .map(|&b| {
+            let listed = u32::try_from(members[b].len()).unwrap_or(u32::MAX);
+            bands[b].declared_phases.max(listed)
+        })
+        .fold(0u32, u32::saturating_add);
+
     let rows: Vec<ListRow> = laid
         .into_iter()
         .filter_map(|row| match row.kind {
-            LaneKind::Connector(_) => Some(ListRow::Connector { lanes: row.lanes }),
-            LaneKind::Phase(node, lane) => Some(ListRow::Phase {
+            LaneKind::Summary => Some(ListRow::ShippedSummary {
+                text: summary_text.clone(),
+                milestones: shipped.len(),
+                phases: summary_phases,
+                folded: summary_folded,
+                lanes: row.lanes,
+            }),
+            LaneKind::Band(b) if !band_hidden(b) => Some(ListRow::Band {
+                band: b,
+                key: bands[b].key.clone(),
+                label: bands[b].label.clone(),
+                short: bands[b].short.clone(),
+                done: bands[b].done,
+                total: bands[b].total,
+                folded: is_folded(&bands[b].key, fold_toggles),
+                lanes: row.lanes,
+            }),
+            LaneKind::Connector(u) if !node_hidden(u) => {
+                Some(ListRow::Connector { lanes: row.lanes })
+            }
+            LaneKind::Phase(node, lane) if !node_hidden(node) => Some(ListRow::Phase {
                 node,
                 lane,
                 lanes: row.lanes,
             }),
-            LaneKind::Summary | LaneKind::Band(_) => None,
+            _ => None,
         })
         .collect();
 
@@ -917,8 +991,46 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
         total: n,
         notes: cycle_note(&cycles).into_iter().collect(),
         phases,
-        bands: Vec::new(),
+        bands,
     }
+}
+
+/// A band's key: its lower-cased trimmed RAW label (logic only).
+fn band_key(band: &BandInput) -> BandKey {
+    BandKey::Named(band.label.as_raw_for_logic_only().trim().to_lowercase())
+}
+
+/// The unfolded row sequence (D-A07): the shipped summary (when any band
+/// shipped) followed by every shipped band and its phases; then every
+/// non-shipped band that has phases, each followed by its phases; then the
+/// band-less phases. A non-shipped band without phases draws nothing.
+fn row_sequence(
+    bands: &[BandFacts],
+    members: &[Vec<usize>],
+    band_of: &[Option<usize>],
+) -> Vec<Slot> {
+    let mut seq = Vec::with_capacity(bands.len() + band_of.len() + 1);
+    let push_band = |seq: &mut Vec<Slot>, b: usize| {
+        seq.push(Slot::Band(b));
+        seq.extend(members[b].iter().map(|&u| Slot::Phase(u)));
+    };
+    if bands.iter().any(|band| band.shipped) {
+        seq.push(Slot::Summary);
+        for b in (0..bands.len()).filter(|&b| bands[b].shipped) {
+            push_band(&mut seq, b);
+        }
+    }
+    for b in (0..bands.len()).filter(|&b| !bands[b].shipped && !members[b].is_empty()) {
+        push_band(&mut seq, b);
+    }
+    seq.extend(
+        band_of
+            .iter()
+            .enumerate()
+            .filter(|(_, band)| band.is_none())
+            .map(|(u, _)| Slot::Phase(u)),
+    );
+    seq
 }
 
 /// The model as plain text, one line per visible row: the lane column padded
@@ -2514,7 +2626,12 @@ mod tests {
     fn lanes_sentriq_without_bands() {
         assert_eq!(
             lane_text(&plain(SENTRIQ)),
-            vec!["o         9", "o         10", "o         11", "  o       12"]
+            vec![
+                "o         9",
+                "o         10",
+                "o         11",
+                "  o       12"
+            ]
         );
     }
 
@@ -2532,7 +2649,9 @@ mod tests {
         let rows_of_20 = model
             .rows
             .iter()
-            .filter(|row| matches!(row, ListRow::Phase { node, .. } if model.phases[*node].id == "20"))
+            .filter(
+                |row| matches!(row, ListRow::Phase { node, .. } if model.phases[*node].id == "20"),
+            )
             .count();
         assert_eq!(rows_of_20, 1);
         // Every phase has exactly one row.
@@ -2644,7 +2763,12 @@ mod tests {
 
     const SENTRIQ_BANDS: BSpec<'static> = &[
         ("v0.11 Phases", true, 4, &[]),
-        ("v0.12 Actuation Routines", false, 4, &["9", "10", "11", "12"]),
+        (
+            "v0.12 Actuation Routines",
+            false,
+            4,
+            &["9", "10", "11", "12"],
+        ),
         ("Scope Explicitly Excluded from v0.12", false, 0, &[]),
     ];
 
