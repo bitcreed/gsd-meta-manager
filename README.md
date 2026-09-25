@@ -7,9 +7,13 @@ A TUI command center for managing multiple GSD-run projects from a single interf
 
 GSD (Get S\[oftware\] Done) Meta Manager gives you a unified dashboard across all
 your GSD workflow projects. It reads `.planning/` state directly from disk -- no
-need to launch Claude or run `/gsd:progress` in each project directory. Register
+need to launch Claude or run `/gsd-progress` in each project directory. Register
 your projects once and see phase status, roadmap progress, queued work, and
 pending actions at a glance.
+
+![Dashboard overview across registered projects](assets/screenshots/gsd-mm-overview.png)
+
+![Roadmap tab with dependency lanes and phase detail pane](assets/screenshots/gsd-mm-roadmap.png)
 
 ## Why GSD Meta Manager?
 
@@ -18,11 +22,16 @@ GSD Meta Manager is the **cross-project** command center: it observes and acts o
 all of them:
 
 - **Zero-token state reading** -- parses each project's `.planning/` directory on
-  disk. No Claude run, no `/gsd:progress`, no API cost required to see status.
+  disk. No Claude run, no `/gsd-progress`, no API cost required to see status.
 - **Claude session awareness** -- detects which projects have a live `claude`
   instance, launches or resumes a session on any of them, and auto-registers new
   projects from active sessions (Linux only -- see
   [Platform support](#platform-support)).
+- **Initial Codex support** -- interactive `codex` sessions are detected and
+  shown alongside Claude sessions (reachable with `Tab` under tmux), and the
+  experimental driver can run a project whose manager-config entry sets
+  `"runtime": "codex"` (or `preferences.default_runtime`) through `codex exec`. Resume stays Claude-only -- see
+  [Platform support](#platform-support).
 - **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
   session without hunting through terminal tabs.
 - **Milestone archive browsing** -- read shipped-milestone artifacts with inline

@@ -1,10 +1,10 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.7.2
+milestone: v1.8.0
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
-status: planning
-stopped_at: Phase 24 complete, ready to plan Phase 19
+status: shipped
+stopped_at: v1.8.0 released (Roadmap Redesign) — Phase 19 next, halted by user decision
 last_updated: "2026-09-24T04:58:18.993Z"
 last_activity: 2026-09-23
 last_activity_desc: Phase 24 complete, transitioned to Phase 19
@@ -15,7 +15,7 @@ progress:
   total_plans: 7
   completed_plans: 112
   percent: 55
-milestone_name: Release Gate Repair
+milestone_name: Roadmap Redesign
 ---
 
 # Project State
@@ -32,7 +32,13 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Ready to plan
+Status: Shipped v1.8.0 — Roadmap Redesign (2026-09-24). Interim release cut mid-v2.0 carrying
+  Phase 24, quick tasks 260922-hdh/hdi/hdj, 260923-lr8/lr9/lra/md1, 260924-drx and five debug
+  fixes; README gained screenshots and a Codex section. `./scripts/pre-tag-check.sh --container
+  v1.8.0` exit **0**, all five gates PASS, git banner MATCH, 49 suites / **2367 passed / 0 failed**
+  / 15 ignored; `cargo publish --dry-run --locked` clean. Next: Phase 19 (halted — ask first).
+
+Previous (v1.7.2):
   `--container` gate.** It supersedes and carries the contents of v1.7.0 and v1.7.1, NEITHER OF
   WHICH EVER PUBLISHED: for anyone installing from crates.io this is the jump from **1.6.0**.
   `Cargo.toml` moved 1.7.1 -> 1.7.2; `cargo update` relocked only this crate's own entry, with
@@ -506,8 +512,12 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-23
-Stopped at: Phase 24 complete and transitioned (PROJECT.md evolved). Router names Phase 19 next, but its gap-closure loop is halted by user decision — do not resume without asking.
+Last session: 2026-09-24
+Stopped at: v1.8.0 released. `Cargo.toml` 1.7.2 -> 1.8.0 (minor: Phase 24 and the quick tasks add
+user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
+lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
+unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,
+but its gap-closure loop is halted by user decision — do not resume without asking.
 Resume file: None
 
 Previous session (v1.7.2 release):
