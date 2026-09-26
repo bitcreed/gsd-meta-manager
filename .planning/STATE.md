@@ -423,6 +423,7 @@ Recent decisions affecting current work:
 
 ### Roadmap Evolution
 
+- Phase 25 added (2026-09-25): Running Agents & Live Wave View — TUI-only, read-only view of running GSD agents and executor wave progress (worktrees + `~/.claude/projects/.../subagents/*.meta.json` + transcript mtime + PLAN `wave:`); seed evidence from ttbook in ROADMAP Phase 25 details; landed in v2.0 after the v1.8.0 interim release [inferred — no new milestone, same pattern as Phase 24]; Phase 19/21 left untouched (halted by user decision)
 - Phase 24 added (2026-09-23): Roadmap tab redesign and detail-tab consolidation — TUI-only, no dependency on Phases 15-23; Phase 21 left untouched (stopped by user decision)
 
 ### Pending Todos

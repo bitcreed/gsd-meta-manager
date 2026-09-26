@@ -9,7 +9,7 @@
 - ✅ **v1.4 Live Sessions & Document Browsing** - 4 quick tasks (shipped 2026-05-12)
 - ✅ **v1.5.0 Sub-phase Artifact Detection** - 2 quick tasks (shipped 2026-05-15)
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
-- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-23 (in progress)
+- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-25 (in progress)
 
 ## Phases
 
@@ -83,7 +83,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 
 </details>
 
-### v2.0 Autonomous Orchestration (Phases 14-24)
+### v2.0 Autonomous Orchestration (Phases 14-25)
 
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
 - [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
@@ -96,6 +96,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [ ] **Phase 22: Container Execution Target** - Docker/podman parity with the host path
 - [ ] **Phase 23: Gate Policy & Auto-Validation** - The verify gate is a choice, not a law: skip, defer, or auto-validate
 - [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
+- [ ] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
 Phase 22 depends only on Phase 15 and may run alongside Phases 17-21, but must land
@@ -104,6 +105,8 @@ Phase 23 depends on Phase 20's gate taxonomy and on Phase 22 (a containerized su
 one of the surfaces `auto` must be able to drive), so it runs last.
 Phase 24 is a TUI-only phase with no dependency on the orchestration work (Phases 15-23);
 like Phase 14 it is parallel-safe and can ship any time.
+Phase 25 is likewise TUI-only and read-only (worktrees, subagent metadata, plan files);
+it has no dependency on Phases 15-23 and is parallel-safe.
 
 ## Phase Details
 
@@ -777,6 +780,32 @@ Plans:
 
 - [x] 24-07-PLAN.md — Archive folded into Docs › Milestones, final eight tabs, five archive tests ported, docs (wave 4, last per D-B06)
 
+### Phase 25: Running Agents & Live Wave View
+
+**Goal**: For each registered project, show which GSD agents are currently running in parallel and, for executors, which wave and plans are running / queued / done — read-only from files and git, no Claude invocation, non-intrusive to the running GSD session
+**Depends on**: Nothing (TUI-only; independent of the v2.0 orchestration phases 15-23 — parallel-safe, like Phases 14 and 24) [inferred — the `phase.add` default was "Phase 24"; nothing here needs Phase 24's code]
+**Requirements**: TBD (to be derived in discuss)
+
+**Seed evidence** (live inspection of `~/projects/python/ttbook` across three different runs; verified data sources):
+
+  1. `git worktree list --porcelain` — GSD agents run in `.claude/worktrees/agent-<id>` on branch `worktree-agent-<id>`, lock reason `claude agent agent-<id> (pid N start T)`. The pid is the TOP-LEVEL Claude session (all agents share it), so pid-alive ≠ agent-alive
+  2. PRIMARY: `~/.claude/projects/<project path with / → ->/<session-uuid>/subagents/agent-<id>.meta.json` — JSON with `agentType` (e.g. `gsd-executor`, `gsd-code-fixer`), `description` (e.g. "Execute plan 13-13 of phase 13", "Fix phase 12 CLI findings"), `worktreePath`, `worktreeBranch`, `parentAgentId`, `spawnDepth`. Undocumented Claude Code format → must degrade gracefully (show worktree/branch only)
+  3. Liveness: mtime of the sibling `agent-<id>.jsonl` transcript (all live agents updated within ~40s). Stale mtime + worktree present = stalled/orphaned
+  4. Secondary: `.git/worktrees/<name>/gsd-plan-head-before-<phase>-<plan>` ledger, written by gsd-executor before its FIRST commit only (`gsd-core/agents/gsd-executor.md:549`) — absent at plan start (all 13 fresh executors lacked it). Confirmation only; executor-specific
+  5. Plan files: PLAN.md frontmatter `wave:` / `depends_on:`; SUMMARY.md presence = done. Plan number does NOT follow wave order (13-33 in wave 2; 13-26 wave 5 but 13-27 wave 4) — group by the `wave:` field
+  6. Progress per worktree: `git rev-list --count master..HEAD` (commits), `git status --short` (dirty files). Both are 0 right after spawn — "stalled" only when combined with a stale transcript
+  7. Code-review fix runs: `NN-REVIEW.md` frontmatter `findings: {critical, warning, info, total}`; fixer commits `fix(NN): WR-08 ...` carry finding ids → a "fixed/total" estimate
+
+  Observed shapes: 1 executor (single-plan wave); 3 gsd-code-fixers in parallel post-review; 13 executors in parallel (wave 2 of 11).
+
+  UI implication: the dashboard row gets a compact summary (`P13 · wave 2/11 · 13 running · 8/35 done`); the detail view gets a scrollable per-agent list (plan/description, commits, dirty count, last activity) plus per-wave done/running/queued.
+
+**Plans**: 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-discuss-phase 25, then /gsd-plan-phase 25)
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -792,6 +821,7 @@ Plans:
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
+| 25. Running Agents & Live Wave View | 0/? | Not started | - |
 
 ## Backlog
 
