@@ -1328,6 +1328,22 @@ mod tests {
         );
     }
 
+    /// T-jnf-03: serde's Display quotes the offending value, so logging it
+    /// would put a mistyped secret into the log file. The summary carries
+    /// only the error category and position.
+    #[test]
+    fn a_config_parse_error_summary_never_quotes_the_value_secret() {
+        let e = serde_json::from_str::<GsdConfig>(r#"{"workflow":{"research":"sk-SECRET-F6Y4"}}"#)
+            .expect_err("a string where a boolean belongs is a parse error");
+        assert!(
+            e.to_string().contains("F6Y4"),
+            "precondition: the raw serde Display DOES quote the value: {e}"
+        );
+        let summary = parse_error_summary(&e);
+        assert!(!summary.contains("F6Y4") && !summary.contains("SECRET"), "{summary}");
+        assert!(summary.contains(&format!("line {}", e.line())), "{summary}");
+    }
+
     #[test]
     fn test_default_config_omits_new_toplevel_keys() {
         let config = GsdConfig::default();

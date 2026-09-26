@@ -18732,6 +18732,143 @@ mod tests {
         assert_eq!(config_row_values(&ctx)[idx], "false");
     }
 
+    /// Draw the Defaults tab for a cache the caller arranges (project config,
+    /// global defaults, edit target) — the inherited / Global-view probes.
+    fn render_defaults_cache_to_text(arrange: impl FnOnce(&mut super::super::ProjectViewCache)) -> String {
+        let mut ctx = test_ctx();
+        arrange(ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default());
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        draw_config_tab(&screen, &ctx, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT).join("\n")
+    }
+
+    /// Task 2: the NAME heuristic masks keys this build does not model —
+    /// top-level pass-through rows and secret members nested inside one —
+    /// while the measured budget-key exemption keeps its number.
+    #[test]
+    fn the_secret_heuristic_masks_unknown_pass_through_keys() {
+        use crate::state_reader::config_secrets::MASKED_SECRET;
+
+        let config = crate::state_reader::config_json::parse_gsd_config(
+            r#"{
+                "mode": "yolo",
+                "foo_api_key": "FOO-SECRET-J2W6",
+                "My_Service_Token": "TOK-SECRET-V5M3",
+                "integrations": {"github_token": "GH-SECRET-B9R1", "url": "https://example.invalid"},
+                "review": {"max_prompt_tokens": 5000}
+            }"#,
+        )
+        .expect("the heuristic fixture parses");
+        let entries = build_defaults_entries(&config, None);
+        let value_of = |key: &str| {
+            entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("no `{key}` row"))
+                .value
+                .clone()
+        };
+        assert_eq!(value_of("foo_api_key"), MASKED_SECRET);
+        assert_eq!(value_of("My_Service_Token"), MASKED_SECRET);
+        let integrations = value_of("integrations");
+        assert!(integrations.contains(MASKED_SECRET), "{integrations}");
+        assert!(integrations.contains("https://example.invalid"), "{integrations}");
+        assert!(!integrations.contains("B9R1"), "{integrations}");
+        assert_eq!(value_of("review.max_prompt_tokens"), "5000", "the exemption must hold");
+        for row in passthrough_rows(&entries) {
+            assert!(matches!(row.kind, ConfigValueKind::ReadOnly), "masking made `{}` editable", row.key);
+        }
+
+        let text = render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
+        assert!(text.contains("foo_api_key"), "ARRIVAL: the pass-through row was not drawn:\n{text}");
+        for leak in ["SECRET-", "J2W6", "V5M3", "B9R1"] {
+            assert!(!text.contains(leak), "the render leaked {leak:?}:\n{text}");
+        }
+    }
+
+    /// A key inherited from `~/.gsd/defaults.json` (the ` *` rows) is masked,
+    /// and so is the same key in the Global (`d`) view.
+    #[test]
+    fn a_secret_inherited_from_global_defaults_is_masked_in_both_views() {
+        use crate::state_reader::config_json::parse_gsd_config;
+        use crate::state_reader::config_secrets::MASKED_SECRET;
+
+        let project = parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap();
+        let global = parse_gsd_config(r#"{"brave_search":"GLB-SECRET-H3T7"}"#).unwrap();
+
+        let entries = build_defaults_entries(&project, Some(&global));
+        let row = entries
+            .iter()
+            .find(|e| e.key.as_ref() == "brave_search")
+            .expect("the brave_search row");
+        assert_eq!(row.value, MASKED_SECRET);
+        assert!(row.from_defaults, "the key is inherited from the global defaults");
+
+        let (p, g) = (project.clone(), global.clone());
+        let text = render_defaults_cache_to_text(move |cache| {
+            cache.defaults_config = Some(p);
+            cache.defaults_user_config = Some(g);
+        });
+        let line = text
+            .lines()
+            .find(|l| l.contains("brave_search"))
+            .unwrap_or_else(|| panic!("ARRIVAL: no brave_search row drawn:\n{text}"));
+        assert!(line.contains(MASKED_SECRET) && line.contains(" *"), "{line}");
+        assert!(!text.contains("H3T7"), "the Project view leaked the inherited key:\n{text}");
+
+        let text = render_defaults_cache_to_text(move |cache| {
+            cache.defaults_config = Some(project);
+            cache.defaults_user_config = Some(global);
+            cache.defaults_edit_target = super::super::DefaultsEditTarget::Global;
+        });
+        assert!(text.contains("Global Defaults"), "ARRIVAL: the Global view was not drawn:\n{text}");
+        assert!(text.contains(MASKED_SECRET), "ARRIVAL: the mask was not drawn:\n{text}");
+        assert!(!text.contains("H3T7"), "the Global view leaked the key:\n{text}");
+    }
+
+    /// A read-only JSON row redacts a secret MEMBER nested inside its value.
+    #[test]
+    fn a_read_only_json_row_redacts_nested_secret_members() {
+        use crate::state_reader::config_secrets::MASKED_SECRET;
+
+        let config = crate::state_reader::config_json::parse_gsd_config(
+            r#"{"mode":"yolo","review":{"reviewer_instances":{"a":{"cli":"x","api_key":"RI-SECRET-N8P2"}}}}"#,
+        )
+        .unwrap();
+        let entries = build_defaults_entries(&config, None);
+        let row = entries
+            .iter()
+            .find(|e| e.key.as_ref() == "review.reviewer_instances")
+            .expect("the reviewer_instances row");
+        assert!(!row.value.contains("N8P2"), "{}", row.value);
+        assert!(row.value.contains(MASKED_SECRET) && row.value.contains("\"cli\""), "{}", row.value);
+
+        let text = render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
+        assert!(text.contains("review.reviewer_instances"), "ARRIVAL:\n{text}");
+        assert!(!text.contains("N8P2"), "the render leaked the nested key:\n{text}");
+    }
+
+    /// Census: no row this build AUTHORS may carry a secret-looking key
+    /// unless it is a Secret row — so a future `foo_token` row cannot ship
+    /// displaying its value in the clear.
+    #[test]
+    fn no_authored_row_trips_the_secret_heuristic_unmasked() {
+        use crate::state_reader::config_secrets::is_secret_key;
+
+        let mut secret_rows = 0usize;
+        for entry in all_config_entries() {
+            if is_secret_key(entry.key.as_ref()) {
+                secret_rows += 1;
+                assert!(
+                    matches!(entry.kind.editable(), ConfigValueKind::Secret),
+                    "`{}` looks secret but its row is {:?} — it would render in the clear",
+                    entry.key,
+                    entry.kind
+                );
+            }
+        }
+        assert!(secret_rows >= 3, "the census saw no secret rows, so it certifies nothing");
+    }
+
     /// Underlying indices of the rows whose key contains "drift", computed
     /// here and NOT through the production filter helper.
     fn drift_row_indices() -> Vec<usize> {
