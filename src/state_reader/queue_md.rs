@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -72,25 +73,84 @@ fn parse_smart_entry_json(raw: &str) -> Option<Vec<String>> {
     Some(recommended)
 }
 
+/// Relative path of GSD's launcher shim inside an install root.
+const GSD_TOOLS_SHIM: &str = "gsd-core/bin/gsd-tools.cjs";
+
+/// Ordered `gsd-tools.cjs` candidates for `project_root`. Pure: the home
+/// directory and `CODEX_HOME` are passed in, never read from the process.
+///
+/// Order (mirrors gsd-core 1.15.0 `gsd-core/references/gsd-run-resolver.md`,
+/// as reworked by #4834):
+///   1. `<root>/gsd-core/bin/gsd-tools.cjs`
+///   2. `<root>/.claude/gsd-core/bin/gsd-tools.cjs`
+///   3. `<root>/.codex/gsd-core/bin/gsd-tools.cjs`
+///   4. `~/.claude/gsd-core/bin/gsd-tools.cjs`
+///   5. `${CODEX_HOME:-~/.codex}/gsd-core/bin/gsd-tools.cjs`
+///
+/// Like the shell `:-` expansion, an EMPTY `codex_home` falls back to
+/// `~/.codex`. With neither a home nor a non-empty `codex_home`, only the
+/// three project-local candidates are returned.
+fn gsd_tools_candidates(
+    project_root: &Path,
+    home: Option<&Path>,
+    codex_home: Option<&OsStr>,
+) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = vec![
+        project_root.join(GSD_TOOLS_SHIM),
+        project_root.join(".claude").join(GSD_TOOLS_SHIM),
+        project_root.join(".codex").join(GSD_TOOLS_SHIM),
+    ];
+    if let Some(home) = home {
+        candidates.push(home.join(".claude").join(GSD_TOOLS_SHIM));
+    }
+    let codex_root = match codex_home.filter(|v| !v.is_empty()) {
+        Some(explicit) => Some(PathBuf::from(explicit)),
+        None => home.map(|h| h.join(".codex")),
+    };
+    if let Some(codex_root) = codex_root {
+        candidates.push(codex_root.join(GSD_TOOLS_SHIM));
+    }
+    candidates
+}
+
 /// Resolve a runnable `gsd-tools` launcher for `project_root`.
 ///
-/// Checks candidate locations in the same order GSD's own launcher resolution
-/// uses, returning the first that exists:
-///   1. `<root>/gsd-core/bin/gsd-tools.cjs`      (run via `node`)
-///   2. `<root>/.claude/gsd-core/bin/gsd-tools.cjs` (run via `node`)
-///   3. `~/.claude/gsd-core/bin/gsd-tools.cjs`   (run via `node`)
-///   4. `gsd-tools` on `PATH`                    (invoked directly)
-///
-/// Returns `None` when none resolve.
+/// Thin wrapper over [`resolve_gsd_tools_from`] that supplies the user's home
+/// directory and `CODEX_HOME`. This is the ONLY place the resolver reads
+/// process state for those, so tests never have to mutate HOME/CODEX_HOME.
 fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
-    let mut candidates: Vec<PathBuf> = vec![
-        project_root.join("gsd-core/bin/gsd-tools.cjs"),
-        project_root.join(".claude/gsd-core/bin/gsd-tools.cjs"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".claude/gsd-core/bin/gsd-tools.cjs"));
-    }
-    for candidate in candidates {
+    let home = dirs::home_dir();
+    let codex_home = std::env::var_os("CODEX_HOME");
+    resolve_gsd_tools_from(project_root, home.as_deref(), codex_home.as_deref())
+}
+
+/// Resolve a runnable `gsd-tools` launcher with an injected home/CODEX_HOME.
+///
+/// Walks [`gsd_tools_candidates`] in order and runs the first existing
+/// `.cjs` shim through `node`; failing that, falls back to a `gsd-tools`
+/// executable on `PATH` (invoked directly). Returns `None` when none resolve.
+///
+/// Follows upstream gsd-core 1.15.0 `gsd-core/references/gsd-run-resolver.md`
+/// (#4834). Since #4667 a Codex install is self-contained under
+/// `${CODEX_HOME:-~/.codex}/gsd-core`, so a Codex-only machine has no
+/// `~/.claude/gsd-core`; the Codex candidates keep such a user on GSD's own
+/// `smart-entry` rather than the keyword heuristic. On a dual install the
+/// `.claude` home candidate is earlier and still wins.
+///
+/// Known, deliberate differences from upstream:
+///   - `CLAUDE_CONFIG_DIR` is not honoured for the Claude home candidate;
+///   - upstream's other runtime homes (Gemini, OpenCode, ...) are not probed;
+///   - the PATH arm is not gated on `gsd-tools runtime-identity`.
+///
+/// No `GSD_RUNTIME` pin is applied to the `smart-entry` call: 1.15.0
+/// `src/smart-entry.cts` hardcodes the `/gsd:` spelling regardless of the
+/// resolved runtime, so a Codex install answers exactly like a Claude one.
+fn resolve_gsd_tools_from(
+    project_root: &Path,
+    home: Option<&Path>,
+    codex_home: Option<&OsStr>,
+) -> Option<GsdToolsCmd> {
+    for candidate in gsd_tools_candidates(project_root, home, codex_home) {
         if candidate.is_file() {
             return Some(GsdToolsCmd {
                 program: "node".to_string(),
