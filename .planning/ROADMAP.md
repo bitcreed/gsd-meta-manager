@@ -800,11 +800,26 @@ Plans:
 
   UI implication: the dashboard row gets a compact summary (`P13 · wave 2/11 · 13 running · 8/35 done`); the detail view gets a scrollable per-agent list (plan/description, commits, dirty count, last activity) plus per-wave done/running/queued.
 
-**Plans**: 0 plans
+**Plans**: 6 plans
 
 Plans:
+**Wave 1**
 
-- [ ] TBD (run /gsd-discuss-phase 25, then /gsd-plan-phase 25)
+- [ ] 25-01-PLAN.md — Core agent-worktree scan (lock-free git), adapter seam, liveness thresholds, AGENT requirement ids (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 25-02-PLAN.md — Claude Code enrichment adapter: metadata, transcript-mtime liveness, worktree-less live agents (wave 2)
+- [ ] 25-03-PLAN.md — Wave model: plan attribution, done/finished/running/stalled/queued, summary ladder (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 25-04-PLAN.md — Scan on the 5 s poll, AgentsScanned cache, dashboard Status-cell summary (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 25-05-PLAN.md — Sessions › Agents detail sub-view, keys, escape-guard coverage, docs (wave 4)
+- [ ] 25-06-PLAN.md — Code-review fixer `~fixed/total` estimate (wave 4)
 
 ## Progress
 
@@ -821,7 +836,7 @@ Plans:
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
-| 25. Running Agents & Live Wave View | 0/? | Not started | - |
+| 25. Running Agents & Live Wave View | 0/6 | Not started | - |
 
 ## Backlog
 

@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.8.0
-current_phase: 19
-current_phase_name: GITSAFE — Git & Blast-Radius Envelope
+current_phase: 25
+current_phase_name: Running Agents & Live Wave View
 status: shipped
 stopped_at: Phase 25 context gathered
-last_updated: "2026-09-26T01:32:27.532Z"
+last_updated: "2026-09-26T02:28:00.743Z"
 last_activity: 2026-09-24
 last_activity_desc: Phase 24 complete, transitioned to Phase 19
-state_head: e93d9d3d98da92f0164eab6cc7d8a334114415c6
+state_head: c45da7697800d76d9fb4595e2fcf922c6404eaec
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 7
+  total_plans: 6
   completed_plans: 112
 milestone_name: Roadmap Redesign
 ---
@@ -102,7 +102,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
-Phase: 19 — GITSAFE — Git & Blast-Radius Envelope
+Phase: 25 (Running Agents & Live Wave View) — READY TO EXECUTE
 Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
