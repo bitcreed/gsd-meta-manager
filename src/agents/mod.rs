@@ -305,3 +305,103 @@ pub fn scan_project_with(
         scanned_at: Some(now),
     }
 }
+
+/// Scan every registered project with the registered adapters.
+pub fn scan_projects_guarded(
+    projects: &[(String, PathBuf)],
+    now: SystemTime,
+) -> Vec<(String, ProjectAgents)> {
+    let _ = (projects, now);
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn at(now: SystemTime, age_secs: i64) -> Option<SystemTime> {
+        Some(if age_secs >= 0 {
+            now - Duration::from_secs(age_secs.unsigned_abs())
+        } else {
+            now + Duration::from_secs(age_secs.unsigned_abs())
+        })
+    }
+
+    fn facts(now: SystemTime, age_secs: i64, lock_released: Option<bool>) -> Enrichment {
+        Enrichment {
+            last_activity: at(now, age_secs),
+            lock_released,
+            ..Enrichment::default()
+        }
+    }
+
+    #[test]
+    fn liveness_thresholds_at_and_one_second_past_each_boundary() {
+        let now = SystemTime::now();
+        let c = |age| classify_liveness(Some(&facts(now, age, None)), false, now);
+        assert_eq!(c(0), AgentLiveness::Live);
+        assert_eq!(c(120), AgentLiveness::Live);
+        assert_eq!(c(121), AgentLiveness::Idle);
+        assert_eq!(c(600), AgentLiveness::Idle);
+        assert_eq!(c(601), AgentLiveness::Stalled);
+        assert_eq!(LIVE_SECS, 120);
+        assert_eq!(IDLE_SECS, 600);
+    }
+
+    #[test]
+    fn a_future_mtime_is_age_zero() {
+        let now = SystemTime::now();
+        assert_eq!(
+            classify_liveness(Some(&facts(now, -30, None)), false, now),
+            AgentLiveness::Live
+        );
+    }
+
+    #[test]
+    fn ended_wins_over_every_other_fact() {
+        let now = SystemTime::now();
+        let mut f = facts(now, 0, Some(true));
+        f.ended = true;
+        assert_eq!(classify_liveness(Some(&f), true, now), AgentLiveness::Ended);
+    }
+
+    #[test]
+    fn finished_needs_a_released_lock_and_a_summary_or_staleness() {
+        let now = SystemTime::now();
+        let c = |age, lock, summary| classify_liveness(Some(&facts(now, age, lock)), summary, now);
+        assert_eq!(
+            c(30, Some(true), false),
+            AgentLiveness::Live,
+            "fresh, no SUMMARY"
+        );
+        assert_eq!(
+            c(30, Some(true), true),
+            AgentLiveness::Finished,
+            "SUMMARY in worktree"
+        );
+        assert_eq!(
+            c(121, Some(true), false),
+            AgentLiveness::Finished,
+            "stale after release"
+        );
+        assert_eq!(
+            c(601, Some(false), false),
+            AgentLiveness::Stalled,
+            "lock held"
+        );
+        assert_eq!(c(601, None, false), AgentLiveness::Stalled, "lock unknown");
+    }
+
+    #[test]
+    fn no_adapter_data_is_unknown_never_stalled() {
+        let now = SystemTime::now();
+        assert_eq!(classify_liveness(None, false, now), AgentLiveness::Unknown);
+        assert_eq!(
+            classify_liveness(Some(&Enrichment::default()), false, now),
+            AgentLiveness::Unknown,
+            "facts without a last_activity establish nothing"
+        );
+        assert_eq!(AgentLiveness::default(), AgentLiveness::Unknown);
+    }
+}

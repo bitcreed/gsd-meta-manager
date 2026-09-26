@@ -24,7 +24,9 @@ use std::time::{Duration, SystemTime};
 use common::git;
 use gsd_meta_manager::agents::adapters::{AdapterReport, AgentAdapter, CoreSnapshot, Enrichment};
 use gsd_meta_manager::agents::worktrees::BranchPlan;
-use gsd_meta_manager::agents::{scan_project_with, AgentLiveness, ProjectAgents};
+use gsd_meta_manager::agents::{
+    scan_project_with, scan_projects_guarded, AgentLiveness, ProjectAgents,
+};
 use gsd_meta_manager::text::Untrusted;
 use tempfile::TempDir;
 
@@ -401,5 +403,269 @@ fn scanning_a_live_agent_worktree_never_touches_its_index() {
         index_fingerprint(&index),
         before,
         "the control did not refresh the index, so this fixture proves nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The adapter seam under hostile adapters (D-A03, D-A07)
+// ---------------------------------------------------------------------------
+
+/// One claim: a named adapter reporting `agent_type` for every worktree index
+/// `select` picks, plus any extra raw indexes (in range or not).
+struct Claimer {
+    name: &'static str,
+    agent_type: &'static str,
+    select: fn(&gsd_meta_manager::agents::worktrees::CoreWorktree) -> bool,
+    extra_indexes: &'static [usize],
+}
+
+impl AgentAdapter for Claimer {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn enrich(&self, snap: &CoreSnapshot<'_>) -> AdapterReport {
+        let facts = || Enrichment {
+            agent_type: Some(Untrusted::from_untrusted_source(self.agent_type.into())),
+            last_activity: Some(snap.now),
+            ..Enrichment::default()
+        };
+        let mut per_worktree: Vec<(usize, Enrichment)> = snap
+            .worktrees
+            .iter()
+            .enumerate()
+            .filter(|(_, wt)| (self.select)(wt))
+            .map(|(index, _)| (index, facts()))
+            .collect();
+        per_worktree.extend(self.extra_indexes.iter().map(|&index| (index, facts())));
+        AdapterReport {
+            per_worktree,
+            worktreeless: Vec::new(),
+        }
+    }
+}
+
+/// An adapter that panics mid-scan.
+struct Panicker;
+
+impl AgentAdapter for Panicker {
+    fn name(&self) -> &'static str {
+        "panicker"
+    }
+
+    fn enrich(&self, _snap: &CoreSnapshot<'_>) -> AdapterReport {
+        panic!("a hostile adapter panicked (expected by this test)");
+    }
+}
+
+fn shown_type(scan: &ProjectAgents, index: usize) -> Option<String> {
+    scan.rows[index]
+        .agent_type
+        .as_ref()
+        .map(|t| t.shown().to_string())
+}
+
+#[test]
+fn a_test_only_adapter_claims_a_worktree_outside_the_predicate() {
+    let Some((_tmp, root)) = plain_repo() else {
+        return;
+    };
+    add_worktree(&root, "feature", "../side");
+    assert!(
+        scan_bare(&root).rows.is_empty(),
+        "a plain user worktree is not an agent row by itself"
+    );
+
+    let adapters: Vec<Box<dyn AgentAdapter>> = vec![Box::new(Claimer {
+        name: "claimer",
+        agent_type: "custom-runtime",
+        select: |wt| wt.branch.as_ref().map(|b| b.as_raw_for_logic_only()) == Some("feature"),
+        extra_indexes: &[],
+    })];
+    let scan = scan_project_with(&root, &adapters, SystemTime::now());
+    assert_eq!(
+        scan.rows.len(),
+        1,
+        "the claim makes it a row: {:?}",
+        scan.rows
+    );
+    assert_eq!(scan.rows[0].path, root.parent().unwrap().join("side"));
+    assert_eq!(scan.rows[0].adapter, Some("claimer"));
+    assert_eq!(shown_type(&scan, 0), Some("custom-runtime".to_string()));
+    assert_eq!(scan.rows[0].liveness, AgentLiveness::Live);
+}
+
+#[test]
+fn the_first_adapter_to_claim_a_worktree_wins() {
+    let Some((_tmp, root)) = agents_fixture() else {
+        return;
+    };
+    let adapters: Vec<Box<dyn AgentAdapter>> = vec![
+        Box::new(Claimer {
+            name: "first",
+            agent_type: "first-type",
+            select: |_| true,
+            extra_indexes: &[99, usize::MAX],
+        }),
+        Box::new(Claimer {
+            name: "second",
+            agent_type: "second-type",
+            select: |_| true,
+            extra_indexes: &[],
+        }),
+    ];
+    let scan = scan_project_with(&root, &adapters, SystemTime::now());
+    assert_eq!(scan.rows.len(), 1, "out-of-range indexes add no row");
+    assert_eq!(scan.rows[0].adapter, Some("first"));
+    assert_eq!(shown_type(&scan, 0), Some("first-type".to_string()));
+}
+
+#[test]
+fn a_panicking_adapter_leaves_the_core_rows_intact() {
+    let Some((_tmp, root)) = agents_fixture() else {
+        return;
+    };
+    let alone: Vec<Box<dyn AgentAdapter>> = vec![Box::new(Panicker)];
+    let scan = scan_project_with(&root, &alone, SystemTime::now());
+    assert_eq!(scan.rows.len(), 1, "the core row survives the panic");
+    assert_eq!(scan.rows[0].adapter, None);
+    assert_eq!(scan.rows[0].liveness, AgentLiveness::Unknown);
+    assert_eq!(
+        scan.rows[0].commits_ahead,
+        Some(0),
+        "git facts still present"
+    );
+
+    let then_fake: Vec<Box<dyn AgentAdapter>> = vec![Box::new(Panicker), Box::new(FakeAdapter)];
+    let scan = scan_project_with(&root, &then_fake, SystemTime::now());
+    assert_eq!(scan.rows.len(), 1);
+    assert_eq!(
+        scan.rows[0].adapter,
+        Some("fake"),
+        "the next adapter still runs"
+    );
+    assert_eq!(scan.rows[0].liveness, AgentLiveness::Live);
+}
+
+#[test]
+fn a_projects_scan_is_sorted_by_alias_and_isolates_failures() {
+    let Some((_tmp_c, with_agent)) = agents_fixture() else {
+        return;
+    };
+    let Some((_tmp_a, plain)) = plain_repo() else {
+        return;
+    };
+    let missing = with_agent.parent().unwrap().join("does-not-exist");
+    let projects = vec![
+        ("charlie".to_string(), with_agent),
+        ("bravo".to_string(), missing),
+        ("alpha".to_string(), plain),
+    ];
+
+    let scans = scan_projects_guarded(&projects, SystemTime::now());
+    let aliases: Vec<&str> = scans.iter().map(|(alias, _)| alias.as_str()).collect();
+    assert_eq!(
+        aliases,
+        vec!["alpha", "bravo", "charlie"],
+        "sorted by alias"
+    );
+    assert!(scans[0].1.rows.is_empty(), "alpha has no linked worktree");
+    assert!(
+        scans[1].1.rows.is_empty(),
+        "a missing path scans to nothing"
+    );
+    assert!(scans[1].1.worktreeless.is_empty());
+    assert_eq!(
+        scans[2].1.rows.len(),
+        1,
+        "charlie's agent row is unaffected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The zero-write guard (D-B01, D-B03)
+// ---------------------------------------------------------------------------
+
+/// Every forbidden token, split in two so this file's own text never contains
+/// one whole — the technique `src/driver/reconcile.rs`'s own guard uses.
+const FORBIDDEN_HALVES: &[(&str, &str)] = &[
+    // Writes.
+    ("fs::", "write"),
+    ("File::", "create"),
+    ("create_", "dir"),
+    ("remove_", "file"),
+    ("remove_", "dir"),
+    ("ren", "ame("),
+    ("Open", "Options"),
+    ("set_", "modified"),
+    ("set_", "permissions"),
+    ("write_", "all("),
+    // Process inspection.
+    ("/pr", "oc"),
+    // Process spawns.
+    ("Command::", "new("),
+    ("CommandWrap::", "with_new("),
+    ("process_", "group("),
+    ("process::", "Command"),
+];
+
+/// Every `.rs` file under `dir`, recursively.
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn no_file_under_src_agents_writes_reads_proc_or_spawns() {
+    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/agents"));
+    let mut files = Vec::new();
+    rust_files(root, &mut files);
+    files.sort();
+    assert!(
+        files.len() >= 3,
+        "the walk found too few files to be a real guard: {files:?}"
+    );
+
+    let tokens: Vec<String> = FORBIDDEN_HALVES
+        .iter()
+        .map(|(head, tail)| format!("{head}{tail}"))
+        .collect();
+
+    let mut offenders = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("readable source");
+        // Production text only: everything before the first `#[cfg(test)]`.
+        for (number, line) in text
+            .lines()
+            .enumerate()
+            .take_while(|(_, line)| line.trim() != "#[cfg(test)]")
+        {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if let Some(token) = tokens.iter().find(|t| line.contains(t.as_str())) {
+                offenders.push(format!(
+                    "{}:{}: `{token}` in {:?}",
+                    file.display(),
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "src/agents/ must not write, read the process table, or spawn (D-B01, \
+         D-B03):\n{}",
+        offenders.join("\n")
     );
 }
