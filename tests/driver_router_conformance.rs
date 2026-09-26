@@ -38,6 +38,7 @@
 // test, which is the whole reason the counters below exist.
 // ============================================================================
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -74,6 +75,32 @@ fn skip_permitted(opt_out: Option<&str>) -> bool {
     matches!(opt_out, Some(value) if !value.trim().is_empty())
 }
 
+/// Where the oracle looks for GSD's `gsd-tools.cjs`, in order.
+///
+/// Mirrors the home arm of `src/state_reader/queue_md.rs`'s
+/// `gsd_tools_candidates` (an integration test cannot call that private fn):
+/// the Claude install first, then `${CODEX_HOME:-$HOME/.codex}` — since
+/// gsd-core 1.15.0 (#4667) a Codex install is self-contained there, so a
+/// Codex-only machine has no `~/.claude/gsd-core`. An EMPTY `CODEX_HOME` falls
+/// back to `~/.codex`, like the shell's `:-`. The project-local candidates of
+/// the production resolver are omitted: the fixtures are temp trees that never
+/// carry an install of their own.
+fn oracle_candidates(home: Option<PathBuf>, codex_home: Option<OsString>) -> Vec<PathBuf> {
+    const SHIM: &str = "gsd-core/bin/gsd-tools.cjs";
+    let mut candidates = Vec::new();
+    if let Some(home) = &home {
+        candidates.push(home.join(".claude").join(SHIM));
+    }
+    let codex_root = match codex_home.filter(|value| !value.is_empty()) {
+        Some(explicit) => Some(PathBuf::from(explicit)),
+        None => home.map(|h| h.join(".codex")),
+    };
+    if let Some(codex_root) = codex_root {
+        candidates.push(codex_root.join(SHIM));
+    }
+    candidates
+}
+
 /// A resolved way to run GSD's own router.
 struct Oracle {
     program: PathBuf,
@@ -89,11 +116,10 @@ impl Oracle {
     /// Reusing the order rather than inventing one keeps "which GSD is this
     /// project talking to?" a single answer.
     fn resolve() -> Option<Self> {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let candidates: Vec<PathBuf> = home
-            .into_iter()
-            .map(|h| h.join(".claude/gsd-core/bin/gsd-tools.cjs"))
-            .collect();
+        let candidates = oracle_candidates(
+            std::env::var_os("HOME").map(PathBuf::from),
+            std::env::var_os("CODEX_HOME"),
+        );
 
         for script in candidates {
             if script.is_file() {
@@ -122,8 +148,9 @@ impl Oracle {
         }
 
         eprintln!(
-            "SKIP: neither ~/.claude/gsd-core/bin/gsd-tools.cjs nor a `gsd-tools` on PATH is \
-             available, so the conformance oracle cannot run. This is a SKIP and not a pass: \
+            "SKIP: neither ~/.claude/gsd-core/bin/gsd-tools.cjs, \
+             ${{CODEX_HOME:-~/.codex}}/gsd-core/bin/gsd-tools.cjs nor a `gsd-tools` on PATH \
+             is available, so the conformance oracle cannot run. This is a SKIP and not a pass: \
              the Rust rule table is a transcription of GSD's routing table and nothing in this \
              run checked that the transcription still holds."
         );
@@ -135,13 +162,31 @@ impl Oracle {
     ///
     /// `None` means the oracle emitted no action for that phase — which is
     /// itself an answer the assertions below check, not a reason to skip.
-    fn recommended_action(&self, root: &Path) -> Result<Option<(String, String)>, String> {
+    /// The `gsd-tools query <verb>` command, pinned to `GSD_RUNTIME=claude`.
+    ///
+    /// **Why the pin.** The oracle's `init.manager` spells every command via
+    /// `formatGsdSlash(resolveRuntime(cwd))` (upstream 1.15.0 `src/init.cts`
+    /// 2865, 3230-3252). A Codex install's `.gsd-runtime` marker (`codex`), or a
+    /// `GSD_RUNTIME` inherited from the test process, makes it answer
+    /// `$gsd-discuss-phase 01` — measured, and it failed the safe-alphabet
+    /// assert. The rule table stores the canonical `/gsd-…` spelling and
+    /// `runtime::codex_command` translates only at the executor edge, so the
+    /// comparison has to be made in canonical spelling. For this verb the
+    /// runtime feeds only the spelling, never the routing, so pinning it cannot
+    /// hide a routing change. (The driven codex child is the opposite case: it
+    /// has `GSD_RUNTIME` scrubbed, never set — see `scrubbed_from_codex_child`.)
+    fn query_command(&self, verb: &str) -> Command {
         let mut command = Command::new(&self.program);
         if let Some(script) = &self.script {
             command.arg(script);
         }
-        let output = command
-            .args(["query", ORACLE_VERB])
+        command.args(["query", verb]).env("GSD_RUNTIME", "claude");
+        command
+    }
+
+    fn recommended_action(&self, root: &Path) -> Result<Option<(String, String)>, String> {
+        let output = self
+            .query_command(ORACLE_VERB)
             .current_dir(root)
             .output()
             .map_err(|err| format!("the oracle did not run: {}", err.kind()))?;
@@ -382,8 +427,9 @@ fn the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state() {
                  failure by default: the table is a transcription of a runtime \
                  this project neither owns nor versions, GSD shipped 1.8.0 → \
                  1.10.0 in about a month, and the research behind the table \
-                 self-expires. Install GSD (~/.claude/gsd-core/bin/gsd-tools.cjs) \
-                 and Node, or set {ALLOW_MISSING_ORACLE}=1 to accept a run that \
+                 self-expires. Install GSD (~/.claude/gsd-core/bin/gsd-tools.cjs \
+                 or ${{CODEX_HOME:-~/.codex}}/gsd-core/bin/gsd-tools.cjs) and \
+                 Node, or set {ALLOW_MISSING_ORACLE}=1 to accept a run that \
                  verified none of it"
             );
             eprintln!(
