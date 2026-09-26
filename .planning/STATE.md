@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 milestone: v1.8.0
 current_phase: 25
 current_phase_name: Running Agents & Live Wave View
-status: verifying
+status: executing
 stopped_at: Completed 25-06-PLAN.md
-last_updated: "2026-09-26T03:48:50.318Z"
+last_updated: "2026-09-26T04:19:49.171Z"
 last_activity: 2026-09-25
 last_activity_desc: Phase 25 execution started
-state_head: 24db864449c2845d7b166d9a2eb6eda15a48b350
+state_head: fbbe20903834f261549b3fe614a1b4f878ba4d7a
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 6
+  total_plans: 7
   completed_plans: 112
 milestone_name: Roadmap Redesign
 ---
@@ -31,7 +31,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Phase complete — ready for verification
+Status: Ready to execute
   Phase 24, quick tasks 260922-hdh/hdi/hdj, 260923-lr8/lr9/lra/md1, 260924-drx and five debug
   fixes; README gained screenshots and a Codex section. `./scripts/pre-tag-check.sh --container
   v1.8.0` exit **0**, all five gates PASS, git banner MATCH, 49 suites / **2367 passed / 0 failed**
@@ -102,7 +102,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
-Phase: 25 (Running Agents & Live Wave View) — EXECUTING
+Phase: 25 (Running Agents & Live Wave View) — READY TO EXECUTE
 Plan: 6 of 6
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
@@ -154,6 +154,14 @@ verified, and the four outstanding items are all reading judgements (does the pi
 statement read as candour; are 19-08's composed proofs faithful decompositions; do the
 residual-exposure disclosures read as admissions) plus the `driver_lock` one-off risk call.
 Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked passed.
+
+### Phase 25 gap planning (25-07) — decision-coverage gate override (autonomous run — audit this)
+
+`/gsd-plan-phase 25 --gaps` step-13a gate returned `{passed: false, reason: "could-not-parse",
+total: 30}` and was **overridden** [inferred], human unavailable. Parser mismatch, not a coverage
+gap: `25-CONTEXT.md` uses letter-grouped IDs (`D-A01`, `D-C08`), which the `D-NN`/`D4-NN` grammar
+rejects. Phase-wide decision coverage was already planned by 25-01..25-06; 25-07 is gap-only
+(CR-01 + WR-01) and cites D-A03/A08/B01/C08/C10/C12/C13/C14/C16/C17. CONTEXT.md not edited.
 
 ### Phase 22 planning — decision-coverage gate override (autonomous run — audit this)
 

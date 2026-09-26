@@ -800,7 +800,7 @@ Plans:
 
   UI implication: the dashboard row gets a compact summary (`P13 · wave 2/11 · 13 running · 8/35 done`); the detail view gets a scrollable per-agent list (plan/description, commits, dirty count, last activity) plus per-wave done/running/queued.
 
-**Plans**: 6/6 plans executed
+**Plans**: 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -820,6 +820,10 @@ Plans:
 
 - [x] 25-05-PLAN.md — Sessions › Agents detail sub-view, keys, escape-guard coverage, docs (wave 4)
 - [x] 25-06-PLAN.md — Code-review fixer `~fixed/total` estimate (wave 4)
+
+**Wave 5** *(gap closure — blocked on Wave 4 completion)*
+
+- [ ] 25-07-PLAN.md — close CR-01: orphaned agent worktrees age out (`MAX_AGENT_AGE_SECS` → `Ended`), `Finished` alone never switches the Status cell on, running agents choose phase/ladder (WR-01), fixer estimate needs a running fixer; byte-identical dashboard regressions
 
 ## Progress
 
