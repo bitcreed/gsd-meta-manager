@@ -467,6 +467,24 @@ pub fn install_label(status: &GsdInstallStatus) -> (String, Severity) {
     }
 }
 
+/// The one startup status line: the global install against the synced
+/// version, plus how many projects use a project-local install (and how many
+/// of those are newer). Source words come from the enums only.
+pub fn startup_summary<'a>(
+    _global: &GsdInstallStatus,
+    _projects: impl IntoIterator<Item = &'a GsdInstallStatus>,
+) -> String {
+    String::new()
+}
+
+/// The highest installed version among `statuses` that is newer than the
+/// synced ceiling, if any.
+pub fn newest_newer_than_synced<'a>(
+    _statuses: impl IntoIterator<Item = &'a GsdInstallStatus>,
+) -> Option<GsdVersion> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,6 +860,88 @@ mod tests {
             assert_eq!(sev, severity, "{text}");
             assert!(!got.contains("/secret"), "a label never carries the path: {got}");
         }
+    }
+
+    // ── startup summary and dashboard scan ─────────────────────────────
+
+    #[test]
+    fn startup_summary_names_the_global_gsd_install_against_the_synced_version() {
+        use InstallRuntime::*;
+        use InstallScope::*;
+        let none: [&GsdInstallStatus; 0] = [];
+        let newer = newer_str();
+        let tree = GSD_CORE_SYNCED_TREE_VERSION;
+        let cases = [
+            (
+                install(Claude, Global, InstalledVersion::Parsed(ceiling())),
+                format!("GSD {tree} (global Claude) · app synced to gsd-core {tree}"),
+            ),
+            (
+                install(Claude, Global, InstalledVersion::Parsed(v(&newer))),
+                format!(
+                    "GSD {newer} (global Claude) is newer than synced gsd-core {tree} — \
+                     some formats may be unrecognised"
+                ),
+            ),
+            (
+                install(Codex, Global, InstalledVersion::Parsed(v(OLDER))),
+                format!(
+                    "GSD {OLDER} (global Codex) is older than this app's \
+                     {GSD_CORE_SYNCED_VERSION} baseline"
+                ),
+            ),
+            (
+                install(Claude, Global, InstalledVersion::Unrecognised),
+                format!("GSD (global Claude) has an unrecognised VERSION · app synced to gsd-core {tree}"),
+            ),
+            (
+                GsdInstallStatus::NotFound,
+                format!("No global GSD install found · app synced to gsd-core {tree}"),
+            ),
+        ];
+        for (global, text) in cases {
+            assert_eq!(startup_summary(&global, none), text);
+        }
+    }
+
+    #[test]
+    fn startup_summary_counts_project_local_gsd_installs() {
+        use InstallRuntime::*;
+        use InstallScope::*;
+        let tree = GSD_CORE_SYNCED_TREE_VERSION;
+        let global = GsdInstallStatus::NotFound;
+        let base = format!("No global GSD install found · app synced to gsd-core {tree}");
+        let local_ok = install(Claude, ProjectLocal, InstalledVersion::Parsed(ceiling()));
+        let local_newer = install(Codex, ProjectLocal, InstalledVersion::Parsed(v(&newer_str())));
+        // A project resolving to the global install is not counted.
+        let global_use = install(Claude, Global, InstalledVersion::Parsed(v(&newer_str())));
+
+        assert_eq!(
+            startup_summary(&global, [&local_ok, &global_use, &GsdInstallStatus::NotFound]),
+            format!("{base} · 1 project uses a project-local GSD")
+        );
+        assert_eq!(
+            startup_summary(&global, [&local_ok, &local_newer, &global_use]),
+            format!("{base} · 2 projects use a project-local GSD (1 newer)")
+        );
+    }
+
+    #[test]
+    fn newest_newer_than_synced_picks_the_highest_newer_gsd_install() {
+        use InstallRuntime::*;
+        use InstallScope::*;
+        let c = ceiling();
+        let a = format!("{}.0.0", c.major + 1);
+        let b = format!("{}.1.0", c.major + 1);
+        let statuses = [
+            install(Claude, Global, InstalledVersion::Parsed(v(&a))),
+            install(Codex, ProjectLocal, InstalledVersion::Parsed(v(&b))),
+            install(Claude, ProjectLocal, InstalledVersion::Parsed(c.clone())),
+            install(Claude, ProjectLocal, InstalledVersion::Unrecognised),
+            GsdInstallStatus::NotFound,
+        ];
+        assert_eq!(newest_newer_than_synced(&statuses), Some(v(&b)));
+        assert_eq!(newest_newer_than_synced(&statuses[2..]), None);
     }
 
     /// T-j0a-01: an ESC-prefixed VERSION is unrecognised, and nothing of it

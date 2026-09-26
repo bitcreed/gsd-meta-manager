@@ -1071,6 +1071,16 @@ impl App {
         }
     }
 
+    /// Set the one startup status line naming the effective global gsd-core
+    /// install against the synced version (quick 260926-j0a). Called once,
+    /// synchronously, right after the initial [`Self::load_project_states`].
+    pub fn announce_gsd_install(&mut self) {
+        self.announce_gsd_install_with(&state_reader::gsd_install::InstallRoots::from_env());
+    }
+
+    /// [`Self::announce_gsd_install`] with the install roots injected.
+    pub fn announce_gsd_install_with(&mut self, _roots: &state_reader::gsd_install::InstallRoots) {}
+
     /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
     /// unregistered GSD project. Persists config, starts the file watcher,
     /// loads initial project state, and surfaces a status message per
@@ -2450,6 +2460,57 @@ impl App {
 mod tests {
     use super::*;
     use crate::state_reader::roadmap_md::RoadmapPhase;
+
+    /// quick 260926-j0a: the startup line is exactly `startup_summary`'s text
+    /// over the injected global install and the loaded project states.
+    #[test]
+    fn announce_gsd_install_sets_the_startup_summary() {
+        use crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION;
+        use crate::state_reader::gsd_install::{
+            detect_gsd_install, startup_summary, InstallRoots,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let core = home.path().join(".claude/gsd-core");
+        std::fs::create_dir_all(&core).unwrap();
+        std::fs::write(core.join("VERSION"), GSD_CORE_SYNCED_TREE_VERSION).unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let local = project.path().join(".codex/gsd-core");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("VERSION"), "0.1.0").unwrap();
+        let roots = InstallRoots {
+            home: Some(home.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let mut app = App::new_for_test();
+        app.ctx.project_states.insert(
+            "local".to_string(),
+            ProjectState {
+                gsd_install: detect_gsd_install(Some(project.path()), &roots),
+                ..Default::default()
+            },
+        );
+        app.ctx
+            .project_states
+            .insert("plain".to_string(), ProjectState::default());
+        app.ctx.status_message = None;
+        app.needs_redraw = false;
+
+        app.announce_gsd_install_with(&roots);
+
+        let expected = startup_summary(
+            &detect_gsd_install(None, &roots),
+            app.ctx.project_states.values().map(|s| &s.gsd_install),
+        );
+        let (text, _) = app.ctx.status_message.clone().expect("a status message is set");
+        assert_eq!(text, expected);
+        assert!(
+            text.starts_with(&format!("GSD {GSD_CORE_SYNCED_TREE_VERSION} (global Claude)")),
+            "{text}"
+        );
+        assert!(text.ends_with("1 project uses a project-local GSD"), "{text}");
+        assert!(app.needs_redraw);
+    }
 
     /// quick-260924-drx: the line reaches the editor in the syntax it reads.
     #[test]

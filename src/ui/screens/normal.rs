@@ -3307,6 +3307,62 @@ mod tests {
             .collect()
     }
 
+    // ── Installed GSD (quick 260926-j0a) ────────────────────────────────
+
+    fn with_gsd_install(
+        runtime: crate::state_reader::gsd_install::InstallRuntime,
+        scope: crate::state_reader::gsd_install::InstallScope,
+        version: &str,
+    ) -> crate::state_reader::gsd_install::GsdInstallStatus {
+        use crate::state_reader::gsd_install::*;
+        GsdInstallStatus::Found(DetectedInstall {
+            runtime,
+            scope,
+            gsd_core_dir: PathBuf::from("/not/drawn"),
+            version: InstalledVersion::Parsed(GsdVersion::parse(version).expect("fixture")),
+        })
+    }
+
+    #[test]
+    fn dashboard_border_warns_when_a_gsd_install_is_newer() {
+        use crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION;
+        use crate::state_reader::gsd_install::{GsdVersion, InstallRuntime, InstallScope};
+        let major = GsdVersion::parse(GSD_CORE_SYNCED_TREE_VERSION).unwrap().major + 1;
+        let (low, high) = (format!("{major}.0.0"), format!("{major}.2.0"));
+        let mut ctx = mouse_ctx(3);
+        let states = &mut ctx.project_states;
+        states.get_mut("proj00").unwrap().gsd_install =
+            with_gsd_install(InstallRuntime::Claude, InstallScope::Global, &low);
+        states.get_mut("proj01").unwrap().gsd_install =
+            with_gsd_install(InstallRuntime::Codex, InstallScope::ProjectLocal, &high);
+
+        let rows = mouse_render(&NormalScreen::new(), &ctx, 120, 20);
+        let top = &rows[0];
+        assert!(top.contains(" GSD Manager "), "{top:?}");
+        assert!(
+            top.contains(&format!("GSD {high} newer than synced {GSD_CORE_SYNCED_TREE_VERSION}")),
+            "the HIGHEST newer version is named: {top:?}"
+        );
+        assert!(!rows.join("\n").contains("/not/drawn"));
+    }
+
+    #[test]
+    fn dashboard_border_is_unchanged_without_a_newer_gsd_install() {
+        use crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION;
+        use crate::state_reader::gsd_install::{InstallRuntime, InstallScope};
+        let plain = mouse_render(&NormalScreen::new(), &mouse_ctx(3), 120, 20);
+
+        let mut ctx = mouse_ctx(3);
+        let states = &mut ctx.project_states;
+        states.get_mut("proj00").unwrap().gsd_install =
+            with_gsd_install(InstallRuntime::Claude, InstallScope::Global, GSD_CORE_SYNCED_TREE_VERSION);
+        states.get_mut("proj01").unwrap().gsd_install =
+            with_gsd_install(InstallRuntime::Codex, InstallScope::ProjectLocal, "0.1.0");
+        let rows = mouse_render(&NormalScreen::new(), &ctx, 120, 20);
+        assert!(rows[0].contains(" GSD Manager "), "{:?}", rows[0]);
+        assert_eq!(rows, plain, "no Newer install: the dashboard is byte-identical");
+    }
+
     fn mouse_aliases(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("proj{i:02}")).collect()
     }

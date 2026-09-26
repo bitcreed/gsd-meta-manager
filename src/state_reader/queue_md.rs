@@ -1,5 +1,6 @@
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+use super::gsd_install::InstallRoots;
 use std::process::Command;
 
 use serde::Deserialize;
@@ -90,11 +91,9 @@ const GSD_TOOLS_SHIM: &str = "gsd-core/bin/gsd-tools.cjs";
 /// Like the shell `:-` expansion, an EMPTY `codex_home` falls back to
 /// `~/.codex`. With neither a home nor a non-empty `codex_home`, only the
 /// three project-local candidates are returned.
-fn gsd_tools_candidates(
-    project_root: &Path,
-    home: Option<&Path>,
-    codex_home: Option<&OsStr>,
-) -> Vec<PathBuf> {
+fn gsd_tools_candidates(project_root: &Path, roots: &InstallRoots) -> Vec<PathBuf> {
+    let home = roots.home.as_deref();
+    let codex_home = roots.codex_home.as_deref();
     let mut candidates: Vec<PathBuf> = vec![
         project_root.join(GSD_TOOLS_SHIM),
         project_root.join(".claude").join(GSD_TOOLS_SHIM),
@@ -119,9 +118,7 @@ fn gsd_tools_candidates(
 /// directory and `CODEX_HOME`. This is the ONLY place the resolver reads
 /// process state for those, so tests never have to mutate HOME/CODEX_HOME.
 fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
-    let home = dirs::home_dir();
-    let codex_home = std::env::var_os("CODEX_HOME");
-    resolve_gsd_tools_from(project_root, home.as_deref(), codex_home.as_deref())
+    resolve_gsd_tools_from(project_root, &InstallRoots::from_env())
 }
 
 /// Resolve a runnable `gsd-tools` launcher with an injected home/CODEX_HOME.
@@ -145,12 +142,8 @@ fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
 /// No `GSD_RUNTIME` pin is applied to the `smart-entry` call: 1.15.0
 /// `src/smart-entry.cts` hardcodes the `/gsd:` spelling regardless of the
 /// resolved runtime, so a Codex install answers exactly like a Claude one.
-fn resolve_gsd_tools_from(
-    project_root: &Path,
-    home: Option<&Path>,
-    codex_home: Option<&OsStr>,
-) -> Option<GsdToolsCmd> {
-    for candidate in gsd_tools_candidates(project_root, home, codex_home) {
+fn resolve_gsd_tools_from(project_root: &Path, roots: &InstallRoots) -> Option<GsdToolsCmd> {
+    for candidate in gsd_tools_candidates(project_root, roots) {
         if candidate.is_file() {
             return Some(GsdToolsCmd {
                 program: "node".to_string(),
@@ -579,12 +572,71 @@ mod tests {
         }
     }
 
+    fn home_roots(home: &Path) -> InstallRoots {
+        InstallRoots {
+            home: Some(home.to_path_buf()),
+            ..Default::default()
+        }
+    }
+
+    fn with_codex(home: Option<&Path>, codex_home: &str) -> InstallRoots {
+        InstallRoots {
+            home: home.map(Path::to_path_buf),
+            claude_config_dir: None,
+            codex_home: Some(codex_home.into()),
+        }
+    }
+
+    /// quick 260926-j0a (inferred I-4): the resolver honours
+    /// `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` as `gsd-run-resolver.md` does —
+    /// the override REPLACES `~/.claude`, and a blank one falls back.
+    #[test]
+    fn gsd_tools_candidates_honour_claude_config_dir() {
+        let root = Path::new("/p");
+        let home = Path::new("/h");
+        let roots = InstallRoots {
+            home: Some(home.to_path_buf()),
+            claude_config_dir: Some("/cc".into()),
+            codex_home: None,
+        };
+        let got = gsd_tools_candidates(root, &roots);
+        assert_eq!(got.len(), 5, "CLAUDE_CONFIG_DIR replaces ~/.claude, it does not add");
+        assert_eq!(got[3], PathBuf::from("/cc/gsd-core/bin/gsd-tools.cjs"));
+        assert!(!got.contains(&home.join(".claude/gsd-core/bin/gsd-tools.cjs")));
+
+        let blank = InstallRoots {
+            claude_config_dir: Some("  ".into()),
+            ..roots
+        };
+        assert_eq!(
+            gsd_tools_candidates(root, &blank)[3],
+            home.join(".claude/gsd-core/bin/gsd-tools.cjs")
+        );
+    }
+
+    /// The resolver and the version detector read ONE candidate list.
+    #[test]
+    fn gsd_tools_candidates_are_the_install_candidates_projected_onto_the_shim() {
+        let root = Path::new("/p");
+        let roots = InstallRoots {
+            home: Some(PathBuf::from("/h")),
+            claude_config_dir: Some("~/cc".into()),
+            codex_home: Some("/cx".into()),
+        };
+        let projected: Vec<PathBuf> =
+            super::super::gsd_install::install_candidates(Some(root), &roots)
+                .into_iter()
+                .map(|c| c.gsd_core_dir.join("bin/gsd-tools.cjs"))
+                .collect();
+        assert_eq!(gsd_tools_candidates(root, &roots), projected);
+    }
+
     #[test]
     fn gsd_tools_candidates_follow_the_upstream_1_15_0_order() {
         let root = Path::new("/p");
         let home = Path::new("/h");
         assert_eq!(
-            gsd_tools_candidates(root, Some(home), None),
+            gsd_tools_candidates(root, &home_roots(home)),
             vec![
                 root.join("gsd-core/bin/gsd-tools.cjs"),
                 root.join(".claude/gsd-core/bin/gsd-tools.cjs"),
@@ -599,7 +651,7 @@ mod tests {
     fn gsd_tools_candidates_honour_a_non_empty_codex_home() {
         let root = Path::new("/p");
         let home = Path::new("/h");
-        let got = gsd_tools_candidates(root, Some(home), Some(OsStr::new("/x/codex")));
+        let got = gsd_tools_candidates(root, &with_codex(Some(home), "/x/codex"));
         assert_eq!(got.len(), 5, "CODEX_HOME replaces ~/.codex, it does not add");
         assert_eq!(
             got.last().unwrap(),
@@ -613,7 +665,7 @@ mod tests {
         // Mirrors the shell `${CODEX_HOME:-$HOME/.codex}` expansion.
         let root = Path::new("/p");
         let home = Path::new("/h");
-        let got = gsd_tools_candidates(root, Some(home), Some(OsStr::new("")));
+        let got = gsd_tools_candidates(root, &with_codex(Some(home), ""));
         assert_eq!(
             got.last().unwrap(),
             &home.join(".codex/gsd-core/bin/gsd-tools.cjs")
@@ -624,14 +676,14 @@ mod tests {
     fn gsd_tools_candidates_without_a_home() {
         let root = Path::new("/p");
         assert_eq!(
-            gsd_tools_candidates(root, None, None),
+            gsd_tools_candidates(root, &InstallRoots::default()),
             vec![
                 root.join("gsd-core/bin/gsd-tools.cjs"),
                 root.join(".claude/gsd-core/bin/gsd-tools.cjs"),
                 root.join(".codex/gsd-core/bin/gsd-tools.cjs"),
             ]
         );
-        let got = gsd_tools_candidates(root, None, Some(OsStr::new("/x/codex")));
+        let got = gsd_tools_candidates(root, &with_codex(None, "/x/codex"));
         assert_eq!(got.len(), 4);
         assert_eq!(
             got.last().unwrap(),
@@ -645,7 +697,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let codex = plant(home.path(), ".codex");
         assert_eq!(
-            resolve_gsd_tools_from(root.path(), Some(home.path()), None),
+            resolve_gsd_tools_from(root.path(), &home_roots(home.path())),
             Some(node_cmd(&codex))
         );
     }
@@ -657,7 +709,7 @@ mod tests {
         plant(home.path(), ".codex");
         let claude = plant(home.path(), ".claude");
         assert_eq!(
-            resolve_gsd_tools_from(root.path(), Some(home.path()), None),
+            resolve_gsd_tools_from(root.path(), &home_roots(home.path())),
             Some(node_cmd(&claude))
         );
     }
@@ -670,7 +722,7 @@ mod tests {
         plant(home.path(), ".codex");
         let local = plant(root.path(), ".codex");
         assert_eq!(
-            resolve_gsd_tools_from(root.path(), Some(home.path()), None),
+            resolve_gsd_tools_from(root.path(), &home_roots(home.path())),
             Some(node_cmd(&local))
         );
     }
