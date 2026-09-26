@@ -4,11 +4,11 @@ milestone: v1.8.0
 current_phase: 25
 current_phase_name: Running Agents & Live Wave View
 status: executing
-stopped_at: Completed 25-01-PLAN.md
-last_updated: "2026-09-26T02:46:57.185Z"
+stopped_at: Completed 25-02-PLAN.md
+last_updated: "2026-09-26T03:00:44.752Z"
 last_activity: 2026-09-25
 last_activity_desc: Phase 25 execution started
-state_head: 98337e207e47b177c89af28df875551339bb663c
+state_head: 9df5a0b58968266c980025dcd05989cca91315d3
 progress:
   total_phases: 10
   completed_phases: 6
@@ -103,7 +103,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
 Phase: 25 (Running Agents & Live Wave View) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -319,6 +319,7 @@ verify-phase if the gate is fixed.
 | Phase 24 P06 | 16 min | 3 tasks | 5 files |
 | Phase 24 P07 | 13min | 3 tasks | 7 files |
 | Phase 25 P01 | 15 min | 3 tasks | 8 files |
+| Phase 25 P02 | 11 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -423,6 +424,10 @@ Recent decisions affecting current work:
 - [Phase 25]: 25-01: agent git counts live in worktrees::worktree_counts so every src/agents git call stays in worktrees.rs [inferred]
 - [Phase 25]: 25-01: no-linked-worktree prefilter reports main_worktree=project_root, base_sha=None [inferred]
 - [Phase 25]: 25-01: non-z porcelain fallback also decodes octal byte escapes (non-ASCII paths) [inferred]
+- [Phase 25]: 25-02: an unparseable Claude meta is no data for its row; a mistyped field loses only itself [inferred]
+- [Phase 25]: 25-02: read_meta_capped refuses symlinks and non-regular files (transcript redirect, FIFO hang) [inferred]
+- [Phase 25]: 25-02: the MAX_AGENT_AGE_SECS session bound covers the whole second pass; the per-id worktree lookup is unbounded [inferred]
+- [Phase 25]: 25-02: a live meta whose worktreePath names an already-enriched worktree attaches as a child [inferred]
 
 ### Roadmap Evolution
 
@@ -516,8 +521,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-26T02:46:56.725Z
-Stopped at: Completed 25-01-PLAN.md
+Last session: 2026-09-26T03:00:44.299Z
+Stopped at: Completed 25-02-PLAN.md
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
 lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
 unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,
