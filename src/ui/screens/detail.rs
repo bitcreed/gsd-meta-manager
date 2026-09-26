@@ -19542,14 +19542,23 @@ mod tests {
     }
 
     #[test]
-    fn sentriq_phase_12_explains_it_has_no_deps() {
+    fn sentriq_phase_12_needs_what_gsd_1_15_reads_from_its_prose() {
+        // quick 260926-gtl: sentriq's phase 12 declares `Nothing in this
+        // milestone — opportunistic, and blocks on nothing in Phases 9-11`.
+        // gsd-core 1.15.0's PHASE_DEP_REF (#4764) reads that as 9 and 11 —
+        // negation prose is kept by design upstream — so its router gates the
+        // phase on them, and the Needs row shows what the router gates on.
         let (screen, mut ctx) = roadmap_fixture("sentriq");
         set_roadmap_cursor(&mut ctx, phase_target("12"));
         for (w, h) in [(80, 24), (120, 30)] {
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
             assert!(text.contains("Phase 12 "), "{w}x{h}:\n{text}");
-            assert!(text.contains("nothing declared"), "{w}x{h}:\n{text}");
-            assert!(text.contains("can run any time"), "{w}x{h}:\n{text}");
+            let needs = text
+                .lines()
+                .find(|l| l.contains("Needs"))
+                .unwrap_or_else(|| panic!("{w}x{h}: a Needs row:\n{text}"));
+            assert!(needs.contains("11"), "{w}x{h}: {needs}");
+            assert!(!needs.contains("nothing declared"), "{w}x{h}: {needs}");
             assert!(!text.contains("Nothing in this milestone"), "{w}x{h}:\n{text}");
         }
     }

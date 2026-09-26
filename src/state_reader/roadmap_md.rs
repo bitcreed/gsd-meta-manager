@@ -12,7 +12,9 @@ pub struct RoadmapPhase {
     pub total_plans: u32,
     pub completed_plans: u32,
     /// The phase identifiers this phase's `**Depends on**:` line declares, in
-    /// the order written. Empty when the entry has no dependency line.
+    /// the order written. Empty when the entry has no dependency line. The
+    /// entry's own phase is never listed (gsd-core #4764); see
+    /// [`parse_depends_on`] for the grammar.
     ///
     /// **Declared, never inferred.** GSD's own router gates two of its three
     /// forward-motion actions on `deps_satisfied` (`init.cjs:2037-2064`), so a
@@ -118,37 +120,107 @@ fn is_sentinel_phase(number: &str) -> bool {
     }
 }
 
-/// Extract the phase identifiers declared by a `**Depends on**:` line's text.
+/// Extract the phase identifiers declared by a `**Depends on**:` line's text,
+/// for the entry whose own recognised number is `own_number`.
 ///
-/// Two rules, both narrowing:
+/// Two rules:
 ///
-/// 1. **Parenthetical groups are stripped first.** A qualifier is prose about
-///    ordering, not a dependency — this repository's phase 20 declares
-///    `Phase 16, Phase 17, Phase 19 (and Phase 22 must land before this phase
-///    closes)`, and promoting `22` out of that aside would state a dependency
-///    the roadmap does not. It also disarms `Nothing (no v2.0 dependencies…)`,
-///    where a bare-number scan would invent a phase `2.0` from a version string
-///    and leave the condition unsatisfiable forever.
-/// 2. **Only `Phase <id>` occurrences count**, reusing [`PHASE_ID`] so the same
-///    identifier forms the rest of this file accepts — bare numeric, decimal,
-///    project-code-prefixed and milestone-prefixed — are accepted here too. The
-///    keyword is required precisely because a bare number in prose is
-///    indistinguishable from an identifier. `Phases 17-21` does not match: the
-///    plural leaves no whitespace after `Phase`, so a range stays prose.
+/// 1. **Parenthetical groups are stripped first** (Plan 20-03, threat
+///    mitigation T-20-16). A qualifier is prose about ordering, not a
+///    dependency — this repository's phase 20 declares `Phase 16, Phase 17,
+///    Phase 19 (and Phase 22 must land before this phase closes)`, and
+///    promoting `22` out of that aside would state a dependency the roadmap
+///    does not. It also disarms `Nothing (no v2.0 dependencies…)`, where a
+///    bare-number scan would invent a phase `2.0` from a version string.
+///    **This is the one recorded divergence from gsd-core 1.15.0** (which
+///    reads parentheticals): measured over this repository's ROADMAP, 1.15.0
+///    gives phase 20 → 16, 17, 19, 22 while phase 22 → 15, 17, 21, 20 — a
+///    20↔22 cycle that leaves both unsatisfiable — and phases 24/25 gain 15, 23,
+///    14 (and 24) out of an "independent of … phases 15-23 … like Phase 14"
+///    aside. Reversing a threat-register mitigation is a decision of its own,
+///    so the strip stays.
+/// 2. **gsd-core 1.15.0's `PHASE_DEP_REF` grammar** (`src/phase-id.cts:80`,
+///    #4764, the grammar `init manager` computes `dep_phases` with): a
+///    case-insensitive `phase` / `phases` keyword followed by a list of ids
+///    joined by `,` / `, and` / `and` / `&`, or ranges joined by `-` / `to` /
+///    `through` (hyphen only — en/em dashes are prose, as upstream). **A range
+///    contributes its ENDPOINTS only** (`Phases 17-21` → 17, 21), upstream's
+///    deliberate choice. The keyword is still required, because a bare number
+///    in prose is indistinguishable from an identifier — dates, shas and
+///    version strings stay prose. The id token is [`PHASE_ID`], so beyond
+///    upstream's `\d+[A-Z]?(?:\.\d+)*` it also reads project-code-prefixed
+///    ids (`Phase M-2`), which upstream skips. Negation prose (`blocks on
+///    nothing in Phases 9-11`) is read, as upstream reads it: dropping a real
+///    dependency is the dangerous direction.
 ///
-/// Order written is preserved; a repeated identifier appears once.
-fn parse_depends_on(text: &str) -> Vec<String> {
-    let without_qualifiers = Regex::new(r"\([^)]*\)").unwrap().replace_all(text, " ");
-    let phase_ref = Regex::new(&format!(r"Phase\s+({id})", id = PHASE_ID)).unwrap();
+/// The entry's own phase is never listed (#4764 self-reference), and a
+/// repeated identifier appears once — both compared by [`dep_ref_key`], so
+/// `Phase 8, phase 08` and `phase 12a` under `### Phase 12A:` resolve as
+/// upstream resolves them. Order written is preserved and the first-written
+/// spelling is kept.
+fn parse_depends_on(text: &str, own_number: &str) -> Vec<String> {
+    static QUALIFIER: OnceLock<Regex> = OnceLock::new();
+    static REFERENCE: OnceLock<Regex> = OnceLock::new();
+    static TOKEN: OnceLock<Regex> = OnceLock::new();
+    let qualifier = QUALIFIER.get_or_init(|| Regex::new(r"\([^)]*\)").unwrap());
+    let reference = REFERENCE.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)\bphases?\s+({id}(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&\s*|\s+(?:to|through)\s+|\s*-\s*){id})*)",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    });
+    let token = TOKEN.get_or_init(|| Regex::new(PHASE_ID).unwrap());
 
+    let without_qualifiers = qualifier.replace_all(text, " ");
+    let own = dep_ref_key(own_number);
+    let mut seen: Vec<String> = Vec::new();
     let mut out: Vec<String> = Vec::new();
-    for caps in phase_ref.captures_iter(&without_qualifiers) {
-        let id = caps[1].trim_end_matches(['.', ',']).to_string();
-        if !id.is_empty() && !out.contains(&id) {
-            out.push(id);
+    for caps in reference.captures_iter(&without_qualifiers) {
+        for tok in token.find_iter(&caps[1]) {
+            let id = tok.as_str().trim_end_matches(['.', ',']);
+            if id.is_empty() {
+                continue;
+            }
+            let key = dep_ref_key(id);
+            if key == own || seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push(id.to_string());
         }
     }
     out
+}
+
+/// The comparison key [`parse_depends_on`] uses for the self-reference skip
+/// and the dedupe — a port of gsd-core's `init.cts` `normalizePhaseNumber`.
+/// Each `.`-separated segment of the form `^(\d+)([A-Za-z]?)$` becomes its
+/// digits with leading zeros stripped (an all-zero run becomes `0`) followed by
+/// the letter uppercased; any other segment (`M-2`) is kept verbatim.
+///
+/// Leading zeros are **stripped, not parsed**, so an absurdly long digit run
+/// cannot overflow. Private on purpose: [`phase_key`] keeps letter ids raw and
+/// case-sensitive, and changing it would move every other caller.
+fn dep_ref_key(id: &str) -> String {
+    id.trim()
+        .split('.')
+        .map(|segment| {
+            let digits_end = segment
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(segment.len());
+            let (digits, rest) = segment.split_at(digits_end);
+            let letter_ok = rest.is_empty()
+                || (rest.len() == 1 && rest.as_bytes()[0].is_ascii_alphabetic());
+            if digits.is_empty() || !letter_ok {
+                return segment.to_string();
+            }
+            let stripped = digits.trim_start_matches('0');
+            let number = if stripped.is_empty() { "0" } else { stripped };
+            format!("{number}{}", rest.to_ascii_uppercase())
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Parse ROADMAP.md content and extract phase checklist items with per-phase plan counts.
@@ -402,7 +474,7 @@ fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
             // empty and `merge_duplicate_phases` takes the detail copy's.
             if phase.depends_on.is_empty() {
                 if let Some(dep_caps) = depends_re.captures(l) {
-                    phase.depends_on = parse_depends_on(&dep_caps[1]);
+                    phase.depends_on = parse_depends_on(&dep_caps[1], &phase.number);
                 }
             }
         }
@@ -778,7 +850,9 @@ fn is_fence_line(line: &str) -> bool {
 
 /// Extract the phase identifiers a build-phase entry's `**Depends on**:` line
 /// declares. Applied ONLY inside a build-phase entry; [`parse_depends_on`]
-/// stays the grammar for every GSD phase (its plural-range test pins that).
+/// stays the grammar for every GSD phase. The two differ on ranges: the GSD
+/// grammar reads a range's ENDPOINTS only (gsd-core 1.15.0 parity, #4764),
+/// while this build-phase grammar EXPANDS a range against the known ids.
 ///
 /// Parentheticals are stripped first, as [`parse_depends_on`] does. Then four
 /// forms are accepted: `Build phase N`, `Build phases A, B[, C]`,
