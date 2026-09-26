@@ -3062,6 +3062,35 @@ mod tests {
         );
     }
 
+    /// 25-07 (CR-01): a released-lock orphan two hours silent reads `Finished`
+    /// (inside the age bound), and `Finished` alone never switches the summary
+    /// on, so the milestone-complete frame is byte-identical.
+    #[test]
+    fn a_finished_orphan_within_the_age_bound_leaves_the_status_cell_byte_identical() {
+        use std::time::{Duration, SystemTime};
+
+        let now = SystemTime::now();
+        let finished = classified(now, Duration::from_secs(7_200), Some(true));
+        assert_eq!(finished, AgentLiveness::Finished);
+
+        let mut ctx = milestone_complete_ctx();
+        let view = orbit_view(&ctx, vec![agent_row(0, finished, Some("13-02"))], now);
+        assert!(!view.is_active());
+        ctx.agent_views.insert("orbit".to_string(), view);
+        for width in [80u16, 120] {
+            let baseline = render_selected(&mut milestone_complete_ctx(), width);
+            let rows = render_selected(&mut ctx, width);
+            assert_eq!(
+                rows, baseline,
+                "a finished orphan must not change a single cell at {width}"
+            );
+            assert_eq!(
+                status_cell_text(&rows, row_with(&rows, "orbit")),
+                "v1.0 Complete"
+            );
+        }
+    }
+
     /// 25-06 (D-C12, D-C14): three live code fixers that fixed an estimated
     /// five of 48 findings read as the compact fixer form in the 13-cell
     /// column and as the widest form — which keeps `fixed` — at 200.

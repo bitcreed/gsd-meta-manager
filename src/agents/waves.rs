@@ -891,6 +891,105 @@ mod tests {
         assert_eq!((view.finished, view.running), (1, 12));
     }
 
+    /// A live worktree-less agent (the scan keeps only live ones).
+    fn live_child() -> ChildAgent {
+        ChildAgent {
+            liveness: AgentLiveness::Live,
+            ..ChildAgent::default()
+        }
+    }
+
+    /// CR-01: `Finished` is done work. It counts inside a ladder something
+    /// running switched on, but never switches the summary on by itself, and
+    /// a leftover never selects the executor ladder.
+    #[test]
+    fn a_finished_row_alone_never_switches_the_summary_on() {
+        let finished: Vec<AgentRow> = (9..=10)
+            .map(|n| {
+                row(
+                    &format!("/wt/agent-{n:02}"),
+                    AgentLiveness::Finished,
+                    Some(&format!("13-{n:02}")),
+                )
+            })
+            .collect();
+        let view = derive(&agents(finished.clone()), &phase_13_state());
+        assert!(!view.is_active(), "finished rows alone are not running");
+        assert_eq!(view.summary_forms(), Vec::<String>::new());
+        assert_eq!(view.finished, 2, "the counts are still derived");
+
+        let with_live_child = ProjectAgents {
+            rows: finished,
+            worktreeless: vec![live_child()],
+            ..ProjectAgents::default()
+        };
+        let view = derive(&with_live_child, &phase_13_state());
+        assert!(view.is_active());
+        assert_eq!(
+            view.summary_forms(),
+            vec!["1 agent".to_string()],
+            "the live agent is counted, the leftovers pick no ladder"
+        );
+
+        let stalled_plus_live_child = ProjectAgents {
+            rows: vec![row("/wt/agent-09", AgentLiveness::Stalled, Some("13-09"))],
+            worktreeless: vec![live_child()],
+            ..ProjectAgents::default()
+        };
+        assert_eq!(
+            derive(&stalled_plus_live_child, &phase_13_state()).summary_forms(),
+            vec!["1 agent".to_string()]
+        );
+    }
+
+    /// Phase 12 with plans 12-01..12-03 in wave 1, beside [`phase_13_state`].
+    fn phases_12_and_13_state() -> ProjectState {
+        let mut st = phase_13_state();
+        st.phase_disk_statuses.insert(
+            "12".to_string(),
+            DiskInference {
+                plan_waves: vec![wave(Some(1), &strs(&["12-01", "12-02", "12-03"]))],
+                plan_count: 3,
+                ..DiskInference::default()
+            },
+        );
+        st
+    }
+
+    /// WR-01: running rows choose the active phase; `Finished` and `Stalled`
+    /// rows vote only when nothing attributed is running.
+    #[test]
+    fn running_agents_outvote_orphans_for_the_active_phase() {
+        let orphans = vec![
+            row("/wt/o1", AgentLiveness::Stalled, Some("12-01")),
+            row("/wt/o2", AgentLiveness::Stalled, Some("12-02")),
+            row("/wt/o3", AgentLiveness::Finished, Some("12-03")),
+        ];
+        let mut rows = orphans.clone();
+        rows.push(row("/wt/l1", AgentLiveness::Live, Some("13-01")));
+        rows.push(row("/wt/l2", AgentLiveness::Live, Some("13-02")));
+        let view = derive(&agents(rows), &phases_12_and_13_state());
+        assert_eq!(view.active_phase, PhaseNum::parse("13"));
+        assert_eq!(view.running, 2);
+        let forms = view.summary_forms();
+        assert!(forms[0].starts_with("P13"), "{forms:?}");
+
+        let view = derive(&agents(orphans.clone()), &phases_12_and_13_state());
+        assert_eq!(
+            view.active_phase,
+            PhaseNum::parse("12"),
+            "the fallback tier: orphans vote when nothing runs"
+        );
+        assert_eq!(view.summary_forms(), vec!["2 stalled".to_string()]);
+
+        // A first-tier tie goes to the higher phase, whatever the orphans say.
+        let mut rows = orphans;
+        rows.push(row("/wt/l0", AgentLiveness::Live, Some("12-01")));
+        rows.push(row("/wt/l1", AgentLiveness::Idle, Some("13-01")));
+        let view = derive(&agents(rows), &phases_12_and_13_state());
+        assert_eq!(view.active_phase, PhaseNum::parse("13"));
+    }
+
     #[test]
     fn stalled_and_unknown_only_states() {
         let st = state(

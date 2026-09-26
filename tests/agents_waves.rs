@@ -251,6 +251,9 @@ fn released_30s() -> Scripted {
     }
 }
 
+/// A finished plan whose SUMMARY is only in its worktree reads `Finished`.
+/// Alone it does not switch the ladder on (CR-01: `Finished` is done work,
+/// not running work); once something on the phase runs, it counts toward done.
 #[test]
 fn a_summary_committed_in_the_worktree_reads_finished_before_the_merge() {
     let Some((_tmp, root)) = phase_repo() else {
@@ -281,9 +284,18 @@ fn a_summary_committed_in_the_worktree_reads_finished_before_the_merge() {
 
     let view = derive(&agents, &phase_13_state(&root));
     assert_eq!((view.done, view.finished, view.running), (1, 1, 0));
+    assert!(!view.is_active(), "a finished agent alone is not running");
+    assert_eq!(view.summary_forms(), Vec::<String>::new());
+
+    // 13-03's executor, running: no SUMMARY, 30 s old, so Live.
+    add_agent_worktree(&root, "agent-p13-03-1790386423");
+    let agents = scan(&root, released_30s());
+    assert_eq!(agents.rows.len(), 2, "{:?}", agents.rows);
+    let view = derive(&agents, &phase_13_state(&root));
+    assert_eq!((view.done, view.finished, view.running), (1, 1, 1));
     assert_eq!(
         view.summary_forms().first().map(String::as_str),
-        Some("P13 \u{b7} w2/2 \u{b7} 0 run \u{b7} 2/3 done"),
+        Some("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 2/3 done"),
         "done shown to the user is main-done plus finished-unmerged"
     );
 }

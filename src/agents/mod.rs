@@ -73,6 +73,16 @@ pub enum AgentLiveness {
     Unknown,
 }
 
+impl AgentLiveness {
+    /// RED stub (25-07 Task 2): today's activation set.
+    pub fn is_running(self) -> bool {
+        matches!(
+            self,
+            AgentLiveness::Live | AgentLiveness::Idle | AgentLiveness::Finished
+        )
+    }
+}
+
 // The liveness thresholds, in one block (D-C08). Changing what "live" or
 // "stalled" means is an edit here and nowhere else.
 
@@ -557,6 +567,22 @@ mod tests {
             ..ChildAgent::default()
         };
         assert_eq!(classify_child(child, now).liveness, AgentLiveness::Ended);
+    }
+
+    /// CR-01: only a `Live` or `Idle` agent is running.
+    #[test]
+    fn only_live_and_idle_are_running() {
+        use AgentLiveness::*;
+        for (liveness, running) in [
+            (Live, true),
+            (Idle, true),
+            (Finished, false),
+            (Stalled, false),
+            (Ended, false),
+            (Unknown, false),
+        ] {
+            assert_eq!(liveness.is_running(), running, "{liveness:?}");
+        }
     }
 
     #[test]
