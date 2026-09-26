@@ -8818,7 +8818,7 @@ fn agent_state_style(liveness: AgentLiveness) -> Style {
 /// `text` cut to at most `cols` terminal cells, the cut marked with `…`.
 /// Measured with `Span::width` per character, never with `str::len`, so a
 /// wide or multi-byte glyph is never split and never miscounted.
-fn fit_cells(text: &str, cols: usize) -> String {
+pub(super) fn fit_cells(text: &str, cols: usize) -> String {
     if Span::raw(text).width() <= cols {
         return text.to_string();
     }

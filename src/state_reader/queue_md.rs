@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::gsd_install::InstallRoots;
+use super::gsd_install::{install_candidates, InstallRoots};
 use std::process::Command;
 
 use serde::Deserialize;
@@ -74,54 +74,46 @@ fn parse_smart_entry_json(raw: &str) -> Option<Vec<String>> {
     Some(recommended)
 }
 
-/// Relative path of GSD's launcher shim inside an install root.
-const GSD_TOOLS_SHIM: &str = "gsd-core/bin/gsd-tools.cjs";
+/// Relative path of GSD's launcher shim inside a `gsd-core` directory.
+const GSD_TOOLS_SHIM: &str = "bin/gsd-tools.cjs";
 
 /// Ordered `gsd-tools.cjs` candidates for `project_root`. Pure: the home
-/// directory and `CODEX_HOME` are passed in, never read from the process.
+/// directory and the runtime-home overrides arrive in `roots`, never read from
+/// the process.
 ///
-/// Order (mirrors gsd-core 1.15.0 `gsd-core/references/gsd-run-resolver.md`,
-/// as reworked by #4834):
+/// **A projection of [`install_candidates`]** (quick 260926-j0a, inferred
+/// I-4): each candidate `gsd-core` directory mapped onto its
+/// [`GSD_TOOLS_SHIM`], so the launcher resolver and the installed-version
+/// detector read ONE list and cannot drift apart. The order mirrors gsd-core
+/// 1.15.0 `gsd-core/references/gsd-run-resolver.md` (as reworked by #4834):
 ///   1. `<root>/gsd-core/bin/gsd-tools.cjs`
 ///   2. `<root>/.claude/gsd-core/bin/gsd-tools.cjs`
 ///   3. `<root>/.codex/gsd-core/bin/gsd-tools.cjs`
-///   4. `~/.claude/gsd-core/bin/gsd-tools.cjs`
+///   4. `${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core/bin/gsd-tools.cjs`
 ///   5. `${CODEX_HOME:-~/.codex}/gsd-core/bin/gsd-tools.cjs`
 ///
-/// Like the shell `:-` expansion, an EMPTY `codex_home` falls back to
-/// `~/.codex`. With neither a home nor a non-empty `codex_home`, only the
-/// three project-local candidates are returned.
+/// An override counts only when it is non-blank (the installer's
+/// `hasNonBlankOverride`), so an empty or whitespace-only value falls back to
+/// the home default; a leading `~` is expanded against home. With neither a
+/// home nor an override, only the three project-local candidates are returned.
 fn gsd_tools_candidates(project_root: &Path, roots: &InstallRoots) -> Vec<PathBuf> {
-    let home = roots.home.as_deref();
-    let codex_home = roots.codex_home.as_deref();
-    let mut candidates: Vec<PathBuf> = vec![
-        project_root.join(GSD_TOOLS_SHIM),
-        project_root.join(".claude").join(GSD_TOOLS_SHIM),
-        project_root.join(".codex").join(GSD_TOOLS_SHIM),
-    ];
-    if let Some(home) = home {
-        candidates.push(home.join(".claude").join(GSD_TOOLS_SHIM));
-    }
-    let codex_root = match codex_home.filter(|v| !v.is_empty()) {
-        Some(explicit) => Some(PathBuf::from(explicit)),
-        None => home.map(|h| h.join(".codex")),
-    };
-    if let Some(codex_root) = codex_root {
-        candidates.push(codex_root.join(GSD_TOOLS_SHIM));
-    }
-    candidates
+    install_candidates(Some(project_root), roots)
+        .into_iter()
+        .map(|candidate| candidate.gsd_core_dir.join(GSD_TOOLS_SHIM))
+        .collect()
 }
 
 /// Resolve a runnable `gsd-tools` launcher for `project_root`.
 ///
-/// Thin wrapper over [`resolve_gsd_tools_from`] that supplies the user's home
-/// directory and `CODEX_HOME`. This is the ONLY place the resolver reads
-/// process state for those, so tests never have to mutate HOME/CODEX_HOME.
+/// Thin wrapper over [`resolve_gsd_tools_from`] that supplies
+/// [`InstallRoots::from_env`] (home, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`). This is
+/// the ONLY place the resolver reads process state for those, so tests never
+/// have to mutate the environment.
 fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
     resolve_gsd_tools_from(project_root, &InstallRoots::from_env())
 }
 
-/// Resolve a runnable `gsd-tools` launcher with an injected home/CODEX_HOME.
+/// Resolve a runnable `gsd-tools` launcher with injected [`InstallRoots`].
 ///
 /// Walks [`gsd_tools_candidates`] in order and runs the first existing
 /// `.cjs` shim through `node`; failing that, falls back to a `gsd-tools`
@@ -134,8 +126,10 @@ fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
 /// `smart-entry` rather than the keyword heuristic. On a dual install the
 /// `.claude` home candidate is earlier and still wins.
 ///
+/// `CLAUDE_CONFIG_DIR` is honoured for the Claude home candidate, as
+/// upstream's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` does (quick 260926-j0a).
+///
 /// Known, deliberate differences from upstream:
-///   - `CLAUDE_CONFIG_DIR` is not honoured for the Claude home candidate;
 ///   - upstream's other runtime homes (Gemini, OpenCode, ...) are not probed;
 ///   - the PATH arm is not gated on `gsd-tools runtime-identity`.
 ///

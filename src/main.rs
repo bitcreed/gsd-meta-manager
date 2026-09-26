@@ -524,6 +524,10 @@ async fn main() -> anyhow::Result<()> {
             app.load_project_states();
 
             app.init_change_tracker();
+            // One startup status line: the installed gsd-core against the
+            // version this build is synced to. All fs reads live in the App
+            // method, so this async body stays free of inline fs calls.
+            app.announce_gsd_install();
 
             let event_bus = EventBus::new();
 

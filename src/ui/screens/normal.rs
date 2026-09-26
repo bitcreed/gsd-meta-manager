@@ -831,9 +831,31 @@ impl NormalScreen {
     }
 
     fn render_main(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let outer_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" GSD Manager ");
+        const TITLE: &str = " GSD Manager ";
+        let mut outer_block = Block::default().borders(Borders::ALL).title(TITLE);
+        // Quick 260926-j0a (inferred I-8): warn on the outer border ONLY when
+        // some project's effective gsd-core is newer than the synced version.
+        // An in-memory scan of already-parsed state, no I/O; with no Newer
+        // install nothing is drawn and the dashboard is byte-identical.
+        if let Some(newest) = crate::state_reader::gsd_install::newest_newer_than_synced(
+            ctx.project_states.values().map(|state| &state.gsd_install),
+        ) {
+            let room = usize::from(area.width).saturating_sub(Line::from(TITLE).width() + 3);
+            if room >= 8 {
+                let label = format!(
+                    " GSD {newest} newer than synced {} ",
+                    crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION
+                );
+                let text = super::detail::fit_cells(
+                    crate::text::render_for_terminal(&label).as_ref(),
+                    room,
+                );
+                outer_block = outer_block.title_top(
+                    Line::from(Span::styled(text, Style::default().fg(Color::Yellow)))
+                        .right_aligned(),
+                );
+            }
+        }
 
         if ctx.config.projects.is_empty() && !self.searching {
             // Empty state

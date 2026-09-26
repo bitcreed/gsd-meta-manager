@@ -1079,7 +1079,31 @@ impl App {
     }
 
     /// [`Self::announce_gsd_install`] with the install roots injected.
-    pub fn announce_gsd_install_with(&mut self, _roots: &state_reader::gsd_install::InstallRoots) {}
+    ///
+    /// Sets exactly one status message. The winning `gsd-core` path goes to
+    /// the log file only, never the TUI (T-j0a-05). A rarer "Auto-registered"
+    /// message set later in startup may supersede it (inferred I-9); the
+    /// Config tab and dashboard border keep carrying the information.
+    pub fn announce_gsd_install_with(&mut self, roots: &state_reader::gsd_install::InstallRoots) {
+        use state_reader::gsd_install::{detect_gsd_install, startup_summary, GsdInstallStatus};
+        let global = detect_gsd_install(None, roots);
+        let text = startup_summary(
+            &global,
+            self.ctx.project_states.values().map(|s| &s.gsd_install),
+        );
+        match &global {
+            GsdInstallStatus::Found(install) => tracing::info!(
+                gsd_core_dir = %install.gsd_core_dir.display(),
+                summary = %text,
+                "installed gsd-core detected",
+            ),
+            GsdInstallStatus::NotFound => {
+                tracing::info!(summary = %text, "no global gsd-core install found")
+            }
+        }
+        self.ctx.status_message = Some((text, std::time::Instant::now()));
+        self.needs_redraw = true;
+    }
 
     /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
     /// unregistered GSD project. Persists config, starts the file watcher,

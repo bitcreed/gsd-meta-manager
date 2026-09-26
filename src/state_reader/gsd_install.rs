@@ -471,18 +471,87 @@ pub fn install_label(status: &GsdInstallStatus) -> (String, Severity) {
 /// version, plus how many projects use a project-local install (and how many
 /// of those are newer). Source words come from the enums only.
 pub fn startup_summary<'a>(
-    _global: &GsdInstallStatus,
-    _projects: impl IntoIterator<Item = &'a GsdInstallStatus>,
+    global: &GsdInstallStatus,
+    projects: impl IntoIterator<Item = &'a GsdInstallStatus>,
 ) -> String {
-    String::new()
+    let tree = GSD_CORE_SYNCED_TREE_VERSION;
+    let mut text = match global {
+        GsdInstallStatus::NotFound => {
+            format!("No global GSD install found · app synced to gsd-core {tree}")
+        }
+        GsdInstallStatus::Found(install) => {
+            let source = install.source_label();
+            match &install.version {
+                InstalledVersion::Unrecognised => format!(
+                    "GSD ({source}) has an unrecognised VERSION · app synced to gsd-core {tree}"
+                ),
+                InstalledVersion::Parsed(v) => match relation_to_synced(v) {
+                    SyncRelation::InRange => {
+                        format!("GSD {v} ({source}) · app synced to gsd-core {tree}")
+                    }
+                    SyncRelation::Newer => format!(
+                        "GSD {v} ({source}) is newer than synced gsd-core {tree} — \
+                         some formats may be unrecognised"
+                    ),
+                    SyncRelation::Older => format!(
+                        "GSD {v} ({source}) is older than this app's \
+                         {GSD_CORE_SYNCED_VERSION} baseline"
+                    ),
+                },
+            }
+        }
+    };
+
+    let (mut local, mut local_newer) = (0usize, 0usize);
+    for status in projects {
+        if let GsdInstallStatus::Found(install) = status {
+            if install.scope == InstallScope::ProjectLocal {
+                local += 1;
+                if install_relation(install) == Some(SyncRelation::Newer) {
+                    local_newer += 1;
+                }
+            }
+        }
+    }
+    if local > 0 {
+        let noun = if local == 1 {
+            "project uses"
+        } else {
+            "projects use"
+        };
+        text.push_str(&format!(" · {local} {noun} a project-local GSD"));
+        if local_newer > 0 {
+            text.push_str(&format!(" ({local_newer} newer)"));
+        }
+    }
+    text
+}
+
+/// The relation of a detected install's version, `None` when unrecognised.
+fn install_relation(install: &DetectedInstall) -> Option<SyncRelation> {
+    match &install.version {
+        InstalledVersion::Parsed(v) => Some(relation_to_synced(v)),
+        InstalledVersion::Unrecognised => None,
+    }
 }
 
 /// The highest installed version among `statuses` that is newer than the
-/// synced ceiling, if any.
+/// synced ceiling, if any. An in-memory scan — no I/O — for the dashboard's
+/// border indicator.
 pub fn newest_newer_than_synced<'a>(
-    _statuses: impl IntoIterator<Item = &'a GsdInstallStatus>,
+    statuses: impl IntoIterator<Item = &'a GsdInstallStatus>,
 ) -> Option<GsdVersion> {
-    None
+    statuses
+        .into_iter()
+        .filter_map(|status| match status {
+            GsdInstallStatus::Found(DetectedInstall {
+                version: InstalledVersion::Parsed(v),
+                ..
+            }) if relation_to_synced(v) == SyncRelation::Newer => Some(v),
+            _ => None,
+        })
+        .max_by(|a, b| a.precedence_cmp(b))
+        .cloned()
 }
 
 #[cfg(test)]
