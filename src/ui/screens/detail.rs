@@ -2169,6 +2169,12 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Agents => {
+                        let max = agents_list_max(ctx, &self.alias);
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.agents_selected = (cache.agents_selected + 1).min(max);
+                        ctx.needs_redraw = true;
+                    }
                     DetailSubView::Archive => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         use crate::archive::ArchiveDepth;
@@ -2310,6 +2316,12 @@ impl Screen for DetailScreen {
                     DetailSubView::Sessions => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         cache.sessions_selected = cache.sessions_selected.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Agents => {
+                        let max = agents_list_max(ctx, &self.alias);
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.agents_selected = cache.agents_selected.min(max).saturating_sub(1);
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Archive => {
@@ -2471,6 +2483,12 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Agents => {
+                        let max = agents_list_max(ctx, &self.alias);
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.agents_selected = (cache.agents_selected + PAGE_SCROLL_LINES as usize).min(max);
+                        ctx.needs_redraw = true;
+                    }
                     DetailSubView::Archive => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         use crate::archive::ArchiveDepth;
@@ -2620,6 +2638,12 @@ impl Screen for DetailScreen {
                     DetailSubView::Sessions => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         cache.sessions_selected = cache.sessions_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Agents => {
+                        let max = agents_list_max(ctx, &self.alias);
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.agents_selected = cache.agents_selected.min(max).saturating_sub(PAGE_SCROLL_LINES as usize);
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Archive => {
@@ -2888,6 +2912,9 @@ impl Screen for DetailScreen {
                         }
                         ScreenAction::None
                     }
+                    // The Agents sub-view observes only: Enter acts on no
+                    // agent (phase boundary, T-25-24).
+                    DetailSubView::Agents => ScreenAction::None,
                     DetailSubView::Sessions => {
                         // Resume selected session in a new terminal
                         let filtered_sessions: Vec<_> = ctx
@@ -6744,6 +6771,17 @@ pub(crate) fn agent_list_len(view: &AgentView) -> usize {
     rows + worktreeless
 }
 
+/// The last selectable line of `alias`'s Agents list: [`agent_list_len`] less
+/// one, with a missing view counting as zero lines. The scroll keys clamp
+/// against it, and the render clamps against the same count.
+fn agents_list_max(ctx: &AppContext, alias: &str) -> usize {
+    ctx.agent_views
+        .get(alias)
+        .map(agent_list_len)
+        .unwrap_or(0)
+        .saturating_sub(1)
+}
+
 /// `+{n}` / `~{n}`, or `?` in place of a count git could not produce.
 fn agent_count(prefix: &str, count: Option<u32>) -> String {
     match count {
@@ -6956,6 +6994,14 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("switch  "));
             spans.push(Span::styled("[n]", b));
             spans.push(Span::raw("ew session  "));
+            spans.push(Span::styled("[m]", b));
+            spans.push(Span::raw(" agents  "));
+        }
+        // The Sessions tab's Agents sub-view (D-C15): it observes only, so it
+        // offers no Enter or `n`. Scrolling is the shared prefix's `[j/k]`.
+        DetailSubView::Agents => {
+            spans.push(Span::styled("[m]", b));
+            spans.push(Span::raw(" sessions  "));
         }
         // The Docs tab's two sub-views each advertise `m`, naming the other
         // sub-tab it switches to (D-B04).

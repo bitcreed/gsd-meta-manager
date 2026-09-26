@@ -241,7 +241,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("e", "Backlog tab: edit the open item where it lives, e.g. ROADMAP.md (detail view)"),
         // Phase 24-07 (D-B04): the archive is the Docs tab's Milestones
         // sub-tab, and `m` is the only key that reaches it from Files.
-        row("m", "Docs tab: switch Files / Milestones (detail view)"),
+        row("m", "Docs / Sessions tab: switch sub-view (detail view)"),
         row("q / Esc", "Quit / Back"),
         row("Ctrl+C", "Force quit"),
         Line::from(""),
