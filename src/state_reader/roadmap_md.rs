@@ -2724,6 +2724,95 @@ Plans:
         assert_eq!(goals.len(), 1);
     }
 
+    // ── quick 260926-gtl: gsd-core 1.15.0 extractPhaseFieldMultiline parity
+    //    (#4731 / #4837). Every expected value MEASURED 2026-09-26 with the
+    //    built 1.15.0 oracle's `roadmap get-phase 1` over the same body. ──
+
+    /// The goal of phase 1 when `body` sits alone under `### Phase 1: T` — one
+    /// roadmap string per case, so an unbalanced fence cannot leak across.
+    fn goal_under_phase_1(body: &str) -> Option<String> {
+        let roadmap = format!("### Phase 1: T\n\n{body}\n");
+        goal_of(&parse_phase_goals(&roadmap), "1")
+    }
+
+    #[test]
+    fn a_hard_wrapped_goal_reads_past_the_line_break() {
+        // This repository's own ROADMAP `999.4` goal, verbatim.
+        let body = "**Goal:** Decide whether the `COVERAGE.md` sub-stage should be read as a *state* parsed\n\
+            from frontmatter rather than as a *presence bit*, and change the Pipeline drill-down\n\
+            rendering if so.\n\
+            **Requirements:** TBD";
+        assert_eq!(
+            goal_under_phase_1(body).as_deref(),
+            Some(
+                "Decide whether the `COVERAGE.md` sub-stage should be read as a *state* parsed \
+                 from frontmatter rather than as a *presence bit*, and change the Pipeline \
+                 drill-down rendering if so."
+            ),
+            "a hard-wrapped goal continues to the next `**Label**` line, as 1.15.0 reads it"
+        );
+    }
+
+    #[test]
+    fn a_goal_stops_at_the_gsd_1_15_boundaries() {
+        let rows: &[(&str, Option<&str>)] = &[
+            ("**Goal**: Ship it\n- a bullet", Some("Ship it")),
+            ("**Goal**: Ship it\n* a bullet", Some("Ship it")),
+            ("**Goal**: Ship it\n+ a bullet", Some("Ship it")),
+            (
+                "**Goal**: Ship it\n   indented wrap   \n| a | table |",
+                Some("Ship it indented wrap"),
+            ),
+            ("**Goal**: Do the thing\n```\nnot this\n```", Some("Do the thing")),
+            ("**Goal**: Do the thing\n~~~\nnot this\n~~~", Some("Do the thing")),
+            ("**Goal:** ```js\nfoo()\n```", None),
+            ("**Goal** without colon\nwrapped too", Some("without colon wrapped too")),
+            ("**Goal**: one\n**requirements**: lower", Some("one")),
+            ("**Goal**: eight\n\ntail after blank", Some("eight")),
+            (
+                "**Goal**: nine\n1. numbered item\nPlans:",
+                Some("nine 1. numbered item Plans:"),
+            ),
+            ("**Goal:**\nnext line goal\nwrapped", Some("next line goal wrapped")),
+        ];
+        for (body, expected) in rows {
+            assert_eq!(
+                goal_under_phase_1(body).as_deref(),
+                *expected,
+                "gsd-core 1.15.0 extractPhaseFieldMultiline reads {expected:?} from {body:?}"
+            );
+        }
+
+        let letter = "### Phase 23A.1.2: K\n\n**Goal**: letter-suffixed\n";
+        assert_eq!(
+            goal_of(&parse_phase_goals(letter), "23A.1.2").as_deref(),
+            Some("letter-suffixed"),
+            "a letter-suffixed phase keys its goal by the full id"
+        );
+    }
+
+    #[test]
+    fn goal_divergences_from_gsd_1_15_are_pinned() {
+        assert_eq!(
+            goal_under_phase_1("**Goal**: ten\n##### deep heading\nmore").as_deref(),
+            Some("ten"),
+            "divergence C: 1.15.0 reads `ten ##### deep heading more` (its stop is \
+             `#{{1,4}}`); here every heading level already ends the entry"
+        );
+        assert_eq!(
+            goal_under_phase_1("**Goal**:\n**Depends on**: Phase 1"),
+            None,
+            "divergence D: 1.15.0 reads `**Depends on**: Phase 1` as the goal — its \
+             label regex's `\\s*` crosses the empty label line into the next field"
+        );
+        assert_eq!(
+            goal_under_phase_1("**Goal**:   \n\nafter blank"),
+            None,
+            "divergence D: 1.15.0 reads `after blank` — its `\\s*` crosses the blank \
+             line; here continuation starts on the next line and a blank ends it"
+        );
+    }
+
     #[test]
     fn fixture_goals_cover_every_detailed_phase() {
         for (name, content, keys) in [
