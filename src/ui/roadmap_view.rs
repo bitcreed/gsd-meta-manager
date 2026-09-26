@@ -1346,6 +1346,7 @@ mod tests {
                     deps,
                     band,
                     marker,
+                    done: marker == PhaseMarker::Done,
                     plans: extras.plans.iter().find(|(p, _)| *p == id).map(|(_, v)| *v),
                     goal: goal.as_ref(),
                     planned: extras.planned.contains(&id),

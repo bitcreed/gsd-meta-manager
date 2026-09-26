@@ -1611,15 +1611,9 @@ pub(crate) fn roadmap_model_for(
         })
         .collect();
 
-    // GSD phases first, then build phases no GSD phase already holds.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let entries: Vec<(&roadmap_md::RoadmapPhase, bool)> = state
-        .phases
-        .iter()
-        .map(|p| (p, false))
-        .chain(state.planned_phases.iter().map(|p| (p, true)))
-        .filter(|(p, _)| seen.insert(phase_key(&p.number)))
-        .collect();
+    // GSD phases first, then build phases no GSD phase already holds — the
+    // same entries `phase_progress` counts.
+    let entries = state.roadmap_entries();
 
     let active = roadmap_md::active_milestone_index(&state.milestones, &state.milestone);
     let own_band = |p: &roadmap_md::RoadmapPhase| {
@@ -1658,6 +1652,7 @@ pub(crate) fn roadmap_model_for(
                 deps: &p.depends_on,
                 band: own_band(p).or(active).or(synthetic),
                 marker: state.phase_marker(p),
+                done: state_reader::phase_is_done(&p.number, p.completed, &state.phase_disk_statuses),
                 plans: state_reader::phase_plan_counts(p, &state.phase_disk_statuses),
                 goal: state.phase_goals.get(&phase_key(&p.number)),
                 planned,
@@ -1676,15 +1671,15 @@ pub(crate) fn roadmap_model_for(
 ///
 /// The milestone is the active roadmap milestone's label, else STATE.md's
 /// `{milestone} {milestone_name}` (sentriq, whose roadmap has no heading for
-/// its milestone), else it is left out. `k`/`n` are the model's own counts,
-/// so every listed phase — GSD and planned build phases alike — is counted
-/// (RESEARCH Pattern 5). Every third-party string goes through `shown()` /
-/// `Untrusted::shown()`.
-fn roadmap_summary_line(
-    alias: &str,
-    state: &state_reader::ProjectState,
-    model: &roadmap_graph::RoadmapModel,
-) -> Line<'static> {
+/// its milestone), else it is left out. `k`/`n` come from
+/// [`state_reader::ProjectState::phase_progress`], the one phase-count
+/// definition the dashboard's `k/n phases` cell uses too: the CURRENT
+/// milestone's phases (the label just before it names that scope), done
+/// meaning implementation finished. This used to be the model's own node
+/// count, so ttbook's future milestones' build-phase placeholders inflated it
+/// to `5 of 11` while the dashboard said `4/6`. Every third-party string goes
+/// through `shown()` / `Untrusted::shown()`.
+fn roadmap_summary_line(alias: &str, state: &state_reader::ProjectState) -> Line<'static> {
     use crate::state_reader::roadmap_md;
 
     let sep = || Span::styled(" \u{00B7} ", Style::default().fg(Color::DarkGray));
@@ -1720,7 +1715,11 @@ fn roadmap_summary_line(
         ));
     }
     spans.push(sep());
-    spans.push(Span::raw(format!("{} of {} phases done", model.done, model.total)));
+    let progress = state.phase_progress();
+    spans.push(Span::raw(format!(
+        "{} of {} phases done",
+        progress.done, progress.total
+    )));
     Line::from(spans)
 }
 
@@ -4296,10 +4295,11 @@ impl DetailScreen {
             // only when it has something to say.
             // Too wide for the terminal: the done count takes Mockup C's
             // compact `k/n done` form rather than being cut mid-word.
-            let mut summary = roadmap_summary_line(alias, state, &model);
+            let mut summary = roadmap_summary_line(alias, state);
             if summary.width() > usize::from(area.width) {
                 if let Some(count) = summary.spans.last_mut() {
-                    *count = Span::raw(format!("{}/{} done", model.done, model.total));
+                    let progress = state.phase_progress();
+                    *count = Span::raw(format!("{}/{} done", progress.done, progress.total));
                 }
             }
             let mut header_lines: Vec<Line> = vec![
@@ -17382,6 +17382,55 @@ mod tests {
         assert!(text.contains("phase 12"), "{text}");
     }
 
+    // --- quick-260926-16t: one phase-count definition -------------------
+
+    /// The active band's (done, total) in the Roadmap model.
+    fn active_band_counts(state: &state_reader::ProjectState) -> (usize, usize) {
+        let model = roadmap_model_for(state, None, true);
+        let active = state_reader::roadmap_md::active_milestone_index(
+            &state.milestones,
+            &state.milestone,
+        )
+        .expect("an active milestone");
+        (model.bands[active].done, model.bands[active].total)
+    }
+
+    #[test]
+    fn ttbook_phase13_roadmap_header_counts_the_current_milestone() {
+        let state = fixture_state("ttbook-phase13");
+        let progress = state.phase_progress();
+        assert_eq!(
+            progress,
+            state_reader::PhaseProgress { done: 5, total: 6 }
+        );
+
+        let (screen, ctx) = roadmap_fixture("ttbook-phase13");
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let summary = summary_line(&text);
+        let want = format!("{} of {} phases done", progress.done, progress.total);
+        assert!(summary.contains(&want), "{summary}");
+        assert!(summary.contains("5 of 6 phases done"), "{summary}");
+        assert!(!summary.contains("of 11"), "{summary}");
+
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        let compact = format!("{}/{} done", progress.done, progress.total);
+        assert!(text.contains(&compact), "{text}");
+        assert!(text.contains("5/6 done"), "{text}");
+    }
+
+    #[test]
+    fn active_band_count_equals_phase_progress() {
+        for name in ["ttbook-phase13", "daily-vow"] {
+            let state = fixture_state(name);
+            let progress = state.phase_progress();
+            assert_eq!(
+                active_band_counts(&state),
+                (progress.done as usize, progress.total as usize),
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn stale_handoff_line_names_phase_age_and_state_phase() {
         let now = chrono::DateTime::parse_from_rfc3339("2026-09-26T03:00:00Z")
@@ -17479,12 +17528,12 @@ mod tests {
     fn the_summary_line_compacts_its_count_when_too_wide() {
         let (screen, ctx) = roadmap_fixture("ttbook");
         let wide = render_detail_to_text_at(&screen, &ctx, 120, 30);
-        assert!(summary_line(&wide).contains("0 of 11 phases done"), "{wide}");
+        assert!(summary_line(&wide).contains("0 of 6 phases done"), "{wide}");
         let narrow = render_detail_to_text_at(&screen, &ctx, 80, 24);
         let line = narrow
             .lines()
             .find(|l| l.contains("phase 8 executing"))
             .unwrap_or_else(|| panic!("no summary line:\n{narrow}"));
-        assert!(line.contains("· 0/11 done"), "{line}");
+        assert!(line.contains("· 0/6 done"), "{line}");
     }
 }

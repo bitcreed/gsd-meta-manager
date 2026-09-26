@@ -865,8 +865,13 @@ impl NormalScreen {
                         ])
                     };
 
+                    // The one phase-count definition the Roadmap header also
+                    // uses (quick 260926-16t), not the `## Progress` table.
                     let progress_cell = match state {
-                        Some(s) => format!("{}/{} phases", s.completed_phases, s.total_phases),
+                        Some(s) => {
+                            let progress = s.phase_progress();
+                            format!("{}/{} phases", progress.done, progress.total)
+                        }
                         None => "?".to_string(),
                     };
 
@@ -884,6 +889,8 @@ impl NormalScreen {
                     };
 
                     // Build status cell: milestone complete, pipeline, or expanded
+                    // Deliberately the bookkeeping, not `phase_progress()`:
+                    // "Milestone Complete" is GSD's own closing statement, not a count.
                     let is_milestone_complete = match state {
                         Some(s) => s.completed_phases >= s.total_phases && s.total_phases > 0,
                         None => false,
@@ -2646,6 +2653,29 @@ mod tests {
         let want: Vec<String> = text.chars().map(|c| c.to_string()).collect();
         (0..row.len().saturating_sub(want.len() - 1))
             .find(|&x| want.iter().enumerate().all(|(i, w)| row[x + i].0 == *w))
+    }
+
+    /// quick-260926-16t: the dashboard `k/n phases` cell is
+    /// `ProjectState::phase_progress()`, not the lagging `## Progress` table.
+    #[test]
+    fn ttbook_phase13_dashboard_row_counts_current_milestone_implementation() {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::write_ttbook_phase13_fixture(&planning);
+        let state = parse_project_state(&planning);
+        // The bookkeeping still says 4 of 6; the cell must not.
+        assert_eq!((state.completed_phases, state.total_phases), (4, 6));
+        let progress = state.phase_progress();
+
+        let mut ctx = ctx_with_aliases(&["ttbook"]);
+        ctx.config.projects.get_mut("ttbook").unwrap().path = td.path().to_path_buf();
+        ctx.project_states.insert("ttbook".to_string(), state);
+        let rows = render_dashboard_cells(&ctx, 120, 12);
+        let row = row_with(&rows, "ttbook");
+        let want = format!("{}/{} phases", progress.done, progress.total);
+        assert_eq!(want, "5/6 phases");
+        assert!(find_in_row(row, &want).is_some(), "row lacks {want}");
+        assert!(find_in_row(row, "4/6 phases").is_none());
     }
 
     /// The single rendered row holding `text`, as its cells.

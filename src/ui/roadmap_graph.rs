@@ -274,6 +274,13 @@ pub struct ListNode<'a> {
     pub band: Option<usize>,
     /// The caller's done/current decision (D-B12).
     pub marker: PhaseMarker,
+    /// Implementation finished, independent of the current marker; from
+    /// `state_reader::phase_is_done`. The band and model `done` counts read
+    /// this rather than the marker, because a phase that is both finished and
+    /// current draws `*` yet still counts as done — which is what keeps the
+    /// active band's count equal to the Roadmap header's
+    /// (`ProjectState::phase_progress`).
+    pub done: bool,
     /// Plans done / total, when known.
     pub plans: Option<(u32, u32)>,
     pub goal: Option<&'a crate::text::Untrusted>,
@@ -762,10 +769,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 label,
                 short,
                 shipped: band.shipped,
-                done: members[b]
-                    .iter()
-                    .filter(|&&u| status[u] == PhaseStatus::Done)
-                    .count(),
+                done: members[b].iter().filter(|&&u| nodes[u].done).count(),
                 total: members[b].len(),
                 declared_phases: band.declared_phases,
             }
@@ -896,7 +900,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
             .filter(|&u| matches!(status[u], PhaseStatus::Active | PhaseStatus::Ready))
             .collect(),
         max_wave: layer.iter().map(|l| l + 1).max().unwrap_or(0),
-        done: status.iter().filter(|&&s| s == PhaseStatus::Done).count(),
+        done: nodes.iter().filter(|node| node.done).count(),
         total: n,
         notes: cycle_note(&cycles).into_iter().collect(),
         phases,
@@ -1250,6 +1254,7 @@ mod tests {
                     deps,
                     band: bands.iter().position(|(_, _, _, ids)| ids.contains(&id)),
                     marker,
+                    done: marker == PhaseMarker::Done,
                     plans: None,
                     goal: None,
                     planned: false,
@@ -1776,6 +1781,7 @@ mod tests {
                     deps,
                     band: None,
                     marker: F,
+                    done: false,
                     plans: None,
                     goal: None,
                     planned: false,
@@ -2159,6 +2165,7 @@ mod tests {
                     deps: &deps,
                     band: Some(1),
                     marker: C,
+                    done: false,
                     plans: Some((1, 2)),
                     goal: Some(&goal),
                     planned: false,
@@ -2170,6 +2177,7 @@ mod tests {
                     deps: &deps2,
                     band: Some(0),
                     marker: F,
+                    done: false,
                     plans: None,
                     goal: None,
                     planned: true,

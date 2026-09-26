@@ -998,6 +998,7 @@ mod tests {
                     deps: &deps,
                     band: None,
                     marker: PhaseMarker::Current,
+                    done: false,
                     plans: None,
                     goal: None,
                     planned: false,

@@ -324,6 +324,63 @@ impl ProjectState {
         }
     }
 
+    /// Every roadmap entry the Roadmap lists, in its order: [`Self::phases`],
+    /// then [`Self::planned_phases`] no GSD phase already holds (deduped by
+    /// `phase_key`, so a GSD phase wins a duplicate). `true` marks a planned
+    /// (placeholder) entry.
+    pub fn roadmap_entries(&self) -> Vec<(&roadmap_md::RoadmapPhase, bool)> {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        self.phases
+            .iter()
+            .map(|p| (p, false))
+            .chain(self.planned_phases.iter().map(|p| (p, true)))
+            .filter(|(p, _)| seen.insert(phase_num::phase_key(&p.number)))
+            .collect()
+    }
+
+    /// Whether a phase belongs to the current milestone, by the Roadmap's own
+    /// band rule: with an active roadmap milestone, a phase in it or in no
+    /// milestone at all; with none, a phase in no milestone (the synthetic /
+    /// unbanded phases — every phase, in a roadmap without milestones).
+    pub fn in_current_milestone(&self, phase_id: &str) -> bool {
+        let own = roadmap_md::milestone_index_of(&self.milestones, phase_id);
+        match roadmap_md::active_milestone_index(&self.milestones, &self.milestone) {
+            Some(active) => own.is_none() || own == Some(active),
+            None => own.is_none(),
+        }
+    }
+
+    /// The project's phase count — see [`PhaseProgress`].
+    ///
+    /// Scope: [`Self::roadmap_entries`] in [`Self::in_current_milestone`], so
+    /// a future milestone's build-phase placeholders are not counted. Done:
+    /// [`phase_is_done`], which counts the current phase too, so a finished
+    /// milestone reads n/n rather than n-1/n. When the scope is empty (no
+    /// parsable roadmap phases), the STATE.md / `## Progress` bookkeeping
+    /// answers instead, clamped so done never exceeds total.
+    pub fn phase_progress(&self) -> PhaseProgress {
+        let scope: Vec<&roadmap_md::RoadmapPhase> = self
+            .roadmap_entries()
+            .into_iter()
+            .map(|(p, _)| p)
+            .filter(|p| self.in_current_milestone(&p.number))
+            .collect();
+        if scope.is_empty() {
+            return PhaseProgress {
+                done: self.completed_phases.min(self.total_phases),
+                total: self.total_phases,
+            };
+        }
+        let done = scope
+            .iter()
+            .filter(|p| phase_is_done(&p.number, p.completed, &self.phase_disk_statuses))
+            .count();
+        PhaseProgress {
+            done: done as u32,
+            total: scope.len() as u32,
+        }
+    }
+
     /// The marker one roadmap entry earns — see [`PhaseMarker`] for why the
     /// two questions behind it must be answered from these two sources and no
     /// others.
@@ -402,6 +459,9 @@ impl PhaseMarker {
     /// exactly that situation — and the dashboard reads milestone completion
     /// from `completed_phases >= total_phases`, not from this glyph.
     ///
+    /// The done half lives in [`phase_is_done`], the single threshold the
+    /// phase counts use too.
+    ///
     /// **`>= Executed` is the done threshold, not `== Complete`.** It is the
     /// same threshold [`parse_project_state`] uses to place the frontier — the
     /// frontier is the first phase *below* `Executed`, so every phase at or
@@ -429,17 +489,49 @@ impl PhaseMarker {
         if phase_num::PhaseNum::parse(phase_number).as_ref() == Some(active_phase_number) {
             return PhaseMarker::Current;
         }
-        let done = match disk_statuses.get(phase_number) {
-            Some(inf) if inf.status != disk_status::DiskStatus::NoDirectory => {
-                inf.status >= disk_status::DiskStatus::Executed
-            }
-            _ => roadmap_completed,
-        };
-        if done {
+        if phase_is_done(phase_number, roadmap_completed, disk_statuses) {
             return PhaseMarker::Done;
         }
         PhaseMarker::Future
     }
+}
+
+/// Whether one phase's **implementation** is finished: disk status
+/// `>= Executed`, or — when the phase has no directory or no disk entry at
+/// all — the ROADMAP checkbox.
+///
+/// The one done threshold, shared by [`PhaseMarker::decide`] (whose doc
+/// comment argues the threshold and the checkbox fallback) and
+/// [`ProjectState::phase_progress`], so the `+` glyph, the Roadmap band
+/// counts, the Roadmap header and the dashboard `k/n phases` cell cannot use
+/// different ones. Unlike the marker, it does not care whether the phase is
+/// also the current one.
+pub fn phase_is_done(
+    phase_number: &str,
+    roadmap_completed: bool,
+    disk_statuses: &HashMap<String, disk_status::DiskInference>,
+) -> bool {
+    match disk_statuses.get(phase_number) {
+        Some(inf) if inf.status != disk_status::DiskStatus::NoDirectory => {
+            inf.status >= disk_status::DiskStatus::Executed
+        }
+        _ => roadmap_completed,
+    }
+}
+
+/// A project's phase count: `done` of `total` phases in the CURRENT
+/// milestone, done meaning implementation finished ([`phase_is_done`]).
+///
+/// The one definition behind the dashboard's `k/n phases` cell and the
+/// Roadmap header's `k of n phases done` ([`ProjectState::phase_progress`]).
+/// Those used to disagree for ttbook: the dashboard read ROADMAP's `##
+/// Progress` table (4/6, lagging phase 12's executed-and-verified work) and
+/// the header counted every listed node, future milestones' build-phase
+/// placeholders included (5 of 11). Both now read 5/6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhaseProgress {
+    pub done: u32,
+    pub total: u32,
 }
 
 /// One phase's `(completed, total)` plan counts, for display.
@@ -1179,6 +1271,138 @@ mod tests {
             state.stale_handoff.map(|s| s.reason),
             Some(StaleHandoffReason::StateNewer)
         );
+    }
+
+    // --- quick-260926-16t: one phase-count definition ------------------------
+
+    fn disk(status: disk_status::DiskStatus) -> disk_status::DiskInference {
+        disk_status::DiskInference {
+            status,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn phase_is_done_reads_disk_then_checkbox() {
+        use disk_status::DiskStatus as S;
+        let mut map = HashMap::new();
+        for (id, st) in [
+            ("1", S::Executed),
+            ("2", S::Complete),
+            ("3", S::Partial),
+            ("4", S::Planned),
+            ("5", S::NoDirectory),
+        ] {
+            map.insert(id.to_string(), disk(st));
+        }
+        assert!(phase_is_done("1", false, &map));
+        assert!(phase_is_done("2", false, &map));
+        assert!(!phase_is_done("3", true, &map));
+        assert!(!phase_is_done("4", true, &map));
+        // NoDirectory and a missing entry fall back to the checkbox.
+        assert!(phase_is_done("5", true, &map));
+        assert!(!phase_is_done("5", false, &map));
+        assert!(phase_is_done("6", true, &map));
+        assert!(!phase_is_done("6", false, &map));
+        // The marker still ranks Current above Done.
+        assert_eq!(
+            PhaseMarker::decide("1", false, &map, &pn("1")),
+            PhaseMarker::Current
+        );
+        assert_eq!(
+            PhaseMarker::decide("1", false, &map, &pn("9")),
+            PhaseMarker::Done
+        );
+        assert_eq!(
+            PhaseMarker::decide("3", true, &map, &pn("9")),
+            PhaseMarker::Future
+        );
+    }
+
+    #[test]
+    fn human_needed_verification_still_counts_as_done() {
+        // HumanNeeded is a verification outcome on an Executed phase.
+        let mut map = HashMap::new();
+        map.insert(
+            "1".to_string(),
+            disk_status::DiskInference {
+                status: disk_status::DiskStatus::Executed,
+                verification_status: disk_status::VerificationStatus::HumanNeeded,
+                ..Default::default()
+            },
+        );
+        assert!(phase_is_done("1", false, &map));
+    }
+
+    #[test]
+    fn ttbook_phase13_phase_progress_is_5_of_6() {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        write_ttbook_phase13_fixture(&planning);
+        let state = parse_project_state(&planning);
+        // The bookkeeping lags; the fix is not the bookkeeping.
+        assert_eq!((state.completed_phases, state.total_phases), (4, 6));
+        // Future milestones' placeholders exist but are out of scope.
+        assert_eq!(state.planned_phases.len(), 5);
+        assert_eq!(state.roadmap_entries().len(), 11);
+        assert!(state
+            .planned_phases
+            .iter()
+            .all(|p| !state.in_current_milestone(&p.number)));
+        assert_eq!(state.phase_progress(), PhaseProgress { done: 5, total: 6 });
+    }
+
+    #[test]
+    fn a_finished_milestone_whose_last_phase_is_current_reads_n_of_n() {
+        let roadmap = "# Roadmap\n\n## Phases\n\n\
+                       - [x] **Phase 1: One** - a\n\
+                       - [x] **Phase 2: Two** - b\n";
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: verifying\ncurrent_phase: 2\n---\n"),
+            ("ROADMAP.md", roadmap),
+            ("phases/01-one/01-01-PLAN.md", "# p\n"),
+            ("phases/01-one/01-01-SUMMARY.md", "# s\n"),
+            ("phases/02-two/02-01-PLAN.md", "# p\n"),
+            ("phases/02-two/02-01-SUMMARY.md", "# s\n"),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.phases.len(), 2);
+        assert_eq!(
+            state.phase_marker(&state.phases[1]),
+            PhaseMarker::Current
+        );
+        assert_eq!(state.phase_progress(), PhaseProgress { done: 2, total: 2 });
+    }
+
+    #[test]
+    fn phase_progress_falls_back_to_bookkeeping_without_roadmap_phases() {
+        let state = ProjectState {
+            completed_phases: 7,
+            total_phases: 5,
+            ..Default::default()
+        };
+        assert_eq!(state.phase_progress(), PhaseProgress { done: 5, total: 5 });
+        let state = ProjectState {
+            completed_phases: 2,
+            total_phases: 5,
+            ..Default::default()
+        };
+        assert_eq!(state.phase_progress(), PhaseProgress { done: 2, total: 5 });
+    }
+
+    #[test]
+    fn a_roadmap_without_milestones_counts_every_phase() {
+        let roadmap = "# Roadmap\n\n## Phases\n\n\
+                       - [x] **Phase 1: One** - a\n\
+                       - [ ] **Phase 2: Two** - b\n\
+                       - [ ] **Phase 3: Three** - c\n";
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            ("ROADMAP.md", roadmap),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(state.milestones.is_empty());
+        assert_eq!(state.phase_progress(), PhaseProgress { done: 1, total: 3 });
     }
 
     #[test]
