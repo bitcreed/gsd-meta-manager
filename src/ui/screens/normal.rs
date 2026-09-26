@@ -2960,6 +2960,108 @@ mod tests {
         assert!(text_is_colored(row, "w2/11 13run", Color::Cyan));
     }
 
+    /// 25-07: `ctx_with_aliases(["orbit", "beta"])` with orbit milestone-complete.
+    fn milestone_complete_ctx() -> AppContext {
+        let mut ctx = ctx_with_aliases(&["orbit", "beta"]);
+        let state = ctx.project_states.get_mut("orbit").expect("state");
+        state.completed_phases = 3;
+        state.total_phases = 3;
+        state.milestone = "v1.0".to_string();
+        ctx
+    }
+
+    /// 25-07: the verdict the real public classifier gives an agent whose last
+    /// activity is `age` old and whose lock is `lock_released`.
+    fn classified(
+        now: std::time::SystemTime,
+        age: std::time::Duration,
+        lock_released: Option<bool>,
+    ) -> AgentLiveness {
+        crate::agents::classify_liveness(
+            Some(&crate::agents::adapters::Enrichment {
+                last_activity: Some(now - age),
+                lock_released,
+                ..Default::default()
+            }),
+            false,
+            now,
+        )
+    }
+
+    /// 25-07: derive orbit's view from `rows` through the real wave model.
+    fn orbit_view(ctx: &AppContext, rows: Vec<AgentRow>, now: std::time::SystemTime) -> AgentView {
+        crate::agents::waves::derive(
+            &crate::agents::ProjectAgents {
+                rows,
+                scanned_at: Some(now),
+                ..Default::default()
+            },
+            ctx.project_states.get("orbit").expect("orbit state"),
+        )
+    }
+
+    /// 25-07 (CR-01, AGENT-05): an aborted run's worktrees, three days silent,
+    /// read `Ended` whatever their locks say, and a milestone-complete
+    /// project's frame is byte-identical to the frame with no agent view.
+    #[test]
+    fn an_aged_out_orphan_leaves_the_status_cell_byte_identical() {
+        use std::time::{Duration, SystemTime};
+
+        let baselines: Vec<_> = [80u16, 120]
+            .into_iter()
+            .map(|w| render_selected(&mut milestone_complete_ctx(), w))
+            .collect();
+
+        let now = SystemTime::now();
+        let three_days = Duration::from_secs(3 * 86_400);
+        let released = classified(now, three_days, Some(true));
+        let held = classified(now, three_days, Some(false));
+        assert_eq!(released, AgentLiveness::Ended, "released lock, days stale");
+        assert_eq!(held, AgentLiveness::Ended, "held lock, days stale");
+
+        let mut ctx = milestone_complete_ctx();
+        let view = orbit_view(
+            &ctx,
+            vec![
+                agent_row(0, released, Some("13-02")),
+                agent_row(1, held, None),
+            ],
+            now,
+        );
+        assert!(!view.is_active());
+        assert_eq!(view.summary_forms(), Vec::<String>::new());
+        ctx.agent_views.insert("orbit".to_string(), view);
+        for (width, baseline) in [80u16, 120].into_iter().zip(&baselines) {
+            let rows = render_selected(&mut ctx, width);
+            assert_eq!(
+                &rows, baseline,
+                "an aged-out orphan must not change a single cell at {width}"
+            );
+            assert_eq!(
+                status_cell_text(&rows, row_with(&rows, "orbit")),
+                "v1.0 Complete"
+            );
+        }
+
+        // Control arm: inside the bound a crashed run's alert still reaches
+        // the cell, so the view is wired to it.
+        let two_hours = Duration::from_secs(7_200);
+        assert_eq!(
+            classified(now, two_hours, Some(true)),
+            AgentLiveness::Finished
+        );
+        let held = classified(now, two_hours, Some(false));
+        assert_eq!(held, AgentLiveness::Stalled);
+        let mut ctx = milestone_complete_ctx();
+        let view = orbit_view(&ctx, vec![agent_row(1, held, None)], now);
+        ctx.agent_views.insert("orbit".to_string(), view);
+        let rows = render_selected(&mut ctx, 120);
+        assert_eq!(
+            status_cell_text(&rows, row_with(&rows, "orbit")),
+            "1 stalled"
+        );
+    }
+
     /// 25-06 (D-C12, D-C14): three live code fixers that fixed an estimated
     /// five of 48 findings read as the compact fixer form in the 13-cell
     /// column and as the widest form — which keeps `fixed` — at 200.

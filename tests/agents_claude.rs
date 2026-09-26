@@ -26,9 +26,11 @@ use gsd_meta_manager::agents::adapters::claude::{encode_project_dir, ClaudeCodeA
 use gsd_meta_manager::agents::adapters::{
     registered_adapters, AdapterReport, AgentAdapter, CoreSnapshot,
 };
+use gsd_meta_manager::agents::waves::derive;
 use gsd_meta_manager::agents::{
     scan_project_with, AgentLiveness, ProjectAgents, MAX_AGENT_AGE_SECS,
 };
+use gsd_meta_manager::state_reader::ProjectState;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -289,6 +291,74 @@ fn a_worktree_without_metadata_degrades_to_the_core_row() {
     assert_eq!(row.liveness, AgentLiveness::Unknown);
     assert_eq!(row.commits_ahead, Some(0), "git's facts are still there");
     assert_eq!(row.dirty, Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Orphans of an aborted run (25-07, CR-01, D-C08): past MAX_AGENT_AGE_SECS of
+// inactivity an agent is over whatever its lock says. Its row is still listed
+// (D-A03, D-C16); only the dashboard summary ignores it.
+// ---------------------------------------------------------------------------
+
+const THREE_DAYS: Duration = Duration::from_secs(3 * 86_400);
+
+#[test]
+fn a_released_lock_orphan_days_stale_reads_ended_and_is_not_active() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let wt = fx.add_agent_worktree(AGENT_ID, None);
+    let now = SystemTime::now();
+    fx.write_meta(AGENT_ID, &executor_meta(&wt));
+    fx.write_transcript(AGENT_ID, now, THREE_DAYS);
+
+    let scan = fx.scan(now);
+    let row = only_row(&scan);
+    assert!(!row.locked, "the runtime released the lock");
+    assert_eq!(row.adapter, Some("claude-code"), "still enriched");
+    assert_eq!(shown(&row.agent_type), Some("gsd-executor".to_string()));
+    assert_eq!(row.commits_ahead, Some(0), "git's facts are still there");
+    assert_eq!(row.dirty, Some(0));
+    assert_eq!(row.liveness, AgentLiveness::Ended);
+
+    let view = derive(&scan, &ProjectState::default());
+    assert!(!view.is_active());
+    assert_eq!(view.summary_forms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_locked_orphan_days_stale_reads_ended_not_stalled() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let wt = fx.add_agent_worktree(AGENT_ID, Some(std::process::id()));
+    let now = SystemTime::now();
+    fx.write_meta(AGENT_ID, &executor_meta(&wt));
+    fx.write_transcript(AGENT_ID, now, THREE_DAYS);
+
+    let scan = fx.scan(now);
+    let row = only_row(&scan);
+    assert!(row.locked, "a crashed session never released its lock");
+    assert_eq!(row.adapter, Some("claude-code"));
+    assert_eq!(row.commits_ahead, Some(0));
+    assert_eq!(row.dirty, Some(0));
+    assert_eq!(row.liveness, AgentLiveness::Ended);
+    assert_eq!(
+        derive(&scan, &ProjectState::default()).summary_forms(),
+        Vec::<String>::new(),
+        "no `1 stalled` for a days-old orphan"
+    );
+
+    // Inside the bound the crashed run still alerts. The exact second is
+    // pinned by the unit test; mtime granularity makes a file test at the
+    // boundary flaky.
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let wt = fx.add_agent_worktree(AGENT_ID, Some(std::process::id()));
+    fx.write_meta(AGENT_ID, &executor_meta(&wt));
+    fx.write_transcript(AGENT_ID, now, Duration::from_secs(MAX_AGENT_AGE_SECS - 60));
+    let scan = fx.scan(now);
+    assert_eq!(only_row(&scan).liveness, AgentLiveness::Stalled);
 }
 
 fn only_row(scan: &ProjectAgents) -> &gsd_meta_manager::agents::AgentRow {

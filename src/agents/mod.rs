@@ -63,7 +63,10 @@ pub enum AgentLiveness {
     Finished,
     /// No activity for more than [`IDLE_SECS`] and nothing says it finished.
     Stalled,
-    /// The runtime recorded the agent as ended.
+    /// The runtime recorded the agent as ended, **or** its last activity is
+    /// older than [`MAX_AGENT_AGE_SECS`]: an aborted or crashed run's leftover
+    /// worktree, which is over whatever its lock says (CR-01). The row is still
+    /// listed; only the dashboard summary ignores it.
     Ended,
     /// Nothing was established.
     #[default]
@@ -77,7 +80,11 @@ pub enum AgentLiveness {
 pub const LIVE_SECS: u64 = 120;
 /// Activity at most this many seconds old (and older than [`LIVE_SECS`]) is `Idle`.
 pub const IDLE_SECS: u64 = 600;
-/// Adapters ignore agents whose last activity is older than this (a day).
+/// Activity older than this (a day) is over. The core classifies such an
+/// agent `Ended` ([`classify_liveness`], CR-01), and the Claude adapter's
+/// worktree-less pass skips sessions with no spawn this recent. The bound is on
+/// **inactivity**: an agent that keeps writing its transcript is never aged
+/// out, however long it runs.
 pub const MAX_AGENT_AGE_SECS: u64 = 86_400;
 
 /// Seconds from `then` to `now`; a `then` in the future is age 0.
@@ -100,6 +107,11 @@ fn classify_facts(
         return AgentLiveness::Unknown;
     };
     let age = age_secs(last, now);
+    // CR-01: an aborted or crashed run's leftover is over, whatever its lock
+    // says. Strictly greater, like the LIVE/IDLE "at most" boundaries.
+    if age > MAX_AGENT_AGE_SECS {
+        return AgentLiveness::Ended;
+    }
     if lock_released == Some(true) && (summary_in_worktree || age > LIVE_SECS) {
         return AgentLiveness::Finished;
     }
@@ -115,8 +127,9 @@ fn classify_facts(
 /// Classify one agent from its adapter's facts (D-C08).
 ///
 /// In order: no facts → `Unknown`; `ended` → `Ended`; no `last_activity` →
-/// `Unknown`; a released lock plus (a SUMMARY in the worktree, or activity
-/// older than [`LIVE_SECS`]) → `Finished`; activity within [`LIVE_SECS`] →
+/// `Unknown`; activity older than [`MAX_AGENT_AGE_SECS`] → `Ended`, whatever
+/// the lock says (CR-01); a released lock plus (a SUMMARY in the worktree, or
+/// activity older than [`LIVE_SECS`]) → `Finished`; activity within [`LIVE_SECS`] →
 /// `Live`; within [`IDLE_SECS`] → `Idle`; otherwise `Stalled`. A future mtime
 /// is age 0.
 pub fn classify_liveness(
@@ -512,6 +525,38 @@ mod tests {
             "lock held"
         );
         assert_eq!(c(601, None, false), AgentLiveness::Stalled, "lock unknown");
+    }
+
+    /// CR-01 (D-C08): an aborted or crashed run's leftover worktree is over once
+    /// its last activity is older than [`MAX_AGENT_AGE_SECS`], whatever its lock
+    /// says. At exactly the bound it still reads `Finished` or `Stalled`.
+    #[test]
+    fn an_agent_silent_past_the_age_bound_reads_ended() {
+        assert_eq!(MAX_AGENT_AGE_SECS, 86_400);
+        let now = SystemTime::now();
+        let bound = i64::try_from(MAX_AGENT_AGE_SECS).expect("the bound fits an i64");
+        let c = |age, lock, summary| classify_liveness(Some(&facts(now, age, lock)), summary, now);
+
+        assert_eq!(c(bound, Some(true), false), AgentLiveness::Finished);
+        assert_eq!(c(bound, Some(true), true), AgentLiveness::Finished);
+        assert_eq!(c(bound, Some(false), false), AgentLiveness::Stalled);
+        assert_eq!(c(bound, None, false), AgentLiveness::Stalled);
+
+        let past = bound + 1;
+        assert_eq!(c(past, Some(true), false), AgentLiveness::Ended, "released");
+        assert_eq!(
+            c(past, Some(true), true),
+            AgentLiveness::Ended,
+            "released, SUMMARY in worktree"
+        );
+        assert_eq!(c(past, Some(false), false), AgentLiveness::Ended, "held");
+        assert_eq!(c(past, None, false), AgentLiveness::Ended, "lock unknown");
+
+        let child = ChildAgent {
+            last_activity: at(now, past),
+            ..ChildAgent::default()
+        };
+        assert_eq!(classify_child(child, now).liveness, AgentLiveness::Ended);
     }
 
     #[test]
