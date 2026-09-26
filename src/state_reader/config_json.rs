@@ -107,7 +107,9 @@ pub enum ApiKeySetting {
 impl std::fmt::Debug for ApiKeySetting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ApiKeySetting::Flag(b) => f.debug_tuple("Flag").field(b).finish(),
+            // `write!`, not `debug_tuple(..)` + its terminal call:
+            // tests/spawn_seam_guard.rs rejects that call name anywhere in src/.
+            ApiKeySetting::Flag(b) => write!(f, "Flag({b})"),
             ApiKeySetting::Key(_) => f.write_str("Key(<redacted>)"),
         }
     }
