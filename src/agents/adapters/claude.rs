@@ -44,7 +44,7 @@ use std::time::SystemTime;
 
 use super::{AdapterReport, AgentAdapter, ChildAgent, CoreSnapshot, Enrichment};
 use crate::agents::worktrees::{valid_agent_id, CoreWorktree};
-use crate::agents::LIVE_SECS;
+use crate::agents::{LIVE_SECS, MAX_AGENT_AGE_SECS};
 use crate::text::Untrusted;
 
 /// The most bytes of one `*.meta.json` that are read. Measured metas are a few
@@ -522,7 +522,22 @@ impl Placement<'_, '_> {
 /// at most [`LIVE_SECS`] old (a future mtime is age 0) gets its meta read, so
 /// the metas of the thousands of finished agents in a long history are never
 /// opened. Each id is handled once, in sorted session-then-id order. Returns
-/// the live metas that joined no worktree.
+/// the live metas that joined no worktree — the worktree-less group (D-C07),
+/// `agentType` verbatim, with no `gsd-*` filter.
+///
+/// **The cost bound (D-C09, amended by RESEARCH Pitfall 2).** D-C09 proposed
+/// skipping sessions whose `subagents/` mtime is older than [`LIVE_SECS`]. That
+/// mtime is a SPAWN clock, not an activity clock: it moves when an agent is
+/// created in the directory, never while one works, so that prefilter would
+/// hide every agent running longer than two minutes. Every transcript is
+/// statted instead (hundreds in ~10 ms, measured), and the only bound is
+/// coarse: a session whose `subagents/` has seen no spawn for
+/// [`MAX_AGENT_AGE_SECS`] (a day) is skipped by this pass. The consequence
+/// (RESEARCH Assumption A5): an agent running for more than a day in a session
+/// with no newer spawn is hidden from the worktree-less group, and is not
+/// attached as a child or path-joined either [inferred — the bound covers the
+/// whole pass, or it bounds nothing]. A worktree agent's own row is
+/// unaffected: the id pass ([`enrich_by_id`]) is not bounded.
 fn place_live_subagents(
     placement: &mut Placement<'_, '_>,
     sessions: &[PathBuf],
@@ -532,6 +547,10 @@ fn place_live_subagents(
     let mut unjoined = Vec::new();
     for session in sessions {
         let subagents = session.join("subagents");
+        let spawned = mtime(&subagents);
+        if spawned.is_none_or(|at| age_secs(at, placement.snap.now) > MAX_AGENT_AGE_SECS) {
+            continue;
+        }
         let mut ids: Vec<String> = entry_names(&subagents)
             .into_iter()
             .filter_map(|name| {
@@ -583,7 +602,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             primary: per_worktree.iter().map(Option::is_some).collect(),
             per_worktree,
         };
-        place_live_subagents(&mut placement, &sessions, &matched);
+        let worktreeless = place_live_subagents(&mut placement, &sessions, &matched);
         AdapterReport {
             per_worktree: placement
                 .per_worktree
@@ -591,7 +610,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 .enumerate()
                 .filter_map(|(index, facts)| facts.map(|facts| (index, facts)))
                 .collect(),
-            worktreeless: Vec::new(),
+            worktreeless,
         }
     }
 }
