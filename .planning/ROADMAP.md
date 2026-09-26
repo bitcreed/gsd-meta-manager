@@ -96,7 +96,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [ ] **Phase 22: Container Execution Target** - Docker/podman parity with the host path
 - [ ] **Phase 23: Gate Policy & Auto-Validation** - The verify gate is a choice, not a law: skip, defer, or auto-validate
 - [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
-- [ ] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata
+- [x] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata (completed 2026-09-25)
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
 Phase 22 depends only on Phase 15 and may run alongside Phases 17-21, but must land
@@ -840,7 +840,7 @@ Plans:
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
-| 25. Running Agents & Live Wave View | 7/7 | In Progress|  |
+| 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
 
 ## Backlog
 

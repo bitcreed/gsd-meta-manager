@@ -105,13 +105,13 @@ interleave and corrupt each other.
 
 ### Agent Observation (AGENT)
 
-- [ ] **AGENT-01**: The TUI enumerates each registered project's agent worktrees (under `.claude/worktrees/`, on an agent branch, or claimed by an adapter) with commits ahead of the main worktree's HEAD and a dirty-file count, using read-only git that takes no lock in a live agent's worktree
-- [ ] **AGENT-02**: For the active phase, plans are grouped by their PLAN.md `wave:` frontmatter (never by plan number) and each reads done (SUMMARY in main), finished (SUMMARY or lock release in its agent's worktree), running, stalled or queued, with the current wave identified
-- [ ] **AGENT-03**: Agent metadata arrives through a pluggable runtime-adapter seam; any adapter failure (missing directory, bad or truncated JSON, unknown or missing fields, a panic) degrades a row to what git knows and never drops the row or fails the scan
-- [ ] **AGENT-04**: A Claude Code adapter attaches agent type, description and liveness (transcript mtime; lock release as finished) from `<config>/projects/<encoded path>/*/subagents/` metadata, honours `$CLAUDE_CONFIG_DIR`, and lists live worktree-less subagents
-- [ ] **AGENT-05**: While agents are active, the dashboard row's Status cell shows a compact summary (phase, wave x/y, running, done/total) that fits the measured column width; with no active agents the row is unchanged
-- [ ] **AGENT-06**: The Sessions tab of the detail view has an Agents sub-view with the summary, per-wave running/done/queued rows, a scrollable per-agent list and a worktree-less group, with explicit empty and degraded states
-- [ ] **AGENT-07**: For code-review fix runs, the summary shows an estimated fixed/total count from REVIEW.md `findings.total` and finding ids in `fix(NN):` commit subjects, labelled as an estimate
+- [x] **AGENT-01**: The TUI enumerates each registered project's agent worktrees (under `.claude/worktrees/`, on an agent branch, or claimed by an adapter) with commits ahead of the main worktree's HEAD and a dirty-file count, using read-only git that takes no lock in a live agent's worktree
+- [x] **AGENT-02**: For the active phase, plans are grouped by their PLAN.md `wave:` frontmatter (never by plan number) and each reads done (SUMMARY in main), finished (SUMMARY or lock release in its agent's worktree), running, stalled or queued, with the current wave identified
+- [x] **AGENT-03**: Agent metadata arrives through a pluggable runtime-adapter seam; any adapter failure (missing directory, bad or truncated JSON, unknown or missing fields, a panic) degrades a row to what git knows and never drops the row or fails the scan
+- [x] **AGENT-04**: A Claude Code adapter attaches agent type, description and liveness (transcript mtime; lock release as finished) from `<config>/projects/<encoded path>/*/subagents/` metadata, honours `$CLAUDE_CONFIG_DIR`, and lists live worktree-less subagents
+- [x] **AGENT-05**: While agents are active, the dashboard row's Status cell shows a compact summary (phase, wave x/y, running, done/total) that fits the measured column width; with no active agents the row is unchanged
+- [x] **AGENT-06**: The Sessions tab of the detail view has an Agents sub-view with the summary, per-wave running/done/queued rows, a scrollable per-agent list and a worktree-less group, with explicit empty and degraded states
+- [x] **AGENT-07**: For code-review fix runs, the summary shows an estimated fixed/total count from REVIEW.md `findings.total` and finding ids in `fix(NN):` commit subjects, labelled as an estimate
 
 ## Future Requirements
 
@@ -187,10 +187,10 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-25.
 | UIFIX-02 | Phase 14: UI Fixes | Complete |
 | UIFIX-03 | Phase 14: UI Fixes | Complete |
 | UIFIX-04 | Phase 14: UI Fixes | Complete |
-| AGENT-01 | Phase 25: Running Agents & Live Wave View | Gaps Found |
-| AGENT-02 | Phase 25: Running Agents & Live Wave View | Gaps Found |
-| AGENT-03 | Phase 25: Running Agents & Live Wave View | Gaps Found |
-| AGENT-04 | Phase 25: Running Agents & Live Wave View | Gaps Found |
-| AGENT-05 | Phase 25: Running Agents & Live Wave View | Gaps Found |
-| AGENT-06 | Phase 25: Running Agents & Live Wave View | Gaps Found |
-| AGENT-07 | Phase 25: Running Agents & Live Wave View | Gaps Found |
+| AGENT-01 | Phase 25: Running Agents & Live Wave View | Complete |
+| AGENT-02 | Phase 25: Running Agents & Live Wave View | Complete |
+| AGENT-03 | Phase 25: Running Agents & Live Wave View | Complete |
+| AGENT-04 | Phase 25: Running Agents & Live Wave View | Complete |
+| AGENT-05 | Phase 25: Running Agents & Live Wave View | Complete |
+| AGENT-06 | Phase 25: Running Agents & Live Wave View | Complete |
+| AGENT-07 | Phase 25: Running Agents & Live Wave View | Complete |

@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.8.0
-current_phase: 25
-current_phase_name: Running Agents & Live Wave View
-status: verifying
-stopped_at: Completed 25-07-PLAN.md (CR-01 gap closure); phase 25 ready for re-verification
-last_updated: "2026-09-26T04:31:32.824Z"
+current_phase: 19
+current_phase_name: GITSAFE — Git & Blast-Radius Envelope
+status: planning
+stopped_at: Phase 25 complete, ready to plan Phase 19
+last_updated: "2026-09-26T04:44:07.189Z"
 last_activity: 2026-09-25
-last_activity_desc: Phase 25 execution started
-state_head: 06933a5d189c9aca336538ffa05393ad46e36848
+last_activity_desc: Phase 25 complete, transitioned to Phase 19
+state_head: bc5b1f557bf3ff050d18f49ba2acdc122f370e0d
 progress:
   total_phases: 10
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 7
   completed_plans: 112
+  percent: 58
 milestone_name: Roadmap Redesign
 ---
 
@@ -31,7 +32,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Phase complete — ready for verification
+Status: Ready to plan
   Phase 24, quick tasks 260922-hdh/hdi/hdj, 260923-lr8/lr9/lra/md1, 260924-drx and five debug
   fixes; README gained screenshots and a Codex section. `./scripts/pre-tag-check.sh --container
   v1.8.0` exit **0**, all five gates PASS, git banner MATCH, 49 suites / **2367 passed / 0 failed**
@@ -102,8 +103,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
-Phase: 25 (Running Agents & Live Wave View) — READY TO EXECUTE
-Plan: 6 of 6
+Phase: 19 — GITSAFE — Git & Blast-Radius Envelope
+Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -137,7 +138,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-25 — Phase 25 execution started
+Last activity: 2026-09-25 — Phase 25 complete, transitioned to Phase 19
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -266,7 +267,7 @@ verify-phase if the gate is fixed.
 
 **Velocity:**
 
-- Total plans completed: 44
+- Total plans completed: 51
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -280,6 +281,7 @@ verify-phase if the gate is fixed.
 | 17 | 8 | - | - |
 | 18 | 11 | - | - |
 | 24 | 7 | - | - |
+| 25 | 7 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -547,7 +549,7 @@ Recent decisions affecting current work:
 ## Session Continuity
 
 Last session: 2026-09-26T04:31:32.338Z
-Stopped at: Completed 25-07-PLAN.md (CR-01 gap closure); phase 25 ready for re-verification
+Stopped at: Phase 25 complete, ready to plan Phase 19
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
 lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
 unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,
