@@ -58,7 +58,7 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   The dashboard's `k/n phases` and the Roadmap header's `k of n phases done`
   count the current milestone's phases; a phase is done once its
   implementation is finished (executed on disk, or ticked in ROADMAP.md when
-  it has no phase directory). Verification state is shown separately
+  it has no phase directory). Verification state is shown separately.
 - Live filesystem watching -- auto-refreshes when `.planning/` files change
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
 - Mouse support: click tabs, sub-tabs and rows, double-click to open, and
@@ -67,7 +67,10 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   with git-log-style dependency lanes and a detail pane showing each phase's
   goal, needs, unblocks and parallel phases), Phases (the selected phase's
   ladder and stage summary above a focusable Waves pane: one row per plan
-  with its state, PLAN.md title and act/est tokens, finished waves folded),
+  with its state, PLAN.md title and act/est tokens, finished waves folded;
+  the stage summary flags a non-passed or unparseable verification report
+  with the command to run, and shows the code-review ledger's open/deferred
+  counts),
   Backlog, Git History,
   Queue, Sessions (with an Agents sub-view), Config, Docs (Files: rendered
   `.planning/` browser rooted at

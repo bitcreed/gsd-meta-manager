@@ -162,7 +162,15 @@ keystrokes:
 ### Reading the Waves pane
 
 The Phases tab shows the selected phase's name, its stage ladder and a
-two-line stage summary, then the **Waves pane**: one row per plan, grouped by
+two-line stage summary. The summary's `Checks` line shows
+`(N open, M deferred)` beside `✓Code Review` when gsd-core 1.15's
+`NN-REVIEW-DISPOSITION.md` findings ledger is present. When the phase's
+verification report is present but not passed, one more `Verify:` line names
+its state and what to run next: `/gsd:execute-phase N` for a stale report
+(it re-runs the verifier), `/gsd:verify-work N` for `human_needed`,
+`/gsd:plan-phase N --gaps` for `gaps_found`, and, for an `unparseable`
+VERIFICATION.md, fixing the YAML frontmatter in the report itself. Below the
+summary is the **Waves pane**: one row per plan, grouped by
 the `wave:` each PLAN.md declares. Every row shows a glyph and a state word —
 `✓ done`, `▶ running`, `◐ leftover` (finished in a worktree, not merged yet),
 `! stalled`, `· queued`, `○ planned` (a phase that is not the active one) —
