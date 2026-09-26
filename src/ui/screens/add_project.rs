@@ -265,3 +265,26 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
 }
+
+// State-only tests: no rendering function is called (the src/ui census counts
+// rendering call sites per file) and no process is spawned (this file is not on
+// the spawn allowlist). Quick 260925-x0v.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::worktree_fixture::fake_linked_worktree;
+
+    #[test]
+    fn the_tui_add_route_refuses_a_linked_worktree_naming_the_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (main, worktree) = fake_linked_worktree(tmp.path());
+        let mut app = crate::app::App::new_for_test();
+        do_add_project(&mut app.ctx, "agent-x", &worktree);
+        assert!(app.ctx.config.projects.is_empty());
+        let err = app.ctx.error_message.as_deref().expect("an error is shown");
+        assert!(
+            err.contains(&main.display().to_string()),
+            "error lacks the main path: {err}"
+        );
+    }
+}

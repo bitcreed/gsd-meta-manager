@@ -1,5 +1,5 @@
 use crate::text::Untrusted;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Read a project's last-activity timestamp from its most recent git commit
 /// (committer date), falling back to filesystem mtimes for non-git or empty
@@ -214,6 +214,35 @@ pub(crate) fn git_read_raw(project_root: &Path, args: &[&str]) -> Option<String>
     }
 
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// `(git_dir, common_dir)` for the repository `root` is in, via
+/// `git rev-parse --git-dir --git-common-dir`.
+///
+/// **The registry's fallback for gitfiles its structural read cannot classify**
+/// (quick 260925-x0v): `crate::registry::linked_worktree_main` reads `.git` /
+/// `commondir` itself and only lands here when that read is inconclusive. The
+/// two differ exactly in a linked worktree. Built on [`git_read_raw`], so it
+/// inherits `--no-optional-locks` + `GIT_OPTIONAL_LOCKS=0` and failure-as-`None`;
+/// `rev-parse` reads no index and runs no hooks.
+///
+/// git reports each path relative to the `-C` directory when it is not
+/// absolute, so each is resolved against `root` and canonicalized (falling back
+/// to the joined path).
+pub(crate) fn git_dir_pair(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let raw = git_read_raw(root, &["rev-parse", "--git-dir", "--git-common-dir"])?;
+    let lines: Vec<&str> = raw.lines().map(str::trim).collect();
+    let [git_dir, common_dir] = lines.as_slice() else {
+        return None;
+    };
+    if git_dir.is_empty() || common_dir.is_empty() {
+        return None;
+    }
+    let resolve = |value: &str| {
+        let joined = root.join(value);
+        joined.canonicalize().unwrap_or(joined)
+    };
+    Some((resolve(git_dir), resolve(common_dir)))
 }
 
 /// [`git_read_raw`] trimmed, with an empty answer reported as `None`.
@@ -969,6 +998,37 @@ mod tests {
             return false;
         }
         git(&["commit", "-m", "initial commit"])
+    }
+
+    #[test]
+    fn git_dir_pair_differs_only_in_a_linked_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        if !try_init_repo_with_commit(&main) {
+            // Sandbox forbids git commit — skip gracefully.
+            return;
+        }
+        let added = Command::new("git")
+            .arg("-C")
+            .arg(&main)
+            .args(["worktree", "add", "--quiet", "-b", "wt", ".claude/worktrees/agent-x"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(added, "git worktree add");
+        let worktree = main.join(".claude/worktrees/agent-x");
+
+        let (git_dir, common) = git_dir_pair(&main).expect("main has a git dir pair");
+        assert_eq!(git_dir, common, "main worktree: git dir is the common dir");
+        assert_eq!(common, main.join(".git"));
+
+        let (git_dir, common) = git_dir_pair(&worktree).expect("worktree has a git dir pair");
+        assert_ne!(git_dir, common, "linked worktree: the two differ");
+        assert_eq!(common, main.join(".git"));
+
+        assert_eq!(git_dir_pair(&root), None, "not a repository");
     }
 
     #[test]

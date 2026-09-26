@@ -250,9 +250,28 @@ pub(crate) fn valid_plan_id(id: &str) -> bool {
 
 /// Whether `raw` is the directory `.claude/worktrees/<something>` under `root`.
 fn under_claude_worktrees(root: &Path, raw: &RawWorktree) -> bool {
-    raw.path
-        .strip_prefix(root.join(".claude").join("worktrees"))
+    path_under_claude_worktrees(root, &raw.path)
+}
+
+/// Whether `path` is `.claude/worktrees/<something>` (or deeper) under `root`.
+///
+/// The one spelling of the D-C03 path half, shared with the registry's
+/// auto-discovery skip and stale-entry prune (quick 260925-x0v).
+pub(crate) fn path_under_claude_worktrees(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root.join(".claude").join("worktrees"))
         .is_ok_and(|rest| rest.components().next().is_some())
+}
+
+/// Whether `path` contains the three consecutive components `.claude`,
+/// `worktrees`, `agent-*` — the shape a GSD/Claude executor worktree has,
+/// regardless of which project it sits under.
+pub(crate) fn has_claude_agent_worktree_segment(path: &Path) -> bool {
+    let comps: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    comps.windows(3).any(|w| {
+        w[0] == ".claude"
+            && w[1] == "worktrees"
+            && w[2].to_str().is_some_and(|s| s.starts_with("agent-"))
+    })
 }
 
 /// The D-C03 agent-worktree predicate, widened to GSD's branch families.
@@ -491,6 +510,50 @@ mod tests {
             branch: branch.map(str::to_string),
             ..RawWorktree::default()
         }
+    }
+
+    #[test]
+    fn path_under_claude_worktrees_needs_a_child_of_the_root_worktrees_dir() {
+        let root = Path::new("/repo");
+        assert!(path_under_claude_worktrees(
+            root,
+            Path::new("/repo/.claude/worktrees/agent-x")
+        ));
+        assert!(path_under_claude_worktrees(
+            root,
+            Path::new("/repo/.claude/worktrees/feature/sub")
+        ));
+        assert!(!path_under_claude_worktrees(
+            root,
+            Path::new("/repo/.claude/worktrees")
+        ));
+        assert!(!path_under_claude_worktrees(
+            root,
+            Path::new("/other/.claude/worktrees/agent-x")
+        ));
+        assert!(!path_under_claude_worktrees(
+            root,
+            Path::new("/repo/claude/worktrees/agent-x")
+        ));
+    }
+
+    #[test]
+    fn claude_agent_worktree_segment_needs_all_three_components() {
+        assert!(has_claude_agent_worktree_segment(Path::new(
+            "/x/p/.claude/worktrees/agent-ad8ab6d33e06a2f84"
+        )));
+        assert!(has_claude_agent_worktree_segment(Path::new(
+            "/x/p/.claude/worktrees/agent-y/src"
+        )));
+        assert!(!has_claude_agent_worktree_segment(Path::new(
+            "/x/p/.claude/worktrees/feature"
+        )));
+        assert!(!has_claude_agent_worktree_segment(Path::new(
+            "/x/p/claude/worktrees/agent-y"
+        )));
+        assert!(!has_claude_agent_worktree_segment(Path::new(
+            "/x/p/.claude/agent-y"
+        )));
     }
 
     #[test]

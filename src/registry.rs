@@ -575,11 +575,19 @@ fn classify_worktree(path: &Path) -> WorktreeKind {
 /// else `None`.
 ///
 /// Structural first (filesystem reads only, so the ~5s session poll stays
-/// spawn-free for ordinary repositories).
+/// spawn-free for ordinary repositories: a `.git` directory or no `.git` at all
+/// never reaches git). Only a gitfile the structural read cannot classify falls
+/// back to [`crate::state_reader::git_ops::git_dir_pair`], which differs in
+/// its two answers exactly in a linked worktree. This file itself contains no
+/// process-spawn site (`tests/spawn_seam_guard.rs`).
 pub fn linked_worktree_main(path: &Path) -> Option<PathBuf> {
     match classify_worktree(path) {
         WorktreeKind::Linked(main) => Some(main),
-        WorktreeKind::NotLinked | WorktreeKind::Unknown => None,
+        WorktreeKind::NotLinked => None,
+        WorktreeKind::Unknown => {
+            let (git_dir, common_dir) = crate::state_reader::git_ops::git_dir_pair(path)?;
+            (git_dir != common_dir).then(|| main_of(&common_dir))
+        }
     }
 }
 
@@ -1130,6 +1138,22 @@ pub fn auto_register_from_sessions(
             );
             continue;
         }
+        // Secondary, path-shaped signal — discovery only. A cwd shaped like an
+        // agent worktree, or under a registered project's `.claude/worktrees/`,
+        // is skipped even when it is not (or no longer) a git linked worktree.
+        // Manual add does NOT apply this [inferred: a user explicitly adding a
+        // non-git directory keeps that right].
+        if crate::agents::worktrees::has_claude_agent_worktree_segment(&canonical)
+            || registered
+                .iter()
+                .any(|p| crate::agents::worktrees::path_under_claude_worktrees(p, &canonical))
+        {
+            tracing::debug!(
+                path = %canonical.display(),
+                "auto-register: skipping .claude/worktrees path",
+            );
+            continue;
+        }
 
         let base = derive_alias(&canonical);
         let alias = unique_alias(config, &base);
@@ -1171,6 +1195,184 @@ pub fn auto_register_from_sessions(
     }
 
     added
+}
+
+/// A FAKE linked-worktree layout built with `std::fs` alone — no git binary, so
+/// it is usable from any in-source test module (none of which may spawn; see
+/// `tests/spawn_seam_guard.rs`). Quick 260925-x0v.
+#[cfg(test)]
+pub(crate) mod worktree_fixture {
+    use std::path::{Path, PathBuf};
+
+    /// Under `root`: `main/.git/` (a directory) with admin dir
+    /// `main/.git/worktrees/agent-x/commondir` = `../..`, `main/.planning/`,
+    /// and the worktree `main/.claude/worktrees/agent-x/` whose `.git` is the
+    /// gitfile `gitdir: <abs main>/.git/worktrees/agent-x`, plus its own
+    /// `.planning/`. Returns canonical `(main, worktree)`.
+    pub(crate) fn fake_linked_worktree(root: &Path) -> (PathBuf, PathBuf) {
+        let root = root.canonicalize().expect("canonical root");
+        let main = root.join("main");
+        let admin = main.join(".git").join("worktrees").join("agent-x");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::create_dir_all(main.join(".planning")).unwrap();
+        let worktree = main.join(".claude").join("worktrees").join("agent-x");
+        std::fs::create_dir_all(worktree.join(".planning")).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )
+        .unwrap();
+        (main, worktree)
+    }
+}
+
+#[cfg(test)]
+mod linked_worktree_tests {
+    use super::worktree_fixture::fake_linked_worktree;
+    use super::*;
+    use tempfile::tempdir;
+
+    fn alias(raw: &str) -> Alias {
+        Alias::new(raw).expect("plain test alias")
+    }
+
+    fn session(working_dir: PathBuf) -> ClaudeSession {
+        ClaudeSession {
+            pid: 1,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir,
+            start_time: None,
+            tty: None,
+        }
+    }
+
+    /// Both primitives refuse `worktree` with a typed refusal naming `main`.
+    fn assert_both_refuse(worktree: &Path, main: &Path) {
+        for unchecked in [false, true] {
+            let mut cfg = Config::new();
+            let err = if unchecked {
+                add_project_unchecked(&mut cfg, &alias("agent-x"), worktree)
+            } else {
+                add_project(&mut cfg, &alias("agent-x"), worktree)
+            }
+            .expect_err("a linked worktree is refused");
+            let refusal = err
+                .downcast_ref::<LinkedWorktreeRefusal>()
+                .expect("typed refusal");
+            assert_eq!(refusal.main_worktree, main);
+            assert!(err.to_string().contains(&main.display().to_string()));
+            assert!(cfg.projects.is_empty());
+        }
+    }
+
+    #[test]
+    fn an_absolute_gitfile_with_commondir_names_the_main() {
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = fake_linked_worktree(tmp.path());
+        assert_eq!(linked_worktree_main(&worktree), Some(main.clone()));
+        assert_eq!(linked_worktree_main(&main), None);
+        assert_both_refuse(&worktree, &main);
+    }
+
+    #[test]
+    fn a_relative_gitfile_resolves_against_the_dot_git_directory() {
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = fake_linked_worktree(tmp.path());
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../../../.git/worktrees/agent-x\n",
+        )
+        .unwrap();
+        assert_eq!(linked_worktree_main(&worktree), Some(main.clone()));
+        assert_both_refuse(&worktree, &main);
+    }
+
+    #[test]
+    fn an_admin_dir_without_commondir_or_already_pruned_still_names_the_main() {
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = fake_linked_worktree(tmp.path());
+        let admin = main.join(".git/worktrees/agent-x");
+        std::fs::remove_file(admin.join("commondir")).unwrap();
+        assert_eq!(linked_worktree_main(&worktree), Some(main.clone()));
+        std::fs::remove_dir_all(&admin).unwrap();
+        assert_eq!(linked_worktree_main(&worktree), Some(main.clone()));
+        assert_both_refuse(&worktree, &main);
+    }
+
+    #[test]
+    fn a_submodule_gitfile_is_not_a_linked_worktree() {
+        let tmp = tempdir().unwrap();
+        let (main, _) = fake_linked_worktree(tmp.path());
+        std::fs::create_dir_all(main.join(".git/modules/sub")).unwrap();
+        let sub = main.join("sub");
+        std::fs::create_dir_all(sub.join(".planning")).unwrap();
+        std::fs::write(sub.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+        assert_eq!(linked_worktree_main(&sub), None);
+        let mut cfg = Config::new();
+        add_project(&mut cfg, &alias("sub"), &sub).expect("a submodule registers");
+        assert_eq!(cfg.projects.len(), 1);
+    }
+
+    #[test]
+    fn a_plain_non_git_planning_dir_registers_as_before() {
+        let tmp = tempdir().unwrap();
+        let plain = tmp.path().canonicalize().unwrap().join("plain");
+        std::fs::create_dir_all(plain.join(".planning")).unwrap();
+        assert_eq!(linked_worktree_main(&plain), None);
+
+        let mut cfg = Config::new();
+        add_project(&mut cfg, &alias("plain"), &plain).expect("registers");
+        assert_eq!(cfg.projects.len(), 1);
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &[session(plain.clone())]);
+        assert_eq!(added, vec![("plain".to_string(), plain)]);
+    }
+
+    /// A FIFO `.git` is classified without being opened — opening it would
+    /// block this test forever (T-x0v-01).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fifo_dot_git_is_never_opened() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap().join("fifo");
+        std::fs::create_dir_all(dir.join(".planning")).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            dir.join(".git"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .expect("mkfifo");
+        assert_eq!(linked_worktree_main(&dir), None);
+    }
+
+    #[test]
+    fn discovery_skips_claude_worktree_shaped_paths_that_are_not_git() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let p = root.join("p");
+        std::fs::create_dir_all(p.join(".planning")).unwrap();
+        let mut cfg = Config::new();
+        add_project(&mut cfg, &alias("p"), &p).unwrap();
+
+        let feature = p.join(".claude/worktrees/feature");
+        let stray_agent = root.join("other/.claude/worktrees/agent-y");
+        let no_dot = root.join("q/claude/worktrees/agent-z");
+        for dir in [&feature, &stray_agent, &no_dot] {
+            std::fs::create_dir_all(dir.join(".planning")).unwrap();
+        }
+
+        let added = auto_register_from_sessions(
+            &mut cfg,
+            &[session(feature), session(stray_agent), session(no_dot.clone())],
+        );
+        assert_eq!(added, vec![("agent-z".to_string(), no_dot)]);
+        assert_eq!(cfg.projects.len(), 2);
+    }
 }
 
 #[cfg(test)]
