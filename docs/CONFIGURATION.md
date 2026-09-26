@@ -112,7 +112,7 @@ Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
 ### `GSDMM_EXPERIMENTAL_FEATURES` in detail
 
 The driver runs a real agent against a real repository, so its surface is hidden
-rather than merely disabled: with the variable unset the TUI has **ten** tabs,
+rather than merely disabled: with the variable unset the TUI has **eight** tabs,
 no `Shift+D`, no `D` in the detail-view tab hint, no driver rows or Driver
 section in the help screen, no driven badge on the dashboard, and no `r`/`x`/`o`
 driver keys. A user who never asked for a driver cannot discover one by pressing

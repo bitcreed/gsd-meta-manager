@@ -84,8 +84,9 @@ On first launch:
 
 You can register a project from inside the TUI or via the CLI.
 
-**From the TUI:** press `a`, then enter the absolute path to any directory
-that contains a `.planning/` subfolder.
+**From the TUI:** press `a`, type an alias (no spaces) and press `Enter`,
+then enter the absolute path to a directory that contains a `.planning/`
+subfolder and press `Enter`; `Esc` cancels.
 
 **From the CLI** (in a separate shell, or before relaunching the TUI):
 
@@ -109,8 +110,7 @@ $XDG_CONFIG_HOME/gsd-meta-manager/config.json      # Linux (typically ~/.config/
 %APPDATA%\gsd-meta-manager\config.json             # Windows
 ```
 
-> Despite what README.md says, the on-disk format is **JSON**, not TOML. See
-> [CONFIGURATION.md](CONFIGURATION.md) for the schema.
+The config file is JSON; see [CONFIGURATION.md](CONFIGURATION.md) for the schema.
 
 ### 3. Verify your registration
 
@@ -137,11 +137,13 @@ gsd-meta-manager
 You should see your registered project in the dashboard. Useful first
 keystrokes:
 
-- `j` / `k` — move the selection up/down
+- `j` / `k` (or `↓` / `↑`) — move the selection down / up
 - `Enter` — drill into the project detail view (8 tabs: Roadmap, Phases,
   Backlog, Git, Queue, Sessions, Config, Docs)
 - In the detail view, `1`-`8` or `←` / `→` switch tabs; `↓` / `Enter` enter a
-  tab from the tab bar, and `↑` on the first row goes back up to it
+  tab from the tab bar, and `↑` on the first row goes back up to it. Inside the
+  Sessions and Docs tabs, `←` / `→` switch sub-tabs (Sessions / Agents,
+  Files / Milestones) instead of tabs
 - `Esc` — go back one level (close a pane, then the tab bar, then the
   dashboard); `q` — go straight back to the dashboard
 - `Tab` — switch the terminal to the project's running Claude / Codex session
@@ -149,6 +151,7 @@ keystrokes:
 - On the Phases tab, `→` or `Enter` focuses the **Waves pane** (see below);
   `←` / `Esc` go back to the phase list
 - `/` — filter projects
+- `c` — create a new project (name, path, confirm)
 - The mouse works too: click a tab, a sub-tab or a row, double-click a row to
   open it (the same as `Enter`), and use the wheel to move the selection in the
   pane under the pointer. `M` turns the mouse off and on; while it is on, use
@@ -169,9 +172,9 @@ SUMMARY files otherwise; nothing is read from disk while the screen draws.
 
 Finished waves fold into one row, and consecutive ones merge
 (`w1–w10 ✓ 28/28 done`). The current wave is marked `▸`, drawn bold and
-expanded along with the next one; later waves show as header rows. `Enter` on
-a header or merged row folds or unfolds it, and `↑ +N more` / `↓ +N more`
-say what is scrolled out of view. Four phase shapes have their own display:
+expanded along with the next one; later waves show as header rows.
+`Enter` or `Space` on a header or merged row folds or unfolds it, and
+`↑ +N more` / `↓ +N more` say what is scrolled out of view. Four phase shapes have their own display:
 a phase not started yet (`not started`, every wave open), a completed phase
 (one merged row), plans with no `wave:` metadata (a flat
 `Plans (no wave metadata)` list) and no plans at all
