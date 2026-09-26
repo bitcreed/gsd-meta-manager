@@ -19,6 +19,7 @@ use crate::text::Untrusted;
 use crate::ui::roadmap_graph;
 use crate::ui::roadmap_view;
 use crate::ui::roadmap_widget::RoadmapWidget;
+use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -824,6 +825,17 @@ pub struct DetailScreen {
     /// (quick 260926-1t1). A `RefCell` since the Waves-pane rows made the
     /// record a `Vec` (quick 260926-2l4, [inferred I-14]).
     regions: std::cell::RefCell<DetailRegions>,
+    /// First visible row of the Phases tab's phase list, the Sessions list and
+    /// the Agents list, kept across frames — the `roadmap_list_offset` pattern
+    /// (quick 260926-dyf, [inferred I-12]). A fresh offset per frame would
+    /// scroll a clicked row out from under the pointer.
+    phase_list_offset: Cell<usize>,
+    sessions_offset: Cell<usize>,
+    agents_offset: Cell<usize>,
+    /// Set by a single click that selected a row; a double-click runs Enter
+    /// only while it is set, so it acts on the row the FIRST click selected
+    /// (quick 260926-dyf, [inferred I-7]).
+    mouse_row_armed: bool,
 }
 
 /// Where the last frame drew each focusable region of the detail view (quick
@@ -836,6 +848,12 @@ pub struct DetailScreen {
 /// pane and one rect per visible pane row, each tagged with the row identity a
 /// click would move the cursor to — so the type is no longer `Copy`
 /// ([inferred I-14]).
+///
+/// **The mouse hit test is the live consumer** (quick 260926-dyf, D-04):
+/// [`DetailRegions::click_target`] and [`DetailRegions::wheel_target`] are pure
+/// functions over these rects, and [`DetailScreen::handle_mouse`] reads them.
+/// The tab entries, the sub-tab labels and the content's clickable list were
+/// added for it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct DetailRegions {
     /// The tab bar, its bottom border included.
@@ -853,6 +871,70 @@ pub(crate) struct DetailRegions {
     /// One entry per Waves-pane row drawn this frame (plan, wave header or
     /// merged row; never the `+N more` markers), top to bottom.
     pub waves_rows: Vec<WavesRowRegion>,
+    /// One entry per tab drawn in the tab bar, in bar order; the `‹`/`›`
+    /// overflow markers are never recorded (quick 260926-dyf).
+    pub tabs: Vec<TabRegion>,
+    /// The two sub-tab labels, on the Sessions and Docs tabs only.
+    pub sub_tabs: Vec<SubTabRegion>,
+    /// The content's clickable list — the Phases phase list, the Sessions list
+    /// or the Agents list — when one was drawn this frame.
+    pub list: Option<crate::ui::mouse::ListRegion>,
+}
+
+/// One drawn tab-bar entry: its one-row rect and the tab index it switches to
+/// (quick 260926-dyf).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TabRegion {
+    pub rect: Rect,
+    pub tab: usize,
+}
+
+/// One drawn sub-tab label: its rect and the sub-view it switches to.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SubTabRegion {
+    pub rect: Rect,
+    pub view: DetailSubView,
+}
+
+/// What a click lands on, in [`DetailRegions::click_target`]'s priority order
+/// (quick 260926-dyf, [inferred I-8]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ClickTarget {
+    Tab(usize),
+    SubTab(DetailSubView),
+    WavesRow(super::WavesCursor),
+    ListRow(usize),
+    WavesPane,
+    Content,
+    Nothing,
+}
+
+impl DetailRegions {
+    /// The click hit test: tabs, sub-tabs, Waves-pane rows, list rows, the
+    /// Waves pane, content, then nothing (the tab bar outside a tab, the
+    /// footer, outside the frame). Pure over the recorded rects (D-04, D-08).
+    pub(crate) fn click_target(&self, column: u16, row: u16) -> ClickTarget {
+        let at = ratatui::layout::Position::new(column, row);
+        if let Some(t) = self.tabs.iter().find(|t| t.rect.contains(at)) {
+            return ClickTarget::Tab(t.tab);
+        }
+        if let Some(s) = self.sub_tabs.iter().find(|s| s.rect.contains(at)) {
+            return ClickTarget::SubTab(s.view.clone());
+        }
+        if let Some(w) = self.waves_rows.iter().find(|w| w.rect.contains(at)) {
+            return ClickTarget::WavesRow(w.target.clone());
+        }
+        if let Some(index) = self.list.and_then(|l| l.row_at(column, row)) {
+            return ClickTarget::ListRow(index);
+        }
+        if self.waves_pane.is_some_and(|p| p.contains(at)) {
+            return ClickTarget::WavesPane;
+        }
+        if self.content.contains(at) {
+            return ClickTarget::Content;
+        }
+        ClickTarget::Nothing
+    }
 }
 
 /// One visible Waves-pane row: its one-row rect and the row identity the
@@ -919,15 +1001,16 @@ impl DetailScreen {
             waves_viewport_rows: Cell::new(0),
             focus: DetailFocus::Content,
             regions: std::cell::RefCell::default(),
+            phase_list_offset: Cell::new(0),
+            sessions_offset: Cell::new(0),
+            agents_offset: Cell::new(0),
+            mouse_row_armed: false,
         }
     }
 
-    /// The regions the last frame drew (see [`DetailRegions`]).
-    ///
-    /// Read only by tests so far; its consumer is the mouse hit test, which
-    /// is why the lint is silenced for non-test builds rather than the
-    /// accessor left out. A clone, so no borrow outlives the call.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The regions the last frame drew (see [`DetailRegions`]). Its consumer
+    /// is the mouse hit test, [`Screen::handle_mouse`] (quick 260926-dyf). A
+    /// clone, so no borrow outlives the call.
     pub(crate) fn regions(&self) -> DetailRegions {
         self.regions.borrow().clone()
     }
@@ -942,7 +1025,90 @@ impl DetailScreen {
             pane: None,
             waves_pane: None,
             waves_rows: Vec::new(),
+            tabs: Vec::new(),
+            sub_tabs: Vec::new(),
+            list: None,
         };
+    }
+
+    /// Record the drawn tab entries (quick 260926-dyf), from the same titles,
+    /// select index and block the widget is given — the one place both tab-bar
+    /// sites record them, the file's "one function each" rule for the bar.
+    ///
+    /// The rects mirror ratatui's `Tabs` layout through
+    /// [`crate::ui::mouse::tab_entry_rects`]: each entry is its label plus the
+    /// two framing cells [`tab_bar_widget`] adds, with a one-cell divider. The
+    /// overflow markers are skipped; every other title maps back to its tab
+    /// index through the select index, as [`tab_titles`] laid them out.
+    fn record_tab_bar(
+        &self,
+        tab_area: Rect,
+        tab_block: &Block<'_>,
+        titles: &[Line<'_>],
+        select: usize,
+        active: usize,
+        experimental: bool,
+    ) {
+        let inner = tab_block.inner(tab_area);
+        let widths: Vec<u16> = titles
+            .iter()
+            .map(|line| u16::try_from(tab_entry_cells(line.width())).unwrap_or(u16::MAX))
+            .collect();
+        let rects = crate::ui::mouse::tab_entry_rects(inner, &widths, 1);
+        let active = active.min(visible_tab_count(experimental) - 1);
+        let tabs = titles
+            .iter()
+            .zip(rects)
+            .enumerate()
+            .filter(|(_, (line, rect))| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                rect.width > 0 && text != TAB_OVERFLOW_LEFT && text != TAB_OVERFLOW_RIGHT
+            })
+            .map(|(i, (_, rect))| TabRegion { rect, tab: active + i - select })
+            .collect();
+        self.regions.borrow_mut().tabs = tabs;
+    }
+
+    /// The tab bar's block, built ONCE for both tab-bar sites: the bottom
+    /// border and the ` Project: {alias} ` title.
+    fn tab_bar_block(&self, _tab_area: Rect, _ctx: &AppContext) -> Block<'static> {
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .title(format!(" Project: {} ", shown(&self.alias)))
+    }
+
+    /// The Config String entry being edited, if any — the first of
+    /// `handle_key`'s two text intercepts.
+    fn config_text_edit_index(&self, ctx: &AppContext) -> Option<usize> {
+        let cache = ctx.view_cache.get(&self.alias);
+        let editing = cache.and_then(|c| c.defaults_editing);
+        editing.and_then(|idx| {
+            cache
+                .map(entries_for_cache)
+                .and_then(|entries| entries.into_iter().nth(idx))
+                .filter(|e| matches!(e.kind.editable(), ConfigValueKind::String))
+                .map(|_| idx)
+        })
+    }
+
+    /// Whether the Config `/` filter is being typed — the second intercept.
+    fn config_filter_typing(&self, ctx: &AppContext) -> bool {
+        ctx.view_cache
+            .get(&self.alias)
+            .is_some_and(|c| c.defaults_filter_typing && c.defaults_editing.is_none())
+    }
+
+    /// Whether text is being typed on the Config tab: exactly the condition of
+    /// `handle_key`'s two intercepts, through the same two helpers, so the
+    /// mouse guard cannot drift from them (quick 260926-dyf, [inferred I-13]).
+    fn config_text_entry_active(&self, current_view: &DetailSubView, ctx: &AppContext) -> bool {
+        *current_view == DetailSubView::Defaults
+            && (self.config_text_edit_index(ctx).is_some() || self.config_filter_typing(ctx))
+    }
+
+    /// Record the content's clickable list for this frame (quick 260926-dyf).
+    fn record_list(&self, list: crate::ui::mouse::ListRegion) {
+        self.regions.borrow_mut().list = Some(list);
     }
 
     /// One sub-tab step on a tab that has sub-tabs — `←`/`→` inside content,
@@ -989,13 +1155,40 @@ impl DetailScreen {
         }
     }
 
-    /// Draw a two-sub-view `strip` in the first row of `area`, record that row
-    /// as the frame's sub-tab strip, and return the rest — so every Docs and
-    /// Sessions sub-view render shrinks its body by exactly that one row.
-    fn sub_tab_row(&self, frame: &mut Frame, area: Rect, strip: Line<'static>) -> Rect {
+    /// Draw `view`'s two-sub-view strip in the first row of `area`, record that
+    /// row as the frame's sub-tab strip and its two labels as click targets,
+    /// and return the rest — so every Docs and Sessions sub-view render shrinks
+    /// its body by exactly that one row.
+    ///
+    /// The label rects come from the strip's own spans (gutter, left label,
+    /// separator, right label, hint; see [`two_sub_tab_strip`]), so they cannot
+    /// drift from what is drawn (quick 260926-dyf).
+    fn sub_tab_row(&self, frame: &mut Frame, area: Rect, view: &DetailSubView) -> Rect {
+        let strip = match view {
+            DetailSubView::Sessions | DetailSubView::Agents => sessions_sub_tab_strip(view),
+            _ => docs_sub_tab_strip(view),
+        };
         let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-        frame.render_widget(Paragraph::new(strip), chunks[0]);
-        self.record_sub_tab_strip(chunks[0]);
+        let row = chunks[0];
+        if let Some((left, right)) = sub_tab_pair(view) {
+            let cells = |i: usize| {
+                strip.spans.get(i).map_or(0, |s| u16::try_from(s.width()).unwrap_or(u16::MAX))
+            };
+            let label = |start: u16, width: u16| {
+                let x = row.x.saturating_add(start).min(row.right());
+                Rect::new(x, row.y, width.min(row.right() - x), row.height.min(1))
+            };
+            let left_x = cells(0);
+            let right_x = cells(0) + cells(1) + cells(2);
+            let mut regions = self.regions.borrow_mut();
+            regions.sub_tabs = [(left_x, cells(1), left), (right_x, cells(3), right)]
+                .into_iter()
+                .map(|(start, width, view)| SubTabRegion { rect: label(start, width), view })
+                .filter(|s| !s.rect.is_empty())
+                .collect();
+        }
+        frame.render_widget(Paragraph::new(strip), row);
+        self.record_sub_tab_strip(row);
         chunks[1]
     }
 
@@ -2649,29 +2842,14 @@ impl Screen for DetailScreen {
         // edited, route all keystrokes to the input buffer so character keys
         // ('q', 'x', 'r', etc.) don't trigger their global shortcuts.
         if current_view == DetailSubView::Defaults {
-            let editing_text_idx = {
-                let cache = ctx.view_cache.get(&self.alias);
-                let editing = cache.and_then(|c| c.defaults_editing);
-                editing.and_then(|idx| {
-                    cache
-                        .map(entries_for_cache)
-                        .and_then(|entries| entries.into_iter().nth(idx))
-                        .filter(|e| matches!(e.kind.editable(), ConfigValueKind::String))
-                        .map(|_| idx)
-                })
-            };
-            if let Some(editing_idx) = editing_text_idx {
+            if let Some(editing_idx) = self.config_text_edit_index(ctx) {
                 return self.handle_text_input_key(code, ctx, editing_idx);
             }
             // Filter-input intercept (quick 260922-hdi): while the `/` line
             // has focus every key belongs to it, so a query containing x / d /
             // r / q / a digit never clears a value, flips the edit target,
             // switches the tab or pops the screen (T-HDI-01).
-            let filter_typing = ctx
-                .view_cache
-                .get(&self.alias)
-                .is_some_and(|c| c.defaults_filter_typing && c.defaults_editing.is_none());
-            if filter_typing {
+            if self.config_filter_typing(ctx) {
                 return self.handle_config_filter_key(code, ctx);
             }
         }
@@ -4867,10 +5045,9 @@ impl Screen for DetailScreen {
             driver_live_for(ctx, alias),
             ctx.experimental,
         );
+        let tab_block = self.tab_bar_block(tab_area, ctx);
+        self.record_tab_bar(tab_area, &tab_block, &titles, select, tab_idx, ctx.experimental);
         let tabs_widget = tab_bar_widget(titles, select, self.focus);
-        let tab_block = Block::default()
-            .borders(Borders::BOTTOM)
-            .title(format!(" Project: {} ", shown(alias)));
         frame.render_widget(tabs_widget.block(tab_block), tab_area);
 
         // Render content based on active tab
@@ -4930,6 +5107,106 @@ impl Screen for DetailScreen {
 
     fn name(&self) -> &str {
         Self::NAME
+    }
+
+    /// Mouse input (quick 260926-dyf, D-01, D-02, D-03).
+    ///
+    /// A single click only selects and focuses — never Enter, Space or a
+    /// Queue/driver action (T-dyf-03). A double-click runs `Enter` through the
+    /// unchanged keyboard path, and only on the row the FIRST click selected
+    /// ([inferred I-7]): the first click can re-lay-out the frame, so the cell
+    /// under the second may be a different row. Everything is ignored while
+    /// Config text is being typed ([inferred I-13]).
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        let current_view = effective_sub_view(
+            ctx.detail_sub_view_per_project
+                .get(&self.alias)
+                .cloned()
+                .unwrap_or_default(),
+            ctx.experimental,
+        );
+        if self.config_text_entry_active(&current_view, ctx) {
+            return ScreenAction::None;
+        }
+        match input {
+            MouseInput::Click { double: true, .. } if self.mouse_row_armed => {
+                self.mouse_row_armed = false;
+                self.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx)
+            }
+            MouseInput::Click { column, row, .. } => {
+                let target = self.regions().click_target(column, row);
+                self.click(target, &current_view, ctx)
+            }
+            MouseInput::Wheel { .. } => {
+                self.mouse_row_armed = false;
+                ScreenAction::None
+            }
+        }
+    }
+}
+
+impl DetailScreen {
+    /// One single click on `target` ([inferred I-8]).
+    fn click(
+        &mut self,
+        target: ClickTarget,
+        current_view: &DetailSubView,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        self.mouse_row_armed = false;
+        match target {
+            // Literally the digit / Shift+D arm.
+            ClickTarget::Tab(index) => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
+            }
+            ClickTarget::SubTab(view) => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                if view != *current_view {
+                    switch_to_sub_view(&self.alias, view, &mut self.scroll_offset, ctx)
+                } else {
+                    ScreenAction::None
+                }
+            }
+            ClickTarget::WavesRow(cursor) => {
+                self.focus = DetailFocus::Pane;
+                ctx.view_cache.entry(self.alias.clone()).or_default().waves_cursor = Some(cursor);
+                self.mouse_row_armed = true;
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            ClickTarget::ListRow(index) => {
+                self.focus = DetailFocus::Content;
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                match current_view {
+                    // The j/k arm's triple.
+                    DetailSubView::Pipeline => {
+                        cache.pipeline_selected = index;
+                        cache.waves_cursor = None;
+                        share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
+                    }
+                    DetailSubView::Sessions => cache.sessions_selected = index,
+                    DetailSubView::Agents => cache.agents_selected = index,
+                    _ => {}
+                }
+                self.mouse_row_armed = true;
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            ClickTarget::WavesPane => {
+                self.focus = DetailFocus::Pane;
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            ClickTarget::Content => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            ClickTarget::Nothing => ScreenAction::None,
+        }
     }
 }
 
@@ -5655,8 +5932,12 @@ impl DetailScreen {
             })
             .collect();
 
+        // The block's inner area is computed BEFORE the block moves into the
+        // `List`: it is the rect the phase rows occupy, the click target.
+        let list_block = Block::default().borders(Borders::RIGHT).title(" Phases ");
+        let list_inner = list_block.inner(left_area);
         let list = List::new(items)
-            .block(Block::default().borders(Borders::RIGHT).title(" Phases "))
+            .block(list_block)
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
@@ -5664,9 +5945,18 @@ impl DetailScreen {
             )
             .highlight_symbol("> ");
 
-        let mut list_state = ListState::default();
+        // Seeded with the offset the previous frame left, and stored back
+        // (quick 260926-dyf, [inferred I-12]).
+        let mut list_state =
+            ListState::default().with_offset(self.phase_list_offset.get());
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, left_area, &mut list_state);
+        self.phase_list_offset.set(list_state.offset());
+        self.record_list(crate::ui::mouse::ListRegion {
+            rect: list_inner,
+            offset: list_state.offset(),
+            len: state.phases.len(),
+        });
 
         // Right pane, top to bottom (quick 260926-2l4, D-01): the phase line,
         // the ladder, the two-line stage block, the external-job line when it
@@ -5878,7 +6168,7 @@ impl DetailScreen {
     fn render_sessions_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
 
-        let area = self.sub_tab_row(frame, area, sessions_sub_tab_strip(&DetailSubView::Sessions));
+        let area = self.sub_tab_row(frame, area, &DetailSubView::Sessions);
 
         // Filter sessions by project path
         let filtered_sessions: Vec<_> = ctx
@@ -5964,9 +6254,16 @@ impl DetailScreen {
             )
             .highlight_symbol("> ");
 
-        let mut list_state = ListState::default();
+        // Persisted offset (quick 260926-dyf, [inferred I-12]).
+        let mut list_state = ListState::default().with_offset(self.sessions_offset.get());
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, inner, &mut list_state);
+        self.sessions_offset.set(list_state.offset());
+        self.record_list(crate::ui::mouse::ListRegion {
+            rect: inner,
+            offset: list_state.offset(),
+            len: filtered_sessions.len(),
+        });
     }
 
     /// Render the Sessions tab's Agents sub-view (AGENT-06, D-C15): what is
@@ -5991,7 +6288,7 @@ impl DetailScreen {
     /// to the row's plan in the Phases tab's Waves pane — navigation, nothing
     /// sent to any agent (quick 260926-2l4, D-05).
     fn render_agents_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let area = self.sub_tab_row(frame, area, sessions_sub_tab_strip(&DetailSubView::Agents));
+        let area = self.sub_tab_row(frame, area, &DetailSubView::Agents);
         let block = Block::default().borders(Borders::ALL).title(" Agents ");
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -6053,9 +6350,16 @@ impl DetailScreen {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("> ");
-        let mut list_state = ListState::default();
+        // Persisted offset (quick 260926-dyf, [inferred I-12]).
+        let mut list_state = ListState::default().with_offset(self.agents_offset.get());
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, list_area, &mut list_state);
+        self.agents_offset.set(list_state.offset());
+        self.record_list(crate::ui::mouse::ListRegion {
+            rect: list_area,
+            offset: list_state.offset(),
+            len,
+        });
     }
 
     /// Render the Docs tab's Milestones sub-tab: the archive with 4-level
@@ -6063,7 +6367,7 @@ impl DetailScreen {
     fn render_archive_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         use crate::archive::ArchiveDepth;
 
-        let area = self.sub_tab_row(frame, area, docs_sub_tab_strip(&DetailSubView::Archive));
+        let area = self.sub_tab_row(frame, area, &DetailSubView::Archive);
         let cache = if let Some(c) = ctx.view_cache.get(&self.alias) {
             c
         } else {
@@ -6249,7 +6553,7 @@ impl DetailScreen {
     fn render_browser_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         use crate::browser::BrowserDepth;
 
-        let area = self.sub_tab_row(frame, area, docs_sub_tab_strip(&DetailSubView::Browse));
+        let area = self.sub_tab_row(frame, area, &DetailSubView::Browse);
         let cache = match ctx.view_cache.get(&self.alias) {
             Some(c) => c,
             None => {
@@ -6506,10 +6810,9 @@ impl DetailScreen {
             driver_live_for(ctx, alias),
             ctx.experimental,
         );
+        let tab_block = self.tab_bar_block(tab_area, ctx);
+        self.record_tab_bar(tab_area, &tab_block, &titles, select, tab_idx, ctx.experimental);
         let tabs_widget = tab_bar_widget(titles, select, self.focus);
-        let tab_block = Block::default()
-            .borders(Borders::BOTTOM)
-            .title(format!(" Project: {} ", shown(alias)));
         frame.render_widget(tabs_widget.block(tab_block), tab_area);
 
         // Render content based on active tab
@@ -20647,5 +20950,497 @@ mod tests {
         ] {
             assert_eq!(help.matches(needle).count(), 1, "{needle}: {help}");
         }
+    }
+
+    // ── quick 260926-dyf: mouse — clicks, double-clicks, regions ─────────
+
+    fn mouse_click(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16) -> ScreenAction {
+        screen.handle_mouse(MouseInput::Click { column, row, double: false }, ctx)
+    }
+
+    fn mouse_double(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16) -> ScreenAction {
+        screen.handle_mouse(MouseInput::Click { column, row, double: true }, ctx)
+    }
+
+    /// Click then double-click at the same cell, as `App` delivers a double.
+    fn mouse_click_twice(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16) -> ScreenAction {
+        mouse_click(screen, ctx, column, row);
+        mouse_double(screen, ctx, column, row)
+    }
+
+    fn mouse_mid(rect: Rect) -> (u16, u16) {
+        (rect.x + rect.width / 2, rect.y)
+    }
+
+    fn mouse_tab_rect(screen: &DetailScreen, tab: usize) -> Rect {
+        screen
+            .regions()
+            .tabs
+            .iter()
+            .find(|t| t.tab == tab)
+            .map(|t| t.rect)
+            .unwrap_or_else(|| panic!("tab {tab} is not drawn: {:?}", screen.regions().tabs))
+    }
+
+    fn mouse_sub_tab_rect(screen: &DetailScreen, view: DetailSubView) -> Rect {
+        screen
+            .regions()
+            .sub_tabs
+            .iter()
+            .find(|s| s.view == view)
+            .map(|s| s.rect)
+            .unwrap_or_else(|| panic!("{view:?} has no sub-tab rect"))
+    }
+
+    fn mouse_list(screen: &DetailScreen) -> crate::ui::mouse::ListRegion {
+        screen.regions().list.expect("a clickable list was drawn")
+    }
+
+    /// `n` phases, 1..=n, each with one wave-1 plan, on the Phases tab.
+    fn mouse_phases_ctx(n: usize) -> AppContext {
+        let names: Vec<(String, String)> =
+            (1..=n).map(|i| (i.to_string(), format!("{i}-01"))).collect();
+        let phases = names
+            .iter()
+            .map(|(num, plan)| {
+                (num.as_str(), "Phase", waves_inference(&[(plan.as_str(), None, Some(1))], &[]))
+            })
+            .collect();
+        waves_ctx(phases, "1")
+    }
+
+    /// [`two_sessions_fixture`] with both rows Codex, so `Enter` answers with a
+    /// status message and never spawns a terminal.
+    fn mouse_codex_sessions() -> (DetailScreen, AppContext) {
+        let (screen, mut ctx) = two_sessions_fixture();
+        for s in &mut ctx.active_sessions {
+            s.kind = crate::session_detector::SessionKind::Codex;
+        }
+        (screen, ctx)
+    }
+
+    #[test]
+    fn mouse_tab_rects_match_the_rendered_tab_bar() {
+        for experimental in [true, false] {
+            let visible = visible_tab_count(experimental);
+            for width in [120, tab_bar_compact_cells(experimental), 40] {
+                for active in [0, visible / 2, visible - 1] {
+                    let mut ctx = test_ctx();
+                    ctx.experimental = experimental;
+                    ctx.detail_sub_view_per_project.insert(
+                        TEST_ALIAS.to_string(),
+                        sub_view_from_index(active, experimental),
+                    );
+                    let screen = DetailScreen::new(TEST_ALIAS.to_string());
+                    let buffer = render_detail_buffer(&screen, &ctx, width, 24);
+                    let bar = buffer_row(&buffer, 1);
+                    let regions = screen.regions();
+                    let at = format!("flag {experimental}, {width} cols, active {active}");
+                    assert!(!regions.tabs.is_empty(), "{at}");
+                    for t in &regions.tabs {
+                        assert_eq!((t.rect.y, t.rect.height), (1, 1), "{at}");
+                        let text: String = (t.rect.x..t.rect.right())
+                            .map(|x| buffer.cell((x, 1)).map_or(" ", |c| c.symbol()).to_string())
+                            .collect();
+                        assert!(
+                            text.contains(TAB_LABELS_FULL[t.tab])
+                                || text.contains(TAB_LABELS_COMPACT[t.tab]),
+                            "{at}: tab {} rect shows {text:?} in {bar:?}",
+                            t.tab
+                        );
+                        let framed = if t.tab == active {
+                            text.starts_with('[') && text.ends_with(']')
+                        } else {
+                            text.starts_with(' ') && text.ends_with(' ')
+                        };
+                        assert!(framed, "{at}: the rect is the whole framed entry: {text:?}");
+                    }
+                    let drawn: Vec<usize> = (0..visible)
+                        .filter(|&i| {
+                            bar.contains(TAB_LABELS_FULL[i]) || bar.contains(TAB_LABELS_COMPACT[i])
+                        })
+                        .collect();
+                    let recorded: Vec<usize> = regions.tabs.iter().map(|t| t.tab).collect();
+                    assert_eq!(recorded, drawn, "{at}: {bar:?}");
+                    if width == 40 {
+                        assert!(
+                            bar.contains(TAB_OVERFLOW_LEFT) || bar.contains(TAB_OVERFLOW_RIGHT),
+                            "{at}: the windowed tier is exercised: {bar:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_click_on_a_tab_is_its_digit() {
+        for from_tab_bar in [false, true] {
+            let (mut screen, mut ctx) = two_sessions_fixture();
+            let (mut keyed, mut kctx) = two_sessions_fixture();
+            if from_tab_bar {
+                screen.focus = DetailFocus::TabBar;
+                keyed.focus = DetailFocus::TabBar;
+            }
+            render_detail_to_text(&screen, &ctx);
+            let (c, r) = mouse_mid(mouse_tab_rect(&screen, 3));
+            mouse_click(&mut screen, &mut ctx, c, r);
+            press(&mut keyed, &mut kctx, KeyCode::Char('4'));
+            assert_eq!(stored_view(&ctx), DetailSubView::GitHistory);
+            assert_eq!(screen.focus, DetailFocus::Content);
+            assert_eq!(stored_view(&ctx), stored_view(&kctx), "the same as `4`");
+            assert_eq!(screen.focus, keyed.focus, "the same focus as `4`");
+        }
+
+        // The digit's memory rule: Sessions re-opens on Agents.
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Agents);
+        press(&mut screen, &mut ctx, KeyCode::Char('1'));
+        render_detail_to_text(&screen, &ctx);
+        let (c, r) = mouse_mid(mouse_tab_rect(&screen, 5));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+
+        // The Driver tab, flag on.
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        assert!(ctx.experimental);
+        render_detail_to_text(&screen, &ctx);
+        let (c, r) = mouse_mid(mouse_tab_rect(&screen, DRIVER_TAB_INDEX));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(stored_view(&ctx), DetailSubView::Driver);
+    }
+
+    #[test]
+    fn mouse_click_on_a_sub_tab_switches_it() {
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        render_detail_to_text(&screen, &ctx);
+        assert_eq!(screen.regions().sub_tabs.len(), 2);
+        let (c, r) = mouse_mid(mouse_sub_tab_rect(&screen, DetailSubView::Agents));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+        let text = render_detail_to_text(&screen, &ctx);
+        let rect = mouse_sub_tab_rect(&screen, DetailSubView::Agents);
+        let row: String = text.lines().nth(usize::from(rect.y)).unwrap_or_default().chars()
+            .skip(usize::from(rect.x)).take(usize::from(rect.width)).collect();
+        assert_eq!(row, "[Agents]", "the rect is exactly the label");
+        let (c, r) = mouse_mid(rect);
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents, "a click on the active one is a no-op");
+
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Browse);
+        render_detail_to_text(&screen, &ctx);
+        let (c, r) = mouse_mid(mouse_sub_tab_rect(&screen, DetailSubView::Archive));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(stored_view(&ctx), DetailSubView::Archive);
+
+        // The `←/→ switch` hint changes nothing but focus.
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        screen.focus = DetailFocus::TabBar;
+        let text = render_detail_to_text(&screen, &ctx);
+        let strip = screen.regions().sub_tab_strip.expect("a strip");
+        let line = text.lines().nth(usize::from(strip.y)).unwrap_or_default().to_string();
+        let hint = cell_column(&line, "switch").expect("the hint is drawn");
+        mouse_click(&mut screen, &mut ctx, hint, strip.y);
+        assert_eq!(stored_view(&ctx), DetailSubView::Sessions);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    #[test]
+    fn mouse_click_selects_a_list_row_and_focuses_content() {
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        screen.focus = DetailFocus::TabBar;
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 1);
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        // Agents: line 1 is the 13-02 row's child.
+        let mut ctx = cross_jump_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let list = mouse_list(&screen);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].agents_selected, 1);
+
+        // Phases: the third phase row, from content and from the pane.
+        for from_pane in [false, true] {
+            let mut ctx = mouse_phases_ctx(5);
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            if from_pane {
+                press(&mut screen, &mut ctx, KeyCode::Right);
+                assert_eq!(screen.focus, DetailFocus::Pane);
+            }
+            render_detail_to_text_at(&screen, &ctx, 100, 32);
+            let list = mouse_list(&screen);
+            assert_eq!(list.len, 5);
+            mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 2);
+            let cache = &ctx.view_cache[TEST_ALIAS];
+            assert_eq!(cache.pipeline_selected, 2, "from pane: {from_pane}");
+            assert_eq!(cache.waves_cursor, None);
+            assert_eq!(screen.focus, DetailFocus::Content);
+        }
+    }
+
+    #[test]
+    fn mouse_click_on_a_waves_row_moves_the_pane_cursor() {
+        use super::super::WavesCursor;
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let regions = screen.regions();
+        let plan = regions
+            .waves_rows
+            .iter()
+            .find(|r| matches!(r.target, WavesCursor::Plan(_)))
+            .expect("a plan row")
+            .clone();
+        let header = regions
+            .waves_rows
+            .iter()
+            .find(|r| matches!(r.target, WavesCursor::Wave(_)))
+            .expect("a header row")
+            .clone();
+        let pane = regions.waves_pane.expect("the pane");
+
+        mouse_click(&mut screen, &mut ctx, plan.rect.x + 2, plan.rect.y);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_cursor, Some(plan.target.clone()));
+
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        mouse_click(&mut screen, &mut ctx, header.rect.x + 2, header.rect.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_cursor, Some(header.target.clone()));
+
+        // The pane's border: focus only.
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let before = ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.waves_cursor.clone());
+        mouse_click(&mut screen, &mut ctx, pane.x, pane.y + 1);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        assert_eq!(ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.waves_cursor.clone()), before);
+    }
+
+    #[test]
+    fn mouse_double_click_is_enter_on_the_first_clicks_row() {
+        use super::super::WavesCursor;
+        // A wave header: the fold flips exactly as `Enter` in the pane.
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let header = screen
+            .regions()
+            .waves_rows
+            .iter()
+            .find(|r| matches!(r.target, WavesCursor::Wave(_)))
+            .expect("a header row")
+            .clone();
+        mouse_click_twice(&mut screen, &mut ctx, header.rect.x + 2, header.rect.y);
+        let mut kctx = tracer_ctx();
+        let mut keyed = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut keyed, &mut kctx, KeyCode::Right);
+        kctx.view_cache.get_mut(TEST_ALIAS).unwrap().waves_cursor = Some(header.target.clone());
+        press(&mut keyed, &mut kctx, KeyCode::Enter);
+        assert!(!ctx.view_cache[TEST_ALIAS].waves_toggles.is_empty(), "the fold flipped");
+        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_toggles, kctx.view_cache[TEST_ALIAS].waves_toggles);
+
+        // A plan row with an attributed agent: the 2l4 cross-jump.
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let plan = screen
+            .regions()
+            .waves_rows
+            .iter()
+            .find(|r| matches!(r.target, WavesCursor::Plan(_)))
+            .expect("a plan row")
+            .clone();
+        mouse_click_twice(&mut screen, &mut ctx, plan.rect.x + 2, plan.rect.y);
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].agents_selected, 0);
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        // A phase-list row: focus the pane.
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let list = mouse_list(&screen);
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+
+        // An Agents row: Phases, with the pane on its plan.
+        let mut ctx = cross_jump_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let list = mouse_list(&screen);
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].waves_cursor,
+            Some(WavesCursor::Plan("13-02-beta".to_string()))
+        );
+
+        // Sessions: the same answer as `Enter` from the same state.
+        let (mut screen, mut ctx) = mouse_codex_sessions();
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        let (mut keyed, mut kctx) = mouse_codex_sessions();
+        kctx.view_cache.get_mut(TEST_ALIAS).unwrap().sessions_selected = 1;
+        let expected = keyed.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut kctx);
+        match (action, expected) {
+            (ScreenAction::SetStatusMessage(a), ScreenAction::SetStatusMessage(b)) => {
+                assert_eq!(a, b);
+                assert_eq!(a, CODEX_RESUME_UNSUPPORTED);
+            }
+            _ => panic!("both paths must answer with the resume refusal"),
+        }
+
+        // A double whose first click hit a tab, or empty content, is a single
+        // click: no Enter (which here would answer with a status message).
+        let (mut screen, mut ctx) = mouse_codex_sessions();
+        render_detail_to_text(&screen, &ctx);
+        let (c, r) = mouse_mid(mouse_tab_rect(&screen, 5));
+        assert!(matches!(mouse_click_twice(&mut screen, &mut ctx, c, r), ScreenAction::None));
+        let list = mouse_list(&screen);
+        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x - 1, list.rect.y);
+        assert!(matches!(action, ScreenAction::None), "the list's border is not a row");
+        assert_eq!(stored_view(&ctx), DetailSubView::Sessions);
+    }
+
+    #[test]
+    fn mouse_click_target_is_a_pure_function_of_the_regions() {
+        use super::super::WavesCursor;
+        let regions = DetailRegions {
+            tab_bar: Rect::new(0, 0, 80, 3),
+            sub_tab_strip: Some(Rect::new(0, 3, 80, 1)),
+            content: Rect::new(0, 3, 80, 20),
+            pane: None,
+            waves_pane: Some(Rect::new(40, 6, 40, 10)),
+            waves_rows: vec![WavesRowRegion {
+                rect: Rect::new(41, 7, 38, 1),
+                target: WavesCursor::Plan("1-01".to_string()),
+            }],
+            tabs: vec![
+                TabRegion { rect: Rect::new(0, 1, 10, 1), tab: 0 },
+                TabRegion { rect: Rect::new(11, 1, 10, 1), tab: 1 },
+            ],
+            sub_tabs: vec![SubTabRegion {
+                rect: Rect::new(1, 3, 8, 1),
+                view: DetailSubView::Agents,
+            }],
+            list: Some(crate::ui::mouse::ListRegion {
+                rect: Rect::new(1, 5, 30, 10),
+                offset: 4,
+                len: 7,
+            }),
+        };
+        assert_eq!(regions.click_target(12, 1), ClickTarget::Tab(1));
+        assert_eq!(regions.click_target(3, 3), ClickTarget::SubTab(DetailSubView::Agents));
+        assert_eq!(
+            regions.click_target(50, 7),
+            ClickTarget::WavesRow(WavesCursor::Plan("1-01".to_string())),
+            "a row wins over its pane"
+        );
+        assert_eq!(regions.click_target(40, 8), ClickTarget::WavesPane, "the border");
+        assert_eq!(regions.click_target(2, 6), ClickTarget::ListRow(5));
+        assert_eq!(regions.click_target(2, 8), ClickTarget::Content, "beyond len");
+        assert_eq!(regions.click_target(35, 20), ClickTarget::Content);
+        assert_eq!(regions.click_target(10, 1), ClickTarget::Nothing, "the divider gap");
+        assert_eq!(regions.click_target(5, 23), ClickTarget::Nothing, "the footer row");
+    }
+
+    #[test]
+    fn mouse_regions_reset_every_frame_on_both_render_paths() {
+        let (screen, mut ctx) = two_sessions_fixture();
+        render_detail_to_text(&screen, &ctx);
+        let regions = screen.regions();
+        assert_eq!(regions.sub_tabs.len(), 2);
+        assert!(regions.list.is_some());
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        render_detail_to_text(&screen, &ctx);
+        let regions = screen.regions();
+        assert!(regions.sub_tabs.is_empty());
+        assert_eq!(regions.list, None);
+        assert!(!regions.tabs.is_empty());
+        let tabs = regions.tabs;
+
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
+        terminal
+            .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
+            .expect("draw");
+        assert_eq!(screen.regions().tabs, tabs, "render_main_only records the same tabs");
+    }
+
+    #[test]
+    fn mouse_clicks_are_ignored_while_typing_in_config() {
+        let config = crate::state_reader::config_json::parse_gsd_config(
+            r#"{"mode":"yolo","project_code":"GMM"}"#,
+        )
+        .expect("the fixture parses");
+        let (mut ctx, idx) = ctx_on_config_row(config, "project_code");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx));
+        press(&mut screen, &mut ctx, KeyCode::Char('Z'));
+        render_detail_to_text(&screen, &ctx);
+        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
+        let content = screen.regions().content;
+        let (c, r) = mouse_mid(mouse_tab_rect(&screen, 3));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        mouse_click(&mut screen, &mut ctx, content.x + 4, content.y + 3);
+        screen.handle_mouse(MouseInput::Wheel { column: content.x + 4, row: content.y + 3, down: true }, &mut ctx);
+        assert_eq!(stored_view(&ctx), DetailSubView::Defaults);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string(), buffer);
+
+        // Filter typing.
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.focus = DetailFocus::TabBar;
+        type_config_filter(&mut screen, &mut ctx, "dr");
+        let focus = screen.focus;
+        render_detail_to_text(&screen, &ctx);
+        let (c, r) = mouse_mid(mouse_tab_rect(&screen, 3));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        let content = screen.regions().content;
+        mouse_click(&mut screen, &mut ctx, content.x + 4, content.y + 3);
+        assert_eq!(stored_view(&ctx), DetailSubView::Defaults);
+        assert_eq!(screen.focus, focus);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_filter, "dr");
+        assert!(ctx.view_cache[TEST_ALIAS].defaults_filter_typing);
+    }
+
+    #[test]
+    fn mouse_lists_keep_their_scroll_offset() {
+        let mut ctx = mouse_phases_ctx(30);
+        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().pipeline_selected = 25;
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        let list = mouse_list(&screen);
+        assert!(list.offset > 0, "phase 26 of 30 needs a scrolled list");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, list.offset);
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        assert_eq!(mouse_list(&screen).offset, list.offset, "the click did not scroll");
+
+        let agents: Vec<crate::agents::AgentRow> = (0..30)
+            .map(|i| agent_row(&format!("/wt/agent-{i:02}"), AgentLiveness::Live, None))
+            .collect();
+        let (mut screen, mut ctx) = on_agents(Some(AgentView { agents, ..AgentView::default() }));
+        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().agents_selected = 25;
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        let list = mouse_list(&screen);
+        assert!(list.offset > 0, "agent line 25 needs a scrolled list");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].agents_selected, list.offset);
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        assert_eq!(mouse_list(&screen).offset, list.offset);
     }
 }
