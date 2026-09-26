@@ -112,6 +112,7 @@ coverage assertions refuse a row with no `ConfigHelp`.
 | `workflow.plan_review_convergence` | v1.01.0 |
 | `planning.chunked_parallel` | v1.13.0 |
 | `planning.pr_strict` | v1.12.0 |
+| `planner.stall_detection_enabled` | v1.15.0 |
 | `plan_review.source_grounding` | v1.2.0 |
 | `plan_review.source_grounding_authority` | v1.2.0 |
 | `features.global_learnings` | v1.01.0 |

@@ -114,6 +114,9 @@ pub struct GsdConfig {
     pub planning: Option<PlanningConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_review: Option<PlanReviewConfig>,
+    // --- gsd-core re-sync at 1.15.0 (quick task 260926-gtk) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<PlannerConfig>,
     /// Top-level gsd-core keys this build does not model — see [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -178,6 +181,32 @@ pub struct PlanReviewConfig {
     pub source_grounding: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_grounding_authority: Option<String>,
+    /// See [`ExtraKeys`].
+    #[serde(flatten)]
+    pub extra: ExtraKeys,
+}
+
+/// gsd-core's `planner` block, added at 1.15.0 (#4570 / PR #4585) with one
+/// documented key, `stall_detection_enabled` (default `true`).
+///
+/// **Only that key is typed.** `stall_detect_interval_minutes` and
+/// `stall_threshold_minutes`, which projects can also carry here, stay in
+/// [`Self::extra`] as pass-through, per docs/GSD-CORE-SYNC.md's
+/// runtime-tuning-knobs decision (quick task 260926-gtk, INFERRED I-3) — they
+/// render as read-only `planner.<key>` rows and round-trip untouched.
+///
+/// **A deliberate divergence from gsd-core (INFERRED I-5, accepted).** gsd-core
+/// treats a non-boolean `stall_detection_enabled` (string, number, null) as
+/// `true` — only a real JSON boolean overrides the default. The typed
+/// `Option<bool>` here instead makes such a hand edit a whole-file parse
+/// failure, exactly like every other typed key in this file. gsd-core's own
+/// `config-set` always writes a real boolean, so only a hand edit can produce
+/// the case, and a failed parse draws no Defaults rows and therefore cannot
+/// save over (and lose) the file.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct PlannerConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_detection_enabled: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -849,6 +878,42 @@ mod tests {
         assert_eq!(reparsed.workflow.as_ref().unwrap().compact_content, Some(true));
     }
 
+    /// The tracer key of the gsd-core release-1.15.0 re-sync (quick task
+    /// 260926-gtk): `planner` became a typed block, but only its one boolean
+    /// is modelled — the two stall-tuning knobs beside it must stay in the
+    /// pass-through map and survive a save untouched (T-gtk-02).
+    #[test]
+    fn planner_stall_detection_enabled_is_a_modelled_planner_key() {
+        let content = r#"{"planner":{"stall_detection_enabled":false,"stall_detect_interval_minutes":5,"stall_threshold_minutes":10}}"#;
+        let config = parse_gsd_config(content).expect("the planner fixture parses");
+        let planner = config.planner.as_ref().expect("planner is a typed block");
+        assert_eq!(planner.stall_detection_enabled, Some(false));
+
+        let mut extra: Vec<&str> = planner.extra.keys().map(String::as_str).collect();
+        extra.sort_unstable();
+        assert_eq!(
+            extra,
+            ["stall_detect_interval_minutes", "stall_threshold_minutes"],
+            "the planner pass-through map must hold exactly the two tuning knobs"
+        );
+        assert!(
+            !config.extra.contains_key("planner"),
+            "planner fell through to the top-level pass-through map, so it is NOT modelled"
+        );
+
+        let serialized = serialize_gsd_config(&config).expect("serialises");
+        let reparsed = parse_gsd_config(&serialized).expect("re-parses");
+        assert_eq!(
+            serialized,
+            serialize_gsd_config(&reparsed).unwrap(),
+            "the save path is not a fixed point over the planner block"
+        );
+        assert_eq!(
+            reparsed.planner.as_ref().unwrap().stall_detection_enabled,
+            Some(false)
+        );
+    }
+
     /// Every `workflow.*` key the gsd-core 1.14.0 re-sync added, parsed from
     /// GSD's own spelling and round-tripped.
     ///
@@ -1067,13 +1132,13 @@ mod tests {
         );
     }
 
-    /// The four new blocks are omitted entirely from a default config, so
+    /// The re-synced blocks are omitted entirely from a default config, so
     /// saving an untouched project does not invent `gates` / `features` /
-    /// `planning` / `plan_review` sections gsd-core never saw.
+    /// `planning` / `plan_review` / `planner` sections gsd-core never saw.
     #[test]
     fn the_resynced_blocks_are_absent_from_a_default_config() {
         let serialized = serialize_gsd_config(&GsdConfig::default()).unwrap();
-        for block in ["features", "gates", "planning", "plan_review", "context_window"] {
+        for block in ["features", "gates", "planning", "plan_review", "planner", "context_window"] {
             assert!(
                 !serialized.contains(block),
                 "a default config emitted {block:?}"
@@ -1084,6 +1149,7 @@ mod tests {
         assert!(empty.gates.is_none());
         assert!(empty.planning.is_none());
         assert!(empty.plan_review.is_none());
+        assert!(empty.planner.is_none());
         assert!(empty.context_window.is_none());
     }
 

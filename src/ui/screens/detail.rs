@@ -9831,6 +9831,20 @@ fn build_defaults_entries(
     push(cat, "planning.pr_strict", v, k, false, fd, ConfigHelp::new(
         "Drops every .planning path from a generated PR branch, structural files included, rather than just the transient ones.",
     ).since("v1.12.0"));
+    // gsd-core 1.15.0 re-sync (quick task 260926-gtk). The `since` is
+    // PROVISIONAL (INFERRED I-1): no v1.15.0 tag exists (`tag --contains` on
+    // the introducing commit 1e3e1f7cd, #4570, is empty); that commit is
+    // reachable only from release-1.15.0, whose package.json says 1.15.0.
+    let ppn = config.planner.as_ref();
+    let dpn = defaults.and_then(|d: &GsdConfig| d.planner.as_ref());
+    let (v, k, fd) = bool_l(ppn.and_then(|p| p.stall_detection_enabled), dpn.and_then(|p| p.stall_detection_enabled));
+    push(cat, "planner.stall_detection_enabled", v, k, false, fd, ConfigHelp::with_choices(
+        "Watches the planner, plan-checker and revision agents for stalls and offers accept/retry/stop when one goes quiet.",
+        &[
+            ("true", "bounded stall checks with a recovery prompt, the default"),
+            ("false", "no watchdog; a lost completion handoff needs a manual interrupt"),
+        ],
+    ).since("v1.15.0"));
     let prv = config.plan_review.as_ref();
     let dprv = defaults.and_then(|d: &GsdConfig| d.plan_review.as_ref());
     let (v, k, fd) = bool_l(prv.and_then(|p| p.source_grounding), dprv.and_then(|p| p.source_grounding));
@@ -10579,6 +10593,15 @@ fn append_passthrough_entries(
         if let Some(block) = config.plan_review.as_ref() {
             take("plan_review.", &block.extra);
         }
+        // --- gsd-core re-sync at 1.15.0 (quick task 260926-gtk) ---
+        //
+        // The release-1.15.0 re-sync added `planner` as a typed block. Before
+        // it, the whole `planner` object was ONE top-level pass-through row;
+        // now its unmodelled keys (the `stall_*` tuning knobs) land in
+        // `PlannerConfig::extra` and must be walked here to stay visible.
+        if let Some(block) = config.planner.as_ref() {
+            take("planner.", &block.extra);
+        }
     }
 
     // `(value, from_defaults)`, defaults first so the project overwrites them.
@@ -10904,6 +10927,7 @@ fn set_config_value(
             "planning.pr_strict" => { config.planning.get_or_insert_with(PlanningConfig::default).pr_strict = Some(b); return true; }
             "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = Some(b); return true; }
             "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = Some(b); return true; }
+            "planner.stall_detection_enabled" => { config.planner.get_or_insert_with(PlannerConfig::default).stall_detection_enabled = Some(b); return true; }
             "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = Some(b); return true; }
             "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = Some(b); return true; }
             "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = Some(b); return true; }
@@ -11140,6 +11164,7 @@ fn clear_config_value(
         "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = None; true }
         "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = None; true }
         "plan_review.source_grounding_authority" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding_authority = None; true }
+        "planner.stall_detection_enabled" => { config.planner.get_or_insert_with(PlannerConfig::default).stall_detection_enabled = None; true }
         "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = None; true }
         "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = None; true }
         "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = None; true }
@@ -11254,6 +11279,9 @@ fn mutate_config_entry(
                 "planning.pr_strict" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.pr_strict = Some(!p.pr_strict.unwrap_or(false)); true }
                 "planning.search_gitignored" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.search_gitignored = Some(!p.search_gitignored.unwrap_or(false)); true }
                 "plan_review.source_grounding" => { let r = config.plan_review.get_or_insert_with(PlanReviewConfig::default); r.source_grounding = Some(!r.source_grounding.unwrap_or(false)); true }
+                // From unset the first toggle writes `true` — gsd-core's own
+                // default — like every `gates.*` row (INFERRED I-4).
+                "planner.stall_detection_enabled" => { let p = config.planner.get_or_insert_with(PlannerConfig::default); p.stall_detection_enabled = Some(!p.stall_detection_enabled.unwrap_or(false)); true }
                 "git.create_tag" => { let g = config.git.get_or_insert_with(GitConfig::default); g.create_tag = Some(!g.create_tag.unwrap_or(false)); true }
                 "git.allow_default_branch_commits" => { let g = config.git.get_or_insert_with(GitConfig::default); g.allow_default_branch_commits = Some(!g.allow_default_branch_commits.unwrap_or(false)); true }
                 "hooks.workflow_guard" => { let h = config.hooks.get_or_insert_with(HooksConfig::default); h.workflow_guard = Some(!h.workflow_guard.unwrap_or(false)); true }
@@ -11522,6 +11550,7 @@ mod tests {
                 "source_grounding": true,
                 "source_grounding_authority": "grep"
             },
+            "planner": { "stall_detection_enabled": true },
             "git": {
                 "branching_strategy": "phase",
                 "base_branch": "master",
@@ -11659,7 +11688,7 @@ mod tests {
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 130;
+    const DEFAULTS_OPTION_COUNT: usize = 131;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -12060,6 +12089,7 @@ mod tests {
         "hooks",
         "intel",
         "plan_review",
+        "planner",
         "planning",
         "review",
         "statusline",
@@ -12210,6 +12240,104 @@ mod tests {
         );
     }
 
+    /// Each gsd-core 1.15.0 key is a first-class editable row, and every arm
+    /// that can mutate it writes the key's OWN JSON path.
+    ///
+    /// **Asserted through `serde_json::to_value` + a JSON pointer, not through
+    /// the struct**: a field that is set correctly but serialises under a
+    /// different name (or in the wrong block) passes a struct assertion and
+    /// still writes the wrong config.json.
+    #[test]
+    fn every_gsd_core_1_15_0_key_is_an_editable_row_writing_its_own_json_path() {
+        let entries = all_config_entries();
+        for (key, expected_kind) in RESYNCED_KEYS_1_15_0 {
+            assert_eq!(*expected_kind, "bool", "this loop only drives bool rows");
+            let matching: Vec<(usize, &ConfigEntry)> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.key.as_ref() == *key)
+                .collect();
+            assert_eq!(matching.len(), 1, "`{key}` must have exactly one row");
+            let (idx, entry) = matching[0];
+            assert!(
+                matches!(entry.kind, ConfigValueKind::Bool),
+                "`{key}` is a boolean; kind is {:?}",
+                entry.kind
+            );
+            assert_ne!(entry.category, PASSTHROUGH_CATEGORY, "`{key}` rendered as pass-through");
+            assert_eq!(entry.help.since, "v1.15.0", "`{key}` must name gsd-core v1.15.0");
+
+            let pointer = format!("/{}", key.replace('.', "/"));
+            let at = |config: &crate::state_reader::config_json::GsdConfig| {
+                serde_json::to_value(config)
+                    .expect("the config serialises")
+                    .pointer(&pointer)
+                    .cloned()
+            };
+            let mut config = crate::state_reader::config_json::parse_gsd_config("{}").unwrap();
+            assert!(set_config_value(&mut config, key, "false"), "{key} set");
+            assert_eq!(at(&config), Some(serde_json::json!(false)), "{key} set wrote the wrong path");
+            assert!(mutate_config_entry(&mut config, key, &ConfigValueKind::Bool), "{key} toggle");
+            assert_eq!(at(&config), Some(serde_json::json!(true)), "{key} toggle wrote the wrong path");
+            assert!(clear_config_value(&mut config, key), "{key} clear");
+            assert_eq!(at(&config), None, "{key} clear left the key in the file");
+
+            let rendered = squeeze_ws(&render_defaults_to_text(120, 40, idx));
+            assert!(
+                rendered.contains(&squeeze_ws(&format!("{SINCE_PREFIX}v1.15.0"))),
+                "the help pane for `{key}` did not draw the `since` marker: {rendered}"
+            );
+        }
+    }
+
+    /// `planner` became a typed block at 1.15.0, but only its boolean is
+    /// modelled. The two stall-tuning knobs must stay VISIBLE (as `planner.`-
+    /// prefixed pass-through rows, not a single `planner` row holding the whole
+    /// object) and survive a toggle of the typed key (T-gtk-01 / T-gtk-02).
+    #[test]
+    fn planner_stall_tuning_keys_stay_visible_and_survive_a_toggle() {
+        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
+
+        let mut config = parse_gsd_config(
+            r#"{"planner":{"stall_detection_enabled":false,"stall_detect_interval_minutes":5,"stall_threshold_minutes":10}}"#,
+        )
+        .expect("the planner fixture parses");
+        let entries = build_defaults_entries(&config, None);
+
+        let rows = passthrough_rows(&entries);
+        for tuning in ["planner.stall_detect_interval_minutes", "planner.stall_threshold_minutes"] {
+            let row = rows
+                .iter()
+                .find(|entry| entry.key.as_ref() == tuning)
+                .unwrap_or_else(|| panic!("`{tuning}` has no pass-through row"));
+            assert!(
+                matches!(row.kind, ConfigValueKind::ReadOnly),
+                "`{tuning}` is pass-through but its kind is {:?}",
+                row.kind
+            );
+        }
+        assert!(
+            !entries.iter().any(|entry| entry.key.as_ref() == "planner"),
+            "the whole planner object still renders as one top-level pass-through row"
+        );
+        let typed = entries
+            .iter()
+            .find(|entry| entry.key.as_ref() == "planner.stall_detection_enabled")
+            .expect("the typed planner row exists");
+        assert_eq!(typed.value, "false");
+
+        assert!(mutate_config_entry(
+            &mut config,
+            "planner.stall_detection_enabled",
+            &ConfigValueKind::Bool
+        ));
+        let saved = serialize_gsd_config(&config).expect("serialises");
+        let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(value.pointer("/planner/stall_detection_enabled"), Some(&serde_json::json!(true)));
+        assert_eq!(value.pointer("/planner/stall_detect_interval_minutes"), Some(&serde_json::json!(5)));
+        assert_eq!(value.pointer("/planner/stall_threshold_minutes"), Some(&serde_json::json!(10)));
+    }
+
     /// Every key the gsd-core 1.14.0 re-sync added, with the kind its row must
     /// carry — MEASURED from gsd-core's own key table, not from this build.
     ///
@@ -12284,6 +12412,17 @@ mod tests {
     /// [`DEFAULTS_OPTION_COUNT`] is: a row quietly dropped from the table above
     /// would make every loop over it pass while covering one key fewer.
     const RESYNCED_KEY_COUNT: usize = 57;
+
+    /// Every key the gsd-core `release-1.15.0` re-sync added (quick task
+    /// 260926-gtk), with the kind its row must carry — MEASURED from the
+    /// `docs/CONFIGURATION.md` key-cell diff 651511d1e..ec81d0d (+2 / -0).
+    ///
+    /// **Kept separate from [`RESYNCED_KEYS`]** because that table's 57 / 27
+    /// counts pin the 1.14.0 measurement; folding these in would turn a pinned
+    /// historical fact into a moving total. The per-key loops iterate both.
+    const RESYNCED_KEYS_1_15_0: &[(&str, &str)] = &[
+        ("planner.stall_detection_enabled", "bool"),
+    ];
 
     /// `docs/GSD-CORE-SYNC.md` is the baseline a future sync DIFFS FROM, so a
     /// record that outlives its subject is worse than no record — it tells the
@@ -12378,7 +12517,7 @@ mod tests {
     #[test]
     fn every_resynced_key_has_one_row_of_the_right_kind_with_a_measured_since() {
         let entries = all_config_entries();
-        for (key, expected_kind) in RESYNCED_KEYS {
+        for (key, expected_kind) in RESYNCED_KEYS.iter().chain(RESYNCED_KEYS_1_15_0) {
             let matching: Vec<&ConfigEntry> = entries
                 .iter()
                 .filter(|entry| entry.key.as_ref() == *key)
@@ -12424,7 +12563,7 @@ mod tests {
     #[test]
     fn every_editable_resynced_key_sets_toggles_and_clears() {
         let entries = all_config_entries();
-        for (key, expected_kind) in RESYNCED_KEYS {
+        for (key, expected_kind) in RESYNCED_KEYS.iter().chain(RESYNCED_KEYS_1_15_0) {
             let entry = entries
                 .iter()
                 .find(|entry| entry.key.as_ref() == *key)
