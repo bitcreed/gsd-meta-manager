@@ -6,8 +6,11 @@
 `GSD_CORE_SYNCED_VERSION` pinned at `1.14.0`**, the latest version published on
 npm.
 
-`src/state_reader/config_json.rs` carries the machine-readable copy of those two
-values as `GSD_CORE_SYNCED_VERSION` and `GSD_CORE_SYNCED_COMMIT`. This file is
+`src/state_reader/config_json.rs` carries the machine-readable copy of those
+values as three constants: `GSD_CORE_SYNCED_VERSION` (the oracle pin, `1.14.0`),
+`GSD_CORE_SYNCED_COMMIT` (the synced tree's describe) and
+`GSD_CORE_SYNCED_TREE_VERSION` (the synced tree's `package.json` version,
+`1.15.0`). This file is
 the human-readable half: the full key inventory, per-key status, and the exact
 commands that produced it, so the *next* sync starts from a measured point
 instead of a blank slate.
@@ -20,9 +23,9 @@ happened to notice. The 1.14.0 re-sync (260916-vqw, at `v1.14.0-52-g651511d1e`)
 closed that gap; the release-1.15.0 re-sync (260926-gtk) is the first delta sync
 made FROM this record.
 
-> **Keep this file and `config_json.rs`'s two constants in step, in the SAME
-> commit.** A record that outlives its subject tells the next reader a surface is
-> covered when it is not.
+> **Keep this file, `config_json.rs`'s three constants and README.md's
+> `**GSD compatibility:**` note in step, in the SAME commit.** A record that
+> outlives its subject tells the next reader a surface is covered when it is not.
 
 ---
 
@@ -34,6 +37,7 @@ not:
 | Constant | Value | What it means |
 |---|---|---|
 | `GSD_CORE_SYNCED_COMMIT` | `v1.14.0-111-gec81d0d10` | The tree the config surface was diffed against: the tip of gsd-core's `release-1.15.0` branch, 111 commits past `v1.14.0`. Its `package.json` says `1.15.0`, but no `v1.15.0` tag exists, so `git describe` still names `v1.14.0`. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.15.0` | The `package.json` version of the tree at `GSD_CORE_SYNCED_COMMIT`. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 | `GSD_CORE_SYNCED_VERSION` | `1.14.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below that commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. |
 
 `npm view @opengsd/gsd-core versions --json` ends at `1.14.0` as of 2026-09-26:
@@ -68,9 +72,9 @@ CORE=~/projects/node/gsd-core
 REF=upstream/release-1.15.0          # the sync target; a tag once one exists
 PREV=651511d1e                       # the previous GSD_CORE_SYNCED_COMMIT's sha
 
-# 1. The baseline pair.
+# 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
-git -C "$CORE" show "$REF:package.json" | grep '"version"'   # the tree's version
+git -C "$CORE" show "$REF:package.json" | grep '"version"'   # -> GSD_CORE_SYNCED_TREE_VERSION; the tree's version
 npm view @opengsd/gsd-core version               # -> GSD_CORE_SYNCED_VERSION
 
 # 2. The two key sets. Pipe RAW output — rtk filters piped command output and
@@ -440,7 +444,16 @@ beyond consistency, and one that would have been buried inside a key re-sync.
 
 ## Next sync
 
-Start from step 1 above, then, in priority order:
+Start from step 1 above. **Every sync, whatever else it does:** when any of
+`GSD_CORE_SYNCED_VERSION`, `GSD_CORE_SYNCED_COMMIT` or
+`GSD_CORE_SYNCED_TREE_VERSION` moves, update README.md's `**GSD compatibility:**`
+paragraph in the same commit — `the_readme_compatibility_note_names_the_synced_baseline`
+fails otherwise. The app's installed-GSD comparison uses the oracle pin as the
+floor and the tree version as the ceiling of the in-sync range, so bumping
+either one moves the boundary at which users see the "newer than synced"
+warning.
+
+Then, in priority order:
 
 1. **Bump the oracle pin once 1.15.0 ships.** When `npm view @opengsd/gsd-core
    version` reports `1.15.0` and a `v1.15.0` tag exists: set

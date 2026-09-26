@@ -11,6 +11,12 @@ need to launch Claude or run `/gsd-progress` in each project directory. Register
 your projects once and see phase status, roadmap progress, queued work, and
 pending actions at a glance.
 
+**GSD compatibility:** synced against gsd-core 1.15.0 (the untagged
+`release-1.15.0` branch, `v1.14.0-111-gec81d0d10`); the conformance oracle is
+pinned to the published 1.14.0. At startup the app reads which gsd-core you have
+installed and warns when it is newer than that -- see
+[docs/GSD-CORE-SYNC.md](docs/GSD-CORE-SYNC.md) and [Compatibility](#compatibility).
+
 ![Dashboard overview across registered projects](assets/screenshots/gsd-mm-overview.png)
 
 ![Roadmap tab with dependency lanes and phase detail pane](assets/screenshots/gsd-mm-roadmap.png)
@@ -32,7 +38,8 @@ all of them:
   experimental driver can run a project whose manager-config entry sets
   `"runtime": "codex"` (or `preferences.default_runtime`) through `codex exec`. Resume stays Claude-only -- see
   [Platform support](#platform-support). Next-command suggestions also use a
-  Codex-only GSD install (`~/.codex/gsd-core`, or `$CODEX_HOME/gsd-core`), and a
+  Codex-only GSD install (`~/.codex/gsd-core`, or `$CODEX_HOME/gsd-core`; a
+  Claude install under `$CLAUDE_CONFIG_DIR/gsd-core` is found too), and a
   driven `codex exec` child does not inherit the launching shell's `GSD_RUNTIME`,
   so GSD inside it takes its runtime from the project's config and its own install.
 - **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
@@ -108,6 +115,10 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
 - Milestone archive browser with inline markdown rendering, in the Docs tab's
   Milestones sub-tab (`←` `→` inside the Docs tab switch Files / Milestones)
 - Search and filter across projects
+- GSD version awareness -- each project's effective gsd-core install
+  (project-local or global, Claude or Codex) and its version are read from
+  `VERSION` files and compared with the version this build is synced to; see
+  [Compatibility](#compatibility)
 
 ## Installation
 
@@ -354,9 +365,31 @@ be resumed from the TUI -- resume is Claude-only.
 
 ### Compatibility
 
-Reads GSD 1.8.0 `.planning/` state formats. Because it observes on-disk state
-rather than driving GSD, it is non-intrusive and works alongside any GSD workflow
-backend, including the experimental `claude-orchestration` execution path.
+Reads the `.planning/` state formats of the gsd-core release named in the
+[GSD compatibility](#what-is-it) note at the top of this README. Because it
+observes on-disk state rather than driving GSD, it is non-intrusive and works
+alongside any GSD workflow backend, including the experimental
+`claude-orchestration` execution path.
+
+**Which GSD you have installed.** For every project the app finds the gsd-core
+install GSD itself would load, in the same order as GSD's own resolver: a
+project-local `.claude/gsd-core` or `.codex/gsd-core` overrides the global
+`${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core` or `${CODEX_HOME:-~/.codex}/gsd-core`
+install, and Claude beats Codex at the same scope. Its `VERSION` is compared
+with the synced baseline:
+
+- newer than the synced release -- a warning, because formats that release
+  added may not be recognised;
+- from the oracle pin up to the synced release -- in sync, no note;
+- older than the oracle pin -- an informational note;
+- no `VERSION` anywhere, or one that does not parse -- a note (an unparseable
+  file's content is never displayed).
+
+The result appears on each project's Config tab (right-aligned on its top
+border), on the dashboard's border only when some project's install is newer,
+and in one status line at startup. Detection reads `VERSION` files only and
+never runs GSD, `node` or `gsd-tools`; an upgrade is picked up at the project's
+next refresh.
 
 ## Contributing
 

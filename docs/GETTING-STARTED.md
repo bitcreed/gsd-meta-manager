@@ -15,6 +15,7 @@ see [CONFIGURATION.md](CONFIGURATION.md); for system internals see
 | A terminal | any | crossterm targets Linux, macOS, and Windows. A truecolor terminal is recommended for the dashboard colors. |
 | (Optional) `tmux` | any | Required only for the "switch to existing Claude session" feature in the TUI. |
 | (Optional) An editor on `$PATH` | — | Required only for opening files from the TUI. Fallback chain is `$VISUAL` → `$EDITOR` → `vi`. |
+| (Optional) A gsd-core install | see the README's **GSD compatibility** note | Not needed to read status: the dashboard reads `.planning/` files directly. When one is installed (project-local `.claude/gsd-core` / `.codex/gsd-core`, or global `${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core` / `${CODEX_HOME:-~/.codex}/gsd-core`), its `VERSION` is only read and compared with the version this build is synced to. |
 | (Optional) A terminal emulator on `$PATH` | — | Required only for launching new Claude sessions from the TUI. Probed in order: `$TERMINAL` → `kitty` → `alacritty` → `gnome-terminal` → `xterm`. |
 
 The produced binary is statically linked against the Rust standard library and
@@ -238,6 +239,17 @@ Or remove the existing entry first:
 ```bash
 gsd-meta-manager remove my-app
 ```
+
+### "GSD ... is newer than synced gsd-core ..."
+
+The startup status line, the Config tab's top border, or the dashboard's border
+says the gsd-core you have installed is newer than the version this build was
+synced against (the README's **GSD compatibility** note names it). The app keeps
+working: everything it already understands is still read. What a newer
+gsd-core added -- new config keys, new `.planning/` formats -- may not be shown
+or may be read as unknown. Check for a newer `gsd-meta-manager` release. The
+message is informational only; nothing is blocked, and the app never runs GSD
+to find out -- it reads the install's `VERSION` file.
 
 ### Logs are silent
 
