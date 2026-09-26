@@ -1648,6 +1648,50 @@ mod tests {
         }
     }
 
+    // ── quick 260926-gtl: letter-suffixed phase ids (gsd-core #2128 / #4830) ──
+
+    #[test]
+    fn letter_suffixed_phase_ids_parse_in_every_recognizer() {
+        let roadmap = "## Phases\n\n\
+            - [ ] **Phase 12A: Twelve** - d\n\
+            - [x] Phase 12A.1: Sub (1/1 plans)\n\n\
+            ## Phase Details\n\n\
+            ### Phase 23A.1.2: Letter\n\n\
+            **Goal**: letter-suffixed goal\n\
+            **Depends on**: Phase 12A\n\n\
+            Plans:\n\
+            - [x] 23A.1.2-01-PLAN.md — one\n";
+        let phases = parse_roadmap_phases(roadmap);
+        let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(
+            numbers,
+            ["12A", "12A.1", "23A.1.2"],
+            "every recogniser keeps the full letter-suffixed id (upstream \
+             PHASE_NUMBER_TOKEN_SOURCE `\\d+[A-Z]?(?:\\.\\d+)*`)"
+        );
+        assert_eq!(phases[0].name, "Twelve");
+        assert_eq!(phases[1].name, "Sub");
+        assert!(phases[1].completed);
+        assert_eq!((phases[1].total_plans, phases[1].completed_plans), (1, 1));
+        let letter = &phases[2];
+        assert_eq!(letter.name, "Letter");
+        assert_eq!(
+            (letter.total_plans, letter.completed_plans),
+            (1, 1),
+            "a `23A.1.2-01-PLAN.md` checklist item counts toward its phase"
+        );
+        assert_eq!(letter.depends_on, ["12A"]);
+
+        assert_eq!(extract_phase_id("23A.1.2-some-slug").as_deref(), Some("23A.1.2"));
+        assert_eq!(extract_phase_id("Phase 12A").as_deref(), Some("12A"));
+        let section = phase_section(roadmap, "23A.1.2").expect("the entry is found");
+        assert!(section.starts_with("### Phase 23A.1.2: Letter"), "{section}");
+        assert_eq!(
+            goal_of(&parse_phase_goals(roadmap), "23A.1.2").as_deref(),
+            Some("letter-suffixed goal")
+        );
+    }
+
     // ── Plan 20-03 Task 3: declared roadmap dependencies ──
 
     /// Parse a `## Phase Details` entry carrying `depends` as its dependency

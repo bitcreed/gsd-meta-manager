@@ -1637,6 +1637,41 @@ mod tests {
         assert_eq!(state.phase_goals.len(), 6);
     }
 
+    /// quick 260926-gtl: a gsd-core 1.15.0 letter-suffixed phase id (#2128 /
+    /// #4830) reads end-to-end — phase row, plan counts, dependency, goal key.
+    #[test]
+    fn letter_suffixed_phase_reads_end_to_end() {
+        let roadmap = "# Roadmap\n\n## Phases\n\n\
+            - [ ] **Phase 12A: Twelve** - twelve\n\
+            - [ ] **Phase 23A.1.2: Letter** - letter\n\n\
+            ## Phase Details\n\n\
+            ### Phase 12A: Twelve\n\n\
+            **Goal**: twelve goal\n\n\
+            ### Phase 23A.1.2: Letter\n\n\
+            **Goal**: letter-suffixed goal\n\
+            **Depends on**: Phase 12A\n\n\
+            Plans:\n\
+            - [x] 23A.1.2-01-PLAN.md — one\n";
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            ("ROADMAP.md", roadmap),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        let phase = state
+            .roadmap_phase("23A.1.2")
+            .expect("the letter-suffixed phase is a roadmap row");
+        assert_eq!(phase.name, "Letter");
+        assert_eq!((phase.total_plans, phase.completed_plans), (1, 1));
+        assert_eq!(phase.depends_on, ["12A"]);
+        assert_eq!(
+            state
+                .phase_goals
+                .get("23A.1.2")
+                .map(|g| g.as_raw_for_logic_only()),
+            Some("letter-suffixed goal")
+        );
+    }
+
     #[test]
     fn test_no_progress_table_uses_frontmatter_counts() {
         let state_md = "---\nstatus: executing\nprogress:\n  total_phases: 4\n  completed_phases: 2\n  total_plans: 8\n  completed_plans: 5\n---\n";

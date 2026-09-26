@@ -696,6 +696,50 @@ mod tests {
         );
     }
 
+    /// quick 260926-gtl: gsd-core 1.15.0's phase token `\d+[A-Z]?(?:\.\d+)*`
+    /// (#2128 / #4830) reaches Codex branches and ledger ids.
+    #[test]
+    fn letter_suffixed_plan_ids_parse_from_agent_branches() {
+        let plan = |plan: &str| {
+            Some(BranchPlan {
+                plan: plan.to_string(),
+                spawned_unix: 1_790_386_422,
+            })
+        };
+        assert_eq!(
+            parse_agent_branch("worktree-agent-p12A-01-1790386422"),
+            plan("12A-01")
+        );
+        assert_eq!(
+            parse_agent_branch("agent-p23A.1.2-03-1790386422"),
+            plan("23A.1.2-03")
+        );
+        assert_eq!(parse_agent_branch("agent-p07.1.2-1790386422"), plan("07.1.2"));
+
+        for hostile in [
+            "agent-p13x-1790386422",
+            "agent-p12a-01-1790386422",
+            "agent-p12AB-01-1790386422",
+            "agent-pA12-01-1790386422",
+            "agent-p12A..1-01-1790386422",
+            "agent-p../x-1790386422",
+        ] {
+            assert_eq!(
+                parse_agent_branch(hostile),
+                None,
+                "lowercase, double-letter, leading-letter and dot-traversal \
+                 shapes stay rejected: {hostile}"
+            );
+        }
+
+        for id in ["12A", "12A-01", "23A.1.2-03", "07.1-02", "13"] {
+            assert!(valid_plan_id(id), "{id} is a plan id");
+        }
+        for id in ["12a-01", "A12-01", "12A.", "12A..1", "12A-01-slug"] {
+            assert!(!valid_plan_id(id), "{id} is not a plan id");
+        }
+    }
+
     #[test]
     fn agent_branch_grammar_rejects_claude_hex_ids_and_hostile_values() {
         assert_eq!(parse_agent_branch("worktree-agent-a0123456789abcdef"), None);
