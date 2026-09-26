@@ -1967,6 +1967,12 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
         // The dashboard, in both footer modes: the normal footer and the
         // filter/search footer, because the second one echoes the filter text
         // the operator typed.
+        //
+        // `probe_ctx` also populates `agent_views` (25-05), so every dashboard
+        // state below renders the Status-cell agent summary for the probed
+        // project. That summary draws NO agent-authored text — only counts,
+        // wave numbers and authored words — which is pinned separately by
+        // `the_dashboard_agent_summary_draws_no_identity` (D-C13).
         "NormalScreen" => Some(|identity| {
             let plain = probe_ctx(identity);
             let mut filtering = probe_ctx(identity);
@@ -3193,6 +3199,32 @@ mod tests {
                     "{name} ({path}) rendered a blank buffer in every state, so \
                      its absence assertions proved nothing"
                 ),
+            }
+        }
+    }
+
+    /// **The dashboard's agent summary draws no agent-authored text** (D-C13,
+    /// T-25-22). The Status-cell summary (25-04) is `AgentView::summary_forms`,
+    /// built from counts, wave numbers, the phase number and authored words
+    /// only. This pins that: over the SAME hostile view `probe_ctx` hands the
+    /// Agents sub-view — every description, agent type, branch, path, child and
+    /// worktree-less description carrying the identity — no form contains the
+    /// identity, clean or hostile. A later edit that puts a description or an
+    /// agent type into the summary turns this red.
+    #[test]
+    fn the_dashboard_agent_summary_draws_no_identity() {
+        for identity in [clean_identity(), hostile_identity()] {
+            let view = hostile_agent_view(&identity, std::path::Path::new("/nonexistent"));
+            let forms = view.summary_forms();
+            assert!(
+                !forms.is_empty(),
+                "the hostile view is active, so it must have summary forms to check"
+            );
+            for form in &forms {
+                assert!(
+                    !form.contains(identity.as_str()),
+                    "summary form {form:?} carries the agent-authored identity {identity:?}"
+                );
             }
         }
     }

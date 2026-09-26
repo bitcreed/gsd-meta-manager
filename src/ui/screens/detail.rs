@@ -11596,6 +11596,296 @@ mod tests {
         assert!(!agents.contains("[Enter]"), "Agents offers no Enter action: {agents}");
     }
 
+    /// The first rendered line containing `needle`.
+    fn agent_line_with<'a>(text: &'a str, needle: &str) -> &'a str {
+        text.lines()
+            .find(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("no line contains {needle:?}:\n{text}"))
+    }
+
+    /// The Agents sub-view of a view holding `rows`, scanned at a fixed
+    /// instant, rendered at 160×30.
+    fn render_agent_rows(rows: Vec<crate::agents::AgentRow>) -> String {
+        let (screen, ctx) = on_agents(Some(AgentView {
+            agents: rows,
+            scanned_at: Some(scan_instant()),
+            ..Default::default()
+        }));
+        render_detail_to_text_at(&screen, &ctx, 160, 30)
+    }
+
+    fn scan_instant() -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000)
+    }
+
+    /// D-C16: a worktree no adapter recognised still renders — its branch,
+    /// its path, the `(no agent metadata)` marker and `?` for every count git
+    /// could not produce. It is never hidden.
+    #[test]
+    fn a_row_without_metadata_shows_branch_path_and_marker() {
+        let text = render_agent_rows(vec![crate::agents::AgentRow {
+            path: std::path::PathBuf::from("/repo/.claude/worktrees/agent-p13"),
+            branch: Some(Untrusted::from_untrusted_source(
+                "worktree-agent-p13-02-1790386422".to_string(),
+            )),
+            adapter: None,
+            ..Default::default()
+        }]);
+        let row = agent_line_with(&text, "worktree-agent-p13-02-1790386422");
+        assert!(row.contains("/repo/.claude/worktrees/agent-p13"), "{row}");
+        assert!(row.contains("(no agent metadata)"), "{row}");
+        assert!(row.contains("+?  ~?"), "{row}");
+        assert!(row.contains("> ?  "), "the Unknown state word: {row}");
+    }
+
+    /// A count of zero is a fact, not an unknown.
+    #[test]
+    fn zero_counts_render_as_zero_not_question_marks() {
+        let text = render_agent_rows(vec![crate::agents::AgentRow {
+            commits_ahead: Some(0),
+            dirty: Some(0),
+            ..agent_row("/wt/a", AgentLiveness::Live, Some("13-02"))
+        }]);
+        let row = agent_line_with(&text, "13-02");
+        assert!(row.contains("+0  ~0"), "{row}");
+        assert!(!row.contains('?'), "{row}");
+    }
+
+    /// Ages are floor-rounded from the scan instant: `45s`, `3m`, `2h`, `1d`;
+    /// activity after the scan is `0s`, and no activity at all is `-`.
+    #[test]
+    fn ages_floor_round_and_clamp_future_to_zero() {
+        let at = |last: Option<std::time::SystemTime>| -> String {
+            let text = render_agent_rows(vec![crate::agents::AgentRow {
+                last_activity: last,
+                ..agent_row("/wt/a", AgentLiveness::Live, Some("13-02"))
+            }]);
+            agent_line_with(&text, "13-02").trim_end_matches([' ', '\u{2502}']).to_string()
+        };
+        let ago = |secs: u64| Some(scan_instant() - std::time::Duration::from_secs(secs));
+        for (secs, age) in [(45, "45s"), (199, "3m"), (7300, "2h"), (90_000, "1d")] {
+            let row = at(ago(secs));
+            assert!(row.ends_with(&format!("  {age}")), "{secs}s ago: {row:?}");
+        }
+        let future = at(Some(scan_instant() + std::time::Duration::from_secs(30)));
+        assert!(future.ends_with("  0s"), "{future:?}");
+        let never = at(None);
+        assert!(never.ends_with("~?  -"), "{never:?}");
+    }
+
+    /// D-C06 adjacency: a sub-agent renders on the line directly below its
+    /// worktree's row, indented.
+    #[test]
+    fn a_nested_agent_renders_indented_under_its_worktree() {
+        let text = render_agent_rows(vec![
+            crate::agents::AgentRow {
+                children: vec![ChildAgent {
+                    description: Some(Untrusted::from_untrusted_source(
+                        "Review the parser".to_string(),
+                    )),
+                    liveness: AgentLiveness::Idle,
+                    ..ChildAgent::default()
+                }],
+                ..agent_row("/wt/a", AgentLiveness::Live, Some("13-02"))
+            },
+            agent_row("/wt/b", AgentLiveness::Live, Some("13-03")),
+        ]);
+        let lines: Vec<&str> = text.lines().collect();
+        let parent = lines
+            .iter()
+            .position(|line| line.contains("13-02"))
+            .expect("the parent row");
+        let child = lines[parent + 1];
+        assert!(child.contains("Review the parser"), "{text}");
+        assert!(lines[parent + 2].contains("13-03"), "{text}");
+        let parent_state = lines[parent].find("live").expect("parent state word");
+        let child_state = child.find("idle").expect("child state word");
+        assert!(child_state > parent_state, "the child is indented: {text}");
+    }
+
+    /// Rows equal in liveness and plan order by path, and the same view
+    /// renders the same picture twice.
+    #[test]
+    fn equal_rows_order_by_path_and_render_identically() {
+        let typed = |path: &str, agent_type: &str| crate::agents::AgentRow {
+            agent_type: Some(Untrusted::from_untrusted_source(agent_type.to_string())),
+            ..agent_row(path, AgentLiveness::Live, Some("13-02"))
+        };
+        let scan = crate::agents::ProjectAgents {
+            rows: vec![typed("/wt/b", "bravo-type"), typed("/wt/a", "alpha-type")],
+            scanned_at: Some(scan_instant()),
+            ..Default::default()
+        };
+        let view = crate::agents::waves::derive(&scan, &crate::state_reader::ProjectState::default());
+        let (screen, ctx) = on_agents(Some(view));
+        let first = render_detail_to_text_at(&screen, &ctx, 160, 30);
+        let alpha = first.find("alpha-type").expect("alpha row");
+        let bravo = first.find("bravo-type").expect("bravo row");
+        assert!(alpha < bravo, "/wt/a sorts before /wt/b:\n{first}");
+        assert_eq!(render_detail_to_text_at(&screen, &ctx, 160, 30), first);
+    }
+
+    /// D-C16: nothing to show reads exactly `No running agents`; a view whose
+    /// only row has ended still shows that row, under `no active agents`.
+    #[test]
+    fn no_running_agents_is_the_empty_state() {
+        let body_lines = |text: &str| -> Vec<String> {
+            text.lines()
+                .map(|line| line.trim_matches([' ', '\u{2502}']).to_string())
+                .filter(|line| line == "No running agents")
+                .collect()
+        };
+        let (screen, ctx) = on_agents(None);
+        let text = render_detail_to_text(&screen, &ctx);
+        assert_eq!(body_lines(&text), vec!["No running agents"], "{text}");
+
+        let (screen, ctx) = on_agents(Some(AgentView::default()));
+        let text = render_detail_to_text(&screen, &ctx);
+        assert_eq!(body_lines(&text), vec!["No running agents"], "{text}");
+
+        let text = render_agent_rows(vec![agent_row("/wt/a", AgentLiveness::Ended, Some("13-02"))]);
+        assert!(text.contains("no active agents"), "{text}");
+        assert!(agent_line_with(&text, "13-02").contains("ended"), "{text}");
+        assert!(!text.contains("No running agents"), "{text}");
+    }
+
+    /// Phase 13's disk inference as observed: 35 plans, wave 1's eight done,
+    /// wave 2 holding 13-09..13-22, waves 3..11 the rest.
+    fn phase_13_state() -> crate::state_reader::ProjectState {
+        use crate::state_reader::plan_waves::PlanWave;
+        let ids = |first: u32, last: u32| -> Vec<String> {
+            (first..=last).map(|n| format!("13-{n:02}")).collect()
+        };
+        let mut plan_waves = vec![
+            PlanWave { wave: Some(1), plans: ids(1, 8) },
+            PlanWave { wave: Some(2), plans: ids(9, 22) },
+            PlanWave { wave: Some(3), plans: ids(23, 27) },
+        ];
+        for (wave, plan) in (4..=11).zip(28..=35) {
+            plan_waves.push(PlanWave { wave: Some(wave), plans: ids(plan, plan) });
+        }
+        crate::state_reader::ProjectState {
+            phase_disk_statuses: std::collections::HashMap::from([(
+                "13".to_string(),
+                DiskInference {
+                    plan_waves,
+                    summarized_plans: ids(1, 8),
+                    plan_count: 35,
+                    summary_count: 8,
+                    ..DiskInference::default()
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+
+    /// Thirteen `Live` executors on 13-09..13-21, derived against phase 13.
+    fn thirteen_executors_view() -> AgentView {
+        let rows = (9..=21)
+            .map(|n| crate::agents::AgentRow {
+                agent_type: Some(Untrusted::from_untrusted_source("gsd-executor".to_string())),
+                commits_ahead: Some(2),
+                dirty: Some(0),
+                last_activity: Some(scan_instant()),
+                ..agent_row(
+                    &format!("/wt/agent-{n:02}"),
+                    AgentLiveness::Live,
+                    Some(&format!("13-{n:02}")),
+                )
+            })
+            .collect();
+        let scan = crate::agents::ProjectAgents {
+            rows,
+            scanned_at: Some(scan_instant()),
+            ..Default::default()
+        };
+        crate::agents::waves::derive(&scan, &phase_13_state())
+    }
+
+    /// D-C15: the three observed run shapes read clearly at 80×24.
+    #[test]
+    fn the_three_observed_shapes_render_at_80_by_24() {
+        // 1. One executor in a single-plan wave.
+        let (screen, ctx) = on_agents(Some(two_wave_view()));
+        let one = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(one.contains("  w1  running 0"), "{one}");
+        assert!(one.contains("\u{25b8} w2  running 1"), "{one}");
+        assert_eq!(one.lines().filter(|l| l.contains("> live") || l.contains("  live  ")).count(), 1, "{one}");
+
+        // 2. Three code-fixers with descriptions and no plans.
+        let fixer = |path: &str, desc: &str| crate::agents::AgentRow {
+            agent_type: Some(Untrusted::from_untrusted_source("gsd-code-fixer".to_string())),
+            description: Some(Untrusted::from_untrusted_source(desc.to_string())),
+            ..agent_row(path, AgentLiveness::Live, None)
+        };
+        let (screen, ctx) = on_agents(Some(AgentView {
+            agents: vec![
+                fixer("/wt/a", "Fix CR-01 in parser"),
+                fixer("/wt/b", "Fix WR-02 in render"),
+                fixer("/wt/c", "Fix IN-03 in docs"),
+            ],
+            scanned_at: Some(scan_instant()),
+            ..Default::default()
+        }));
+        let two = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(two.contains("3 agents"), "{two}");
+        for desc in ["Fix CR-01 in parser", "Fix WR-02 in render", "Fix IN-03 in docs"] {
+            assert!(agent_line_with(&two, desc).contains("gsd-code-fixer"), "{two}");
+        }
+
+        // 3. Thirteen executors in wave 2 of 11.
+        let (screen, ctx) = on_agents(Some(thirteen_executors_view()));
+        let three = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(
+            three.contains("P13 \u{b7} w2/11 \u{b7} 13 run \u{b7} 8/35 done"),
+            "{three}"
+        );
+        assert!(three.contains("\u{25b8} w2  running 13 \u{b7} done 0 \u{b7} queued 1"), "{three}");
+        let first_row = agent_line_with(&three, "13-09");
+        assert!(first_row.contains("live"), "{three}");
+        assert!(first_row.contains("+2  ~0  0s"), "{three}");
+        // More rows than fit: the list scrolls rather than overflowing.
+        assert!(!three.contains("13-21"), "{three}");
+    }
+
+    /// Tiny areas never panic: the whole screen at 12×4, and the sub-view
+    /// itself in every area up to 20×8 — including ones whose list gets no
+    /// row at all.
+    #[test]
+    fn a_tiny_area_renders_without_panicking() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (screen, mut ctx) = on_agents(Some(thirteen_executors_view()));
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .agents_selected = 99;
+        let _ = render_detail_to_text_at(&screen, &ctx, 12, 4);
+        for width in 0..=20u16 {
+            for height in 0..=8u16 {
+                let mut terminal =
+                    Terminal::new(TestBackend::new(20, 8)).expect("TestBackend terminal");
+                terminal
+                    .draw(|frame| {
+                        screen.render_agents_tab(frame, Rect::new(0, 0, width, height), &ctx)
+                    })
+                    .expect("draw the Agents sub-view");
+            }
+        }
+    }
+
+    /// The current wave is marked by a `▸` in the TEXT — not only by bold or
+    /// colour — and no other wave carries the marker.
+    #[test]
+    fn the_current_wave_is_marked_in_text_not_only_colour() {
+        let (screen, ctx) = on_agents(Some(two_wave_view()));
+        let text = render_detail_to_text(&screen, &ctx);
+        assert_eq!(text.matches('\u{25b8}').count(), 1, "{text}");
+        assert!(agent_line_with(&text, "w2  running").contains("\u{25b8} w2"), "{text}");
+        assert!(!agent_line_with(&text, "w1  running").contains('\u{25b8}'), "{text}");
+    }
+
     /// Eight tabs, eight digits (D-B10): `9` and `0` name no tab and fall
     /// through to the no-op arm, and `8` is Docs, landing on its Files
     /// sub-view.
