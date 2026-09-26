@@ -146,120 +146,266 @@ fn parse_depends_on(text: &str) -> Vec<String> {
 
 /// Parse ROADMAP.md content and extract phase checklist items with per-phase plan counts.
 ///
-/// Recognizes several heading shapes used by GSD 1.8.0 roadmaps:
-/// - checklist form: `- [ ] **Phase N: Title** - desc`
+/// Recognizes several phase-line shapes used by GSD roadmaps, one grammar
+/// shared with [`parse_shipped_phases`] (see [`recognize_phase_line`]):
+/// - bold checklist with a dash tail: `- [ ] **Phase N: Title** - desc`
+///   (the original grammar, tried first so its captures never change)
+/// - bold checklist with any other tail, or none: `- [ ] **Phase N: Title**`,
+///   `- [x] **Phase N: Title** (INSERTED) - desc`, `… (3/3 plans) — done`
+/// - plain checklist: `- [x] Phase N: Title — desc`
 /// - parenthetical cluster tags: `- [ ] **Phase 26 (Cluster B): Title** - desc`
 /// - project-code / milestone-prefixed IDs: `Phase M-2`, `Phase AB-29`
-/// - markdown headings: `### Phase 4: Visualization` (no checkbox → `completed: false`)
+/// - markdown headings, colon or spaced-dash separated: `### Phase 4:
+///   Visualization`, `### Phase 13 — Title` (no checkbox → `completed: false`)
 /// - `<details>` / `</details>` / `<summary>` wrapper lines are transparent, so
-///   phases and plans nested inside a `<details>` block are still counted.
+///   phases and plans nested inside an active or unlabelled `<details>` block
+///   are still counted — but **every line of a closed-milestone collapse is
+///   skipped** ([`closed_milestone_lines`], GSD's own rule): those phases are
+///   shipped history and go to [`parse_shipped_phases`] instead.
 pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
-    // Checklist form. Groups: 1=checkbox, 2=strike-open (`~~`), 3=id, 4=name,
-    // 5=strike-close (`~~`), 6=description. The `(~~)?` groups let a retired
-    // (strikethrough) phase still match so it can be filtered out explicitly.
-    let checklist_re = Regex::new(&format!(
-        r"- \[([ xX])\] (~~)?\*\*Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)\*\*(~~)?\s*[-\x{{2014}}]\s*(.*)",
-        id = PHASE_ID
-    ))
-    .unwrap();
-    // Markdown-heading form (no checkbox, no `**`). Groups: 1=id, 2=name.
-    let heading_re = Regex::new(&format!(
-        r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
-        id = PHASE_ID
-    ))
-    .unwrap();
+    parse_phases_in_region(content, Region::Current)
+}
+
+/// Which part of a roadmap a phase parser reads: everything outside
+/// closed-milestone collapses (the GSD-facing list), or only inside them
+/// (the shipped history).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    Current,
+    Closed,
+}
+
+/// Which recognizer matched a phase line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryShape {
+    Checklist,
+    Heading,
+    Bare,
+}
+
+/// A recognized phase line. `phase` is `None` for a retired (`~~`) or
+/// sentinel entry: it is not returned, yet it still ends the entry above.
+struct RecognizedLine {
+    phase: Option<RoadmapPhase>,
+    tally: Option<PlanTally>,
+    shape: EntryShape,
+}
+
+/// R1, the original bold checklist grammar. Groups: 1=checkbox,
+/// 2=strike-open (`~~`), 3=id, 4=name, 5=strike-close (`~~`), 6=description.
+/// Unanchored and byte-identical to the grammar this parser always had.
+fn checklist_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r"- \[([ xX])\] (~~)?\*\*Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)\*\*(~~)?\s*[-\x{{2014}}]\s*(.*)",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    })
+}
+
+/// R2, a bold checklist line whose tail is not a dash description — nothing,
+/// a `(TAG)`, a plan tally. Anchored. Groups as [`checklist_re`], 6=the tail.
+fn bold_checkbox_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r"^\s*[-*] \[([ xX])\] (~~)?\*\*Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)\*\*(~~)?(.*)$",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    })
+}
+
+/// R5, a bare `Phase 01: Name (3 plans, complete)` line — this repository's
+/// own v1.0-v1.2 shape. Consulted ONLY inside a closed collapse: anywhere
+/// else a bare line is prose. Groups: 1=id, 2=the text after the colon.
+fn bare_phase_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r"^\s*Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    })
+}
+
+/// Whether `line` opens (or, retired, still bounds) a phase entry in `region`.
+fn is_entry_line(line: &str, region: Region) -> bool {
+    checklist_re().is_match(line)
+        || bold_checkbox_re().is_match(line)
+        || plain_checkbox_re().is_match(line)
+        || phase_heading_re().is_match(line)
+        || (region == Region::Closed && bare_phase_re().is_match(line))
+}
+
+/// The one phase-line grammar both channels share. Recognizers are tried in
+/// order — R1 [`checklist_re`], R2 [`bold_checkbox_re`], R3
+/// [`plain_checkbox_re`], headings [`phase_heading_re`], and in the closed
+/// region only R5 [`bare_phase_re`] — so an original-grammar line keeps its
+/// captures exactly. Only R2, R3 and R5 read a plan tally.
+fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
+    let entry = |number: &str,
+                 name: String,
+                 description: String,
+                 completed: bool,
+                 retired: bool,
+                 tally: Option<PlanTally>,
+                 shape: EntryShape| {
+        let number = number.to_string();
+        let phase = (!retired && !is_sentinel_phase(&number)).then(|| RoadmapPhase {
+            number,
+            name,
+            description,
+            completed,
+            total_plans: 0,
+            completed_plans: 0,
+            depends_on: Vec::new(),
+        });
+        RecognizedLine { phase, tally, shape }
+    };
+
+    if let Some(caps) = checklist_re().captures(line) {
+        // Strikethrough (`~~...~~`) marks a retired phase → exclude entirely.
+        let retired = caps.get(2).is_some() || caps.get(5).is_some() || line.contains("~~");
+        return Some(entry(
+            &caps[3],
+            caps[4].trim().to_string(),
+            caps[6].trim().to_string(),
+            &caps[1] != " ",
+            retired,
+            None,
+            EntryShape::Checklist,
+        ));
+    }
+    if let Some(caps) = bold_checkbox_re().captures(line) {
+        let retired = caps.get(2).is_some() || caps.get(5).is_some() || line.contains("~~");
+        let (tags, description, tally) = split_bold_tail(&caps[6]);
+        let mut name = caps[4].trim().to_string();
+        for tag in tags {
+            name.push(' ');
+            name.push_str(&tag);
+        }
+        return Some(entry(
+            &caps[3],
+            name,
+            description,
+            &caps[1] != " ",
+            retired,
+            tally,
+            EntryShape::Checklist,
+        ));
+    }
+    if let Some(caps) = plain_checkbox_re().captures(line) {
+        let retired = caps.get(2).is_some() || line.contains("~~");
+        let (name, description, tally) = split_summary_rest(&caps[4]);
+        return Some(entry(
+            &caps[3],
+            name,
+            description,
+            &caps[1] != " ",
+            retired,
+            tally,
+            EntryShape::Checklist,
+        ));
+    }
+    if let Some(caps) = phase_heading_re().captures(line) {
+        // `###`-style headings carry no checkbox and no inline description.
+        return Some(entry(
+            &caps[1],
+            caps[2].trim().to_string(),
+            String::new(),
+            false,
+            line.contains("~~"),
+            None,
+            EntryShape::Heading,
+        ));
+    }
+    if region == Region::Closed {
+        if let Some(caps) = bare_phase_re().captures(line) {
+            let (name, description, tally) = split_summary_rest(&caps[2]);
+            let completed = tally.is_some_and(|t| t.says_complete);
+            return Some(entry(
+                &caps[1],
+                name,
+                description,
+                completed,
+                line.contains("~~"),
+                tally,
+                EntryShape::Bare,
+            ));
+        }
+    }
+    None
+}
+
+/// The phase entries of one region of a roadmap: every recognized line in
+/// the region opens an entry that runs to the next entry line or the edge of
+/// the region. Inside it, plan-checklist lines are counted and the first
+/// `**Depends on**:` line is read. Plan counts are the per-field max of the
+/// line's tally and the scanned items. A heading is complete only in the
+/// closed region, and only when it lists plans and every one is checked.
+fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
+    static PLAN: OnceLock<Regex> = OnceLock::new();
+    static DEPENDS: OnceLock<Regex> = OnceLock::new();
     // The phase part of a plan filename may be decimal: an inserted phase's
     // plans are `07.1-01-PLAN.md`, and `\d+-` alone never counted them.
-    let plan_re = Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap();
+    let plan_re =
+        PLAN.get_or_init(|| Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap());
     // `**Depends on**: …`, with the emphasis markers optional.
-    let depends_re = Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap();
-
-    let is_header = |line: &str| checklist_re.is_match(line) || heading_re.is_match(line);
+    let depends_re =
+        DEPENDS.get_or_init(|| Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap());
 
     let lines: Vec<&str> = content.lines().collect();
-    // Lines inside a closed-milestone `<details>` block are GSD-invisible:
-    // GSD strips those blocks before it enumerates phases.
     let closed = closed_milestone_lines(&lines);
+    let in_region = |i: usize| closed[i] == (region == Region::Closed);
     let mut phases: Vec<RoadmapPhase> = Vec::new();
 
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        let parsed: Option<RoadmapPhase> = if closed[i] {
-            None
-        } else if let Some(caps) = checklist_re.captures(line) {
-            let number = caps[3].to_string();
-            // Strikethrough (`~~...~~`) marks a retired phase → exclude entirely.
-            let retired = caps.get(2).is_some() || caps.get(5).is_some() || line.contains("~~");
-            if retired || is_sentinel_phase(&number) {
-                None
-            } else {
-                Some(RoadmapPhase {
-                    completed: &caps[1] != " ",
-                    number,
-                    name: caps[4].trim().to_string(),
-                    description: caps[6].trim().to_string(),
-                    total_plans: 0,
-                    completed_plans: 0,
-                    depends_on: Vec::new(),
-                })
-            }
-        } else if let Some(caps) = heading_re.captures(line) {
-            // `###`-style headings carry no checkbox and no inline description.
-            let number = caps[1].to_string();
-            if line.contains("~~") || is_sentinel_phase(&number) {
-                None
-            } else {
-                Some(RoadmapPhase {
-                    completed: false,
-                    number,
-                    name: caps[2].trim().to_string(),
-                    description: String::new(),
-                    total_plans: 0,
-                    completed_plans: 0,
-                    depends_on: Vec::new(),
-                })
-            }
-        } else {
-            None
+    for (i, line) in lines.iter().enumerate() {
+        if !in_region(i) {
+            continue;
+        }
+        let Some(recognized) = recognize_phase_line(line, region) else {
+            continue;
+        };
+        let Some(mut phase) = recognized.phase else {
+            continue;
         };
 
-        if let Some(mut phase) = parsed {
-            // Scan subsequent lines for plan items. `<details>`/`</details>`/
-            // `<summary>` lines don't match `plan_re` or the phase recognizers,
-            // so they are transparent and never break the scan.
-            let mut j = i + 1;
-            while j < lines.len() {
-                let l = lines[j];
-                // Stop at the next phase header (either heading shape), and at
-                // a closed collapse: its plan items belong to a shipped phase,
-                // never to the entry above it.
-                if closed[j] || is_header(l) {
-                    break;
-                }
-                if let Some(plan_caps) = plan_re.captures(l) {
-                    phase.total_plans += 1;
-                    if &plan_caps[1] != " " {
-                        phase.completed_plans += 1;
-                    }
-                }
-                // First dependency line inside the entry wins. Only the
-                // `## Phase Details` copy of a phase carries one; the summary
-                // checklist copy stops at the next header, so its list stays
-                // empty and `merge_duplicate_phases` takes the detail copy's.
-                if phase.depends_on.is_empty() {
-                    if let Some(dep_caps) = depends_re.captures(l) {
-                        phase.depends_on = parse_depends_on(&dep_caps[1]);
-                    }
-                }
-                j += 1;
+        // Scan subsequent lines for plan items. `<details>`/`</details>`/
+        // `<summary>` lines match no recognizer, so inside one region they
+        // are transparent; the region's edge ends the entry, so a plan item
+        // in a closed collapse is never credited to a live phase above it.
+        let (mut scanned_total, mut scanned_done) = (0u32, 0u32);
+        for (j, l) in lines.iter().enumerate().skip(i + 1) {
+            if !in_region(j) || is_entry_line(l, region) {
+                break;
             }
-
-            phases.push(phase);
-            i += 1;
-        } else {
-            i += 1;
+            if let Some(plan_caps) = plan_re.captures(l) {
+                scanned_total += 1;
+                if &plan_caps[1] != " " {
+                    scanned_done += 1;
+                }
+            }
+            // First dependency line inside the entry wins. Only the
+            // `## Phase Details` copy of a phase carries one; the summary
+            // checklist copy stops at the next header, so its list stays
+            // empty and `merge_duplicate_phases` takes the detail copy's.
+            if phase.depends_on.is_empty() {
+                if let Some(dep_caps) = depends_re.captures(l) {
+                    phase.depends_on = parse_depends_on(&dep_caps[1]);
+                }
+            }
         }
+        let (tally_total, tally_done) = recognized.tally.map_or((0, 0), |t| (t.total, t.completed));
+        phase.total_plans = scanned_total.max(tally_total);
+        phase.completed_plans = scanned_done.max(tally_done);
+        if region == Region::Closed && recognized.shape == EntryShape::Heading {
+            phase.completed = phase.total_plans > 0 && phase.completed_plans == phase.total_plans;
+        }
+        phases.push(phase);
     }
 
     merge_duplicate_phases(phases)
@@ -285,6 +431,14 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
 ///   `**Depends on**:` line)
 ///
 /// First-seen order is preserved, and the pass is O(n) — no nested scan.
+///
+/// **"Prefer the richer entry" is honoured field by field, never wholesale**
+/// (quick 260926-fi9): the detail heading's plans (max) and dependencies (only
+/// it has them) win, the checkbox fills completion (OR), and the checklist
+/// description fills the heading's empty one. The name stays first-non-empty
+/// rather than switching to the heading's, because this repository's phases 15
+/// and 17 title their checklist line and their detail heading differently, and
+/// switching would rename them.
 ///
 /// **Keyed pad-insensitively** ([`super::phase_num::phase_key`]): GSD writes an
 /// inserted phase as `Phase 7.1` in the checklist and `### Phase 07.1:` in its
@@ -425,12 +579,21 @@ fn spaced_separator_re() -> &'static Regex {
 /// Strip one leading separator (`--`, `-`, `–`, `—`, `:`) and collapse
 /// whitespace runs.
 fn tidy_description(text: &str) -> String {
+    collapse_whitespace(strip_separator(text))
+}
+
+/// `text` without leading whitespace and one leading separator (`--`, `-`,
+/// `–`, `—`, `:`).
+fn strip_separator(text: &str) -> &str {
     let t = text.trim_start();
-    let t = t
-        .strip_prefix("--")
+    t.strip_prefix("--")
         .or_else(|| t.strip_prefix(['-', '\u{2013}', '\u{2014}', ':']))
-        .unwrap_or(t);
-    t.split_whitespace().collect::<Vec<_>>().join(" ")
+        .unwrap_or(t)
+}
+
+/// Whitespace runs collapsed to one space, trimmed.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Split the text after a non-bold `Phase N:` into `(name, description,
@@ -455,7 +618,7 @@ fn split_summary_rest(rest: &str) -> (String, String, Option<PlanTally>) {
     (name, tidy_description(&remainder), tally.as_ref().map(read_tally))
 }
 
-/// The plain (non-bold) checkbox phase line GSD's `complete-milestone`
+/// R3, the plain (non-bold) checkbox phase line GSD's `complete-milestone`
 /// workflow writes: `- [x] Phase 1: Name (2/2 plans) — completed D`.
 /// Groups: 1=checkbox, 2=strike-open, 3=id, 4=the text after the colon.
 fn plain_checkbox_re() -> &'static Regex {
@@ -469,69 +632,64 @@ fn plain_checkbox_re() -> &'static Regex {
     })
 }
 
+/// Split the tail after a bold `**Phase N: Title**` into `(tags,
+/// description, tally)`. Leading parenthetical groups are read first: a plan
+/// tally sets the counts, any other `(TAG)` is returned to be appended to the
+/// name (so mailbot's `**Phase 03.1: X** (INSERTED) - d` and its `### Phase
+/// 03.1: X (INSERTED)` heading spell one name). Then one leading separator is
+/// stripped; a tally later in the tail is read and removed as well.
+fn split_bold_tail(tail: &str) -> (Vec<String>, String, Option<PlanTally>) {
+    let tally_re = plan_tally_re();
+    let mut rest = tail.trim_start();
+    let mut tags: Vec<String> = Vec::new();
+    let mut tally: Option<PlanTally> = None;
+    while rest.starts_with('(') {
+        let Some(end) = rest.find(')') else {
+            break;
+        };
+        let group = &rest[..=end];
+        let whole_tally = tally_re
+            .captures(group)
+            .filter(|c| c.get(0).is_some_and(|m| m.start() == 0 && m.end() == group.len()));
+        match whole_tally {
+            Some(caps) if tally.is_none() => tally = Some(read_tally(&caps)),
+            _ => tags.push(group.to_string()),
+        }
+        rest = rest[end + 1..].trim_start();
+    }
+    let mut description = strip_separator(rest).to_string();
+    if tally.is_none() {
+        if let Some(caps) = tally_re.captures(&description) {
+            let span = caps.get(0).map(|m| m.range());
+            tally = Some(read_tally(&caps));
+            if let Some(span) = span {
+                description.replace_range(span, " ");
+            }
+        }
+    }
+    (tags, collapse_whitespace(&description), tally)
+}
+
 /// The phases a roadmap lists inside **closed-milestone** `<details>`
-/// collapses — the shipped history GSD's `complete-milestone` workflow folds
-/// away. Display-only.
+/// collapses — the shipped history GSD's `complete-milestone` folds away.
+/// Display-only.
 ///
 /// **Deliberately separate from [`parse_roadmap_phases`].** GSD strips these
 /// blocks before it counts phases (see [`closed_milestone_lines`]), so they
 /// are not GSD phases: in the GSD-facing list an archived phase with no
 /// directory would infer `NoDirectory`, take the current-phase cell, and
-/// become a legal driver target. The two parsers split the roadmap by region,
-/// not by shape — this one reads only closed lines.
+/// become a legal driver target. The two parsers share one grammar
+/// ([`recognize_phase_line`]) and split the roadmap by region, not by shape —
+/// this one reads only closed lines, where a bare `Phase 01: Name (3 plans,
+/// complete)` line is recognized too.
 ///
-/// `completed` comes from the checkbox. Plan counts are the per-field max of
-/// the line's tally and the plan items listed below it, up to the next entry
-/// or the end of the closed region. Retired (`~~`) and sentinel ids are
-/// excluded. Duplicates merge as in [`parse_roadmap_phases`].
+/// `completed` comes from the checkbox; a bare line is complete iff its tally
+/// says so, a heading iff it lists plans and all are checked. Plan counts are
+/// the per-field max of the line's tally and the plan items listed below it.
+/// Retired (`~~`) and sentinel ids are excluded. Duplicates merge as in
+/// [`parse_roadmap_phases`].
 pub fn parse_shipped_phases(content: &str) -> Vec<RoadmapPhase> {
-    static PLAN: OnceLock<Regex> = OnceLock::new();
-    let plan_re = PLAN.get_or_init(|| Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap());
-    let plain = plain_checkbox_re();
-
-    let lines: Vec<&str> = content.lines().collect();
-    let closed = closed_milestone_lines(&lines);
-    let mut phases: Vec<RoadmapPhase> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if !closed[i] {
-            continue;
-        }
-        let Some(caps) = plain.captures(line) else {
-            continue;
-        };
-        let number = caps[3].to_string();
-        if caps.get(2).is_some() || line.contains("~~") || is_sentinel_phase(&number) {
-            continue;
-        }
-        let (name, description, tally) = split_summary_rest(&caps[4]);
-        let (mut scanned_total, mut scanned_done) = (0u32, 0u32);
-        for (j, l) in lines.iter().enumerate().skip(i + 1) {
-            if !closed[j] || plain.is_match(l) {
-                break;
-            }
-            if let Some(plan_caps) = plan_re.captures(l) {
-                scanned_total += 1;
-                if &plan_caps[1] != " " {
-                    scanned_done += 1;
-                }
-            }
-        }
-        let tally = tally.unwrap_or(PlanTally {
-            completed: 0,
-            total: 0,
-            says_complete: false,
-        });
-        phases.push(RoadmapPhase {
-            completed: &caps[1] != " ",
-            number,
-            name,
-            description,
-            total_plans: tally.total.max(scanned_total),
-            completed_plans: tally.completed.max(scanned_done),
-            depends_on: Vec::new(),
-        });
-    }
-    merge_duplicate_phases(phases)
+    parse_phases_in_region(content, Region::Closed)
 }
 
 /// The `#### Build phase N (Milestone M): Title` heading a roadmap uses for a
@@ -563,14 +721,18 @@ fn any_heading_re() -> &'static Regex {
 
 /// An ordinary GSD phase-entry heading, `## / ### / #### Phase N: Title`, with
 /// an optional parenthetical tag before the colon. Group 1 is the id, group 2
-/// the title. **One grammar** shared by [`parse_phase_goals`] and
-/// [`phase_section`], so the Roadmap tab's goals and the Backlog tab's content
-/// cannot disagree about which lines open an entry.
+/// the title. **One grammar** shared by [`parse_roadmap_phases`],
+/// [`parse_phase_goals`] and [`phase_section`], so the phase list, the Roadmap
+/// tab's goals and the Backlog tab's content cannot disagree about which lines
+/// open an entry.
+///
+/// The separator may also be a **spaced** dash (`### Phase 13 — Title`, `-`,
+/// `–`, `--`). Spaced, so `### Phase 3 Implementation Scope` stays prose.
 fn phase_heading_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?(?::\s+|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s+)(.+?)\s*$",
             id = PHASE_ID
         ))
         .unwrap()
@@ -1265,8 +1427,10 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
     // A build-phase heading (`#### Build phase 14 (Milestone 3): …`) counts as
     // a phase heading here: otherwise its `(Milestone 3)` reads as a milestone
     // of its own, and its id never joins the enclosing milestone's scope.
+    // A spaced-dash heading (`### Phase 2 - Migrate to v2 API`) is a phase
+    // heading too, never a `v2` milestone (quick 260926-fi9).
     let phase_heading = Regex::new(&format!(
-        r"^\s*#{{2,4}}\s+(?:(?i:build)\s+)?[Pp]hase ({id})(?:\s*\([^)]*\))?:",
+        r"^\s*#{{2,4}}\s+(?:(?i:build)\s+)?[Pp]hase ({id})(?:\s*\([^)]*\))?(?::|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s)",
         id = PHASE_ID
     ))
     .unwrap();
@@ -2669,5 +2833,238 @@ Plans:
         let live = parse_roadmap_phases(roadmap);
         assert_eq!(live.len(), 1);
         assert_eq!((live[0].completed_plans, live[0].total_plans), (0, 0));
+    }
+
+    // ── quick 260926-fi9 Task 2: every observed shape, both channels ───────
+
+    const V1_ERA_ROADMAP: &str = include_str!("../../tests/fixtures/roadmap-shapes/v1-era-ROADMAP.md");
+
+    fn numbers_of(phases: &[RoadmapPhase]) -> Vec<&str> {
+        phases.iter().map(|p| p.number.as_str()).collect()
+    }
+
+    fn find<'a>(phases: &'a [RoadmapPhase], number: &str) -> &'a RoadmapPhase {
+        phases
+            .iter()
+            .find(|p| p.number == number)
+            .unwrap_or_else(|| panic!("phase {number} in {:?}", numbers_of(phases)))
+    }
+
+    #[test]
+    fn v1_era_fixture_gsd_facing_phases_are_the_live_shapes() {
+        let phases = parse_roadmap_phases(V1_ERA_ROADMAP);
+        assert_eq!(numbers_of(&phases), ["12", "13", "13.1", "14", "16"]);
+
+        let p = find(&phases, "12");
+        assert_eq!(p.name, "Mu Bold With Dash");
+        assert_eq!(p.description, "existing grammar, unchanged");
+        assert!(p.completed);
+        assert_eq!((p.completed_plans, p.total_plans), (1, 1));
+        assert!(p.depends_on.is_empty());
+
+        let p = find(&phases, "13");
+        assert_eq!(p.name, "Nu Bold Bare");
+        assert_eq!(p.description, "");
+        assert!(!p.completed);
+        assert_eq!((p.completed_plans, p.total_plans), (0, 1));
+        assert_eq!(p.depends_on, ["12"]);
+
+        let p = find(&phases, "13.1");
+        assert_eq!(p.name, "Xi Bold Tagged (INSERTED)");
+        assert_eq!(p.description, "an inserted phase");
+        assert!(!p.completed);
+        assert_eq!(p.depends_on, ["13"]);
+
+        let p = find(&phases, "14");
+        assert_eq!(p.name, "Omicron Plain Checkbox");
+        assert_eq!(p.description, "plain checklist line");
+        assert!(p.completed);
+        assert_eq!(p.depends_on, ["13.1"]);
+
+        let p = find(&phases, "16");
+        assert_eq!(p.name, "Pi Collapsed But Active");
+        assert_eq!(p.description, "lives in the active milestone's own block");
+        assert!(!p.completed);
+    }
+
+    #[test]
+    fn v1_era_fixture_shipped_phases_are_every_collapse_shape() {
+        let shipped = parse_shipped_phases(V1_ERA_ROADMAP);
+        assert_eq!(
+            numbers_of(&shipped),
+            ["1", "2", "2.1", "3", "4", "5", "6", "07", "08", "9", "10", "11"]
+        );
+        let facts = |n: &str| {
+            let p = find(&shipped, n);
+            (
+                p.name.as_str(),
+                p.description.as_str(),
+                p.completed,
+                (p.completed_plans, p.total_plans),
+            )
+        };
+        assert_eq!(
+            facts("1"),
+            ("Alpha Foundation", "completed 2026-01-01", true, (3, 3))
+        );
+        assert_eq!(
+            facts("2"),
+            ("Beta Pipeline (R2)", "completed 2026-01-02", true, (13, 13))
+        );
+        assert_eq!(
+            facts("2.1"),
+            ("Hotfix Insert (INSERTED)", "completed 2026-01-03", true, (2, 2))
+        );
+        assert_eq!(
+            facts("3"),
+            (
+                "Gamma Views",
+                "first subtitle, second subtitle (2026-01-04)",
+                true,
+                (0, 0)
+            )
+        );
+        assert_eq!(
+            facts("4"),
+            ("Delta Listing", "rescoped; carried to v1.1", false, (0, 0))
+        );
+        assert_eq!(
+            facts("5"),
+            ("Epsilon Widgets", "completed 2026-02-01", true, (3, 3))
+        );
+        assert_eq!(
+            facts("6"),
+            ("Zeta Wiring", "Wire the parts (completed 2026-02-02)", true, (0, 0))
+        );
+        assert_eq!(facts("07"), ("Eta Accuracy", "", true, (5, 5)));
+        assert_eq!(facts("08"), ("Theta Cleanup", "", true, (1, 1)));
+        assert_eq!(facts("9"), ("Iota Detail Heading", "", true, (2, 2)));
+        assert_eq!(facts("10"), ("Kappa Unplanned", "", false, (0, 0)));
+        assert_eq!(
+            facts("11"),
+            (
+                "Lambda Tail",
+                "SKIPPED (conditional, accuracy sufficient)",
+                true,
+                (0, 0)
+            )
+        );
+    }
+
+    #[test]
+    fn v1_era_channels_share_no_key_and_negative_shapes_never_parse() {
+        let live: std::collections::HashSet<String> = parse_roadmap_phases(V1_ERA_ROADMAP)
+            .iter()
+            .map(|p| phase_key(&p.number))
+            .collect();
+        for p in parse_shipped_phases(V1_ERA_ROADMAP) {
+            assert!(!live.contains(&phase_key(&p.number)), "{} in both channels", p.number);
+        }
+
+        let negatives = [
+            "### Phase 3 Implementation Scope",
+            "**Phase 1 count:** 21 requirements (v1.0)",
+            "**Phase 12** below, rather than being archived unfinished.",
+            "1. **Phase 13 contains the one-way door** and must land first.",
+            "  - Phase 14's oracle encodes a declared divergence.",
+            "- [ ] Phase 12+: TBD — define via a later milestone",
+            "**Depends on**: Phase 3",
+            "Depends on: Phase 3",
+            "| CHAIN-01..08 | 8 | Phase 4 |",
+            "| **Gate 1** gate | Phase 1 | x |",
+            "| 1. Name | 3/3 | Complete | 2026-01-01 |",
+            "<summary>\u{2705} v1.0 MVP (Phases 1-4) — SHIPPED 2026-01-10</summary>",
+        ];
+        for line in negatives {
+            assert!(parse_roadmap_phases(line).is_empty(), "current region: {line}");
+            let collapsed = format!("<details>\n<summary>v0 SHIPPED</summary>\n\n{line}\n\n</details>\n");
+            assert!(parse_shipped_phases(&collapsed).is_empty(), "closed region: {line}");
+            assert!(parse_roadmap_phases(&collapsed).is_empty(), "closed region: {line}");
+        }
+        // A bare `Phase N:` line is prose outside a closed collapse.
+        let bare = "Phase 20: a bare line outside any closed milestone is prose, not a phase";
+        assert!(parse_roadmap_phases(bare).is_empty());
+        assert!(parse_shipped_phases(bare).is_empty());
+    }
+
+    /// This repository's own v1.0-v1.2 history is written as bare
+    /// `Phase 01: Name (3 plans, complete)` lines inside SHIPPED collapses.
+    #[test]
+    fn this_repositorys_own_shipped_history_parses_as_shipped_phases() {
+        let roadmap = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".planning")
+            .join("ROADMAP.md");
+        let content = std::fs::read_to_string(&roadmap)
+            .expect("this repository ships its own .planning/ROADMAP.md");
+        let shipped = parse_shipped_phases(&content);
+        let expected: Vec<String> = (1..=13).map(|n| format!("{n:02}")).collect();
+        let numbers = numbers_of(&shipped);
+        assert!(
+            numbers.len() >= expected.len() && numbers[..expected.len()] == expected[..],
+            "{numbers:?}"
+        );
+        let first = &shipped[0];
+        assert_eq!(first.name, "Project Foundation");
+        assert_eq!((first.completed_plans, first.total_plans), (3, 3));
+        assert!(first.completed);
+
+        let live: std::collections::HashSet<String> = parse_roadmap_phases(&content)
+            .iter()
+            .map(|p| phase_key(&p.number))
+            .collect();
+        for id in &expected {
+            assert!(!live.contains(&phase_key(id)), "{id} leaked into the GSD-facing list");
+        }
+    }
+
+    #[test]
+    fn dash_headings_are_phase_entries_with_goals_and_sections_never_milestones() {
+        let roadmap = "## Phase Details\n\n\
+                       ### Phase 2 — Two\n\n**Goal**: the dash goal\n\n\
+                       ### Phase 3 -- Three\n\n**Goal**: double dash\n\n\
+                       ### Phase 4 – Four\n\n**Goal**: en dash\n\n\
+                       ### Phase 5 - Five\n\n**Goal**: hyphen\n";
+        let goals = parse_phase_goals(roadmap);
+        assert_eq!(goal_of(&goals, "2").as_deref(), Some("the dash goal"));
+        assert_eq!(goal_of(&goals, "3").as_deref(), Some("double dash"));
+        assert_eq!(goal_of(&goals, "4").as_deref(), Some("en dash"));
+        assert_eq!(goal_of(&goals, "5").as_deref(), Some("hyphen"));
+        let two = phase_section(roadmap, "2").expect("the dash heading opens an entry");
+        assert!(two.starts_with("### Phase 2 — Two"), "{two:?}");
+        assert!(!two.contains("Three"), "{two:?}");
+        let phases = parse_roadmap_phases(roadmap);
+        assert_eq!(numbers_of(&phases), ["2", "3", "4", "5"]);
+        assert_eq!(phases[0].name, "Two");
+
+        let ms = roadmap_milestones(
+            "## Plan\n\n### Phase 2 - Migrate to v2 API\n\n### Phase 3 Implementation Scope\n",
+        );
+        assert!(ms.is_empty(), "{:?}", labels(&ms));
+        assert!(parse_roadmap_phases("### Phase 3 Implementation Scope\n").is_empty());
+    }
+
+    #[test]
+    fn bold_lines_parse_with_any_tail_and_the_existing_grammar_is_unchanged() {
+        let bare = parse_roadmap_phases("- [ ] **Phase 2: Name**\n");
+        assert_eq!(numbers_of(&bare), ["2"]);
+        assert_eq!(bare[0].name, "Name");
+        assert_eq!(bare[0].description, "");
+
+        // A `--` tail is the existing grammar's: it keeps the second dash, as
+        // it always has.
+        let dashed = parse_roadmap_phases("- [x] **Phase 3: Three** -- desc\n");
+        assert_eq!(dashed[0].description, "- desc");
+        assert!(dashed[0].completed);
+
+        let tagged = parse_roadmap_phases("- [ ] **Phase 03.1: Tagged** (INSERTED) - desc\n");
+        assert_eq!(tagged[0].name, "Tagged (INSERTED)");
+        assert_eq!(tagged[0].description, "desc");
+
+        let tallied = parse_roadmap_phases("- [x] **Phase 4: Four** (2/3 plans) — completed 2026-01-01\n");
+        assert_eq!(tallied[0].description, "completed 2026-01-01");
+        assert_eq!((tallied[0].completed_plans, tallied[0].total_plans), (2, 3));
+
+        let retired = parse_roadmap_phases("- [ ] ~~**Phase 5: Gone**~~ (dropped)\n");
+        assert!(retired.is_empty());
     }
 }
