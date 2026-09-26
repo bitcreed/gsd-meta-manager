@@ -56,10 +56,11 @@ pub const REVIEW_READ_CAP: u64 = 256 * 1024;
 /// when no phase was determined or the phase has no readable `findings.total`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FixerEstimate {
-    /// Active (`Live`, `Idle` or `Finished`) unattributed fixer agents: the
-    /// run's size. An estimate exists only while at least one of them is
-    /// running (`Live` or `Idle`); `Finished` fixers count inside such a run
-    /// but never start one (CR-01).
+    /// Active (`Live`, `Idle` or `Finished`) unattributed fixer agents working
+    /// on `phase` (or on no known phase): the run's size. An estimate exists
+    /// only while at least one of them is running (`Live` or `Idle`);
+    /// `Finished` fixers count inside such a run but never start one (CR-01),
+    /// and a fixer of another phase is not in the run (WR-06).
     pub fixers: u32,
     /// The phase whose REVIEW.md the fixers are working through.
     pub phase: Option<PhaseNum>,
@@ -256,8 +257,12 @@ fn fixed_count(ids: &BTreeSet<String>, review: &Review) -> u32 {
 ///    [`super::waves::AgentView::is_active`] follows).
 /// 2. Each one's own subjects are `base_sha..HEAD` (at most 200), read only
 ///    when `base_sha` is known and the worktree is not prunable.
-/// 3. The phase is the one most fixers yield ([`fixer_phase`]), ties to the
-///    higher phase; with none, only the fixer count is returned.
+/// 3. The phase is the one most RUNNING fixers yield ([`fixer_phase`]); only
+///    when no running fixer names a phase do all of them vote. Ties go to the
+///    higher phase. The run is then the fixers of that phase or of none: a
+///    finished fixer of another phase — an aborted run's orphan — adds neither
+///    to `fixers` nor to `fixed` (WR-06, the tiering `waves::derive` gives the
+///    active phase). With no phase, only the fixer count is returned.
 /// 4. `total` is `findings.total` from the phase directory's `NN-REVIEW.md` —
 ///    the code review itself, never `NN-EVAL-REVIEW.md` or `NN-UI-REVIEW.md`
 ///    ([`is_code_review_name`], WR-03). A `*-REVIEW-FIX.md` beside it does not
@@ -284,11 +289,6 @@ pub fn estimate(
     if !fixers.iter().any(|r| r.liveness.is_running()) {
         return None;
     }
-    let mut estimate = FixerEstimate {
-        fixers: u32::try_from(fixers.len()).unwrap_or(u32::MAX),
-        ..FixerEstimate::default()
-    };
-
     let own_subjects: Vec<Vec<String>> = fixers
         .iter()
         .map(|row| match base_sha {
@@ -299,23 +299,52 @@ pub fn estimate(
         })
         .collect();
 
-    let mut votes: BTreeMap<PhaseNum, u32> = BTreeMap::new();
-    for (row, subjects) in fixers.iter().zip(&own_subjects) {
-        let description = row
-            .description
-            .as_ref()
-            .map(Untrusted::as_raw_for_logic_only);
-        if let Some(phase) = fixer_phase(description, subjects) {
-            *votes.entry(phase).or_default() += 1;
-        }
-    }
-    // BTreeMap iterates ascending and `max_by_key` keeps the LAST maximum, so a
-    // tie goes to the higher phase.
-    let Some(phase) = votes
+    let phases: Vec<Option<PhaseNum>> = fixers
         .iter()
-        .max_by_key(|(_, count)| **count)
-        .map(|(phase, _)| phase.clone())
-    else {
+        .zip(&own_subjects)
+        .map(|(row, subjects)| {
+            let description = row
+                .description
+                .as_ref()
+                .map(Untrusted::as_raw_for_logic_only);
+            fixer_phase(description, subjects)
+        })
+        .collect();
+
+    // WR-06: the vote is tiered the way `waves::derive` tiers the active-phase
+    // vote (WR-01) — running fixers vote first, and every fixer only when no
+    // running one names a phase. Finished orphans of an aborted run on another
+    // phase can no longer outvote the fixer that is actually working.
+    let vote_over = |counts: fn(AgentLiveness) -> bool| -> Option<PhaseNum> {
+        let mut votes: BTreeMap<&PhaseNum, u32> = BTreeMap::new();
+        for (row, phase) in fixers.iter().zip(&phases) {
+            if let Some(phase) = phase.as_ref().filter(|_| counts(row.liveness)) {
+                *votes.entry(phase).or_default() += 1;
+            }
+        }
+        // BTreeMap iterates ascending and `max_by_key` keeps the LAST maximum,
+        // so a tie goes to the higher phase.
+        votes
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(phase, _)| phase.clone())
+    };
+    let phase = vote_over(AgentLiveness::is_running).or_else(|| vote_over(|_| true));
+
+    // WR-06: only the fixers of the chosen phase — or of no known phase — are
+    // this run: its size, and the commits whose ids it counts.
+    let (fixers, own_subjects): (Vec<&AgentRow>, Vec<Vec<String>>) = fixers
+        .into_iter()
+        .zip(own_subjects)
+        .zip(&phases)
+        .filter(|(_, own)| own.is_none() || **own == phase)
+        .map(|(pair, _)| pair)
+        .unzip();
+    let mut estimate = FixerEstimate {
+        fixers: u32::try_from(fixers.len()).unwrap_or(u32::MAX),
+        ..FixerEstimate::default()
+    };
+    let Some(phase) = phase else {
         return Some(estimate);
     };
     estimate.phase = Some(phase.clone());

@@ -34,6 +34,7 @@ use tempfile::TempDir;
 const FIXER_A: &str = "agent-a0123456789abcdef";
 const FIXER_B: &str = "agent-b0123456789abcdef";
 const FIXER_C: &str = "agent-c0123456789abcdef";
+const FIXER_D: &str = "agent-d0123456789abcdef";
 
 /// The phase-12 review frontmatter GSD writes: a `findings:` block whose
 /// `total` is the denominator.
@@ -563,6 +564,86 @@ fn a_finished_fixer_run_yields_no_estimate() {
             Some(&gone),
             Some("0123456789abcdef0123456789abcdef01234567"),
             &[row]
+        ),
+        None
+    );
+}
+
+/// WR-06: finished orphan fixers of an aborted run on phase 12 do not outvote
+/// the one fixer running on phase 13, and are not part of its run: neither its
+/// `N fixers` nor its `fixed` count.
+#[test]
+fn a_running_fixer_outvotes_finished_orphans_of_another_phase() {
+    let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
+        return;
+    };
+    let phase13 = root.join(".planning/phases/13-api");
+    std::fs::create_dir_all(&phase13).expect("fixture dir");
+    std::fs::write(
+        phase13.join("13-REVIEW.md"),
+        "---\nfindings:\n  total: 5\n---\n\n### WR-01: a\n\n### WR-02: b\n",
+    )
+    .expect("fixture write");
+    for (n, name) in [FIXER_A, FIXER_B, FIXER_C].into_iter().enumerate() {
+        let wt = add_agent_worktree(&root, name);
+        commit(&wt, &format!("fix(12): WR-0{} orphan", n + 1));
+    }
+    let d = add_agent_worktree(&root, FIXER_D);
+    commit(&d, "fix(13): WR-01 running");
+
+    // No description, so each fixer's phase comes from its own commits; then
+    // the three phase-12 fixers are marked finished by hand.
+    let scanned = scan(
+        &root,
+        Scripted {
+            description: None,
+            ..Scripted::fixer()
+        },
+    );
+    assert_eq!(scanned.rows.len(), 4, "{:?}", scanned.rows);
+    let rows: Vec<AgentRow> = scanned
+        .rows
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            if !row.path.ends_with(FIXER_D) {
+                row.liveness = AgentLiveness::Finished;
+            }
+            row
+        })
+        .collect();
+    let estimate = fixers::estimate(
+        &root,
+        scanned.main_worktree.as_deref(),
+        scanned.base_sha.as_deref(),
+        &rows,
+    );
+    assert_eq!(
+        estimate,
+        Some(FixerEstimate {
+            fixers: 1,
+            phase: PhaseNum::parse("13"),
+            fixed: Some(1),
+            total: Some(5),
+        }),
+        "the running fixer's phase 13, not the orphans' 3-to-1 phase 12"
+    );
+
+    // Once the phase-13 fixer finishes too, the run is over (CR-01).
+    let all_finished: Vec<AgentRow> = rows
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row.liveness = AgentLiveness::Finished;
+            row
+        })
+        .collect();
+    assert_eq!(
+        fixers::estimate(
+            &root,
+            scanned.main_worktree.as_deref(),
+            scanned.base_sha.as_deref(),
+            &all_finished,
         ),
         None
     );
