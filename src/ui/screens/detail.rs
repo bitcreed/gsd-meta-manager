@@ -852,6 +852,14 @@ pub struct DetailScreen {
     /// persisted-offset pattern (quick 260926-kes, [inferred I-12]).
     browser_list_offset: Cell<usize>,
     archive_list_offsets: [Cell<usize>; 3],
+    /// The same for the Backlog, Git, Queue and Driver run lists, and the
+    /// Config option list — the last in VISIBLE positions, as its
+    /// `ListState` counts them.
+    backlog_list_offset: Cell<usize>,
+    git_list_offset: Cell<usize>,
+    queue_list_offset: Cell<usize>,
+    config_list_offset: Cell<usize>,
+    driver_list_offset: Cell<usize>,
     /// What the completing press of a double-click does (quick 260926-kes,
     /// [inferred I-1]; it replaced dyf's `mouse_row_armed` bool). A double
     /// acts on what the FIRST click selected and never re-hit-tests (dyf
@@ -919,6 +927,16 @@ pub(crate) struct DetailRegions {
     /// The Roadmap list's visible fold glyphs, one per band or shipped-summary
     /// row drawn this frame (quick 260926-kes, [inferred I-3]).
     pub fold_marks: Vec<FoldMarkRegion>,
+    /// The Config option list, when its rows were drawn (quick 260926-kes,
+    /// [inferred I-5]).
+    pub config_rows: Option<ConfigRowsRegion>,
+    /// The open Config chooser, when drawn — a modal: while it is `Some`, a
+    /// click outside it only closes it ([inferred I-6]).
+    pub dropdown: Option<DropdownRegion>,
+    /// The panes the wheel scrolls as text rather than as a selection: the
+    /// open Backlog content pane, the Git commit pane, the Driver output pane
+    /// (quick 260926-kes).
+    pub scroll_panes: Vec<ScrollPaneRegion>,
 }
 
 /// One drawn Roadmap fold glyph: the two cells of its `"{glyph} "` span and
@@ -927,6 +945,45 @@ pub(crate) struct DetailRegions {
 pub(crate) struct FoldMarkRegion {
     pub rect: Rect,
     pub row: usize,
+}
+
+/// The Config option list as drawn (quick 260926-kes): its item rows, and per
+/// VISIBLE position the underlying entry index and the column its value
+/// starts at.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ConfigRowsRegion {
+    pub list: crate::ui::mouse::ListRegion,
+    pub rows: Vec<ConfigRowHit>,
+}
+
+/// One Config option row: the entry it shows and the first cell of its value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ConfigRowHit {
+    pub underlying: usize,
+    pub value_x: u16,
+}
+
+/// The open Config chooser: the whole popup and its option rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DropdownRegion {
+    pub popup: Rect,
+    pub options: crate::ui::mouse::ListRegion,
+}
+
+/// A pane the wheel scrolls as text (quick 260926-kes, [inferred I-8],
+/// [inferred I-9], [inferred I-11]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrollPane {
+    Backlog,
+    GitCommit,
+    DriverOutput,
+}
+
+/// One drawn scroll pane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ScrollPaneRegion {
+    pub rect: Rect,
+    pub pane: ScrollPane,
 }
 
 /// One drawn tab-bar entry: its one-row rect and the tab index it switches to
@@ -953,6 +1010,13 @@ pub(crate) enum ClickTarget {
     WavesRow(super::WavesCursor),
     /// A Roadmap band or shipped-summary row's fold glyph (quick 260926-kes).
     FoldMarker(usize),
+    /// A Config option row: its UNDERLYING entry index, and whether the click
+    /// fell on the value part (quick 260926-kes, [inferred I-5]).
+    ConfigRow { index: usize, on_value: bool },
+    /// An option of the open Config chooser ([inferred I-6]).
+    DropdownOption(usize),
+    /// Anywhere outside the open Config chooser ([inferred I-6]).
+    DropdownOutside,
     ListRow(usize),
     WavesPane,
     Content,
@@ -963,18 +1027,32 @@ pub(crate) enum ClickTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WheelTarget {
     WavesPane,
+    /// A text pane: one step is one line (quick 260926-kes, [inferred I-14]).
+    Pane(ScrollPane),
     Content,
     Nothing,
 }
 
 impl DetailRegions {
-    /// The click hit test: tabs, sub-tabs, Waves-pane rows, Roadmap fold
-    /// markers, list rows, the Waves pane, content, then nothing (the tab bar
-    /// outside a tab, the footer, outside the frame). Pure over the recorded
-    /// rects (D-04, D-08). A fold marker sits inside its list row, so it is
-    /// tested first (quick 260926-kes, [inferred I-3]).
+    /// The click hit test: an open Config chooser first (modal: an option,
+    /// the rest of the popup, or outside it), then tabs, sub-tabs, Waves-pane
+    /// rows, Roadmap fold markers, Config rows, list rows, the Waves pane,
+    /// content, then nothing (the tab bar outside a tab, the footer, outside
+    /// the frame). Pure over the recorded rects (D-04, D-08). A fold marker
+    /// sits inside its list row, so it is tested first (quick 260926-kes,
+    /// [inferred I-3]).
     pub(crate) fn click_target(&self, column: u16, row: u16) -> ClickTarget {
         let at = ratatui::layout::Position::new(column, row);
+        if let Some(dropdown) = &self.dropdown {
+            if let Some(option) = dropdown.options.row_at(column, row) {
+                return ClickTarget::DropdownOption(option);
+            }
+            return if dropdown.popup.contains(at) {
+                ClickTarget::Nothing
+            } else {
+                ClickTarget::DropdownOutside
+            };
+        }
         if let Some(t) = self.tabs.iter().find(|t| t.rect.contains(at)) {
             return ClickTarget::Tab(t.tab);
         }
@@ -986,6 +1064,18 @@ impl DetailRegions {
         }
         if let Some(m) = self.fold_marks.iter().find(|m| m.rect.contains(at)) {
             return ClickTarget::FoldMarker(m.row);
+        }
+        if let Some(config) = &self.config_rows {
+            if let Some(hit) = config
+                .list
+                .row_at(column, row)
+                .and_then(|visible| config.rows.get(visible))
+            {
+                return ClickTarget::ConfigRow {
+                    index: hit.underlying,
+                    on_value: column >= hit.value_x,
+                };
+            }
         }
         if let Some(index) = self.list.and_then(|l| l.row_at(column, row)) {
             return ClickTarget::ListRow(index);
@@ -1000,13 +1090,17 @@ impl DetailRegions {
     }
 
     /// The wheel hit test: inside the Waves pane (its rows included) it is the
-    /// pane; otherwise inside content but outside the sub-tab strip it is the
+    /// pane; inside a text scroll pane it is that pane (quick 260926-kes);
+    /// otherwise inside content but outside the sub-tab strip it is the
     /// content; anywhere else — the tab bar, the strip, the footer — nothing,
     /// so the wheel never switches tabs ([inferred I-10]).
     pub(crate) fn wheel_target(&self, column: u16, row: u16) -> WheelTarget {
         let at = ratatui::layout::Position::new(column, row);
         if self.waves_pane.is_some_and(|p| p.contains(at)) {
             return WheelTarget::WavesPane;
+        }
+        if let Some(p) = self.scroll_panes.iter().find(|p| p.rect.contains(at)) {
+            return WheelTarget::Pane(p.pane);
         }
         if self.content.contains(at) && !self.sub_tab_strip.is_some_and(|s| s.contains(at)) {
             return WheelTarget::Content;
@@ -1084,6 +1178,11 @@ impl DetailScreen {
             agents_offset: Cell::new(0),
             browser_list_offset: Cell::new(0),
             archive_list_offsets: Default::default(),
+            backlog_list_offset: Cell::new(0),
+            git_list_offset: Cell::new(0),
+            queue_list_offset: Cell::new(0),
+            config_list_offset: Cell::new(0),
+            driver_list_offset: Cell::new(0),
             mouse_arm: MouseArm::None,
         }
     }
@@ -1109,6 +1208,9 @@ impl DetailScreen {
             sub_tabs: Vec::new(),
             list: None,
             fold_marks: Vec::new(),
+            config_rows: None,
+            dropdown: None,
+            scroll_panes: Vec::new(),
         };
     }
 
@@ -1211,6 +1313,14 @@ impl DetailScreen {
     /// Record the content's clickable list for this frame (quick 260926-dyf).
     fn record_list(&self, list: crate::ui::mouse::ListRegion) {
         self.regions.borrow_mut().list = Some(list);
+    }
+
+    /// Record a pane the wheel scrolls as text (quick 260926-kes).
+    fn record_scroll_pane(&self, rect: Rect, pane: ScrollPane) {
+        self.regions
+            .borrow_mut()
+            .scroll_panes
+            .push(ScrollPaneRegion { rect, pane });
     }
 
     /// Record the Roadmap list's drawn fold glyphs (quick 260926-kes).
@@ -3570,23 +3680,24 @@ impl Screen for DetailScreen {
             KeyCode::PageDown => {
                 match current_view {
                     DetailSubView::GitHistory => {
-                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         // QD-06: the Driver tab's posture, reused. While the
                         // commit pane is open PageDown scrolls THAT — paging
                         // the selection instead would close the very pane the
                         // key was aimed at. With it closed, the key keeps its
                         // old job of paging the log.
-                        if cache.git_commit_detail.is_some() {
-                            let vp = self.git_commit_viewport.get();
-                            cache.git_commit_scroll = clamp_scroll(
-                                cache.git_commit_scroll.saturating_add(PAGE_SCROLL_LINES),
-                                vp.total_lines,
-                                vp.visible_height,
-                            );
-                        } else if !cache.git_entries.is_empty() {
-                            let max = cache.git_entries.len().saturating_sub(1);
-                            cache.git_selected = (cache.git_selected + PAGE_SCROLL_LINES as usize).min(max);
-                            cache.close_git_commit_detail();
+                        let pane_open = ctx
+                            .view_cache
+                            .get(&self.alias)
+                            .is_some_and(|c| c.git_commit_detail.is_some());
+                        if pane_open {
+                            self.scroll_git_commit(ctx, i32::from(PAGE_SCROLL_LINES));
+                        } else {
+                            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                            if !cache.git_entries.is_empty() {
+                                let max = cache.git_entries.len().saturating_sub(1);
+                                cache.git_selected = (cache.git_selected + PAGE_SCROLL_LINES as usize).min(max);
+                                cache.close_git_commit_detail();
+                            }
                         }
                         ctx.needs_redraw = true;
                     }
@@ -3723,17 +3834,7 @@ impl Screen for DetailScreen {
                     // Reaching the bottom re-arms the follow bit, because
                     // reaching the bottom *is* the request to follow (D-19).
                     DetailSubView::Driver => {
-                        let vp = self.driver_viewport.get();
-                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        let from =
-                            driver_offset_now(cache.driver_scroll_offset, cache.driver_follow, vp);
-                        cache.driver_scroll_offset = clamp_scroll(
-                            from.saturating_add(PAGE_SCROLL_LINES),
-                            vp.total_lines,
-                            vp.visible_height,
-                        );
-                        cache.driver_follow = cache.driver_scroll_offset >= tail_offset(vp);
-                        ctx.needs_redraw = true;
+                        self.scroll_driver_output(ctx, i32::from(PAGE_SCROLL_LINES));
                     }
                     DetailSubView::RoadmapViz if roadmap_list => {
                         self.roadmap_nav(ctx, RoadmapNav::Page(true));
@@ -3754,22 +3855,23 @@ impl Screen for DetailScreen {
             KeyCode::PageUp => {
                 match current_view {
                     DetailSubView::GitHistory => {
-                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         // The QD-06 branch again, and the up direction clamps
                         // FIRST so a stale offset cannot survive a viewport
                         // that shrank — the UIFIX-04 lesson, through the one
-                        // shared `clamp_scroll` rather than a second copy.
-                        if cache.git_commit_detail.is_some() {
-                            let vp = self.git_commit_viewport.get();
-                            let current = clamp_scroll(
-                                cache.git_commit_scroll,
-                                vp.total_lines,
-                                vp.visible_height,
-                            );
-                            cache.git_commit_scroll = current.saturating_sub(PAGE_SCROLL_LINES);
-                        } else if !cache.git_entries.is_empty() {
-                            cache.git_selected = cache.git_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
-                            cache.close_git_commit_detail();
+                        // shared `clamp_scroll` rather than a second copy
+                        // (inside `scroll_git_commit`).
+                        let pane_open = ctx
+                            .view_cache
+                            .get(&self.alias)
+                            .is_some_and(|c| c.git_commit_detail.is_some());
+                        if pane_open {
+                            self.scroll_git_commit(ctx, -i32::from(PAGE_SCROLL_LINES));
+                        } else {
+                            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                            if !cache.git_entries.is_empty() {
+                                cache.git_selected = cache.git_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                                cache.close_git_commit_detail();
+                            }
                         }
                         ctx.needs_redraw = true;
                     }
@@ -3875,13 +3977,7 @@ impl Screen for DetailScreen {
                     // **Any upward scroll clears the follow bit**, automatically
                     // and without a key of its own (D-19).
                     DetailSubView::Driver => {
-                        let vp = self.driver_viewport.get();
-                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.driver_scroll_offset =
-                            driver_offset_now(cache.driver_scroll_offset, cache.driver_follow, vp)
-                                .saturating_sub(PAGE_SCROLL_LINES);
-                        cache.driver_follow = false;
-                        ctx.needs_redraw = true;
+                        self.scroll_driver_output(ctx, -i32::from(PAGE_SCROLL_LINES));
                     }
                     DetailSubView::RoadmapViz if roadmap_list => {
                         self.roadmap_nav(ctx, RoadmapNav::Page(false));
@@ -5277,14 +5373,7 @@ impl Screen for DetailScreen {
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
             // The Driver tab renders from its own module — the one sub-tab that
             // does. `driver.rs`'s header doc records why.
-            DetailSubView::Driver => super::driver::render_driver_tab(
-                frame,
-                content_area,
-                ctx,
-                alias,
-                ctx.view_cache.get(alias),
-                &self.driver_viewport,
-            ),
+            DetailSubView::Driver => self.render_driver(frame, content_area, ctx),
         }
 
         // The tab-bar focus cue, part two (the reversed label is part one):
@@ -5392,9 +5481,36 @@ impl DetailScreen {
                 ctx.needs_redraw = true;
                 self.handle_key(key, KeyModifiers::NONE, ctx)
             }
+            // A text pane: one line per step (quick 260926-kes, [inferred
+            // I-14]). The open Backlog pane owns j/k, so its keys scroll it;
+            // the Git and Driver panes go through the helpers their
+            // PageUp/PageDown arms use.
+            WheelTarget::Pane(pane) => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                let delta = if down { 1 } else { -1 };
+                match pane {
+                    ScrollPane::Backlog => self.handle_key(key, KeyModifiers::NONE, ctx),
+                    ScrollPane::GitCommit => {
+                        self.scroll_git_commit(ctx, delta);
+                        ScreenAction::None
+                    }
+                    ScrollPane::DriverOutput => {
+                        self.scroll_driver_output(ctx, delta);
+                        ScreenAction::None
+                    }
+                }
+            }
             WheelTarget::Content => {
                 self.focus = DetailFocus::Content;
                 ctx.needs_redraw = true;
+                // The open Backlog pane owns j/k: the wheel over the list
+                // beside it does nothing ([inferred I-8]).
+                if *current_view == DetailSubView::Backlog
+                    && ctx.view_cache.get(&self.alias).is_some_and(|c| c.backlog_expanded)
+                {
+                    return ScreenAction::None;
+                }
                 // The wheel never climbs to the tab bar.
                 if !down && self.content_at_first_row(current_view, ctx) {
                     return ScreenAction::None;
@@ -5403,6 +5519,52 @@ impl DetailScreen {
             }
             WheelTarget::Nothing => ScreenAction::None,
         }
+    }
+
+    /// Scroll the open Git commit message by `delta` lines — the PageDown /
+    /// PageUp arms' QD-06 branch, shared with the wheel (quick 260926-kes,
+    /// [inferred I-9]). Down adds, then clamps; up clamps FIRST, then
+    /// subtracts, so a stale offset cannot survive a viewport that shrank
+    /// (UIFIX-04). A no-op while no commit is open.
+    fn scroll_git_commit(&self, ctx: &mut AppContext, delta: i32) {
+        let vp = self.git_commit_viewport.get();
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        if cache.git_commit_detail.is_none() {
+            return;
+        }
+        let step = u16::try_from(delta.unsigned_abs()).unwrap_or(u16::MAX);
+        cache.git_commit_scroll = if delta >= 0 {
+            clamp_scroll(
+                cache.git_commit_scroll.saturating_add(step),
+                vp.total_lines,
+                vp.visible_height,
+            )
+        } else {
+            clamp_scroll(cache.git_commit_scroll, vp.total_lines, vp.visible_height)
+                .saturating_sub(step)
+        };
+        ctx.needs_redraw = true;
+    }
+
+    /// Scroll the Driver output pane by `delta` lines — the PageDown / PageUp
+    /// arms, shared with the wheel (quick 260926-kes, [inferred I-11]),
+    /// keeping D-19 exactly: down adds then clamps and re-arms follow at the
+    /// tail; up clamps first (through `driver_offset_now`), subtracts and
+    /// clears follow.
+    fn scroll_driver_output(&self, ctx: &mut AppContext, delta: i32) {
+        let vp = self.driver_viewport.get();
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        let from = driver_offset_now(cache.driver_scroll_offset, cache.driver_follow, vp);
+        let step = u16::try_from(delta.unsigned_abs()).unwrap_or(u16::MAX);
+        if delta >= 0 {
+            cache.driver_scroll_offset =
+                clamp_scroll(from.saturating_add(step), vp.total_lines, vp.visible_height);
+            cache.driver_follow = cache.driver_scroll_offset >= tail_offset(vp);
+        } else {
+            cache.driver_scroll_offset = from.saturating_sub(step);
+            cache.driver_follow = false;
+        }
+        ctx.needs_redraw = true;
     }
 
     /// One single click on `target` ([inferred I-8]).
@@ -5457,6 +5619,52 @@ impl DetailScreen {
                 self.mouse_arm = self.select_list_row(index, current_view, ctx);
                 ScreenAction::None
             }
+            // A Config option row ([inferred I-5], T-kes-01): a click on the
+            // value of the row that was ALREADY selected — visible, no chooser
+            // open — is Enter, and the completing double press is swallowed;
+            // every other click only selects, and a double then is Enter.
+            ClickTarget::ConfigRow { index, on_value } => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                if *current_view != DetailSubView::Defaults {
+                    return ScreenAction::None;
+                }
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                let was_selected = cache.defaults_selected == index
+                    && defaults_selection_visible(cache)
+                    && cache.defaults_editing.is_none();
+                if was_selected && on_value {
+                    self.mouse_arm = MouseArm::Swallow;
+                    return self.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+                }
+                cache.defaults_selected = index;
+                self.mouse_arm = MouseArm::Replay(KeyCode::Enter);
+                ScreenAction::None
+            }
+            // The open chooser ([inferred I-6]): the first click highlights,
+            // a click on the highlighted option applies it through the Enter
+            // arm (a double on any option does too) ...
+            ClickTarget::DropdownOption(option) => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if cache.defaults_editing.is_none() {
+                    return ScreenAction::None;
+                }
+                if cache.defaults_dropdown_selected == option {
+                    self.mouse_arm = MouseArm::Swallow;
+                    return self.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+                }
+                cache.defaults_dropdown_selected = option;
+                self.mouse_arm = MouseArm::Replay(KeyCode::Enter);
+                ScreenAction::None
+            }
+            // ... and a click anywhere outside it is Esc: closed, nothing
+            // applied — on the tab bar too, since the chooser is modal.
+            ClickTarget::DropdownOutside => {
+                self.focus = DetailFocus::Content;
+                self.handle_key(KeyCode::Esc, KeyModifiers::NONE, ctx)
+            }
             ClickTarget::WavesPane => {
                 self.focus = DetailFocus::Pane;
                 ctx.needs_redraw = true;
@@ -5492,6 +5700,21 @@ impl DetailScreen {
                 Some(CursorTarget::Phase(_)) => enter,
                 None => MouseArm::None,
             },
+            // The Driver runs: the j/k path, which also resets the output
+            // pane and reschedules the scan; the tab has no Enter
+            // ([inferred I-11]).
+            DetailSubView::Driver => {
+                let current = ctx
+                    .view_cache
+                    .get(&self.alias)
+                    .map_or(0, |c| c.driver_selected_run);
+                if index != current {
+                    let delta = isize::try_from(index).unwrap_or(isize::MAX)
+                        - isize::try_from(current).unwrap_or(isize::MAX);
+                    self.move_driver_selection(ctx, delta);
+                }
+                MouseArm::None
+            }
             _ => {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 match current_view {
@@ -5521,6 +5744,33 @@ impl DetailScreen {
                             ArchiveDepth::FileView { .. } => return MouseArm::None,
                         };
                         cache.archive_selected[depth] = index;
+                    }
+                    // The open content pane is the Backlog's keyboard owner
+                    // ([inferred I-8]): a row click is a click on the list
+                    // level, so it closes the pane first; the completing
+                    // double re-opens it on the new row through Enter.
+                    DetailSubView::Backlog => {
+                        if cache.backlog_expanded {
+                            cache.backlog_expanded = false;
+                            cache.backlog_scroll = 0;
+                        }
+                        cache.backlog_selected = index;
+                    }
+                    // A different commit closes the pane, as every j/k move
+                    // does; the double loads the clicked one ([inferred I-9]).
+                    DetailSubView::GitHistory => {
+                        if index != cache.git_selected {
+                            cache.git_selected = index;
+                            cache.close_git_commit_detail();
+                        }
+                    }
+                    // Select only, and arm NOTHING (T-kes-02, [inferred
+                    // I-10]): Queue's Enter marks the action done — removed
+                    // from the queue and saved, with no undo — so a stray
+                    // double-click must never reach it.
+                    DetailSubView::Queue => {
+                        cache.queue_selected = index;
+                        return MouseArm::None;
                     }
                     _ => return MouseArm::None,
                 }
@@ -5677,6 +5927,28 @@ impl DetailScreen {
             _ => {}
         }
         ScreenAction::None
+    }
+
+    /// Render the Driver tab from its own module and record what it drew for
+    /// the mouse — the run list and the output pane (quick 260926-kes,
+    /// [inferred I-11]). One method for both render paths, so neither can
+    /// record less than the other.
+    fn render_driver(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let drawn = super::driver::render_driver_tab(
+            frame,
+            area,
+            ctx,
+            &self.alias,
+            ctx.view_cache.get(&self.alias),
+            &self.driver_viewport,
+            &self.driver_list_offset,
+        );
+        if let Some(list) = drawn.list {
+            self.record_list(list);
+        }
+        if let Some(output) = drawn.output {
+            self.record_scroll_pane(output, ScrollPane::DriverOutput);
+        }
     }
 
     /// Render the roadmap visualization tab content.
@@ -5894,9 +6166,7 @@ impl DetailScreen {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("> ");
-
-        let mut list_state = ListState::default();
-        list_state.select(Some(cache.backlog_selected));
+        let len = cache.backlog_items.len();
 
         if cache.backlog_expanded {
             // Side-by-side when the tab is wide enough — the Roadmap tab's
@@ -5911,7 +6181,16 @@ impl DetailScreen {
                     .split(inner)
             };
 
-            frame.render_stateful_widget(list, chunks[0], &mut list_state);
+            // Persisted offset, recorded for the mouse (quick 260926-kes,
+            // [inferred I-12]); the List has no block.
+            self.render_offset_list(
+                frame,
+                list,
+                chunks[0],
+                cache.backlog_selected,
+                len,
+                &self.backlog_list_offset,
+            );
 
             // Content pane for selected item
             let selected_item = cache.backlog_items.get(cache.backlog_selected);
@@ -5925,6 +6204,7 @@ impl DetailScreen {
             // contract (T-1t1-03). The open pane always has the focus.
             let content_block = focus_block(title, true);
             self.record_pane(chunks[1]);
+            self.record_scroll_pane(chunks[1], ScrollPane::Backlog);
 
             // READ BY A HUMAN: the item's ROADMAP.md entry plus any `.md`
             // bodies from its `999.*` directory (`backlog::load_backlog_content`).
@@ -5969,7 +6249,14 @@ impl DetailScreen {
             );
         } else {
             // Full-height list, no content pane
-            frame.render_stateful_widget(list, inner, &mut list_state);
+            self.render_offset_list(
+                frame,
+                list,
+                inner,
+                cache.backlog_selected,
+                len,
+                &self.backlog_list_offset,
+            );
         }
     }
 
@@ -6111,13 +6398,22 @@ impl DetailScreen {
             )
             .highlight_symbol("> ");
 
-        let mut list_state = ListState::default();
-        list_state.select(Some(cache.git_selected));
-        frame.render_stateful_widget(list, log_area, &mut list_state);
+        // Persisted offset, recorded for the mouse (quick 260926-kes).
+        self.render_offset_list(
+            frame,
+            list,
+            log_area,
+            cache.git_selected,
+            cache.git_entries.len(),
+            &self.git_list_offset,
+        );
 
         // Render the commit pane if present
         if has_detail {
             let detail_area = content_chunks[2];
+            // The wheel over the message AND the Files pane scrolls the
+            // message ([inferred I-9]).
+            self.record_scroll_pane(detail_area, ScrollPane::GitCommit);
             if cache.loading_commit_detail {
                 let block = Block::default()
                     .borders(Borders::ALL)
@@ -6515,9 +6811,13 @@ impl DetailScreen {
                     .collect();
 
                 let title = format!(" Queue ({} items) ", actions.len());
+                // The block is drawn on its own so the list's item rows — the
+                // rect a click maps onto — are its inner area (quick
+                // 260926-kes); the cells drawn are the same.
                 let list_block = Block::default().borders(Borders::ALL).title(title);
+                let rows = list_block.inner(inner);
+                frame.render_widget(list_block, inner);
                 let list = List::new(items)
-                    .block(list_block)
                     .highlight_style(
                         Style::default()
                             .fg(Color::Cyan)
@@ -6525,10 +6825,14 @@ impl DetailScreen {
                             .add_modifier(Modifier::UNDERLINED),
                     )
                     .highlight_symbol("> ");
-
-                let mut list_state = ListState::default();
-                list_state.select(Some(selected));
-                frame.render_stateful_widget(list, inner, &mut list_state);
+                self.render_offset_list(
+                    frame,
+                    list,
+                    rows,
+                    selected,
+                    actions.len(),
+                    &self.queue_list_offset,
+                );
             }
         }
     }
@@ -7228,14 +7532,7 @@ impl DetailScreen {
             // `DriverInjectScreen` to paint the body behind their footers. The
             // same delegation: a Driver tab that renders on one path and not the
             // other is the classic half-landing D-15 names.
-            DetailSubView::Driver => super::driver::render_driver_tab(
-                frame,
-                content_area,
-                ctx,
-                alias,
-                ctx.view_cache.get(alias),
-                &self.driver_viewport,
-            ),
+            DetailSubView::Driver => self.render_driver(frame, content_area, ctx),
         }
     }
 
@@ -7292,7 +7589,11 @@ impl DetailScreen {
             None => (0..entries.len()).collect(),
         };
 
-        let items: Vec<ListItem> = visible
+        // Each row's ListItem and the cell column its value span starts at —
+        // measured from the very spans the row draws, so a pass-through key
+        // wider than the 30-cell key column moves the value click with it
+        // (quick 260926-kes, [inferred I-5]).
+        let (items, value_cols): (Vec<ListItem>, Vec<u16>) = visible
             .iter()
             .enumerate()
             .map(|(pos, &i)| {
@@ -7368,8 +7669,10 @@ impl DetailScreen {
                     cat_span,
                     Span::raw(" "),
                     key_span,
-                    val_span,
                 ];
+                let value_col = u16::try_from(spans.iter().map(Span::width).sum::<usize>())
+                    .unwrap_or(u16::MAX);
+                spans.push(val_span);
                 if entry.from_defaults {
                     spans.push(Span::styled(
                         " *",
@@ -7378,18 +7681,20 @@ impl DetailScreen {
                 }
                 let line = Line::from(spans);
                 let item = ListItem::new(line);
-                if i == selected {
+                let item = if i == selected {
                     item.style(Style::default().bg(Color::DarkGray).fg(Color::Cyan))
                 } else {
                     item
-                }
+                };
+                (item, value_col)
             })
-            .collect();
+            .unzip();
 
         // A filter that matches nothing: one dim line, no selection, no help
         // (T-HDI-04). The `ListState` below selects `None` because the
         // cursor's position in an empty `visible` is `None`.
-        let items = if filtering && visible.is_empty() {
+        let no_match = filtering && visible.is_empty();
+        let items = if no_match {
             vec![ListItem::new("  No config keys match").style(Style::default().fg(Color::DarkGray))]
         } else {
             items
@@ -7422,8 +7727,6 @@ impl DetailScreen {
                 block = block.title_top(Line::from(Span::styled(text, *style)).right_aligned());
             }
         }
-        let list = List::new(items).block(block);
-
         // ID-04: the pane YIELDS to the list on a short terminal. Below the
         // floor the split is skipped entirely and the list keeps the full
         // `area`, so a small window never loses option rows to help text.
@@ -7437,8 +7740,13 @@ impl DetailScreen {
         } else {
             (area, None)
         };
+        // Below the `Borders::TOP` title row: where the option rows are drawn.
+        let rows_area = block.inner(list_area);
+        let list = List::new(items).block(block);
 
-        let mut list_state = ListState::default();
+        // Persisted offset, in VISIBLE positions (quick 260926-kes,
+        // [inferred I-12]).
+        let mut list_state = ListState::default().with_offset(self.config_list_offset.get());
         if filtering {
             // The VISIBLE position of the underlying cursor, never the
             // underlying index itself (else the viewport follows the wrong row).
@@ -7447,6 +7755,22 @@ impl DetailScreen {
             list_state.select(Some(selected));
         }
         frame.render_stateful_widget(list, list_area, &mut list_state);
+        self.config_list_offset.set(list_state.offset());
+        self.regions.borrow_mut().config_rows = Some(ConfigRowsRegion {
+            list: crate::ui::mouse::ListRegion {
+                rect: rows_area,
+                offset: list_state.offset(),
+                len: if no_match { 0 } else { visible.len() },
+            },
+            rows: visible
+                .iter()
+                .zip(&value_cols)
+                .map(|(&underlying, &col)| ConfigRowHit {
+                    underlying,
+                    value_x: rows_area.x.saturating_add(col),
+                })
+                .collect(),
+        });
 
         if let Some(help_area) = help_area {
             if filtering {
@@ -7590,12 +7914,22 @@ impl DetailScreen {
                                 ListItem::new(Line::from(spans)).style(style)
                             })
                             .collect();
-                        let popup = List::new(opt_items).block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_style(Style::default().fg(Color::Cyan))
-                                .title(title),
-                        );
+                        let popup_block = Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Cyan))
+                            .title(title);
+                        // The chooser's rects for the mouse (quick 260926-kes,
+                        // [inferred I-6]): the popup, and its option rows —
+                        // drawn from option 0, so offset 0.
+                        self.regions.borrow_mut().dropdown = Some(DropdownRegion {
+                            popup: popup_area,
+                            options: crate::ui::mouse::ListRegion {
+                                rect: popup_block.inner(popup_area),
+                                offset: 0,
+                                len: options.len(),
+                            },
+                        });
+                        let popup = List::new(opt_items).block(popup_block);
                         frame.render_widget(popup, popup_area);
                     }
                 }
@@ -23937,13 +24271,24 @@ mod tests {
         screen.focus = DetailFocus::TabBar;
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
-        let (three, five) = (region.rows[3], region.rows[5]);
-        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, 3));
+        // Two drawn rows other than the selected one (`mode` is far enough
+        // down that the list opens scrolled).
+        let selected_pos = region
+            .rows
+            .iter()
+            .position(|r| r.underlying == ctx.view_cache[TEST_ALIAS].defaults_selected)
+            .expect("drawn");
+        let drawn = region.list.offset..region.list.offset + usize::from(region.list.rect.height);
+        let mut others = drawn.filter(|&p| p != selected_pos && p < region.rows.len());
+        let (p3, p5) = (others.next().expect("a row"), others.nth(1).expect("another row"));
+        let (three, five) = (region.rows[p3], region.rows[p5]);
+        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, p3));
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, three.underlying);
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
         assert_eq!(screen.focus, DetailFocus::Content);
         render_detail_to_text(&screen, &ctx);
-        mouse_click(&mut screen, &mut ctx, five.value_x + 1, mouse_config_y(&region, 5));
+        let region = mouse_config_rows(&screen);
+        mouse_click(&mut screen, &mut ctx, five.value_x + 1, mouse_config_y(&region, p5));
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, five.underlying);
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None, "an unselected value only selects");
 

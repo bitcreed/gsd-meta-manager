@@ -994,6 +994,15 @@ fn no_runs_lines(alias: &str, opted_in: bool) -> Vec<Line<'static>> {
 /// convention in `detail.rs`.
 const DRIVER_PANE_TITLE: &str = " Driver \u{2014} EXPERIMENTAL ";
 
+/// What the Driver tab drew that the mouse can hit (quick 260926-kes,
+/// [inferred I-11]): the run list's item rows, and the run-detail pane — the
+/// latter only while the run detail, not the dry-run preview, is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct DriverTabRegions {
+    pub list: Option<crate::ui::mouse::ListRegion>,
+    pub output: Option<Rect>,
+}
+
 pub(super) fn render_driver_tab(
     frame: &mut Frame,
     area: Rect,
@@ -1001,7 +1010,9 @@ pub(super) fn render_driver_tab(
     alias: &str,
     cache: Option<&ProjectViewCache>,
     viewport: &Cell<ViewportMetrics>,
-) {
+    list_offset: &Cell<usize>,
+) -> DriverTabRegions {
+    let mut regions = DriverTabRegions::default();
     let runs: &[RunSummary] = cache.map_or(&[], |c| c.driver_runs.as_slice());
 
     // The "no state / no data" early return, in the shape `render_pipeline_tab`
@@ -1018,7 +1029,7 @@ pub(super) fn render_driver_tab(
             let inner = block.inner(area);
             frame.render_widget(block, area);
             render_dry_run_preview(frame, inner, preview);
-            return;
+            return regions;
         }
         let opted_in = ctx
             .config
@@ -1027,7 +1038,7 @@ pub(super) fn render_driver_tab(
             .is_some_and(|project| project.driver_opt_in.is_some());
         let message = Paragraph::new(no_runs_lines(alias, opted_in)).block(block);
         frame.render_widget(message, area);
-        return;
+        return regions;
     }
 
     let selected = cache
@@ -1050,7 +1061,8 @@ pub(super) fn render_driver_tab(
 
     if let Some(list_area) = list_area {
         let list_block = Block::default().borders(Borders::RIGHT).title(" Runs ");
-        let inner_width = list_block.inner(list_area).width;
+        let rows = list_block.inner(list_area);
+        let inner_width = rows.width;
         let items: Vec<ListItem> = runs
             .iter()
             .map(|run| ListItem::new(run_list_row(run, verdict_for(run), inner_width)))
@@ -1063,9 +1075,18 @@ pub(super) fn render_driver_tab(
                     .fg(Color::Cyan),
             )
             .highlight_symbol("> ");
-        let mut list_state = ListState::default();
+        // Persisted offset, so a clicked run stays under the pointer (quick
+        // 260926-kes, [inferred I-12]); the recorded rect is the block's
+        // inner area, where the rows are drawn.
+        let mut list_state = ListState::default().with_offset(list_offset.get());
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, list_area, &mut list_state);
+        list_offset.set(list_state.offset());
+        regions.list = Some(crate::ui::mouse::ListRegion {
+            rect: rows,
+            offset: list_state.offset(),
+            len: runs.len(),
+        });
     }
 
     // At the narrow tier the selection has nowhere else to go, so it becomes the
@@ -1086,17 +1107,21 @@ pub(super) fn render_driver_tab(
     // Step B, and replaces nothing else (D-26). See `render_dry_run_preview`.
     match cache.and_then(|c| c.driver_dry_run.as_ref()) {
         Some(preview) => render_dry_run_preview(frame, inner, preview),
-        None => render_run_detail(
-            frame,
-            inner,
-            ctx,
-            alias,
-            cache,
-            summary,
-            verdict_for(summary),
-            viewport,
-        ),
+        None => {
+            render_run_detail(
+                frame,
+                inner,
+                ctx,
+                alias,
+                cache,
+                summary,
+                verdict_for(summary),
+                viewport,
+            );
+            regions.output = Some(detail_area);
+        }
     }
+    regions
 }
 
 /// Render the dry-run preview in place of the run detail (D-26).
@@ -4000,6 +4025,7 @@ mod tests {
                         alias,
                         ctx.view_cache.get(alias),
                         &viewport,
+                        &Cell::new(0),
                     );
                 })
                 .expect("draw the driver tab");
@@ -4084,7 +4110,7 @@ mod tests {
             terminal
                 .draw(|frame| {
                     let area = frame.area();
-                    render_driver_tab(frame, area, &ctx, alias, ctx.view_cache.get(alias), &viewport);
+                    render_driver_tab(frame, area, &ctx, alias, ctx.view_cache.get(alias), &viewport, &Cell::new(0));
                 })
                 .expect("draw the driver tab");
 
@@ -4285,7 +4311,7 @@ mod tests {
             terminal
                 .draw(|frame| {
                     let area = frame.area();
-                    render_driver_tab(frame, area, ctx, alias, ctx.view_cache.get(alias), &viewport);
+                    render_driver_tab(frame, area, ctx, alias, ctx.view_cache.get(alias), &viewport, &Cell::new(0));
                 })
                 .expect("draw the driver tab");
             let buffer = terminal.backend().buffer().clone();
