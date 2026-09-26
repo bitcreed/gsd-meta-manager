@@ -21,9 +21,10 @@ use std::time::{Duration, SystemTime};
 
 use common::git;
 use gsd_meta_manager::agents::adapters::{AdapterReport, AgentAdapter, CoreSnapshot, Enrichment};
-use gsd_meta_manager::agents::fixers::FixerEstimate;
+use gsd_meta_manager::agents::fixers::{self, FixerEstimate};
 use gsd_meta_manager::agents::waves::derive;
-use gsd_meta_manager::agents::{scan_project_with, AgentLiveness, ProjectAgents};
+use gsd_meta_manager::agents::waves::PlanRef;
+use gsd_meta_manager::agents::{scan_project_with, AgentLiveness, AgentRow, ProjectAgents};
 use gsd_meta_manager::state_reader::phase_num::PhaseNum;
 use gsd_meta_manager::state_reader::ProjectState;
 use gsd_meta_manager::text::Untrusted;
@@ -31,6 +32,8 @@ use tempfile::TempDir;
 
 /// A Claude-style fixer worktree id: it carries no plan.
 const FIXER_A: &str = "agent-a0123456789abcdef";
+const FIXER_B: &str = "agent-b0123456789abcdef";
+const FIXER_C: &str = "agent-c0123456789abcdef";
 
 /// The phase-12 review frontmatter GSD writes: a `findings:` block whose
 /// `total` is the denominator.
@@ -54,8 +57,11 @@ fn review_repo(review: Option<&str>) -> Option<(TempDir, PathBuf)> {
     assert!(git(&root, &["config", "commit.gpgsign", "false"]));
     let phase = root.join(".planning/phases/12-cli");
     std::fs::create_dir_all(&phase).expect("fixture dir");
-    std::fs::write(phase.join("12-01-PLAN.md"), "---\nphase: 12\nwave: 1\n---\n")
-        .expect("fixture write");
+    std::fs::write(
+        phase.join("12-01-PLAN.md"),
+        "---\nphase: 12\nwave: 1\n---\n",
+    )
+    .expect("fixture write");
     if let Some(review) = review {
         std::fs::write(phase.join("12-REVIEW.md"), review).expect("fixture write");
     }
@@ -142,9 +148,7 @@ impl AgentAdapter for Scripted {
                 (
                     index,
                     Enrichment {
-                        agent_type: Some(Untrusted::from_untrusted_source(
-                            self.agent_type.into(),
-                        )),
+                        agent_type: Some(Untrusted::from_untrusted_source(self.agent_type.into())),
                         description: self
                             .description
                             .map(|d| Untrusted::from_untrusted_source(d.into())),
@@ -166,6 +170,14 @@ impl AgentAdapter for Scripted {
 fn scan(root: &Path, adapter: Scripted) -> ProjectAgents {
     let adapters: Vec<Box<dyn AgentAdapter>> = vec![Box::new(adapter)];
     scan_project_with(root, &adapters, SystemTime::now())
+}
+
+/// The estimate's counts: `(fixers, fixed, total)`.
+fn counts(agents: &ProjectAgents) -> Option<(u32, Option<u32>, Option<u32>)> {
+    agents
+        .fixer_estimate
+        .as_ref()
+        .map(|e| (e.fixers, e.fixed, e.total))
 }
 
 // ---------------------------------------------------------------------------
@@ -202,5 +214,239 @@ fn a_code_fixer_run_shows_an_estimated_fixed_over_total() {
     assert_eq!(
         view.summary_forms().first().map(String::as_str),
         Some("1 fixer \u{b7} ~4/48 fixed")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn finding_ids_dedupe_across_worktrees_and_main() {
+    let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
+        return;
+    };
+    commit(&root, "fix(12): WR-08 on main");
+    commit(&root, "fix(13): WR-09 another phase");
+    let a = add_agent_worktree(&root, FIXER_A);
+    let b = add_agent_worktree(&root, FIXER_B);
+    let c = add_agent_worktree(&root, FIXER_C);
+    commit(&a, "fix(12): WR-08 on a");
+    commit(&b, "fix(12): WR-08 on b");
+    commit(&c, "fix(12): CR-02 on c");
+
+    let agents = scan(&root, Scripted::fixer());
+    assert_eq!(agents.rows.len(), 3, "{:?}", agents.rows);
+    assert_eq!(
+        counts(&agents),
+        Some((3, Some(2), Some(48))),
+        "WR-08 (three times) and CR-02; phase 13's WR-09 never counts"
+    );
+    assert_eq!(
+        derive(&agents, &ProjectState::default()).summary_forms(),
+        vec![
+            "3 fixers \u{b7} ~2/48 fixed".to_string(),
+            "3 fixers \u{b7} ~2/48".to_string(),
+            "3fix ~2/48".to_string(),
+            "3fix".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_review_fix_report_hides_the_estimate() {
+    let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
+        return;
+    };
+    let dir = root.join(".planning/phases/12-cli");
+    std::fs::write(dir.join("12-REVIEW-FIX.md"), "---\nfixed: 30\n---\n").expect("fixture write");
+    assert!(git(&root, &["add", "."]), "git add");
+    assert!(
+        git(
+            &root,
+            &["commit", "-m", "docs(12): review fix report", "--quiet"]
+        ),
+        "git commit"
+    );
+    for (n, name) in [FIXER_A, FIXER_B, FIXER_C].into_iter().enumerate() {
+        let wt = add_agent_worktree(&root, name);
+        commit(&wt, &format!("fix(12): WR-0{n} fixed"));
+    }
+
+    let agents = scan(&root, Scripted::fixer());
+    assert_eq!(
+        agents.fixer_estimate,
+        Some(FixerEstimate {
+            fixers: 3,
+            phase: PhaseNum::parse("12"),
+            fixed: None,
+            total: None,
+        }),
+        "the run is over: no counts"
+    );
+    assert_eq!(
+        derive(&agents, &ProjectState::default()).summary_forms(),
+        vec!["3 fixers".to_string(), "3fix".to_string()]
+    );
+}
+
+#[test]
+fn a_missing_or_unreadable_review_total_gives_no_count() {
+    let no_total = "---\nfindings:\n  critical: 2\n  warning: 22\n---\n";
+    let not_a_number = "---\nfindings:\n  critical: 2\n  total: many\n---\n";
+    let nested_too_deep = "---\nfindings:\n  by_kind:\n    total: 48\n---\n";
+    for (label, review) in [
+        ("no REVIEW.md", None),
+        ("findings without total", Some(no_total)),
+        ("total: many", Some(not_a_number)),
+        ("total one level too deep", Some(nested_too_deep)),
+    ] {
+        let Some((_tmp, root)) = review_repo(review) else {
+            return;
+        };
+        let wt = add_agent_worktree(&root, FIXER_A);
+        commit(&wt, "fix(12): WR-08 x");
+
+        let agents = scan(&root, Scripted::fixer());
+        assert_eq!(
+            agents.fixer_estimate,
+            Some(FixerEstimate {
+                fixers: 1,
+                phase: PhaseNum::parse("12"),
+                fixed: None,
+                total: None,
+            }),
+            "{label}"
+        );
+        assert_eq!(
+            derive(&agents, &ProjectState::default()).summary_forms(),
+            vec!["1 fixer".to_string(), "1fix".to_string()],
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn attributed_or_inactive_fixers_are_not_counted() {
+    let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
+        return;
+    };
+    let wt = add_agent_worktree(&root, FIXER_A);
+    commit(&wt, "fix(12): WR-08 x");
+
+    // A fixer the scan attributes to a plan is executing that plan.
+    let attributed = scan(
+        &root,
+        Scripted {
+            description: Some("Execute plan 12-01 of phase 12"),
+            ..Scripted::fixer()
+        },
+    );
+    assert!(attributed.rows[0].plan.is_some(), "{:?}", attributed.rows);
+    assert_eq!(attributed.fixer_estimate, None, "attributed");
+
+    // Stalled, and ended: not active.
+    let stalled = scan(
+        &root,
+        Scripted {
+            age_secs: 700,
+            ..Scripted::fixer()
+        },
+    );
+    assert_eq!(stalled.rows[0].liveness, AgentLiveness::Stalled);
+    assert_eq!(stalled.fixer_estimate, None, "stalled");
+    let ended = scan(
+        &root,
+        Scripted {
+            ended: true,
+            ..Scripted::fixer()
+        },
+    );
+    assert_eq!(ended.rows[0].liveness, AgentLiveness::Ended);
+    assert_eq!(ended.fixer_estimate, None, "ended");
+
+    // A live agent of another type is not a fixer.
+    let executor = scan(
+        &root,
+        Scripted {
+            agent_type: "gsd-executor",
+            ..Scripted::fixer()
+        },
+    );
+    assert_eq!(executor.rows[0].liveness, AgentLiveness::Live);
+    assert_eq!(executor.fixer_estimate, None, "not a fixer");
+
+    // Unknown (no adapter facts) and attributed rows, built by hand. The
+    // estimate returns before any read when no row is an active fixer, so a
+    // project root and a main worktree that do not exist are never touched.
+    let fixer_type = || Some(Untrusted::from_untrusted_source("gsd-code-fixer".into()));
+    let rows = vec![
+        AgentRow {
+            path: root.join(".claude/worktrees").join(FIXER_A),
+            agent_type: fixer_type(),
+            liveness: AgentLiveness::Unknown,
+            ..AgentRow::default()
+        },
+        AgentRow {
+            path: root.join(".claude/worktrees").join(FIXER_B),
+            agent_type: fixer_type(),
+            liveness: AgentLiveness::Live,
+            plan: PlanRef::from_id("12-01"),
+            ..AgentRow::default()
+        },
+    ];
+    let gone = root.join("does-not-exist");
+    assert_eq!(
+        fixers::estimate(
+            &gone,
+            Some(&gone),
+            Some("0123456789abcdef0123456789abcdef01234567"),
+            &rows
+        ),
+        None
+    );
+    assert_eq!(
+        fixers::estimate(&root, None, None, &[]),
+        None,
+        "no rows at all"
+    );
+}
+
+#[test]
+fn the_phase_comes_from_the_fixers_own_commits_when_the_description_has_none() {
+    let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
+        return;
+    };
+    let wt = add_agent_worktree(&root, FIXER_A);
+    let without_phase = || Scripted {
+        description: Some("Fix the review findings"),
+        ..Scripted::fixer()
+    };
+
+    // Before its first commit, nothing names a phase: the fixer count only.
+    let before = scan(&root, without_phase());
+    assert_eq!(
+        before.fixer_estimate,
+        Some(FixerEstimate {
+            fixers: 1,
+            ..FixerEstimate::default()
+        })
+    );
+    assert_eq!(
+        derive(&before, &ProjectState::default()).summary_forms(),
+        vec!["1 fixer".to_string(), "1fix".to_string()]
+    );
+
+    commit(&wt, "fix(12): WR-02 y");
+    let after = scan(&root, without_phase());
+    assert_eq!(
+        after.fixer_estimate,
+        Some(FixerEstimate {
+            fixers: 1,
+            phase: PhaseNum::parse("12"),
+            fixed: Some(1),
+            total: Some(48),
+        }),
+        "the fixer's own fix(12) scope names the phase"
     );
 }

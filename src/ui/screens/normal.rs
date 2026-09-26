@@ -2960,6 +2960,47 @@ mod tests {
         assert!(text_is_colored(row, "w2/11 13run", Color::Cyan));
     }
 
+    /// 25-06 (D-C12, D-C14): three live code fixers that fixed an estimated
+    /// five of 48 findings read as the compact fixer form in the 13-cell
+    /// column and as the widest form — which keeps `fixed` — at 200.
+    #[test]
+    fn the_fixer_estimate_is_a_whole_ladder_form_at_80_120_and_200() {
+        use crate::agents::fixers::FixerEstimate;
+        use crate::text::Untrusted;
+
+        let fixer = |n: usize| AgentRow {
+            agent_type: Some(Untrusted::from_untrusted_source("gsd-code-fixer".into())),
+            ..agent_row(n, AgentLiveness::Live, None)
+        };
+        let view = AgentView {
+            agents: (0..3).map(fixer).collect(),
+            fixers: Some(FixerEstimate {
+                fixers: 3,
+                phase: PhaseNum::parse("12"),
+                fixed: Some(5),
+                total: Some(48),
+            }),
+            ..Default::default()
+        };
+        for (width, want) in [
+            (80u16, "3fix ~5/48"),
+            (120, "3fix ~5/48"),
+            (200, "3 fixers \u{b7} ~5/48 fixed"),
+        ] {
+            let mut ctx = ctx_with_aliases(&["orbit"]);
+            ctx.agent_views.insert("orbit".to_string(), view.clone());
+            let rows = render_selected(&mut ctx, width);
+            let row = row_with(&rows, "orbit");
+            assert_eq!(
+                status_cell_text(&rows, row),
+                want,
+                "width {width} must show one whole fixer form"
+            );
+            assert_eq!(want, expected_form(&view, status_column_cells(width)));
+            assert!(text_is_colored(row, want, Color::Cyan));
+        }
+    }
+
     /// U+00B7 MIDDLE DOT is one cell under `unicode-width`, which is what
     /// `Line::width` and ratatui's layout use. It is East-Asian-Ambiguous
     /// (measured), so a CJK-locale terminal may draw it two cells wide — the

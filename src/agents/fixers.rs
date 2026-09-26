@@ -101,7 +101,11 @@ pub fn finding_ids(subjects: &[String], phase: &PhaseNum) -> BTreeSet<String> {
             continue;
         }
         let rest = &subject[caps.get(0).map_or(0, |m| m.end())..];
-        ids.extend(finding_id_re().find_iter(rest).map(|m| m.as_str().to_string()));
+        ids.extend(
+            finding_id_re()
+                .find_iter(rest)
+                .map(|m| m.as_str().to_string()),
+        );
     }
     ids
 }
@@ -224,7 +228,10 @@ pub fn estimate(
 
     let mut votes: BTreeMap<PhaseNum, u32> = BTreeMap::new();
     for (row, subjects) in fixers.iter().zip(&own_subjects) {
-        let description = row.description.as_ref().map(Untrusted::as_raw_for_logic_only);
+        let description = row
+            .description
+            .as_ref()
+            .map(Untrusted::as_raw_for_logic_only);
         if let Some(phase) = fixer_phase(description, subjects) {
             *votes.entry(phase).or_default() += 1;
         }
@@ -266,4 +273,108 @@ pub fn estimate(
     estimate.fixed = Some(u32::try_from(ids.len()).unwrap_or(u32::MAX));
     estimate.total = Some(total);
     Some(estimate)
+}
+
+// Pure tests only: every input is a string literal — no git, no file, no
+// process. This directory is not on the spawn allowlist, and that holds for
+// test code too. The git-backed proofs live in `tests/agents_fixers.rs`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strs(subjects: &[&str]) -> Vec<String> {
+        subjects.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn phase(text: &str) -> PhaseNum {
+        PhaseNum::parse(text).unwrap_or_else(|| panic!("{text} is a phase number"))
+    }
+
+    fn ids(found: &[&str]) -> BTreeSet<String> {
+        found.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn finding_ids_accepts_only_fix_subjects_of_the_phase() {
+        assert_eq!(
+            finding_ids(&strs(&["fix(12): WR-08 and CR-01"]), &phase("12")),
+            ids(&["CR-01", "WR-08"])
+        );
+        assert_eq!(
+            finding_ids(
+                &strs(&[
+                    "fix(13): WR-02 another phase",
+                    "feat(12): WR-03 not a fix",
+                    "docs(12): CR-09 not a fix",
+                    "fix(12): XX-01 not a finding id",
+                    "fix: WR-04 no scope",
+                    "refix(12): WR-05 not at the start",
+                    "fix(12): WR-06x not a whole id",
+                ]),
+                &phase("12")
+            ),
+            BTreeSet::new(),
+            "none of these is a fix subject of phase 12 naming a finding"
+        );
+        assert_eq!(
+            finding_ids(&strs(&["fix(12-sec): IN-03 z"]), &phase("12")),
+            ids(&["IN-03"]),
+            "a dashed scope tail keeps the phase"
+        );
+        assert_eq!(finding_ids(&[], &phase("12")), BTreeSet::new());
+    }
+
+    #[test]
+    fn finding_ids_match_the_phase_pad_insensitively() {
+        assert_eq!(
+            finding_ids(&strs(&["fix(05): IN-2"]), &phase("5")),
+            ids(&["IN-2"])
+        );
+        assert_eq!(
+            finding_ids(&strs(&["fix(5): WR-01"]), &phase("05")),
+            ids(&["WR-01"])
+        );
+        assert_eq!(
+            finding_ids(&strs(&["fix(07.1-02): CR-03"]), &phase("7.1")),
+            ids(&["CR-03"])
+        );
+        assert_eq!(
+            finding_ids(&strs(&["fix(07): CR-03"]), &phase("7.1")),
+            BTreeSet::new(),
+            "7 is not 7.1"
+        );
+    }
+
+    #[test]
+    fn fixer_phase_from_description_or_own_commits() {
+        assert_eq!(
+            fixer_phase(Some("Fix phase 05 review findings"), &[]),
+            Some(phase("5"))
+        );
+        assert_eq!(fixer_phase(Some("FIX PHASE 12"), &[]), Some(phase("12")));
+        assert_eq!(
+            fixer_phase(Some("Fix review findings"), &strs(&["fix(07.1): WR-01"])),
+            Some(phase("7.1"))
+        );
+        assert_eq!(
+            fixer_phase(
+                None,
+                &strs(&["feat(09): x", "fix(08-sec): WR-01", "fix(07): WR-02"])
+            ),
+            Some(phase("8")),
+            "the first fix subject, newest first, not the first subject"
+        );
+        assert_eq!(
+            fixer_phase(Some("Fix phase 12 findings"), &strs(&["fix(13): WR-01"])),
+            Some(phase("12")),
+            "the description outranks the commits"
+        );
+        assert_eq!(fixer_phase(Some("Fix review findings"), &[]), None);
+        assert_eq!(fixer_phase(None, &strs(&["docs(12): x"])), None);
+        assert_eq!(
+            fixer_phase(Some("phase ../../etc"), &[]),
+            None,
+            "only digits are ever a phase"
+        );
+    }
 }
