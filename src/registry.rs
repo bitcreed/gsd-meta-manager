@@ -387,11 +387,221 @@ impl Alias {
 // the TUI, where no identity type reaches at all (that is the `Screen` census's
 // job). Three mechanisms, three measured reaches, none doing another's work.
 
+/// A registration refused because the path is a git LINKED worktree.
+///
+/// **Why a linked worktree is never a project root** (quick 260925-x0v): a
+/// linked worktree shares its main repository's history — including the
+/// checked-out `.planning/` — so registering it duplicates a project that is
+/// already (or should be) registered under its main worktree. For GSD executor
+/// worktrees at `<repo>/.claude/worktrees/agent-*` it is worse: the directory
+/// is deleted when the agent finishes, leaving a registry entry pointing at
+/// nothing.
+///
+/// Typed rather than a bare `bail!` so the CLI can `downcast_ref` it and name
+/// the main worktree to add instead. Hand-written `Display` + empty
+/// `std::error::Error`, per the `src/error.rs` convention (no `thiserror`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedWorktreeRefusal {
+    /// The path the caller tried to register.
+    pub worktree: PathBuf,
+    /// The main worktree (or, for a bare repository, the repository itself)
+    /// that should be registered instead.
+    pub main_worktree: PathBuf,
+}
+
+impl std::fmt::Display for LinkedWorktreeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} is a git linked worktree, not a project root — register its main worktree instead: {}",
+            self.worktree.display(),
+            self.main_worktree.display()
+        )
+    }
+}
+
+impl std::error::Error for LinkedWorktreeRefusal {}
+
+/// The structural verdict on a path's git identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorktreeKind {
+    /// A main worktree, a submodule, a non-git directory, or a `.git` that is
+    /// not a regular file or directory.
+    NotLinked,
+    /// A linked worktree whose main worktree is the carried path.
+    Linked(PathBuf),
+    /// A gitfile the structural read could not classify.
+    Unknown,
+}
+
+/// The most bytes read from a gitfile or a `commondir` file. Both are one line
+/// in practice; the cap is what keeps a hostile multi-gigabyte file from
+/// stalling the session poll (T-x0v-01).
+const GITFILE_READ_CAP: u64 = 4096;
+
+/// Read at most [`GITFILE_READ_CAP`] bytes of a REGULAR file.
+///
+/// Anything that is not a regular file (FIFO, socket, device) is never opened:
+/// opening a FIFO blocks until a writer appears, which would freeze the TUI.
+fn read_bounded_regular(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    file.take(GITFILE_READ_CAP).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Fold `.` and `..` components lexically, for a path that may no longer exist
+/// (an admin dir already removed by `git worktree prune`, a deleted worktree).
+fn lexical_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // `pop` on a root is a no-op, matching how the OS resolves `/..`.
+                if !out.pop() {
+                    out.push(comp.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The main worktree of the repository whose common git dir is `common_dir`.
+///
+/// `<main>/.git` -> `<main>`. Anything else — a bare repository, whose common
+/// dir IS the repository — is returned as-is [inferred: a bare repository has
+/// no main worktree, so the refusal names the repository itself].
+fn main_of(common_dir: &Path) -> PathBuf {
+    let normalized = common_dir
+        .canonicalize()
+        .unwrap_or_else(|_| lexical_normalize(common_dir));
+    if normalized.file_name().is_some_and(|n| n == ".git") {
+        if let Some(parent) = normalized.parent() {
+            return parent.to_path_buf();
+        }
+    }
+    normalized
+}
+
+/// Resolve `value` against `base` when it is relative.
+fn resolve_against(base: &Path, value: &str) -> PathBuf {
+    let p = Path::new(value);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    }
+}
+
+/// Classify `path` structurally, reading only the filesystem — no git binary.
+///
+/// Walks `path`'s ancestors (inclusive) to the first `.git`; a `.git`
+/// directory is a main worktree, a `.git` regular file is a gitfile whose
+/// `gitdir:` target's `commondir` (or `worktrees/` parent) identifies a linked
+/// worktree, and a submodule gitfile (`.../modules/...`) is not one.
+fn classify_worktree(path: &Path) -> WorktreeKind {
+    // Absolutize so a relative input never resolves `.git` against the
+    // process cwd's ancestors in a surprising way.
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+
+    for ancestor in abs.ancestors() {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        let dot_git = ancestor.join(".git");
+        let Ok(meta) = std::fs::metadata(&dot_git) else {
+            continue;
+        };
+        if meta.is_dir() {
+            return WorktreeKind::NotLinked;
+        }
+        if !meta.is_file() {
+            // FIFO, socket, device: git itself rejects a non-regular gitfile,
+            // and opening one could block (T-x0v-01).
+            return WorktreeKind::NotLinked;
+        }
+        let Some(contents) = read_bounded_regular(&dot_git) else {
+            return WorktreeKind::Unknown;
+        };
+        let Some(gitdir) = contents
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:"))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return WorktreeKind::Unknown;
+        };
+        // git resolves a relative gitfile against the `.git` file's directory
+        // (git 2.48+ can write relative gitdirs via `worktree.useRelativePaths`).
+        let g = resolve_against(ancestor, gitdir);
+
+        if let Some(commondir) = read_bounded_regular(&g.join("commondir")) {
+            let commondir = commondir.trim();
+            if !commondir.is_empty() {
+                // Only linked-worktree admin dirs carry `commondir`.
+                return WorktreeKind::Linked(main_of(&resolve_against(&g, commondir)));
+            }
+        }
+        let g_norm = lexical_normalize(&g);
+        if g_norm
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == "worktrees")
+        {
+            // An admin dir already pruned (or missing `commondir`): the layout
+            // `<common>/worktrees/<name>` still names the common dir.
+            if let Some(common) = g_norm.parent().and_then(Path::parent) {
+                return WorktreeKind::Linked(main_of(common));
+            }
+        }
+        if g_norm.components().any(|c| c.as_os_str() == "modules") {
+            return WorktreeKind::NotLinked;
+        }
+        return WorktreeKind::Unknown;
+    }
+    WorktreeKind::NotLinked
+}
+
+/// The main worktree of `path` when `path` is inside a git LINKED worktree,
+/// else `None`.
+///
+/// Structural first (filesystem reads only, so the ~5s session poll stays
+/// spawn-free for ordinary repositories).
+pub fn linked_worktree_main(path: &Path) -> Option<PathBuf> {
+    match classify_worktree(path) {
+        WorktreeKind::Linked(main) => Some(main),
+        WorktreeKind::NotLinked | WorktreeKind::Unknown => None,
+    }
+}
+
+/// The refusal for `path`, as an `anyhow::Error` carrying the typed
+/// [`LinkedWorktreeRefusal`], when it is a linked worktree.
+fn refuse_linked_worktree(path: &Path) -> Result<()> {
+    if let Some(main_worktree) = linked_worktree_main(path) {
+        return Err(anyhow::Error::new(LinkedWorktreeRefusal {
+            worktree: path.to_path_buf(),
+            main_worktree,
+        }));
+    }
+    Ok(())
+}
+
 /// Add a project to the registry with the given alias and path.
 /// Validates that:
 /// - alias is unique in the config (the alias itself was judged by
 ///   [`Alias::new`] — this function no longer carries a predicate of its own)
 /// - path exists on disk
+/// - path is not a git linked worktree ([`LinkedWorktreeRefusal`], naming the
+///   main worktree to register instead)
 /// - path contains a `.planning/` directory
 pub fn add_project(config: &mut Config, alias: &Alias, path: &Path) -> Result<()> {
     let alias = alias.as_str();
@@ -403,6 +613,10 @@ pub fn add_project(config: &mut Config, alias: &Alias, path: &Path) -> Result<()
     if !path.exists() {
         bail!("Path does not exist: {}", path.display());
     }
+
+    // Before the `.planning` check: a refusal naming the main worktree is more
+    // useful than "No .planning/".
+    refuse_linked_worktree(path)?;
 
     let planning_dir = path.join(".planning");
     if !planning_dir.is_dir() {
@@ -438,13 +652,16 @@ pub fn add_project(config: &mut Config, alias: &Alias, path: &Path) -> Result<()
 /// Add a project to the registry without checking for `.planning/` directory.
 /// Used for freshly created projects that don't yet have a `.planning/` folder.
 /// "Unchecked" refers to the `.planning/` directory only: the alias is judged by
-/// [`Alias::new`] before it can reach this signature.
+/// [`Alias::new`] before it can reach this signature, and a git linked worktree
+/// is still refused ([`LinkedWorktreeRefusal`]).
 pub fn add_project_unchecked(config: &mut Config, alias: &Alias, path: &Path) -> Result<()> {
     let alias = alias.as_str();
 
     if config.projects.contains_key(alias) {
         bail!("Alias already exists");
     }
+
+    refuse_linked_worktree(path)?;
 
     let now = chrono::Utc::now().to_rfc3339();
     config.projects.insert(
@@ -895,6 +1112,22 @@ pub fn auto_register_from_sessions(
             continue;
         }
         if registered.contains(&canonical) || !seen_this_pass.insert(canonical.clone()) {
+            continue;
+        }
+
+        // A linked worktree (e.g. a GSD executor's `.claude/worktrees/agent-*`)
+        // carries a checked-out `.planning/`, so it passes the check above. It
+        // is never registered — even when its main worktree is not registered
+        // [inferred, per brief]. `add_project` would refuse it anyway; this
+        // pre-check exists so discovery does not log an `add_project failed`
+        // warning on every ~5s poll. `debug`, not `warn`, for the same reason
+        // [inferred].
+        if let Some(main_worktree) = linked_worktree_main(&canonical) {
+            tracing::debug!(
+                path = %canonical.display(),
+                main_worktree = %main_worktree.display(),
+                "auto-register: skipping git linked worktree",
+            );
             continue;
         }
 

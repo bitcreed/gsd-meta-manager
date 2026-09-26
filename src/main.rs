@@ -129,7 +129,27 @@ async fn main() -> anyhow::Result<()> {
             }
             let mut config = config;
             // RAW into `add_project`: that is the value becoming the key.
-            add_project(&mut config, &alias, &canonical_path)?;
+            if let Err(e) = add_project(&mut config, &alias, &canonical_path) {
+                // A linked worktree is refused with the main worktree to add
+                // instead (quick 260925-x0v). Both paths come from the
+                // filesystem, so both are escaped before reaching the terminal.
+                if let Some(refusal) =
+                    e.downcast_ref::<gsd_meta_manager::registry::LinkedWorktreeRefusal>()
+                {
+                    eprintln!(
+                        "Error: {}",
+                        gsd_meta_manager::text::render_for_terminal(&refusal.to_string())
+                    );
+                    eprintln!(
+                        "Register the main worktree instead: gsd-meta-manager add {}",
+                        gsd_meta_manager::text::render_for_terminal(
+                            &refusal.main_worktree.display().to_string()
+                        )
+                    );
+                    std::process::exit(1);
+                }
+                return Err(e);
+            }
             save_config(&config, &config_path)?;
             // READ by a human, so escaped. A confirmation that renders a name
             // other than the one just written is a confirmation of the wrong
