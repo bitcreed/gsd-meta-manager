@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.8.0
 current_phase: 25
 current_phase_name: Running Agents & Live Wave View
-status: executing
-stopped_at: Completed 25-05-PLAN.md
-last_updated: "2026-09-26T03:39:29.395Z"
+status: verifying
+stopped_at: Completed 25-06-PLAN.md
+last_updated: "2026-09-26T03:48:50.318Z"
 last_activity: 2026-09-25
 last_activity_desc: Phase 25 execution started
-state_head: bcf6938c74661d5611474f21c838a72d42e44db2
+state_head: 24db864449c2845d7b166d9a2eb6eda15a48b350
 progress:
   total_phases: 10
   completed_phases: 6
@@ -31,7 +31,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 24, quick tasks 260922-hdh/hdi/hdj, 260923-lr8/lr9/lra/md1, 260924-drx and five debug
   fixes; README gained screenshots and a Codex section. `./scripts/pre-tag-check.sh --container
   v1.8.0` exit **0**, all five gates PASS, git banner MATCH, 49 suites / **2367 passed / 0 failed**
@@ -323,6 +323,7 @@ verify-phase if the gate is fixed.
 | Phase 25 P03 | 11 min | 3 tasks | 6 files |
 | Phase 25 P04 | 8 min | 3 tasks | 7 files |
 | Phase 25 P05 | 13 min | 3 tasks | 7 files |
+| Phase 25 P06 | 8 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -439,6 +440,7 @@ Recent decisions affecting current work:
 - [Phase 25]: 25-05: Sessions › Agents shares Sessions' tab index; m toggles through switch_to_sub_view; Enter/n inert on Agents [inferred details in SUMMARY]
 - [Phase 25]: 25-05: agent_list_len is the one line count both render and scroll keys clamp against; ages floor-rounded from scanned_at
 - [Phase 25]: 25-05: Docs and Sessions strips share two_sub_tab_strip; Agents footer adds only [m] sessions (prefix already has [j/k]) [inferred]
+- [Phase 25]: 25-06: fixer phase from description 'phase NN' else own fix(NN) scope; denominator findings.total verbatim (A7, audit) [inferred]
 
 ### Roadmap Evolution
 
@@ -532,8 +534,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-26T03:39:28.916Z
-Stopped at: Completed 25-05-PLAN.md
+Last session: 2026-09-26T03:48:49.842Z
+Stopped at: Completed 25-06-PLAN.md
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
 lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
 unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,
