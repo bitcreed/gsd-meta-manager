@@ -248,14 +248,6 @@ fn display_key(row: &AgentRow) -> (u8, bool, Option<&PlanRef>, &std::path::Path)
     )
 }
 
-/// Whether a row's agent is doing, or has just done, the work.
-fn is_active_liveness(liveness: AgentLiveness) -> bool {
-    matches!(
-        liveness,
-        AgentLiveness::Live | AgentLiveness::Idle | AgentLiveness::Finished
-    )
-}
-
 /// The disk inference for `phase`, pad-insensitively. `disk_status_for`
 /// resolves through the roadmap; a map populated with another spelling of the
 /// same phase (`5` for `05`) is found by the sorted key scan, so the choice is
@@ -310,9 +302,13 @@ fn tally(row: &mut WaveRow, state: PlanState) {
 
 /// Join one project's scan with its parsed state into an [`AgentView`].
 ///
-/// * **Active phase:** the phase most attributed `Live`, `Idle`, `Finished` or
-///   `Stalled` rows name, ties to the higher phase; with none,
-///   `ProjectState::active_phase_number()`.
+/// * **Active phase (WR-01, CR-01):** a tiered vote, ties to the higher phase.
+///   First the phase most attributed running (`Live` or `Idle`) rows name;
+///   only when no attributed row is running, the phase most attributed
+///   `Finished` or `Stalled` rows name; with neither,
+///   `ProjectState::active_phase_number()`. `Ended` and `Unknown` never vote.
+///   So an aborted run's leftovers from another phase never replace a live
+///   wave's phase.
 /// * **Plan universe:** every plan of that phase's `plan_waves` (the `w?`
 ///   bucket included). A phase whose plans carry no `wave:` has no waves to
 ///   draw; its universe is then the attributed plans plus the summarized ones.
@@ -321,25 +317,22 @@ fn tally(row: &mut WaveRow, state: PlanState) {
 ///
 /// Deterministic: two derivations of the same inputs compare equal.
 pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
-    let mut by_phase: BTreeMap<&PhaseNum, u32> = BTreeMap::new();
-    for row in &agents.rows {
-        let counted = matches!(
-            row.liveness,
-            AgentLiveness::Live
-                | AgentLiveness::Idle
-                | AgentLiveness::Finished
-                | AgentLiveness::Stalled
-        );
-        if let (true, Some(plan)) = (counted, &row.plan) {
-            *by_phase.entry(&plan.phase).or_default() += 1;
+    let vote = |counted: fn(AgentLiveness) -> bool| -> Option<PhaseNum> {
+        let mut by_phase: BTreeMap<&PhaseNum, u32> = BTreeMap::new();
+        for row in &agents.rows {
+            if let (true, Some(plan)) = (counted(row.liveness), &row.plan) {
+                *by_phase.entry(&plan.phase).or_default() += 1;
+            }
         }
-    }
-    // BTreeMap iterates ascending, and `max_by_key` keeps the LAST maximum, so
-    // a tie goes to the higher phase.
-    let active_phase = by_phase
-        .iter()
-        .max_by_key(|(_, count)| **count)
-        .map(|(phase, _)| (*phase).clone())
+        // BTreeMap iterates ascending, and `max_by_key` keeps the LAST maximum,
+        // so a tie goes to the higher phase.
+        by_phase
+            .iter()
+            .max_by_key(|(_, count)| **count)
+            .map(|(phase, _)| (*phase).clone())
+    };
+    let active_phase = vote(|l| l.is_running())
+        .or_else(|| vote(|l| matches!(l, AgentLiveness::Finished | AgentLiveness::Stalled)))
         .unwrap_or_else(|| state.active_phase_number());
 
     let empty = DiskInference::default();
@@ -426,10 +419,18 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
 }
 
 impl AgentView {
-    /// Whether anything is under way: a row `Live`, `Idle` or `Finished`, or
-    /// any worktree-less agent (the scan keeps only live ones).
+    /// Whether anything is running: a row that is `Live` or `Idle`
+    /// ([`AgentLiveness::is_running`]), or any worktree-less agent (the scan
+    /// keeps only live ones).
+    ///
+    /// `Finished` alone never switches the summary on (CR-01, amending RESEARCH
+    /// Pattern 6's "live, idle or finished" per D-C14's "while agents are
+    /// running"): an aborted run's leftovers must not hide the project's real
+    /// status. A consequence: between a wave's last finisher and the
+    /// orchestrator's merge nothing is running, so the Status cell shows the
+    /// project's normal status.
     pub fn is_active(&self) -> bool {
-        self.agents.iter().any(|r| is_active_liveness(r.liveness)) || !self.worktreeless.is_empty()
+        self.agents.iter().any(|r| r.liveness.is_running()) || !self.worktreeless.is_empty()
     }
 
     /// The dashboard Status-cell summary, widest form first (RESEARCH
@@ -443,12 +444,16 @@ impl AgentView {
     /// already shows the phase, and at the common 13-cell width a right-drop
     /// would keep `P13 · w2/11` and hide the running count, which is the point.
     ///
-    /// Executor mode (the active phase has plans, and some row is attributed to
-    /// one of them) yields the wave ladder; otherwise fixer mode (an estimate
-    /// with at least one active fixer, [`Self::fixer_forms`]) yields the fixer
-    /// ladder; otherwise an active view yields `N agents`; an inactive view
-    /// whose rows include stalled ones yields `N stalled`; anything else yields
-    /// no forms and the cell is left alone.
+    /// Only a running view has a summary ([`Self::is_active`], CR-01).
+    /// Executor mode (the active phase has plans, and some Live or Idle row is
+    /// attributed to one of them) yields the wave ladder, in which a
+    /// `Finished` plan still counts toward done; otherwise fixer mode (an
+    /// estimate with at least one fixer, [`Self::fixer_forms`]) yields the fixer
+    /// ladder; otherwise the view yields `N agents`, counting running rows and
+    /// worktree-less agents only. An inactive view whose rows include stalled
+    /// ones yields `N stalled`; anything else yields no forms and the cell is
+    /// left alone. So a leftover — `Finished`, or `Stalled` inside the age
+    /// bound — beside a live worktree-less agent never picks the ladder.
     pub fn summary_forms(&self) -> Vec<String> {
         if !self.is_active() {
             let stalled = self
@@ -466,10 +471,10 @@ impl AgentView {
         let executor_mode = match &self.active_phase {
             Some(phase) => {
                 self.plan_total > 0
-                    && self
-                        .agents
-                        .iter()
-                        .any(|r| r.plan.as_ref().is_some_and(|p| &p.phase == phase))
+                    && self.agents.iter().any(|r| {
+                        r.liveness.is_running()
+                            && r.plan.as_ref().is_some_and(|p| &p.phase == phase)
+                    })
             }
             None => false,
         };
@@ -480,7 +485,7 @@ impl AgentView {
             let n = self
                 .agents
                 .iter()
-                .filter(|r| is_active_liveness(r.liveness))
+                .filter(|r| r.liveness.is_running())
                 .count()
                 + self.worktreeless.len();
             return vec![if n == 1 {
@@ -942,9 +947,9 @@ mod tests {
         );
     }
 
-    /// Phase 12 with plans 12-01..12-03 in wave 1, beside [`phase_13_state`].
+    /// Phases 12 and 13, each with plans `-01..-03` in wave 1, none done.
     fn phases_12_and_13_state() -> ProjectState {
-        let mut st = phase_13_state();
+        let mut st = state("13", vec![wave(Some(1), &ids(1, 3))], &[], 3);
         st.phase_disk_statuses.insert(
             "12".to_string(),
             DiskInference {

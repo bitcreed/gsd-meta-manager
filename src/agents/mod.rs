@@ -74,12 +74,20 @@ pub enum AgentLiveness {
 }
 
 impl AgentLiveness {
-    /// RED stub (25-07 Task 2): today's activation set.
+    /// Whether the agent is running: `Live` or `Idle`, nothing else (CR-01).
+    ///
+    /// A running agent is the only thing that switches the dashboard summary
+    /// on, wins the first tier of the active-phase vote, selects the executor
+    /// ladder, and is counted by the `N agents` form
+    /// ([`waves::AgentView::summary_forms`]). It is also what switches the
+    /// fixer estimate on ([`fixers::estimate`]).
+    ///
+    /// `Finished` is done work. It counts as a finished plan inside a ladder
+    /// something running switched on, and as a fixer inside a running fix run,
+    /// but never switches either on by itself: an aborted run's leftovers must
+    /// not stand in for the project's real status.
     pub fn is_running(self) -> bool {
-        matches!(
-            self,
-            AgentLiveness::Live | AgentLiveness::Idle | AgentLiveness::Finished
-        )
+        matches!(self, AgentLiveness::Live | AgentLiveness::Idle)
     }
 }
 
