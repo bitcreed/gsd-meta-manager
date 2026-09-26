@@ -22879,7 +22879,12 @@ mod tests {
                 offset: 4,
                 len: 7,
             }),
+            // Quick 260926-kes: a fold marker on list row 5.
+            fold_marks: vec![FoldMarkRegion { rect: Rect::new(3, 6, 2, 1), row: 5 }],
         };
+        assert_eq!(regions.click_target(3, 6), ClickTarget::FoldMarker(5), "the marker beats its row");
+        assert_eq!(regions.click_target(4, 6), ClickTarget::FoldMarker(5), "its trailing space");
+        assert_eq!(regions.click_target(5, 6), ClickTarget::ListRow(5), "the label is the row");
         assert_eq!(regions.click_target(12, 1), ClickTarget::Tab(1));
         assert_eq!(regions.click_target(3, 3), ClickTarget::SubTab(DetailSubView::Agents));
         assert_eq!(
@@ -22917,6 +22922,24 @@ mod tests {
             .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
             .expect("draw");
         assert_eq!(screen.regions().tabs, tabs, "render_main_only records the same tabs");
+
+        // Quick 260926-kes: the Roadmap's fold markers are reset too, on both
+        // render paths.
+        let (screen, mut ctx) = roadmap_fixture("daily-vow");
+        render_detail_to_text(&screen, &ctx);
+        assert!(!screen.regions().fold_marks.is_empty());
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        render_detail_to_text(&screen, &ctx);
+        assert!(screen.regions().fold_marks.is_empty());
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        render_detail_to_text(&screen, &ctx);
+        assert!(!screen.regions().fold_marks.is_empty());
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        terminal
+            .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
+            .expect("draw");
+        assert!(screen.regions().fold_marks.is_empty(), "render_main_only resets them");
+        assert_eq!(screen.regions().list, None);
     }
 
     #[test]
@@ -23192,5 +23215,411 @@ mod tests {
         let again = render_detail_to_text(&screen, &ctx);
         assert_eq!(again.lines().next().unwrap_or_default(), plain_row0);
         assert!(!plain_row0.contains("Mouse"));
+    }
+
+    // ── quick 260926-kes: mouse rows on Roadmap and Docs (Task 1) ─────────
+
+    /// The screen row that draws list item `index`.
+    fn mouse_row_y(list: &crate::ui::mouse::ListRegion, index: usize) -> u16 {
+        assert!(index >= list.offset, "item {index} is above the window at {}", list.offset);
+        list.rect.y + u16::try_from(index - list.offset).expect("a visible row")
+    }
+
+    /// The recorded fold marker of Roadmap model row `row`.
+    fn mouse_fold_mark(screen: &DetailScreen, row: usize) -> Rect {
+        screen
+            .regions()
+            .fold_marks
+            .iter()
+            .find(|m| m.row == row)
+            .map(|m| m.rect)
+            .unwrap_or_else(|| panic!("row {row} has no fold marker: {:?}", screen.regions().fold_marks))
+    }
+
+    fn mouse_band(key: roadmap_graph::BandKey) -> roadmap_graph::CursorTarget {
+        roadmap_graph::CursorTarget::Band(key)
+    }
+
+    #[test]
+    fn mouse_roadmap_click_selects_the_row_under_the_pointer() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        screen.focus = DetailFocus::TabBar;
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        let model = fixture_model(&ctx);
+        assert_eq!(list.len, model.rows.len());
+
+        // A phase row's name.
+        let row22 = model.row_of(&phase_target("22")).expect("22 is listed");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 20, mouse_row_y(&list, row22));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, Some(phase_target("22")));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_edge_walk, None);
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        // A band label: selects, never folds.
+        render_detail_to_text(&screen, &ctx);
+        let v15 = band_key(&model, "v1.5");
+        let band_row = model.row_of(&mouse_band(v15.clone())).expect("the v1.5 band row");
+        let mark = mouse_fold_mark(&screen, band_row);
+        mouse_click(&mut screen, &mut ctx, mark.right() + 3, mark.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, Some(mouse_band(v15.clone())));
+        assert!(!roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
+
+        // The Start-now line and the header line: focus only.
+        screen.focus = DetailFocus::TabBar;
+        let before = ctx.view_cache[TEST_ALIAS].roadmap_cursor.clone();
+        for y in [list.rect.y - 2, list.rect.y - 1] {
+            mouse_click(&mut screen, &mut ctx, list.rect.x + 4, y);
+            assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, before);
+            assert_eq!(screen.focus, DetailFocus::Content);
+        }
+
+        // A connector row: nothing selected, nothing armed.
+        let mut found = false;
+        for name in ["daily-vow", "ttbook", "sentriq"] {
+            let (mut screen, mut ctx) = roadmap_fixture(name);
+            render_detail_to_text(&screen, &ctx);
+            let list = mouse_list(&screen);
+            let model = fixture_model(&ctx);
+            let visible = list.offset..(list.offset + usize::from(list.rect.height)).min(model.rows.len());
+            let Some(connector) = visible
+                .clone()
+                .find(|&i| matches!(model.rows[i], roadmap_graph::ListRow::Connector { .. }))
+            else {
+                continue;
+            };
+            found = true;
+            let before = ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.roadmap_cursor.clone());
+            let action =
+                mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 1, mouse_row_y(&list, connector));
+            assert!(matches!(action, ScreenAction::None), "{name}");
+            assert_eq!(
+                ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.roadmap_cursor.clone()),
+                before,
+                "{name}: a connector selects nothing"
+            );
+            assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz, "{name}");
+        }
+        assert!(found, "some fixture draws a connector row");
+    }
+
+    #[test]
+    fn mouse_roadmap_click_maps_through_the_scrolled_offset() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        // Unfold the shipped summary so the list is long enough to scroll.
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .roadmap_fold_toggles
+            .insert(roadmap_graph::BandKey::Shipped);
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        render_detail_to_text_at(&screen, &ctx, 120, 16);
+        let list = mouse_list(&screen);
+        assert!(list.offset > 0, "the cursor at the end scrolls the list: {list:?}");
+        assert_eq!(list.offset, screen.roadmap_list_offset.get(), "the offset the widget drew");
+        let model = fixture_model(&ctx);
+        let first = (list.offset..model.rows.len())
+            .find(|&i| model.target_at(i).is_some())
+            .expect("a selectable visible row");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 10, mouse_row_y(&list, first));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, model.target_at(first));
+        render_detail_to_text_at(&screen, &ctx, 120, 16);
+        assert_eq!(mouse_list(&screen).offset, list.offset, "the row stays under the pointer");
+    }
+
+    #[test]
+    fn mouse_roadmap_fold_marker_click_toggles_the_band() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        set_roadmap_cursor(&mut ctx, phase_target("22"));
+        render_detail_to_text(&screen, &ctx);
+        let model = fixture_model(&ctx);
+        let v15 = band_key(&model, "v1.5");
+        let row = model.row_of(&mouse_band(v15.clone())).expect("the v1.5 band row");
+
+        // One click on the marker folds the band and parks the cursor on it.
+        let mark = mouse_fold_mark(&screen, row);
+        mouse_click(&mut screen, &mut ctx, mark.x, mark.y);
+        assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, Some(mouse_band(v15.clone())));
+
+        // A second, later click on the re-rendered marker unfolds it.
+        render_detail_to_text(&screen, &ctx);
+        let row = fixture_model(&ctx).row_of(&mouse_band(v15.clone())).expect("still listed");
+        let mark = mouse_fold_mark(&screen, row);
+        mouse_click(&mut screen, &mut ctx, mark.x + 1, mark.y);
+        assert!(!roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)), "its trailing space counts");
+
+        // A double-click on the marker toggles exactly once (Swallow).
+        render_detail_to_text(&screen, &ctx);
+        let mark = mouse_fold_mark(&screen, row);
+        mouse_click_twice(&mut screen, &mut ctx, mark.x, mark.y);
+        assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)), "toggled once, not twice");
+
+        // The shipped row's marker toggles the shipped group.
+        let shipped = roadmap_graph::BandKey::Shipped;
+        let was = roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx));
+        render_detail_to_text(&screen, &ctx);
+        let row = fixture_model(&ctx).row_of(&mouse_band(shipped.clone())).expect("the shipped row");
+        let mark = mouse_fold_mark(&screen, row);
+        mouse_click(&mut screen, &mut ctx, mark.x, mark.y);
+        assert_eq!(roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx)), !was);
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+    }
+
+    #[test]
+    fn mouse_roadmap_double_click_folds_bands_and_opens_phases() {
+        // A band label: Space, the fold.
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        let model = fixture_model(&ctx);
+        let v15 = band_key(&model, "v1.5");
+        let row = model.row_of(&mouse_band(v15.clone())).expect("the v1.5 band row");
+        let mark = mouse_fold_mark(&screen, row);
+        mouse_click_twice(&mut screen, &mut ctx, mark.right() + 3, mark.y);
+        assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+
+        // The shipped row: the fold too, never Docs › Milestones.
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        render_detail_to_text(&screen, &ctx);
+        let shipped = roadmap_graph::BandKey::Shipped;
+        let was = roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx));
+        let row = fixture_model(&ctx).row_of(&mouse_band(shipped.clone())).expect("the shipped row");
+        let mark = mouse_fold_mark(&screen, row);
+        mouse_click_twice(&mut screen, &mut ctx, mark.right() + 3, mark.y);
+        assert_eq!(roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx)), !was);
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz, "not Archive");
+
+        // A phase row: Enter, the phase in Phases.
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        render_detail_to_text(&screen, &ctx);
+        let row22 = fixture_model(&ctx).row_of(&phase_target("22")).expect("22 is listed");
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 20, mouse_row_y(&list, row22));
+        assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
+        let expected = ctx.project_states[TEST_ALIAS]
+            .phases
+            .iter()
+            .position(|p| p.number == "22")
+            .expect("22 is a GSD phase");
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, expected);
+    }
+
+    #[test]
+    fn mouse_roadmap_wheel_steps_the_cursor_over_list_and_detail() {
+        for over_detail in [false, true] {
+            let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+            let (mut keyed, mut kctx) = roadmap_fixture("daily-vow");
+            set_roadmap_cursor(&mut ctx, phase_target("20"));
+            set_roadmap_cursor(&mut kctx, phase_target("20"));
+            render_detail_to_text(&screen, &ctx);
+            let list = mouse_list(&screen);
+            let content = screen.regions().content;
+            let (c, r) = if over_detail {
+                (content.right() - 5, list.rect.y + 2)
+            } else {
+                (list.rect.x + 10, list.rect.y + 1)
+            };
+            assert!(!list.rect.contains(ratatui::layout::Position::new(c, r)) || !over_detail);
+            mouse_wheel(&mut screen, &mut ctx, c, r, true);
+            press(&mut keyed, &mut kctx, KeyCode::Char('j'));
+            assert_eq!(resolved_cursor(&ctx), resolved_cursor(&kctx), "over detail: {over_detail}");
+            assert_ne!(resolved_cursor(&ctx), Some(phase_target("20")), "the cursor moved");
+        }
+
+        // Wheel-up on the first target stays there, in content.
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let first = resolved_cursor(&ctx);
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        mouse_wheel(&mut screen, &mut ctx, list.rect.x + 10, list.rect.y, false);
+        assert_eq!(resolved_cursor(&ctx), first);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    /// A Docs › Files list over a real `.planning/`: `sub/` (holding
+    /// `inner.md`), `notes.md` and `extra` more `.md` files.
+    fn mouse_docs_files_ctx(extra: usize) -> (DetailScreen, AppContext, tempfile::TempDir) {
+        let td = tempfile::TempDir::new().expect("temp dir");
+        let planning = td.path().join(".planning");
+        std::fs::create_dir_all(planning.join("sub")).expect("sub");
+        std::fs::write(planning.join("sub/inner.md"), "# Inner\n").expect("inner.md");
+        std::fs::write(planning.join("notes.md"), "# Notes\n").expect("notes.md");
+        for i in 0..extra {
+            std::fs::write(planning.join(format!("x{i:02}.md")), "# X\n").expect("extra");
+        }
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Browse);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.browser_entries = crate::browser::list_dir(&planning);
+        cache.browser_root = Some(planning.clone());
+        cache.browser_current_dir = Some(planning);
+        cache.browser_depth = BrowserDepth::List;
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx, td)
+    }
+
+    #[test]
+    fn mouse_docs_files_click_selects_and_double_click_enters_or_opens() {
+        let (mut screen, mut ctx, _td) = mouse_docs_files_ctx(0);
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2, "sub/ and notes.md");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].browser_selected, 1);
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        // The folder: entered.
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        let dir = ctx.view_cache[TEST_ALIAS].browser_current_dir.clone().expect("a dir");
+        assert!(dir.ends_with("sub"), "{dir:?}");
+
+        // The file inside: opened.
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 1);
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].browser_depth, BrowserDepth::View);
+        render_detail_to_text(&screen, &ctx);
+        assert_eq!(screen.regions().list, None, "the file view has no list");
+    }
+
+    /// A Milestones cache: `versions` milestones, and `v1.1` loaded with one
+    /// top-level file and one phase holding two files.
+    fn mouse_archive_ctx(versions: usize) -> (DetailScreen, AppContext) {
+        let file = |name: &str| crate::archive::ArchiveFile {
+            name: Untrusted::from_untrusted_source(name.to_string()),
+            path: PathBuf::from("/nonexistent/.planning/milestones").join(name),
+        };
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Archive);
+        ctx.archive_cache.insert(
+            TEST_ALIAS.to_string(),
+            "v1.1".to_string(),
+            crate::archive::MilestoneArchive {
+                version: "v1.1".to_string(),
+                top_level_files: vec![file("v1.1-ROADMAP.md")],
+                phases: vec![crate::archive::PhaseArchive {
+                    number: crate::state_reader::phase_num::PhaseNum::parse("1").expect("1"),
+                    name: Untrusted::from_untrusted_source("one".to_string()),
+                    display_name: Untrusted::from_untrusted_source("Phase 01: One".to_string()),
+                    files: vec![file("01-01-PLAN.md"), file("01-01-SUMMARY.md")],
+                }],
+            },
+        );
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.archive_milestones = (0..versions)
+            .map(|i| Untrusted::from_untrusted_source(format!("v1.{i}")))
+            .collect();
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    #[test]
+    fn mouse_docs_milestones_click_selects_at_each_depth() {
+        use crate::archive::ArchiveDepth;
+        let (mut screen, mut ctx) = mouse_archive_ctx(2);
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[0], 1);
+
+        // A double-click descends to the phase list.
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].archive_depth,
+            ArchiveDepth::PhaseList { milestone: "v1.1".to_string() }
+        );
+
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2, "one top-level file and one phase");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[1], 1);
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].archive_depth,
+            ArchiveDepth::FileList { milestone: "v1.1".to_string(), phase_idx: 0 }
+        );
+
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2, "the phase's two files");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[2], 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[0], 1, "each depth its own");
+        assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[1], 1);
+    }
+
+    #[test]
+    fn mouse_docs_lists_map_clicks_through_their_persisted_offset() {
+        // Files.
+        let (mut screen, mut ctx, _td) = mouse_docs_files_ctx(40);
+        for _ in 0..3 {
+            press(&mut screen, &mut ctx, KeyCode::PageDown);
+        }
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        let list = mouse_list(&screen);
+        assert!(list.offset > 0, "a scrolled Files list: {list:?}");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].browser_selected, list.offset);
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        assert_eq!(mouse_list(&screen).offset, list.offset, "the click did not scroll");
+
+        // Milestones.
+        let (mut screen, mut ctx) = mouse_archive_ctx(40);
+        for _ in 0..3 {
+            press(&mut screen, &mut ctx, KeyCode::PageDown);
+        }
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        let list = mouse_list(&screen);
+        assert!(list.offset > 0, "a scrolled Milestones list: {list:?}");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[0], list.offset);
+        render_detail_to_text_at(&screen, &ctx, 100, 20);
+        assert_eq!(mouse_list(&screen).offset, list.offset);
+    }
+
+    #[test]
+    fn mouse_docs_file_view_wheel_scrolls_the_content() {
+        let text = (1..=100).map(|i| format!("line {i}\n")).collect::<String>();
+        for archive in [false, true] {
+            let mut ctx = test_ctx();
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            if archive {
+                cache.archive_depth = crate::archive::ArchiveDepth::FileView {
+                    milestone: "v1.0".to_string(),
+                    phase_idx: None,
+                    file_idx: 0,
+                };
+                cache.archive_file_content = Some(text.clone());
+            } else {
+                cache.browser_depth = BrowserDepth::View;
+                cache.browser_file_content = Some(text.clone());
+            }
+            let view = if archive { DetailSubView::Archive } else { DetailSubView::Browse };
+            ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), view);
+            let offset = |ctx: &AppContext| {
+                let c = &ctx.view_cache[TEST_ALIAS];
+                if archive { c.archive_scroll_offset } else { c.browser_scroll_offset }
+            };
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            render_detail_to_text(&screen, &ctx);
+            let content = screen.regions().content;
+            let strip = screen.regions().sub_tab_strip.expect("the Docs strip");
+            assert_eq!(screen.regions().list, None);
+
+            mouse_wheel(&mut screen, &mut ctx, content.x + 10, content.y + 6, true);
+            assert_eq!(offset(&ctx), 1, "archive: {archive}");
+            mouse_wheel(&mut screen, &mut ctx, strip.x + 3, strip.y, true);
+            assert_eq!(offset(&ctx), 1, "archive: {archive}: the strip scrolls nothing");
+            for _ in 0..200 {
+                mouse_wheel(&mut screen, &mut ctx, content.x + 10, content.y + 6, true);
+            }
+            let bottom = offset(&ctx);
+            assert!(bottom > 1 && bottom < 100, "clamped at the bottom: {bottom}");
+            mouse_wheel(&mut screen, &mut ctx, content.x + 10, content.y + 6, false);
+            assert_eq!(offset(&ctx), bottom - 1);
+        }
     }
 }

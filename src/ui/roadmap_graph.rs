@@ -2022,6 +2022,44 @@ mod tests {
         assert_eq!(model.row_of(&named("m5 web")), Some(16));
     }
 
+    /// Quick 260926-kes (D-01): the mouse's row -> target mapping is the one
+    /// `target_of` rule — bands, the shipped summary and phases map to their
+    /// target, connectors and rows past the end to none.
+    #[test]
+    fn mouse_target_at_maps_rows_and_skips_connectors() {
+        let (mut bands, mut shipped, mut phases, mut connectors) = (0, 0, 0, 0);
+        for model in [mockup_a(), mockup_b()] {
+            for (i, row) in model.rows.iter().enumerate() {
+                let got = model.target_at(i);
+                match row {
+                    ListRow::ShippedSummary { .. } => {
+                        shipped += 1;
+                        assert_eq!(got, Some(CursorTarget::Band(BandKey::Shipped)));
+                    }
+                    ListRow::Band { key, .. } => {
+                        bands += 1;
+                        assert_eq!(got, Some(CursorTarget::Band(key.clone())));
+                    }
+                    ListRow::Phase { node, .. } => {
+                        phases += 1;
+                        assert_eq!(got, Some(phase(&model.phases[*node].key)));
+                    }
+                    ListRow::Connector { .. } => {
+                        connectors += 1;
+                        assert_eq!(got, None, "row {i} is a connector");
+                    }
+                }
+                if let Some(t) = &got {
+                    assert_eq!(model.row_of(t), Some(i), "target_at and row_of agree");
+                }
+            }
+            assert_eq!(model.target_at(model.rows.len()), None, "past the end");
+            assert_eq!(model.target_at(usize::MAX), None);
+        }
+        assert!(bands > 0 && shipped > 0 && phases > 0 && connectors > 0,
+            "the fixtures cover every row kind: {bands} {shipped} {phases} {connectors}");
+    }
+
     #[test]
     fn h_cycles_the_origin_needs_including_implied() {
         let model = mockup_b();

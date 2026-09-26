@@ -1801,6 +1801,105 @@ mod tests {
         assert!(summary.contains(BAND_OPEN), "{summary}");
     }
 
+    /// Quick 260926-kes (D-01, I-3, T-kes-05): the list body and the fold
+    /// glyph cells the mouse hit-tests are what the render drew.
+    #[test]
+    fn mouse_roadmap_view_records_the_list_body_and_fold_glyph_cells() {
+        let unfolded = daily_vow(std::iter::once(BandKey::Shipped).collect());
+        for model in [daily_vow(HashSet::new()), unfolded, bookly()] {
+            for (w, h) in [(120u16, 30u16), (80, 24), (120, 12)] {
+                for start in [0usize, 4] {
+                    let at = format!("{w}x{h}, offset {start}");
+                    let mut state = RoadmapViewState {
+                        offset: start,
+                        ..RoadmapViewState::default()
+                    };
+                    let buf = render(&model, Some(&phase("12")), w, h, &mut state);
+                    let want = model.rows.len() + 4 + usize::from(!model.notes.is_empty());
+                    let (list, _) =
+                        panes_for(Rect::new(0, 0, w, h), u16::try_from(want).unwrap());
+                    let inner = pane_block().inner(list);
+                    let body = state.list_body;
+                    assert_eq!(body.x, inner.x, "{at}");
+                    assert_eq!(body.width, inner.width, "{at}");
+                    assert_eq!(body.y, inner.y + 2, "{at}: below Start now and the header");
+                    let note = u16::from(!model.notes.is_empty() && inner.height > 2);
+                    assert_eq!(body.bottom(), inner.bottom() - note, "{at}: above Notes");
+                    assert_eq!(body.height, state.list_rows, "{at}");
+
+                    let visible = state.offset..state.offset + usize::from(state.list_rows);
+                    let expected: Vec<usize> = model
+                        .rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, row)| {
+                            visible.contains(i)
+                                && matches!(
+                                    row,
+                                    ListRow::Band { .. } | ListRow::ShippedSummary { .. }
+                                )
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    let marked: Vec<usize> = state.fold_marks.iter().map(|m| m.0).collect();
+                    assert_eq!(marked, expected, "{at}: one mark per visible band row");
+                    for (row, rect) in &state.fold_marks {
+                        let y = body.y + u16::try_from(row - state.offset).unwrap();
+                        assert_eq!(rect.y, y, "{at}: row {row}");
+                        assert_eq!(rect.height, 1, "{at}");
+                        assert_eq!(rect.width, 2, "{at}: the glyph and its space");
+                        let glyph = buf.cell((rect.x, rect.y)).map(|c| c.symbol().to_string());
+                        assert!(
+                            glyph.as_deref() == Some(BAND_OPEN)
+                                || glyph.as_deref() == Some(BAND_FOLDED),
+                            "{at}: row {row} marks {glyph:?}"
+                        );
+                        let folded = match model.rows[*row] {
+                            ListRow::Band { folded, .. }
+                            | ListRow::ShippedSummary { folded, .. } => folded,
+                            _ => unreachable!(),
+                        };
+                        let drawn = if folded { BAND_FOLDED } else { BAND_OPEN };
+                        assert_eq!(glyph.as_deref(), Some(drawn), "{at}: row {row}");
+                        assert!(rect.x >= inner.x && rect.right() <= inner.right(), "{at}");
+                    }
+                }
+            }
+        }
+
+        // A scrolled list marks only what it shows.
+        let model = daily_vow(std::iter::once(BandKey::Shipped).collect());
+        let mut state = RoadmapViewState::default();
+        render(&model, Some(&phase("23")), 80, 14, &mut state);
+        assert!(state.offset > 0, "phase 23 at 80x14 needs a scrolled list");
+        assert!(state.fold_marks.iter().all(|(row, _)| *row >= state.offset));
+
+        // An empty model and a zero-size area record nothing.
+        let mut state = RoadmapViewState {
+            list_body: Rect::new(1, 1, 5, 5),
+            fold_marks: vec![(0, Rect::new(1, 1, 2, 1))],
+            ..RoadmapViewState::default()
+        };
+        render(&RoadmapModel::default(), None, 80, 24, &mut state);
+        assert!(state.list_body.is_empty());
+        assert!(state.fold_marks.is_empty());
+        let mut state = RoadmapViewState {
+            list_body: Rect::new(1, 1, 5, 5),
+            fold_marks: vec![(0, Rect::new(1, 1, 2, 1))],
+            ..RoadmapViewState::default()
+        };
+        let model = bookly();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 10));
+        StatefulWidget::render(
+            RoadmapView { model: &model, cursor: None },
+            Rect::new(0, 0, 0, 0),
+            &mut buf,
+            &mut state,
+        );
+        assert!(state.list_body.is_empty());
+        assert!(state.fold_marks.is_empty());
+    }
+
     /// `1` forks into eight children that all merge into `10`: eight lanes
     /// run side by side.
     fn eight_lanes() -> RoadmapModel {
