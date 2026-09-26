@@ -1002,6 +1002,14 @@ impl RoadmapModel {
         }
     }
 
+    /// The cursor target model row `row` stands for — the mouse's row mapping
+    /// (quick 260926-kes, D-01). The one `target_of` rule, so a click and the
+    /// keys agree on what a row is; `None` for a connector row and past the
+    /// last row.
+    pub fn target_at(&self, row: usize) -> Option<CursorTarget> {
+        self.rows.get(row).and_then(|r| self.target_of(r))
+    }
+
     /// Every phase in list order, hidden ones included: shipped bands, then
     /// the other bands, each in band order, then band-less phases — the
     /// order `layout_list` lays them out in.

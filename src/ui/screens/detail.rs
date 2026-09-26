@@ -847,10 +847,31 @@ pub struct DetailScreen {
     phase_list_offset: Cell<usize>,
     sessions_offset: Cell<usize>,
     agents_offset: Cell<usize>,
-    /// Set by a single click that selected a row; a double-click runs Enter
-    /// only while it is set, so it acts on the row the FIRST click selected
-    /// (quick 260926-dyf, [inferred I-7]).
-    mouse_row_armed: bool,
+    /// First visible row of the Docs › Files list and of each Docs ›
+    /// Milestones depth (indexed like `archive_selected`) — the same
+    /// persisted-offset pattern (quick 260926-kes, [inferred I-12]).
+    browser_list_offset: Cell<usize>,
+    archive_list_offsets: [Cell<usize>; 3],
+    /// What the completing press of a double-click does (quick 260926-kes,
+    /// [inferred I-1]; it replaced dyf's `mouse_row_armed` bool). A double
+    /// acts on what the FIRST click selected and never re-hit-tests (dyf
+    /// [inferred I-7]); any wheel event and any other click reset it.
+    mouse_arm: MouseArm,
+}
+
+/// What the second press of a double-click does (quick 260926-kes,
+/// [inferred I-1]).
+///
+/// `Replay(key)` runs `key` through [`Screen::handle_key`] — `Enter` on most
+/// rows, `Space` on a Roadmap band row ([inferred I-2]). `Swallow` means the
+/// first click already acted (a fold marker, a Config value click, a chooser
+/// apply), so the completing press must not act a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum MouseArm {
+    #[default]
+    None,
+    Replay(KeyCode),
+    Swallow,
 }
 
 /// Where the last frame drew each focusable region of the detail view (quick
@@ -892,8 +913,20 @@ pub(crate) struct DetailRegions {
     /// The two sub-tab labels, on the Sessions and Docs tabs only.
     pub sub_tabs: Vec<SubTabRegion>,
     /// The content's clickable list — the Phases phase list, the Sessions list
-    /// or the Agents list — when one was drawn this frame.
+    /// or the Agents list; since quick 260926-kes also the Roadmap list and
+    /// the Docs lists — when one was drawn this frame.
     pub list: Option<crate::ui::mouse::ListRegion>,
+    /// The Roadmap list's visible fold glyphs, one per band or shipped-summary
+    /// row drawn this frame (quick 260926-kes, [inferred I-3]).
+    pub fold_marks: Vec<FoldMarkRegion>,
+}
+
+/// One drawn Roadmap fold glyph: the two cells of its `"{glyph} "` span and
+/// the model row it folds (quick 260926-kes).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FoldMarkRegion {
+    pub rect: Rect,
+    pub row: usize,
 }
 
 /// One drawn tab-bar entry: its one-row rect and the tab index it switches to
@@ -918,6 +951,8 @@ pub(crate) enum ClickTarget {
     Tab(usize),
     SubTab(DetailSubView),
     WavesRow(super::WavesCursor),
+    /// A Roadmap band or shipped-summary row's fold glyph (quick 260926-kes).
+    FoldMarker(usize),
     ListRow(usize),
     WavesPane,
     Content,
@@ -933,9 +968,11 @@ pub(crate) enum WheelTarget {
 }
 
 impl DetailRegions {
-    /// The click hit test: tabs, sub-tabs, Waves-pane rows, list rows, the
-    /// Waves pane, content, then nothing (the tab bar outside a tab, the
-    /// footer, outside the frame). Pure over the recorded rects (D-04, D-08).
+    /// The click hit test: tabs, sub-tabs, Waves-pane rows, Roadmap fold
+    /// markers, list rows, the Waves pane, content, then nothing (the tab bar
+    /// outside a tab, the footer, outside the frame). Pure over the recorded
+    /// rects (D-04, D-08). A fold marker sits inside its list row, so it is
+    /// tested first (quick 260926-kes, [inferred I-3]).
     pub(crate) fn click_target(&self, column: u16, row: u16) -> ClickTarget {
         let at = ratatui::layout::Position::new(column, row);
         if let Some(t) = self.tabs.iter().find(|t| t.rect.contains(at)) {
@@ -946,6 +983,9 @@ impl DetailRegions {
         }
         if let Some(w) = self.waves_rows.iter().find(|w| w.rect.contains(at)) {
             return ClickTarget::WavesRow(w.target.clone());
+        }
+        if let Some(m) = self.fold_marks.iter().find(|m| m.rect.contains(at)) {
+            return ClickTarget::FoldMarker(m.row);
         }
         if let Some(index) = self.list.and_then(|l| l.row_at(column, row)) {
             return ClickTarget::ListRow(index);
@@ -1042,7 +1082,9 @@ impl DetailScreen {
             phase_list_offset: Cell::new(0),
             sessions_offset: Cell::new(0),
             agents_offset: Cell::new(0),
-            mouse_row_armed: false,
+            browser_list_offset: Cell::new(0),
+            archive_list_offsets: Default::default(),
+            mouse_arm: MouseArm::None,
         }
     }
 
@@ -1066,6 +1108,7 @@ impl DetailScreen {
             tabs: Vec::new(),
             sub_tabs: Vec::new(),
             list: None,
+            fold_marks: Vec::new(),
         };
     }
 
@@ -1168,6 +1211,39 @@ impl DetailScreen {
     /// Record the content's clickable list for this frame (quick 260926-dyf).
     fn record_list(&self, list: crate::ui::mouse::ListRegion) {
         self.regions.borrow_mut().list = Some(list);
+    }
+
+    /// Record the Roadmap list's drawn fold glyphs (quick 260926-kes).
+    fn record_fold_marks(&self, marks: Vec<(usize, Rect)>) {
+        self.regions.borrow_mut().fold_marks = marks
+            .into_iter()
+            .map(|(row, rect)| FoldMarkRegion { rect, row })
+            .collect();
+    }
+
+    /// A list drawn with a persisted offset (quick 260926-dyf / 260926-kes,
+    /// [inferred I-12]): seed the `ListState` from `offset`, draw, store the
+    /// widget's clamped offset back and record the list for the mouse — the
+    /// Sessions idiom as one call, so every list keeps the row it drew under
+    /// the pointer. `rect` is where the items are drawn (no border).
+    fn render_offset_list(
+        &self,
+        frame: &mut Frame,
+        list: List<'_>,
+        rect: Rect,
+        selected: usize,
+        len: usize,
+        offset: &Cell<usize>,
+    ) {
+        let mut list_state = ListState::default().with_offset(offset.get());
+        list_state.select(Some(selected));
+        frame.render_stateful_widget(list, rect, &mut list_state);
+        offset.set(list_state.offset());
+        self.record_list(crate::ui::mouse::ListRegion {
+            rect,
+            offset: list_state.offset(),
+            len,
+        });
     }
 
     /// One sub-tab step on a tab that has sub-tabs — `←`/`→` inside content,
@@ -5246,14 +5322,19 @@ impl Screen for DetailScreen {
         Self::NAME
     }
 
-    /// Mouse input (quick 260926-dyf, D-01, D-02, D-03).
+    /// Mouse input (quick 260926-dyf, D-01, D-02, D-03; quick 260926-kes).
     ///
-    /// A single click only selects and focuses — never Enter, Space or a
-    /// Queue/driver action (T-dyf-03). A double-click runs `Enter` through the
-    /// unchanged keyboard path, and only on the row the FIRST click selected
-    /// ([inferred I-7]): the first click can re-lay-out the frame, so the cell
-    /// under the second may be a different row. Everything is ignored while
-    /// Config text is being typed ([inferred I-13]).
+    /// A single click selects and focuses. Two single clicks act, both
+    /// in-memory or behind a deliberate second act (quick 260926-kes): a
+    /// Roadmap fold marker folds its band ([inferred I-3]), and a click on the
+    /// value of the ALREADY-selected Config row, or on the already-highlighted
+    /// chooser option, is `Enter` ([inferred I-5], [inferred I-6]). A
+    /// double-click completes what the first click armed ([`MouseArm`]):
+    /// it replays that key through the unchanged keyboard path on the row the
+    /// FIRST click selected ([inferred I-7]) — the first click can re-lay-out
+    /// the frame, so the cell under the second may be a different row — or is
+    /// swallowed when the first click already acted. Everything is ignored
+    /// while Config text is being typed ([inferred I-13]).
     fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
         let current_view = effective_sub_view(
             ctx.detail_sub_view_per_project
@@ -5266,16 +5347,22 @@ impl Screen for DetailScreen {
             return ScreenAction::None;
         }
         match input {
-            MouseInput::Click { double: true, .. } if self.mouse_row_armed => {
-                self.mouse_row_armed = false;
-                self.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx)
+            MouseInput::Click { double: true, column, row } => {
+                match std::mem::take(&mut self.mouse_arm) {
+                    MouseArm::Replay(key) => self.handle_key(key, KeyModifiers::NONE, ctx),
+                    MouseArm::Swallow => ScreenAction::None,
+                    MouseArm::None => {
+                        let target = self.regions().click_target(column, row);
+                        self.click(target, &current_view, ctx)
+                    }
+                }
             }
             MouseInput::Click { column, row, .. } => {
                 let target = self.regions().click_target(column, row);
                 self.click(target, &current_view, ctx)
             }
             MouseInput::Wheel { column, row, down } => {
-                self.mouse_row_armed = false;
+                self.mouse_arm = MouseArm::None;
                 self.wheel(column, row, down, &current_view, ctx)
             }
         }
@@ -5325,7 +5412,7 @@ impl DetailScreen {
         current_view: &DetailSubView,
         ctx: &mut AppContext,
     ) -> ScreenAction {
-        self.mouse_row_armed = false;
+        self.mouse_arm = MouseArm::None;
         match target {
             // Literally the digit / Shift+D arm.
             ClickTarget::Tab(index) => {
@@ -5345,26 +5432,29 @@ impl DetailScreen {
             ClickTarget::WavesRow(cursor) => {
                 self.focus = DetailFocus::Pane;
                 ctx.view_cache.entry(self.alias.clone()).or_default().waves_cursor = Some(cursor);
-                self.mouse_row_armed = true;
+                self.mouse_arm = MouseArm::Replay(KeyCode::Enter);
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
+            // A Roadmap fold glyph: the cursor goes to its row and the Space
+            // path folds it — the one single click on the Roadmap that acts,
+            // on in-memory view state only ([inferred I-3]).
+            ClickTarget::FoldMarker(row) => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                if *current_view != DetailSubView::RoadmapViz || !self.roadmap_list_active(ctx) {
+                    return ScreenAction::None;
+                }
+                if self.roadmap_select_row(row, ctx).is_none() {
+                    return ScreenAction::None;
+                }
+                self.mouse_arm = MouseArm::Swallow;
+                self.roadmap_activate(KeyCode::Char(' '), ctx)
+            }
             ClickTarget::ListRow(index) => {
                 self.focus = DetailFocus::Content;
-                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                match current_view {
-                    // The j/k arm's triple.
-                    DetailSubView::Pipeline => {
-                        cache.pipeline_selected = index;
-                        cache.waves_cursor = None;
-                        share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
-                    }
-                    DetailSubView::Sessions => cache.sessions_selected = index,
-                    DetailSubView::Agents => cache.agents_selected = index,
-                    _ => {}
-                }
-                self.mouse_row_armed = true;
                 ctx.needs_redraw = true;
+                self.mouse_arm = self.select_list_row(index, current_view, ctx);
                 ScreenAction::None
             }
             ClickTarget::WavesPane => {
@@ -5379,6 +5469,81 @@ impl DetailScreen {
             }
             ClickTarget::Nothing => ScreenAction::None,
         }
+    }
+
+    /// A click on list item `index` of `current_view`'s recorded list: select
+    /// it exactly as that tab's keys would, and say what a completing
+    /// double-click replays (quick 260926-dyf; quick 260926-kes). Every row
+    /// click goes through here, so a tab's click rule is written once.
+    fn select_list_row(
+        &mut self,
+        index: usize,
+        current_view: &DetailSubView,
+        ctx: &mut AppContext,
+    ) -> MouseArm {
+        use roadmap_graph::CursorTarget;
+        let enter = MouseArm::Replay(KeyCode::Enter);
+        match current_view {
+            // The Roadmap list ([inferred I-2], [inferred I-16]): a band row
+            // replays Space — the fold the user asked a double-click to be —
+            // and a phase row Enter; a connector selects nothing.
+            DetailSubView::RoadmapViz => match self.roadmap_select_row(index, ctx) {
+                Some(CursorTarget::Band(_)) => MouseArm::Replay(KeyCode::Char(' ')),
+                Some(CursorTarget::Phase(_)) => enter,
+                None => MouseArm::None,
+            },
+            _ => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                match current_view {
+                    // The j/k arm's triple.
+                    DetailSubView::Pipeline => {
+                        cache.pipeline_selected = index;
+                        cache.waves_cursor = None;
+                        share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
+                    }
+                    DetailSubView::Sessions => cache.sessions_selected = index,
+                    DetailSubView::Agents => cache.agents_selected = index,
+                    // Docs › Files: a drill-down list, so Enter enters a
+                    // folder or opens a file ([inferred I-15]).
+                    DetailSubView::Browse => {
+                        if cache.browser_depth != crate::browser::BrowserDepth::List {
+                            return MouseArm::None;
+                        }
+                        cache.browser_selected = index;
+                    }
+                    // Docs › Milestones: the selection of the depth on screen.
+                    DetailSubView::Archive => {
+                        use crate::archive::ArchiveDepth;
+                        let depth = match cache.archive_depth {
+                            ArchiveDepth::MilestoneList => 0,
+                            ArchiveDepth::PhaseList { .. } => 1,
+                            ArchiveDepth::FileList { .. } => 2,
+                            ArchiveDepth::FileView { .. } => return MouseArm::None,
+                        };
+                        cache.archive_selected[depth] = index;
+                    }
+                    _ => return MouseArm::None,
+                }
+                enter
+            }
+        }
+    }
+
+    /// Put the Roadmap cursor on model row `row` and return the target — the
+    /// `j`/`k` store, without the unfold a clicked row never needs, because a
+    /// clicked row is by definition visible ([inferred I-16]). `None` for a
+    /// connector row or without a model; the cursor is then untouched.
+    fn roadmap_select_row(
+        &self,
+        row: usize,
+        ctx: &mut AppContext,
+    ) -> Option<roadmap_graph::CursorTarget> {
+        let (model, _) = self.roadmap_model_and_cursor(ctx)?;
+        let target = model.target_at(row)?;
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        cache.roadmap_cursor = Some(target.clone());
+        cache.roadmap_edge_walk = None;
+        Some(target)
     }
 }
 
@@ -5633,7 +5798,7 @@ impl DetailScreen {
                 let cursor = cache.and_then(|c| c.roadmap_cursor.as_ref());
                 let mut view_state = roadmap_view::RoadmapViewState {
                     offset: self.roadmap_list_offset.get(),
-                    list_rows: 0,
+                    ..Default::default()
                 };
                 frame.render_stateful_widget(
                     roadmap_view::RoadmapView {
@@ -5645,6 +5810,14 @@ impl DetailScreen {
                 );
                 self.roadmap_list_offset.set(view_state.offset);
                 self.roadmap_list_viewport.set(view_state.list_rows);
+                // The mouse's rects (quick 260926-kes, D-01): the body rows
+                // and fold glyphs the widget drew, at the offset it drew them.
+                self.record_list(crate::ui::mouse::ListRegion {
+                    rect: view_state.list_body,
+                    offset: view_state.offset,
+                    len: model.rows.len(),
+                });
+                self.record_fold_marks(view_state.fold_marks);
             }
         } else {
             let block = Block::default().borders(Borders::ALL);
@@ -6624,9 +6797,14 @@ impl DetailScreen {
                             .add_modifier(Modifier::BOLD),
                     )
                     .highlight_symbol("> ");
-                let mut list_state = ListState::default();
-                list_state.select(Some(cache.archive_selected[0]));
-                frame.render_stateful_widget(list, content_area, &mut list_state);
+                self.render_offset_list(
+                    frame,
+                    list,
+                    content_area,
+                    cache.archive_selected[0],
+                    cache.archive_milestones.len(),
+                    &self.archive_list_offsets[0],
+                );
             }
             ArchiveDepth::PhaseList { milestone } => {
                 if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
@@ -6663,9 +6841,17 @@ impl DetailScreen {
                                 .add_modifier(Modifier::BOLD),
                         )
                         .highlight_symbol("> ");
-                    let mut list_state = ListState::default();
-                    list_state.select(Some(cache.archive_selected[1]));
-                    frame.render_stateful_widget(list, content_area, &mut list_state);
+                    // Top-level files first, then phases: the Enter arm's
+                    // index space.
+                    let len = data.top_level_files.len() + data.phases.len();
+                    self.render_offset_list(
+                        frame,
+                        list,
+                        content_area,
+                        cache.archive_selected[1],
+                        len,
+                        &self.archive_list_offsets[1],
+                    );
                 } else {
                     let loading = Paragraph::new("Loading...")
                         .style(Style::default().fg(Color::DarkGray));
@@ -6698,9 +6884,14 @@ impl DetailScreen {
                                     .add_modifier(Modifier::BOLD),
                             )
                             .highlight_symbol("> ");
-                        let mut list_state = ListState::default();
-                        list_state.select(Some(cache.archive_selected[2]));
-                        frame.render_stateful_widget(list, content_area, &mut list_state);
+                        self.render_offset_list(
+                            frame,
+                            list,
+                            content_area,
+                            cache.archive_selected[2],
+                            phase.files.len(),
+                            &self.archive_list_offsets[2],
+                        );
                     }
                 }
             }
@@ -6858,9 +7049,15 @@ impl DetailScreen {
                             .add_modifier(Modifier::BOLD),
                     )
                     .highlight_symbol("> ");
-                let mut list_state = ListState::default();
-                list_state.select(Some(cache.browser_selected));
-                frame.render_stateful_widget(list, content_area, &mut list_state);
+                // `Borders::NONE`: the items fill `content_area`.
+                self.render_offset_list(
+                    frame,
+                    list,
+                    content_area,
+                    cache.browser_selected,
+                    cache.browser_entries.len(),
+                    &self.browser_list_offset,
+                );
             }
             BrowserDepth::View => {
                 if let Some(content) = &cache.browser_file_content {

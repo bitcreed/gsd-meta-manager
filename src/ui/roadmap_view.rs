@@ -92,12 +92,22 @@ pub struct RoadmapView<'a> {
 }
 
 /// Scroll state of the list pane.
-#[derive(Debug, Default, Clone, Copy)]
+///
+/// Not `Copy` since quick 260926-kes: `fold_marks` is a `Vec`.
+#[derive(Debug, Default, Clone)]
 pub struct RoadmapViewState {
     /// In/out: the first visible model row.
     pub offset: usize,
     /// Out: how many model rows the list pane shows (for PageUp/PageDown).
     pub list_rows: u16,
+    /// Out: the rect of the scrolling model rows only — below the Start-now
+    /// and header lines, above the Notes line; its first row draws model row
+    /// `offset` (quick 260926-kes, D-01). Empty when nothing is listed.
+    pub list_body: Rect,
+    /// Out: one entry per VISIBLE band or shipped-summary row — its model row
+    /// index and the rect of the two-cell `"{glyph} "` span it drew, measured
+    /// from the spans `row_line` built rather than re-derived ([inferred I-3]).
+    pub fold_marks: Vec<(usize, Rect)>,
 }
 
 /// The (list, detail) rects for `area`: side by side at
@@ -171,6 +181,11 @@ pub fn keep_visible(offset: usize, row: usize, visible: usize) -> usize {
 /// Width of already-escaped text, by `char`.
 fn cells(text: &str) -> usize {
     text.chars().count()
+}
+
+/// The summed cell width of `spans`.
+fn spans_cells(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| cells(&s.content)).sum()
 }
 
 /// `text` cut to `cols` chars, the cut marked with `…`. Char-wise, never
@@ -569,6 +584,8 @@ impl RoadmapView<'_> {
             .title_top(Line::from(" v list ").right_aligned());
         let inner = block.inner(area);
         block.render(area, buf);
+        state.list_body = Rect::default();
+        state.fold_marks.clear();
         if inner.is_empty() {
             state.list_rows = 0;
             return;
@@ -611,10 +628,26 @@ impl RoadmapView<'_> {
             inner.height - u16::from(note.is_some()),
         );
 
+        // The mouse's rects (quick 260926-kes): the body rows the loop below
+        // draws, and each band row's fold glyph at the column its spans put
+        // it — so a click maps onto what is drawn, never onto a constant.
+        let body_rows = u16::try_from(body).unwrap_or(u16::MAX);
+        let body_y = inner.y.saturating_add(2).min(inner.bottom());
+        state.list_body = Rect::new(inner.x, body_y, inner.width, body_rows);
+
         let mut lines = vec![self.start_now_line(w), self.header_line(&cols, w)];
         for (i, row) in self.model.rows.iter().enumerate().skip(offset).take(body) {
             let selected = selected_row == Some(i);
-            lines.push(self.row_line(row, selected, selected_phase, &cols, w));
+            let (line, glyph_col) = self.row_line(row, selected, selected_phase, &cols, w);
+            if let Some(col) = glyph_col.and_then(|c| u16::try_from(c).ok()) {
+                let y = body_y.saturating_add(u16::try_from(i - offset).unwrap_or(u16::MAX));
+                let x = inner.x.saturating_add(col);
+                if x < inner.right() && y < inner.bottom() {
+                    let width = 2.min(inner.right() - x);
+                    state.fold_marks.push((i, Rect::new(x, y, width, 1)));
+                }
+            }
+            lines.push(line);
         }
         Paragraph::new(lines).render(list_area, buf);
     }
@@ -658,6 +691,10 @@ impl RoadmapView<'_> {
         fit(vec![Span::styled(text, dim())], w)
     }
 
+    /// One list row, and — on a band or shipped-summary row — the cell
+    /// column its fold glyph was drawn at (quick 260926-kes, [inferred I-3]):
+    /// the summed widths of the spans pushed before the glyph span, confirmed
+    /// against the fitted line, so a glyph `fit` cut away records nothing.
     fn row_line(
         &self,
         row: &ListRow,
@@ -665,8 +702,9 @@ impl RoadmapView<'_> {
         selected_phase: Option<usize>,
         cols: &Cols,
         w: usize,
-    ) -> Line<'static> {
+    ) -> (Line<'static>, Option<usize>) {
         let plain = Style::default();
+        let mut glyph_col = None;
         let spans = match row {
             ListRow::Phase { node, lane, lanes } => {
                 self.phase_spans(*node, *lane, lanes, selected, selected_phase, cols)
@@ -687,6 +725,7 @@ impl RoadmapView<'_> {
                 let used = cols.lane + 2 + cells(&tail);
                 let label = truncate(label, w.saturating_sub(used));
                 let fill = w.saturating_sub(used + cells(&label));
+                glyph_col = Some(spans_cells(&spans));
                 spans.push(Span::styled(format!("{glyph} "), bold()));
                 spans.push(Span::styled(label, bold()));
                 spans.push(Span::styled(tail, dim()));
@@ -709,6 +748,7 @@ impl RoadmapView<'_> {
                     plural(usize::try_from(*phases).unwrap_or(usize::MAX), "phase"),
                 );
                 let mut spans = vec![Span::styled(lanes, plain)];
+                glyph_col = Some(spans_cells(&spans));
                 spans.push(Span::styled(format!("{glyph} "), bold()));
                 spans.push(Span::styled(text.clone(), bold()));
                 spans.push(Span::styled(count, dim()));
@@ -732,7 +772,17 @@ impl RoadmapView<'_> {
         } else {
             spans
         };
-        fit(spans, w)
+        let line = fit(spans, w);
+        let glyph_col = glyph_col.filter(|&col| {
+            let mut start = 0;
+            line.spans.iter().any(|s| {
+                let hit = start == col
+                    && (s.content.starts_with(BAND_OPEN) || s.content.starts_with(BAND_FOLDED));
+                start += cells(&s.content);
+                hit
+            })
+        });
+        (line, glyph_col)
     }
 
     /// The marker cell of `node` relative to the selected phase (D-A05).
@@ -1260,6 +1310,9 @@ impl StatefulWidget for RoadmapView<'_> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let area = area.intersection(buf.area);
+        // Nothing is listed on the two early returns: no stale mouse rects.
+        state.list_body = Rect::default();
+        state.fold_marks.clear();
         if area.is_empty() {
             state.list_rows = 0;
             return;
@@ -2214,7 +2267,7 @@ mod tests {
                 for (w, h) in [(1u16, 1u16), (5, 3), (10, 3), (20, 5), (40, 8)] {
                     let mut state = RoadmapViewState {
                         offset: 99,
-                        list_rows: 0,
+                        ..RoadmapViewState::default()
                     };
                     render(model, cursor.as_ref(), w, h, &mut state);
                 }
