@@ -4,11 +4,11 @@ milestone: v1.8.0
 current_phase: 25
 current_phase_name: Running Agents & Live Wave View
 status: executing
-stopped_at: Completed 25-03-PLAN.md
-last_updated: "2026-09-26T03:14:20.252Z"
+stopped_at: Completed 25-04-PLAN.md
+last_updated: "2026-09-26T03:24:21.108Z"
 last_activity: 2026-09-25
 last_activity_desc: Phase 25 execution started
-state_head: 069e43b7e04aa4ee1d2cb24cad41daa3a1e24688
+state_head: 486c7467526b44ef6fb3a0d288b1c5ccb2d8b997
 progress:
   total_phases: 10
   completed_phases: 6
@@ -103,7 +103,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
 Phase: 25 (Running Agents & Live Wave View) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -321,6 +321,7 @@ verify-phase if the gate is fixed.
 | Phase 25 P01 | 15 min | 3 tasks | 8 files |
 | Phase 25 P02 | 11 min | 3 tasks | 3 files |
 | Phase 25 P03 | 11 min | 3 tasks | 6 files |
+| Phase 25 P04 | 8 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -432,6 +433,8 @@ Recent decisions affecting current work:
 - [Phase 25]: 25-03: commit-scope attribution routes through worktrees::commit_subjects so every src/agents git call stays in worktrees.rs [inferred]
 - [Phase 25]: 25-03: worktree SUMMARY check excludes FIX/GAPCLOSURE summaries, matching main's Pass 2 pairing [inferred]
 - [Phase 25]: 25-03: ladder drops P13 first (RESEARCH A3, deviates from D-C14 drop-from-right); Unknown-only plans read queued [inferred]
+- [Phase 25]: 25-04: agent_views is pruned by per-scan wholesale replacement plus the registered-alias filter, not by prune_driver_maps [inferred]
+- [Phase 25]: 25-04: DASHBOARD_HIGHLIGHT_SYMBOL is shared by dashboard_table and status_column_cells so the fit check cannot drift [inferred]
 
 ### Roadmap Evolution
 
@@ -525,8 +528,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-26T03:14:19.758Z
-Stopped at: Completed 25-03-PLAN.md
+Last session: 2026-09-26T03:24:20.607Z
+Stopped at: Completed 25-04-PLAN.md
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
 lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
 unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,

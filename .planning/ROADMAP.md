@@ -800,7 +800,7 @@ Plans:
 
   UI implication: the dashboard row gets a compact summary (`P13 · wave 2/11 · 13 running · 8/35 done`); the detail view gets a scrollable per-agent list (plan/description, commits, dirty count, last activity) plus per-wave done/running/queued.
 
-**Plans**: 3/6 plans executed
+**Plans**: 4/6 plans executed
 
 Plans:
 **Wave 1**
@@ -814,7 +814,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 25-04-PLAN.md — Scan on the 5 s poll, AgentsScanned cache, dashboard Status-cell summary (wave 3)
+- [x] 25-04-PLAN.md — Scan on the 5 s poll, AgentsScanned cache, dashboard Status-cell summary (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -836,7 +836,7 @@ Plans:
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
-| 25. Running Agents & Live Wave View | 3/6 | In Progress|  |
+| 25. Running Agents & Live Wave View | 4/6 | In Progress|  |
 
 ## Backlog
 

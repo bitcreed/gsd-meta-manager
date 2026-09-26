@@ -109,7 +109,7 @@ interleave and corrupt each other.
 - [x] **AGENT-02**: For the active phase, plans are grouped by their PLAN.md `wave:` frontmatter (never by plan number) and each reads done (SUMMARY in main), finished (SUMMARY or lock release in its agent's worktree), running, stalled or queued, with the current wave identified
 - [x] **AGENT-03**: Agent metadata arrives through a pluggable runtime-adapter seam; any adapter failure (missing directory, bad or truncated JSON, unknown or missing fields, a panic) degrades a row to what git knows and never drops the row or fails the scan
 - [x] **AGENT-04**: A Claude Code adapter attaches agent type, description and liveness (transcript mtime; lock release as finished) from `<config>/projects/<encoded path>/*/subagents/` metadata, honours `$CLAUDE_CONFIG_DIR`, and lists live worktree-less subagents
-- [ ] **AGENT-05**: While agents are active, the dashboard row's Status cell shows a compact summary (phase, wave x/y, running, done/total) that fits the measured column width; with no active agents the row is unchanged
+- [x] **AGENT-05**: While agents are active, the dashboard row's Status cell shows a compact summary (phase, wave x/y, running, done/total) that fits the measured column width; with no active agents the row is unchanged
 - [ ] **AGENT-06**: The Sessions tab of the detail view has an Agents sub-view with the summary, per-wave running/done/queued rows, a scrollable per-agent list and a worktree-less group, with explicit empty and degraded states
 - [ ] **AGENT-07**: For code-review fix runs, the summary shows an estimated fixed/total count from REVIEW.md `findings.total` and finding ids in `fix(NN):` commit subjects, labelled as an estimate
 
@@ -191,6 +191,6 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-25.
 | AGENT-02 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-03 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-04 | Phase 25: Running Agents & Live Wave View | Complete |
-| AGENT-05 | Phase 25: Running Agents & Live Wave View | Pending |
+| AGENT-05 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-06 | Phase 25: Running Agents & Live Wave View | Pending |
 | AGENT-07 | Phase 25: Running Agents & Live Wave View | Pending |
