@@ -179,7 +179,11 @@ pub fn is_dirty(project_root: &Path) -> Option<bool> {
 /// during a preview — and because such a rewrite leaves the index the same
 /// length, a fingerprint that compared only file sizes would not even catch it.
 /// Setting the flag makes "zero git writes" true by construction rather than by
-/// luck.
+/// luck. The environment variable `GIT_OPTIONAL_LOCKS=0` is set as well: the
+/// two are the same instruction to git, and both are set so the no-lock
+/// property survives an edit that drops either one (Phase 25 D-B02 names both,
+/// because this wrapper now also reads live agent worktrees whose index a
+/// running agent is using).
 ///
 /// Raw rather than trimmed because `git diff --stat` renders aligned columns
 /// with a leading space per line; trimming the blob would silently unalign the
@@ -197,6 +201,7 @@ pub fn is_dirty(project_root: &Path) -> Option<bool> {
 /// spawn-seam allowlist entry that noticed.
 pub(crate) fn git_read_raw(project_root: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("--no-optional-locks")
         .arg("-C")
         .arg(project_root)
@@ -519,6 +524,91 @@ pub fn push_refspecs(project_root: &Path) -> PushPreview {
     }
 
     preview
+}
+
+// ============================================================================
+// Agent-worktree reads (Phase 25)
+//
+// Three read-only questions the agent observer (`crate::agents`) asks of a
+// project and of each of its agent worktrees: which worktrees exist, how many
+// commits a worktree's HEAD carries beyond the main worktree's HEAD, and how
+// many paths it has changed. A running agent owns those worktrees, so every
+// call goes through `git_read_raw` and inherits its no-lock property (D-B02):
+// a `git status` that refreshed the index of a live agent's worktree, or took
+// its `index.lock`, would be the observer perturbing the thing it observes.
+//
+// Failure is data: every helper answers `None` rather than erroring, and the
+// caller renders that as `?` (D-C16).
+// ============================================================================
+
+/// `git worktree list --porcelain` output, raw, plus which record separator it
+/// uses.
+///
+/// `raw` is untrimmed, because under `-z` the record separator is NUL and a
+/// trailing empty record is how the last block ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PorcelainListing {
+    pub raw: String,
+    /// `true` for `-z` output (NUL-separated records); `false` for the
+    /// newline-separated fallback older git produces.
+    pub nul_separated: bool,
+}
+
+/// The project's worktrees, as git's porcelain listing.
+///
+/// Tries `worktree list --porcelain -z` first and, when that fails, retries
+/// without `-z`: git older than 2.36 has no `-z` for this command, and the
+/// newline form is still parseable (C-quoted paths aside). `None` when both
+/// fail — not a repository, or no git. Never panics.
+pub(crate) fn worktree_list_porcelain(project_root: &Path) -> Option<PorcelainListing> {
+    if let Some(raw) = git_read_raw(project_root, &["worktree", "list", "--porcelain", "-z"]) {
+        return Some(PorcelainListing {
+            raw,
+            nul_separated: true,
+        });
+    }
+    git_read_raw(project_root, &["worktree", "list", "--porcelain"]).map(|raw| PorcelainListing {
+        raw,
+        nul_separated: false,
+    })
+}
+
+/// Whether `s` is a full git object id: 40 (SHA-1) or 64 (SHA-256) lowercase
+/// hex characters, and nothing else.
+pub(crate) fn is_full_hex_sha(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// How many commits `worktree`'s HEAD carries beyond `base_sha`.
+///
+/// **`base_sha` is refused unless it is a full lowercase hex object id**, and
+/// then git is not run at all. The value is formatted into an argument, so a
+/// string such as `--output=x` must never reach argv as an option; a ref name
+/// such as `HEAD~1` is refused too, because the only base this module means is
+/// the main worktree's resolved HEAD. The worktree side is always the literal
+/// `HEAD` inside `-C <worktree>`, so no branch name ever reaches argv (D-C04).
+///
+/// `None` when git fails or its output does not parse as `u32` — never a
+/// wrapped or saturated number (D-C16).
+pub(crate) fn commits_ahead(worktree: &Path, base_sha: &str) -> Option<u32> {
+    if !is_full_hex_sha(base_sha) {
+        return None;
+    }
+    let range = format!("{base_sha}..HEAD");
+    let raw = git_read_raw(worktree, &["rev-list", "--count", &range])?;
+    raw.trim().parse::<u32>().ok()
+}
+
+/// How many paths `git status --porcelain` reports in `worktree` — modified,
+/// staged and untracked alike.
+///
+/// Read through `git_read_raw`, so it takes no optional lock and never
+/// refreshes the worktree's index. `None` when git fails or the count does not
+/// fit a `u32`.
+pub(crate) fn dirty_count(worktree: &Path) -> Option<u32> {
+    let raw = git_read_raw(worktree, &["status", "--porcelain"])?;
+    let lines = raw.lines().filter(|line| !line.trim().is_empty()).count();
+    u32::try_from(lines).ok()
 }
 
 /// One row of a THIRD-PARTY repository's `git log`, in a type that cannot reach
@@ -1427,5 +1517,57 @@ mod tests {
                  replacement glyph instead: {line:?}"
             );
         }
+    }
+
+    // ========================================================================
+    // Agent-worktree reads (Phase 25)
+    // ========================================================================
+
+    #[test]
+    fn commits_ahead_refuses_a_base_that_is_not_a_full_hex_sha() {
+        let Some(repo) = repo_with_commit() else {
+            return;
+        };
+        let first = head_sha(repo.path()).expect("a repo with one commit has a HEAD");
+        std::fs::write(repo.path().join("second.txt"), "two").unwrap();
+        assert!(git_ok(repo.path(), &["add", "second.txt"]));
+        assert!(git_ok(repo.path(), &["commit", "-m", "second", "--quiet"]));
+
+        // One assertion per refused value: each is something git itself would
+        // happily accept, which is exactly why it must not reach argv.
+        assert_eq!(commits_ahead(repo.path(), "HEAD~1"), None, "a ref expression");
+        assert_eq!(commits_ahead(repo.path(), "--output=x"), None, "an option");
+        assert_eq!(commits_ahead(repo.path(), &first[..39]), None, "39 hex chars");
+        assert_eq!(
+            commits_ahead(repo.path(), &first.to_uppercase()),
+            None,
+            "uppercase hex"
+        );
+        assert_eq!(commits_ahead(repo.path(), ""), None, "empty");
+
+        assert_eq!(
+            commits_ahead(repo.path(), &first),
+            Some(1),
+            "the first commit's full sha is one behind HEAD"
+        );
+    }
+
+    #[test]
+    fn dirty_count_counts_modified_and_untracked_files() {
+        let Some(repo) = repo_with_commit() else {
+            return;
+        };
+        assert_eq!(dirty_count(repo.path()), Some(0), "a fresh commit is clean");
+
+        std::fs::write(repo.path().join("file.txt"), "changed").unwrap();
+        std::fs::write(repo.path().join("new.txt"), "untracked").unwrap();
+        assert_eq!(
+            dirty_count(repo.path()),
+            Some(2),
+            "one modified tracked file plus one untracked file"
+        );
+
+        let not_git = tempfile::TempDir::new().unwrap();
+        assert_eq!(dirty_count(not_git.path()), None, "not a repository");
     }
 }

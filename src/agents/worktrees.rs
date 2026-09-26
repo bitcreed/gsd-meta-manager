@@ -1,0 +1,344 @@
+//! The runtime-agnostic core of the agent observer (D-A01a): which of a
+//! project's git worktrees belong to agents, and what git alone can say about
+//! each of them.
+//!
+//! **Read-only, and every git call goes through `git_ops`.** This file builds
+//! no git command of its own; it asks [`git_ops::worktree_list_porcelain`],
+//! [`git_ops::commits_ahead`] and [`git_ops::dirty_count`], which all route
+//! through `git_read_raw` and therefore carry `--no-optional-locks` plus
+//! `GIT_OPTIONAL_LOCKS=0` (D-B02). A live agent owns these worktrees; a read
+//! that refreshed one of their indexes would be the observer perturbing the run
+//! it observes.
+//!
+//! Nothing here knows about Claude, Codex or any other runtime. Runtime facts
+//! arrive later, through [`crate::agents::adapters`].
+//!
+//! Every text value git reports about a worktree — its path aside — is
+//! attacker-controllable (a hostile clone names its own branches and lock
+//! reasons), so branch names and lock reasons leave this module wrapped in
+//! [`Untrusted`], and no branch name is ever placed into git's argv (D-C04).
+
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+use crate::state_reader::git_ops;
+use crate::text::Untrusted;
+
+/// One worktree block of `git worktree list --porcelain`, as git reported it.
+///
+/// Plain strings rather than [`Untrusted`]: this is the parser's output, and it
+/// is consumed only by [`scan_worktrees`] and tests, which wrap before anything
+/// leaves the module.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RawWorktree {
+    /// The worktree's path, verbatim (C-unquoted in the non-`-z` fallback).
+    pub path: PathBuf,
+    /// The `HEAD` sha, when git reported one (a bare main has none).
+    pub head: Option<String>,
+    /// The checked-out branch with `refs/heads/` stripped; `None` when detached.
+    pub branch: Option<String>,
+    /// Whether git reported `detached`.
+    pub detached: bool,
+    /// `None` = not locked; `Some(None)` = locked without a reason;
+    /// `Some(Some(r))` = locked with reason `r`.
+    pub locked: Option<Option<String>>,
+    /// Whether git reported `prunable` (typically: the directory is gone).
+    pub prunable: bool,
+    /// Whether git reported `bare` (main worktree of a bare repository only).
+    pub bare: bool,
+}
+
+/// A plan id and spawn time read from a Codex-style agent branch name,
+/// `worktree-agent-p{plan}-{unix_ts}` (D-A06).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BranchPlan {
+    /// The plan id, e.g. `13-13` or `07.1-02`.
+    pub plan: String,
+    /// The Unix timestamp the branch name carries.
+    pub spawned_unix: u64,
+}
+
+/// One NON-main worktree, as the core found it. Read-only to adapters.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CoreWorktree {
+    /// The worktree's path, as git reported it.
+    pub path: PathBuf,
+    /// The branch short name, wrapped because a hostile clone chooses it.
+    pub branch: Option<Untrusted>,
+    /// `None` = not locked; `Some(None)` = locked without a reason;
+    /// `Some(Some(r))` = locked with reason `r`.
+    pub locked: Option<Option<Untrusted>>,
+    /// Whether git reported the worktree `prunable`. Such a worktree keeps its
+    /// row and is never pruned from here (D-C16, D-B02).
+    pub prunable: bool,
+    /// The D-C03 predicate: under `<project>/.claude/worktrees/`, or on a
+    /// branch in GSD's agent families. See [`is_agent_worktree`].
+    pub agent_pattern: bool,
+    /// The agent id from the path (`agent-<id>`) or branch, kept only when it
+    /// passes [`valid_agent_id`].
+    pub agent_id: Option<String>,
+    /// The plan id and spawn time from a Codex-style branch name (D-A06).
+    pub branch_plan: Option<BranchPlan>,
+    /// The plan id from GSD's `gsd-plan-head-before-<plan>` ledger file in the
+    /// worktree's admin dir — confirmation only (D-C10 tier 4); usually absent.
+    pub ledger_plan: Option<String>,
+}
+
+/// Everything [`scan_worktrees`] learned about one project.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CoreScan {
+    /// The main worktree's path, from the first porcelain block.
+    pub main_worktree: Option<PathBuf>,
+    /// The main worktree's HEAD, kept only when it is a full lowercase hex sha.
+    pub base_sha: Option<String>,
+    /// Every non-main worktree, agent or not, in git's order.
+    pub worktrees: Vec<CoreWorktree>,
+}
+
+/// Apply one porcelain record to the block being built.
+///
+/// Unknown keys are ignored, so a newer git's additional attributes do not
+/// break the parse.
+fn apply_record(current: &mut RawWorktree, record: &str) {
+    let (key, value) = match record.split_once(' ') {
+        Some((key, value)) => (key, Some(value)),
+        None => (record, None),
+    };
+    match key {
+        "HEAD" => current.head = value.map(str::to_string),
+        "branch" => {
+            current.branch = value.map(|v| v.strip_prefix("refs/heads/").unwrap_or(v).to_string())
+        }
+        "detached" => current.detached = true,
+        "locked" => current.locked = Some(value.filter(|v| !v.is_empty()).map(str::to_string)),
+        "prunable" => current.prunable = true,
+        "bare" => current.bare = true,
+        _ => {}
+    }
+}
+
+/// Parse a sequence of porcelain records into worktree blocks.
+///
+/// A `worktree <path>` record opens a block and an empty record closes it. The
+/// first block is the main worktree. `unquote` is applied to the path only.
+fn parse_records<'a>(
+    records: impl Iterator<Item = &'a str>,
+    unquote: fn(&str) -> String,
+) -> Vec<RawWorktree> {
+    let mut out = Vec::new();
+    let mut current: Option<RawWorktree> = None;
+    for record in records {
+        if record.is_empty() {
+            if let Some(done) = current.take() {
+                out.push(done);
+            }
+            continue;
+        }
+        if let Some(path) = record.strip_prefix("worktree ") {
+            if let Some(done) = current.take() {
+                out.push(done);
+            }
+            current = Some(RawWorktree {
+                path: PathBuf::from(unquote(path)),
+                ..RawWorktree::default()
+            });
+            continue;
+        }
+        if let Some(block) = current.as_mut() {
+            apply_record(block, record);
+        }
+    }
+    if let Some(done) = current.take() {
+        out.push(done);
+    }
+    out
+}
+
+/// Parse `git worktree list --porcelain -z` output. The first block is the
+/// main worktree. Paths with spaces or other unusual bytes arrive verbatim
+/// under `-z`. Empty input yields an empty vec.
+pub fn parse_porcelain_z(raw: &str) -> Vec<RawWorktree> {
+    parse_records(raw.split('\0'), str::to_string)
+}
+
+/// Parse the newline-separated `git worktree list --porcelain` output older git
+/// produces (no `-z` before 2.36). A blank line ends a block.
+pub fn parse_porcelain_lines(raw: &str) -> Vec<RawWorktree> {
+    parse_records(raw.lines(), str::to_string)
+}
+
+/// GSD's own agent-branch regex, `WORKTREE_AGENT_BRANCH_RE` in
+/// `gsd-core/bin/lib/worktree-safety.cjs` (RESEARCH Pattern 1).
+fn agent_branch_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$").unwrap())
+}
+
+/// A Codex-style branch: `(worktree-)agent-p{plan}-{unix_ts}` (D-A06).
+fn plan_branch_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^(?:worktree-)?agent-p(?P<plan>[0-9][0-9A-Za-z.]*(?:-[0-9]+)?)-(?P<ts>[0-9]{9,11})$",
+        )
+        .unwrap()
+    })
+}
+
+/// A plan id: `13`, `13-02`, `07.1`, `07.1-02`.
+fn plan_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[0-9]+(\.[0-9]+)?(-[0-9]+)?$").unwrap())
+}
+
+/// Whether `id` is a plan id (`^[0-9]+(\.[0-9]+)?(-[0-9]+)?$`).
+pub(crate) fn valid_plan_id(id: &str) -> bool {
+    plan_id_re().is_match(id)
+}
+
+/// Whether `raw` is the directory `.claude/worktrees/<something>` under `root`.
+fn under_claude_worktrees(root: &Path, raw: &RawWorktree) -> bool {
+    raw.path
+        .strip_prefix(root.join(".claude").join("worktrees"))
+        .is_ok_and(|rest| rest.components().next().is_some())
+}
+
+/// The D-C03 agent-worktree predicate, widened to GSD's branch families.
+///
+/// True when the worktree's path is under `<project_root>/.claude/worktrees/`,
+/// or its branch matches `^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$`.
+/// A path that merely contains `.claude` elsewhere does not qualify.
+pub fn is_agent_worktree(project_root: &Path, raw: &RawWorktree) -> bool {
+    under_claude_worktrees(project_root, raw)
+        || raw
+            .branch
+            .as_deref()
+            .is_some_and(|branch| agent_branch_re().is_match(branch))
+}
+
+/// The plan id and spawn time a Codex-style agent branch carries (D-A06).
+///
+/// Runtime-agnostic: the branch shape is what counts, not who created it.
+/// Claude's `agent-a<16 hex>` ids never parse, because the plan must start
+/// with a digit and satisfy the plan-id rule.
+pub fn parse_agent_branch(branch: &str) -> Option<BranchPlan> {
+    let caps = plan_branch_re().captures(branch)?;
+    let plan = caps.name("plan")?.as_str();
+    if !valid_plan_id(plan) {
+        return None;
+    }
+    let spawned_unix = caps.name("ts")?.as_str().parse::<u64>().ok()?;
+    Some(BranchPlan {
+        plan: plan.to_string(),
+        spawned_unix,
+    })
+}
+
+/// Whether `id` may be used as an agent id — and therefore, later, as a path
+/// component: `^[A-Za-z0-9_-]{1,64}$`, so no separator, no dot, no traversal.
+pub fn valid_agent_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// The agent id: from a path component `agent-<id>` directly under
+/// `.claude/worktrees/`, else from a branch `worktree-agent-<id>` or
+/// `agent-<id>`; kept only when [`valid_agent_id`].
+fn agent_id_of(roots: &[&Path], raw: &RawWorktree) -> Option<String> {
+    let from_path = roots.iter().find_map(|root| {
+        let rest = raw
+            .path
+            .strip_prefix(root.join(".claude").join("worktrees"))
+            .ok()?;
+        let first = rest.components().next()?.as_os_str().to_str()?;
+        first.strip_prefix("agent-").map(str::to_string)
+    });
+    let from_branch = || {
+        let branch = raw.branch.as_deref()?;
+        branch
+            .strip_prefix("worktree-agent-")
+            .or_else(|| branch.strip_prefix("agent-"))
+            .map(str::to_string)
+    };
+    from_path
+        .filter(|id| valid_agent_id(id))
+        .or_else(|| from_branch().filter(|id| valid_agent_id(id)))
+}
+
+/// Enumerate a project's worktrees, classify each against the agent predicate,
+/// and resolve the base the commit counts are measured from.
+///
+/// The base is the main worktree's HEAD from the first porcelain block of the
+/// same listing, kept only when it is a full lowercase hex sha (D-C04).
+///
+/// Any failure — not a repository, no git, unparseable output — yields an
+/// empty [`CoreScan`], never an error.
+pub fn scan_worktrees(project_root: &Path) -> CoreScan {
+    let Some(listing) = git_ops::worktree_list_porcelain(project_root) else {
+        return CoreScan::default();
+    };
+    let blocks = if listing.nul_separated {
+        parse_porcelain_z(&listing.raw)
+    } else {
+        parse_porcelain_lines(&listing.raw)
+    };
+    let mut blocks = blocks.into_iter();
+    let Some(main) = blocks.next() else {
+        return CoreScan::default();
+    };
+    let base_sha = main
+        .head
+        .clone()
+        .filter(|sha| git_ops::is_full_hex_sha(sha));
+
+    // Git reports canonical paths; the registered root may be spelled
+    // differently (a symlink, a trailing component), so both are tried.
+    let main_path = main.path.clone();
+    let roots: [&Path; 2] = [project_root, main_path.as_path()];
+
+    let worktrees = blocks
+        .map(|raw| {
+            let agent_pattern = roots.iter().any(|root| is_agent_worktree(root, &raw));
+            CoreWorktree {
+                agent_id: agent_id_of(&roots, &raw),
+                branch_plan: raw.branch.as_deref().and_then(parse_agent_branch),
+                branch: raw.branch.clone().map(Untrusted::from_untrusted_source),
+                locked: raw
+                    .locked
+                    .clone()
+                    .map(|reason| reason.map(Untrusted::from_untrusted_source)),
+                prunable: raw.prunable,
+                agent_pattern,
+                ledger_plan: None,
+                path: raw.path,
+            }
+        })
+        .collect();
+
+    CoreScan {
+        main_worktree: Some(main_path),
+        base_sha,
+        worktrees,
+    }
+}
+
+/// Commits ahead of `base_sha` and the dirty-file count for one worktree.
+///
+/// Both `None` for a `prunable` worktree, whose directory git already says is
+/// gone — the helpers are not called for it (D-C16). A git failure for one
+/// worktree affects only that worktree's counts.
+pub(crate) fn worktree_counts(
+    worktree: &CoreWorktree,
+    base_sha: Option<&str>,
+) -> (Option<u32>, Option<u32>) {
+    if worktree.prunable {
+        return (None, None);
+    }
+    let ahead = base_sha.and_then(|base| git_ops::commits_ahead(&worktree.path, base));
+    let dirty = git_ops::dirty_count(&worktree.path);
+    (ahead, dirty)
+}
