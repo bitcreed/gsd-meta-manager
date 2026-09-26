@@ -2063,7 +2063,11 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 one_state(
                     "dashboard with filter footer",
                     filtering,
-                    Box::new(super::normal::NormalScreen { searching: true }),
+                    Box::new({
+                        let mut s = super::normal::NormalScreen::new();
+                        s.searching = true;
+                        s
+                    }),
                 ),
             ]
         }),
@@ -3326,7 +3330,11 @@ mod tests {
         let mut shadowed = probe_ctx(&clean);
         shadowed.status_message = Some((message, std::time::Instant::now()));
         let shadowed_text = render_to_text(
-            &crate::ui::screens::normal::NormalScreen { searching: true },
+            &{
+                let mut s = crate::ui::screens::normal::NormalScreen::new();
+                s.searching = true;
+                s
+            },
             &shadowed,
         );
 

@@ -54,6 +54,12 @@ fn map_event_to_action(event: Event) -> Option<Action> {
             }
         }
         Event::Resize(_w, _h) => Some(Action::Resize),
+        // Mouse capture turns on any-motion tracking, and `pump` drains this
+        // FIFO on a biased-first arm: a continuous producer there starves every
+        // other arm (see `main_loop::pump`'s doc). So only a left press and
+        // vertical wheel steps are forwarded; everything else is dropped here
+        // (quick 260926-dyf, T-dyf-01).
+        Event::Mouse(m) => gsd_meta_manager::ui::mouse::routed(&m).map(|_| Action::Mouse(m)),
         _ => None,
     }
 }

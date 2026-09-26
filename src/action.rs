@@ -49,6 +49,12 @@ impl From<&crate::driver::kill::StopOutcome> for StopDisposition {
 pub enum Action {
     Tick,
     RawKey(KeyEvent),
+    /// A mouse event that passed the reader filter (quick 260926-dyf).
+    ///
+    /// Only a left press and vertical wheel steps are ever sent:
+    /// `ui::mouse::routed` drops motion, drag, release, the other buttons and
+    /// horizontal scroll in the reader, before the Action FIFO (I-5, T-dyf-01).
+    Mouse(crossterm::event::MouseEvent),
     Resize,
     /// A watched path under a project's `.planning/` changed.
     ///

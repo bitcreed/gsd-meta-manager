@@ -635,6 +635,21 @@ async fn run_tui_loop(
     exec_rx: &mut tokio::sync::mpsc::Receiver<ExecEvent>,
 ) -> anyhow::Result<()> {
     loop {
+        // Apply the desired mouse capture (quick 260926-dyf, I-14). This is
+        // also the session's FIRST enable: it runs after every fallible startup
+        // `?` in main's TUI arm, and every exit from this function is followed
+        // by `tui::restore()`, which turns capture off.
+        if app.mouse_capture != tui::mouse_captured() {
+            if let Err(e) = tui::set_mouse_capture(app.mouse_capture) {
+                app.mouse_capture = tui::mouse_captured();
+                app.ctx.status_message = Some((
+                    format!("Mouse capture unavailable: {e}"),
+                    std::time::Instant::now(),
+                ));
+                app.needs_redraw = true;
+            }
+        }
+
         // Sync needs_redraw from ctx (screens set ctx.needs_redraw)
         if app.ctx.needs_redraw {
             app.needs_redraw = true;
@@ -657,8 +672,11 @@ async fn run_tui_loop(
 
         // Check if a screen action requested an editor launch
         if let Some((path, line)) = app.pending_editor.take() {
-            // Suspend the TUI
-            ratatui::restore();
+            // Suspend the TUI. D-05: mouse capture goes off before the
+            // terminal is handed to the editor (`tui::restore` disables it),
+            // and comes back on return only if it was on.
+            let mouse_was_on = tui::mouse_captured();
+            tui::restore();
 
             // Determine editor: $VISUAL > $EDITOR > vi
             let editor = std::env::var("VISUAL")
@@ -697,7 +715,12 @@ async fn run_tui_loop(
             }
 
             // Re-initialize TUI
-            *terminal = ratatui::init();
+            *terminal = tui::init();
+            if mouse_was_on {
+                // Errors are left to the loop's sync at the top, which retries
+                // and reports.
+                let _ = tui::set_mouse_capture(true);
+            }
             app.needs_redraw = true;
         }
 

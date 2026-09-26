@@ -14,9 +14,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 use ratatui::Frame;
+use crate::ui::mouse::{ListRegion, MouseInput};
+use std::cell::Cell;
 
 pub struct NormalScreen {
     pub searching: bool,
+    /// The table's scroll offset, kept across frames (quick 260926-dyf, I-12):
+    /// a fresh offset per frame would scroll a clicked row out from under the
+    /// pointer.
+    table_offset: Cell<usize>,
+    /// The table's body rows as drawn in the last frame (no header), for the
+    /// click hit test (D-04). `None` when no table was drawn.
+    table_region: Cell<Option<ListRegion>>,
+    /// The table's whole outer block as drawn in the last frame, for the wheel.
+    table_area: Cell<Option<Rect>>,
+    /// Set by a single click that selected a row; a double-click runs Enter only
+    /// while it is set (I-7).
+    mouse_row_armed: bool,
 }
 
 impl Default for NormalScreen {
@@ -27,7 +41,13 @@ impl Default for NormalScreen {
 
 impl NormalScreen {
     pub fn new() -> Self {
-        Self { searching: false }
+        Self {
+            searching: false,
+            table_offset: Cell::new(0),
+            table_region: Cell::new(None),
+            table_area: Cell::new(None),
+            mouse_row_armed: false,
+        }
     }
 }
 
@@ -524,7 +544,7 @@ impl Screen for NormalScreen {
             // the module doc on `super::driver_confirm` for the full fence.
             //
             // Collision check, performed before these were written: this match
-            // already claims `q`, `j`, `k`, `a`, `c`, `d`, `b`, `/`, `?`,
+            // already claims `q`, `j`, `k`, `a`, `c`, `d`, `b`, `M`, `/`, `?`,
             // `Tab`, `Enter`, `Up` and `Down`, and the search sub-mode is
             // entered by `/` and handled separately. None of `r`, `x`, `o` is
             // among them. (`b` is later in the file than these three but is
@@ -580,7 +600,7 @@ impl Screen for NormalScreen {
             //
             // One key, one indicator, no new screen. `s` is free on this
             // screen: the match above claims `q`, `j`, `k`, `a`, `c`, `d`,
-            // `r`, `x`, `o`, `b`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`,
+            // `r`, `x`, `o`, `b`, `M`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`,
             // and the search sub-mode is entered by `/` and handled
             // separately. (`b` is bound below, beside `Enter`; see the note in
             // the driver-keys block above about keeping these lists current.)
@@ -609,6 +629,10 @@ impl Screen for NormalScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
+            // Mouse capture toggle (quick 260926-dyf, D-06 / I-2). Runtime
+            // only; App flips the desired state and says so. Free: nothing in
+            // src/ bound `M` before this.
+            KeyCode::Char('M') => ScreenAction::ToggleMouseCapture,
             KeyCode::Enter => {
                 if let Some(alias) = ctx.selected_alias() {
                     ctx.detail_scroll_offset = 0;
@@ -627,8 +651,8 @@ impl Screen for NormalScreen {
             // items behind that number belongs where the number is.
             //
             // Collision check, performed before this was written: this match
-            // claims `q`, `j`, `k`, `a`, `c`, `d`, `r`, `x`, `o`, `s`, `/`,
-            // `?`, `Tab`, `Enter`, `Up` and `Down`, and the search sub-mode is
+            // claims `q`, `j`, `k`, `a`, `c`, `d`, `r`, `x`, `o`, `s`, `M`,
+            // `/`, `?`, `Tab`, `Enter`, `Up` and `Down`, and the search sub-mode is
             // entered by `/` and short-circuits at the top of this handler, so
             // a `b` typed into the filter never reaches here. `b` was free.
             //
@@ -693,6 +717,10 @@ impl Screen for NormalScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        // Regions are re-recorded every frame; a frame that draws no table
+        // (too small, empty state) leaves nothing clickable (D-04).
+        self.table_region.set(None);
+        self.table_area.set(None);
         // Minimum terminal size guard
         if area.width < 40 || area.height < 8 {
             let msg = Paragraph::new("Terminal too small. Resize to at least 40x8.")
@@ -712,6 +740,46 @@ impl Screen for NormalScreen {
 
     fn name(&self) -> &str {
         "normal"
+    }
+
+    /// Click selects a row, a double-click opens the row the first click
+    /// selected (the Enter path), the wheel steps the selection and clamps at
+    /// both ends (quick 260926-dyf: D-01, D-02, D-03, I-7, I-11). Everything is
+    /// ignored while the `/` search is being typed (I-13).
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        if self.searching {
+            return ScreenAction::None;
+        }
+        match input {
+            MouseInput::Click { double: true, .. } if self.mouse_row_armed => {
+                self.mouse_row_armed = false;
+                self.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx)
+            }
+            MouseInput::Click { column, row, .. } => {
+                let hit = self.table_region.get().and_then(|r| r.row_at(column, row));
+                match hit {
+                    Some(index) => {
+                        ctx.table_state.select(Some(index));
+                        self.mouse_row_armed = true;
+                        ctx.needs_redraw = true;
+                    }
+                    None => self.mouse_row_armed = false,
+                }
+                ScreenAction::None
+            }
+            MouseInput::Wheel { column, row, down } => {
+                self.mouse_row_armed = false;
+                let over_table = self
+                    .table_area
+                    .get()
+                    .is_some_and(|a| a.contains(ratatui::layout::Position::new(column, row)));
+                if over_table {
+                    step_selection_clamped(ctx, down);
+                    ctx.needs_redraw = true;
+                }
+                ScreenAction::None
+            }
+        }
     }
 }
 
@@ -985,10 +1053,25 @@ impl NormalScreen {
 
             let table = dashboard_table(rows, terminal_width);
 
-            // We need a mutable table_state for rendering
-            let mut table_state = ctx.table_state;
+            // A copy of the selection, seeded with the offset the previous frame
+            // left, so a list scrolled by the keyboard stays where it is and a
+            // clicked row stays under the pointer (quick 260926-dyf, I-12).
+            let mut table_state = ctx.table_state.with_offset(self.table_offset.get());
             frame.render_stateful_widget(table, inner, &mut table_state);
             // Note: table_state selection is managed by ctx directly through handle_key
+            self.table_offset.set(table_state.offset());
+            // The body rows start below the one-row header (bottom_margin 0).
+            let body = Rect {
+                y: inner.y.saturating_add(1),
+                height: inner.height.saturating_sub(1),
+                ..inner
+            };
+            self.table_region.set(Some(ListRegion {
+                rect: body,
+                offset: table_state.offset(),
+                len: ctx.filtered_aliases.len(),
+            }));
+            self.table_area.set(Some(area));
         }
     }
 
@@ -1200,6 +1283,18 @@ fn move_selection_down(ctx: &mut AppContext) {
     }
     let current = ctx.table_state.selected().unwrap_or(0);
     let next = if current >= count - 1 { 0 } else { current + 1 };
+    ctx.table_state.select(Some(next));
+}
+
+/// One wheel step: like `j`/`k` but CLAMPED at both ends, where the keyboard
+/// wraps — a wheel flick past the end must not cycle to the top (I-11).
+fn step_selection_clamped(ctx: &mut AppContext, down: bool) {
+    let count = ctx.filtered_aliases.len();
+    if count == 0 {
+        return;
+    }
+    let current = ctx.table_state.selected().unwrap_or(0);
+    let next = if down { (current + 1).min(count - 1) } else { current.saturating_sub(1) };
     ctx.table_state.select(Some(next));
 }
 
@@ -3193,5 +3288,151 @@ mod tests {
     fn the_middle_dot_is_one_cell() {
         assert_eq!(Line::from("\u{b7}").width(), 1);
         assert_eq!("\u{b7}".len(), 2, "two bytes, one cell: never measure with len");
+    }
+
+    // ── Mouse (quick 260926-dyf) ────────────────────────────────────────
+
+    /// Render `screen` into a `w`x`h` TestBackend, as the app does, and return
+    /// the rows as text.
+    fn mouse_render(screen: &NormalScreen, ctx: &AppContext, w: u16, h: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), ctx))
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    fn mouse_aliases(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("proj{i:02}")).collect()
+    }
+
+    fn mouse_ctx(n: usize) -> AppContext {
+        let names = mouse_aliases(n);
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut ctx = ctx_with_aliases(&refs);
+        ctx.table_state.select(Some(0));
+        ctx
+    }
+
+    fn click(column: u16, row: u16) -> MouseInput {
+        MouseInput::Click { column, row, double: false }
+    }
+
+    #[test]
+    fn mouse_dashboard_click_selects_the_row_under_the_pointer() {
+        let mut ctx = mouse_ctx(5);
+        let mut screen = NormalScreen::new();
+        mouse_render(&screen, &ctx, 100, 30);
+        let region = screen.table_region.get().expect("the table was drawn");
+        let centre = region.rect.x + region.rect.width / 2;
+
+        let action = screen.handle_mouse(click(centre, region.rect.y + 2), &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(ctx.table_state.selected(), Some(2));
+        let rows = mouse_render(&screen, &ctx, 100, 30);
+        assert!(
+            rows[usize::from(region.rect.y + 2)].contains("> proj02"),
+            "the clicked row is the highlighted one: {:?}",
+            rows[usize::from(region.rect.y + 2)]
+        );
+
+        // The header row and the footer are inert.
+        screen.handle_mouse(click(centre, region.rect.y - 1), &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(2));
+        screen.handle_mouse(click(centre, 29), &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn mouse_dashboard_double_click_opens_the_first_clicks_row() {
+        let mut ctx = mouse_ctx(5);
+        let mut screen = NormalScreen::new();
+        mouse_render(&screen, &ctx, 100, 30);
+        let region = screen.table_region.get().expect("the table was drawn");
+        let (col, row) = (region.rect.x + 4, region.rect.y + 2);
+
+        screen.handle_mouse(click(col, row), &mut ctx);
+        let action =
+            screen.handle_mouse(MouseInput::Click { column: col, row, double: true }, &mut ctx);
+        match action {
+            ScreenAction::Push(pushed) => assert_eq!(pushed.name(), DetailScreen::NAME),
+            _ => panic!("a double-click on a row must open its detail view"),
+        }
+        assert_eq!(ctx.table_state.selected(), Some(2));
+
+        // A double whose first click hit the header is a single click.
+        let mut screen = NormalScreen::new();
+        mouse_render(&screen, &ctx, 100, 30);
+        let header = region.rect.y - 1;
+        screen.handle_mouse(click(col, header), &mut ctx);
+        let action = screen
+            .handle_mouse(MouseInput::Click { column: col, row: header, double: true }, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "no Enter without an armed row");
+    }
+
+    #[test]
+    fn mouse_dashboard_wheel_moves_and_clamps() {
+        let mut ctx = mouse_ctx(3);
+        let mut screen = NormalScreen::new();
+        mouse_render(&screen, &ctx, 100, 30);
+        let region = screen.table_region.get().expect("the table was drawn");
+        let wheel = |down| MouseInput::Wheel { column: region.rect.x + 3, row: region.rect.y, down };
+
+        screen.handle_mouse(wheel(true), &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(1));
+        screen.handle_mouse(wheel(true), &mut ctx);
+        screen.handle_mouse(wheel(true), &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(2), "the wheel stops at the last row");
+        for _ in 0..4 {
+            screen.handle_mouse(wheel(false), &mut ctx);
+        }
+        assert_eq!(ctx.table_state.selected(), Some(0), "the wheel stops at the first row");
+
+        // Over the footer: nothing.
+        screen.handle_mouse(MouseInput::Wheel { column: 5, row: 29, down: true }, &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn mouse_dashboard_keeps_its_scroll_offset() {
+        let mut ctx = mouse_ctx(40);
+        ctx.table_state.select(Some(30));
+        let mut screen = NormalScreen::new();
+        mouse_render(&screen, &ctx, 100, 20);
+        let region = screen.table_region.get().expect("the table was drawn");
+        assert!(region.offset > 0, "row 30 of 40 needs a scrolled table");
+
+        screen.handle_mouse(click(region.rect.x + 4, region.rect.y), &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(region.offset));
+        let rows = mouse_render(&screen, &ctx, 100, 20);
+        let after = screen.table_region.get().expect("the table was drawn");
+        assert_eq!(after.offset, region.offset, "the click must not scroll the table");
+        assert!(
+            rows[usize::from(region.rect.y)].contains(&format!("> proj{:02}", region.offset)),
+            "the clicked project is still under the pointer: {:?}",
+            rows[usize::from(region.rect.y)]
+        );
+    }
+
+    #[test]
+    fn mouse_dashboard_ignores_the_mouse_while_searching() {
+        let mut ctx = mouse_ctx(5);
+        let mut screen = NormalScreen::new();
+        mouse_render(&screen, &ctx, 100, 30);
+        let region = screen.table_region.get().expect("the table was drawn");
+        press(&mut screen, &mut ctx, KeyCode::Char('/'));
+        assert!(screen.searching);
+        let before = ctx.table_state.selected();
+        screen.handle_mouse(click(region.rect.x + 4, region.rect.y + 2), &mut ctx);
+        screen.handle_mouse(
+            MouseInput::Wheel { column: region.rect.x + 4, row: region.rect.y, down: true },
+            &mut ctx,
+        );
+        assert_eq!(ctx.table_state.selected(), before);
     }
 }

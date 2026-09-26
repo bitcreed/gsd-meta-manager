@@ -304,6 +304,19 @@ pub trait Screen: RenderAdjudicated {
     ) -> ScreenAction;
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext);
     fn name(&self) -> &str;
+    /// One mouse input, already filtered and double-click-classified by `App`
+    /// (quick 260926-dyf).
+    ///
+    /// **The default ignores it, and modal, overlay and text-entry screens rely
+    /// on that default**: a click can never confirm a dialog or land in a text
+    /// field (I-13, T-dyf-03).
+    fn handle_mouse(
+        &mut self,
+        _input: crate::ui::mouse::MouseInput,
+        _ctx: &mut AppContext,
+    ) -> ScreenAction {
+        ScreenAction::None
+    }
 }
 
 pub enum ScreenAction {
@@ -340,6 +353,11 @@ pub enum ScreenAction {
     /// Used by archive browser (Phase 12) to dispatch async load actions.
     #[allow(dead_code)]
     DispatchAction(Box<Action>),
+    /// Flip terminal mouse capture (the `M` key, quick 260926-dyf D-06).
+    ///
+    /// `App` owns the desired state and shows the status message; the binary's
+    /// main loop applies it to the terminal. Never written to `config.json`.
+    ToggleMouseCapture,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

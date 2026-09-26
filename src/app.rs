@@ -501,6 +501,14 @@ pub struct App {
     /// When set, the main loop should suspend the TUI and open this file in
     /// $EDITOR, at the 1-based line when one is carried (see [`editor_args`]).
     pub pending_editor: Option<(PathBuf, Option<usize>)>,
+    /// The DESIRED terminal mouse-capture state (quick 260926-dyf, D-06).
+    ///
+    /// Initialised from `preferences.mouse` and flipped by `M`; the binary's
+    /// main loop applies it to the terminal each iteration (I-14). While it is
+    /// false every mouse action is ignored.
+    pub mouse_capture: bool,
+    /// Double-click detection (I-6); reset by every key press.
+    click_tracker: crate::ui::mouse::ClickTracker,
 }
 
 /// The argv (after the program name) that opens `path` in `editor`, positioned
@@ -574,6 +582,7 @@ impl App {
     }
 
     fn from_config(config: Config, config_path: PathBuf) -> Self {
+        let mouse_capture = config.preferences.mouse;
         let mut table_state = TableState::default();
         if !config.projects.is_empty() {
             table_state.select(Some(0));
@@ -626,6 +635,8 @@ impl App {
             active_sessions: Vec::new(),
             session_poll_counter: 0,
             pending_editor: None,
+            mouse_capture,
+            click_tracker: crate::ui::mouse::ClickTracker::default(),
         }
     }
 
@@ -1259,6 +1270,9 @@ impl App {
             }
             Action::RawKey(key_event) => {
                 self.handle_key(key_event.code, key_event.modifiers);
+            }
+            Action::Mouse(mouse_event) => {
+                self.handle_mouse(mouse_event, std::time::Instant::now());
             }
             Action::Resize => {
                 self.needs_redraw = true;
@@ -2340,7 +2354,35 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// One mouse event from the reader (quick 260926-dyf).
+    ///
+    /// Ignored while capture is off. A left press goes through the click tracker
+    /// to decide `double` (I-6); the result reaches the TOP screen only, whose
+    /// default `handle_mouse` ignores it (I-13).
+    pub fn handle_mouse(&mut self, event: crossterm::event::MouseEvent, now: std::time::Instant) {
+        use crate::ui::mouse::{routed, MouseInput, Routed};
+        if !self.mouse_capture {
+            return;
+        }
+        let input = match routed(&event) {
+            Some(Routed::Click { column, row }) => MouseInput::Click {
+                column,
+                row,
+                double: self.click_tracker.register(now, column, row),
+            },
+            Some(Routed::Wheel { column, row, down }) => MouseInput::Wheel { column, row, down },
+            None => return,
+        };
+        if let Some(screen) = self.screen_stack.last_mut() {
+            let action = screen.handle_mouse(input, &mut self.ctx);
+            self.process_screen_action(action);
+        }
+        self.needs_redraw = true;
+    }
+
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // A key between two presses means they are not a double-click (I-6).
+        self.click_tracker.reset();
         // Ctrl+C always quits regardless of mode
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             self.should_quit = true;
@@ -2390,6 +2432,15 @@ impl App {
                 if let Some(tx) = &self.ctx.event_tx {
                     let _ = tx.send(*action);
                 }
+            }
+            // Runtime only: nothing is written to `config.json` (D-06, I-2).
+            ScreenAction::ToggleMouseCapture => {
+                self.mouse_capture = !self.mouse_capture;
+                self.ctx.status_message = Some((
+                    crate::ui::mouse::mouse_status_text(self.mouse_capture).to_string(),
+                    std::time::Instant::now(),
+                ));
+                self.needs_redraw = true;
             }
         }
     }
@@ -5532,5 +5583,113 @@ mod tests {
 
         assert!(app.ctx.agent_views.is_empty());
         assert!(app.needs_redraw, "the row reverts, so the frame repaints");
+    }
+
+    // ── Mouse (quick 260926-dyf) ────────────────────────────────────────
+
+    fn mouse_app(aliases: &[&str]) -> App {
+        use crate::config::RegisteredProject;
+        let mut app = App::new_for_test();
+        for alias in aliases {
+            app.ctx.config.projects.insert(
+                (*alias).to_string(),
+                RegisteredProject {
+                    path: PathBuf::from("/nonexistent").join(alias),
+                    added: "2026-09-26".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+        }
+        app.ctx.recompute_filtered_aliases();
+        app.ctx.table_state.select(Some(0));
+        app
+    }
+
+    /// Draw the app exactly as the binary does and return the terminal row that
+    /// shows `needle`.
+    fn mouse_draw_and_find(app: &mut App, needle: &str) -> u16 {
+        use ratatui::backend::TestBackend;
+        let mut terminal =
+            ratatui::Terminal::new(TestBackend::new(100, 30)).expect("TestBackend terminal");
+        terminal.draw(|frame| crate::ui::render(frame, app)).expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        (0..30u16)
+            .find(|&y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .expect("the row is drawn")
+    }
+
+    fn left_press(column: u16, row: u16) -> Action {
+        Action::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn mouse_toggle_key_flips_capture_and_says_so() {
+        let mut app = App::new_for_test();
+        assert!(app.mouse_capture, "the default config turns capture on");
+        press(&mut app, KeyCode::Char('M'));
+        assert!(!app.mouse_capture);
+        let msg = app.ctx.status_message.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(msg.contains("Mouse off"), "{msg}");
+        press(&mut app, KeyCode::Char('M'));
+        assert!(app.mouse_capture);
+        let msg = app.ctx.status_message.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(msg.contains("Shift+drag"), "{msg}");
+
+        // In the `/` search, `M` is text.
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('M'));
+        assert_eq!(app.ctx.filter_text, "M");
+        assert!(app.mouse_capture, "a typed M must not toggle capture");
+    }
+
+    #[test]
+    fn mouse_preference_false_starts_with_capture_off() {
+        let mut config = Config::new();
+        config.preferences.mouse = false;
+        let app = App::from_config(config, PathBuf::from("/nonexistent/config.json"));
+        assert!(!app.mouse_capture);
+    }
+
+    #[test]
+    fn mouse_events_are_ignored_while_capture_is_off() {
+        let mut app = mouse_app(&["proja", "projb", "projc"]);
+        let row = mouse_draw_and_find(&mut app, "projc");
+        app.mouse_capture = false;
+        app.update(left_press(5, row));
+        assert_eq!(app.ctx.table_state.selected(), Some(0));
+        // And with capture on, the same press selects it.
+        app.mouse_capture = true;
+        app.update(left_press(5, row));
+        assert_eq!(app.ctx.table_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn mouse_app_turns_a_quick_second_press_into_enter() {
+        let mut app = mouse_app(&["proja", "projb", "projc"]);
+        let row = mouse_draw_and_find(&mut app, "projc");
+        app.update(left_press(5, row));
+        app.update(left_press(5, row));
+        assert_eq!(app.screen_stack.len(), 2, "the double-click opened the detail view");
+        assert_eq!(app.screen_stack.last().map(|s| s.name().to_string()).as_deref(), Some("detail"));
+
+        // A key between the two presses prevents the double.
+        let mut app = mouse_app(&["proja", "projb", "projc"]);
+        let row = mouse_draw_and_find(&mut app, "projc");
+        app.update(left_press(5, row));
+        press(&mut app, KeyCode::Char('j'));
+        app.update(left_press(5, row));
+        assert_eq!(app.screen_stack.len(), 1);
+        assert_eq!(app.ctx.table_state.selected(), Some(2));
     }
 }

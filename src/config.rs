@@ -300,6 +300,12 @@ fn default_driver_max_concurrent() -> usize {
     1
 }
 
+/// Mouse capture is ON unless the user says otherwise (quick 260926-dyf, D-06):
+/// an absent key, like a missing file, must still give the mouse-driven TUI.
+fn default_mouse() -> bool {
+    true
+}
+
 /// **`Default` is deliberately NOT derived on this struct.**
 ///
 /// A derived `Default` would yield `usize::default()` for
@@ -332,6 +338,13 @@ pub struct Preferences {
     /// default, so nobody should look for the policy in this file.
     #[serde(default = "default_driver_max_concurrent")]
     pub driver_max_concurrent: usize,
+    /// The startup default for terminal mouse capture (quick 260926-dyf, D-06).
+    ///
+    /// `M` toggles capture at runtime on the dashboard and in the detail view,
+    /// and the toggle is **never written back** here. While capture is on, the
+    /// terminal's own text selection needs Shift+drag (terminal-dependent).
+    #[serde(default = "default_mouse")]
+    pub mouse: bool,
     /// Every preference this build does not model.
     ///
     /// See [`RegisteredProject::extra`] — same technique, same reason, same
@@ -367,6 +380,7 @@ impl Default for Preferences {
             hooks: HooksConfig::default(),
             gsd_integration: false,
             driver_max_concurrent: default_driver_max_concurrent(),
+            mouse: default_mouse(),
             extra: Map::new(),
         }
     }
@@ -886,5 +900,27 @@ mod tests {
             1,
             "an absent key must default to one via `default_driver_max_concurrent`"
         );
+    }
+
+    /// quick-260926-dyf D-06 / I-1: mouse capture defaults ON from both `Default`
+    /// and an absent key, an explicit `false` is honoured, and it survives a
+    /// save/load round trip.
+    #[test]
+    fn mouse_preference_defaults_to_true_from_default_and_from_empty_json() {
+        assert!(Preferences::default().mouse);
+        let empty: Config =
+            serde_json::from_str(r#"{"version":1,"projects":{},"preferences":{}}"#).expect("parses");
+        assert!(empty.preferences.mouse, "an absent key defaults to true");
+        let off: Config =
+            serde_json::from_str(r#"{"version":1,"projects":{},"preferences":{"mouse":false}}"#)
+                .expect("parses");
+        assert!(!off.preferences.mouse);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.json");
+        save_config(&off, &path).expect("save");
+        assert!(!load_config(&path).expect("load").preferences.mouse);
+        // A missing file is the default config, mouse on.
+        assert!(load_config(&dir.path().join("absent.json")).expect("load").preferences.mouse);
     }
 }

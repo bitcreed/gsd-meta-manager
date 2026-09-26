@@ -1,3 +1,4 @@
+pub mod mouse;
 pub mod roadmap_widget;
 pub mod roadmap_graph;
 pub mod roadmap_view;
