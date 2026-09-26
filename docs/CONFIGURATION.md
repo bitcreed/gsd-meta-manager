@@ -43,7 +43,8 @@ The file is JSON. The top-level shape mirrors the `Config` struct in `src/config
       "pre_create": null,
       "post_create": null
     },
-    "gsd_integration": false
+    "gsd_integration": false,
+    "mouse": true
   }
 }
 ```
@@ -70,6 +71,7 @@ The file is JSON. The top-level shape mirrors the `Config` struct in `src/config
 | `hooks.pre_create` | string \| null | `null` | Shell command run before `create_project` creates a new project directory. Receives `GSD_PROJECT_NAME`, `GSD_PROJECT_PATH`, and `GSD_PROJECT_ALIAS` in its environment. Executed via `sh -c <cmd>`. |
 | `hooks.post_create` | string \| null | `null` | Shell command run after `git init` succeeds in the new project directory. Same env vars as `pre_create`. |
 | `gsd_integration` | boolean | `false` | When true, the detail view renders extra verified/inferred badges for GSD-integrated projects (see `src/ui/screens/detail.rs`). |
+| `mouse` | boolean | `true` | Whether the TUI starts with terminal mouse capture on (click tabs, sub-tabs and rows, double-click to open, wheel to scroll). An absent key means `true`. `M` toggles capture at runtime on the dashboard and in the detail view; the toggle is not saved back here. While capture is on, most terminals select text with Shift+drag. |
 
 Hook commands are non-fatal in the sense that the surrounding logic only proceeds when they exit `0` — see `execute_hook` in `src/project_creator.rs`.
 

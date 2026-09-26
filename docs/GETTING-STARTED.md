@@ -149,6 +149,10 @@ keystrokes:
 - On the Phases tab, `→` or `Enter` focuses the **Waves pane** (see below);
   `←` / `Esc` go back to the phase list
 - `/` — filter projects
+- The mouse works too: click a tab, a sub-tab or a row, double-click a row to
+  open it (the same as `Enter`), and use the wheel to move the selection in the
+  pane under the pointer. `M` turns the mouse off and on; while it is on, use
+  Shift+drag to select text (terminal-dependent)
 - `?` — show the help overlay
 - `q` — quit (on the dashboard)
 

@@ -58,6 +58,8 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   it has no phase directory). Verification state is shown separately
 - Live filesystem watching -- auto-refreshes when `.planning/` files change
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
+- Mouse support: click tabs, sub-tabs and rows, double-click to open, and
+  scroll with the wheel; `M` turns mouse capture off and on
 - 8-tab detail view (plus the experimental Driver tab): Roadmap (phase list
   with git-log-style dependency lanes and a detail pane showing each phase's
   goal, needs, unblocks and parallel phases), Phases (the selected phase's
@@ -187,6 +189,7 @@ Options:
 | `n`              | Create new project      |
 | `d`              | Delete project          |
 | `?`              | Show help               |
+| `M`              | Toggle mouse capture    |
 | `q`              | Quit (dashboard); back to the dashboard (detail view) |
 
 The detail view has two focus levels: the **tab bar** at the top and the
@@ -213,6 +216,23 @@ bar has focus it is also reversed and the content is dimmed.
 | `Enter`           | Sessions › Agents: jump to the agent's plan in the Phases Waves pane (navigation only; nothing is sent to the agent) |
 
 `6` and `8` re-open the sub-tab you last used on the Sessions and Docs tabs.
+
+#### Mouse
+
+Mouse capture is on by default, on the dashboard and in the detail view. Dialogs,
+the help overlay and text entry (the `/` search, Config value edits and the
+Config filter) ignore the mouse.
+
+| Mouse | Action |
+|-------|--------|
+| Click | Select a dashboard row; in the detail view, switch tab or sub-tab (exactly like its digit key), or select a Phases, Sessions, Agents or Waves-pane row and focus that pane |
+| Double-click | Open the row, the same as `Enter` (a project's detail view, session resume, the Agents <-> Waves-pane jumps, wave fold / unfold) |
+| Wheel | Move the selection in the pane under the pointer, one row per step; it never switches tabs or climbs to the tab bar |
+| `M` | Toggle mouse capture on / off (not saved) |
+| Shift+drag | Select and copy text while mouse capture is on (terminal-dependent) |
+
+To start with mouse capture off, set `"mouse": false` under `preferences` in
+`config.json` (see [Configuration](docs/CONFIGURATION.md)).
 
 ### Examples
 
