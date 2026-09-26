@@ -72,6 +72,16 @@ pub struct ProjectState {
     /// frontier read `phases`: merging would let them target a phase GSD does
     /// not know exists.
     pub planned_phases: Vec<roadmap_md::RoadmapPhase>,
+    /// The phases ROADMAP.md lists inside closed-milestone `<details>`
+    /// collapses — the shipped history GSD's `complete-milestone` folds away
+    /// ([`roadmap_md::parse_shipped_phases`]); drawn in the Roadmap's shipped
+    /// bands. Display-only.
+    ///
+    /// **Deliberately NOT merged into `phases`.** GSD strips closed collapses
+    /// before it enumerates phases, and an archived phase usually has no
+    /// directory: in `phases` it would infer `NoDirectory`, take the
+    /// current-phase cell, and become a legal driver goal target.
+    pub shipped_phases: Vec<roadmap_md::RoadmapPhase>,
     /// Each phase's and build phase's `**Goal**:` line
     /// ([`roadmap_md::parse_phase_goals`]), keyed by `phase_key`; shown in the
     /// Roadmap's detail pane. Display-only.
@@ -866,6 +876,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
         state.planned_phases = roadmap_md::parse_planned_build_phases(&content);
+        state.shipped_phases = roadmap_md::parse_shipped_phases(&content);
         state.phase_goals = roadmap_md::parse_phase_goals(&content);
         state.milestones = roadmap_md::roadmap_milestones(&content);
         // STATE.md is the milestone's primary source; a project whose STATE.md

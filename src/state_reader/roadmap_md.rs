@@ -177,12 +177,17 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
     let is_header = |line: &str| checklist_re.is_match(line) || heading_re.is_match(line);
 
     let lines: Vec<&str> = content.lines().collect();
+    // Lines inside a closed-milestone `<details>` block are GSD-invisible:
+    // GSD strips those blocks before it enumerates phases.
+    let closed = closed_milestone_lines(&lines);
     let mut phases: Vec<RoadmapPhase> = Vec::new();
 
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
-        let parsed: Option<RoadmapPhase> = if let Some(caps) = checklist_re.captures(line) {
+        let parsed: Option<RoadmapPhase> = if closed[i] {
+            None
+        } else if let Some(caps) = checklist_re.captures(line) {
             let number = caps[3].to_string();
             // Strikethrough (`~~...~~`) marks a retired phase → exclude entirely.
             let retired = caps.get(2).is_some() || caps.get(5).is_some() || line.contains("~~");
@@ -226,8 +231,10 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
             let mut j = i + 1;
             while j < lines.len() {
                 let l = lines[j];
-                // Stop at the next phase header (either heading shape).
-                if is_header(l) {
+                // Stop at the next phase header (either heading shape), and at
+                // a closed collapse: its plan items belong to a shipped phase,
+                // never to the entry above it.
+                if closed[j] || is_header(l) {
                     break;
                 }
                 if let Some(plan_caps) = plan_re.captures(l) {
@@ -317,6 +324,214 @@ fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
     }
 
     merged
+}
+
+/// One flag per line: `true` when the line lies inside a **closed-milestone**
+/// `<details>` block, its `<details>` and `</details>` lines included.
+///
+/// **A port of GSD's own rule** (`gsd-core/bin/lib/roadmap-parser.cjs`,
+/// `stripClosedMilestoneDetails` / `isClosedMilestoneHeading`): a block is
+/// closed when its first `<summary>…</summary>` text carries a closed marker
+/// (`CLOSED`, `ARCHIVED`, `ABANDONED`, `SHIPPED`, `FAILED`, `✅`, `🗄`) and no
+/// active marker (`STARTED`, `ACTIVE`, `WIP`, `in progress`, `🚧`, `🔄`). GSD
+/// strips exactly these blocks before it enumerates phases, which is why
+/// [`parse_roadmap_phases`] must not see their lines and
+/// [`parse_shipped_phases`] reads only them.
+///
+/// A block without a summary, and a block with no terminating `</details>`,
+/// is not closed — GSD's pattern matches neither. Nesting is tracked with a
+/// stack, so a closed outer block covers everything inside it.
+fn closed_milestone_lines(lines: &[&str]) -> Vec<bool> {
+    static OPEN: OnceLock<Regex> = OnceLock::new();
+    static CLOSE: OnceLock<Regex> = OnceLock::new();
+    static SUMMARY: OnceLock<Regex> = OnceLock::new();
+    static CLOSED_MARKER: OnceLock<Regex> = OnceLock::new();
+    static ACTIVE_MARKER: OnceLock<Regex> = OnceLock::new();
+    let open = OPEN.get_or_init(|| Regex::new(r"(?i)<details\b").unwrap());
+    let close = CLOSE.get_or_init(|| Regex::new(r"(?i)</details>").unwrap());
+    let summary = SUMMARY.get_or_init(|| Regex::new(r"(?i)<summary[^>]*>([^<]*)</summary>").unwrap());
+    let closed_marker = CLOSED_MARKER.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:CLOSED|ARCHIVED|ABANDONED|SHIPPED|FAILED)\b|\x{2705}|\x{1F5C4}").unwrap()
+    });
+    let active_marker = ACTIVE_MARKER.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:STARTED|ACTIVE|WIP)\b|in\s+progress|\x{1F6A7}|\x{1F504}").unwrap()
+    });
+
+    let mut flags = vec![false; lines.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        for _ in open.find_iter(line) {
+            stack.push(i);
+        }
+        for _ in close.find_iter(line) {
+            let Some(start) = stack.pop() else {
+                continue;
+            };
+            let block = lines[start..=i].join("\n");
+            let is_closed = summary.captures(&block).is_some_and(|caps| {
+                closed_marker.is_match(&caps[1]) && !active_marker.is_match(&caps[1])
+            });
+            if is_closed {
+                flags[start..=i].fill(true);
+            }
+        }
+    }
+    flags
+}
+
+/// A plan tally written after a phase title: `(6/6 plans)`, `(3 plans,
+/// complete)`, `(1 plan)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlanTally {
+    completed: u32,
+    total: u32,
+    /// The tally itself says the phase is finished (`complete`, `completed`,
+    /// `done`) — only the `N plans, …` form can.
+    says_complete: bool,
+}
+
+fn plan_tally_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\((\d+)/(\d+) plans?\)|\((\d+) plans?(?:,\s*(complete|completed|done))?\)").unwrap()
+    })
+}
+
+fn read_tally(caps: &regex::Captures<'_>) -> PlanTally {
+    let num = |i: usize| caps.get(i).and_then(|m| m.as_str().parse::<u32>().ok()).unwrap_or(0);
+    if caps.get(1).is_some() {
+        PlanTally {
+            completed: num(1),
+            total: num(2),
+            says_complete: false,
+        }
+    } else {
+        let total = num(3);
+        let says_complete = caps.get(4).is_some();
+        PlanTally {
+            completed: if says_complete { total } else { 0 },
+            total,
+            says_complete,
+        }
+    }
+}
+
+/// A spaced title/description separator: ` -- `, ` - `, ` – `, ` — `.
+fn spaced_separator_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\s+(?:--|[-\x{2013}\x{2014}])\s+").unwrap())
+}
+
+/// Strip one leading separator (`--`, `-`, `–`, `—`, `:`) and collapse
+/// whitespace runs.
+fn tidy_description(text: &str) -> String {
+    let t = text.trim_start();
+    let t = t
+        .strip_prefix("--")
+        .or_else(|| t.strip_prefix(['-', '\u{2013}', '\u{2014}', ':']))
+        .unwrap_or(t);
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Split the text after a non-bold `Phase N:` into `(name, description,
+/// tally)`. The name ends at the earliest plan tally or spaced separator;
+/// the description is the rest with the first tally removed and one leading
+/// separator stripped. With neither, the whole text is the name.
+fn split_summary_rest(rest: &str) -> (String, String, Option<PlanTally>) {
+    let tally = plan_tally_re().captures(rest);
+    let tally_span = tally.as_ref().and_then(|c| c.get(0)).map(|m| (m.start(), m.end()));
+    let sep_start = spaced_separator_re().find(rest).map(|m| m.start());
+    let cut = match (tally_span.map(|(s, _)| s), sep_start) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return (rest.trim().to_string(), String::new(), None),
+    };
+    let name = rest[..cut].trim().to_string();
+    let remainder = match tally_span {
+        Some((s, e)) => format!("{} {}", &rest[cut..s], &rest[e..]),
+        None => rest[cut..].to_string(),
+    };
+    (name, tidy_description(&remainder), tally.as_ref().map(read_tally))
+}
+
+/// The plain (non-bold) checkbox phase line GSD's `complete-milestone`
+/// workflow writes: `- [x] Phase 1: Name (2/2 plans) — completed D`.
+/// Groups: 1=checkbox, 2=strike-open, 3=id, 4=the text after the colon.
+fn plain_checkbox_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r"^\s*[-*] \[([ xX])\] (~~)?Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            id = PHASE_ID
+        ))
+        .unwrap()
+    })
+}
+
+/// The phases a roadmap lists inside **closed-milestone** `<details>`
+/// collapses — the shipped history GSD's `complete-milestone` workflow folds
+/// away. Display-only.
+///
+/// **Deliberately separate from [`parse_roadmap_phases`].** GSD strips these
+/// blocks before it counts phases (see [`closed_milestone_lines`]), so they
+/// are not GSD phases: in the GSD-facing list an archived phase with no
+/// directory would infer `NoDirectory`, take the current-phase cell, and
+/// become a legal driver target. The two parsers split the roadmap by region,
+/// not by shape — this one reads only closed lines.
+///
+/// `completed` comes from the checkbox. Plan counts are the per-field max of
+/// the line's tally and the plan items listed below it, up to the next entry
+/// or the end of the closed region. Retired (`~~`) and sentinel ids are
+/// excluded. Duplicates merge as in [`parse_roadmap_phases`].
+pub fn parse_shipped_phases(content: &str) -> Vec<RoadmapPhase> {
+    static PLAN: OnceLock<Regex> = OnceLock::new();
+    let plan_re = PLAN.get_or_init(|| Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap());
+    let plain = plain_checkbox_re();
+
+    let lines: Vec<&str> = content.lines().collect();
+    let closed = closed_milestone_lines(&lines);
+    let mut phases: Vec<RoadmapPhase> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if !closed[i] {
+            continue;
+        }
+        let Some(caps) = plain.captures(line) else {
+            continue;
+        };
+        let number = caps[3].to_string();
+        if caps.get(2).is_some() || line.contains("~~") || is_sentinel_phase(&number) {
+            continue;
+        }
+        let (name, description, tally) = split_summary_rest(&caps[4]);
+        let (mut scanned_total, mut scanned_done) = (0u32, 0u32);
+        for (j, l) in lines.iter().enumerate().skip(i + 1) {
+            if !closed[j] || plain.is_match(l) {
+                break;
+            }
+            if let Some(plan_caps) = plan_re.captures(l) {
+                scanned_total += 1;
+                if &plan_caps[1] != " " {
+                    scanned_done += 1;
+                }
+            }
+        }
+        let tally = tally.unwrap_or(PlanTally {
+            completed: 0,
+            total: 0,
+            says_complete: false,
+        });
+        phases.push(RoadmapPhase {
+            completed: &caps[1] != " ",
+            number,
+            name,
+            description,
+            total_plans: tally.total.max(scanned_total),
+            completed_plans: tally.completed.max(scanned_done),
+            depends_on: Vec::new(),
+        });
+    }
+    merge_duplicate_phases(phases)
 }
 
 /// The `#### Build phase N (Milestone M): Title` heading a roadmap uses for a
@@ -2361,5 +2576,98 @@ Plans:
             Some("### Phase 999.1: One (BACKLOG)"),
             "fixture self-check: line 13 is the 999.1 heading"
         );
+    }
+
+    // ── quick 260926-fi9: shipped-milestone collapses ───────────────────────
+
+    #[test]
+    fn ttbook_shipped_v1_lines_parse_as_shipped_phases() {
+        let shipped = parse_shipped_phases(TTBOOK_ROADMAP);
+        let numbers: Vec<&str> = shipped.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, ["1", "2", "3", "4", "5", "6", "7", "7.1"]);
+        let names: Vec<&str> = shipped.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Access and session handling (R1)",
+                "Stack and dependency review (R2)",
+                "Architecture and data model (R3)",
+                "Deployment and operations (R4)",
+                "Module redesign (R5)",
+                "Domain rules and open facts (R6)",
+                "Consolidation",
+                "Apply rulings and review findings (INSERTED)",
+            ]
+        );
+        let plans: Vec<(u32, u32)> = shipped
+            .iter()
+            .map(|p| (p.completed_plans, p.total_plans))
+            .collect();
+        assert_eq!(
+            plans,
+            [(6, 6), (13, 13), (8, 8), (9, 9), (9, 9), (8, 8), (12, 12), (16, 16)]
+        );
+        assert!(shipped.iter().all(|p| p.completed));
+        assert_eq!(shipped[0].description, "completed 2026-09-23; (sanitised)");
+        assert!(shipped.iter().all(|p| p.depends_on.is_empty()));
+    }
+
+    #[test]
+    fn closed_collapses_follow_gsds_marker_rule() {
+        let block = |summary: &str| {
+            format!(
+                "<details>\n{summary}\n\n- [x] Phase 1: One (1/1 plans) - completed 2026-01-01\n\n</details>\n"
+            )
+        };
+        for summary in [
+            "<summary>v1.0 MVP (Phases 1-4) - SHIPPED 2026-01-01</summary>",
+            "<summary>v1.0 MVP - closed early</summary>",
+            "<summary>\u{2705} v1.0 MVP (Phases 1-4)</summary>",
+            "<summary>v0.9 Archived notes</summary>",
+        ] {
+            let roadmap = block(summary);
+            let lines: Vec<&str> = roadmap.lines().collect();
+            assert!(
+                closed_milestone_lines(&lines).iter().all(|c| *c),
+                "{summary}: every line of the block, wrappers included, is closed"
+            );
+            let shipped = parse_shipped_phases(&roadmap);
+            assert_eq!(shipped.len(), 1, "{summary}");
+            assert!(parse_roadmap_phases(&roadmap).is_empty(), "{summary}");
+        }
+        for (why, roadmap) in [
+            ("no marker", block("<summary>Completed phases</summary>")),
+            (
+                "closed and active markers",
+                block("<summary>\u{2705} v1.0 done, \u{1F6A7} v1.1 in flight</summary>"),
+            ),
+            ("no summary", block("")),
+            (
+                "unterminated",
+                "<details>\n<summary>v1.0 SHIPPED</summary>\n\n- [x] Phase 1: One (1/1 plans)\n"
+                    .to_string(),
+            ),
+        ] {
+            let lines: Vec<&str> = roadmap.lines().collect();
+            assert!(
+                closed_milestone_lines(&lines).iter().all(|c| !c),
+                "{why}: not a closed collapse"
+            );
+            assert!(
+                parse_shipped_phases(&roadmap).is_empty(),
+                "{why}: a plain line outside a closed collapse is not shipped"
+            );
+        }
+
+        // Outside the block nothing is flagged, and a plan item inside a
+        // closed collapse is never credited to the GSD phase above it.
+        let roadmap = "### Phase 5: Live\n\n<details>\n<summary>v1 SHIPPED</summary>\n\n\
+                       - [x] 01-01-PLAN.md - archived\n</details>\n\n- [ ] 05-01-PLAN.md - live\n";
+        let lines: Vec<&str> = roadmap.lines().collect();
+        let flags = closed_milestone_lines(&lines);
+        assert_eq!(flags, [false, false, true, true, true, true, true, false, false]);
+        let live = parse_roadmap_phases(roadmap);
+        assert_eq!(live.len(), 1);
+        assert_eq!((live[0].completed_plans, live[0].total_plans), (0, 0));
     }
 }

@@ -2427,7 +2427,11 @@ fn disk_suffix_spans(
 /// [`roadmap_graph::layout_list`]'s input, so the key handler and the render
 /// (24-06) can never lay out two different lists.
 ///
-/// * **Nodes:** `state.phases` in roadmap order, then `state.planned_phases`
+/// * **Nodes:** first `state.shipped_phases` (the closed-milestone collapse
+///   history, quick 260926-fi9) whose `phase_key` no GSD or planned entry
+///   holds and whose id a milestone range covers — marker from the checkbox
+///   only, never current, never "start now" and never parallel with a live
+///   phase; then `state.phases` in roadmap order, then `state.planned_phases`
 ///   (ttbook's build-phase placeholders, D-A12) whose `phase_key` no GSD phase
 ///   already holds — a GSD phase wins a duplicate.
 /// * **Bands:** every roadmap milestone, shipped flags from
@@ -2490,9 +2494,44 @@ pub(crate) fn roadmap_model_for(
         bands.len() - 1
     });
 
-    let nodes = entries
+    // Shipped phases (quick 260926-fi9): the closed-collapse history, drawn
+    // before the GSD entries. A GSD or planned entry wins a shared key and
+    // nothing is merged across channels, so an archived `Phase 1` never
+    // completes a renumbered current `Phase 1`. Band from the milestone ranges
+    // only — a shipped phase no milestone covers is omitted rather than
+    // guessed into the active or synthetic band — and no disk lookup: the
+    // marker is the checkbox, never Current.
+    let held: std::collections::HashSet<String> =
+        entries.iter().map(|(p, _)| phase_key(&p.number)).collect();
+    let shipped_nodes: Vec<roadmap_graph::ListNode<'_>> = state
+        .shipped_phases
+        .iter()
+        .filter(|p| !held.contains(&phase_key(&p.number)))
+        .filter_map(|p| {
+            let band = own_band(p)?;
+            Some(roadmap_graph::ListNode {
+                id: &p.number,
+                name: &p.name,
+                deps: &p.depends_on,
+                band: Some(band),
+                marker: if p.completed {
+                    state_reader::PhaseMarker::Done
+                } else {
+                    state_reader::PhaseMarker::Future
+                },
+                done: p.completed,
+                plans: state_reader::phase_plan_counts(p, &state.phase_disk_statuses),
+                goal: state.phase_goals.get(&phase_key(&p.number)),
+                planned: false,
+                badge: None,
+            })
+        })
+        .collect();
+    let shipped_count = shipped_nodes.len();
+
+    let nodes = shipped_nodes
         .into_iter()
-        .map(|(p, planned)| {
+        .chain(entries.into_iter().map(|(p, planned)| {
             let badge: String = disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
                 .iter()
                 .map(|s| s.content.as_ref())
@@ -2510,12 +2549,21 @@ pub(crate) fn roadmap_model_for(
                 planned,
                 badge: (!badge.is_empty()).then(|| badge.to_string()),
             }
-        })
+        }))
         .collect();
 
     let no_toggles = std::collections::HashSet::new();
     let toggles = cache.map_or(&no_toggles, |c| &c.roadmap_fold_toggles);
-    roadmap_graph::layout_list(&roadmap_graph::ListInput { nodes, bands }, toggles)
+    let mut model = roadmap_graph::layout_list(&roadmap_graph::ListInput { nodes, bands }, toggles);
+    // An archived phase is history, not work: it is never "start now" (an
+    // unfinished, rescoped one would otherwise read as ready), and it never
+    // shares a wave with a live phase in either direction.
+    let is_shipped = |u: usize| u < shipped_count;
+    model.start_now.retain(|&u| !is_shipped(u));
+    for (u, facts) in model.phases.iter_mut().enumerate() {
+        facts.parallel.retain(|&v| is_shipped(v) == is_shipped(u));
+    }
+    model
 }
 
 /// The Roadmap tab's first line (Mockups A/B/C, D-B02):
@@ -18590,6 +18638,11 @@ mod tests {
                 include_str!("../../../tests/fixtures/roadmaps/ttbook-ROADMAP.md"),
                 include_str!("../../../tests/fixtures/roadmaps/ttbook-STATE.md"),
             ),
+            // Synthetic shape fixture (quick 260926-fi9).
+            "v1-era-shapes" => (
+                include_str!("../../../tests/fixtures/roadmap-shapes/v1-era-ROADMAP.md"),
+                "---\nmilestone: v2.0\nstatus: executing\ncurrent_phase: 13\n---\n# Project State\n",
+            ),
             other => panic!("no roadmap fixture named {other}"),
         };
         let dir = tempfile::tempdir().expect("temp dir");
@@ -18707,6 +18760,46 @@ mod tests {
             let facts = &model.phases[model.phase_index(&id).expect("listed")];
             assert_eq!(facts.planned, n >= 14, "phase {id}");
         }
+    }
+
+    /// quick 260926-fi9: ttbook's shipped v1 lines (plain checkboxes inside a
+    /// `✅ … SHIPPED` collapse) are rows of the v1 band once the shipped
+    /// summary is unfolded, and invisible while it is folded.
+    #[test]
+    fn roadmap_model_for_ttbook_lists_shipped_v1_phases_when_unfolded() {
+        let state = fixture_state("ttbook");
+        let shipped_ids = ["1", "2", "3", "4", "5", "6", "7", "7.1"];
+
+        let folded = roadmap_model_for(&state, None, false);
+        let ids = phase_row_ids(&folded);
+        for n in 8..=18 {
+            assert!(ids.contains(&n.to_string()), "{n}: {ids:?}");
+        }
+        for id in shipped_ids {
+            assert!(!ids.iter().any(|i| i == id), "{id} hidden while folded: {ids:?}");
+        }
+
+        let mut cache = crate::ui::screens::ProjectViewCache::default();
+        cache.roadmap_fold_toggles.insert(roadmap_graph::BandKey::Shipped);
+        let model = roadmap_model_for(&state, Some(&cache), false);
+        let ids = phase_row_ids(&model);
+        let v1 = model
+            .bands
+            .iter()
+            .position(|b| b.short == "v1")
+            .expect("a v1 band");
+        for id in shipped_ids {
+            assert_eq!(ids.iter().filter(|i| *i == id).count(), 1, "{id}: {ids:?}");
+            let facts = &model.phases[model.phase_index(id).expect("listed")];
+            assert_eq!(facts.band, Some(v1), "phase {id}");
+            assert_eq!(facts.status, roadmap_graph::PhaseStatus::Done, "phase {id}");
+        }
+        assert_eq!(model.bands[v1].done, shipped_ids.len(), "every shipped v1 phase is done");
+        assert_eq!(model.bands[v1].total, shipped_ids.len());
+        assert!(
+            model.start_now.iter().all(|&u| !shipped_ids.contains(&model.phases[u].id.as_str())),
+            "a shipped phase is never start-now"
+        );
     }
 
     #[test]
