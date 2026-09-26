@@ -499,4 +499,119 @@ mod tests {
         assert_eq!(suggestions, keyword_suggestions(&state));
         assert!(suggestions[0].contains("discuss-phase 2"));
     }
+
+    // --- gsd-tools resolver order (gsd-core 1.15.0 gsd-run-resolver.md) ---
+
+    const SHIM: &str = "gsd-core/bin/gsd-tools.cjs";
+
+    /// Plant a stub `gsd-tools.cjs` under `base/<rel>/gsd-core/bin/`.
+    fn plant(base: &Path, rel: &str) -> PathBuf {
+        let path = base.join(rel).join(SHIM);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "// stub\n").unwrap();
+        path
+    }
+
+    fn node_cmd(path: &Path) -> GsdToolsCmd {
+        GsdToolsCmd {
+            program: "node".to_string(),
+            prefix_args: vec![path.to_string_lossy().into_owned()],
+        }
+    }
+
+    #[test]
+    fn gsd_tools_candidates_follow_the_upstream_1_15_0_order() {
+        let root = Path::new("/p");
+        let home = Path::new("/h");
+        assert_eq!(
+            gsd_tools_candidates(root, Some(home), None),
+            vec![
+                root.join("gsd-core/bin/gsd-tools.cjs"),
+                root.join(".claude/gsd-core/bin/gsd-tools.cjs"),
+                root.join(".codex/gsd-core/bin/gsd-tools.cjs"),
+                home.join(".claude/gsd-core/bin/gsd-tools.cjs"),
+                home.join(".codex/gsd-core/bin/gsd-tools.cjs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn gsd_tools_candidates_honour_a_non_empty_codex_home() {
+        let root = Path::new("/p");
+        let home = Path::new("/h");
+        let got = gsd_tools_candidates(root, Some(home), Some(OsStr::new("/x/codex")));
+        assert_eq!(got.len(), 5, "CODEX_HOME replaces ~/.codex, it does not add");
+        assert_eq!(
+            got.last().unwrap(),
+            &PathBuf::from("/x/codex/gsd-core/bin/gsd-tools.cjs")
+        );
+        assert!(!got.contains(&home.join(".codex/gsd-core/bin/gsd-tools.cjs")));
+    }
+
+    #[test]
+    fn gsd_tools_candidates_treat_an_empty_codex_home_as_unset() {
+        // Mirrors the shell `${CODEX_HOME:-$HOME/.codex}` expansion.
+        let root = Path::new("/p");
+        let home = Path::new("/h");
+        let got = gsd_tools_candidates(root, Some(home), Some(OsStr::new("")));
+        assert_eq!(
+            got.last().unwrap(),
+            &home.join(".codex/gsd-core/bin/gsd-tools.cjs")
+        );
+    }
+
+    #[test]
+    fn gsd_tools_candidates_without_a_home() {
+        let root = Path::new("/p");
+        assert_eq!(
+            gsd_tools_candidates(root, None, None),
+            vec![
+                root.join("gsd-core/bin/gsd-tools.cjs"),
+                root.join(".claude/gsd-core/bin/gsd-tools.cjs"),
+                root.join(".codex/gsd-core/bin/gsd-tools.cjs"),
+            ]
+        );
+        let got = gsd_tools_candidates(root, None, Some(OsStr::new("/x/codex")));
+        assert_eq!(got.len(), 4);
+        assert_eq!(
+            got.last().unwrap(),
+            &PathBuf::from("/x/codex/gsd-core/bin/gsd-tools.cjs")
+        );
+    }
+
+    #[test]
+    fn a_codex_only_home_install_resolves_through_node() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let codex = plant(home.path(), ".codex");
+        assert_eq!(
+            resolve_gsd_tools_from(root.path(), Some(home.path()), None),
+            Some(node_cmd(&codex))
+        );
+    }
+
+    #[test]
+    fn a_claude_home_install_beats_a_codex_home_install() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        plant(home.path(), ".codex");
+        let claude = plant(home.path(), ".claude");
+        assert_eq!(
+            resolve_gsd_tools_from(root.path(), Some(home.path()), None),
+            Some(node_cmd(&claude))
+        );
+    }
+
+    #[test]
+    fn a_project_local_codex_install_beats_a_home_install() {
+        let home = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        plant(home.path(), ".claude");
+        plant(home.path(), ".codex");
+        let local = plant(root.path(), ".codex");
+        assert_eq!(
+            resolve_gsd_tools_from(root.path(), Some(home.path()), None),
+            Some(node_cmd(&local))
+        );
+    }
 }
