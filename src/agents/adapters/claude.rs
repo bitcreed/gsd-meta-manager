@@ -267,11 +267,18 @@ fn entry_names(dir: &Path) -> Vec<String> {
 /// Candidates, in order: the registered path, its canonical form, and the main
 /// worktree path git reported — Claude Code files sessions under the canonical
 /// working-copy root, which the registered spelling may not be. Each is kept
-/// when its encoded directory exists. When an encoding exceeded 200 units and
-/// its exact directory is absent (a hash drift, or a path spelled differently
-/// than when Claude hashed it), `<root>/projects/` is listed once and the
-/// single entry starting with the 200-unit prefix plus `-` is accepted; zero or
-/// several such entries mean no directory.
+/// when its exact encoded directory exists, and only then.
+///
+/// **No prefix fallback (WR-05).** An encoding over 200 units used to fall
+/// back, when its exact directory was absent, to the single entry sharing its
+/// 200-unit prefix. Two projects under one long parent share that prefix, so a
+/// project with no Claude directory yet adopted its sibling's, and the
+/// sibling's live subagents were reported as this project's worktree-less
+/// agents — switching its Status cell on. The three candidate spellings are
+/// already hashed exactly as Claude Code hashes them ([`encode_project_dir`],
+/// pinned against the extracted algorithm), so the fallback only ever rescued a
+/// hash drift, at the price of a wrong project [inferred: dropped rather than
+/// kept for enrichment only, per the review's first option].
 fn project_dirs(root: &Path, snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
     let projects = root.join("projects");
     let mut encodings: Vec<String> = Vec::new();
@@ -289,27 +296,11 @@ fn project_dirs(root: &Path, snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
         push(main);
     }
 
-    let mut listing: Option<Vec<String>> = None;
     let mut dirs: Vec<PathBuf> = Vec::new();
     for encoded in encodings {
         let exact = projects.join(&encoded);
-        let found = if exact.is_dir() {
-            Some(exact)
-        } else if encoded.len() > ENCODED_NAME_LIMIT {
-            let prefix = format!("{}-", &encoded[..ENCODED_NAME_LIMIT]);
-            let names = listing.get_or_insert_with(|| entry_names(&projects));
-            let mut matches = names.iter().filter(|name| name.starts_with(&prefix));
-            match (matches.next(), matches.next()) {
-                (Some(only), None) => Some(projects.join(only)).filter(|dir| dir.is_dir()),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        if let Some(dir) = found {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
+        if exact.is_dir() && !dirs.contains(&exact) {
+            dirs.push(exact);
         }
     }
     dirs

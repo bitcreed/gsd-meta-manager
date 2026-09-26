@@ -439,6 +439,59 @@ fn a_live_worktree_less_subagent_is_listed_and_a_stale_one_is_not() {
     );
 }
 
+/// WR-05: two projects under one long parent share their encodings' 200-unit
+/// prefix. A project with no Claude directory of its own must not adopt its
+/// sibling's and report the sibling's live subagents as its own.
+#[test]
+fn a_long_path_project_never_adopts_a_siblings_claude_directory() {
+    let Ok(tmp) = TempDir::new() else {
+        return;
+    };
+    let root = tmp.path().join("claude");
+    let parent = PathBuf::from(format!("/srv/{}", "p".repeat(220)));
+    let with_dir = parent.join("beta");
+    let without_dir = parent.join("alpha");
+    let encoded = encode_project_dir(with_dir.to_str().expect("utf-8"));
+    assert!(encoded.len() > 200, "the fixture is a long-path encoding");
+    assert_eq!(
+        encoded[..200],
+        encode_project_dir(without_dir.to_str().expect("utf-8"))[..200],
+        "the two projects share the 200-unit prefix"
+    );
+    let subagents = root
+        .join("projects")
+        .join(encoded)
+        .join(SESSION)
+        .join("subagents");
+    std::fs::create_dir_all(&subagents).expect("fixture subagents dir");
+    let now = SystemTime::now();
+    write_meta_in(
+        &subagents,
+        "aresearcher00000",
+        &loose_meta("gsd-phase-researcher", "Research phase 26"),
+    );
+    write_transcript_in(&subagents, "aresearcher00000", now - Duration::from_secs(5));
+
+    let report_for = |project: &Path| {
+        let snap = CoreSnapshot {
+            project_root: project,
+            main_worktree: Some(project),
+            worktrees: &[],
+            now,
+        };
+        ClaudeCodeAdapter::new(root.clone()).enrich(&snap)
+    };
+    assert_eq!(
+        report_for(&with_dir).worktreeless.len(),
+        1,
+        "the owner still sees its live subagent"
+    );
+    assert!(
+        report_for(&without_dir).worktreeless.is_empty(),
+        "the sibling's subagent is not this project's"
+    );
+}
+
 #[test]
 fn agent_type_is_shown_verbatim_without_a_gsd_filter() {
     let Some(fx) = claude_fixture() else {
