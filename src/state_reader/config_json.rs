@@ -1,10 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-/// The gsd-core release this build's config surface was last synced against —
-/// the `version` field of that repository's `package.json`, MEASURED rather
-/// than remembered (quick task 260916-vqw, ID-1/ID-4).
+/// The latest gsd-core release PUBLISHED ON NPM at or below
+/// [`GSD_CORE_SYNCED_COMMIT`] — MEASURED rather than remembered (quick tasks
+/// 260916-vqw ID-1/ID-4, 260926-gtk).
 ///
-/// **What a future syncer does with it.** gsd-core adds config keys every
+/// **It is the conformance-oracle pin, not the synced tree's version.**
+/// `scripts/install-conformance-oracle.sh` greps this declaration and
+/// npm-installs `@opengsd/gsd-core@<this>` — in the publish job
+/// (`.github/workflows/release.yml`) and in `./scripts/pre-tag-check.sh
+/// --container`. The config surface is synced to gsd-core's `release-1.15.0`
+/// branch, whose `package.json` says `1.15.0`, but 1.15.0 is not on npm yet,
+/// so pinning it here would break the publish job. Bump this to `1.15.0`
+/// TOGETHER with [`GSD_CORE_SYNCED_COMMIT`] once `npm view @opengsd/gsd-core
+/// version` reports 1.15.0 and a `v1.15.0` tag exists.
+///
+/// **What a future syncer does with the pair.** gsd-core adds config keys every
 /// release, and a key this build does not model is a key the Defaults tab
 /// cannot show. Before 260916-vqw it was also a key the SAVE path deleted, and
 /// the drift was silent in both directions because nothing in the tree recorded
@@ -12,20 +22,27 @@ use serde::{Deserialize, Serialize};
 /// record; `docs/GSD-CORE-SYNC.md` is the human-readable half and carries the
 /// per-key inventory to diff against.
 ///
-/// Re-measure both, never hand-edit, when syncing:
+/// Re-measure both, never hand-edit, when syncing — against a REF, because the
+/// local checkout's working-tree HEAD is not necessarily the sync target:
 ///
 /// ```text
-/// node -p "require('$HOME/projects/node/gsd-core/package.json').version"
-/// git -C ~/projects/node/gsd-core describe --tags --always
+/// CORE=~/projects/node/gsd-core REF=upstream/release-1.15.0
+/// git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
+/// git -C "$CORE" show "$REF:package.json"          # the tree's own version
+/// npm view @opengsd/gsd-core version               # -> GSD_CORE_SYNCED_VERSION
 /// ```
 pub const GSD_CORE_SYNCED_VERSION: &str = "1.14.0";
 
-/// The exact gsd-core revision [`GSD_CORE_SYNCED_VERSION`] was read at, as
-/// `git describe --tags --always` spells it.
+/// The exact gsd-core revision this build's config surface was synced
+/// against, as `git describe --tags --always` spells it.
 ///
-/// The version alone is not enough to diff from: gsd-core lands config keys on
-/// `main` between tags, and this build synced 52 commits past `v1.14.0`.
-pub const GSD_CORE_SYNCED_COMMIT: &str = "v1.14.0-52-g651511d1e";
+/// The tip of gsd-core's `release-1.15.0` branch — 111 commits past
+/// `v1.14.0`, full sha `ec81d0d10f545dd5aea2cc893863a542bc49029d`, whose
+/// `package.json` says `1.15.0` but which carries no tag. The describe names
+/// `v1.14.0` because that is the newest tag reachable from it, which is why it
+/// still contains [`GSD_CORE_SYNCED_VERSION`]; that stops holding once
+/// `v1.15.0` is tagged, and is the signal to bump both together.
+pub const GSD_CORE_SYNCED_COMMIT: &str = "v1.14.0-111-gec81d0d10";
 
 /// Every key of a parsed block that this build has no typed field for.
 ///
