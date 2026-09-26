@@ -145,6 +145,7 @@ coverage assertions refuse a row with no `ConfigHelp`.
 | `workflow.test_command` | v1.01.0 |
 | `workflow.worktree_skip_hooks` | v1.01.0 |
 | `workflow.live_dom_uat` | v1.12.0 |
+| `workflow.ui_interaction_capture` | v1.15.0 |
 | `workflow.cross_ai_execution` | v1.01.0 |
 | `workflow.cross_ai_command` | v1.01.0 |
 | `workflow.cross_ai_timeout` | v1.01.0 |

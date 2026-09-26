@@ -454,6 +454,9 @@ pub struct WorkflowConfig {
     pub test_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_skip_hooks: Option<bool>,
+    // --- gsd-core re-sync at 1.15.0 (quick task 260926-gtk) ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_interaction_capture: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -911,6 +914,33 @@ mod tests {
         assert_eq!(
             reparsed.planner.as_ref().unwrap().stall_detection_enabled,
             Some(false)
+        );
+    }
+
+    /// The second gsd-core release-1.15.0 key (#4223, capability-registered in
+    /// capabilities/ui/capability.json rather than the schema manifest).
+    #[test]
+    fn ui_interaction_capture_is_a_modelled_workflow_key() {
+        let config =
+            parse_gsd_config(r#"{"workflow": {"ui_interaction_capture": true}}"#).unwrap();
+        let wf = config.workflow.as_ref().unwrap();
+        assert_eq!(wf.ui_interaction_capture, Some(true));
+        assert!(
+            !wf.extra.contains_key("ui_interaction_capture"),
+            "ui_interaction_capture reached the pass-through map, so it is NOT modelled"
+        );
+        let reparsed = parse_gsd_config(&serialize_gsd_config(&config).unwrap()).unwrap();
+        assert_eq!(
+            reparsed.workflow.as_ref().unwrap().ui_interaction_capture,
+            Some(true)
+        );
+
+        let without = parse_gsd_config(r#"{"workflow": {"research": true}}"#).unwrap();
+        assert!(
+            !serialize_gsd_config(&without)
+                .unwrap()
+                .contains("ui_interaction_capture"),
+            "an unset ui_interaction_capture was invented on save"
         );
     }
 

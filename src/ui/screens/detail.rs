@@ -9659,7 +9659,7 @@ fn build_defaults_entries(
     use crate::state_reader::config_json::GsdConfig;
 
     let mut entries = Vec::new();
-    // `help` is REQUIRED and last (ID-01). A 131st option added below without a
+    // `help` is REQUIRED and last (ID-01). A 133rd option added below without a
     // `ConfigHelp` does not compile, which is the whole reason the help lives
     // here rather than in a key-indexed side table.
     let mut push = |cat: &'static str,
@@ -10008,6 +10008,14 @@ fn build_defaults_entries(
     push(cat, "workflow.live_dom_uat", v, k, false, fd, ConfigHelp::new(
         "Runs a browser-driven verifier after each wave and writes its report; while off no browser tooling is ever driven.",
     ).since("v1.12.0"));
+    // gsd-core 1.15.0 re-sync (quick task 260926-gtk): introduced by 88b5775dc
+    // (#4223). Placed beside the other browser-driven gate (INFERRED I-2); the
+    // `since` is provisional for the same reason as
+    // `planner.stall_detection_enabled` (INFERRED I-1).
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.ui_interaction_capture), dwf.and_then(|w| w.ui_interaction_capture));
+    push(cat, "workflow.ui_interaction_capture", v, k, false, fd, ConfigHelp::new(
+        "Lets the UI auditor add hover, focus, open-menu and filled-form screenshots via the chrome-devtools CLI; needs Chrome.",
+    ).since("v1.15.0"));
     let (v, k, fd) = bool_l(pwf.and_then(|w| w.cross_ai_execution), dwf.and_then(|w| w.cross_ai_execution));
     push(cat, "workflow.cross_ai_execution", v, k, false, fd, ConfigHelp::new(
         "Hands a whole phase to an external CLI model instead of spawning local executor agents; needs the command below.",
@@ -10907,6 +10915,7 @@ fn set_config_value(
             "workflow.context_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_precheck = Some(b); return true; }
             "workflow.cross_ai_execution" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_execution = Some(b); return true; }
             "workflow.live_dom_uat" => { config.workflow.get_or_insert_with(WorkflowConfig::default).live_dom_uat = Some(b); return true; }
+            "workflow.ui_interaction_capture" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_interaction_capture = Some(b); return true; }
             "workflow.plan_bounce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce = Some(b); return true; }
             "workflow.plan_review_convergence" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_review_convergence = Some(b); return true; }
             "workflow.post_planning_gaps" => { config.workflow.get_or_insert_with(WorkflowConfig::default).post_planning_gaps = Some(b); return true; }
@@ -11138,6 +11147,7 @@ fn clear_config_value(
         "workflow.human_verify_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).human_verify_mode = None; true }
         "workflow.inline_plan_threshold" => { config.workflow.get_or_insert_with(WorkflowConfig::default).inline_plan_threshold = None; true }
         "workflow.live_dom_uat" => { config.workflow.get_or_insert_with(WorkflowConfig::default).live_dom_uat = None; true }
+        "workflow.ui_interaction_capture" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_interaction_capture = None; true }
         "workflow.max_discuss_passes" => { config.workflow.get_or_insert_with(WorkflowConfig::default).max_discuss_passes = None; true }
         "workflow.plan_bounce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce = None; true }
         "workflow.plan_bounce_passes" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_passes = None; true }
@@ -11259,6 +11269,7 @@ fn mutate_config_entry(
                 "workflow.context_drift_precheck" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.context_drift_precheck = Some(!wf.context_drift_precheck.unwrap_or(false)); true }
                 "workflow.cross_ai_execution" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.cross_ai_execution = Some(!wf.cross_ai_execution.unwrap_or(false)); true }
                 "workflow.live_dom_uat" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.live_dom_uat = Some(!wf.live_dom_uat.unwrap_or(false)); true }
+                "workflow.ui_interaction_capture" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_interaction_capture = Some(!wf.ui_interaction_capture.unwrap_or(false)); true }
                 "workflow.plan_bounce" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_bounce = Some(!wf.plan_bounce.unwrap_or(false)); true }
                 "workflow.plan_review_convergence" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_review_convergence = Some(!wf.plan_review_convergence.unwrap_or(false)); true }
                 "workflow.post_planning_gaps" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.post_planning_gaps = Some(!wf.post_planning_gaps.unwrap_or(false)); true }
@@ -11622,7 +11633,8 @@ mod tests {
                 "security_enforcement": true,
                 "smart_zone_tokens": 100000,
                 "test_command": "cargo test --no-fail-fast",
-                "worktree_skip_hooks": false
+                "worktree_skip_hooks": false,
+                "ui_interaction_capture": false
             },
             "hooks": {
                 "context_warnings": true,
@@ -11678,17 +11690,18 @@ mod tests {
     }
 
     /// The number of `push` call sites in `build_defaults_entries`, MEASURED at
-    /// the time the help was authored and RE-measured at the gsd-core 1.14.0
-    /// re-sync (73 -> 130, quick task 260916-vqw). It is asserted rather than
-    /// trusted so a 131st option cannot slip past the coverage assertions below
-    /// by being added to a list nobody counted.
+    /// the time the help was authored and RE-measured at each gsd-core re-sync:
+    /// 73 -> 130 at the 1.14.0 re-sync (quick task 260916-vqw) and 130 -> 132
+    /// at the release-1.15.0 re-sync (quick task 260926-gtk). It is asserted
+    /// rather than trusted so a 133rd option cannot slip past the coverage
+    /// assertions below by being added to a list nobody counted.
     ///
     /// **It counts STATIC rows only.** `append_passthrough_entries` emits one
     /// row per unmodelled key found in the config it is handed, so a fixture
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 131;
+    const DEFAULTS_OPTION_COUNT: usize = 132;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -12422,6 +12435,7 @@ mod tests {
     /// historical fact into a moving total. The per-key loops iterate both.
     const RESYNCED_KEYS_1_15_0: &[(&str, &str)] = &[
         ("planner.stall_detection_enabled", "bool"),
+        ("workflow.ui_interaction_capture", "bool"),
     ];
 
     /// `docs/GSD-CORE-SYNC.md` is the baseline a future sync DIFFS FROM, so a
@@ -12496,6 +12510,12 @@ mod tests {
             .filter(|(key, _)| key.starts_with("workflow."))
             .count();
         assert_eq!(workflow, 27, "the workflow.* half of the re-sync changed size");
+        assert_eq!(
+            RESYNCED_KEYS_1_15_0.len(),
+            2,
+            "the release-1.15.0 delta was MEASURED at +2 keys; re-measure against \
+             gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
     }
 
     fn kind_name(kind: &ConfigValueKind) -> &'static str {
