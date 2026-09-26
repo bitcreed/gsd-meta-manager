@@ -210,22 +210,61 @@ bar has focus it is also reversed and the content is dimmed.
 | Key (detail view) | Action |
 |-------------------|--------|
 | `1`-`8`           | Jump straight into a tab's content |
-| `←` `→`           | Tab bar: previous / next tab. Inside Sessions or Docs: previous / next sub-tab (Sessions / Agents, Files / Milestones). Inside any other tab: switch tab and return to the tab bar |
-| `↓` / `Enter`     | Tab bar: enter the tab's content (no action is taken) |
-| `↑`               | From the first row of the content: back to the tab bar |
-| `[` `]`           | Sessions / Docs: previous / next sub-tab (on the Roadmap: previous / next phase in the same wave) |
+| `←` `→`           | Tab bar: previous / next tab; stops at the first / last tab. Inside Sessions or Docs: previous / next sub-tab (Sessions / Agents, Files / Milestones), stopping at the ends. On the Phases tab, `→` focuses the Waves pane; with a Backlog item open, `←` closes it. Inside any other tab: switch tab and return to the tab bar |
+| `↓` / `j` / `Enter` / `Space` | Tab bar: enter the tab's content (no action is taken) |
+| `↑` / `k`         | From the first row of the content: back to the tab bar |
+| `[` `]`           | Sessions / Docs: previous / next sub-tab (on the Roadmap list: previous / next phase in the same wave) |
 | `Esc`             | Close an open pane or level first; otherwise go to the tab bar; at the tab bar, back to the dashboard |
 | `q`               | Back to the dashboard from any level |
 | `m`               | Sessions / Docs: switch sub-tab (alias of `←` `→`) |
-| `Tab`             | Switch the terminal to this project's Claude / Codex session |
-| `→` / `Enter`     | Phases: focus the Waves pane (on top of the right side, under the ladder) |
-| `j` `k` `g` `G` `PgUp` `PgDn` | Waves pane: move the row cursor, top / bottom, page |
-| `Enter` / `Space` | Waves pane: fold / unfold a wave (or a merged `w1–w10 ✓` row); on a plan, jump to its agent in Sessions › Agents |
-| `e`               | Waves pane: edit the plan's PLAN.md in `$EDITOR` at its objective |
-| `←` / `Esc`       | Waves pane: back to the phase list (`q` still leaves the detail view) |
-| `Enter`           | Sessions › Agents: jump to the agent's plan in the Phases Waves pane (navigation only; nothing is sent to the agent) |
+| `Tab`             | Switch the terminal to this project's Claude / Codex session (on the Sessions tab, the highlighted session) |
 
 `6` and `8` re-open the sub-tab you last used on the Sessions and Docs tabs.
+
+Tab-specific keys:
+
+| Tab | Key | Action |
+|-----|-----|--------|
+| Roadmap | `j` `k` `g` `G` `PgUp` `PgDn` | On the list view: move the phase cursor, jump to top / bottom, or page |
+| Roadmap | `h` / `l` | Jump to a dependency / to a phase it unblocks; repeat to cycle |
+| Roadmap | `[` / `]` | Previous / next phase in the same wave |
+| Roadmap | `Space` | Fold / unfold the milestone |
+| Roadmap | `Enter` | Open the phase in Phases. On a milestone row, fold / unfold it; on the shipped-milestones row, open Docs › Milestones |
+| Roadmap | `v` | Switch between the graph list and the box view |
+| Phases | `→` / `Enter` / `Space` | Focus the Waves pane (on top of the right side, under the ladder) |
+| Waves pane | `j` `k` `g` `G` `PgUp` `PgDn` | Move the row cursor, top / bottom, page |
+| Waves pane | `Enter` / `Space` | Fold / unfold a wave (or a merged `w1–w10 ✓` row); on a plan, jump to its agent in Sessions › Agents |
+| Waves pane | `e` | Edit the plan's PLAN.md in `$EDITOR` at its objective |
+| Waves pane | `←` / `Esc` | Back to the phase list (`q` still leaves the detail view; a digit, `[` or `]` leaves the pane and acts as usual) |
+| Backlog | `Enter` | Open / close the item's content pane |
+| Backlog | `j` `k` `PgUp` `PgDn` | Scroll the open content pane |
+| Backlog | `e` | With the pane open, edit the item where it lives (e.g. its ROADMAP.md section) in `$EDITOR`; otherwise enqueue it |
+| Backlog | `←` / `Esc` | Close the content pane |
+| Git | `Enter` | Show the selected commit's message and diff stat |
+| Git | `p` | Toggle planning-only commits |
+| Git | `PgUp` / `PgDn` | Scroll by a page |
+| Git | `Esc` | Close the commit pane |
+| Queue | `a` | Add an item |
+| Queue | `e` | Edit the selected item. The item is removed while you edit, so `Esc` leaves it removed |
+| Queue | `d` / `x` | Delete the selected item (asks first) |
+| Queue | `Enter` / `Space` | Mark the selected item done, which removes it from the queue |
+| Queue | `J` / `K` | Move the selected item down / up |
+| Sessions | `Enter` | Resume the selected Claude session (Codex sessions cannot be resumed) |
+| Sessions | `n` | Launch a new Claude session in this project |
+| Sessions › Agents | `Enter` | Jump to the agent's plan in the Phases Waves pane (navigation only; nothing is sent to the agent) |
+| Config | `Enter` | Edit the selected value; in an open dropdown, apply the choice |
+| Config | `x` | Clear (unset) the selected value |
+| Config | `d` | Switch between the project's config and `~/.gsd/defaults.json` |
+| Config | `r` | Reload the config from disk |
+| Config | `/` | Filter the rows; `Esc` clears the filter |
+| Docs › Files | `Enter` | Open the selected directory or file |
+| Docs › Files | `Esc` | Close the file, then go up one directory |
+| Docs › Files | `g` / `p` | Jump to the `.planning/` root / back to the active phase's directory |
+| Docs › Files | `e` | Open the selected file in `$EDITOR` |
+| Docs › Milestones | `Enter` | Open the milestone, phase or file |
+| Docs › Milestones | `Esc` | Back up one level |
+| Docs › Milestones | `e` | Archived files are read-only, so this only shows a status message |
+| Any other tab | `e` | Enqueue the suggested next GSD command |
 
 #### Mouse
 
