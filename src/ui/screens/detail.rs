@@ -818,21 +818,25 @@ pub struct DetailScreen {
     /// Which level of the view has the keyboard: the tab bar or the tab's
     /// content (quick 260926-1t1). Content on every opening.
     focus: DetailFocus,
-    /// The rects of the last frame's tab bar, sub-tab strip, content and
-    /// focused pane — written by the render pass through `&self`, the same
-    /// interior-mutability reason as the viewports above (quick 260926-1t1).
-    regions: Cell<DetailRegions>,
+    /// The rects of the last frame's tab bar, sub-tab strip, content,
+    /// focused pane and Waves-pane rows — written by the render pass through
+    /// `&self`, the same interior-mutability reason as the viewports above
+    /// (quick 260926-1t1). A `RefCell` since the Waves-pane rows made the
+    /// record a `Vec` (quick 260926-2l4, [inferred I-14]).
+    regions: std::cell::RefCell<DetailRegions>,
 }
 
 /// Where the last frame drew each focusable region of the detail view (quick
 /// 260926-1t1).
 ///
-/// The plug-in point for a mouse hit test and for task 4b's Phases waves
-/// pane: both need to know which rect a click or a focus cue belongs to, and
-/// the render pass is the only place that knows. Both render paths reset it
-/// and refill it every frame ([inferred I-17]), so the rects never mix two
-/// frames.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// The plug-in point for a mouse hit test: it needs to know which rect a click
+/// belongs to, and the render pass is the only place that knows. Both render
+/// paths reset it and refill it every frame ([inferred I-17]), so the rects
+/// never mix two frames. Quick 260926-2l4 (D-07) added the Phases tab's Waves
+/// pane and one rect per visible pane row, each tagged with the row identity a
+/// click would move the cursor to — so the type is no longer `Copy`
+/// ([inferred I-14]).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct DetailRegions {
     /// The tab bar, its bottom border included.
     pub tab_bar: Rect,
@@ -840,8 +844,23 @@ pub(crate) struct DetailRegions {
     pub sub_tab_strip: Option<Rect>,
     /// The whole content area between the tab bar and the footer.
     pub content: Rect,
-    /// A focused pane inside the content — in 4a, the open Backlog pane.
+    /// A focused pane inside the content — the open Backlog pane (4a), or
+    /// the Waves pane while it has the keyboard (4b).
     pub pane: Option<Rect>,
+    /// The Phases tab's Waves pane, border included, whenever it is drawn —
+    /// focused or not.
+    pub waves_pane: Option<Rect>,
+    /// One entry per Waves-pane row drawn this frame (plan, wave header or
+    /// merged row; never the `+N more` markers), top to bottom.
+    pub waves_rows: Vec<WavesRowRegion>,
+}
+
+/// One visible Waves-pane row: its one-row rect and the row identity the
+/// cursor would take on it (quick 260926-2l4, D-07).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WavesRowRegion {
+    pub rect: Rect,
+    pub target: super::WavesCursor,
 }
 
 /// The detail view's focus levels (quick 260926-1t1, D-01).
@@ -899,29 +918,31 @@ impl DetailScreen {
             waves_offset: Cell::new(0),
             waves_viewport_rows: Cell::new(0),
             focus: DetailFocus::Content,
-            regions: Cell::default(),
+            regions: std::cell::RefCell::default(),
         }
     }
 
     /// The regions the last frame drew (see [`DetailRegions`]).
     ///
-    /// Read only by tests in 4a; its consumers are the mouse hit test and task
-    /// 4b's waves pane, which is why the lint is silenced for non-test builds
-    /// rather than the accessor left out.
+    /// Read only by tests so far; its consumer is the mouse hit test, which
+    /// is why the lint is silenced for non-test builds rather than the
+    /// accessor left out. A clone, so no borrow outlives the call.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn regions(&self) -> DetailRegions {
-        self.regions.get()
+        self.regions.borrow().clone()
     }
 
     /// Record the frame's tab bar and content rects and clear the rest — the
     /// first write of every frame, on both render paths ([inferred I-17]).
     fn reset_regions(&self, tab_bar: Rect, content: Rect) {
-        self.regions.set(DetailRegions {
+        *self.regions.borrow_mut() = DetailRegions {
             tab_bar,
             sub_tab_strip: None,
             content,
             pane: None,
-        });
+            waves_pane: None,
+            waves_rows: Vec::new(),
+        };
     }
 
     /// One sub-tab step on a tab that has sub-tabs — `←`/`→` inside content,
@@ -949,16 +970,23 @@ impl DetailScreen {
 
     /// Record this frame's sub-tab strip rect.
     fn record_sub_tab_strip(&self, strip: Rect) {
-        let mut regions = self.regions.get();
-        regions.sub_tab_strip = Some(strip);
-        self.regions.set(regions);
+        self.regions.borrow_mut().sub_tab_strip = Some(strip);
     }
 
     /// Record this frame's focused pane rect.
     fn record_pane(&self, pane: Rect) {
-        let mut regions = self.regions.get();
-        regions.pane = Some(pane);
-        self.regions.set(regions);
+        self.regions.borrow_mut().pane = Some(pane);
+    }
+
+    /// Record this frame's Waves pane and its visible rows (D-07). The pane is
+    /// also the frame's focused `pane` while it has the keyboard.
+    fn record_waves(&self, pane: Rect, rows: Vec<WavesRowRegion>, focused: bool) {
+        let mut regions = self.regions.borrow_mut();
+        regions.waves_pane = Some(pane);
+        regions.waves_rows = rows;
+        if focused {
+            regions.pane = Some(pane);
+        }
     }
 
     /// Draw a two-sub-view `strip` in the first row of `area`, record that row
@@ -1266,6 +1294,91 @@ impl DetailScreen {
         ScreenAction::None
     }
 
+    /// `Enter`/`Space` in the Waves pane ([inferred I-5]): on a wave header or
+    /// a merged row, flip the fold of every wave the row covers (the flips
+    /// live in `waves_toggles`, in memory, per phase); on a plan row, jump to
+    /// the agent attributed to it.
+    fn waves_activate(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let Some((model, rows)) = self.selected_waves(ctx) else {
+            return ScreenAction::None;
+        };
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        let index = waves_cursor_index(&model, &rows, cache.waves_cursor.as_ref());
+        let Some(row) = rows.get(index) else {
+            return ScreenAction::None;
+        };
+        let covered = match row.kind {
+            WavesRowKind::Header { wave, .. } => wave..=wave,
+            WavesRowKind::Merged { first, last } => first..=last,
+            WavesRowKind::Plan { .. } => {
+                return ScreenAction::SetStatusMessage(
+                    "No agent is attributed to this plan".to_string(),
+                );
+            }
+        };
+        for wave in &model.waves[covered] {
+            let key = (model.phase_key.clone(), wave.wave);
+            if !cache.waves_toggles.remove(&key) {
+                cache.waves_toggles.insert(key);
+            }
+        }
+        cache.waves_cursor = Some(row.target.clone());
+        ctx.needs_redraw = true;
+        ScreenAction::None
+    }
+
+    /// `e` in the Waves pane: open the plan under the cursor in `$EDITOR` at
+    /// its `<objective>` line (D-01).
+    ///
+    /// Key-time I/O, like the Backlog `e`; render-time I/O stays forbidden.
+    /// The path is the scanned stem joined to the phase directory
+    /// `find_phase_dir` resolves, and must be an existing FILE whose parent IS
+    /// that directory (T-2l4-02) — a stem carrying a separator or `..` fails
+    /// that and gets the status message instead. `None` (with no plans at all)
+    /// falls through to the tab's generic enqueue.
+    fn waves_edit(&mut self, ctx: &mut AppContext) -> Option<ScreenAction> {
+        let (model, rows) = self.selected_waves(ctx)?;
+        if rows.is_empty() {
+            return None;
+        }
+        ctx.needs_redraw = true;
+        let cursor = ctx
+            .view_cache
+            .get(&self.alias)
+            .and_then(|c| c.waves_cursor.as_ref());
+        let index = waves_cursor_index(&model, &rows, cursor);
+        let Some(WavesRowKind::Plan { wave, plan }) = rows.get(index).map(|r| r.kind.clone())
+        else {
+            return Some(ScreenAction::SetStatusMessage(
+                "Move to a plan row to edit its PLAN.md".to_string(),
+            ));
+        };
+        let p = &model.waves[wave].plans[plan];
+        let target = ctx
+            .config
+            .projects
+            .get(&self.alias)
+            .and_then(|project| {
+                crate::state_reader::disk_status::find_phase_dir(
+                    &project.path.join(".planning"),
+                    &model.phase_number,
+                )
+            })
+            .and_then(|dir| {
+                let name = if p.id.is_empty() {
+                    "PLAN.md".to_string()
+                } else {
+                    format!("{}-PLAN.md", p.id)
+                };
+                let path = dir.join(name);
+                (path.is_file() && path.parent() == Some(dir.as_path())).then_some(path)
+            });
+        Some(match target {
+            Some(path) => ScreenAction::SuspendAndEdit(path, p.objective_line),
+            None => ScreenAction::SetStatusMessage("No PLAN.md found for this plan".to_string()),
+        })
+    }
+
     /// A key while the Waves pane has the keyboard ([inferred I-5]).
     ///
     /// `Some(action)` consumes the key. `None` lets it fall through to the
@@ -1296,6 +1409,14 @@ impl DetailScreen {
             KeyCode::Char('k') | KeyCode::Up => {
                 Some(self.waves_move(ctx, |i, _, _| i.saturating_sub(1)))
             }
+            KeyCode::PageDown => Some(self.waves_move(ctx, |i, _, page| i.saturating_add(page))),
+            KeyCode::PageUp => Some(self.waves_move(ctx, |i, _, page| i.saturating_sub(page))),
+            KeyCode::Char('g') => Some(self.waves_move(ctx, |_, _, _| 0)),
+            KeyCode::Char('G') => Some(self.waves_move(ctx, |_, n, _| n.saturating_sub(1))),
+            KeyCode::Enter | KeyCode::Char(' ') => Some(self.waves_activate(ctx)),
+            KeyCode::Char('e') => self.waves_edit(ctx),
+            // `→` has nothing to its right.
+            KeyCode::Right => Some(ScreenAction::None),
             KeyCode::Char('?') | KeyCode::Tab => None,
             KeyCode::Char(c) if c.is_ascii_digit() || matches!(c, 'D' | '[' | ']') => {
                 self.focus = DetailFocus::Content;
@@ -5364,18 +5485,39 @@ impl DetailScreen {
             return;
         }
 
+        let selected_index = cache
+            .map(|c| c.pipeline_selected.min(state.phases.len().saturating_sub(1)))
+            .unwrap_or(0);
+        // Below the side-by-side width a FOCUSED Waves pane takes the whole
+        // tab under a one-row breadcrumb (quick 260926-2l4, D-06); unfocused,
+        // the 40/60 split stays.
+        if self.focus == DetailFocus::Pane
+            && area.width < roadmap_view::ROADMAP_SIDE_BY_SIDE_MIN_COLS
+        {
+            if let Some((model, rows)) = self.selected_waves(ctx) {
+                let phase = &state.phases[selected_index];
+                let parts =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+                let crumb = format!("\u{2039} P{} {}", shown(&phase.number), shown(&phase.name));
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        fit_cells(&crumb, area.width as usize),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    parts[0],
+                );
+                self.render_waves_pane(frame, parts[1], ctx, &model, &rows);
+                return;
+            }
+        }
+
         // Split into left (phase list) and right (pipeline detail)
         let panes = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(area);
         let left_area = panes[0];
         let right_area = panes[1];
 
-        let selected = cache
-            .map(|c| {
-                c.pipeline_selected
-                    .min(state.phases.len().saturating_sub(1))
-            })
-            .unwrap_or(0);
+        let selected = selected_index;
 
         // Left pane: phase list
         let items: Vec<ListItem> = state
@@ -5479,6 +5621,7 @@ impl DetailScreen {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.height == 0 || inner.width == 0 {
+            self.record_waves(area, Vec::new(), focused);
             return;
         }
         let cells = inner.width as usize;
@@ -5494,6 +5637,7 @@ impl DetailScreen {
                 inner,
             );
             self.waves_viewport_rows.set(inner.height);
+            self.record_waves(area, Vec::new(), focused);
             return;
         }
 
@@ -5529,11 +5673,17 @@ impl DetailScreen {
             );
             y += 1;
         }
+        let mut regions: Vec<WavesRowRegion> = Vec::with_capacity(visible);
         for (index, row) in rows.iter().enumerate().skip(offset).take(visible) {
             let line = waves_row_line(model, row, focused && index == cursor, cells);
             frame.render_widget(Paragraph::new(line), row_rect(y));
+            regions.push(WavesRowRegion {
+                rect: row_rect(y),
+                target: row.target.clone(),
+            });
             y += 1;
         }
+        self.record_waves(area, regions, focused);
         if markers && below > 0 {
             frame.render_widget(
                 Paragraph::new(Span::styled(format!("  \u{2193} +{below} more"), dim)),
@@ -7391,6 +7541,10 @@ fn waves_rows(
         target: WavesCursor::Plan(model.waves[wave].plans[plan].id.clone()),
     };
     let mut rows: Vec<WavesRow> = Vec::new();
+    if model.shape == WavesShape::NoPlans {
+        // The pane draws its `No plans yet` hint instead; nothing to walk.
+        return rows;
+    }
     if model.shape == WavesShape::NoWaveMetadata {
         for (wi, wave) in model.waves.iter().enumerate() {
             for pi in 0..wave.plans.len() {
@@ -19650,5 +19804,394 @@ mod tests {
         register(&mut ctx, std::path::PathBuf::from("/nonexistent/waves-pane-probe"));
         let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
         assert!(text.contains("wCACHED"), "{text}");
+    }
+
+    /// `n` plans `{phase}-01..` spread over waves per `sizes` (wave 1 first),
+    /// each titled, the first `done` of them summarized.
+    fn many_waves_inference(phase: &str, sizes: &[usize], done: usize) -> DiskInference {
+        let mut plans: Vec<(String, u32)> = Vec::new();
+        for (w, size) in sizes.iter().enumerate() {
+            for _ in 0..*size {
+                let n = plans.len() + 1;
+                plans.push((format!("{phase}-{n:02}"), w as u32 + 1));
+            }
+        }
+        let titles: Vec<String> = plans.iter().map(|(id, _)| format!("Title of {id}")).collect();
+        let spec: Vec<(&str, Option<&str>, Option<u32>)> = plans
+            .iter()
+            .zip(&titles)
+            .map(|((id, w), t)| (id.as_str(), Some(t.as_str()), Some(*w)))
+            .collect();
+        let done: Vec<&str> = plans.iter().take(done).map(|(id, _)| id.as_str()).collect();
+        waves_inference(&spec, &done)
+    }
+
+    #[test]
+    fn waves_pane_completed_phase_is_one_merged_row() {
+        // 13 waves, 33 plans (seven waves of 3, six of 2), every one summarized.
+        let sizes = [3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2];
+        let inf = many_waves_inference("19", &sizes, 33);
+        let mut ctx = waves_ctx(vec![("19", "Gitsafe", inf)], "20");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        for (w, h) in [(100, 32), (80, 24)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            let wave_rows: Vec<&str> = text
+                .lines()
+                .filter(|l| l.contains("w1") || l.contains("w2 ") || l.contains("w13"))
+                .collect();
+            assert_eq!(wave_rows.len(), 1, "at {w}x{h}: {text}");
+            assert!(
+                wave_rows[0].contains("w1\u{2013}w13 \u{2713} 33/33 done"),
+                "at {w}x{h}: {text}"
+            );
+            assert!(!text.contains("19-01"), "no plan row while folded: {text}");
+        }
+
+        // Enter on the merged row expands every wave it covers.
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let (model, rows) = screen.selected_waves(&ctx).expect("a model");
+        let headers = rows
+            .iter()
+            .filter(|r| matches!(r.kind, WavesRowKind::Header { .. }))
+            .count();
+        assert_eq!(headers, 13, "{rows:?}");
+        assert_eq!(rows.len(), 13 + 33);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].waves_cursor,
+            Some(super::super::WavesCursor::Wave(Some(1)))
+        );
+        // Enter again on w1's header re-collapses it and folds it back.
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let (_, rows) = screen.selected_waves(&ctx).expect("a model");
+        assert!(matches!(rows[0].kind, WavesRowKind::Merged { first: 0, last: 0 }));
+        assert_eq!(rows.len(), 1 + 12 + 30);
+        let line = line_text(&waves_row_line(&model, &rows[0], false, 60));
+        assert!(line.contains("w1  3 parallel \u{b7} done \u{2713}"), "{line}");
+    }
+
+    /// Phase 13 of 13 waves / 35 plans: waves 1-10 done (28 plans), wave 11
+    /// current with one plan running per the agent view, 12 and 13 queued.
+    fn executing_13_wave_ctx() -> AppContext {
+        let sizes = [3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 3, 2, 2];
+        let inf = many_waves_inference("13", &sizes, 28);
+        let mut ctx = waves_ctx(vec![("13", "Busy", inf)], "13");
+        ctx.agent_views.insert(
+            TEST_ALIAS.to_string(),
+            AgentView {
+                active_phase: crate::state_reader::phase_num::PhaseNum::parse("13"),
+                current_wave: Some(11),
+                waves: vec![WaveRow {
+                    wave: Some(11),
+                    running: 1,
+                    current: true,
+                    plans: vec![PlanStatus {
+                        id: "13-29".to_string(),
+                        state: AgentPlanState::Running,
+                    }],
+                    ..WaveRow::default()
+                }],
+                ..Default::default()
+            },
+        );
+        ctx
+    }
+
+    #[test]
+    fn waves_pane_executing_folds_done_waves_and_keeps_the_current_one_visible() {
+        let mut ctx = executing_13_wave_ctx();
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        assert!(text.contains("w1\u{2013}w10 \u{2713} 28/28 done"), "{text}");
+        assert!(text.contains("\u{25b8} w11  3 parallel"), "{text}");
+        assert!(text.contains("13-29"), "the current wave is expanded: {text}");
+        assert!(text.contains("13-32"), "the next wave is expanded: {text}");
+        assert!(text.contains("  w13  2 parallel \u{b7} queued"), "{text}");
+        assert!(!text.contains("13-34"), "later waves are headers only: {text}");
+
+        // The current wave's header is BOLD as well as marked.
+        let (model, rows) = screen.selected_waves(&ctx).expect("a model");
+        let header = rows
+            .iter()
+            .find(|r| matches!(r.kind, WavesRowKind::Header { current: true, .. }))
+            .expect("a current header");
+        let line = waves_row_line(&model, header, false, 60);
+        assert!(line
+            .spans
+            .iter()
+            .any(|s| s.content.contains("w11") && s.style.add_modifier.contains(Modifier::BOLD)));
+
+        // Every wave open: the pane overflows, and the current wave stays in
+        // view with the clipped rows stated — at both sizes, unfocused.
+        let key = crate::state_reader::phase_num::phase_key("13");
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        for wave in (1..=10).chain([13]) {
+            cache.waves_toggles.insert((key.clone(), Some(wave)));
+        }
+        for (w, h) in [(100, 32), (80, 24)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(text.contains("\u{25b8} w11"), "at {w}x{h}: {text}");
+            assert!(
+                text.contains("\u{2193} +") || text.contains("\u{2191} +"),
+                "a clipped side is stated at {w}x{h}: {text}"
+            );
+            assert!(text.contains(" more"), "at {w}x{h}: {text}");
+        }
+        // ... and focused, the cursor (on the running plan) is in view too.
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().waves_cursor = None;
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        for (w, h) in [(100, 32), (80, 24)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(text.contains("\u{25b8} w11"), "focused at {w}x{h}: {text}");
+            assert!(
+                text.lines().any(|l| l.contains("> ") && l.contains("13-29")),
+                "the cursor is drawn on the running plan at {w}x{h}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn waves_pane_not_started_no_wave_metadata_and_no_plans() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let not_started = waves_inference(
+            &[
+                ("5-01-a", Some("Alpha work"), Some(1)),
+                ("5-02-b", Some("Beta work"), Some(2)),
+            ],
+            &[],
+        );
+        let flat = waves_inference(
+            &[("6-01", Some("Flat one"), None), ("6-02", Some("Flat two"), None)],
+            &["6-01"],
+        );
+        let none = waves_inference(&[], &[]);
+        for (w, h) in [(100, 32), (80, 24)] {
+            let ctx = waves_ctx(vec![("5", "Later", not_started.clone())], "3");
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(text.contains("not started"), "at {w}: {text}");
+            let planned = text.lines().filter(|l| l.contains("\u{25cb} planned")).count();
+            assert_eq!(planned, 2, "both waves expanded, both rows planned at {w}: {text}");
+
+            let ctx = waves_ctx(vec![("6", "Flat", flat.clone())], "6");
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(text.contains("Plans (no wave metadata)"), "at {w}: {text}");
+            assert!(!text.contains(" w1 ") && !text.contains("w?"), "no headers at {w}: {text}");
+            assert!(text.contains("06-01") && text.contains("06-02"), "at {w}: {text}");
+
+            let ctx = waves_ctx(vec![("7", "Empty", none.clone())], "7");
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(text.contains("No plans yet \u{2014} /gsd:plan-phase 7"), "at {w}: {text}");
+        }
+    }
+
+    #[test]
+    fn waves_pane_scrolls_with_the_cursor() {
+        // Two not-started waves of 21 plans: 44 rows.
+        let inf = many_waves_inference("5", &[21, 21], 0);
+        let mut ctx = waves_ctx(vec![("5", "Big", inf)], "5");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let index = |screen: &DetailScreen, ctx: &AppContext| {
+            let (model, rows) = screen.selected_waves(ctx).expect("a model");
+            (
+                waves_cursor_index(&model, &rows, ctx.view_cache[TEST_ALIAS].waves_cursor.as_ref()),
+                rows.len(),
+            )
+        };
+        let (_, total) = index(&screen, &ctx);
+        assert_eq!(total, 44);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        assert_eq!(index(&screen, &ctx).0, 43);
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 24);
+        assert!(text.contains("05-42"), "the last row is drawn: {text}");
+        assert!(text.contains("\u{2191} +"), "the top is clipped: {text}");
+
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert_eq!(index(&screen, &ctx).0, 0);
+        let _ = render_detail_to_text_at(&screen, &ctx, 100, 24);
+        let page = usize::from(screen.waves_viewport_rows.get());
+        assert!(page > 1, "the page is the rendered row count");
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(index(&screen, &ctx).0, page);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(index(&screen, &ctx).0, 0);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(index(&screen, &ctx).0, 0);
+        assert_eq!(screen.focus, DetailFocus::Pane, "k on the first row stays in the pane");
+    }
+
+    #[test]
+    fn waves_pane_e_opens_the_plan_md_at_the_objective() {
+        use crate::config::RegisteredProject;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let phase_dir = tmp.path().join(".planning/phases/05-demo");
+        std::fs::create_dir_all(&phase_dir).expect("phase dir");
+        std::fs::write(phase_dir.join("05-01-alpha-PLAN.md"), "---\nwave: 1\n---\n").expect("plan");
+        let inf = waves_inference(&[("05-01-alpha", Some("Alpha"), Some(1))], &[]);
+        let mut ctx = waves_ctx(vec![("5", "Demo", inf)], "5");
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: tmp.path().to_path_buf(),
+                added: "2026-09-26".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        match action {
+            ScreenAction::SuspendAndEdit(path, line) => {
+                assert_eq!(path, phase_dir.join("05-01-alpha-PLAN.md"));
+                assert_eq!(line, Some(7), "the objective tag's 1-based line");
+            }
+            _ => panic!("expected an edit"),
+        }
+        // On the wave header: a status message, no edit.
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::SetStatusMessage(_)));
+
+        // A plan whose file is gone: the authored message.
+        std::fs::remove_file(phase_dir.join("05-01-alpha-PLAN.md")).expect("rm");
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(&action, ScreenAction::SetStatusMessage(m) if m == "No PLAN.md found for this plan")
+        );
+
+        // No plans at all: `e` is the tab's generic enqueue.
+        let mut ctx = waves_ctx(vec![("5", "Demo", waves_inference(&[], &[]))], "5");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        // The generic arm's own answer for a project with no `.planning/`.
+        assert!(
+            matches!(&action, ScreenAction::SetStatusMessage(m) if m.contains("enable queue")),
+            "the tab's generic enqueue"
+        );
+    }
+
+    #[test]
+    fn waves_pane_at_80_cols_focus_goes_full_width() {
+        let mut inf = waves_inference(
+            &[
+                ("5-01-a", Some("A reasonably long plan title here"), Some(1)),
+                ("5-02-b", Some("Another reasonably long plan title"), Some(1)),
+            ],
+            &[],
+        );
+        inf.plan_tokens = vec![crate::state_reader::disk_status::PlanTokens {
+            id: "5-01-a".to_string(),
+            estimate: Some(60_000),
+            actual: Some(12_000),
+        }];
+        let mut ctx = waves_ctx(vec![("5", "Narrow", inf)], "9");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        // Unfocused: the 40/60 split; the plan rows keep glyph and id, and
+        // the state word drops first.
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(text.contains("P5: Narrow"), "the phase list is drawn: {text}");
+        let row = text.lines().find(|l| l.contains("05-01")).expect("a plan row");
+        assert!(row.contains("\u{25cb} 05-01"), "glyph then id, no word: {row}");
+        assert!(!row.contains("planned"), "{row}");
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(!text.contains("P5: Narrow"), "the phase list is not drawn: {text}");
+        assert!(text.contains("\u{2039} P5 Narrow"), "the breadcrumb: {text}");
+        let top = text
+            .lines()
+            .find(|l| l.contains("\u{25b8}Waves"))
+            .unwrap_or_else(|| panic!("no focused pane: {text}"));
+        assert!(top.starts_with('\u{250c}') && top.ends_with('\u{2510}'), "full width: {top:?}");
+        let row = text.lines().find(|l| l.contains("05-01")).expect("a plan row");
+        assert!(row.contains("planned"), "the full-width pane has room for the word: {row}");
+        for line in text.lines() {
+            assert!(Span::raw(line).width() <= 80, "{line:?}");
+        }
+        // Wide terminals keep the split even when focused.
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        assert!(text.contains("P5: Narrow"), "{text}");
+    }
+
+    #[test]
+    fn waves_pane_glyphs_are_distinct_single_cells() {
+        let mut seen = std::collections::HashSet::new();
+        for state in PANE_STATES {
+            assert_eq!(Span::raw(state.glyph()).width(), 1, "{state:?}");
+            assert!(seen.insert(state.glyph()), "{state:?} shares a glyph");
+            assert!(!state.word().is_empty() && state.word().is_ascii(), "{state:?}");
+            assert!(state.word().len() < WAVES_WORD_CELLS, "{state:?}");
+        }
+        let words: std::collections::HashSet<&str> = PANE_STATES.iter().map(|s| s.word()).collect();
+        assert_eq!(words.len(), PANE_STATES.len());
+    }
+
+    #[test]
+    fn waves_pane_regions_record_the_pane_and_every_visible_row() {
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let regions = screen.regions();
+        let pane = regions.waves_pane.expect("the pane is recorded");
+        let content = regions.content;
+        assert!(pane.x >= content.x && pane.right() <= content.right());
+        assert!(pane.y >= content.y && pane.bottom() <= content.bottom());
+        assert_eq!(regions.pane, None, "unfocused: no focused pane");
+        assert_eq!(regions.waves_rows.len(), 3, "w1 merged, w2 header, 13-02");
+        let lines: Vec<&str> = text.lines().collect();
+        for row in &regions.waves_rows {
+            assert_eq!(row.rect.height, 1);
+            assert!(row.rect.y > pane.y && row.rect.bottom() < pane.bottom());
+            assert!(row.rect.x > pane.x && row.rect.right() < pane.right());
+            if let super::super::WavesCursor::Plan(id) = &row.target {
+                assert_eq!(id, "13-02-beta");
+                assert!(lines[row.rect.y as usize].contains("13-02"), "{text}");
+            }
+        }
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let _ = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        assert_eq!(screen.regions().pane, screen.regions().waves_pane, "focused");
+
+        // The overlay path resets and refills too.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("terminal");
+        terminal
+            .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
+            .expect("draw");
+        assert!(screen.regions().waves_pane.is_some());
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        terminal
+            .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
+            .expect("draw");
+        assert_eq!(screen.regions().waves_pane, None, "reset on another tab");
+        assert!(screen.regions().waves_rows.is_empty());
+    }
+
+    #[test]
+    fn waves_pane_window_keeps_its_focus_row_and_states_the_clipped_sides() {
+        // Fits: no window.
+        assert_eq!(waves_window(5, 10, 0, 3, true), (0, 5));
+        // Focused, cursor at the end: the window reaches it, with a top marker.
+        let (offset, visible) = waves_window(40, 10, 0, 39, true);
+        assert!(offset + visible == 40 && offset > 0, "{offset} {visible}");
+        assert_eq!(visible, 9, "one row for the top marker");
+        // Unfocused, anchored one above the focus row, both markers.
+        let (offset, visible) = waves_window(40, 10, 0, 20, false);
+        assert_eq!(offset, 19);
+        assert_eq!(visible, 8);
+        // Clamped to the end.
+        let (offset, visible) = waves_window(40, 10, 0, 39, false);
+        assert_eq!(offset + visible, 40);
     }
 }
