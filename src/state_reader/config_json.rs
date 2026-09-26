@@ -1346,6 +1346,39 @@ mod tests {
         );
     }
 
+    /// Quick task 260926-jnf: the seven real top-level gsd-core keys that were
+    /// still pass-through are TYPED, so none of them lands in `extra`, and an
+    /// untouched config does not invent them on save.
+    #[test]
+    fn the_promoted_top_level_keys_are_typed_not_extra() {
+        let config = parse_gsd_config(
+            r#"{"runtime":"codex","context_profile":"review","agent_skills":{},"tavily_search":"T-SECRET-M1M1","jina":true}"#,
+        )
+        .expect("the promoted-key fixture parses");
+        assert_eq!(config.runtime.as_deref(), Some("codex"));
+        assert_eq!(config.context_profile.as_deref(), Some("review"));
+        assert_eq!(config.agent_skills, Some(serde_json::json!({})));
+        assert_eq!(
+            config.tavily_search,
+            Some(ApiKeySetting::Key("T-SECRET-M1M1".to_string()))
+        );
+        assert_eq!(config.jina, Some(ApiKeySetting::Flag(true)));
+        assert!(config.ref_search.is_none() && config.perplexity.is_none());
+        assert!(
+            config.extra.is_empty(),
+            "a promoted key fell through to the pass-through map: {:?}",
+            config.extra.keys().collect::<Vec<_>>()
+        );
+
+        let empty = serialize_gsd_config(&parse_gsd_config("{}").unwrap()).unwrap();
+        for key in [
+            "tavily_search", "ref_search", "perplexity", "jina", "runtime", "context_profile",
+            "agent_skills",
+        ] {
+            assert!(!empty.contains(key), "an unset `{key}` was invented on save");
+        }
+    }
+
     /// T-jnf-03: serde's Display quotes the offending value, so logging it
     /// would put a mistyped secret into the log file. The summary carries
     /// only the error category and position.

@@ -11781,6 +11781,13 @@ mod tests {
             "brave_search": false,
             "firecrawl": false,
             "exa_search": true,
+            "tavily_search": false,
+            "ref_search": true,
+            "perplexity": false,
+            "jina": true,
+            "runtime": "claude",
+            "context_profile": "dev",
+            "agent_skills": {},
             "project_code": "GMM",
             "phase_naming": "sequential",
             "phase_id_convention": "milestone-prefixed",
@@ -12806,6 +12813,25 @@ mod tests {
         ("workflow.ui_interaction_capture", "bool"),
     ];
 
+    /// The real top-level gsd-core keys that were still pass-through after the
+    /// release-1.15.0 re-sync, promoted to typed rows by quick task
+    /// 260926-jnf — MEASURED against `upstream/release-1.15.0` (the 260926-gtk
+    /// I-8 list minus `kg_backend`, which is a `mempalace.memory_mode` VALUE,
+    /// not a key; INFERRED I-2).
+    ///
+    /// Kept separate from the two re-sync tables for the same reason those two
+    /// are separate: each pins its own measurement. The per-key loops iterate
+    /// all three.
+    const PROMOTED_TOP_LEVEL_KEYS: &[(&str, &str)] = &[
+        ("tavily_search", "secret"),
+        ("ref_search", "secret"),
+        ("perplexity", "secret"),
+        ("jina", "secret"),
+        ("runtime", "string"),
+        ("context_profile", "enum"),
+        ("agent_skills", "readonly"),
+    ];
+
     /// `docs/GSD-CORE-SYNC.md` is the baseline a future sync DIFFS FROM, so a
     /// record that outlives its subject is worse than no record — it tells the
     /// next reader a surface is covered when it is not.
@@ -12936,6 +12962,112 @@ mod tests {
             "the release-1.15.0 delta was MEASURED at +2 keys; re-measure against \
              gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
         );
+        assert_eq!(
+            PROMOTED_TOP_LEVEL_KEYS.len(),
+            7,
+            "quick task 260926-jnf promoted exactly 7 top-level keys (kg_backend is \
+             a value, not a key); update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+    }
+
+    /// Each promoted top-level key (quick task 260926-jnf) carries its MEASURED
+    /// `since`, and every arm that can change it writes the key's OWN
+    /// top-level JSON path — asserted through `serde_json::to_value`, not the
+    /// struct, for the reason `every_gsd_core_1_15_0_key_is_...` gives.
+    #[test]
+    fn every_promoted_top_level_key_writes_its_own_json_path() {
+        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config, GsdConfig};
+
+        let entries = all_config_entries();
+        let at = |config: &GsdConfig, key: &str| {
+            serde_json::to_value(config)
+                .expect("the config serialises")
+                .pointer(&format!("/{key}"))
+                .cloned()
+        };
+        for (key, kind) in PROMOTED_TOP_LEVEL_KEYS {
+            let entry = entries
+                .iter()
+                .find(|e| e.key.as_ref() == *key)
+                .unwrap_or_else(|| panic!("`{key}` has no row"));
+            let since = if *kind == "secret" { "v1.4.0" } else { "v1.01.0" };
+            assert_eq!(entry.help.since, since, "`{key}`'s measured since (INFERRED I-7)");
+
+            let mut config = parse_gsd_config("{}").unwrap();
+            match *kind {
+                "secret" => {
+                    assert!(set_secret_value(&mut config, key, "K-SECRET-Z1Z1"));
+                    assert_eq!(at(&config, key), Some(serde_json::json!("K-SECRET-Z1Z1")));
+                    assert!(set_secret_value(&mut config, key, "false"));
+                    assert_eq!(at(&config, key), Some(serde_json::json!(false)));
+                }
+                "string" => {
+                    assert!(set_string_value(&mut config, key, "codex"));
+                    assert_eq!(at(&config, key), Some(serde_json::json!("codex")));
+                }
+                "enum" => {
+                    // INFERRED I-10: from unset, the first press lands on the
+                    // FIRST option, not on the one `cycle` would skip to.
+                    assert!(mutate_config_entry(&mut config, key, &entry.kind));
+                    assert_eq!(at(&config, key), Some(serde_json::json!("dev")));
+                    assert!(set_config_value(&mut config, key, "review"));
+                    assert_eq!(at(&config, key), Some(serde_json::json!("review")));
+                }
+                "readonly" => {
+                    assert!(!set_string_value(&mut config, key, "x"));
+                    assert!(!set_config_value(&mut config, key, "true"));
+                    assert!(!clear_config_value(&mut config, key));
+                    assert!(!mutate_config_entry(&mut config, key, &entry.kind));
+                    continue;
+                }
+                other => panic!("unknown kind {other:?}"),
+            }
+            assert!(clear_config_value(&mut config, key), "`{key}` clear");
+            assert_eq!(at(&config, key), None, "`{key}` clear left the key in the file");
+        }
+
+        // agent_skills: a typed read-only row, no top-level pass-through row,
+        // and it survives a toggle of another key plus a save byte for byte.
+        let mut config =
+            parse_gsd_config(r#"{"agent_skills":{"gsd-planner":["skills/x"]}}"#).unwrap();
+        let entries = build_defaults_entries(&config, None);
+        let row = entries
+            .iter()
+            .find(|e| e.key.as_ref() == "agent_skills")
+            .expect("the agent_skills row");
+        assert!(matches!(row.kind, ConfigValueKind::ReadOnly), "{:?}", row.kind);
+        assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+        assert_eq!(
+            entries.iter().filter(|e| e.key.as_ref() == "agent_skills").count(),
+            1,
+            "agent_skills also rendered as a pass-through row"
+        );
+        assert!(mutate_config_entry(&mut config, "research", &ConfigValueKind::Bool));
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_string(saved.pointer("/agent_skills").unwrap()).unwrap(),
+            r#"{"gsd-planner":["skills/x"]}"#
+        );
+    }
+
+    /// The sync record carries the secret-key provenance a future sync diffs
+    /// against: every explicit secret key and every measured exemption.
+    #[test]
+    fn the_sync_record_names_every_secret_key_and_exemption() {
+        use crate::state_reader::config_secrets::{NON_SECRET_CONFIG_KEYS, SECRET_CONFIG_KEYS};
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/GSD-CORE-SYNC.md");
+        let doc = std::fs::read_to_string(&path).expect("the sync record exists");
+        let section = doc
+            .split_once("\n## Secret-bearing keys")
+            .expect("the record has a `## Secret-bearing keys` section")
+            .1;
+        for key in SECRET_CONFIG_KEYS.iter().chain(NON_SECRET_CONFIG_KEYS) {
+            assert!(
+                section.contains(&format!("`{key}`")),
+                "docs/GSD-CORE-SYNC.md's secret section does not name `{key}`"
+            );
+        }
     }
 
     fn kind_name(kind: &ConfigValueKind) -> &'static str {
@@ -12958,7 +13090,11 @@ mod tests {
     #[test]
     fn every_resynced_key_has_one_row_of_the_right_kind_with_a_measured_since() {
         let entries = all_config_entries();
-        for (key, expected_kind) in RESYNCED_KEYS.iter().chain(RESYNCED_KEYS_1_15_0) {
+        for (key, expected_kind) in RESYNCED_KEYS
+            .iter()
+            .chain(RESYNCED_KEYS_1_15_0)
+            .chain(PROMOTED_TOP_LEVEL_KEYS)
+        {
             let matching: Vec<&ConfigEntry> = entries
                 .iter()
                 .filter(|entry| entry.key.as_ref() == *key)
@@ -13004,7 +13140,11 @@ mod tests {
     #[test]
     fn every_editable_resynced_key_sets_toggles_and_clears() {
         let entries = all_config_entries();
-        for (key, expected_kind) in RESYNCED_KEYS.iter().chain(RESYNCED_KEYS_1_15_0) {
+        for (key, expected_kind) in RESYNCED_KEYS
+            .iter()
+            .chain(RESYNCED_KEYS_1_15_0)
+            .chain(PROMOTED_TOP_LEVEL_KEYS)
+        {
             let entry = entries
                 .iter()
                 .find(|entry| entry.key.as_ref() == *key)
@@ -13044,6 +13184,28 @@ mod tests {
                 }
                 "string" => {
                     assert!(set_string_value(&mut config, key, "x"), "{key} set");
+                }
+                "secret" => {
+                    let at = |config: &crate::state_reader::config_json::GsdConfig| {
+                        serde_json::to_value(config)
+                            .expect("the config serialises")
+                            .pointer(&format!("/{key}"))
+                            .cloned()
+                    };
+                    assert!(set_secret_value(&mut config, key, "K-SECRET-Z1Z1"), "{key} set key");
+                    assert_eq!(at(&config), Some(serde_json::json!("K-SECRET-Z1Z1")), "{key}");
+                    assert!(set_secret_value(&mut config, key, "true"), "{key} set flag");
+                    assert_eq!(at(&config), Some(serde_json::json!(true)), "{key}");
+                    assert!(
+                        !set_secret_value(&mut config, key, "  "),
+                        "{key}: blank input must change nothing"
+                    );
+                    assert_eq!(at(&config), Some(serde_json::json!(true)), "{key}");
+                    assert!(
+                        dropdown_options(&entry.kind).is_empty()
+                            && !mutate_config_entry(&mut config, key, &entry.kind),
+                        "{key}: a secret row has no dropdown and no toggle"
+                    );
                 }
                 "integer" => {
                     assert!(
@@ -18651,7 +18813,16 @@ mod tests {
 
         let mut config = populated_gsd_config();
         config.brave_search = Some(ApiKeySetting::Key("BSA-SECRET-Q7Z9".to_string()));
+        // Task 3: the four promoted search keys, each with its own last-4.
+        config.tavily_search = Some(ApiKeySetting::Key("TVL-SECRET-A1B2".to_string()));
+        config.ref_search = Some(ApiKeySetting::Key("REF-SECRET-C3D4".to_string()));
+        config.perplexity = Some(ApiKeySetting::Key("PPX-SECRET-E5F6".to_string()));
+        config.jina = Some(ApiKeySetting::Key("JNA-SECRET-G7H8".to_string()));
         let entries = build_defaults_entries(&config, None);
+        for key in ["tavily_search", "ref_search", "perplexity", "jina"] {
+            let row = entries.iter().find(|e| e.key.as_ref() == key).expect("a promoted row");
+            assert_eq!(row.value, MASKED_SECRET, "`{key}`");
+        }
         assert!(
             entries.len() + 8 < SECRET_PROBE_HEIGHT as usize,
             "the probe is too short to draw every row"
@@ -18660,7 +18831,8 @@ mod tests {
         let text = render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
         assert!(text.contains("brave_search"), "ARRIVAL: the row was not drawn:\n{text}");
         assert!(text.contains(MASKED_SECRET), "ARRIVAL: the mask was not drawn:\n{text}");
-        for leak in ["SECRET-", "Q7Z9"] {
+        assert!(text.contains("perplexity"), "ARRIVAL: a promoted row was not drawn:\n{text}");
+        for leak in ["SECRET-", "Q7Z9", "A1B2", "C3D4", "E5F6", "G7H8"] {
             assert!(!text.contains(leak), "the render leaked {leak:?}:\n{text}");
         }
     }
