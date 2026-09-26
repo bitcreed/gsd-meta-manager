@@ -905,6 +905,17 @@ impl EditBuffer {
     }
 }
 
+/// What the Phases-tab Waves-pane cursor rests on (quick 260926-2l4,
+/// [inferred I-6]): a wave header (or a merged row, which answers to any wave
+/// in its range) by wave number — `None` is the `w?` bucket — or a plan by its
+/// scanned stem. An identity, never an index: when its target disappears the
+/// cursor falls to the first row at or after it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WavesCursor {
+    Wave(Option<u32>),
+    Plan(String),
+}
+
 #[derive(Default)]
 pub struct ProjectViewCache {
     pub backlog_items: Vec<BacklogItem>,
@@ -942,6 +953,16 @@ pub struct ProjectViewCache {
     pub loading_git: bool,
     pub loading_commit_detail: bool,
     pub pipeline_selected: usize,
+    /// The Phases tab's Waves-pane cursor (quick 260926-2l4, [inferred I-6]):
+    /// a row IDENTITY, never an index, so it survives refreshes and folds.
+    /// `None` until the pane is entered; cleared whenever the phase selection
+    /// moves on the list.
+    pub waves_cursor: Option<WavesCursor>,
+    /// The Waves-pane waves whose fold state differs from the default, keyed
+    /// by `(phase_key, wave)` — `None` is the `w?` bucket. Toggled by
+    /// `Enter`/`Space` on a wave or merged row; per project, in memory only,
+    /// the `roadmap_fold_toggles` pattern ([inferred I-4]).
+    pub waves_toggles: std::collections::HashSet<(String, Option<u32>)>,
     /// The Roadmap tab's view: `false` (the default) draws the cursor list
     /// (`ui::roadmap_view` over `ui::roadmap_graph`'s model), `true` draws the box list
     /// (`ui::roadmap_widget`). Toggled per project by `v` on that tab.

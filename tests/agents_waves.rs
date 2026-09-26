@@ -388,3 +388,135 @@ fn a_phase_missing_from_main_skips_the_summary_check() {
     assert!(!row.summary_in_worktree, "no directory in main, no stat");
     assert_eq!(row.liveness, AgentLiveness::Live);
 }
+
+// ---------------------------------------------------------------------------
+// Per-plan state (quick 260926-2l4, D-02): the states `derive` computes are
+// kept per plan, not only tallied, so the Phases-tab Waves pane can look them
+// up without re-deriving anything.
+// ---------------------------------------------------------------------------
+
+/// Phase 13's parsed state from a plain directory (no git needed) whose plans
+/// carry GSD's descriptive slugs: `13-01-alpha` (wave 1, summarized),
+/// `13-02-beta` and `13-03-gamma` (wave 2) — or no `wave:` at all.
+fn slugged_phase_13_state(with_waves: bool) -> (TempDir, ProjectState) {
+    let tmp = TempDir::new().expect("tempdir");
+    let planning = tmp.path().join(".planning");
+    let phase = planning.join("phases/13-demo");
+    std::fs::create_dir_all(&phase).expect("fixture dir");
+    let plan = |wave: u32| {
+        if with_waves {
+            format!("---\nphase: 13\nwave: {wave}\n---\n\nbody\n")
+        } else {
+            "---\nphase: 13\n---\n\nbody\n".to_string()
+        }
+    };
+    std::fs::write(phase.join("13-01-alpha-PLAN.md"), plan(1)).expect("fixture write");
+    std::fs::write(phase.join("13-02-beta-PLAN.md"), plan(2)).expect("fixture write");
+    std::fs::write(phase.join("13-03-gamma-PLAN.md"), plan(2)).expect("fixture write");
+    std::fs::write(phase.join("13-01-SUMMARY.md"), "done\n").expect("fixture write");
+    let state = ProjectState {
+        phase_disk_statuses: HashMap::from([(
+            "13".to_string(),
+            infer_phase_status(&planning, "13"),
+        )]),
+        ..ProjectState::default()
+    };
+    (tmp, state)
+}
+
+#[test]
+fn per_plan_state_is_kept_per_wave() {
+    use gsd_meta_manager::agents::waves::{PlanState, PlanStatus};
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    add_agent_worktree(&root, P13_02);
+    let agents = scan(&root, Scripted::live());
+    let (_state_tmp, state) = slugged_phase_13_state(true);
+
+    let view = derive(&agents, &state);
+    assert_eq!(view.waves.len(), 2);
+    assert_eq!(
+        view.waves[0].plans,
+        vec![PlanStatus {
+            id: "13-01-alpha".to_string(),
+            state: PlanState::Done
+        }]
+    );
+    assert_eq!(
+        view.waves[1].plans,
+        vec![
+            PlanStatus {
+                id: "13-02-beta".to_string(),
+                state: PlanState::Running
+            },
+            PlanStatus {
+                id: "13-03-gamma".to_string(),
+                state: PlanState::Queued
+            },
+        ]
+    );
+    // The kept states are exactly what the counts tally.
+    for wave in &view.waves {
+        let count = |s: PlanState| wave.plans.iter().filter(|p| p.state == s).count() as u32;
+        assert_eq!(
+            (
+                wave.done,
+                wave.finished,
+                wave.running,
+                wave.stalled,
+                wave.queued
+            ),
+            (
+                count(PlanState::Done),
+                count(PlanState::Finished),
+                count(PlanState::Running),
+                count(PlanState::Stalled),
+                count(PlanState::Queued)
+            )
+        );
+    }
+    assert!(view.unwaved_plans.is_empty());
+
+    // Looked up pad-insensitively, slug or not.
+    assert_eq!(view.plan_state("13-02"), Some(PlanState::Running));
+    assert_eq!(view.plan_state("13-2"), Some(PlanState::Running));
+    assert_eq!(view.plan_state("13-02-beta"), Some(PlanState::Running));
+    assert_eq!(view.plan_state("13-01"), Some(PlanState::Done));
+    assert_eq!(view.plan_state("13-09"), None);
+    assert_eq!(view.plan_state("not-a-plan"), None);
+}
+
+#[test]
+fn per_plan_state_without_wave_metadata_matches_the_totals() {
+    use gsd_meta_manager::agents::waves::PlanState;
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    add_agent_worktree(&root, P13_02);
+    let agents = scan(&root, Scripted::live());
+    let (_state_tmp, state) = slugged_phase_13_state(false);
+
+    let view = derive(&agents, &state);
+    assert!(view.waves.is_empty());
+    let ids: Vec<(&str, PlanState)> = view
+        .unwaved_plans
+        .iter()
+        .map(|p| (p.id.as_str(), p.state))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![("13-01-alpha", PlanState::Done), ("13-02", PlanState::Running)],
+        "the summarized stem when one exists, else the PlanRef label"
+    );
+    let count = |s: PlanState| view.unwaved_plans.iter().filter(|p| p.state == s).count() as u32;
+    assert_eq!(
+        (view.done, view.running, view.queued),
+        (
+            count(PlanState::Done),
+            count(PlanState::Running),
+            count(PlanState::Queued)
+        )
+    );
+    assert_eq!(view.plan_state("13-02-beta"), Some(PlanState::Running));
+}

@@ -110,6 +110,121 @@ pub fn group_into_waves(entries: Vec<(String, Option<u32>)>) -> Vec<PlanWave> {
     waves
 }
 
+/// A `waves.json` parallelism manifest (GSD 1.8.0 claude-orchestration),
+/// normalised for display.
+///
+/// Moved here from the Pipeline renderer (quick 260926-2l4, D-04): the file is
+/// now read once per refresh inside
+/// [`crate::state_reader::disk_status::infer_disk_status`] and cached on
+/// `DiskInference::waves_manifest`, so rendering performs no file I/O. The form
+/// carries no `serde_json::Value`, so it derives `PartialEq` for the
+/// unchanged-state suppression the rest of `DiskInference` feeds.
+///
+/// Every `label` and plan `id` is third-party text from another project's
+/// `.planning/` directory: a renderer puts it through the UI's `shown()`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WavesManifest {
+    pub waves: Vec<ManifestWave>,
+}
+
+/// One wave of a [`WavesManifest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestWave {
+    /// The manifest's own wave id (`"w1"`), its numeric `wave`, or `wave N`
+    /// (1-based position) when it carries neither.
+    pub label: String,
+    /// The wave's plans that carry an id; a plan entry with no id says nothing
+    /// a row could show and is dropped.
+    pub plans: Vec<ManifestPlan>,
+}
+
+/// One plan of a [`ManifestWave`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestPlan {
+    pub id: String,
+    /// How many files the manifest says the plan modifies.
+    pub files: usize,
+}
+
+/// The on-disk shape, deserialized leniently: unknown fields are ignored and
+/// any missing field defaults, so a partial or evolving manifest still parses.
+/// `{ "waves": [ { "id": "w1", "plans": [ { "id": "p1", "files_modified": [..] } ] } ] }`.
+#[derive(Debug, serde::Deserialize)]
+struct RawManifest {
+    #[serde(default)]
+    waves: Vec<RawWave>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawWave {
+    /// Wave identifier — usually a string id (`"w1"`) but tolerated as a number too.
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+    /// Alternate wave key some manifests use instead of `id`.
+    #[serde(default)]
+    wave: Option<serde_json::Value>,
+    #[serde(default)]
+    plans: Vec<RawPlan>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawPlan {
+    #[serde(default)]
+    id: Option<String>,
+    /// Alternate plan-identifier key.
+    #[serde(default)]
+    plan: Option<String>,
+    #[serde(default)]
+    files_modified: Vec<String>,
+}
+
+impl RawWave {
+    /// A short display label for the wave, falling back to a 1-based index.
+    fn label(&self, index: usize) -> String {
+        match self.id.as_ref().or(self.wave.as_ref()) {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+            Some(serde_json::Value::Null) | None => format!("wave {}", index + 1),
+            Some(other) => other.to_string(),
+        }
+    }
+}
+
+impl RawPlan {
+    /// The plan's identifier, if the manifest carried one.
+    fn label(&self) -> Option<String> {
+        self.id
+            .clone()
+            .or_else(|| self.plan.clone())
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// Deserialize and normalise a `waves.json` manifest. `None` on unparsable
+/// input, so the scan silently records nothing rather than surfacing noise.
+pub fn parse_waves_manifest(raw: &str) -> Option<WavesManifest> {
+    let parsed = serde_json::from_str::<RawManifest>(raw).ok()?;
+    Some(WavesManifest {
+        waves: parsed
+            .waves
+            .iter()
+            .enumerate()
+            .map(|(index, wave)| ManifestWave {
+                label: wave.label(index),
+                plans: wave
+                    .plans
+                    .iter()
+                    .filter_map(|p| {
+                        p.label().map(|id| ManifestPlan {
+                            id,
+                            files: p.files_modified.len(),
+                        })
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::disk_status::infer_disk_status;
@@ -279,5 +394,63 @@ mod tests {
         let inf = infer_disk_status(dir.path());
         assert_eq!(inf.plan_count, 2);
         assert!(inf.plan_waves.is_empty());
+    }
+
+    #[test]
+    fn test_parse_waves_manifest_two_waves() {
+        let raw = r#"{
+            "waves": [
+                {
+                    "id": "w1",
+                    "plans": [
+                        { "id": "p1", "files_modified": ["src/foo.rs"] },
+                        { "id": "p2", "files_modified": ["src/bar.rs"] }
+                    ]
+                },
+                {
+                    "id": "w2",
+                    "plans": [
+                        { "id": "p3", "files_modified": ["src/baz.rs", "src/qux.rs"] }
+                    ]
+                }
+            ]
+        }"#;
+        let manifest = parse_waves_manifest(raw).expect("valid manifest parses");
+        assert_eq!(manifest.waves.len(), 2);
+        assert_eq!(manifest.waves[0].label, "w1");
+        assert_eq!(manifest.waves[0].plans.len(), 2);
+        assert_eq!(
+            manifest.waves[0].plans[0],
+            ManifestPlan {
+                id: "p1".to_string(),
+                files: 1
+            }
+        );
+        assert_eq!(manifest.waves[1].label, "w2");
+        assert_eq!(manifest.waves[1].plans[0].files, 2);
+    }
+
+    #[test]
+    fn test_parse_waves_manifest_garbage_is_none() {
+        assert!(parse_waves_manifest("not json at all").is_none());
+        assert!(parse_waves_manifest("{ oops ]").is_none());
+    }
+
+    #[test]
+    fn test_parse_waves_manifest_lenient_defaults() {
+        // Numeric wave id and missing plan ids are tolerated.
+        let raw = r#"{ "waves": [ { "wave": 1, "plans": [ { "files_modified": [] } ] }, { "plans": [ { "plan": "p9" } ] } ] }"#;
+        let manifest = parse_waves_manifest(raw).expect("lenient parse");
+        assert_eq!(manifest.waves.len(), 2);
+        assert_eq!(manifest.waves[0].label, "1");
+        // A plan with no id says nothing a row could show, and is dropped.
+        assert!(manifest.waves[0].plans.is_empty());
+        // No id and no wave: the 1-based position; `plan` is the alternate key.
+        assert_eq!(manifest.waves[1].label, "wave 2");
+        assert_eq!(manifest.waves[1].plans[0].id, "p9");
+
+        // Empty object → empty waves, still Some (the scan keeps only non-empty).
+        let empty = parse_waves_manifest("{}").expect("empty object parses");
+        assert!(empty.waves.is_empty());
     }
 }

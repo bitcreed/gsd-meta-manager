@@ -114,6 +114,18 @@ pub enum PlanState {
     Queued,
 }
 
+/// One plan's state as [`derive`] computed it (quick 260926-2l4, D-02).
+///
+/// `id` is the plan's stem exactly as the disk inference carries it
+/// (`13-02-slug`), or, for a plan known only from an agent's attribution,
+/// [`PlanRef::label`]. It is third-party filename text: a renderer puts it
+/// through the UI's `shown()` escape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanStatus {
+    pub id: String,
+    pub state: PlanState,
+}
+
 /// One wave's plan-state counts.
 ///
 /// `wave` is `None` for the trailing bucket of plans with no readable `wave:`,
@@ -127,6 +139,11 @@ pub struct WaveRow {
     pub stalled: u32,
     pub queued: u32,
     pub current: bool,
+    /// Every plan of the wave with its state, in the wave's plan order. The
+    /// counts above are a tally of exactly these states, so the two can never
+    /// disagree. The Phases-tab Waves pane looks states up here (via
+    /// [`AgentView::plan_state`]) and never re-derives them.
+    pub plans: Vec<PlanStatus>,
 }
 
 impl WaveRow {
@@ -160,6 +177,10 @@ pub struct AgentView {
     pub stalled: u32,
     pub queued: u32,
     pub waves: Vec<WaveRow>,
+    /// The per-plan states of a phase with no `wave:` metadata — the same
+    /// plans, with the same states, the totals above count. Empty whenever
+    /// `waves` is not.
+    pub unwaved_plans: Vec<PlanStatus>,
     /// Agent rows in display order (liveness, then plan, then path).
     pub agents: Vec<AgentRow>,
     pub worktreeless: Vec<ChildAgent>,
@@ -355,6 +376,7 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
 
     let mut totals = WaveRow::default();
     let mut waves: Vec<WaveRow> = Vec::new();
+    let mut unwaved_plans: Vec<PlanStatus> = Vec::new();
     if di.plan_waves.is_empty() {
         // No wave metadata: count the plans something is known about, keyed by
         // PlanRef so a summarized `13-01-slug` and an agent on `13-01` are one.
@@ -370,7 +392,19 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
         }
         for (key, done) in &universe {
             let rows = key.as_ref().map(rows_for).unwrap_or_default();
-            tally(&mut totals, plan_state(*done, &rows));
+            let s = plan_state(*done, &rows);
+            tally(&mut totals, s);
+            // The summarized stem when one names this plan, else the label.
+            let id = match key {
+                Ok(plan) => di
+                    .summarized_plans
+                    .iter()
+                    .find(|stem| PlanRef::from_stem(stem).as_ref() == Some(plan))
+                    .cloned()
+                    .unwrap_or_else(|| plan.label()),
+                Err(stem) => stem.clone(),
+            };
+            unwaved_plans.push(PlanStatus { id, state: s });
         }
     } else {
         for wave in &di.plan_waves {
@@ -382,6 +416,10 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
                 let s = state_of(stem);
                 tally(&mut row, s);
                 tally(&mut totals, s);
+                row.plans.push(PlanStatus {
+                    id: stem.clone(),
+                    state: s,
+                });
             }
             waves.push(row);
         }
@@ -411,6 +449,7 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
         stalled: totals.stalled,
         queued: totals.queued,
         waves,
+        unwaved_plans,
         agents: rows,
         worktreeless: agents.worktreeless.clone(),
         scanned_at: agents.scanned_at,
@@ -419,6 +458,28 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
 }
 
 impl AgentView {
+    /// The state [`derive`] computed for the plan `stem` names, looked up in
+    /// the waves (or, for a phase without wave metadata, the unwaved list).
+    ///
+    /// Matches the exact id first, then any id with the same `NN-MM` plan
+    /// index, so `13-02` finds `13-02-slug` and `13-2` finds `13-02`. `None`
+    /// when this view says nothing about that plan.
+    pub fn plan_state(&self, stem: &str) -> Option<PlanState> {
+        let all = || {
+            self.waves
+                .iter()
+                .flat_map(|w| w.plans.iter())
+                .chain(self.unwaved_plans.iter())
+        };
+        if let Some(found) = all().find(|p| p.id == stem) {
+            return Some(found.state);
+        }
+        let index = plan_index(stem)?;
+        all()
+            .find(|p| plan_index(&p.id).as_ref() == Some(&index))
+            .map(|p| p.state)
+    }
+
     /// Whether anything is running: a row that is `Live` or `Idle`
     /// ([`AgentLiveness::is_running`]), or any worktree-less agent (the scan
     /// keeps only live ones).
@@ -857,6 +918,7 @@ mod tests {
                 running: 13,
                 queued: 1,
                 current: true,
+                plans: view.waves[1].plans.clone(),
                 ..WaveRow::default()
             }
         );

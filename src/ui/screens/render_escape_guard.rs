@@ -862,7 +862,8 @@ type Fixture = fn(&str) -> Vec<ProbeState>;
 const PROBE_PLANNED_PHASE_ID: &str = "90";
 
 fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
-    use crate::state_reader::disk_status::{DiskInference, DiskStatus, PlanTokens};
+    use crate::state_reader::disk_status::{DiskInference, DiskStatus, PlanMeta, PlanTokens};
+    use crate::state_reader::plan_waves::PlanWave;
     use crate::state_reader::queue_md::QueuedAction;
     use crate::state_reader::roadmap_md::RoadmapPhase;
     use crate::state_reader::ProjectState;
@@ -912,6 +913,21 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
                         id: identity.to_string(),
                         estimate: Some(95_000),
                         actual: Some(12_846),
+                    }],
+                    // The Waves pane (quick 260926-2l4): the plan's id AND its
+                    // PLAN.md title are both third-party text, and one wave
+                    // holds the plan so the default state draws its row.
+                    plans: vec![PlanMeta {
+                        id: identity.to_string(),
+                        title: Some(crate::text::Untrusted::from_untrusted_source(
+                            identity.to_string(),
+                        )),
+                        objective_line: Some(1),
+                        wave: Some(1),
+                    }],
+                    plan_waves: vec![PlanWave {
+                        wave: Some(1),
+                        plans: vec![identity.to_string()],
                     }],
                     ..Default::default()
                 },
@@ -1516,10 +1532,21 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         true,
         "Draws the current phase name, status and pause context — and, since \
          `phase_disk_statuses` was populated (260916-vqx), the RIGHT pane's \
-         `Some(inf)` branch too, including a plan identifier read out of a \
-         third-party `.planning/` filename. Before that this tab's right pane \
-         returned at `No disk data` while this row already read `true` on the \
-         left pane alone.",
+         `Some(inf)` branch too. Since quick 260926-2l4 that branch's third-party \
+         text reaches cells through the Waves pane's plan rows: the plan id (a \
+         filename stem out of a foreign `.planning/`) and its PLAN.md title, on \
+         the fixture's one queued plan in its expanded current wave. The old \
+         per-plan token table no longer exists. Before 260916-vqx this tab's right \
+         pane returned at `No disk data` while this row already read `true` on \
+         the left pane alone.",
+    ),
+    (
+        "Pipeline tab, waves pane expanded",
+        true,
+        "The fixture's one plan marked done, so the phase is complete and its wave \
+         folds into a merged row by default — and `waves_toggles` flipping that \
+         wave open again, so the DONE plan row (glyph, id, PLAN.md title, tokens) \
+         is drawn through the toggle-expanded path the default state never takes.",
     ),
     (
         "Queue tab",
@@ -1792,6 +1819,31 @@ type SubStateArrange = fn(&str, &mut AppContext);
 ///   drawn whole only there); and an absent active roadmap milestone is the
 ///   only render of `milestone_name` (header and synthetic band row).
 const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
+    // The Phases tab's Waves pane with a toggle-expanded done wave (quick
+    // 260926-2l4). The plan id, the phase key and the wave are all DERIVED
+    // from the fixture's own state, never spelled; `chrome_ctx` has no project
+    // state, so the arrange returns early there.
+    ("Pipeline tab, waves pane expanded", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Pipeline);
+        let Some(state) = ctx.project_states.get_mut(identity) else {
+            return;
+        };
+        let Some(phase) = state.phases.first() else {
+            return;
+        };
+        let key = crate::state_reader::phase_num::phase_key(&phase.number);
+        let number = phase.number.clone();
+        let Some(inf) = state.phase_disk_statuses.get_mut(&number) else {
+            return;
+        };
+        inf.summarized_plans = inf.plans.iter().map(|p| p.id.clone()).collect();
+        let waves: Vec<Option<u32>> = inf.plan_waves.iter().map(|w| w.wave).collect();
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        for wave in waves {
+            cache.waves_toggles.insert((key.clone(), wave));
+        }
+    }),
     ("Backlog tab, expanded", |identity, ctx| {
         ctx.detail_sub_view_per_project
             .insert(identity.to_string(), crate::app::DetailSubView::Backlog);

@@ -807,6 +807,14 @@ pub struct DetailScreen {
     /// render pass (plan 24-06); `0` until the first frame, which the key
     /// handler treats as a one-row page.
     roadmap_list_viewport: Cell<u16>,
+    /// First visible row of the Phases tab's Waves pane, kept across frames so
+    /// the window does not jump while the cursor moves inside it — the
+    /// `roadmap_list_offset` pattern (quick 260926-2l4).
+    waves_offset: Cell<usize>,
+    /// Last-rendered height, in rows, of the Waves pane's body — the page
+    /// `PageUp`/`PageDown` move the pane cursor by; `0` before the first frame,
+    /// which the keys treat as a one-row page.
+    waves_viewport_rows: Cell<u16>,
     /// Which level of the view has the keyboard: the tab bar or the tab's
     /// content (quick 260926-1t1). Content on every opening.
     focus: DetailFocus,
@@ -844,11 +852,14 @@ pub(crate) struct DetailRegions {
 /// backdrop build through [`DetailScreen::new`] — so `6` then `j` still moves
 /// the Sessions list exactly as it did before the tab bar was a level.
 ///
-/// A third level, `Pane`, is reserved for task 4b's Phases waves pane and is
-/// deliberately NOT a variant yet. The Backlog content pane is not a focus
-/// level of its own: `backlog_expanded` stays its single source of truth
-/// ([inferred I-10]), because a second flag that had to agree with it would
-/// be a bug waiting to happen.
+/// A third level, `Pane`, is the Phases tab's Waves pane (quick 260926-2l4,
+/// D-01): `→`/`Enter` on the phase list descend into it, `←`/`Esc` climb back
+/// to the list, and while it holds the keyboard every key is the pane's — so
+/// nothing reaches the phase list underneath. It is meaningful on the Phases
+/// tab only; `handle_key` resets it to `Content` anywhere else. The Backlog
+/// content pane is not a focus level of its own: `backlog_expanded` stays its
+/// single source of truth ([inferred I-10]), because a second flag that had to
+/// agree with it would be a bug waiting to happen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum DetailFocus {
     /// The tab bar: `←`/`→` walk tabs, `↓`/`j`/`Enter`/`Space` descend with
@@ -857,6 +868,9 @@ pub(crate) enum DetailFocus {
     /// The active tab's content (and its sub-tab strip, when it has one).
     #[default]
     Content,
+    /// The Phases tab's Waves pane: `j`/`k` walk its rows, `←`/`Esc` return
+    /// to the phase list.
+    Pane,
 }
 
 impl DetailScreen {
@@ -882,6 +896,8 @@ impl DetailScreen {
             backlog_viewport: Cell::default(),
             roadmap_list_offset: Cell::new(0),
             roadmap_list_viewport: Cell::new(0),
+            waves_offset: Cell::new(0),
+            waves_viewport_rows: Cell::new(0),
             focus: DetailFocus::Content,
             regions: Cell::default(),
         }
@@ -1186,6 +1202,107 @@ impl DetailScreen {
                 crate::text::render_for_terminal(&planned.number)
             )),
             None => ScreenAction::None,
+        }
+    }
+
+    /// The Waves pane's model and rows for the Phases tab's selected phase —
+    /// the ONE derivation the render and the pane keys share (quick
+    /// 260926-2l4). Memory only: `phase_disk_statuses` and `agent_views` are
+    /// the scans' caches. `None` without a project state, a phase or an
+    /// inference for the selected phase.
+    fn selected_waves(&self, ctx: &AppContext) -> Option<(WavesModel, Vec<WavesRow>)> {
+        let state = ctx.project_states.get(&self.alias)?;
+        let last = state.phases.len().checked_sub(1)?;
+        let cache = ctx.view_cache.get(&self.alias);
+        let selected = cache.map_or(0, |c| c.pipeline_selected.min(last));
+        let phase = &state.phases[selected];
+        let inf = state.phase_disk_statuses.get(&phase.number)?;
+        let active = crate::state_reader::phase_num::same_phase(
+            &state.active_phase_number().to_string(),
+            &phase.number,
+        );
+        let model = waves_model(&phase.number, inf, ctx.agent_views.get(&self.alias), active);
+        let empty = std::collections::HashSet::new();
+        let rows = waves_rows(&model, cache.map_or(&empty, |c| &c.waves_toggles));
+        Some((model, rows))
+    }
+
+    /// Give the Waves pane the keyboard (`→`/`Enter` on the phase list). The
+    /// cursor keeps its row when it has one for this phase, else lands per
+    /// [inferred I-7].
+    fn focus_waves_pane(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        self.focus = DetailFocus::Pane;
+        ctx.needs_redraw = true;
+        if let Some((model, rows)) = self.selected_waves(ctx) {
+            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+            if cache.waves_cursor.is_none() {
+                cache.waves_cursor = rows
+                    .get(waves_default_cursor(&model, &rows))
+                    .map(|row| row.target.clone());
+            }
+        }
+        ScreenAction::None
+    }
+
+    /// Move the Waves-pane cursor to `to(current index, row count, page)`,
+    /// clamped, and store the target row's identity.
+    fn waves_move(
+        &mut self,
+        ctx: &mut AppContext,
+        to: fn(usize, usize, usize) -> usize,
+    ) -> ScreenAction {
+        let Some((model, rows)) = self.selected_waves(ctx) else {
+            return ScreenAction::None;
+        };
+        if rows.is_empty() {
+            return ScreenAction::None;
+        }
+        let page = usize::from(self.waves_viewport_rows.get()).max(1);
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        let current = waves_cursor_index(&model, &rows, cache.waves_cursor.as_ref());
+        let next = to(current, rows.len(), page).min(rows.len() - 1);
+        cache.waves_cursor = Some(rows[next].target.clone());
+        ctx.needs_redraw = true;
+        ScreenAction::None
+    }
+
+    /// A key while the Waves pane has the keyboard ([inferred I-5]).
+    ///
+    /// `Some(action)` consumes the key. `None` lets it fall through to the
+    /// main match — for `?` and `Tab` with the focus unchanged, and for the
+    /// digits, `D`, `[` and `]` after focus moves to the list (4a's I-2 rule).
+    /// Every other key is consumed as a no-op, so nothing acts on the phase
+    /// list while the pane holds the keyboard.
+    fn handle_waves_pane_key(
+        &mut self,
+        code: KeyCode,
+        ctx: &mut AppContext,
+    ) -> Option<ScreenAction> {
+        match code {
+            KeyCode::Left | KeyCode::Esc => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                Some(ScreenAction::None)
+            }
+            KeyCode::Char('q') => {
+                self.scroll_offset = 0;
+                ctx.needs_redraw = true;
+                Some(ScreenAction::Pop)
+            }
+            // `↑` on the first row stays in the pane (report §3.2).
+            KeyCode::Char('j') | KeyCode::Down => {
+                Some(self.waves_move(ctx, |i, _, _| i.saturating_add(1)))
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                Some(self.waves_move(ctx, |i, _, _| i.saturating_sub(1)))
+            }
+            KeyCode::Char('?') | KeyCode::Tab => None,
+            KeyCode::Char(c) if c.is_ascii_digit() || matches!(c, 'D' | '[' | ']') => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                None
+            }
+            _ => Some(ScreenAction::None),
         }
     }
 
@@ -2361,6 +2478,18 @@ impl Screen for DetailScreen {
             }
         }
 
+        // The Waves-pane level (quick 260926-2l4, D-01, [inferred I-5]).
+        // AFTER the tab-bar block, BEFORE the main match: while the pane has
+        // the keyboard, no phase-list arm is reachable. Pane focus means
+        // nothing off the Phases tab, so any other tab resets it.
+        if self.focus == DetailFocus::Pane {
+            if current_view != DetailSubView::Pipeline {
+                self.focus = DetailFocus::Content;
+            } else if let Some(action) = self.handle_waves_pane_key(code, ctx) {
+                return action;
+            }
+        }
+
         match code {
             // `q` leaves the detail view from every level, WITHOUT popping
             // inner levels first ([inferred I-4]): an open pane, an Archive
@@ -2533,6 +2662,7 @@ impl Screen for DetailScreen {
                                 cache.pipeline_selected = (cache.pipeline_selected + 1).min(max);
                             }
                         }
+                        cache.waves_cursor = None;
                         share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
@@ -2708,6 +2838,7 @@ impl Screen for DetailScreen {
                     DetailSubView::Pipeline => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         cache.pipeline_selected = cache.pipeline_selected.saturating_sub(1);
+                        cache.waves_cursor = None;
                         share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
@@ -2854,6 +2985,7 @@ impl Screen for DetailScreen {
                                 cache.pipeline_selected = (cache.pipeline_selected + PAGE_SCROLL_LINES as usize).min(max);
                             }
                         }
+                        cache.waves_cursor = None;
                         share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
@@ -3030,6 +3162,7 @@ impl Screen for DetailScreen {
                     DetailSubView::Pipeline => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         cache.pipeline_selected = cache.pipeline_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        cache.waves_cursor = None;
                         share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
@@ -3190,6 +3323,11 @@ impl Screen for DetailScreen {
                 if sub_tab_pair(&current_view).is_some() {
                     return self.step_sub_tab(&current_view, forward, ctx);
                 }
+                // `→` on the phase list descends into the Waves pane
+                // (quick 260926-2l4, D-01); `←` keeps the 4a tab switch.
+                if current_view == DetailSubView::Pipeline && forward {
+                    return self.focus_waves_pane(ctx);
+                }
                 self.focus = DetailFocus::TabBar;
                 ctx.needs_redraw = true;
                 match stepped_tab_index(current_idx, forward, ctx.experimental) {
@@ -3202,6 +3340,9 @@ impl Screen for DetailScreen {
             // Enter/Space: expand backlog item, load diff stat, or mark queue item done
             KeyCode::Enter | KeyCode::Char(' ') => {
                 match current_view {
+                    // The phase list's Enter descends into the Waves pane
+                    // (quick 260926-2l4, D-01).
+                    DetailSubView::Pipeline => self.focus_waves_pane(ctx),
                     DetailSubView::Queue => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         let selected = cache.queue_selected;
@@ -4532,6 +4673,8 @@ impl Screen for DetailScreen {
                 .is_some_and(|c| c.backlog_expanded);
         let footer = if self.focus == DetailFocus::TabBar {
             Paragraph::new(Line::from(tab_bar_footer_spans(ctx.experimental)))
+        } else if self.focus == DetailFocus::Pane && sub_view == DetailSubView::Pipeline {
+            Paragraph::new(Line::from(waves_pane_footer_spans()))
         } else if backlog_focused {
             Paragraph::new(Line::from(backlog_focused_footer_spans()))
         } else {
@@ -5259,7 +5402,11 @@ impl DetailScreen {
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, left_area, &mut list_state);
 
-        // Right pane: pipeline detail for selected phase
+        // Right pane, top to bottom (quick 260926-2l4, D-01): the phase line,
+        // the ladder, the two-line stage block, the external-job line when it
+        // applies, then the Waves pane in all the remaining height. Nothing
+        // here reads a file: every input is the refresh scan's inference and
+        // the agents scan's view (D-04).
         let phase = &state.phases[selected];
         let inference = state.phase_disk_statuses.get(&phase.number);
 
@@ -5267,103 +5414,131 @@ impl DetailScreen {
         let inner = right_block.inner(right_area);
         frame.render_widget(right_block, right_area);
 
-        match inference {
-            None => {
-                let msg = Paragraph::new("  No disk data");
-                frame.render_widget(msg, inner);
-            }
-            Some(inf) => {
-                let stage_statuses = derive_all_stage_statuses(inf);
-                let pipeline_line = build_pipeline_line(inf, &stage_statuses);
-                let detail_lines = build_stage_detail_lines(inf, &stage_statuses);
-                let substage_lines = build_substage_lines(inf);
+        let Some(inf) = inference else {
+            frame.render_widget(Paragraph::new("  No disk data"), inner);
+            return;
+        };
+        let cols = inner.width as usize;
+        let stage_statuses = derive_all_stage_statuses(inf);
+        let mut head: Vec<Line> = Vec::new();
+        // `phase.number` is the RAW key into `phase_disk_statuses`; only this
+        // row is read.
+        head.push(Line::from(fit_cells(
+            &format!("  Phase {}: {}", shown(&phase.number), shown(&phase.name)),
+            cols,
+        )));
+        head.push(build_pipeline_line(inf, &stage_statuses));
+        head.extend(stage_block_lines(inf, &stage_statuses, cols));
+        // External-job indicator: distinguish a legitimately blocked phase
+        // (waiting on an async job) from a stuck one.
+        if state.external_job_waiting {
+            head.push(fit_spans(
+                vec![
+                    Span::styled(
+                        "  \u{23F3} external job waiting",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "  (blocked on an async job, not stuck)",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ],
+                cols,
+            ));
+        }
+        let head_rows = (head.len() as u16).min(inner.height);
+        let parts =
+            Layout::vertical([Constraint::Length(head_rows), Constraint::Min(0)]).split(inner);
+        frame.render_widget(Paragraph::new(head), parts[0]);
+        if let Some((model, rows)) = self.selected_waves(ctx) {
+            self.render_waves_pane(frame, parts[1], ctx, &model, &rows);
+        }
+    }
 
-                let mut lines: Vec<Line> = Vec::new();
-                // `phase.number` is the RAW key into `phase_disk_statuses` and
-                // into `find_phase_dir` above and below; only this row is read.
-                lines.push(Line::from(format!(
-                    "  Phase {}: {}",
-                    shown(&phase.number),
-                    shown(&phase.name)
-                )));
-                lines.push(Line::from(""));
-                lines.push(pipeline_line);
-                lines.push(Line::from(""));
-                for dl in detail_lines {
-                    lines.push(dl);
-                }
-                if !substage_lines.is_empty() {
-                    lines.push(Line::from(""));
-                    for sl in substage_lines {
-                        lines.push(sl);
-                    }
-                }
+    /// Draw the Waves pane (quick 260926-2l4, D-01, D-03) into `area`: a
+    /// [`focus_block`] titled per [inferred I-9], then one terminal row per
+    /// visible [`waves_rows`] row from a windowed slice — never a scrolling
+    /// `List`, so the window, the keys and the recorded rects agree — with
+    /// `↑ +N more` / `↓ +N more` stating what is clipped. The cursor is drawn
+    /// only while the pane is focused.
+    fn render_waves_pane(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &AppContext,
+        model: &WavesModel,
+        rows: &[WavesRow],
+    ) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let focused = self.focus == DetailFocus::Pane;
+        let block = focus_block(waves_pane_title(model, area.width as usize), focused);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        let cells = inner.width as usize;
+        let dim = Style::default().fg(Color::DarkGray);
+        if model.shape == WavesShape::NoPlans {
+            // The number is third-party text: escaped (T-2l4-01).
+            let hint = format!(
+                "  No plans yet \u{2014} /gsd:plan-phase {}",
+                shown(&model.phase_number)
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(fit_cells(&hint, cells), dim))),
+                inner,
+            );
+            self.waves_viewport_rows.set(inner.height);
+            return;
+        }
 
-                // External-job indicator: distinguish a legitimately blocked
-                // phase (waiting on an async job) from a stuck one.
-                if state.external_job_waiting {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "  \u{23F3} external job waiting",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            "  (blocked on an async job, not stuck)",
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ]));
-                }
+        let height = inner.height as usize;
+        let cursor = waves_cursor_index(
+            model,
+            rows,
+            ctx.view_cache
+                .get(&self.alias)
+                .and_then(|c| c.waves_cursor.as_ref()),
+        );
+        // Unfocused, the window anchors on the current wave's row: its header,
+        // or the merged row that folds it.
+        let anchor = model
+            .current_wave
+            .map(|w| super::WavesCursor::Wave(Some(w)))
+            .and_then(|c| rows.iter().position(|row| row.answers_to(&c, model)))
+            .unwrap_or(0);
+        let focus_row = if focused { cursor } else { anchor };
+        let (offset, visible) =
+            waves_window(rows.len(), height, self.waves_offset.get(), focus_row, focused);
+        self.waves_offset.set(offset);
+        self.waves_viewport_rows.set(visible.max(1) as u16);
 
-                // Per-plan token cost (estimate vs actual), read during the disk
-                // scan and cached on the inference — no file is read here.
-                let token_lines = build_plan_token_lines(inf);
-                if !token_lines.is_empty() {
-                    lines.push(Line::from(""));
-                    for tl in token_lines {
-                        lines.push(tl);
-                    }
-                }
-
-                // Waves — ONE resolution, then ONE render. The on-disk
-                // `waves.json` manifest (GSD 1.8.0 claude-orchestration) is
-                // preferred where it exists; when it is absent, unparsable or
-                // carries no waves, the grouping derived from each plan's own
-                // `wave:` frontmatter stands in. That fallback reads no files:
-                // the data was derived during the refresh scan and is already
-                // on the inference, so nothing here touches the render tick.
-                // Neither source available → render nothing at all.
-                let manifest = ctx
-                    .config
-                    .projects
-                    .get(alias)
-                    .and_then(|proj| {
-                        crate::state_reader::disk_status::find_phase_dir(
-                            &proj.path.join(".planning"),
-                            &phase.number,
-                        )
-                    })
-                    .and_then(|phase_dir| {
-                        std::fs::read_to_string(phase_dir.join("waves.json")).ok()
-                    })
-                    .and_then(|raw| parse_waves_manifest(&raw))
-                    .filter(|manifest| !manifest.waves.is_empty())
-                    .or_else(|| {
-                        (!inf.plan_waves.is_empty())
-                            .then(|| waves_manifest_from_derived(&inf.plan_waves))
-                    });
-                if let Some(manifest) = manifest {
-                    lines.push(Line::from(""));
-                    for wl in build_waves_lines(&manifest) {
-                        lines.push(wl);
-                    }
-                }
-
-                let paragraph = Paragraph::new(lines);
-                frame.render_widget(paragraph, inner);
-            }
+        let markers = height >= 3;
+        let below = rows.len().saturating_sub(offset + visible);
+        let mut y = inner.y;
+        let row_rect = |y: u16| Rect::new(inner.x, y, inner.width, 1);
+        if markers && offset > 0 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(format!("  \u{2191} +{offset} more"), dim)),
+                row_rect(y),
+            );
+            y += 1;
+        }
+        for (index, row) in rows.iter().enumerate().skip(offset).take(visible) {
+            let line = waves_row_line(model, row, focused && index == cursor, cells);
+            frame.render_widget(Paragraph::new(line), row_rect(y));
+            y += 1;
+        }
+        if markers && below > 0 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(format!("  \u{2193} +{below} more"), dim)),
+                row_rect(y),
+            );
         }
     }
 
@@ -6573,100 +6748,6 @@ pub(super) fn build_pipeline_line(
     Line::from(spans)
 }
 
-/// Build detail lines showing each stage's status text.
-fn build_stage_detail_lines(
-    inf: &DiskInference,
-    statuses: &[StageStatus; 5],
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-
-    for (i, &status) in statuses.iter().enumerate() {
-        let color = stage_color(status);
-        let detail = match (i, status) {
-            (3, StageStatus::Complete) => {
-                format!("{}/{} complete", inf.summary_count, inf.plan_count)
-            }
-            (3, StageStatus::Current) => {
-                format!("{}/{} complete", inf.summary_count, inf.plan_count)
-            }
-            (2, StageStatus::Complete) if inf.plan_count > 0 => format!("{} plans", inf.plan_count),
-            (_, StageStatus::Complete) => "Complete".to_string(),
-            (_, StageStatus::Current) => "Current".to_string(),
-            (_, StageStatus::Skipped) => "Skipped".to_string(),
-            (_, StageStatus::NotStarted) => "Not started".to_string(),
-        };
-
-        lines.push(Line::from(vec![
-            Span::raw(format!("  {:<12}", format!("{}:", STAGE_NAMES[i]))),
-            Span::styled(detail, Style::default().fg(color)),
-        ]));
-    }
-
-    lines
-}
-
-/// A parsed `waves.json` parallelism manifest (GSD 1.8.0 claude-orchestration).
-///
-/// On-disk shape (see gsd-core `enable-claude-orchestration-workflow-backend`):
-/// `{ "waves": [ { "id": "w1", "plans": [ { "id": "p1", "files_modified": [..] } ] } ] }`.
-/// Deserialization is intentionally lenient: unknown fields are ignored and any
-/// missing field defaults, so a partial or evolving manifest still renders.
-#[derive(Debug, serde::Deserialize)]
-struct WavesManifest {
-    #[serde(default)]
-    waves: Vec<WaveEntry>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct WaveEntry {
-    /// Wave identifier — usually a string id (`"w1"`) but tolerated as a number too.
-    #[serde(default)]
-    id: Option<serde_json::Value>,
-    /// Alternate wave key some manifests use instead of `id`.
-    #[serde(default)]
-    wave: Option<serde_json::Value>,
-    #[serde(default)]
-    plans: Vec<WavePlan>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct WavePlan {
-    #[serde(default)]
-    id: Option<String>,
-    /// Alternate plan-identifier key.
-    #[serde(default)]
-    plan: Option<String>,
-    #[serde(default)]
-    files_modified: Vec<String>,
-}
-
-impl WaveEntry {
-    /// A short display label for the wave, falling back to a 1-based index.
-    fn label(&self, index: usize) -> String {
-        match self.id.as_ref().or(self.wave.as_ref()) {
-            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
-            Some(serde_json::Value::Null) | None => format!("wave {}", index + 1),
-            Some(other) => other.to_string(),
-        }
-    }
-}
-
-impl WavePlan {
-    /// The plan's identifier, if the manifest carried one.
-    fn label(&self) -> Option<String> {
-        self.id
-            .clone()
-            .or_else(|| self.plan.clone())
-            .filter(|s| !s.is_empty())
-    }
-}
-
-/// Deserialize a `waves.json` manifest. Returns `None` on unparsable input so
-/// callers can silently omit the section rather than surface parse noise.
-fn parse_waves_manifest(raw: &str) -> Option<WavesManifest> {
-    serde_json::from_str::<WavesManifest>(raw).ok()
-}
-
 /// One row of the Pipeline tab's left-hand phase list.
 ///
 /// Today's text verbatim — `P{number}: {name}`, both halves escaped — plus, for
@@ -6703,97 +6784,6 @@ fn phase_list_label(
     }
     label
 }
-
-/// Present waves derived from `*-PLAN.md` frontmatter in the shape
-/// [`build_waves_lines`] already renders.
-///
-/// A second *source* for the existing renderer, not a second renderer: the
-/// on-disk `waves.json` manifest exists only under GSD 1.8.0's
-/// claude-orchestration backend, so without this the section renders for
-/// nobody. `files_modified` is left empty — the hint it feeds is appended only
-/// when the count is above zero, so the derived path degrades to just the plan
-/// count rather than showing a false `0f`.
-///
-/// Every plan id passes through [`shown`] first. These strings are filenames
-/// from another project's `.planning/` directory — untrusted text, escaped on
-/// the same path as the other ~50 call sites in this file.
-fn waves_manifest_from_derived(waves: &[crate::state_reader::plan_waves::PlanWave]) -> WavesManifest {
-    WavesManifest {
-        waves: waves
-            .iter()
-            .map(|w| WaveEntry {
-                // The label carries the real frontmatter wave number, so it is
-                // supplied here rather than left to `WaveEntry::label`'s
-                // index-plus-one fallback.
-                id: Some(serde_json::Value::String(w.label())),
-                wave: None,
-                plans: w
-                    .plans
-                    .iter()
-                    .map(|id| WavePlan {
-                        id: Some(shown(id)),
-                        plan: None,
-                        files_modified: Vec::new(),
-                    })
-                    .collect(),
-            })
-            .collect(),
-    }
-}
-
-/// Render a compact "Waves" section: one line per wave listing its plans and a
-/// small parallelism hint (plan count). Assumes `manifest.waves` is non-empty.
-fn build_waves_lines(manifest: &WavesManifest) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        "  Waves (parallelism):",
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    )));
-    for (i, wave) in manifest.waves.iter().enumerate() {
-        let plan_count = wave.plans.len();
-        let files_touched: usize = wave.plans.iter().map(|p| p.files_modified.len()).sum();
-        let mut hint = if plan_count == 1 {
-            "1 plan".to_string()
-        } else {
-            format!("{} parallel", plan_count)
-        };
-        if files_touched > 0 {
-            hint.push_str(&format!(", {}f", files_touched));
-        }
-        let plans: Vec<String> = wave.plans.iter().filter_map(|p| p.label()).collect();
-        let plans_str = if plans.is_empty() {
-            "(no plans)".to_string()
-        } else {
-            plans.join(", ")
-        };
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(
-                format!("{:<8}", wave.label(i)),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!("{:<14}", hint),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(plans_str, Style::default().fg(Color::White)),
-        ]));
-    }
-    lines
-}
-
-/// How many per-plan token rows the Pipeline pane draws before it stops and says
-/// so (D-INF-03).
-///
-/// This pane is a plain `Paragraph` with no scroll state, so lines past the pane
-/// height are simply not drawn. Phase 19 of this very repository has 33 plans:
-/// an uncapped list would push the overflow off the bottom INVISIBLY. A cap plus
-/// a stated remainder is honest about what is not shown, and the header's totals
-/// cover every plan regardless of the cap. If this proves annoying the follow-up
-/// is pane scrolling, not a bigger constant.
-const MAX_PLAN_TOKEN_ROWS: usize = 10;
 
 /// A token count in at most six ASCII characters, so the column is predictable.
 ///
@@ -6836,181 +6826,971 @@ fn fmt_tokens(n: u64) -> String {
     format!("{units}.{tenth}M")
 }
 
-/// Render the compact `Plan tokens (est/act)` section for the Pipeline pane.
-///
-/// Empty in, empty out: an inference whose `plan_tokens` is empty produces no
-/// lines at all, so a project whose plans predate GSD's `estimate`/`actuals`
-/// keys renders exactly what it rendered before this section existed.
-///
-/// Otherwise a header carrying the phase's summed estimate, its summed actual
-/// and how many of its plans have been MEASURED over its plan count, then up to
-/// [`MAX_PLAN_TOKEN_ROWS`] rows, then — if the cap dropped any — one line saying
-/// how many. The totals are over ALL rows, capped or not.
-///
-/// Every number here comes off `inf`; this function reads no file. The numbers
-/// were parsed during the `.planning/` disk scan and cached on the inference,
-/// and are invalidated with it.
-fn build_plan_token_lines(inf: &DiskInference) -> Vec<Line<'static>> {
-    if inf.plan_tokens.is_empty() {
-        return Vec::new();
-    }
+// ── The Phases-tab Waves pane (quick 260926-2l4) ─────────────────────────
+//
+// Pure and memory-only: every function below reads the refresh scan's
+// `DiskInference` and the agents scan's `AgentView` and nothing else — no file,
+// no clock, no process. `waves_rows` is the ONE row list the render, the pane
+// keys and `DetailRegions` all consume (the `agent_list_len` pattern), so the
+// cursor, the drawing and the hit-test rects cannot drift apart.
 
-    let label_style = Style::default().fg(Color::DarkGray);
-    let mut lines: Vec<Line> = Vec::new();
-
-    let total_estimate: u64 = inf.plan_tokens.iter().filter_map(|r| r.estimate).sum();
-    let total_actual: u64 = inf.plan_tokens.iter().filter_map(|r| r.actual).sum();
-    let measured = inf
-        .plan_tokens
-        .iter()
-        .filter(|r| r.actual.is_some())
-        .count();
-
-    // The header, and every word and number below it, is this crate's own text
-    // and arithmetic — authored strings and integers, neither of which can carry
-    // an escape sequence — so none of it goes through `shown()`. Only the plan
-    // LABEL does, because only the label came out of another project's
-    // filesystem. `unreadable_state_line` keeps that same asymmetry visible for
-    // the same reason.
-    lines.push(Line::from(vec![
-        Span::styled(
-            "  Plan tokens (est/act):",
-            label_style.add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(
-                "  est {}  act {}  {}/{} measured",
-                fmt_tokens(total_estimate),
-                fmt_tokens(total_actual),
-                measured,
-                inf.plan_count
-            ),
-            label_style,
-        ),
-    ]));
-
-    for row in inf.plan_tokens.iter().take(MAX_PLAN_TOKEN_ROWS) {
-        let estimate = row.estimate.map_or_else(|| "-".to_string(), fmt_tokens);
-        let actual = row.actual.map_or_else(|| "-".to_string(), fmt_tokens);
-        let mut spans = vec![
-            Span::raw("    "),
-            // The ONE value on this line that is third-party text.
-            Span::styled(
-                format!("{:<10}", shown(&row.label())),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!("est {estimate:>7}  act {actual:>7}  "),
-                Style::default().fg(Color::White),
-            ),
-        ];
-        if let (Some(estimate), Some(actual)) = (row.estimate, row.actual) {
-            // An estimate of zero renders no delta and does not divide.
-            if estimate > 0 {
-                let percent = (actual as i128 - estimate as i128) * 100 / estimate as i128;
-                let color = if actual <= estimate {
-                    Color::Green
-                } else {
-                    Color::Yellow
-                };
-                spans.push(Span::styled(
-                    format!("{percent:+}%"),
-                    Style::default().fg(color),
-                ));
-            }
-        }
-        lines.push(Line::from(spans));
-    }
-
-    let dropped = inf.plan_tokens.len().saturating_sub(MAX_PLAN_TOKEN_ROWS);
-    if dropped > 0 {
-        lines.push(Line::from(Span::styled(
-            format!("    ... +{dropped} more (totals above cover all)"),
-            label_style,
-        )));
-    }
-
-    lines
+/// The sub-stage artifacts the stage block's `Checks` line reports, in display
+/// order: `(label, present, group)`, group `0` for the Plan stage's artifacts
+/// and `1` for the Execute stage's. The ONE table — it replaced
+/// `build_substage_lines`' two hand-written lists — so the set stays
+/// single-sourced ([inferred I-12]).
+fn substage_table(inf: &DiskInference) -> [(&'static str, bool, u8); 16] {
+    [
+        ("Spec", inf.has_spec, 0),
+        ("Skeleton", inf.has_skeleton, 0),
+        ("Security", inf.has_security, 0),
+        ("Patterns", inf.has_patterns, 0),
+        ("UI-Spec", inf.has_ui_spec, 0),
+        ("AI-Spec", inf.has_ai_spec, 0),
+        ("Plan-Check", inf.has_plan_check, 0),
+        ("UI-Check", inf.has_ui_check, 0),
+        ("Nyquist", inf.has_validation, 0),
+        ("Windows", inf.has_windows, 0),
+        ("Deferred", inf.has_deferred_items, 0),
+        ("Code Review", inf.has_review, 1),
+        ("UI Review", inf.has_ui_review, 1),
+        ("Eval Review", inf.has_eval_review, 1),
+        ("UAT", inf.has_uat, 1),
+        ("Coverage", inf.has_coverage, 1),
+    ]
 }
 
-/// Build sub-stage status lines for the Plan and Execute parent stages.
-/// Each sub-stage is detected by the presence of a specific artifact.
-/// We only render a parent group's lines once that parent has any artifact
-/// on disk — otherwise the section stays collapsed to avoid noise on
-/// not-yet-touched phases.
-fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line> = Vec::new();
+/// `spans` cut to at most `cols` cells, the cut marked with `…` in the style of
+/// the span it fell in — [`fit_cells`] for a styled line.
+fn fit_spans(spans: Vec<Span<'static>>, cols: usize) -> Line<'static> {
+    let line = Line::from(spans);
+    if line.width() <= cols {
+        return line;
+    }
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in line.spans {
+        let w = span.width();
+        if used + w < cols {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        // Whatever is left of the row: this span's longest prefix that
+        // leaves one cell for the `…` marking the cut.
+        let room = cols - used;
+        if room > 0 {
+            let mut cut = String::new();
+            let mut taken = 0;
+            let mut buf = [0u8; 4];
+            for ch in span.content.chars() {
+                let cw = Span::raw(&*ch.encode_utf8(&mut buf)).width();
+                if taken + cw > room - 1 {
+                    break;
+                }
+                cut.push(ch);
+                taken += cw;
+            }
+            cut.push('\u{2026}');
+            out.push(Span::styled(cut, span.style));
+        }
+        break;
+    }
+    Line::from(out)
+}
+
+/// The two-line stage block under the ladder ([inferred I-12]).
+///
+/// Line A is one token per stage — `Discuss ✓  Research –  Plan 7  Execute 3/7
+/// Verify –` — from [`derive_all_stage_statuses`] and the plan counts: `✓`
+/// complete, `…` current, `–` skipped or not started, with the Plan
+/// stage's plan count and the Execute stage's `done/total` in place of a mark.
+/// Line B is `Checks ✓Patterns ✓Plan-Check +N not run` over the
+/// [`substage_table`] rows whose stage has been touched (the collapse rule
+/// `build_substage_lines` applied), or `Checks –` when none is. Both lines are
+/// cut to `cols` cells. Authored words and integers only: nothing here is
+/// third-party text.
+fn stage_block_lines(
+    inf: &DiskInference,
+    statuses: &[StageStatus; 5],
+    cols: usize,
+) -> [Line<'static>; 2] {
+    let mut a: Vec<Span<'static>> = vec![Span::raw("  ")];
+    for (i, &status) in statuses.iter().enumerate() {
+        let mark = match (i, status) {
+            (3, StageStatus::Complete | StageStatus::Current) if inf.plan_count > 0 => {
+                format!("{}/{}", inf.summary_count, inf.plan_count)
+            }
+            (2, StageStatus::Complete) if inf.plan_count > 0 => inf.plan_count.to_string(),
+            (_, StageStatus::Complete) => "\u{2713}".to_string(),
+            (_, StageStatus::Current) => "\u{2026}".to_string(),
+            // The ladder above already spells a skip as `[--]`; here both
+            // read `–`, in the ladder's own colours.
+            (_, StageStatus::Skipped | StageStatus::NotStarted) => "\u{2013}".to_string(),
+        };
+        if i > 0 {
+            a.push(Span::raw("  "));
+        }
+        a.push(Span::raw(format!("{} ", STAGE_NAMES[i])));
+        a.push(Span::styled(mark, Style::default().fg(stage_color(status))));
+    }
 
     let plan_touched = inf.has_plans
-        || inf.has_spec
-        || inf.has_patterns
-        || inf.has_plan_check
-        || inf.has_validation
-        || inf.has_ui_spec
-        || inf.has_ui_check
-        || inf.has_ai_spec
-        || inf.has_security
-        || inf.has_skeleton
-        || inf.has_windows
-        || inf.has_deferred_items;
-    if plan_touched {
-        lines.push(Line::from(Span::styled(
-            "  Plan sub-stages:",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
-        )));
-        push_substage(&mut lines, "Spec", inf.has_spec);
-        push_substage(&mut lines, "Skeleton", inf.has_skeleton);
-        push_substage(&mut lines, "Security", inf.has_security);
-        push_substage(&mut lines, "Patterns", inf.has_patterns);
-        push_substage(&mut lines, "UI-Spec", inf.has_ui_spec);
-        push_substage(&mut lines, "AI-Spec", inf.has_ai_spec);
-        push_substage(&mut lines, "Plan-Check", inf.has_plan_check);
-        push_substage(&mut lines, "UI-Check", inf.has_ui_check);
-        push_substage(&mut lines, "Nyquist", inf.has_validation);
-        push_substage(&mut lines, "Windows", inf.has_windows);
-        push_substage(&mut lines, "Deferred", inf.has_deferred_items);
-    }
-
+        || substage_table(inf)
+            .iter()
+            .any(|(_, present, group)| *group == 0 && *present);
     let exec_touched = inf.summary_count > 0
-        || inf.has_review
-        || inf.has_ui_review
-        || inf.has_eval_review
-        || inf.has_uat
-        || inf.has_coverage;
-    if exec_touched {
-        if plan_touched {
-            lines.push(Line::from(""));
+        || substage_table(inf)
+            .iter()
+            .any(|(_, present, group)| *group == 1 && *present);
+    let label = Style::default().fg(Color::DarkGray);
+    let mut b: Vec<Span<'static>> = vec![Span::styled("  Checks", label)];
+    let rows: Vec<(&str, bool)> = substage_table(inf)
+        .iter()
+        .filter(|(_, _, group)| (*group == 0 && plan_touched) || (*group == 1 && exec_touched))
+        .map(|(name, present, _)| (*name, *present))
+        .collect();
+    if rows.is_empty() {
+        b.push(Span::styled(" \u{2013}", label));
+    } else {
+        for (name, _) in rows.iter().filter(|(_, present)| *present) {
+            b.push(Span::styled(
+                format!(" \u{2713}{name}"),
+                Style::default().fg(Color::Green),
+            ));
         }
-        lines.push(Line::from(Span::styled(
-            "  Execute sub-stages:",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
-        )));
-        push_substage(&mut lines, "Code Review", inf.has_review);
-        push_substage(&mut lines, "UI Review", inf.has_ui_review);
-        push_substage(&mut lines, "Eval Review", inf.has_eval_review);
-        push_substage(&mut lines, "UAT", inf.has_uat);
-        push_substage(&mut lines, "Coverage", inf.has_coverage);
+        let missing = rows.iter().filter(|(_, present)| !present).count();
+        if missing > 0 {
+            b.push(Span::styled(format!(" +{missing} not run"), label));
+        }
     }
-
-    lines
+    [fit_spans(a, cols), fit_spans(b, cols)]
 }
 
-fn push_substage(lines: &mut Vec<Line<'static>>, label: &'static str, present: bool) {
-    let (marker, color) = if present {
-        ("✓", Color::Green)
+/// The Waves pane's per-plan state vocabulary ([inferred I-1]): the five
+/// [`PlanState`](crate::agents::waves::PlanState)s one-to-one, plus `Planned`
+/// for a not-done plan of a phase that is not the active one. Each state has a
+/// distinct one-cell glyph AND an ASCII word, so a state never depends on
+/// colour alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneState {
+    Done,
+    Running,
+    Leftover,
+    Stalled,
+    Queued,
+    Planned,
+}
+
+/// Every [`PaneState`], in the order a wave header counts them.
+const PANE_STATES: [PaneState; 6] = [
+    PaneState::Done,
+    PaneState::Running,
+    PaneState::Leftover,
+    PaneState::Stalled,
+    PaneState::Queued,
+    PaneState::Planned,
+];
+
+impl PaneState {
+    fn from_plan_state(state: crate::agents::waves::PlanState) -> Self {
+        use crate::agents::waves::PlanState;
+        match state {
+            PlanState::Done => PaneState::Done,
+            PlanState::Finished => PaneState::Leftover,
+            PlanState::Running => PaneState::Running,
+            PlanState::Stalled => PaneState::Stalled,
+            PlanState::Queued => PaneState::Queued,
+        }
+    }
+
+    fn glyph(self) -> &'static str {
+        match self {
+            PaneState::Done => "\u{2713}",
+            PaneState::Running => "\u{25b6}",
+            PaneState::Leftover => "\u{25d0}",
+            PaneState::Stalled => "!",
+            PaneState::Queued => "\u{b7}",
+            PaneState::Planned => "\u{25cb}",
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            PaneState::Done => "done",
+            PaneState::Running => "running",
+            PaneState::Leftover => "leftover",
+            PaneState::Stalled => "stalled",
+            PaneState::Queued => "queued",
+            PaneState::Planned => "planned",
+        }
+    }
+
+    fn style(self) -> Style {
+        let fg = match self {
+            PaneState::Done => Color::Green,
+            PaneState::Running => Color::Yellow,
+            PaneState::Leftover => Color::Cyan,
+            PaneState::Stalled => Color::Red,
+            PaneState::Queued => Color::White,
+            PaneState::Planned => Color::DarkGray,
+        };
+        Style::default().fg(fg)
+    }
+}
+
+/// One plan row's data, joined from the scan (`plans`, `plan_tokens`) and the
+/// agents view by the plan's scanned stem.
+#[derive(Debug, Clone, PartialEq)]
+struct PanePlan {
+    /// The scanned stem — the identity the cursor, the edit path and the joins
+    /// use. Third-party filename text: drawn only through [`shown`].
+    id: String,
+    title: Option<Untrusted>,
+    objective_line: Option<usize>,
+    estimate: Option<u64>,
+    actual: Option<u64>,
+    state: PaneState,
+}
+
+impl PanePlan {
+    /// The display id, RAW (the caller escapes it): zero-padded `NN-MM` when
+    /// the stem carries a plan index — the slug repeats the title — else the
+    /// stem, else `PLAN` for a standalone `PLAN.md`. `PlanTokens::label`'s rule.
+    fn label(&self) -> String {
+        crate::state_reader::disk_status::PlanTokens {
+            id: self.id.clone(),
+            estimate: None,
+            actual: None,
+        }
+        .label()
+    }
+}
+
+/// One wave of the pane: a frontmatter wave, a `waves.json` wave, the `w?`
+/// bucket, or — for a phase with no wave metadata at all — the one flat list.
+#[derive(Debug, Clone, PartialEq)]
+struct PaneWave {
+    /// The wave's identity for the cursor and the fold toggles: the frontmatter
+    /// number, a manifest wave's 1-based position, or `None` for the `w?`
+    /// bucket and the flat list.
+    wave: Option<u32>,
+    /// The display label, RAW: `w2`, `w?`, or a manifest's own wave id (third-
+    /// party text, so every renderer escapes it).
+    label: String,
+    plans: Vec<PanePlan>,
+    /// Files the manifest says the wave modifies; `0` without a manifest.
+    files: usize,
+}
+
+impl PaneWave {
+    fn count(&self, state: PaneState) -> usize {
+        self.plans.iter().filter(|p| p.state == state).count()
+    }
+
+    fn all_done(&self) -> bool {
+        self.plans.iter().all(|p| p.state == PaneState::Done)
+    }
+}
+
+/// Which of the four explicit phase shapes (D-03) — or a phase mid-run — the
+/// pane is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WavesShape {
+    Executing,
+    NotStarted,
+    Complete,
+    NoWaveMetadata,
+    NoPlans,
+}
+
+/// Everything the Waves pane draws for one phase, derived in memory.
+#[derive(Debug, Clone, PartialEq)]
+struct WavesModel {
+    /// `phase_key` of the phase — the fold toggles' first key.
+    phase_key: String,
+    /// The phase number, RAW — the `No plans yet` hint escapes it.
+    phase_number: String,
+    waves: Vec<PaneWave>,
+    /// The first numbered wave holding a plan that is not done.
+    current_wave: Option<u32>,
+    shape: WavesShape,
+    /// The active phase is part-way done and no agent view covers it: the
+    /// title says so rather than implying the queued plans are moving.
+    no_live_agents: bool,
+}
+
+impl WavesModel {
+    fn plans(&self) -> impl Iterator<Item = &PanePlan> {
+        self.waves.iter().flat_map(|w| w.plans.iter())
+    }
+
+    /// Index of the wave holding plan `id`.
+    fn wave_of(&self, id: &str) -> Option<usize> {
+        self.waves
+            .iter()
+            .position(|w| w.plans.iter().any(|p| p.id == id))
+    }
+}
+
+/// Build the Waves pane model for one phase (D-01, D-02, D-03).
+///
+/// * **Grouping** ([inferred I-2]): the frontmatter `wave:` grouping
+///   (`plan_waves`) is the authority, as in the agents model (D-A10), so the
+///   two always agree on the current wave. The cached `waves_manifest`
+///   supplies the grouping ONLY when no plan carries a `wave:`; with neither
+///   the pane is one flat list.
+/// * **State** (D-02): from `view.plan_state` when the view's active phase is
+///   this phase; otherwise `Done` for a summarized plan, else `Queued` on the
+///   active phase and `Planned` on any other.
+fn waves_model(
+    phase_number: &str,
+    inf: &DiskInference,
+    view: Option<&AgentView>,
+    phase_is_active: bool,
+) -> WavesModel {
+    use crate::state_reader::disk_status::plan_index;
+    use crate::state_reader::phase_num::{phase_key, same_phase};
+
+    let view = view.filter(|v| {
+        v.active_phase
+            .as_ref()
+            .is_some_and(|p| same_phase(&p.to_string(), phase_number))
+    });
+    let not_done = if phase_is_active {
+        PaneState::Queued
     } else {
-        ("○", Color::DarkGray)
+        PaneState::Planned
     };
-    lines.push(Line::from(vec![
-        Span::raw("    "),
-        Span::styled(marker.to_string(), Style::default().fg(color)),
-        Span::raw(" "),
-        Span::styled(format!("{:<14}", label), Style::default().fg(Color::White)),
+    let state_of = |id: &str| -> PaneState {
+        if let Some(state) = view.and_then(|v| v.plan_state(id)) {
+            return PaneState::from_plan_state(state);
+        }
+        if inf.summarized_plans.iter().any(|s| s == id) {
+            PaneState::Done
+        } else {
+            not_done
+        }
+    };
+    let make = |id: &str| -> PanePlan {
+        let meta = inf.plans.iter().find(|p| p.id == id);
+        let tokens = inf.plan_tokens.iter().find(|t| t.id == id);
+        PanePlan {
+            id: id.to_string(),
+            title: meta.and_then(|m| m.title.clone()),
+            objective_line: meta.and_then(|m| m.objective_line),
+            estimate: tokens.and_then(|t| t.estimate),
+            actual: tokens.and_then(|t| t.actual),
+            state: state_of(id),
+        }
+    };
+
+    // Every plan the scan knows about, in scan order, each once.
+    let mut universe: Vec<String> = Vec::new();
+    let ids = inf
+        .plans
+        .iter()
+        .map(|p| p.id.as_str())
+        .chain(inf.plan_waves.iter().flat_map(|w| w.plans.iter().map(String::as_str)))
+        .chain(inf.plan_tokens.iter().map(|t| t.id.as_str()));
+    for id in ids {
+        if !universe.iter().any(|u| u == id) {
+            universe.push(id.to_string());
+        }
+    }
+
+    let mut flat = false;
+    let mut waves: Vec<PaneWave> = Vec::new();
+    if !inf.plan_waves.is_empty() {
+        for wave in &inf.plan_waves {
+            waves.push(PaneWave {
+                wave: wave.wave,
+                label: wave.label(),
+                plans: wave.plans.iter().map(|id| make(id)).collect(),
+                files: 0,
+            });
+        }
+    } else if let Some(manifest) = &inf.waves_manifest {
+        for (index, mw) in manifest.waves.iter().enumerate() {
+            let plans = mw
+                .plans
+                .iter()
+                .map(|mp| {
+                    let matched = universe.iter().find(|u| {
+                        **u == mp.id
+                            || plan_index(u).is_some_and(|k| plan_index(&mp.id) == Some(k))
+                    });
+                    match matched {
+                        Some(id) => make(id),
+                        None => PanePlan {
+                            id: mp.id.clone(),
+                            title: None,
+                            objective_line: None,
+                            estimate: None,
+                            actual: None,
+                            state: not_done,
+                        },
+                    }
+                })
+                .collect();
+            waves.push(PaneWave {
+                wave: Some(index as u32 + 1),
+                label: mw.label.clone(),
+                plans,
+                files: mw.plans.iter().map(|p| p.files).sum(),
+            });
+        }
+    } else {
+        flat = true;
+        waves.push(PaneWave {
+            wave: None,
+            label: String::new(),
+            plans: universe.iter().map(|id| make(id)).collect(),
+            files: 0,
+        });
+    }
+    // Any scanned plan the grouping did not name joins the `w?` bucket, drawn
+    // last, so a plan is never silently missing from the pane.
+    if !flat {
+        let missing: Vec<PanePlan> = universe
+            .iter()
+            .filter(|id| !waves.iter().any(|w| w.plans.iter().any(|p| &p.id == *id)))
+            .map(|id| make(id))
+            .collect();
+        if !missing.is_empty() {
+            match waves.iter_mut().find(|w| w.wave.is_none()) {
+                Some(bucket) => bucket.plans.extend(missing),
+                None => waves.push(PaneWave {
+                    wave: None,
+                    label: "w?".to_string(),
+                    plans: missing,
+                    files: 0,
+                }),
+            }
+        }
+    }
+
+    let all: Vec<PaneState> = waves
+        .iter()
+        .flat_map(|w| w.plans.iter().map(|p| p.state))
+        .collect();
+    let done = all.iter().filter(|s| **s == PaneState::Done).count();
+    let moving = all.iter().any(|s| {
+        matches!(
+            s,
+            PaneState::Running | PaneState::Leftover | PaneState::Stalled
+        )
+    });
+    let shape = if all.is_empty() {
+        WavesShape::NoPlans
+    } else if flat {
+        WavesShape::NoWaveMetadata
+    } else if done == all.len() {
+        WavesShape::Complete
+    } else if done == 0 && !moving {
+        WavesShape::NotStarted
+    } else {
+        WavesShape::Executing
+    };
+    let current_wave = waves
+        .iter()
+        .filter(|w| w.wave.is_some() && !w.all_done())
+        .find_map(|w| w.wave);
+    let no_live_agents =
+        phase_is_active && view.is_none() && done > 0 && done < all.len();
+
+    WavesModel {
+        phase_key: phase_key(phase_number),
+        phase_number: phase_number.to_string(),
+        waves,
+        current_wave,
+        shape,
+        no_live_agents,
+    }
+}
+
+/// What one Waves-pane row is.
+#[derive(Debug, Clone, PartialEq)]
+enum WavesRowKind {
+    /// A wave header; `wave` indexes `WavesModel::waves`.
+    Header {
+        wave: usize,
+        current: bool,
+        expanded: bool,
+    },
+    /// Consecutive collapsed, fully done waves folded into one row; indices
+    /// into `WavesModel::waves`, inclusive.
+    Merged { first: usize, last: usize },
+    /// A plan of an expanded wave (or of the flat list).
+    Plan { wave: usize, plan: usize },
+}
+
+/// One row of the Waves pane, tagged with the identity the cursor, the keys
+/// and `DetailRegions` address it by.
+#[derive(Debug, Clone, PartialEq)]
+struct WavesRow {
+    kind: WavesRowKind,
+    target: super::WavesCursor,
+}
+
+impl WavesRow {
+    /// Whether the cursor `c` rests on this row. A merged row answers to any
+    /// wave in its range ([inferred I-6]).
+    fn answers_to(&self, c: &super::WavesCursor, model: &WavesModel) -> bool {
+        use super::WavesCursor;
+        match (&self.kind, c) {
+            (WavesRowKind::Merged { first, last }, WavesCursor::Wave(w)) => {
+                model.waves[*first..=*last].iter().any(|x| x.wave == *w)
+            }
+            _ => self.target == *c,
+        }
+    }
+}
+
+/// Whether wave `index` is expanded by default ([inferred I-4]), before the
+/// operator's toggles.
+fn wave_expanded_by_default(model: &WavesModel, index: usize) -> bool {
+    let wave = &model.waves[index];
+    match model.shape {
+        WavesShape::Complete => false,
+        WavesShape::NotStarted | WavesShape::NoWaveMetadata | WavesShape::NoPlans => true,
+        WavesShape::Executing => {
+            if wave.wave.is_none() {
+                return !wave.all_done();
+            }
+            if wave.all_done() {
+                return false;
+            }
+            let Some(current) = model.current_wave else {
+                return true;
+            };
+            let next = model
+                .waves
+                .iter()
+                .filter_map(|w| w.wave)
+                .find(|n| *n > current);
+            wave.wave == Some(current) || wave.wave == next
+        }
+    }
+}
+
+/// The ONE row list of the Waves pane for `model` under `toggles` — the
+/// operator's `(phase_key, wave)` fold flips. The render, the pane keys and
+/// `DetailRegions` all read it.
+///
+/// A flat list is plan rows only. Otherwise each wave is a header followed by
+/// its plans when expanded, and consecutive collapsed fully done waves fold
+/// into ONE merged row (`w1–w10 ✓ 28/28 done`).
+fn waves_rows(
+    model: &WavesModel,
+    toggles: &std::collections::HashSet<(String, Option<u32>)>,
+) -> Vec<WavesRow> {
+    use super::WavesCursor;
+    let plan_row = |wave: usize, plan: usize| WavesRow {
+        kind: WavesRowKind::Plan { wave, plan },
+        target: WavesCursor::Plan(model.waves[wave].plans[plan].id.clone()),
+    };
+    let mut rows: Vec<WavesRow> = Vec::new();
+    if model.shape == WavesShape::NoWaveMetadata {
+        for (wi, wave) in model.waves.iter().enumerate() {
+            for pi in 0..wave.plans.len() {
+                rows.push(plan_row(wi, pi));
+            }
+        }
+        return rows;
+    }
+    let expanded = |index: usize| {
+        let flipped = toggles.contains(&(model.phase_key.clone(), model.waves[index].wave));
+        wave_expanded_by_default(model, index) != flipped
+    };
+    let mut index = 0;
+    while index < model.waves.len() {
+        let wave = &model.waves[index];
+        let open = expanded(index);
+        if !open && wave.all_done() && !wave.plans.is_empty() {
+            // Fold the run of collapsed, fully done waves that starts here.
+            let mut last = index;
+            while last + 1 < model.waves.len()
+                && !expanded(last + 1)
+                && model.waves[last + 1].all_done()
+                && !model.waves[last + 1].plans.is_empty()
+            {
+                last += 1;
+            }
+            rows.push(WavesRow {
+                kind: WavesRowKind::Merged { first: index, last },
+                target: WavesCursor::Wave(wave.wave),
+            });
+            index = last + 1;
+            continue;
+        }
+        rows.push(WavesRow {
+            kind: WavesRowKind::Header {
+                wave: index,
+                current: wave.wave.is_some() && wave.wave == model.current_wave,
+                expanded: open,
+            },
+            target: WavesCursor::Wave(wave.wave),
+        });
+        if open {
+            for pi in 0..wave.plans.len() {
+                rows.push(plan_row(index, pi));
+            }
+        }
+        index += 1;
+    }
+    rows
+}
+
+/// Where the pane's cursor lands on entry ([inferred I-7]): the first plan of
+/// the current wave that is not done, else the first row.
+fn waves_default_cursor(model: &WavesModel, rows: &[WavesRow]) -> usize {
+    rows.iter()
+        .position(|row| match row.kind {
+            WavesRowKind::Plan { wave, plan } => {
+                let w = &model.waves[wave];
+                w.wave == model.current_wave
+                    && model.current_wave.is_some()
+                    && w.plans[plan].state != PaneState::Done
+            }
+            _ => false,
+        })
+        .unwrap_or(0)
+}
+
+/// The row index the cursor `c` rests on ([inferred I-6]). When its target has
+/// vanished — a refresh, or a fold — it falls to the row that now covers it
+/// (its wave's header or merged row), else to the first row at or after it,
+/// else to the last row. `None` (no cursor yet) lands per
+/// [`waves_default_cursor`].
+fn waves_cursor_index(
+    model: &WavesModel,
+    rows: &[WavesRow],
+    c: Option<&super::WavesCursor>,
+) -> usize {
+    use super::WavesCursor;
+    let Some(c) = c else {
+        return waves_default_cursor(model, rows);
+    };
+    if let Some(found) = rows.iter().position(|row| row.answers_to(c, model)) {
+        return found;
+    }
+    // The (wave index, plan index) the lost target had, to find what is at or
+    // after it. A plan that left the model entirely orders by its stem.
+    let key: Option<(usize, usize)> = match c {
+        WavesCursor::Plan(id) => model.wave_of(id).map(|wi| {
+            let pi = model.waves[wi]
+                .plans
+                .iter()
+                .position(|p| &p.id == id)
+                .unwrap_or(0);
+            (wi, pi + 1)
+        }),
+        WavesCursor::Wave(w) => model
+            .waves
+            .iter()
+            .position(|x| x.wave == *w)
+            .map(|wi| (wi, 0)),
+    };
+    if let (WavesCursor::Plan(_), Some((wi, _))) = (c, key) {
+        let covering = WavesCursor::Wave(model.waves[wi].wave);
+        if let Some(found) = rows.iter().position(|row| {
+            !matches!(row.kind, WavesRowKind::Plan { .. }) && row.answers_to(&covering, model)
+        }) {
+            return found;
+        }
+    }
+    let row_key = |row: &WavesRow| match row.kind {
+        WavesRowKind::Header { wave, .. } => (wave, 0),
+        WavesRowKind::Merged { last, .. } => (last, 0),
+        WavesRowKind::Plan { wave, plan } => (wave, plan + 1),
+    };
+    match key {
+        Some(key) => rows
+            .iter()
+            .position(|row| row_key(row) >= key)
+            .unwrap_or(rows.len().saturating_sub(1)),
+        None => 0,
+    }
+}
+
+/// `1 plan` or `N parallel` — the wave size in the header's words.
+fn wave_size_words(n: usize) -> String {
+    if n == 1 {
+        "1 plan".to_string()
+    } else {
+        format!("{n} parallel")
+    }
+}
+
+/// A header's state summary in the pane vocabulary: the one word when every
+/// plan shares a state (`queued`), else `{count} {word}` per non-zero state
+/// joined with ` · `.
+fn wave_state_words(wave: &PaneWave) -> String {
+    let present: Vec<(PaneState, usize)> = PANE_STATES
+        .iter()
+        .map(|s| (*s, wave.count(*s)))
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    match present.as_slice() {
+        [] => "no plans".to_string(),
+        [(state, _)] => state.word().to_string(),
+        many => many
+            .iter()
+            .map(|(s, n)| format!("{n} {}", s.word()))
+            .collect::<Vec<_>>()
+            .join(" \u{b7} "),
+    }
+}
+
+/// `act/est` for a plan, `–` for a missing side, `None` when both are.
+fn plan_tokens_text(plan: &PanePlan) -> Option<String> {
+    if plan.estimate.is_none() && plan.actual.is_none() {
+        return None;
+    }
+    let side = |n: Option<u64>| n.map_or_else(|| "\u{2013}".to_string(), fmt_tokens);
+    Some(format!("{}/{}", side(plan.actual), side(plan.estimate)))
+}
+
+/// Cells the state word takes in a full-width plan row: the widest word
+/// (`leftover`, `running `) plus one separating space.
+const WAVES_WORD_CELLS: usize = 9;
+
+/// The narrowest title a plan row keeps its state WORD for ([inferred I-8]):
+/// below it the word drops first, then the tokens.
+const WAVES_MIN_TITLE_CELLS: usize = 16;
+
+/// One Waves-pane row as a line `cells` wide ([inferred I-8]).
+///
+/// A plan row is `cursor(2) indent glyph word id title tokens`: the word drops
+/// first and the tokens next when the title would fall below
+/// [`WAVES_MIN_TITLE_CELLS`]; the title shrinks with `…` down to nothing; the
+/// glyph and the id never drop. The id and the title are third-party text and
+/// reach the line only through [`shown`] / `Untrusted::shown`.
+fn waves_row_line(
+    model: &WavesModel,
+    row: &WavesRow,
+    cursor_here: bool,
+    cells: usize,
+) -> Line<'static> {
+    let cursor = if cursor_here {
         Span::styled(
-            if present { "done" } else { "not run" },
-            Style::default().fg(color),
-        ),
-    ]));
+            "> ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("  ")
+    };
+    let emphasis = if cursor_here {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    match row.kind {
+        WavesRowKind::Plan { wave, plan } => {
+            let p = &model.waves[wave].plans[plan];
+            let indent = if model.shape == WavesShape::NoWaveMetadata {
+                ""
+            } else {
+                "  "
+            };
+            let label = shown(&p.label());
+            let tokens = plan_tokens_text(p);
+            let title = p.title.as_ref().map(|t| t.shown().to_string());
+            let label_w = Span::raw(&*label).width();
+            let base = 2 + indent.len() + 1 + 1 + label_w;
+            let tokens_w = tokens.as_ref().map_or(0, |t| 2 + t.len());
+            let min_title = if title.is_some() {
+                WAVES_MIN_TITLE_CELLS
+            } else {
+                0
+            };
+            let show_word = cells >= base + WAVES_WORD_CELLS + tokens_w + min_title;
+            let word_w = if show_word { WAVES_WORD_CELLS } else { 0 };
+            let show_tokens = tokens.is_some()
+                && cells >= base + word_w + tokens_w + min_title.min(8);
+            let tokens_w = if show_tokens { tokens_w } else { 0 };
+            let mut spans = vec![
+                cursor,
+                Span::raw(indent),
+                Span::styled(p.state.glyph(), p.state.style()),
+                Span::raw(" "),
+            ];
+            if show_word {
+                spans.push(Span::styled(
+                    format!("{:<width$}", p.state.word(), width = WAVES_WORD_CELLS),
+                    p.state.style(),
+                ));
+            }
+            spans.push(Span::styled(label, Style::default().fg(Color::Cyan)));
+            let room = cells.saturating_sub(base + word_w + tokens_w);
+            let mut used = base + word_w;
+            if let Some(title) = title {
+                if room > 1 {
+                    let cut = fit_cells(&title, room - 1);
+                    used += 1 + Span::raw(&*cut).width();
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(cut, emphasis.fg(Color::White)));
+                }
+            }
+            if let (true, Some(tokens)) = (show_tokens, tokens) {
+                let pad = cells.saturating_sub(used + tokens.len()).max(2);
+                spans.push(Span::raw(" ".repeat(pad)));
+                spans.push(Span::styled(tokens, Style::default().fg(Color::DarkGray)));
+            }
+            Line::from(spans)
+        }
+        WavesRowKind::Merged { first, last } => {
+            let waves = &model.waves[first..=last];
+            let plans: usize = waves.iter().map(|w| w.plans.len()).sum();
+            let text = if first == last {
+                format!(
+                    "{}  {} \u{b7} done \u{2713}",
+                    shown(&waves[0].label),
+                    wave_size_words(plans)
+                )
+            } else {
+                format!(
+                    "{}\u{2013}{} \u{2713} {plans}/{plans} done",
+                    shown(&waves[0].label),
+                    shown(&waves[waves.len() - 1].label)
+                )
+            };
+            fit_spans(
+                vec![
+                    cursor,
+                    Span::raw("  "),
+                    Span::styled(text, emphasis.fg(Color::Green)),
+                ],
+                cells,
+            )
+        }
+        WavesRowKind::Header { wave, current, .. } => {
+            let w = &model.waves[wave];
+            let mut text = format!(
+                "{}  {} \u{b7} {}",
+                shown(&w.label),
+                wave_size_words(w.plans.len()),
+                wave_state_words(w)
+            );
+            if w.files > 0 {
+                text.push_str(&format!(" \u{b7} {}f", w.files));
+            }
+            let (marker, style) = if current {
+                ("\u{25b8} ", emphasis.add_modifier(Modifier::BOLD))
+            } else {
+                ("  ", emphasis)
+            };
+            fit_spans(
+                vec![
+                    cursor,
+                    Span::styled(marker, style),
+                    Span::styled(text, style),
+                ],
+                cells,
+            )
+        }
+    }
+}
+
+/// The Waves pane's title, already escaped ([inferred I-9]) — authored words
+/// and integers only. Dropped to fit `cells`: the token totals go first.
+fn waves_pane_title(model: &WavesModel, cells: usize) -> String {
+    let plans: Vec<&PanePlan> = model.plans().collect();
+    let total = plans.len();
+    let done = plans.iter().filter(|p| p.state == PaneState::Done).count();
+    let waves = model.waves.iter().filter(|w| w.wave.is_some()).count();
+    let suffix = if model.no_live_agents {
+        " \u{b7} no live agents"
+    } else {
+        ""
+    };
+    let est: u64 = plans.iter().filter_map(|p| p.estimate).sum();
+    let act: u64 = plans.iter().filter_map(|p| p.actual).sum();
+    let has_tokens = plans
+        .iter()
+        .any(|p| p.estimate.is_some() || p.actual.is_some());
+    let forms: Vec<String> = match model.shape {
+        WavesShape::NoPlans => vec![" Waves \u{b7} no plans ".to_string(), " Waves ".to_string()],
+        WavesShape::NoWaveMetadata => vec![
+            format!(" Plans (no wave metadata) \u{b7} {done}/{total} done{suffix} "),
+            format!(" Plans (no wave metadata) \u{b7} {done}/{total} done "),
+            format!(" Plans \u{b7} {done}/{total} done "),
+        ],
+        WavesShape::NotStarted => vec![
+            format!(" Waves {waves} \u{b7} {total} plans \u{b7} not started "),
+            " Waves \u{b7} not started ".to_string(),
+        ],
+        WavesShape::Executing | WavesShape::Complete => {
+            let mut forms = Vec::new();
+            if has_tokens {
+                forms.push(format!(
+                    " Waves {waves} \u{b7} plans {done}/{total} done \u{b7} est {} act {}{suffix} ",
+                    fmt_tokens(est),
+                    fmt_tokens(act)
+                ));
+            }
+            forms.push(format!(
+                " Waves {waves} \u{b7} plans {done}/{total} done{suffix} "
+            ));
+            forms.push(format!(" Waves {waves} \u{b7} {done}/{total} done "));
+            forms
+        }
+    };
+    let last = forms.last().cloned().unwrap_or_default();
+    forms
+        .into_iter()
+        .find(|f| Span::raw(f.as_str()).width() + 2 <= cells)
+        .unwrap_or(last)
+}
+
+/// The window over a `rows`-long pane `height` rows tall: `(offset, visible)`
+/// — the first row drawn and how many are drawn.
+///
+/// Focused, the window keeps `focus_row` (the cursor) inside it, starting from
+/// last frame's `prev` offset so it does not jump; unfocused it is anchored one
+/// row above `focus_row` (the current wave's header), so the current wave is in
+/// view whatever the scroll. Both are clamped to the end. From three rows up a
+/// row is reserved on each side that has clipped rows, for `↑ +N more` /
+/// `↓ +N more`.
+fn waves_window(
+    rows: usize,
+    height: usize,
+    prev: usize,
+    focus_row: usize,
+    focused: bool,
+) -> (usize, usize) {
+    if rows <= height || height == 0 {
+        return (0, rows.min(height));
+    }
+    let markers = height >= 3;
+    let visible = |offset: usize| -> usize {
+        if !markers {
+            return height;
+        }
+        let rest = height - usize::from(offset > 0);
+        if offset + rest >= rows {
+            rest
+        } else {
+            rest - 1
+        }
+    };
+    let max_offset = (0..rows)
+        .find(|&o| o + visible(o) >= rows)
+        .unwrap_or(rows - 1);
+    let mut offset = if focused {
+        prev
+    } else {
+        focus_row.saturating_sub(1)
+    }
+    .min(max_offset);
+    if focused {
+        offset = offset.min(focus_row);
+        while offset < max_offset && focus_row >= offset + visible(offset) {
+            offset += 1;
+        }
+    }
+    (offset, visible(offset))
 }
 
 /// Resolve the markdown file the Docs (Browse) tab's `[e]dit` key should open.
@@ -7535,17 +8315,24 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
         Some(_) => "Files|Milestones  ",
         None => "tabs  ",
     };
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled("[\u{2191}]", b),
-        Span::raw("tab bar  "),
-        Span::styled("[\u{2190}/\u{2192}]", b),
-        Span::raw(arrows),
+    let mut spans = vec![Span::raw("  "), Span::styled("[\u{2191}]", b), Span::raw("tab bar  ")];
+    if matches!(sub_view, DetailSubView::Pipeline) {
+        // `→` and `Enter` descend into the Waves pane on this tab (quick
+        // 260926-2l4), so only `←` still switches tab.
+        spans.push(Span::styled("[\u{2190}]", b));
+        spans.push(Span::raw("tabs  "));
+        spans.push(Span::styled("[\u{2192}/Enter]", b));
+        spans.push(Span::raw("waves  "));
+    } else {
+        spans.push(Span::styled("[\u{2190}/\u{2192}]", b));
+        spans.push(Span::raw(arrows));
+    }
+    spans.extend([
         Span::styled(if experimental { "[1-8/D]" } else { "[1-8]" }, b),
         Span::raw("jump  "),
         Span::styled("[j/k]", b),
         Span::raw("move  "),
-    ];
+    ]);
 
     match sub_view {
         DetailSubView::Backlog => {
@@ -7642,6 +8429,27 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
     spans.push(Span::raw("help"));
 
     spans
+}
+
+/// The Phases tab's footer while its Waves pane has the keyboard (quick
+/// 260926-2l4, D-01): only the keys that level handles.
+fn waves_pane_footer_spans() -> Vec<Span<'static>> {
+    let b = Style::default().add_modifier(Modifier::BOLD);
+    vec![
+        Span::raw("  "),
+        Span::styled("[\u{2190}/Esc]", b),
+        Span::raw("phases  "),
+        Span::styled("[j/k]", b),
+        Span::raw("move  "),
+        Span::styled("[Enter]", b),
+        Span::raw("expand/agent  "),
+        Span::styled("[e]", b),
+        Span::raw("dit plan  "),
+        Span::styled("[q]", b),
+        Span::raw("uit  "),
+        Span::styled("[?]", b),
+        Span::raw("help"),
+    ]
 }
 
 /// The Backlog tab's footer while its content pane is open and focused
@@ -10983,59 +11791,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_parse_waves_manifest_two_waves() {
-        let raw = r#"{
-            "waves": [
-                {
-                    "id": "w1",
-                    "plans": [
-                        { "id": "p1", "files_modified": ["src/foo.rs"] },
-                        { "id": "p2", "files_modified": ["src/bar.rs"] }
-                    ]
-                },
-                {
-                    "id": "w2",
-                    "plans": [
-                        { "id": "p3", "files_modified": ["src/baz.rs"] }
-                    ]
-                }
-            ]
-        }"#;
-        let manifest = parse_waves_manifest(raw).expect("valid manifest parses");
-        assert_eq!(manifest.waves.len(), 2);
-        assert_eq!(manifest.waves[0].label(0), "w1");
-        assert_eq!(manifest.waves[0].plans.len(), 2);
-        assert_eq!(manifest.waves[0].plans[0].label(), Some("p1".to_string()));
-        assert_eq!(manifest.waves[1].label(1), "w2");
-        assert_eq!(manifest.waves[1].plans.len(), 1);
-
-        // Rendering produces a header + one line per wave.
-        let lines = build_waves_lines(&manifest);
-        assert_eq!(lines.len(), 3);
-    }
-
-    #[test]
-    fn test_parse_waves_manifest_garbage_is_none() {
-        assert!(parse_waves_manifest("not json at all").is_none());
-        assert!(parse_waves_manifest("{ oops ]").is_none());
-    }
-
-    #[test]
-    fn test_parse_waves_manifest_lenient_defaults() {
-        // Numeric wave id and missing plan ids are tolerated.
-        let raw = r#"{ "waves": [ { "wave": 1, "plans": [ { "files_modified": [] } ] } ] }"#;
-        let manifest = parse_waves_manifest(raw).expect("lenient parse");
-        assert_eq!(manifest.waves.len(), 1);
-        assert_eq!(manifest.waves[0].label(0), "1");
-        // A plan with no id falls back to None (rendered as "(no plans)").
-        assert_eq!(manifest.waves[0].plans[0].label(), None);
-
-        // Empty object → empty waves, still Some (render layer skips it).
-        let empty = parse_waves_manifest("{}").expect("empty object parses");
-        assert!(empty.waves.is_empty());
-    }
-
     // ── UIFIX-03: Docs (Browse) tab `[e]dit` key routing ──────────────────
 
     use crate::browser::{BrowserDepth, BrowserEntry};
@@ -11234,13 +11989,15 @@ mod tests {
             (0..visible_tab_count(false)).map(|index| sub_view_from_index(index, false))
         {
             let text = footer_text_at(&sub_view, 120, false);
+            // Phases: `→`/`Enter` descend into the Waves pane (quick 260926-2l4).
             let arrows = match sub_tab_pair(&sub_view) {
-                Some((DetailSubView::Sessions, _)) => "Sessions|Agents",
-                Some(_) => "Files|Milestones",
-                None => "tabs",
+                Some((DetailSubView::Sessions, _)) => "[←/→]Sessions|Agents",
+                Some(_) => "[←/→]Files|Milestones",
+                None if sub_view == DetailSubView::Pipeline => "[←]tabs  [→/Enter]waves",
+                None => "[←/→]tabs",
             };
             assert!(
-                text.starts_with(&format!("  [↑]tab bar  [←/→]{arrows}  [1-8]jump  ")),
+                text.starts_with(&format!("  [↑]tab bar  {arrows}  [1-8]jump  ")),
                 "{sub_view:?} must not advertise a Driver tab the user cannot \
                  reach: {text}"
             );
@@ -15715,14 +16472,6 @@ mod tests {
         }
     }
 
-    fn inference_with_tokens(plan_count: u32, rows: Vec<PlanTokens>) -> DiskInference {
-        DiskInference {
-            plan_count,
-            plan_tokens: rows,
-            ..DiskInference::default()
-        }
-    }
-
     #[test]
     fn fmt_tokens_boundaries_are_pinned_not_described() {
         // The point of the table is that the column width is PREDICTABLE, so
@@ -15764,170 +16513,89 @@ mod tests {
                 "fmt_tokens({n}) emitted a non-ASCII character"
             );
         }
-        let inf = inference_with_tokens(
-            3,
-            vec![
-                token_row("07-01", Some(95_000), Some(12_846)),
-                token_row("07-02", Some(10_000), Some(15_000)),
-                token_row("07-03", Some(40_000), None),
+    }
+
+    // The `build_plan_token_lines` section and its table were retired by quick
+    // 260926-2l4 (D-01): each plan's `act/est` now sits on its own Waves-pane
+    // row, and the phase totals in the pane title. These pin what replaced it.
+
+    #[test]
+    fn waves_pane_tokens_render_act_over_est_with_a_dash_for_a_missing_side() {
+        let inf = DiskInference {
+            plan_count: 4,
+            plan_tokens: vec![
+                token_row("07-01", Some(95_000), None),
+                token_row("07-02", None, Some(12_846)),
+                token_row("07-03", Some(0), Some(5_000)),
             ],
-        );
-        for line in build_plan_token_lines(&inf) {
-            assert!(
-                line_text(&line).is_ascii(),
-                "the section's authored strings must be ASCII too"
-            );
-        }
+            ..DiskInference::default()
+        };
+        let model = waves_model("7", &inf, None, false);
+        let text = |id: &str| {
+            model
+                .plans()
+                .find(|p| p.id == id)
+                .and_then(plan_tokens_text)
+        };
+        assert_eq!(text("07-01").as_deref(), Some("\u{2013}/95.0k"));
+        assert_eq!(text("07-02").as_deref(), Some("12.8k/\u{2013}"));
+        // An estimate of zero is a number like any other: no division happens.
+        assert_eq!(text("07-03").as_deref(), Some("5.0k/0"));
+        // A plan carrying neither number shows no token column at all.
+        let bare = PanePlan {
+            id: "07-04".to_string(),
+            title: None,
+            objective_line: None,
+            estimate: None,
+            actual: None,
+            state: PaneState::Planned,
+        };
+        assert_eq!(plan_tokens_text(&bare), None);
     }
 
     #[test]
-    fn an_empty_plan_tokens_renders_no_section_at_all() {
-        let inf = inference_with_tokens(5, Vec::new());
-        assert!(
-            build_plan_token_lines(&inf).is_empty(),
-            "a project whose plans carry neither key renders byte-identically to \
-             before this section existed: absence degrades to silence, never to a \
-             column of dashes"
-        );
-    }
-
-    #[test]
-    fn the_header_states_both_totals_and_the_denominator() {
-        let inf = inference_with_tokens(
-            5,
-            vec![
+    fn waves_pane_tokens_totals_sum_every_plan_in_the_title() {
+        let inf = DiskInference {
+            plan_count: 5,
+            plan_tokens: vec![
                 token_row("07-01", Some(95_000), Some(12_846)),
                 token_row("07-02", Some(40_000), Some(30_000)),
                 token_row("07-03", Some(15_000), None),
             ],
-        );
-        let lines = build_plan_token_lines(&inf);
-        let header = line_text(&lines[0]);
-        // 95 000 + 40 000 + 15 000 = 150 000 -> "150k"
-        assert!(
-            header.contains("150k"),
-            "header must sum ALL estimates: {header}"
-        );
-        // 12 846 + 30 000 = 42 846 -> "42.8k"
-        assert!(
-            header.contains("42.8k"),
-            "header must sum ALL actuals: {header}"
-        );
-        assert!(
-            header.contains("2/5"),
-            "the denominator is the PHASE's plan count, not the row count: {header}"
-        );
+            summarized_plans: vec!["07-01".to_string()],
+            plan_waves: vec![PlanWave {
+                wave: Some(1),
+                plans: vec!["07-01".into(), "07-02".into(), "07-03".into()],
+            }],
+            ..DiskInference::default()
+        };
+        let model = waves_model("7", &inf, None, false);
+        let title = waves_pane_title(&model, 200);
+        // 95 000 + 40 000 + 15 000 = 150 000; 12 846 + 30 000 = 42 846.
+        assert!(title.contains("est 150k act 42.8k"), "{title}");
+        assert!(title.contains("plans 1/3 done") || title.contains("1/3 done"), "{title}");
+        // Narrow: the totals drop first, the done count stays.
+        let narrow = waves_pane_title(&model, 34);
+        assert!(!narrow.contains("est"), "{narrow}");
+        assert!(narrow.contains("1/3 done"), "{narrow}");
     }
 
     #[test]
-    fn a_row_renders_both_numbers_and_a_dash_for_an_absent_one() {
-        let inf = inference_with_tokens(
-            2,
-            vec![
-                token_row("07-01", Some(95_000), None),
-                token_row("07-02", None, Some(12_846)),
-            ],
-        );
-        let lines = build_plan_token_lines(&inf);
-        let estimate_only = line_text(&lines[1]);
-        assert!(estimate_only.contains("95.0k"), "{estimate_only}");
-        assert!(
-            estimate_only.contains('-'),
-            "an absent actual renders a dash: {estimate_only}"
-        );
-        let actual_only = line_text(&lines[2]);
-        assert!(actual_only.contains("12.8k"), "{actual_only}");
-        assert!(
-            actual_only.contains('-'),
-            "an absent estimate renders a dash: {actual_only}"
-        );
-    }
-
-    #[test]
-    fn the_delta_is_signed_and_relative_to_the_estimate() {
-        let inf = inference_with_tokens(
-            4,
-            vec![
-                token_row("07-01", Some(95_000), Some(12_846)),
-                token_row("07-02", Some(10_000), Some(15_000)),
-                token_row("07-03", Some(40_000), None),
-                token_row("07-04", Some(0), Some(5_000)),
-            ],
-        );
-        let lines = build_plan_token_lines(&inf);
-        // (12846 - 95000) * 100 / 95000 == -86 under one truncating rule.
-        assert!(
-            line_text(&lines[1]).contains("-86%"),
-            "under by 86%: {}",
-            line_text(&lines[1])
-        );
-        assert!(
-            line_text(&lines[2]).contains("+50%"),
-            "over by 50%: {}",
-            line_text(&lines[2])
-        );
-        assert!(
-            !line_text(&lines[3]).contains('%'),
-            "a row missing either number renders no delta: {}",
-            line_text(&lines[3])
-        );
-        assert!(
-            !line_text(&lines[4]).contains('%'),
-            "an estimate of 0 renders no delta and does not divide: {}",
-            line_text(&lines[4])
-        );
-    }
-
-    #[test]
-    fn the_row_cap_is_honest_about_what_it_does_not_show() {
-        let rows: Vec<PlanTokens> = (1..=14)
-            .map(|i| token_row(&format!("07-{i:02}"), Some(1_000), None))
-            .collect();
-        let inf = inference_with_tokens(14, rows);
-        let lines = build_plan_token_lines(&inf);
-        assert_eq!(
-            lines.len(),
-            1 + MAX_PLAN_TOKEN_ROWS + 1,
-            "header + {MAX_PLAN_TOKEN_ROWS} rows + exactly one overflow line"
-        );
-        let overflow = line_text(lines.last().unwrap());
-        assert!(
-            overflow.contains("+4 more"),
-            "the pane is a Paragraph with no scroll (D-INF-03), so the remainder \
-             is STATED rather than dropped off the bottom invisibly: {overflow}"
-        );
-        // 14 x 1 000 = 14 000 -> the totals still cover every plan, capped or not.
-        assert!(
-            line_text(&lines[0]).contains("14.0k"),
-            "the header's totals sum ALL rows, including the capped ones: {}",
-            line_text(&lines[0])
-        );
-    }
-
-    #[test]
-    fn a_hostile_plan_label_reaches_no_cell_unescaped() {
-        // A plan identifier is a filename stem out of ANOTHER project's
-        // `.planning/` directory. A terminal interprets control bytes it is
-        // handed, so this is code-execution surface, not text.
-        let inf = inference_with_tokens(
-            1,
-            vec![token_row(
-                "07-\u{202E}01\u{1b}[31m",
-                Some(1_000),
-                Some(2_000),
-            )],
-        );
-        let lines = build_plan_token_lines(&inf);
-        for line in &lines {
-            let text = line_text(line);
-            assert!(
-                !text.contains('\u{202E}'),
-                "a bidi override reached a cell: {text:?}"
-            );
-            assert!(
-                !text.contains('\u{1b}'),
-                "a raw ESC reached a cell: {text:?}"
-            );
+    fn waves_pane_tokens_a_hostile_plan_id_reaches_no_cell_unescaped() {
+        // A plan id is a filename stem out of ANOTHER project's `.planning/`.
+        let hostile = "07-\u{202E}01\u{1b}[31m";
+        let inf = DiskInference {
+            plan_count: 1,
+            plan_tokens: vec![token_row(hostile, Some(1_000), Some(2_000))],
+            ..DiskInference::default()
+        };
+        let model = waves_model("7", &inf, None, false);
+        let rows = waves_rows(&model, &std::collections::HashSet::new());
+        assert!(!rows.is_empty());
+        for row in &rows {
+            let text = line_text(&waves_row_line(&model, row, true, 80));
+            assert!(!text.contains('\u{202E}'), "a bidi override reached a cell: {text:?}");
+            assert!(!text.contains('\u{1b}'), "a raw ESC reached a cell: {text:?}");
         }
     }
 
@@ -18634,6 +19302,8 @@ mod tests {
             let arrows = match view {
                 DetailSubView::Sessions | DetailSubView::Agents => "[←/→]Sessions|Agents",
                 DetailSubView::Browse | DetailSubView::Archive => "[←/→]Files|Milestones",
+                // `→`/`Enter` descend into the Waves pane (quick 260926-2l4).
+                DetailSubView::Pipeline => "[←]tabs  [→/Enter]waves",
                 _ => "[←/→]tabs",
             };
             for (experimental, digits) in [(true, "[1-8/D]jump"), (false, "[1-8]jump")] {
@@ -18694,5 +19364,291 @@ mod tests {
         let text = render_detail_to_text(&screen, &ctx);
         let footer = text.lines().last().unwrap_or_default();
         assert!(footer.starts_with("  [←/→]tabs  [↓/Enter]open  "), "{footer:?}");
+    }
+
+    // ── quick 260926-2l4: the Phases-tab Waves pane ──────────────────────
+
+    use crate::agents::waves::{PlanState as AgentPlanState, PlanStatus};
+    use crate::state_reader::disk_status::PlanMeta;
+
+    /// A scanned plan with a title and a wave.
+    fn plan_meta(id: &str, title: Option<&str>, wave: Option<u32>) -> PlanMeta {
+        PlanMeta {
+            id: id.to_string(),
+            title: title.map(|t| Untrusted::from_untrusted_source(t.to_string())),
+            objective_line: title.map(|_| 7),
+            wave,
+        }
+    }
+
+    /// An inference whose plans are `(id, title, wave)`, grouped by wave the
+    /// way the scan groups them, with `done` summarized.
+    fn waves_inference(plans: &[(&str, Option<&str>, Option<u32>)], done: &[&str]) -> DiskInference {
+        let metas: Vec<PlanMeta> = plans
+            .iter()
+            .map(|(id, title, wave)| plan_meta(id, *title, *wave))
+            .collect();
+        let plan_waves = crate::state_reader::plan_waves::group_into_waves(
+            plans.iter().map(|(id, _, wave)| (id.to_string(), *wave)).collect(),
+        );
+        let plan_count = plans.len() as u32;
+        let summary_count = done.len() as u32;
+        DiskInference {
+            status: if plan_count == 0 {
+                DiskStatus::Empty
+            } else if summary_count >= plan_count {
+                DiskStatus::Executed
+            } else if summary_count > 0 {
+                DiskStatus::Partial
+            } else {
+                DiskStatus::Planned
+            },
+            plan_count,
+            summary_count,
+            has_plans: plan_count > 0,
+            has_summaries: summary_count > 0,
+            plans: metas,
+            plan_waves,
+            summarized_plans: done.iter().map(|d| d.to_string()).collect(),
+            ..DiskInference::default()
+        }
+    }
+
+    /// A context whose project has one phase per `(number, name, inference)`
+    /// and whose active phase is `active`, parked on the Phases tab.
+    fn waves_ctx(phases: Vec<(&str, &str, DiskInference)>, active: &str) -> AppContext {
+        use crate::state_reader::roadmap_md::RoadmapPhase;
+        let mut ctx = test_ctx();
+        let roadmap: Vec<RoadmapPhase> = phases
+            .iter()
+            .map(|(number, name, _)| RoadmapPhase {
+                number: number.to_string(),
+                name: name.to_string(),
+                description: String::new(),
+                completed: false,
+                total_plans: 0,
+                completed_plans: 0,
+                depends_on: Vec::new(),
+            })
+            .collect();
+        let state = crate::state_reader::ProjectState {
+            phases: roadmap,
+            current_phase_number: crate::state_reader::phase_num::PhaseNum::parse(active),
+            phase_disk_statuses: phases
+                .into_iter()
+                .map(|(number, _, inf)| (number.to_string(), inf))
+                .collect(),
+            ..Default::default()
+        };
+        ctx.project_states.insert(TEST_ALIAS.to_string(), state);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
+        ctx
+    }
+
+    /// Phase 13, two waves: 13-01 done in wave 1, 13-02 running in wave 2 per
+    /// the agent view.
+    fn tracer_ctx() -> AppContext {
+        let inf = waves_inference(
+            &[
+                ("13-01-alpha", Some("Build the alpha"), Some(1)),
+                ("13-02-beta", Some("Wire the beta seam"), Some(2)),
+            ],
+            &["13-01-alpha"],
+        );
+        let mut ctx = waves_ctx(vec![("13", "Demo phase", inf)], "13");
+        ctx.agent_views.insert(
+            TEST_ALIAS.to_string(),
+            AgentView {
+                active_phase: crate::state_reader::phase_num::PhaseNum::parse("13"),
+                current_wave: Some(2),
+                max_wave: Some(2),
+                plan_total: 2,
+                done: 1,
+                running: 1,
+                waves: vec![
+                    WaveRow {
+                        wave: Some(1),
+                        done: 1,
+                        plans: vec![PlanStatus {
+                            id: "13-01-alpha".to_string(),
+                            state: AgentPlanState::Done,
+                        }],
+                        ..WaveRow::default()
+                    },
+                    WaveRow {
+                        wave: Some(2),
+                        running: 1,
+                        current: true,
+                        plans: vec![PlanStatus {
+                            id: "13-02-beta".to_string(),
+                            state: AgentPlanState::Running,
+                        }],
+                        ..WaveRow::default()
+                    },
+                ],
+                agents: vec![agent_row("/wt/agent-a", AgentLiveness::Live, Some("13-02"))],
+                ..Default::default()
+            },
+        );
+        ctx
+    }
+
+    #[test]
+    fn waves_pane_tracer_is_visible_at_100x32() {
+        let ctx = tracer_ctx();
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let lines: Vec<&str> = text.lines().collect();
+        let name_row = lines
+            .iter()
+            .position(|l| l.contains("Phase 13: Demo phase"))
+            .unwrap_or_else(|| panic!("no phase line: {text}"));
+        let pane_top = lines
+            .iter()
+            .position(|l| l.contains(" Waves 2 "))
+            .unwrap_or_else(|| panic!("no Waves pane: {text}"));
+        // Name, ladder and a two-line stage block, then the pane's border.
+        assert_eq!(pane_top, name_row + 4, "{text}");
+        assert!(lines[name_row + 1].contains("[E 1/2]"), "the ladder: {text}");
+        assert!(lines[name_row + 2].contains("Execute 1/2"), "stage line A: {text}");
+        assert!(lines[name_row + 3].contains("Checks"), "stage line B: {text}");
+        assert!(text.contains("\u{25b8} w2"), "the current wave is marked in text: {text}");
+        let row = lines
+            .iter()
+            .find(|l| l.contains("13-02"))
+            .unwrap_or_else(|| panic!("no 13-02 row: {text}"));
+        assert!(row.contains("\u{25b6} running"), "{row}");
+        assert!(row.contains("Wire the beta seam"), "{row}");
+        for gone in [
+            "Plan sub-stages",
+            "Execute sub-stages",
+            "Plan tokens",
+            "Waves (parallelism)",
+        ] {
+            assert!(!text.contains(gone), "{gone} is still drawn: {text}");
+        }
+    }
+
+    #[test]
+    fn waves_pane_focus_in_and_out() {
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let footer = |screen: &DetailScreen, ctx: &AppContext| {
+            render_detail_to_text_at(screen, ctx, 100, 32)
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert!(footer(&screen, &ctx).contains("[→/Enter]waves"));
+
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        assert!(text.contains("\u{25b8}Waves 2"), "the title gains ▸: {text}");
+        assert!(footer(&screen, &ctx).starts_with("  [←/Esc]phases  [j/k]move  "));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].waves_cursor,
+            Some(super::super::WavesCursor::Plan("13-02-beta".to_string())),
+            "lands on the current wave's first not-done plan"
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        // `↑` at the pane's first row stays in the pane.
+        for _ in 0..5 {
+            press(&mut screen, &mut ctx, KeyCode::Up);
+        }
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        press(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        press(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::TabBar, "a second Esc is 4a's");
+
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q leaves the detail view");
+    }
+
+    #[test]
+    fn waves_pane_keys_never_reach_the_phase_list() {
+        let a = waves_inference(&[("1-01", None, Some(1))], &[]);
+        let b = waves_inference(&[("2-01", None, Some(1))], &[]);
+        let mut ctx = waves_ctx(vec![("1", "One", a), ("2", "Two", b)], "1");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        for code in [KeyCode::Char('j'), KeyCode::Down, KeyCode::PageDown, KeyCode::Char('x')] {
+            press(&mut screen, &mut ctx, code);
+        }
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 0);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        // A digit moves focus to content first, then runs there.
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_ne!(stored_view(&ctx), DetailSubView::Pipeline);
+    }
+
+    #[test]
+    fn waves_pane_list_moves_clear_the_cursor() {
+        let a = waves_inference(&[("1-01", None, Some(1))], &[]);
+        let b = waves_inference(&[("2-01", None, Some(1))], &[]);
+        let mut ctx = waves_ctx(vec![("1", "One", a), ("2", "Two", b)], "1");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(ctx.view_cache[TEST_ALIAS].waves_cursor.is_some());
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_cursor, None);
+    }
+
+    #[test]
+    fn waves_pane_render_reads_no_waves_file() {
+        use crate::config::RegisteredProject;
+        let register = |ctx: &mut AppContext, path: std::path::PathBuf| {
+            ctx.config.projects.insert(
+                TEST_ALIAS.to_string(),
+                RegisteredProject {
+                    path,
+                    added: "2026-09-26".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+        };
+
+        // (a) A waves.json on disk that the cache never saw is never drawn.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let phase_dir = tmp.path().join(".planning/phases/13-demo");
+        std::fs::create_dir_all(&phase_dir).expect("phase dir");
+        std::fs::write(
+            phase_dir.join("waves.json"),
+            r#"{"waves":[{"id":"wDISKONLY","plans":[{"id":"13-01"}]}]}"#,
+        )
+        .expect("waves.json");
+        let inf = waves_inference(&[("13-01", Some("Only plan"), None)], &[]);
+        assert_eq!(inf.waves_manifest, None);
+        let mut ctx = waves_ctx(vec![("13", "Demo", inf)], "13");
+        register(&mut ctx, tmp.path().to_path_buf());
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        assert!(!text.contains("wDISKONLY"), "{text}");
+        assert!(text.contains("Plans (no wave metadata)"), "{text}");
+
+        // (b) The cached manifest is drawn with the project at a path that
+        // does not exist — so it cannot have come from disk.
+        let mut inf = waves_inference(&[("13-01", Some("Only plan"), None)], &[]);
+        inf.waves_manifest = crate::state_reader::plan_waves::parse_waves_manifest(
+            r#"{"waves":[{"id":"wCACHED","plans":[{"id":"13-01"}]}]}"#,
+        );
+        let mut ctx = waves_ctx(vec![("13", "Demo", inf)], "13");
+        register(&mut ctx, std::path::PathBuf::from("/nonexistent/waves-pane-probe"));
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        assert!(text.contains("wCACHED"), "{text}");
     }
 }

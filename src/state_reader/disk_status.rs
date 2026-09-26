@@ -226,6 +226,91 @@ impl PlanTokens {
     }
 }
 
+/// One surviving plan as the scan read it (quick 260926-2l4, D-01/D-04): its
+/// identity, a display title, where its objective starts, and its wave.
+///
+/// `id` is the plan's filename stem minus `-PLAN.md` — the identity
+/// `plan_tokens`, `plan_waves` and `summarized_plans` carry — so the Waves pane
+/// joins the four without a second spelling. `title` is text out of another
+/// project's file and therefore arrives [`Untrusted`]; a renderer reads it
+/// only through `Untrusted::shown`. `objective_line` is the 1-based line of the
+/// `<objective>` tag, the convention `editor_args` hands `$EDITOR`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanMeta {
+    pub id: String,
+    pub title: Option<crate::text::Untrusted>,
+    pub objective_line: Option<usize>,
+    pub wave: Option<u32>,
+}
+
+/// The longest title [`plan_title`] keeps, in characters (T-2l4-03).
+const MAX_PLAN_TITLE_CHARS: usize = 160;
+
+/// A plan's display title, read out of the plan-file content the scan already
+/// holds [inferred I-3].
+///
+/// 1. The leading-frontmatter `title:` scalar, quotes stripped, when non-empty.
+/// 2. Otherwise the first non-empty text after the `<objective>` tag — on the
+///    tag's own line or the next non-empty one — cut at the first `: ` or `. `
+///    sentence boundary, with markdown emphasis (`**`, backticks) removed and a
+///    trailing `.`/`:` dropped.
+/// 3. Otherwise `None`.
+///
+/// Capped at [`MAX_PLAN_TITLE_CHARS`]. H1 headings are NOT consulted: no plan
+/// in this repository carries one outside a code fence.
+fn plan_title(content: &str) -> Option<String> {
+    let cap = |s: &str| -> Option<String> {
+        let t: String = s.trim().chars().take(MAX_PLAN_TITLE_CHARS).collect();
+        let t = t.trim().to_string();
+        (!t.is_empty()).then_some(t)
+    };
+    if let Some(title) = leading_frontmatter_value(content, "title") {
+        let title = title.trim().trim_matches(|c| c == '"' || c == '\'');
+        if let Some(t) = cap(title) {
+            return Some(t);
+        }
+    }
+    let line = objective_line(content)?;
+    let mut rest = content.lines().skip(line - 1);
+    let tag_line = rest.next()?;
+    let after_tag = tag_line.split_once("<objective>").map(|(_, r)| r).unwrap_or("");
+    let first = std::iter::once(after_tag)
+        .chain(rest)
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    if first.starts_with("</objective>") {
+        return None;
+    }
+    let text = first.replace("**", "").replace('`', "");
+    let cut = [": ", ". "]
+        .iter()
+        .filter_map(|b| text.find(b))
+        .min()
+        .unwrap_or(text.len());
+    let sentence = text[..cut].trim().trim_end_matches(['.', ':']);
+    cap(sentence)
+}
+
+/// The 1-based line of the plan's `<objective>` tag: the first line whose
+/// trimmed form starts with it, outside a fenced code block. `None` without one.
+fn objective_line(content: &str) -> Option<usize> {
+    let mut in_fence = false;
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence && trimmed.starts_with("<objective>") {
+            return Some(index + 1);
+        }
+    }
+    None
+}
+
+/// The largest `waves.json` the scan reads (T-2l4-03, [inferred I-13]).
+const MAX_WAVES_MANIFEST_BYTES: u64 = 1024 * 1024;
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DiskInference {
     pub status: DiskStatus,
@@ -326,6 +411,21 @@ pub struct DiskInference {
     /// struct's `PartialEq` drives the dashboard's unchanged-state suppression.
     /// Sorted by numeric plan index, ids without one last.
     pub summarized_plans: Vec<String>,
+    /// Every SURVIVING plan with its title, objective line and wave, read out
+    /// of the same single plan-file read the superseded check performs.
+    ///
+    /// **Sorted by numeric plan index, and the order is load-bearing** for the
+    /// same reason [`DiskInference::plan_tokens`] is: this struct's `PartialEq`
+    /// drives the dashboard's unchanged-state suppression, and directory
+    /// iteration order is unspecified.
+    pub plans: Vec<PlanMeta>,
+    /// The phase directory's `waves.json` manifest, parsed ONCE here (D-04).
+    ///
+    /// `None` when the file is absent, unparsable, over 1 MiB, or lists no
+    /// wave. The Phases-tab Waves pane reads the grouping from this cache and
+    /// never from disk; a manifest that exists only on disk and not here is
+    /// never drawn.
+    pub waves_manifest: Option<plan_waves::WavesManifest>,
 }
 
 /// Read a scalar key out of a file's **leading** YAML frontmatter block.
@@ -727,6 +827,11 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // in-hand content. A plan that could not be read contributes a `None` wave
     // rather than disappearing, so it still shows up in the unknown bucket.
     let mut plan_wave_entries: Vec<(String, Option<u32>)> = Vec::new();
+    // Title/objective/wave per surviving plan, from that same in-hand content.
+    let mut plans: Vec<PlanMeta> = Vec::new();
+    // Read only when the walk actually meets the file, so no extra syscall is
+    // spent on the (common) directory without one.
+    let mut waves_manifest: Option<plan_waves::WavesManifest> = None;
     // Verification artifacts are COLLECTED, not flagged: the status lives inside
     // the file, and which file to read is decided after the scan by sorting.
     let mut verification_names: Vec<String> = Vec::new();
@@ -758,6 +863,23 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
 
         // Only consider files (not directories)
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+            continue;
+        }
+
+        // GSD 1.8.0's claude-orchestration manifest, parsed once per refresh
+        // (D-04) instead of once per rendered frame. Oversized files are
+        // skipped unread; an empty manifest is recorded as none.
+        if name == "waves.json" {
+            let small = entry
+                .metadata()
+                .map(|m| m.len() <= MAX_WAVES_MANIFEST_BYTES)
+                .unwrap_or(false);
+            if small {
+                waves_manifest = std::fs::read_to_string(entry.path())
+                    .ok()
+                    .and_then(|raw| plan_waves::parse_waves_manifest(&raw))
+                    .filter(|m| !m.waves.is_empty());
+            }
             continue;
         }
 
@@ -862,10 +984,17 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             {
                 plan_estimates.insert(id.clone(), estimate);
             }
-            plan_wave_entries.push((
-                id.clone(),
-                content.as_deref().and_then(plan_waves::plan_wave_number),
-            ));
+            let wave = content.as_deref().and_then(plan_waves::plan_wave_number);
+            plan_wave_entries.push((id.clone(), wave));
+            plans.push(PlanMeta {
+                id: id.clone(),
+                title: content
+                    .as_deref()
+                    .and_then(plan_title)
+                    .map(crate::text::Untrusted::from_untrusted_source),
+                objective_line: content.as_deref().and_then(objective_line),
+                wave,
+            });
             plan_ids.insert(id);
             continue;
         }
@@ -982,6 +1111,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // Waves, from the `wave:` key each surviving plan's own frontmatter carries.
     // Sorted inside `group_into_waves` — see the field's doc comment.
     let plan_waves = plan_waves::group_into_waves(plan_wave_entries);
+    // Same order as every other per-plan vector — see the field's doc comment.
+    plans.sort_by(|a, b| plan_id_order(&a.id, &b.id));
 
     // Determine status following GSD's priority order (`init.cjs:1875-1888`).
     //
@@ -1040,6 +1171,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         plan_tokens,
         plan_waves,
         summarized_plans,
+        plans,
+        waves_manifest,
     }
 }
 
@@ -2835,5 +2968,114 @@ actuals:
              it rendered before this field existed: absence degrades to silence, \
              never to a column of dashes"
         );
+    }
+
+    // ── quick 260926-2l4: PlanMeta and the cached waves.json ────────────────
+
+    #[test]
+    fn plan_meta_title_comes_from_the_objective_first_sentence() {
+        let content = "---\nphase: 25\nplan: 02\nwave: 1\n---\n\n# not a title source\n\n<objective>\nImplement the adapter (D-A04) against 25-01's seam: find the\nrest of it.\n</objective>\n";
+        assert_eq!(
+            plan_title(content).as_deref(),
+            Some("Implement the adapter (D-A04) against 25-01's seam")
+        );
+        assert_eq!(objective_line(content), Some(9), "1-based line of the tag");
+
+        // Text on the tag's own line, a `. ` boundary, emphasis stripped.
+        assert_eq!(
+            plan_title("<objective>Build the **Waves pane** first. Then more.\n").as_deref(),
+            Some("Build the Waves pane first")
+        );
+        // A frontmatter title wins, quotes stripped.
+        let titled = "---\ntitle: \"The real title\"\n---\n<objective>\nOther words.\n</objective>\n";
+        assert_eq!(plan_title(titled).as_deref(), Some("The real title"));
+        assert_eq!(objective_line(titled), Some(4));
+        // No title, no objective: None. An empty objective: None.
+        assert_eq!(plan_title("---\nphase: 1\n---\nbody\n"), None);
+        assert_eq!(objective_line("---\nphase: 1\n---\nbody\n"), None);
+        assert_eq!(plan_title("<objective>\n\n</objective>\n"), None);
+        // A tag inside a code fence is not the objective.
+        assert_eq!(objective_line("```\n<objective>\n```\n"), None);
+        // Capped.
+        let long = format!("<objective>\n{}\n", "x".repeat(400));
+        assert_eq!(plan_title(&long).map(|t| t.chars().count()), Some(MAX_PLAN_TITLE_CHARS));
+    }
+
+    #[test]
+    fn plan_meta_lists_every_surviving_plan_sorted_with_its_wave() {
+        let dir = tempdir().unwrap();
+        let hostile = "Evil \u{1b}[31mred\u{202e} title";
+        fs::write(
+            dir.path().join("05-10-late-PLAN.md"),
+            "---\nwave: 2\n---\n<objective>\nTen comes after two.\n</objective>\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("05-02-early-PLAN.md"),
+            format!("---\nwave: 1\n---\n<objective>\n{hostile}\n</objective>\n"),
+        )
+        .unwrap();
+        fs::write(dir.path().join("05-03-nowave-PLAN.md"), "no frontmatter\n").unwrap();
+        fs::write(
+            dir.path().join("05-04-gone-PLAN.md"),
+            "---\nstatus: superseded\nwave: 1\n---\n",
+        )
+        .unwrap();
+
+        let inf = infer_disk_status(dir.path());
+        let ids: Vec<&str> = inf.plans.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["05-02-early", "05-03-nowave", "05-10-late"]);
+        let waves: Vec<Option<u32>> = inf.plans.iter().map(|p| p.wave).collect();
+        assert_eq!(waves, vec![Some(1), None, Some(2)]);
+        let title = inf.plans[0].title.as_ref().expect("a title");
+        assert_eq!(title.as_raw_for_logic_only(), hostile, "stored raw");
+        let shown = title.shown().to_string();
+        assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'), "{shown:?}");
+        assert_eq!(inf.plans[0].objective_line, Some(4));
+        assert_eq!(inf.plans[1].title, None);
+        assert_eq!(inf.plans[1].objective_line, None);
+        assert_eq!(
+            inf.plans[2].title.as_ref().map(|t| t.as_raw_for_logic_only().to_string()),
+            Some("Ten comes after two".to_string())
+        );
+    }
+
+    #[test]
+    fn waves_manifest_is_read_in_the_scan() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "x\n").unwrap();
+        assert_eq!(infer_disk_status(dir.path()).waves_manifest, None, "absent");
+
+        fs::write(
+            dir.path().join("waves.json"),
+            r#"{"waves":[{"id":"w1","plans":[{"id":"05-01","files_modified":["a","b"]}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            infer_disk_status(dir.path()).waves_manifest,
+            Some(plan_waves::WavesManifest {
+                waves: vec![plan_waves::ManifestWave {
+                    label: "w1".to_string(),
+                    plans: vec![plan_waves::ManifestPlan {
+                        id: "05-01".to_string(),
+                        files: 2
+                    }],
+                }]
+            })
+        );
+
+        fs::write(dir.path().join("waves.json"), "{ not json").unwrap();
+        assert_eq!(infer_disk_status(dir.path()).waves_manifest, None, "unparsable");
+        fs::write(dir.path().join("waves.json"), r#"{"waves":[]}"#).unwrap();
+        assert_eq!(infer_disk_status(dir.path()).waves_manifest, None, "empty");
+
+        // Over 1 MiB: skipped, even though it would parse.
+        let padding = " ".repeat(MAX_WAVES_MANIFEST_BYTES as usize + 1);
+        fs::write(
+            dir.path().join("waves.json"),
+            format!(r#"{{"waves":[{{"id":"w1","plans":[]}}]}}{padding}"#),
+        )
+        .unwrap();
+        assert_eq!(infer_disk_status(dir.path()).waves_manifest, None, "oversized");
     }
 }
