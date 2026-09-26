@@ -239,11 +239,34 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Enter", "Backlog tab: open / close the item's content pane (detail view)"),
         row("j/k PgUp/PgDn", "Backlog tab: scroll the open content pane (detail view)"),
         row("e", "Backlog tab: edit the open item where it lives, e.g. ROADMAP.md (detail view)"),
-        // Phase 24-07 (D-B04): the archive is the Docs tab's Milestones
-        // sub-tab, and `m` is the only key that reaches it from Files.
-        row("m", "Docs / Sessions tab: switch sub-view (detail view)"),
+        // Phase 24-07 (D-B04) made `m` the Docs / Sessions sub-tab switch;
+        // since quick 260926-1t1 it is an alias of the arrows and `[` / `]`,
+        // documented here only (the strip and footer no longer show it).
+        row("m", "Docs / Sessions tab: switch sub-tab (alias of Left / Right) (detail view)"),
+        // Still true on the dashboard; the detail view's split of the two is
+        // documented in the navigation block below.
         row("q / Esc", "Quit / Back"),
         row("Ctrl+C", "Force quit"),
+        Line::from(""),
+        // ── The detail view's navigation model (quick 260926-1t1, D-07): a
+        // tab-bar level above each tab's content. Every description is unique
+        // in this body, so the whole-row assertions can tell the rows apart
+        // from the dashboard's `Enter` and the Roadmap's `[ / ]`. Ends with
+        // exactly one blank row, whichever section follows.
+        heading("Detail View Navigation"),
+        Line::from(""),
+        row("1-8", "Detail view: jump straight into a tab's content"),
+        row(
+            "Left / Right",
+            "Detail view: previous / next tab on the tab bar; sub-tab inside Sessions / Docs",
+        ),
+        row("[ / ]", "Sessions / Docs tab: previous / next sub-tab (detail view)"),
+        row("Down / Enter", "Detail view tab bar: enter the tab's content (no action)"),
+        row("Up", "Detail view: back to the tab bar from the first row"),
+        row("Esc", "Detail view: close a pane or level; then tab bar; then dashboard"),
+        row("q", "Detail view: back to the dashboard from anywhere"),
+        row("Tab", "Detail view: switch the terminal to this project's session"),
+        row("Enter", "Sessions tab: resume the selected session (detail view)"),
         Line::from(""),
     ]);
 
@@ -935,11 +958,16 @@ mod tests {
 
     /// Phase 24-07 (D-B04) and 25-05 (D-C15): `m` switches sub-view on the
     /// Docs tab (Files / Milestones) and on the Sessions tab (Sessions /
-    /// Agents). One shared row documents both, as a WHOLE row, exactly once,
-    /// with the flag on and off (it is not a driver key).
+    /// Agents) — since quick 260926-1t1 as an alias of the arrows. One shared
+    /// row documents both, as a WHOLE row, exactly once, with the flag on and
+    /// off (it is not a driver key).
     #[test]
     fn the_m_sub_view_switch_is_documented() {
-        let expected = row("m", "Docs / Sessions tab: switch sub-view (detail view)").spans[0]
+        let expected = row(
+            "m",
+            "Docs / Sessions tab: switch sub-tab (alias of Left / Right) (detail view)",
+        )
+        .spans[0]
             .content
             .to_string();
         for experimental in [true, false] {
@@ -950,6 +978,44 @@ mod tests {
                 "experimental={experimental}: the row {expected:?} must appear \
                  exactly once:\n{text}"
             );
+        }
+    }
+
+    /// Quick 260926-1t1 (D-07): the detail view's navigation model — digits,
+    /// the arrows, `[ / ]`, Up / Down / Enter between levels, the Esc vs q
+    /// split and Tab — is documented under its own heading as WHOLE rows,
+    /// each exactly once, with the flag on and off (none is a driver key).
+    #[test]
+    fn the_detail_navigation_block_is_documented_as_whole_rows() {
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            assert_eq!(
+                text.lines().filter(|line| *line == "Detail View Navigation").count(),
+                1,
+                "experimental={experimental}: the heading must appear once:\n{text}"
+            );
+            for (key, description) in [
+                ("1-8", "Detail view: jump straight into a tab's content"),
+                (
+                    "Left / Right",
+                    "Detail view: previous / next tab on the tab bar; sub-tab inside Sessions / Docs",
+                ),
+                ("[ / ]", "Sessions / Docs tab: previous / next sub-tab (detail view)"),
+                ("Down / Enter", "Detail view tab bar: enter the tab's content (no action)"),
+                ("Up", "Detail view: back to the tab bar from the first row"),
+                ("Esc", "Detail view: close a pane or level; then tab bar; then dashboard"),
+                ("q", "Detail view: back to the dashboard from anywhere"),
+                ("Tab", "Detail view: switch the terminal to this project's session"),
+                ("Enter", "Sessions tab: resume the selected session (detail view)"),
+            ] {
+                let expected = row(key, description).spans[0].content.to_string();
+                assert_eq!(
+                    text.lines().filter(|line| *line == expected).count(),
+                    1,
+                    "experimental={experimental}: the row {expected:?} must appear \
+                     exactly once:\n{text}"
+                );
+            }
         }
     }
 

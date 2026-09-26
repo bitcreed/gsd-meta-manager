@@ -4522,13 +4522,17 @@ impl Screen for DetailScreen {
                 .set_style(content_area, Style::default().fg(Color::DarkGray));
         }
 
-        // Render footer with tab-appropriate hints
+        // Render the footer for the level that has focus (D-07): the tab
+        // bar's keys at the tab bar — on every tab, the Driver's included —
+        // then the open Backlog pane's, then the tab's content hints.
         let backlog_focused = sub_view == DetailSubView::Backlog
             && ctx
                 .view_cache
                 .get(&self.alias)
                 .is_some_and(|c| c.backlog_expanded);
-        let footer = if backlog_focused {
+        let footer = if self.focus == DetailFocus::TabBar {
+            Paragraph::new(Line::from(tab_bar_footer_spans(ctx.experimental)))
+        } else if backlog_focused {
             Paragraph::new(Line::from(backlog_focused_footer_spans()))
         } else {
             build_footer(&sub_view, footer_area.width, ctx.experimental)
@@ -7470,21 +7474,54 @@ fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
     spans
 }
 
-/// Build the footer key-hint spans for a tab.
+/// The footer while the TAB BAR has focus (quick 260926-1t1, D-07): only the
+/// keys that level handles — `  [←/→]tabs  [↓/Enter]open  [1-8/D]jump
+/// [Esc]back  [?]help`. Shown on every tab, the Driver's included, because at
+/// the tab bar no tab's own keys apply until focus descends.
+///
+/// `experimental` gates the `D` in the digit token exactly as it does in
+/// [`footer_spans`] (260917-fko D2).
+fn tab_bar_footer_spans(experimental: bool) -> Vec<Span<'static>> {
+    let b = Style::default().add_modifier(Modifier::BOLD);
+    vec![
+        Span::raw("  "),
+        Span::styled("[\u{2190}/\u{2192}]", b),
+        Span::raw("tabs  "),
+        Span::styled("[\u{2193}/Enter]", b),
+        Span::raw("open  "),
+        Span::styled(if experimental { "[1-8/D]" } else { "[1-8]" }, b),
+        Span::raw("jump  "),
+        Span::styled("[Esc]", b),
+        Span::raw("back  "),
+        Span::styled("[?]", b),
+        Span::raw("help"),
+    ]
+}
+
+/// Build the footer key-hint spans for a tab, at CONTENT level.
 ///
 /// Split out of `build_footer` so the hint set is assertable: `Paragraph`
 /// exposes no public text accessor, but a `Vec<Span>` concatenates cleanly.
 ///
-/// `width` is the footer row's width. Only the Driver tab tiers on it today; the
-/// other tabs keep their single shipped form, with the shared prefix's tabs hint
-/// changed once, for every tab, so `Shift+D` is discoverable from anywhere in
-/// the detail view.
+/// The detail view has two focus levels (quick 260926-1t1, D-07), and the
+/// footer always shows the current level's keys first: at the tab bar
+/// `render` draws [`tab_bar_footer_spans`] instead of this; in content this
+/// leads with `[↑]tab bar`, then what `←`/`→` do on this tab — the sub-tab
+/// pair's names on Sessions and Docs ([`sub_tab_pair`]), `tabs` elsewhere —
+/// then the digit jump and `[j/k]move`, then the tab's own hints. `m` is not
+/// advertised: it stays a working alias, documented in the help popup only.
 ///
-/// `experimental` decides that shared hint. **It is the one string that would
+/// `width` is the footer row's width. Only the Driver tab tiers on it today;
+/// its footer is left as it was ([inferred I-13]) — its three forms are
+/// width-measured and pinned, and its `[Esc]back` is still accurate as "back
+/// one level". The other tabs keep a single form.
+///
+/// `experimental` decides the digit token. **It is the one string that would
 /// otherwise leak the Driver tab onto every other tab** (260917-fko D2): a
 /// user with the flag off who read `[1-8/D]` would have been told about a tab
 /// that does not exist and a key that does nothing, which is the discovery this
-/// gate exists to prevent.
+/// gate exists to prevent. The token is kept on every tab so `Shift+D` stays
+/// discoverable from anywhere ([inferred I-14]).
 ///
 /// The digit range is the eight tabs' (D-B10): `9` and `0` are inert.
 fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec<Span<'static>> {
@@ -7493,14 +7530,21 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
     }
 
     let b = Style::default().add_modifier(Modifier::BOLD);
+    let arrows = match sub_tab_pair(sub_view) {
+        Some((DetailSubView::Sessions, _)) => "Sessions|Agents  ",
+        Some(_) => "Files|Milestones  ",
+        None => "tabs  ",
+    };
     let mut spans = vec![
         Span::raw("  "),
-        Span::styled("[Esc]", b),
-        Span::raw("back  "),
+        Span::styled("[\u{2191}]", b),
+        Span::raw("tab bar  "),
+        Span::styled("[\u{2190}/\u{2192}]", b),
+        Span::raw(arrows),
         Span::styled(if experimental { "[1-8/D]" } else { "[1-8]" }, b),
-        Span::raw("tabs  "),
+        Span::raw("jump  "),
         Span::styled("[j/k]", b),
-        Span::raw("scroll  "),
+        Span::raw("move  "),
     ];
 
     match sub_view {
@@ -7539,24 +7583,18 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("switch  "));
             spans.push(Span::styled("[n]", b));
             spans.push(Span::raw("ew session  "));
-            spans.push(Span::styled("[m]", b));
-            spans.push(Span::raw(" agents  "));
         }
         // The Sessions tab's Agents sub-view (D-C15): it observes only, so it
-        // offers no Enter or `n`. Scrolling is the shared prefix's `[j/k]`.
-        DetailSubView::Agents => {
-            spans.push(Span::styled("[m]", b));
-            spans.push(Span::raw(" sessions  "));
-        }
-        // The Docs tab's two sub-views each advertise `m`, naming the other
-        // sub-tab it switches to (D-B04).
+        // offers no Enter or `n`. Scrolling is the shared prefix's `[j/k]`,
+        // and the way back to Sessions is the prefix's `[←/→]` token.
+        DetailSubView::Agents => {}
+        // The Docs tab's two sub-views name each other through the prefix's
+        // `[←/→]Files|Milestones` token (D-B04, quick 260926-1t1).
         DetailSubView::Archive => {
             spans.push(Span::styled("[Enter]", b));
             spans.push(Span::raw("open  "));
             spans.push(Span::styled("[e]", b));
             spans.push(Span::raw("dit  "));
-            spans.push(Span::styled("[m]", b));
-            spans.push(Span::raw(" files  "));
         }
         DetailSubView::Browse => {
             spans.push(Span::styled("[Enter]", b));
@@ -7569,8 +7607,6 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("root  "));
             spans.push(Span::styled("[p]", b));
             spans.push(Span::raw("hase  "));
-            spans.push(Span::styled("[m]", b));
-            spans.push(Span::raw("ilestones  "));
         }
         DetailSubView::Defaults => {
             spans.push(Span::styled("[Enter]", b));
@@ -7608,17 +7644,17 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
     spans
 }
 
-/// Build the footer line with tab-appropriate key hints.
 /// The Backlog tab's footer while its content pane is open and focused
-/// (quick-260924-drx): the keys now scroll the pane, Enter/Esc close it, and
-/// `e` edits the item where it lives instead of enqueueing it.
+/// (quick-260924-drx): the keys now scroll the pane, Enter/Esc/`←` close it
+/// (`←` since quick 260926-1t1, [inferred I-9]), and `e` edits the item where
+/// it lives instead of enqueueing it.
 fn backlog_focused_footer_spans() -> Vec<Span<'static>> {
     let b = Style::default().add_modifier(Modifier::BOLD);
     vec![
         Span::raw("  "),
         Span::styled("[j/k PgUp/PgDn]", b),
         Span::raw("scroll content  "),
-        Span::styled("[Enter/Esc]", b),
+        Span::styled("[Enter/Esc/\u{2190}]", b),
         Span::raw("close  "),
         Span::styled("[e]", b),
         Span::raw("dit in $EDITOR  "),
@@ -7627,6 +7663,7 @@ fn backlog_focused_footer_spans() -> Vec<Span<'static>> {
     ]
 }
 
+/// Build the content-level footer line with tab-appropriate key hints.
 fn build_footer(sub_view: &DetailSubView, width: u16, experimental: bool) -> Paragraph<'static> {
     Paragraph::new(Line::from(footer_spans(sub_view, width, experimental)))
 }
@@ -11153,12 +11190,12 @@ mod tests {
     fn test_other_footers_unchanged_by_browse_edit_hint() {
         assert_eq!(
             footer_text(&DetailSubView::Backlog),
-            "  [Esc]back  [1-8/D]tabs  [j/k]scroll  [Enter]view  [e]nqueue  [?]help"
+            "  [↑]tab bar  [←/→]tabs  [1-8/D]jump  [j/k]move  [Enter]view  [e]nqueue  [?]help"
         );
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
-            "  [Esc]back  [1-8/D]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
-             [r]eload  [/]filter  [?]help"
+            "  [↑]tab bar  [←/→]tabs  [1-8/D]jump  [j/k]move  [Enter]edit  [x] clear  \
+             [d] defaults  [r]eload  [/]filter  [?]help"
         );
     }
 
@@ -11174,11 +11211,11 @@ mod tests {
         for sub_view in (0..DRIVER_TAB_INDEX).map(|index| sub_view_from_index(index, true)) {
             let text = footer_text(&sub_view);
             assert!(
-                text.contains("[1-8/D]tabs"),
+                text.contains("[1-8/D]jump"),
                 "{sub_view:?} footer must advertise the Driver tab: {text}"
             );
             assert!(
-                !text.contains("[1-8]tabs"),
+                !text.contains("[1-8]jump"),
                 "{sub_view:?} shows the flag-off digits-only hint with the flag on: {text}"
             );
         }
@@ -11197,8 +11234,13 @@ mod tests {
             (0..visible_tab_count(false)).map(|index| sub_view_from_index(index, false))
         {
             let text = footer_text_at(&sub_view, 120, false);
+            let arrows = match sub_tab_pair(&sub_view) {
+                Some((DetailSubView::Sessions, _)) => "Sessions|Agents",
+                Some(_) => "Files|Milestones",
+                None => "tabs",
+            };
             assert!(
-                text.starts_with("  [Esc]back  [1-8]tabs  "),
+                text.starts_with(&format!("  [↑]tab bar  [←/→]{arrows}  [1-8]jump  ")),
                 "{sub_view:?} must not advertise a Driver tab the user cannot \
                  reach: {text}"
             );
@@ -12142,15 +12184,18 @@ mod tests {
         }
     }
 
-    /// Sessions advertises `m` to Agents, and Agents advertises scrolling and
-    /// `m` back to Sessions.
+    /// Sessions and Agents advertise the arrows' sub-tab switch between the
+    /// two (quick 260926-1t1: `m` is an alias, no longer advertised), and
+    /// Agents advertises scrolling.
     #[test]
-    fn the_sessions_and_agents_footers_advertise_m() {
+    fn the_sessions_and_agents_footers_advertise_the_arrow_sub_tab_switch() {
         let sessions = footer_text(&DetailSubView::Sessions);
-        assert!(sessions.contains("[m] agents  "), "{sessions}");
+        assert!(sessions.contains("[←/→]Sessions|Agents  "), "{sessions}");
+        assert!(!sessions.contains("[m]"), "{sessions}");
         let agents = footer_text(&DetailSubView::Agents);
         assert!(agents.contains("[j/k]"), "{agents}");
-        assert!(agents.contains("[m] sessions  "), "{agents}");
+        assert!(agents.contains("[←/→]Sessions|Agents  "), "{agents}");
+        assert!(!agents.contains("[m]"), "{agents}");
         assert!(!agents.contains("[n]"), "Agents offers no new-session key: {agents}");
         assert!(!agents.contains("[Enter]"), "Agents offers no Enter action: {agents}");
     }
@@ -12487,27 +12532,31 @@ mod tests {
         assert!(!text.contains("[Files]"), "{text}");
     }
 
-    /// Both Docs footers advertise `m`, each naming where it goes, over the
-    /// final `[1-8/D]` / `[1-8]` tabs hint.
+    /// Both Docs footers advertise the arrows' Files | Milestones switch
+    /// (quick 260926-1t1: `m` is an alias, no longer advertised), ahead of
+    /// the `[1-8/D]` / `[1-8]` digit hint.
     #[test]
-    fn the_docs_footers_advertise_the_milestones_switch() {
+    fn the_docs_footers_advertise_the_arrow_milestones_switch() {
         let files = footer_text(&DetailSubView::Browse);
-        assert!(files.contains("[m]ilestones  "), "{files}");
+        assert!(!files.contains("[m]"), "{files}");
         let milestones = footer_text(&DetailSubView::Archive);
-        assert!(milestones.contains("[m] files  "), "{milestones}");
+        assert!(!milestones.contains("[m]"), "{milestones}");
 
         for view in [DetailSubView::Browse, DetailSubView::Archive] {
             assert!(
-                footer_text_at(&view, 120, true).starts_with("  [Esc]back  [1-8/D]tabs  "),
+                footer_text_at(&view, 120, true)
+                    .starts_with("  [↑]tab bar  [←/→]Files|Milestones  [1-8/D]jump  "),
                 "{view:?}"
             );
             assert!(
-                footer_text_at(&view, 120, false).starts_with("  [Esc]back  [1-8]tabs  "),
+                footer_text_at(&view, 120, false)
+                    .starts_with("  [↑]tab bar  [←/→]Files|Milestones  [1-8]jump  "),
                 "{view:?}"
             );
         }
-        // `m` is the Docs tab's key only.
+        // No tab without sub-tabs advertises a sub-tab switch.
         assert!(!footer_text(&DetailSubView::RoadmapViz).contains("[m]"));
+        assert!(!footer_text(&DetailSubView::RoadmapViz).contains("Files|Milestones"));
     }
 
     /// From either Docs sub-tab, `Right` ON THE TAB BAR reaches the Driver tab
@@ -16261,7 +16310,7 @@ mod tests {
         let (screen, ctx, _td) = focused_long_backlog_fixture();
         let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
         let footer = text.lines().last().unwrap_or_default();
-        for hint in ["scroll content", "[Enter/Esc]close", "[e]dit"] {
+        for hint in ["scroll content", "[Enter/Esc/←]close", "[e]dit"] {
             assert!(footer.contains(hint), "missing {hint:?} in footer {footer:?}");
         }
     }
@@ -18539,5 +18588,111 @@ mod tests {
         let (screen, ctx, _td) = focused_long_backlog_fixture();
         render_detail_to_text(&screen, &ctx);
         assert!(screen.regions().pane.is_some(), "the open pane is recorded");
+    }
+
+    // --- quick 260926-1t1: the level-aware footer (D-07) --------------------
+
+    fn spans_text(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Every sub-view, flag on (the Driver included) — derived from the enum's
+    /// full set rather than listed by hand where a mapping exists.
+    fn every_sub_view() -> Vec<DetailSubView> {
+        vec![
+            DetailSubView::RoadmapViz,
+            DetailSubView::Pipeline,
+            DetailSubView::Backlog,
+            DetailSubView::GitHistory,
+            DetailSubView::Queue,
+            DetailSubView::Sessions,
+            DetailSubView::Agents,
+            DetailSubView::Defaults,
+            DetailSubView::Browse,
+            DetailSubView::Archive,
+            DetailSubView::Driver,
+        ]
+    }
+
+    #[test]
+    fn the_tab_bar_footer_names_only_tab_bar_keys() {
+        assert_eq!(
+            spans_text(&tab_bar_footer_spans(true)),
+            "  [←/→]tabs  [↓/Enter]open  [1-8/D]jump  [Esc]back  [?]help"
+        );
+        let off = spans_text(&tab_bar_footer_spans(false));
+        assert_eq!(off, "  [←/→]tabs  [↓/Enter]open  [1-8]jump  [Esc]back  [?]help");
+        assert!(!off.contains("[1-8/D]"), "{off}");
+    }
+
+    #[test]
+    fn content_footers_lead_with_the_tab_bar_and_the_arrow_meaning() {
+        for view in every_sub_view()
+            .into_iter()
+            .filter(|v| *v != DetailSubView::Driver)
+        {
+            let arrows = match view {
+                DetailSubView::Sessions | DetailSubView::Agents => "[←/→]Sessions|Agents",
+                DetailSubView::Browse | DetailSubView::Archive => "[←/→]Files|Milestones",
+                _ => "[←/→]tabs",
+            };
+            for (experimental, digits) in [(true, "[1-8/D]jump"), (false, "[1-8]jump")] {
+                let text = footer_text_at(&view, 120, experimental);
+                let prefix = format!("  [↑]tab bar  {arrows}  {digits}  [j/k]move  ");
+                assert!(text.starts_with(&prefix), "{view:?}: {text:?}");
+                assert!(text.ends_with("[?]help"), "{view:?}: {text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_footer_or_strip_advertises_m() {
+        for view in every_sub_view() {
+            for width in [50u16, 80, 120] {
+                let text = footer_text_at(&view, width, true);
+                assert!(!text.contains("[m]"), "{view:?} at {width}: {text}");
+            }
+        }
+        assert!(!spans_text(&tab_bar_footer_spans(true)).contains("[m]"));
+        assert!(!spans_text(&backlog_focused_footer_spans()).contains("[m]"));
+        for view in [DetailSubView::Sessions, DetailSubView::Agents] {
+            let strip = spans_text(&sessions_sub_tab_strip(&view).spans);
+            assert!(!strip.contains("m switch"), "{strip}");
+        }
+        for view in [DetailSubView::Browse, DetailSubView::Archive] {
+            let strip = spans_text(&docs_sub_tab_strip(&view).spans);
+            assert!(!strip.contains("m switch"), "{strip}");
+        }
+    }
+
+    #[test]
+    fn the_backlog_pane_footer_names_left_as_a_close_key() {
+        assert_eq!(
+            spans_text(&backlog_focused_footer_spans()),
+            "  [j/k PgUp/PgDn]scroll content  [Enter/Esc/←]close  [e]dit in $EDITOR  [?]help"
+        );
+    }
+
+    #[test]
+    fn the_rendered_footer_follows_the_focus_level() {
+        let (mut screen, ctx) = two_sessions_fixture();
+        screen.focus = DetailFocus::TabBar;
+        let text = render_detail_to_text(&screen, &ctx);
+        let footer = text.lines().last().unwrap_or_default();
+        assert!(footer.starts_with("  [←/→]tabs  [↓/Enter]open  "), "{footer:?}");
+
+        screen.focus = DetailFocus::Content;
+        let text = render_detail_to_text(&screen, &ctx);
+        let footer = text.lines().last().unwrap_or_default();
+        assert!(footer.starts_with("  [↑]tab bar  [←/→]Sessions|Agents  "), "{footer:?}");
+
+        // The tab-bar footer wins on the Driver tab too.
+        let mut ctx = test_ctx();
+        let mut screen =
+            DetailScreen::opened_on(TEST_ALIAS.to_string(), DetailSubView::Driver, &mut ctx);
+        screen.focus = DetailFocus::TabBar;
+        let text = render_detail_to_text(&screen, &ctx);
+        let footer = text.lines().last().unwrap_or_default();
+        assert!(footer.starts_with("  [←/→]tabs  [↓/Enter]open  "), "{footer:?}");
     }
 }
