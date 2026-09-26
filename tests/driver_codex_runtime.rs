@@ -46,12 +46,14 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
 
 /// The agent-family variables this binary plants in its own environment, so
 /// the env-hardening test has something to see scrubbed. `CODEX_HOME` is the
-/// one that must survive.
-const PLANTED_ENV: [(&str, &str); 4] = [
+/// one that must survive. `GSD_RUNTIME` is planted as `claude` — the value a
+/// user who exported it globally would leak into a Codex child.
+const PLANTED_ENV: [(&str, &str); 5] = [
     ("CODEX_THREAD_ID", "01a0ca2f-0000-7000-8000-00000000beef"),
     ("CODEX_SANDBOX_NETWORK_DISABLED", "1"),
     ("CODEX_HOME", "/nonexistent/codex-home"),
     ("CLAUDECODE", "1"),
+    ("GSD_RUNTIME", "claude"),
 ];
 
 /// Point the envelope at a temp root for this test binary and plant
@@ -464,5 +466,17 @@ async fn the_codex_child_inherits_codex_home_and_no_other_agent_variable() {
     assert!(
         !env.iter().any(|name| name.starts_with("CLAUDE")),
         "no CLAUDE* variable reaches a codex child: {env:?}"
+    );
+    // Positive control: the fixture does log GSD_* names, so the absence of
+    // GSD_RUNTIME below is a scrub and not a blind spot.
+    assert!(
+        env.iter()
+            .any(|name| name == gsd_meta_manager::envelope::ENVELOPE_ROOT_ENV),
+        "GSD_* names are logged and the envelope root is inherited: {env:?}"
+    );
+    assert!(
+        !env.iter().any(|name| name == "GSD_RUNTIME"),
+        "an inherited GSD_RUNTIME must not reach a codex child — it would outrank \
+         the child GSD's own config.runtime and install marker: {env:?}"
     );
 }

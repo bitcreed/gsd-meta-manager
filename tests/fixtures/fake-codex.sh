@@ -18,7 +18,7 @@
 #                        Read from the link, never from the descriptor, so the
 #                        stand-in can never block on an inherited stdin.
 #                 env    the sorted NAMES — never the values — of every
-#                        variable matching ^(CODEX_|CLAUDE)
+#                        variable matching ^(CODEX_|CLAUDE|GSD_)
 #
 # Everything after the third argument is the executor's own argv and is logged,
 # not interpreted: this stand-in replays the same transcript whatever it is
@@ -38,7 +38,7 @@ done
 
 readlink "/proc/$$/fd/0" > "$LOG_DIR/stdin" 2>/dev/null || echo unknown > "$LOG_DIR/stdin"
 
-env | sed -n 's/^\(CODEX_[^=]*\)=.*/\1/p; s/^\(CLAUDE[^=]*\)=.*/\1/p' | sort > "$LOG_DIR/env"
+env | sed -n 's/^\(CODEX_[^=]*\)=.*/\1/p; s/^\(CLAUDE[^=]*\)=.*/\1/p; s/^\(GSD_[^=]*\)=.*/\1/p' | sort > "$LOG_DIR/env"
 
 cat "$TRANSCRIPT"
 exit "$EXIT_CODE"

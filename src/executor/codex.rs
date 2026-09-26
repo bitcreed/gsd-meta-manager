@@ -632,6 +632,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_scrub_drops_exactly_gsd_runtime_and_no_gsd_sibling() {
+        assert!(
+            scrubbed_from_codex_child(OsStr::new("GSD_RUNTIME")),
+            "an inherited GSD_RUNTIME describes the launching session and would \
+             outrank the child's own config.runtime and install marker (#4717)"
+        );
+        for kept in [
+            "GSD_RUNTIME_ROOT",
+            "GSD_RUNTIMES",
+            "GSD_TOOLS",
+            "GSD_MM_ENVELOPE_ROOT",
+            "PATH",
+            "HOME",
+            "CODEX_HOME",
+        ] {
+            assert!(
+                !scrubbed_from_codex_child(OsStr::new(kept)),
+                "{kept} is kept: the GSD_RUNTIME scrub is an exact-name match"
+            );
+        }
+    }
+
     /// A handle that is not attached to any process: only the fields `send`
     /// and `interrupt` could possibly touch need to be real.
     fn detached_handle() -> ExecutionHandle {
