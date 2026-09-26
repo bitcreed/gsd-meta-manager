@@ -9836,23 +9836,22 @@ fn opt_enum_layered(
     }
 }
 
-/// Format a shape-varying JSON value for read-only display.
-fn json_display(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
 /// Layered accessor for shape-varying keys rendered read-only.
+///
+/// `path` is the row's full dotted JSON path. The value is drawn through
+/// [`crate::state_reader::config_secrets::display_config_value`] (quick task
+/// 260926-jnf), so a secret-named MEMBER nested inside it — e.g. an `api_key`
+/// in a `review.reviewer_instances` entry — renders masked (T-jnf-01).
 fn opt_json_readonly(
+    path: &str,
     project: Option<&serde_json::Value>,
     defaults: Option<&serde_json::Value>,
 ) -> (String, ConfigValueKind, bool) {
+    use crate::state_reader::config_secrets::display_config_value;
     if let Some(v) = project {
-        (json_display(v), ConfigValueKind::ReadOnly, false)
+        (display_config_value(path, v), ConfigValueKind::ReadOnly, false)
     } else if let Some(v) = defaults {
-        (json_display(v), ConfigValueKind::ReadOnly, true)
+        (display_config_value(path, v), ConfigValueKind::ReadOnly, true)
     } else {
         ("(unset)".to_string(), ConfigValueKind::Null, false)
     }
@@ -10149,6 +10148,7 @@ fn build_defaults_entries(
     ));
     // Shape-varying security keys — read-only display.
     let (v, k, fd) = opt_json_readonly(
+        "workflow.security_asvs_level",
         pwf.and_then(|w| w.security_asvs_level.as_ref()),
         dwf.and_then(|w| w.security_asvs_level.as_ref()),
     );
@@ -10156,6 +10156,7 @@ fn build_defaults_entries(
         "OWASP ASVS rigor of the security audit, 1 opportunistic to 3 comprehensive; shown here, edited in the file.",
     ));
     let (v, k, fd) = opt_json_readonly(
+        "workflow.security_block_on",
         pwf.and_then(|w| w.security_block_on.as_ref()),
         dwf.and_then(|w| w.security_block_on.as_ref()),
     );
@@ -10184,6 +10185,7 @@ fn build_defaults_entries(
         ],
     ).since("v1.13.0"));
     let (v, k, fd) = opt_json_readonly(
+        "workflow.code_review_depth_overrides",
         pwf.and_then(|w| w.code_review_depth_overrides.as_ref()),
         dwf.and_then(|w| w.code_review_depth_overrides.as_ref()),
     );
@@ -10444,6 +10446,7 @@ fn build_defaults_entries(
         ],
     ).since("v1.13.0"));
     let (v, k, fd) = opt_json_readonly(
+        "git.protected_branches",
         pgit.and_then(|g| g.protected_branches.as_ref()),
         dgit.and_then(|g| g.protected_branches.as_ref()),
     );
@@ -10528,11 +10531,12 @@ fn build_defaults_entries(
     push(cat, "claude_md_path", v, k, false, fd, ConfigHelp::new(
         "Where the developer-profile writer puts its instructions section; GSD's default is ./.claude/CLAUDE.md.",
     ));
-    let (v, k, fd) = opt_json_readonly(config.sub_repos.as_ref(), defaults.and_then(|d| d.sub_repos.as_ref()));
+    let (v, k, fd) = opt_json_readonly("sub_repos", config.sub_repos.as_ref(), defaults.and_then(|d| d.sub_repos.as_ref()));
     push(cat, "sub_repos", v, k, false, fd, ConfigHelp::new(
         "Child directories with their own .git, auto-detected so commits route correctly; edited in the file.",
     ));
     let (v, k, fd) = opt_json_readonly(
+        "planning.sub_repos",
         config.planning.as_ref().and_then(|p| p.sub_repos.as_ref()),
         defaults.and_then(|d| d.planning.as_ref().and_then(|p| p.sub_repos.as_ref())),
     );
@@ -10654,6 +10658,7 @@ fn build_defaults_entries(
     // ── Review ────────────────────────────────────────────────
     let cat = "Review";
     let (v, k, fd) = opt_json_readonly(
+        "review.reviewer_instances",
         config.review.as_ref().and_then(|r| r.reviewer_instances.as_ref()),
         defaults.and_then(|d| d.review.as_ref().and_then(|r| r.reviewer_instances.as_ref())),
     );
@@ -10843,8 +10848,12 @@ fn append_passthrough_entries(
     for (key, (value, from_defaults)) in rows {
         entries.push(ConfigEntry {
             category: PASSTHROUGH_CATEGORY,
+            // THE pass-through value route (quick task 260926-jnf): a
+            // secret-named key renders masked, and any other value renders
+            // with its secret-named MEMBERS masked (T-jnf-01). The row stays
+            // ReadOnly — masking never makes it editable (INFERRED I-12).
+            value: crate::state_reader::config_secrets::display_config_value(&key, &value),
             key: std::borrow::Cow::Owned(key),
-            value: json_display(&value),
             kind: ConfigValueKind::ReadOnly,
             show_category: first,
             from_defaults,

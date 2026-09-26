@@ -583,10 +583,28 @@ pub fn parse_gsd_config(content: &str) -> Option<GsdConfig> {
     match serde_json::from_str(content) {
         Ok(config) => Some(config),
         Err(e) => {
-            tracing::warn!("Failed to parse config.json: {}", e);
+            // T-jnf-03 (quick task 260926-jnf): NEVER the serde Display — it
+            // quotes the offending value (`invalid type: string "sk-…"`), and
+            // that value can be an API key. Category and position only.
+            tracing::warn!("Failed to parse config.json: {}", parse_error_summary(&e));
             None
         }
     }
+}
+
+/// A value-free description of a config parse error: the serde error
+/// CATEGORY plus line and column, built only from `classify()`, `line()` and
+/// `column()` — never from the error's `Display`, which quotes the offending
+/// value (T-jnf-03).
+pub fn parse_error_summary(e: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let category = match e.classify() {
+        Category::Io => "I/O error",
+        Category::Syntax => "syntax error",
+        Category::Data => "data error (a value of the wrong type or shape)",
+        Category::Eof => "unexpected end of input",
+    };
+    format!("{category} at line {}, column {}", e.line(), e.column())
 }
 
 /// Serialize a GsdConfig back to pretty-printed JSON.
