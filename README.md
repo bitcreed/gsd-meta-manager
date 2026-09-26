@@ -74,7 +74,7 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   read from git worktrees and Claude Code's subagent metadata without invoking
   Claude: the dashboard Status cell summarises the live wave (e.g. `w2/11 13run`,
   or an estimated `~5/12 fixed` for code-review fix runs), and the Sessions tab's
-  Agents sub-view (`m`) lists every agent with its plan, commits, dirty files and
+  Agents sub-view (`→` inside the Sessions tab) lists every agent with its plan, commits, dirty files and
   last activity, wave by wave
 - Auto-registration of GSD projects from active Claude sessions -- any running
   `claude` whose working directory contains `.planning/` is added to the
@@ -93,7 +93,7 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   "Stale HANDOFF ignored" hint instead of "Paused", and the dashboard raises
   no pause badge or needs-human flag for it
 - Milestone archive browser with inline markdown rendering, in the Docs tab's
-  Milestones sub-tab (`m` switches Files / Milestones)
+  Milestones sub-tab (`←` `→` inside the Docs tab switch Files / Milestones)
 - Search and filter across projects
 
 ## Installation
@@ -177,14 +177,31 @@ Options:
 |------------------|-------------------------|
 | `j` / `k`        | Navigate up/down        |
 | `Enter`          | Open project detail     |
-| `1`-`8` / `←` `→` | Switch detail tabs     |
-| `m`              | Docs tab: Files / Milestones |
 | `/`              | Search / filter         |
 | `a`              | Add existing project    |
 | `n`              | Create new project      |
 | `d`              | Delete project          |
 | `?`              | Show help               |
-| `q`              | Quit                    |
+| `q`              | Quit (dashboard); back to the dashboard (detail view) |
+
+The detail view has two focus levels: the **tab bar** at the top and the
+**content** of the active tab below it. It opens on the content of the tab you
+last used; the active tab is shown bracketed, e.g. `[6:Sess]`, and while the tab
+bar has focus it is also reversed and the content is dimmed.
+
+| Key (detail view) | Action |
+|-------------------|--------|
+| `1`-`8`           | Jump straight into a tab's content |
+| `←` `→`           | Tab bar: previous / next tab. Inside Sessions or Docs: previous / next sub-tab (Sessions / Agents, Files / Milestones). Inside any other tab: switch tab and return to the tab bar |
+| `↓` / `Enter`     | Tab bar: enter the tab's content (no action is taken) |
+| `↑`               | From the first row of the content: back to the tab bar |
+| `[` `]`           | Sessions / Docs: previous / next sub-tab (on the Roadmap: previous / next phase in the same wave) |
+| `Esc`             | Close an open pane or level first; otherwise go to the tab bar; at the tab bar, back to the dashboard |
+| `q`               | Back to the dashboard from any level |
+| `m`               | Sessions / Docs: switch sub-tab (alias of `←` `→`) |
+| `Tab`             | Switch the terminal to this project's Claude / Codex session |
+
+`6` and `8` re-open the sub-tab you last used on the Sessions and Docs tabs.
 
 ### Examples
 

@@ -138,12 +138,17 @@ You should see your registered project in the dashboard. Useful first
 keystrokes:
 
 - `j` / `k` — move the selection up/down
-- `Enter` — drill into the project detail view (10 tabs: Phases, Roadmap,
-  Backlog, Git History, Pipeline, Queue, Sessions, Archive, Config, Docs)
-- `Tab` / `Shift+Tab` — cycle detail tabs
+- `Enter` — drill into the project detail view (8 tabs: Roadmap, Phases,
+  Backlog, Git, Queue, Sessions, Config, Docs)
+- In the detail view, `1`-`8` or `←` / `→` switch tabs; `↓` / `Enter` enter a
+  tab from the tab bar, and `↑` on the first row goes back up to it
+- `Esc` — go back one level (close a pane, then the tab bar, then the
+  dashboard); `q` — go straight back to the dashboard
+- `Tab` — switch the terminal to the project's running Claude / Codex session
+  (it does not cycle tabs)
 - `/` — filter projects
 - `?` — show the help overlay
-- `q` — quit
+- `q` — quit (on the dashboard)
 
 ## Common setup issues
 
