@@ -343,8 +343,28 @@ impl CodexExecutor {
 /// `CODEX_SANDBOX_NETWORK_DISABLED`, which describe THAT session, not the
 /// driven one — **except** `CODEX_HOME` (where the user's config and auth
 /// live) and `CODEX_CA_CERTIFICATE` (a TLS trust anchor the user chose).
+///
+/// And exactly `GSD_RUNTIME` (quick 260926-gtm; `GSD_RUNTIME_*` siblings and
+/// other `GSD_*` variables are kept). **Scrubbed, never set to `codex`:**
+///   - an inherited value describes the launching shell or session, not the
+///     driven one — the same class as `CODEX_THREAD_ID` above;
+///   - gsd-core 1.15.0 (#4717) ranks it above the project's `config.runtime`
+///     and the loaded install's `.gsd-runtime` marker, so a leaked
+///     `GSD_RUNTIME=claude` would give the Codex child Claude spelling, agents
+///     dir and model tiers;
+///   - once removed, the child's own GSD resolves `config.runtime`, then the
+///     marker of the install it loads (post-#4667 the Codex one), then host
+///     detection — no assertion from the manager needed;
+///   - setting it to `codex` would override an explicit project `runtime`,
+///     which #4717 deliberately never does, and couple the manager into GSD's
+///     runtime ladder (the inverse of ID-2 in `runtime.rs`);
+///   - envelope entries are applied after this scrub in `start_run`, so an
+///     explicit envelope value would still win.
 pub fn scrubbed_from_codex_child(key: &OsStr) -> bool {
     let key = key.to_string_lossy();
+    if key == "GSD_RUNTIME" {
+        return true;
+    }
     if key.starts_with("CLAUDE") {
         return true;
     }

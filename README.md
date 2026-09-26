@@ -31,7 +31,10 @@ all of them:
   shown alongside Claude sessions (reachable with `Tab` under tmux), and the
   experimental driver can run a project whose manager-config entry sets
   `"runtime": "codex"` (or `preferences.default_runtime`) through `codex exec`. Resume stays Claude-only -- see
-  [Platform support](#platform-support).
+  [Platform support](#platform-support). Next-command suggestions also use a
+  Codex-only GSD install (`~/.codex/gsd-core`, or `$CODEX_HOME/gsd-core`), and a
+  driven `codex exec` child does not inherit the launching shell's `GSD_RUNTIME`,
+  so GSD inside it takes its runtime from the project's config and its own install.
 - **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
   session without hunting through terminal tabs.
 - **Milestone archive browsing** -- read shipped-milestone artifacts with inline
