@@ -60,7 +60,10 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
 - 8-tab detail view (plus the experimental Driver tab): Roadmap (phase list
   with git-log-style dependency lanes and a detail pane showing each phase's
-  goal, needs, unblocks and parallel phases), Phases, Backlog, Git History,
+  goal, needs, unblocks and parallel phases), Phases (the selected phase's
+  ladder and stage summary above a focusable Waves pane: one row per plan
+  with its state, PLAN.md title and act/est tokens, finished waves folded),
+  Backlog, Git History,
   Queue, Sessions (with an Agents sub-view), Config, Docs (Files: rendered
   `.planning/` browser rooted at
   the active phase, with quick jumps to `.planning/` and back; Milestones: the
@@ -74,8 +77,10 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   read from git worktrees and Claude Code's subagent metadata without invoking
   Claude: the dashboard Status cell summarises the live wave (e.g. `w2/11 13run`,
   or an estimated `~5/12 fixed` for code-review fix runs), and the Sessions tab's
-  Agents sub-view (`→` inside the Sessions tab) lists every agent with its plan, commits, dirty files and
-  last activity, wave by wave
+  Agents sub-view (`→` inside the Sessions tab) shows a one-line wave strip
+  above every agent with its plan, commits, dirty files and last activity;
+  `Enter` on an agent jumps to its plan in the Phases tab's Waves pane, and
+  `Enter` on a plan there jumps back to its agent
 - Auto-registration of GSD projects from active Claude sessions -- any running
   `claude` whose working directory contains `.planning/` is added to the
   registry automatically; a git linked worktree (e.g. an agent worktree under
@@ -200,6 +205,12 @@ bar has focus it is also reversed and the content is dimmed.
 | `q`               | Back to the dashboard from any level |
 | `m`               | Sessions / Docs: switch sub-tab (alias of `←` `→`) |
 | `Tab`             | Switch the terminal to this project's Claude / Codex session |
+| `→` / `Enter`     | Phases: focus the Waves pane (on top of the right side, under the ladder) |
+| `j` `k` `g` `G` `PgUp` `PgDn` | Waves pane: move the row cursor, top / bottom, page |
+| `Enter` / `Space` | Waves pane: fold / unfold a wave (or a merged `w1–w10 ✓` row); on a plan, jump to its agent in Sessions › Agents |
+| `e`               | Waves pane: edit the plan's PLAN.md in `$EDITOR` at its objective |
+| `←` / `Esc`       | Waves pane: back to the phase list (`q` still leaves the detail view) |
+| `Enter`           | Sessions › Agents: jump to the agent's plan in the Phases Waves pane (navigation only; nothing is sent to the agent) |
 
 `6` and `8` re-open the sub-tab you last used on the Sessions and Docs tabs.
 

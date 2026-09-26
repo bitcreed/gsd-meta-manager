@@ -146,9 +146,33 @@ keystrokes:
   dashboard); `q` — go straight back to the dashboard
 - `Tab` — switch the terminal to the project's running Claude / Codex session
   (it does not cycle tabs)
+- On the Phases tab, `→` or `Enter` focuses the **Waves pane** (see below);
+  `←` / `Esc` go back to the phase list
 - `/` — filter projects
 - `?` — show the help overlay
 - `q` — quit (on the dashboard)
+
+### Reading the Waves pane
+
+The Phases tab shows the selected phase's name, its stage ladder and a
+two-line stage summary, then the **Waves pane**: one row per plan, grouped by
+the `wave:` each PLAN.md declares. Every row shows a glyph and a state word —
+`✓ done`, `▶ running`, `◐ leftover` (finished in a worktree, not merged yet),
+`! stalled`, `· queued`, `○ planned` (a phase that is not the active one) —
+then the plan id, its PLAN.md title and `act/est` tokens. The state comes
+from the running-agents scan for the active phase, and from the phase's own
+SUMMARY files otherwise; nothing is read from disk while the screen draws.
+
+Finished waves fold into one row, and consecutive ones merge
+(`w1–w10 ✓ 28/28 done`). The current wave is marked `▸`, drawn bold and
+expanded along with the next one; later waves show as header rows. `Enter` on
+a header or merged row folds or unfolds it, and `↑ +N more` / `↓ +N more`
+say what is scrolled out of view. Four phase shapes have their own display:
+a phase not started yet (`not started`, every wave open), a completed phase
+(one merged row), plans with no `wave:` metadata (a flat
+`Plans (no wave metadata)` list) and no plans at all
+(`No plans yet — /gsd:plan-phase N`). Below 100 columns, focusing the pane
+widens it to the full width under a one-line breadcrumb.
 
 ## Common setup issues
 
