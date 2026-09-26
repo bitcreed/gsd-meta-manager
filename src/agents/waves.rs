@@ -506,3 +506,551 @@ impl AgentView {
         }
     }
 }
+
+// Pure tests only: every input is built by hand — no git, no file, no process.
+// This directory is not on the spawn allowlist, and that holds for test code too.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_reader::plan_waves::PlanWave;
+    use crate::text::Untrusted;
+    use ratatui::text::Line;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    const DOT: &str = "\u{b7}";
+
+    fn pr(id: &str) -> PlanRef {
+        PlanRef::from_id(id).unwrap_or_else(|| panic!("{id} is a valid plan id"))
+    }
+
+    fn row(path: &str, liveness: AgentLiveness, plan: Option<&str>) -> AgentRow {
+        AgentRow {
+            path: PathBuf::from(path),
+            liveness,
+            plan: plan.map(pr),
+            ..AgentRow::default()
+        }
+    }
+
+    fn agents(rows: Vec<AgentRow>) -> ProjectAgents {
+        ProjectAgents {
+            rows,
+            ..ProjectAgents::default()
+        }
+    }
+
+    fn wave(n: Option<u32>, plans: &[String]) -> PlanWave {
+        PlanWave {
+            wave: n,
+            plans: plans.to_vec(),
+        }
+    }
+
+    /// `13-{first:02}` ..= `13-{last:02}`.
+    fn ids(first: u32, last: u32) -> Vec<String> {
+        (first..=last).map(|n| format!("13-{n:02}")).collect()
+    }
+
+    fn strs(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A `ProjectState` whose only disk inference is `phase`'s.
+    fn state(
+        phase: &str,
+        plan_waves: Vec<PlanWave>,
+        summarized: &[String],
+        plan_count: u32,
+    ) -> ProjectState {
+        let di = DiskInference {
+            plan_waves,
+            summarized_plans: summarized.to_vec(),
+            plan_count,
+            summary_count: summarized.len() as u32,
+            ..DiskInference::default()
+        };
+        ProjectState {
+            phase_disk_statuses: HashMap::from([(phase.to_string(), di)]),
+            ..ProjectState::default()
+        }
+    }
+
+    /// Phase 13 as observed: 35 plans; wave 1's 8 all done in main; wave 2's
+    /// 14 plans (13-09..13-22); waves 3..11 holding the other 13 (13-23..13-27
+    /// in wave 3, one plan in each of waves 4..11).
+    fn phase_13_state() -> ProjectState {
+        let mut waves = vec![wave(Some(1), &ids(1, 8)), wave(Some(2), &ids(9, 22))];
+        waves.push(wave(Some(3), &ids(23, 27)));
+        for (w, plan) in (4..=11).zip(28..=35) {
+            waves.push(wave(Some(w), &ids(plan, plan)));
+        }
+        state("13", waves, &ids(1, 8), 35)
+    }
+
+    /// One Live executor on each of 13-09..13-21: thirteen of wave 2's fourteen.
+    fn thirteen_live_executors() -> Vec<AgentRow> {
+        (9..=21)
+            .map(|n| {
+                row(
+                    &format!("/wt/agent-{n:02}"),
+                    AgentLiveness::Live,
+                    Some(&format!("13-{n:02}")),
+                )
+            })
+            .collect()
+    }
+
+    fn width(form: &str) -> usize {
+        Line::from(form).width()
+    }
+
+    // --- attribution ------------------------------------------------------
+
+    #[test]
+    fn attribution_tiers_in_priority_order() {
+        let a = |d, b, c, l| attribute(d, b, c, l).map(|p| p.label());
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            a(Some("Execute plan 13-13 of phase 13"), None, None, None),
+            some("13-13")
+        );
+        assert_eq!(
+            a(Some("Close out plan 04-03"), None, None, None),
+            some("04-03")
+        );
+        assert_eq!(
+            a(Some("Execute plans 05-02 and 05-03"), None, None, None),
+            some("05-02")
+        );
+        assert_eq!(
+            a(Some("Execute 260923-e9d: quick"), Some("13-02"), None, None),
+            some("13-02"),
+            "a quick-task description falls through to the branch"
+        );
+        assert_eq!(a(None, None, Some("13-03"), None), some("13-03"));
+        assert_eq!(a(None, None, None, Some("13-04")), some("13-04"));
+        assert_eq!(
+            a(
+                Some("Execute plan 13-03 of phase 13"),
+                Some("13-02"),
+                Some("13-05"),
+                Some("13-06")
+            ),
+            some("13-03"),
+            "the description outranks the branch"
+        );
+        assert_eq!(
+            a(None, Some("13-02"), Some("13-05"), Some("13-06")),
+            some("13-02"),
+            "the branch outranks the commit scope"
+        );
+        assert_eq!(
+            a(None, None, Some("13-05"), Some("13-06")),
+            some("13-05"),
+            "the commit scope outranks the ledger"
+        );
+        assert_eq!(a(None, None, None, None), None);
+    }
+
+    #[test]
+    fn a_bare_plan_number_joins_its_phase() {
+        let a = |d: &str| attribute(Some(d), None, None, None).map(|p| p.label());
+        assert_eq!(a("Execute plan 22 of phase 21"), Some("21-22".to_string()));
+        assert_eq!(
+            a("Execute plan 7 of phase 07.1."),
+            Some("07.1-07".to_string()),
+            "trailing punctuation stripped, decimal phase kept"
+        );
+        assert_eq!(
+            a("execute PLAN 3 of Phase 5, then stop"),
+            Some("05-03".to_string())
+        );
+    }
+
+    #[test]
+    fn hostile_or_malformed_ids_never_attribute() {
+        assert_eq!(
+            attribute(Some("plan ../../x of phase 13"), None, None, None),
+            None
+        );
+        assert_eq!(
+            attribute(Some("plan ../../x of phase 13"), Some("13-07"), None, None)
+                .map(|p| p.label()),
+            Some("13-07".to_string()),
+            "a hostile capture falls through to the next tier"
+        );
+        assert_eq!(
+            attribute(Some("plan 13-02x of phase 13"), None, None, None),
+            None
+        );
+        for bad in [
+            "../13-02",
+            "13-02/../../etc",
+            "13-02; rm -rf /",
+            "13-02-slug",
+            "13",
+            "7",
+            "-13-02",
+            "13--02",
+            "13.-02",
+            "99999999999-1",
+            "13-99999999999",
+            "",
+        ] {
+            assert_eq!(PlanRef::from_id(bad), None, "{bad:?} must not parse");
+            assert_eq!(
+                attribute(None, Some(bad), Some(bad), Some(bad)),
+                None,
+                "{bad:?} must not attribute"
+            );
+        }
+    }
+
+    #[test]
+    fn commit_scopes_pick_the_first_plan_scope() {
+        assert_eq!(
+            commit_scope_plan(&strs(&["docs(13-17): summary", "feat(13-17): x"])),
+            Some("13-17".to_string())
+        );
+        assert_eq!(
+            commit_scope_plan(&strs(&["fix: typo", "chore(release): v1.8.0"])),
+            None
+        );
+        assert_eq!(
+            commit_scope_plan(&strs(&["fix: typo", "test(07.1-03): red"])),
+            Some("07.1-03".to_string()),
+            "the first subject that names a plan, not the first subject"
+        );
+        assert_eq!(commit_scope_plan(&[]), None);
+    }
+
+    #[test]
+    fn plan_ids_join_pad_insensitively() {
+        assert_eq!(PlanRef::from_id("13-1"), PlanRef::from_id("13-01"));
+        assert_eq!(PlanRef::from_id("7.1-3"), PlanRef::from_id("07.1-03"));
+        assert_eq!(pr("13-1").label(), "13-01");
+
+        let st = state(
+            "13",
+            vec![wave(Some(1), &strs(&["13-01-slug", "13-02-slug"]))],
+            &[],
+            2,
+        );
+        let view = derive(
+            &agents(vec![
+                row("/wt/a", AgentLiveness::Live, Some("13-02")),
+                row("/wt/b", AgentLiveness::Live, Some("13-2")),
+            ]),
+            &st,
+        );
+        assert_eq!(
+            view.running, 1,
+            "two agents on one plan make one running plan"
+        );
+        assert_eq!(view.queued, 1);
+    }
+
+    // --- the three observed run shapes -------------------------------------
+
+    #[test]
+    fn a_single_executor_in_a_single_plan_wave() {
+        let st = state(
+            "05",
+            vec![
+                wave(Some(1), &strs(&["05-01"])),
+                wave(Some(2), &strs(&["05-02"])),
+            ],
+            &strs(&["05-01"]),
+            2,
+        );
+        let view = derive(
+            &agents(vec![row("/wt/a", AgentLiveness::Live, Some("05-02"))]),
+            &st,
+        );
+        assert_eq!(view.active_phase, PhaseNum::parse("5"));
+        assert_eq!(view.current_wave, Some(2));
+        assert_eq!(view.max_wave, Some(2));
+        assert_eq!(
+            view.summary_forms()[0],
+            format!("P05 {DOT} w2/2 {DOT} 1 run {DOT} 1/2 done")
+        );
+        assert_eq!(view.waves.len(), 2);
+        assert!(!view.waves[0].current && view.waves[1].current);
+    }
+
+    #[test]
+    fn three_code_fixers_without_plans_use_the_generic_form() {
+        let fixer = |path: &str| AgentRow {
+            agent_type: Some(Untrusted::from_untrusted_source("gsd-code-fixer".into())),
+            ..row(path, AgentLiveness::Live, None)
+        };
+        let view = derive(
+            &agents(vec![fixer("/wt/a"), fixer("/wt/b"), fixer("/wt/c")]),
+            &ProjectState::default(),
+        );
+        assert_eq!(view.summary_forms(), vec!["3 agents".to_string()]);
+
+        let one = derive(&agents(vec![fixer("/wt/a")]), &ProjectState::default());
+        assert_eq!(one.summary_forms(), vec!["1 agent".to_string()]);
+    }
+
+    #[test]
+    fn thirteen_executors_in_wave_two_of_eleven() {
+        let view = derive(&agents(thirteen_live_executors()), &phase_13_state());
+        assert_eq!(view.active_phase, PhaseNum::parse("13"));
+        assert_eq!(view.current_wave, Some(2));
+        assert_eq!(view.max_wave, Some(11));
+        assert_eq!(view.plan_total, 35);
+        assert_eq!(
+            (
+                view.done,
+                view.finished,
+                view.running,
+                view.stalled,
+                view.queued
+            ),
+            (8, 0, 13, 0, 14)
+        );
+        assert_eq!(view.waves.len(), 11);
+        assert_eq!(
+            view.waves[1],
+            WaveRow {
+                wave: Some(2),
+                running: 13,
+                queued: 1,
+                current: true,
+                ..WaveRow::default()
+            }
+        );
+        assert_eq!(
+            view.summary_forms(),
+            vec![
+                format!("P13 {DOT} w2/11 {DOT} 13 run {DOT} 8/35 done"),
+                format!("w2/11 {DOT} 13 run {DOT} 8/35 done"),
+                format!("w2/11 {DOT} 13 run {DOT} 8/35"),
+                format!("w2/11 {DOT} 13 run"),
+                "w2/11 13run".to_string(),
+                "13run".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn finished_agents_count_as_done_plus_unmerged() {
+        let mut rows = thirteen_live_executors();
+        rows[0].liveness = AgentLiveness::Finished;
+        rows[1].liveness = AgentLiveness::Finished;
+        let view = derive(&agents(rows), &phase_13_state());
+        assert_eq!(view.finished, 2);
+        assert_eq!(view.running, 11);
+        assert_eq!(view.done, 8, "finished is never folded into done");
+        assert_eq!(
+            view.summary_forms()[0],
+            format!("P13 {DOT} w2/11 {DOT} 11 run {DOT} 10/35 done")
+        );
+        assert_eq!(view.waves[1].finished, 2);
+        assert_eq!(view.current_wave, Some(2));
+
+        // A SUMMARY in the worktree finishes a plan whose agent still reads Live.
+        let mut rows = thirteen_live_executors();
+        rows[2].summary_in_worktree = true;
+        let view = derive(&agents(rows), &phase_13_state());
+        assert_eq!((view.finished, view.running), (1, 12));
+    }
+
+    #[test]
+    fn stalled_and_unknown_only_states() {
+        let st = state(
+            "13",
+            vec![wave(Some(1), &strs(&["13-01", "13-02", "13-03"]))],
+            &[],
+            3,
+        );
+        let view = derive(
+            &agents(vec![
+                row("/wt/a", AgentLiveness::Live, Some("13-01")),
+                row("/wt/b", AgentLiveness::Stalled, Some("13-02")),
+                row("/wt/c", AgentLiveness::Stalled, Some("13-03")),
+                row("/wt/d", AgentLiveness::Unknown, Some("13-03")),
+            ]),
+            &st,
+        );
+        assert_eq!(view.running, 1);
+        assert_eq!(view.stalled, 1, "13-02's only agent is stalled");
+        assert_eq!(
+            view.queued, 1,
+            "13-03 has an Unknown agent beside the stalled one: not every agent is stalled"
+        );
+
+        let all_stalled = derive(
+            &agents(vec![
+                row("/wt/b", AgentLiveness::Stalled, Some("13-02")),
+                row("/wt/c", AgentLiveness::Stalled, Some("13-03")),
+            ]),
+            &st,
+        );
+        assert_eq!(all_stalled.summary_forms(), vec!["2 stalled".to_string()]);
+
+        // An Unknown row names no active phase, so STATE.md's phase is used.
+        let mut st13 = st.clone();
+        st13.state_md_phase_number = PhaseNum::parse("13");
+        let unknown_only = derive(
+            &agents(vec![row("/wt/d", AgentLiveness::Unknown, Some("13-03"))]),
+            &st13,
+        );
+        assert_eq!(unknown_only.active_phase, PhaseNum::parse("13"));
+        assert!(!unknown_only.is_active());
+        assert_eq!(unknown_only.summary_forms(), Vec::<String>::new());
+        assert_eq!(unknown_only.queued, 3, "an Unknown agent runs nothing");
+
+        let nothing = derive(&agents(vec![]), &st);
+        assert_eq!(nothing.summary_forms(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_phase_without_wave_metadata_has_no_wave_segment() {
+        let st = state("13", vec![], &strs(&["13-01-slug"]), 3);
+        let view = derive(
+            &agents(vec![row("/wt/a", AgentLiveness::Live, Some("13-02"))]),
+            &st,
+        );
+        assert!(view.waves.is_empty());
+        assert_eq!((view.current_wave, view.max_wave), (None, None));
+        assert_eq!((view.done, view.running), (1, 1));
+        let forms = view.summary_forms();
+        assert_eq!(forms[0], format!("P13 {DOT} 1 run {DOT} 1/3 done"));
+        assert!(
+            forms.iter().all(|f| !f.contains('w')),
+            "no w segment: {forms:?}"
+        );
+    }
+
+    #[test]
+    fn the_unknown_wave_bucket_is_never_current_nor_the_denominator() {
+        let st = state(
+            "13",
+            vec![
+                wave(Some(1), &strs(&["13-01"])),
+                wave(Some(2), &strs(&["13-02"])),
+                wave(None, &strs(&["13-03", "13-04"])),
+            ],
+            &strs(&["13-01"]),
+            4,
+        );
+        let view = derive(
+            &agents(vec![row("/wt/a", AgentLiveness::Live, Some("13-02"))]),
+            &st,
+        );
+        let last = view.waves.last().expect("the w? bucket is shown");
+        assert_eq!(last.wave, None);
+        assert_eq!(last.label(), "w?");
+        assert!(!last.current);
+        assert_eq!(last.queued, 2);
+        assert_eq!((view.current_wave, view.max_wave), (Some(2), Some(2)));
+
+        // Only the w? bucket holds unfinished plans: there is no current wave.
+        let st = state(
+            "13",
+            vec![
+                wave(Some(1), &strs(&["13-01"])),
+                wave(None, &strs(&["13-02"])),
+            ],
+            &strs(&["13-01"]),
+            2,
+        );
+        let view = derive(
+            &agents(vec![row("/wt/a", AgentLiveness::Live, Some("13-02"))]),
+            &st,
+        );
+        assert_eq!((view.current_wave, view.max_wave), (None, Some(1)));
+        assert!(view.waves.iter().all(|w| !w.current));
+        assert_eq!(
+            view.summary_forms()[0],
+            format!("P13 {DOT} 1 run {DOT} 1/2 done")
+        );
+    }
+
+    #[test]
+    fn every_summary_form_is_narrower_than_the_one_before() {
+        let views = [
+            derive(&agents(thirteen_live_executors()), &phase_13_state()),
+            derive(
+                &agents(vec![row("/wt/a", AgentLiveness::Live, Some("13-02"))]),
+                &state("13", vec![], &strs(&["13-01"]), 3),
+            ),
+            AgentView {
+                active_phase: PhaseNum::parse("999.12"),
+                current_wave: Some(99),
+                max_wave: Some(99),
+                plan_total: 999,
+                done: 998,
+                running: 99,
+                agents: vec![row("/wt/a", AgentLiveness::Live, Some("999.12-01"))],
+                ..AgentView::default()
+            },
+        ];
+        for view in &views {
+            let forms = view.summary_forms();
+            assert!(forms.len() >= 4, "{forms:?}");
+            for pair in forms.windows(2) {
+                assert!(
+                    width(&pair[1]) < width(&pair[0]),
+                    "{:?} is not narrower than {:?}",
+                    pair[1],
+                    pair[0]
+                );
+            }
+        }
+
+        // The common-case form fits the 13-cell Status column at its extremes.
+        let widest = AgentView {
+            active_phase: PhaseNum::parse("13"),
+            current_wave: Some(99),
+            max_wave: Some(99),
+            plan_total: 99,
+            running: 99,
+            agents: vec![row("/wt/a", AgentLiveness::Live, Some("13-01"))],
+            ..AgentView::default()
+        };
+        let forms = widest.summary_forms();
+        assert_eq!(forms[4], "w99/99 99run");
+        assert!(width(&forms[4]) <= 13);
+        assert_eq!(width(DOT), 1, "U+00B7 is one cell");
+    }
+
+    #[test]
+    fn display_order_is_total_and_stable() {
+        let rows = vec![
+            row("/wt/z", AgentLiveness::Ended, Some("13-01")),
+            row("/wt/y", AgentLiveness::Unknown, None),
+            row("/wt/x", AgentLiveness::Stalled, Some("13-02")),
+            row("/wt/w", AgentLiveness::Finished, Some("13-03")),
+            row("/wt/v", AgentLiveness::Idle, Some("13-04")),
+            row("/wt/b", AgentLiveness::Live, None),
+            row("/wt/c", AgentLiveness::Live, Some("13-06")),
+            row("/wt/a", AgentLiveness::Live, Some("13-06")),
+            row("/wt/d", AgentLiveness::Live, Some("13-05")),
+        ];
+        let st = state("13", vec![wave(Some(1), &ids(1, 6))], &[], 6);
+        let view = derive(&agents(rows.clone()), &st);
+        let order: Vec<&str> = view
+            .agents
+            .iter()
+            .map(|r| r.path.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["/wt/d", "/wt/a", "/wt/c", "/wt/b", "/wt/v", "/wt/w", "/wt/x", "/wt/y", "/wt/z"]
+        );
+
+        let mut reversed = rows;
+        reversed.reverse();
+        assert_eq!(
+            derive(&agents(reversed), &st),
+            view,
+            "input order never changes the view"
+        );
+        assert_eq!(derive(&agents(view.agents.clone()), &st), view);
+    }
+}

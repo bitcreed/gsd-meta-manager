@@ -611,6 +611,11 @@ pub(crate) fn dirty_count(worktree: &Path) -> Option<u32> {
     u32::try_from(lines).ok()
 }
 
+/// The subjects of at most `max` commits in `range`, newest first.
+pub(crate) fn log_subjects(_dir: &Path, _range: &str, _max: u32) -> Vec<String> {
+    Vec::new()
+}
+
 /// One row of a THIRD-PARTY repository's `git log`, in a type that cannot reach
 /// a terminal cell unescaped.
 ///
@@ -1569,5 +1574,53 @@ mod tests {
 
         let not_git = tempfile::TempDir::new().unwrap();
         assert_eq!(dirty_count(not_git.path()), None, "not a repository");
+    }
+
+    #[test]
+    fn log_subjects_refuses_a_range_that_is_not_head_or_a_hex_base() {
+        let Some(repo) = repo_with_commit() else {
+            return;
+        };
+        // Each is a range git itself would accept, which is exactly why it must
+        // not reach argv: a ref name, an option, a relative ref, a short sha.
+        for range in ["main", "--all", "HEAD~3..HEAD", "abc..HEAD", "--output=x..HEAD"] {
+            assert_eq!(
+                log_subjects(repo.path(), range, 50),
+                Vec::<String>::new(),
+                "{range} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn log_subjects_reads_newest_first() {
+        let Some(repo) = repo_with_commit() else {
+            return;
+        };
+        let first = head_sha(repo.path()).expect("a repo with one commit has a HEAD");
+        for (file, subject) in [("a.txt", "feat(13-17): add a"), ("b.txt", "docs(13-17): summary")] {
+            std::fs::write(repo.path().join(file), subject).unwrap();
+            assert!(git_ok(repo.path(), &["add", file]));
+            assert!(git_ok(repo.path(), &["commit", "-m", subject, "--quiet"]));
+        }
+
+        assert_eq!(
+            log_subjects(repo.path(), &format!("{first}..HEAD"), 50),
+            vec![
+                "docs(13-17): summary".to_string(),
+                "feat(13-17): add a".to_string()
+            ],
+            "the two commits beyond the base, newest first"
+        );
+        assert_eq!(
+            log_subjects(repo.path(), "HEAD", 1),
+            vec!["docs(13-17): summary".to_string()],
+            "-n bounds the count"
+        );
+        assert_eq!(
+            log_subjects(repo.path(), "HEAD", 50).len(),
+            3,
+            "HEAD reaches the initial commit too"
+        );
     }
 }

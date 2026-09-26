@@ -83,6 +83,18 @@ fn add_agent_worktree(root: &Path, name: &str) -> PathBuf {
     root.join(rel)
 }
 
+/// Write `rel` under `dir` and commit it with `subject`.
+fn commit_in(dir: &Path, rel: &str, body: &str, subject: &str) {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().expect("rel has a parent")).expect("fixture dir");
+    std::fs::write(&path, body).expect("fixture write");
+    assert!(git(dir, &["add", rel]), "git add {rel}");
+    assert!(
+        git(dir, &["commit", "-m", subject, "--quiet"]),
+        "git commit {subject}"
+    );
+}
+
 /// A test-only adapter reporting the same scripted facts for every worktree
 /// the agent predicate matches.
 struct Scripted {
@@ -178,5 +190,49 @@ fn a_branch_attributed_executor_drives_the_wave_summary_end_to_end() {
     assert_eq!(
         view.summary_forms().first().map(String::as_str),
         Some("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/3 done")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Attribution tiers against real worktrees
+// ---------------------------------------------------------------------------
+
+#[test]
+fn commit_scopes_attribute_an_executor_whose_description_and_branch_do_not() {
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    // A Claude-style id carries no plan, and the adapter reports no description.
+    let wt = add_agent_worktree(&root, "agent-a0123456789abcdef");
+    commit_in(&wt, "src/thing.txt", "thing\n", "feat(13-03): add thing");
+
+    let agents = scan(&root, Scripted::live());
+    assert_eq!(agents.rows.len(), 1, "{:?}", agents.rows);
+    assert_eq!(agents.rows[0].branch_plan, None);
+    assert_eq!(
+        agents.rows[0].plan.as_ref().map(|p| p.label()),
+        Some("13-03".to_string()),
+        "the worktree's own commit scope names the plan"
+    );
+}
+
+#[test]
+fn a_description_outranks_the_branch() {
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    add_agent_worktree(&root, P13_02);
+    let agents = scan(
+        &root,
+        Scripted {
+            description: Some("Execute plan 13-03 of phase 13"),
+            ..Scripted::live()
+        },
+    );
+    assert_eq!(agents.rows.len(), 1, "{:?}", agents.rows);
+    assert_eq!(
+        agents.rows[0].plan.as_ref().map(|p| p.label()),
+        Some("13-03".to_string()),
+        "tier 1 (description) wins over tier 3 (branch p13-02)"
     );
 }
