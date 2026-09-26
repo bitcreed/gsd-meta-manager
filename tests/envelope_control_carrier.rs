@@ -975,7 +975,8 @@ fn the_program_this_corpus_draws_a_carrier_row_under_appears_nowhere_in_the_guar
     );
 
     // THEN the absence.
-    for name in ["shred"] {
+    {
+        let name = "shred";
         assert!(
             !POLICY_SOURCE.contains(name) && !HOOKS_SOURCE.contains(name),
             "\n\n**`{name}` MUST APPEAR NOWHERE IN THE GUARD'S SOURCE.**\n\n\

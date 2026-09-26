@@ -1708,7 +1708,7 @@ fn bash_really_reaches_the_file_for_each_spelling_and_where_it_does_not_that_is_
 
     // -- OPERAND position: glob and brace, against a temporary root.
     for (name, command, gone) in [
-        ("glob-dir", "rm -rf {}/alph?", format!("{ALIAS}")),
+        ("glob-dir", "rm -rf {}/alph?", ALIAS.to_string()),
         (
             "glob-file",
             "rm -f {}/alpha/pr-ledger.ndjso?",

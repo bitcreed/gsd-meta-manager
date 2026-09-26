@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn test_expand_tilde_home() {
         let result = expand_tilde("~");
-        assert!(result != PathBuf::from("~") || dirs::home_dir().is_none());
+        assert!(result != Path::new("~") || dirs::home_dir().is_none());
     }
 
     #[test]

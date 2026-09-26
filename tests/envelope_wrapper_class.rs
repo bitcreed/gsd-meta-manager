@@ -6124,7 +6124,7 @@ fn quoted_config_assignments(command: &str) -> Vec<ConfigAssignment> {
     let words = shell_words(command);
     let mut out = Vec::new();
     let mut index = 1;
-    let mut push = |out: &mut Vec<ConfigAssignment>, carrier: &str, text: &str| {
+    let push = |out: &mut Vec<ConfigAssignment>, carrier: &str, text: &str| {
         let (key, value) = text.split_once('=').unwrap_or((text, ""));
         out.push(ConfigAssignment {
             carrier: carrier.to_string(),
@@ -6210,7 +6210,7 @@ fn config_value_is_a_shell_alias_body(value: &str) -> bool {
 /// `-c notalias.q=…` red; both are pinned PERMITTED before and after in
 /// `tests/envelope_reparsed_value.rs` as this round's `--signed no`.
 fn config_key_names_the_alias_section(key: &str) -> bool {
-    config_section(key).to_ascii_lowercase() == "alias"
+    config_section(key).eq_ignore_ascii_case("alias")
 }
 
 /// **Class 6** — a carrier delivered inside a config VALUE THE GUARD CONFINES.
@@ -10792,7 +10792,7 @@ fn the_control_carrier_axis_can_draw_a_carrier_path_inside_a_word_and_not_only_a
                                 && character == '/'
                                 && (word.text[index..].starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
                                     || &word.text[index..] == REPRESENTATIVE_BINARY_PATH)
-                                && word.text[..index].chars().next_back() != Some('=')
+                                && !word.text[..index].ends_with('=')
                         });
                 if attached_by_something_else {
                     non_equals_attached.push(word.text.clone());
@@ -11229,9 +11229,7 @@ fn the_two_git_dir_spellings_are_pinned_by_name_on_opposite_sides_of_the_boundar
          rule, which is D-08's defect one level over."
     );
     assert!(
-        CONTROL_CARRIER_ORDINARY_OPERANDS
-            .iter()
-            .any(|entry| *entry == "tar --create --file /tmp/t -C/tmp/g"),
+        CONTROL_CARRIER_ORDINARY_OPERANDS.contains(&"tar --create --file /tmp/t -C/tmp/g"),
         "**AND ITS OUTSIDE-THE-PATH-SET TWIN MUST BE IN THE ORDINARY ALPHABET.** A fail-closed \
          entry whose twin is not pinned permitted certifies nothing about WHY it is refused."
     );

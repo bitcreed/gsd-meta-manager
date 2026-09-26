@@ -153,9 +153,9 @@ mod tests {
             .map(|e| e.name.as_raw_for_logic_only())
             .collect();
         assert_eq!(names, vec!["alpha-dir", "zeta-dir", "apple.md", "beta.md"]);
-        assert_eq!(entries[0].is_dir, true);
-        assert_eq!(entries[1].is_dir, true);
-        assert_eq!(entries[2].is_dir, false);
+        assert!(entries[0].is_dir);
+        assert!(entries[1].is_dir);
+        assert!(!entries[2].is_dir);
     }
 
     #[test]

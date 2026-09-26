@@ -2203,9 +2203,8 @@ fn git_config_nosystem_defeats_a_key_the_envelope_sets_and_the_harm_is_inert() {
         "the control: with `GIT_CONFIG_SYSTEM` pointing at a file that names a helper, git \
          reads it"
     );
-    assert_eq!(
-        helper(&[("GIT_CONFIG_NOSYSTEM", "1")]).0,
-        false,
+    assert!(
+        !helper(&[("GIT_CONFIG_NOSYSTEM", "1")]).0,
         "**THE DEFEAT.** `GIT_CONFIG_NOSYSTEM=1` makes git read NOTHING from the system file \
          — a key the envelope does not set that suppresses one it does.\n\n\
          **This is NOT a bypass**, and this round does not call it one: \
