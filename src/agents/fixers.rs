@@ -18,7 +18,9 @@
 //! * commit subjects, through [`git_ops::log_subjects`] only — whose range is
 //!   `HEAD` or `<hex>..HEAD` and is refused otherwise (D-B02).
 //!
-//! It runs only while an active fixer exists, and it writes nothing (D-B01).
+//! It runs only while a running (Live or Idle) fixer exists — a run whose
+//! fixers have all finished or aged out is over (CR-01) — and it writes
+//! nothing (D-B01).
 //! Agent-authored text (a description, a commit subject) only ever selects a
 //! phase number or a finding id by regex; it never reaches argv or a path
 //! other than through `find_phase_dir` over main's own listing.
@@ -55,7 +57,10 @@ pub const REVIEW_READ_CAP: u64 = 256 * 1024;
 /// or its `*-REVIEW-FIX.md` already exists (the run is over).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FixerEstimate {
-    /// Active (`Live`, `Idle` or `Finished`) unattributed fixer agents.
+    /// Active (`Live`, `Idle` or `Finished`) unattributed fixer agents: the
+    /// run's size. An estimate exists only while at least one of them is
+    /// running (`Live` or `Idle`); `Finished` fixers count inside such a run
+    /// but never start one (CR-01).
     pub fixers: u32,
     /// The phase whose REVIEW.md the fixers are working through.
     pub phase: Option<PhaseNum>,
@@ -179,12 +184,16 @@ fn review_total(path: &Path) -> Option<u32> {
 }
 
 /// The fix-run estimate for one project's scanned rows, or `None` when no
-/// active unattributed `gsd-code-fixer` row exists — in which case no git
-/// call and no file read is made at all.
+/// running (`Live` or `Idle`) unattributed `gsd-code-fixer` row exists — in
+/// which case no git call and no file read is made at all.
 ///
 /// 1. The active fixers are rows whose raw agent type is `gsd-code-fixer`,
 ///    whose `plan` is `None`, and whose liveness is `Live`, `Idle` or
-///    `Finished`.
+///    `Finished`. Unless at least one of them is running
+///    ([`AgentLiveness::is_running`]), there is no estimate: a finished fixer
+///    counts inside a running run — its size and its unmerged commits — but
+///    never switches the estimate on by itself (CR-01, the rule
+///    [`super::waves::AgentView::is_active`] follows).
 /// 2. Each one's own subjects are `base_sha..HEAD` (at most 200), read only
 ///    when `base_sha` is known and the worktree is not prunable.
 /// 3. The phase is the one most fixers yield ([`fixer_phase`]), ties to the
@@ -208,7 +217,9 @@ pub fn estimate(
     rows: &[AgentRow],
 ) -> Option<FixerEstimate> {
     let fixers: Vec<&AgentRow> = rows.iter().filter(|r| is_active_fixer(r)).collect();
-    if fixers.is_empty() {
+    // CR-01: a finished fixer counts inside a running run, but never switches
+    // the estimate on — an orphaned fix run is over.
+    if !fixers.iter().any(|r| r.liveness.is_running()) {
         return None;
     }
     let mut estimate = FixerEstimate {

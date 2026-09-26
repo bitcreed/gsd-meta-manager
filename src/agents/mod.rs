@@ -229,7 +229,7 @@ pub struct ProjectAgents {
     /// When the scan ran.
     pub scanned_at: Option<SystemTime>,
     /// The code-review fix-run estimate ([`fixers::estimate`]); `None` unless
-    /// an active unattributed `gsd-code-fixer` row exists.
+    /// a running (`Live` or `Idle`) unattributed `gsd-code-fixer` row exists.
     pub fixer_estimate: Option<fixers::FixerEstimate>,
 }
 
