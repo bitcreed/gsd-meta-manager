@@ -141,8 +141,9 @@ The binary is at `target/release/gsd-meta-manager`.
    gsd-meta-manager
    ```
 
-3. Register a project by pressing `a` and entering the path to any directory
-   that contains a `.planning/` folder, or via the CLI:
+3. Register a project in the TUI (press `a`, type an alias for the project and
+   press `Enter`, then enter the path to any directory that contains a
+   `.planning/` folder), or via the CLI:
 
    ```bash
    gsd-meta-manager add /path/to/your/gsd-project
@@ -182,15 +183,24 @@ Options:
 
 | Key              | Action                  |
 |------------------|-------------------------|
-| `j` / `k`        | Navigate up/down        |
+| `j` / `↓`        | Move the selection down |
+| `k` / `↑`        | Move the selection up   |
 | `Enter`          | Open project detail     |
-| `/`              | Search / filter         |
-| `a`              | Add existing project    |
-| `n`              | Create new project      |
-| `d`              | Delete project          |
-| `?`              | Show help               |
+| `b`              | Open project detail on the Backlog tab |
+| `/`              | Filter projects. Type to filter; `Enter` keeps the filter, `Esc` clears it. The help overlay (`?`) lists the filter syntax |
+| `s`              | Toggle sort: alphabetical / attention first |
+| `a`              | Add an existing project: type an alias, `Enter`, then its path, `Enter`; `Esc` cancels |
+| `c`              | Create a new project: enter a name, then a path (`Tab` completes it), then confirm with `y` / `Enter` |
+| `d`              | Remove the selected project from the registry after a `y` / `n` confirm; project files are not deleted |
+| `Tab`            | Switch the terminal to the selected project's Claude / Codex session |
+| `?`              | Show / hide the help overlay (`j` / `k` and `PgUp` / `PgDn` scroll it; `Esc` also closes it) |
 | `M`              | Toggle mouse capture    |
 | `q`              | Quit (dashboard); back to the dashboard (detail view) |
+| `Ctrl+C`         | Force quit from any screen |
+
+With `GSDMM_EXPERIMENTAL_FEATURES` set, the dashboard's `r` / `x` / `o` start a
+driver run, stop it and toggle driver opt-in, and `Shift+D` in the detail view
+opens the experimental Driver tab; see [Configuration](docs/CONFIGURATION.md).
 
 The detail view has two focus levels: the **tab bar** at the top and the
 **content** of the active tab below it. It opens on the content of the tab you
