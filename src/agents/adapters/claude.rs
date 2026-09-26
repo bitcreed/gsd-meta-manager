@@ -42,8 +42,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::{AdapterReport, AgentAdapter, CoreSnapshot, Enrichment};
+use super::{AdapterReport, AgentAdapter, ChildAgent, CoreSnapshot, Enrichment};
 use crate::agents::worktrees::{valid_agent_id, CoreWorktree};
+use crate::agents::LIVE_SECS;
 use crate::text::Untrusted;
 
 /// The most bytes of one `*.meta.json` that are read. Measured metas are a few
@@ -403,6 +404,164 @@ fn enrich_by_id(
     matched
 }
 
+/// Seconds from `then` to `now`; a `then` in the future is age 0.
+fn age_secs(then: SystemTime, now: SystemTime) -> u64 {
+    now.duration_since(then).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// The index of the snapshot worktree at `path`: a raw match across every
+/// worktree first, then a canonical one (RESEARCH Pitfall 7).
+fn worktree_at(snap: &CoreSnapshot<'_>, path: &Path) -> Option<usize> {
+    snap.worktrees
+        .iter()
+        .position(|wt| wt.path == path)
+        .or_else(|| {
+            snap.worktrees
+                .iter()
+                .position(|wt| same_path(path, &wt.path))
+        })
+}
+
+/// A meta as a sub-agent.
+fn child_agent(meta: &Meta, last_activity: SystemTime) -> ChildAgent {
+    ChildAgent {
+        agent_type: meta
+            .agent_type
+            .clone()
+            .map(Untrusted::from_untrusted_source),
+        description: meta
+            .description
+            .clone()
+            .map(Untrusted::from_untrusted_source),
+        last_activity: Some(last_activity),
+        ended: meta.ended(),
+        ..ChildAgent::default()
+    }
+}
+
+/// The per-worktree results of both passes. `primary[i]` records that worktree
+/// `i` carries its OWN agent's facts, as opposed to an enrichment created only
+/// to hold children.
+struct Placement<'s, 'a> {
+    snap: &'s CoreSnapshot<'a>,
+    per_worktree: Vec<Option<Enrichment>>,
+    primary: Vec<bool>,
+}
+
+impl Placement<'_, '_> {
+    /// Attach `child` under worktree `index`, creating an enrichment that
+    /// carries only the child when the worktree has none.
+    fn attach_child(&mut self, index: usize, child: ChildAgent) {
+        self.per_worktree[index]
+            .get_or_insert_with(Enrichment::default)
+            .children
+            .push(child);
+    }
+
+    /// Make `meta` worktree `index`'s own agent, keeping any children already
+    /// attached there.
+    fn set_primary(&mut self, index: usize, meta: &Meta, last_activity: SystemTime) {
+        let children = self.per_worktree[index]
+            .take()
+            .map(|facts| facts.children)
+            .unwrap_or_default();
+        let mut facts = worktree_enrichment(meta, Some(last_activity), &self.snap.worktrees[index]);
+        facts.children = children;
+        self.per_worktree[index] = Some(facts);
+        self.primary[index] = true;
+    }
+
+    /// Place one live meta the id pass did not match; `Some(child)` when it
+    /// joins no worktree at all.
+    ///
+    /// In order: its `worktreePath` names a worktree with no agent of its own →
+    /// it becomes that worktree's agent (a worktree whose path carries no id);
+    /// names a worktree that already has one → a child there [inferred];
+    /// otherwise its `inheritedWorktreePath` names a worktree, or its
+    /// `parentAgentId` equals a worktree's agent id → a child there (D-C06).
+    fn place(&mut self, meta: &Meta, last_activity: SystemTime) -> Option<ChildAgent> {
+        if let Some(index) = meta
+            .worktree_path
+            .as_deref()
+            .and_then(|path| worktree_at(self.snap, path))
+        {
+            if self.primary[index] {
+                self.attach_child(index, child_agent(meta, last_activity));
+            } else {
+                self.set_primary(index, meta, last_activity);
+            }
+            return None;
+        }
+        let parent = meta
+            .inherited_worktree_path
+            .as_deref()
+            .and_then(|path| worktree_at(self.snap, path))
+            .or_else(|| {
+                let parent_id = meta.parent_agent_id.as_deref()?;
+                self.snap
+                    .worktrees
+                    .iter()
+                    .position(|wt| wt.agent_id.as_deref() == Some(parent_id))
+            });
+        let child = child_agent(meta, last_activity);
+        match parent {
+            Some(index) => {
+                self.attach_child(index, child);
+                None
+            }
+            None => Some(child),
+        }
+    }
+}
+
+/// Pass two: live subagents the id pass did not match — worktrees whose path
+/// carries no agent id, nested agents, and agents with no worktree at all.
+///
+/// Per session, `subagents/` is listed and every `agent-<id>.jsonl` whose id
+/// passes [`valid_agent_id`] and was not matched is statted. Only a transcript
+/// at most [`LIVE_SECS`] old (a future mtime is age 0) gets its meta read, so
+/// the metas of the thousands of finished agents in a long history are never
+/// opened. Each id is handled once, in sorted session-then-id order. Returns
+/// the live metas that joined no worktree.
+fn place_live_subagents(
+    placement: &mut Placement<'_, '_>,
+    sessions: &[PathBuf],
+    matched: &HashSet<String>,
+) -> Vec<ChildAgent> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unjoined = Vec::new();
+    for session in sessions {
+        let subagents = session.join("subagents");
+        let mut ids: Vec<String> = entry_names(&subagents)
+            .into_iter()
+            .filter_map(|name| {
+                let id = name.strip_prefix("agent-")?.strip_suffix(".jsonl")?;
+                (valid_agent_id(id) && !matched.contains(id)).then(|| id.to_string())
+            })
+            .collect();
+        ids.sort();
+        for id in ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let Some(last_activity) = mtime(&subagents.join(format!("agent-{id}.jsonl"))) else {
+                continue;
+            };
+            if age_secs(last_activity, placement.snap.now) > LIVE_SECS {
+                continue;
+            }
+            let Some(meta) = read_meta_capped(&subagents.join(format!("agent-{id}{META_SUFFIX}")))
+            else {
+                continue;
+            };
+            if let Some(child) = placement.place(&meta, last_activity) {
+                unjoined.push(child);
+            }
+        }
+    }
+    unjoined
+}
+
 impl AgentAdapter for ClaudeCodeAdapter {
     fn name(&self) -> &'static str {
         "claude-code"
@@ -418,9 +577,16 @@ impl AgentAdapter for ClaudeCodeAdapter {
         }
         let sessions = session_dirs(&dirs);
         let mut per_worktree: Vec<Option<Enrichment>> = vec![None; snap.worktrees.len()];
-        enrich_by_id(snap, &sessions, &mut per_worktree);
+        let matched = enrich_by_id(snap, &sessions, &mut per_worktree);
+        let mut placement = Placement {
+            snap,
+            primary: per_worktree.iter().map(Option::is_some).collect(),
+            per_worktree,
+        };
+        place_live_subagents(&mut placement, &sessions, &matched);
         AdapterReport {
-            per_worktree: per_worktree
+            per_worktree: placement
+                .per_worktree
                 .into_iter()
                 .enumerate()
                 .filter_map(|(index, facts)| facts.map(|facts| (index, facts)))
