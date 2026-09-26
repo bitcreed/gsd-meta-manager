@@ -45,13 +45,11 @@ covered_files:
   - "tests/agents_fixers.rs"
   - "tests/agents_scan.rs"
   - "tests/agents_waves.rs"
-covered_digest: "v1:sha256:c69857b4bd8cbdc30d556bdddb317fb34abba5f90a584d8b358042f2a936d66c"
-# NOTE: the installed gsd-core (@opengsd/gsd-core 1.14.0, gsd-tools.cjs at
-# /home/blk/projects/node/gsd-core/gsd-core/bin/gsd-tools.cjs) has no
-# `verification.fingerprint` verb (`query verification` only exposes
-# `status`/`resolve-file`). This digest is a manual substitute: sha256 of the
-# sorted `sha256sum` lines for the files above. Recompute with the canonical
-# verb once available; do not treat this as the authoritative fingerprint.
+covered_digest: "v1:sha256:0605011d949d94144ce332bd3599943076c12d178720f3883dd00a70e0a16c03"
+# NOTE: the verifier first wrote a hand-computed sha256 here because gsd-core 1.14.0
+# exposes no `verification.fingerprint` query verb; that value did not match the
+# canonical scheme and read as `stale`. The orchestrator replaced it with the output of
+# gsd-core's own computeCoveredDigest (bin/lib/verification.cjs) over the files above.
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
