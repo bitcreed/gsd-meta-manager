@@ -119,16 +119,18 @@ struct Scripted {
     description: Option<&'static str>,
     age_secs: u64,
     ended: bool,
+    lock_released: Option<bool>,
 }
 
 impl Scripted {
-    /// A live `gsd-code-fixer` on phase 12's findings.
+    /// A live `gsd-code-fixer` on phase 12's findings, its lock held.
     fn fixer() -> Self {
         Scripted {
             agent_type: "gsd-code-fixer",
             description: Some("Fix phase 12 CLI findings"),
             age_secs: 0,
             ended: false,
+            lock_released: Some(false),
         }
     }
 }
@@ -153,7 +155,7 @@ impl AgentAdapter for Scripted {
                             .description
                             .map(|d| Untrusted::from_untrusted_source(d.into())),
                         last_activity: Some(snap.now - Duration::from_secs(self.age_secs)),
-                        lock_released: Some(false),
+                        lock_released: self.lock_released,
                         ended: self.ended,
                         ..Enrichment::default()
                     },
@@ -409,6 +411,106 @@ fn attributed_or_inactive_fixers_are_not_counted() {
         fixers::estimate(&root, None, None, &[]),
         None,
         "no rows at all"
+    );
+}
+
+/// 25-07 (CR-01, D-C12): the estimate needs a running (Live or Idle) fixer. An
+/// orphaned fix run whose fixers all finished shows no `N fixers`, while a
+/// running run still counts its finished fixers and their commits.
+#[test]
+fn a_finished_fixer_run_yields_no_estimate() {
+    let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
+        return;
+    };
+    let a = add_agent_worktree(&root, FIXER_A);
+    commit(&a, "fix(12): WR-08 x");
+
+    // Lock released, 200 s silent: Finished.
+    let finished = scan(
+        &root,
+        Scripted {
+            age_secs: 200,
+            lock_released: Some(true),
+            ..Scripted::fixer()
+        },
+    );
+    assert_eq!(finished.rows[0].liveness, AgentLiveness::Finished);
+    assert_eq!(finished.fixer_estimate, None, "a finished run");
+    assert_eq!(
+        derive(&finished, &ProjectState::default()).summary_forms(),
+        Vec::<String>::new()
+    );
+
+    // Three days silent: Ended.
+    let aged = scan(
+        &root,
+        Scripted {
+            age_secs: 3 * 86_400,
+            ..Scripted::fixer()
+        },
+    );
+    assert_eq!(aged.rows[0].liveness, AgentLiveness::Ended);
+    assert_eq!(aged.fixer_estimate, None, "an aged-out run");
+
+    // Two fixers; the base sha and the rows are git's own, then the
+    // liveness is edited by hand.
+    let b = add_agent_worktree(&root, FIXER_B);
+    commit(&b, "fix(12): CR-01 y");
+    let live = scan(&root, Scripted::fixer());
+    assert_eq!(live.rows.len(), 2, "{:?}", live.rows);
+    let with = |a_liveness, b_liveness| -> Option<FixerEstimate> {
+        let rows: Vec<AgentRow> = live
+            .rows
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row.liveness = if row.path.ends_with(FIXER_A) {
+                    a_liveness
+                } else {
+                    b_liveness
+                };
+                row
+            })
+            .collect();
+        fixers::estimate(
+            &root,
+            live.main_worktree.as_deref(),
+            live.base_sha.as_deref(),
+            &rows,
+        )
+    };
+    assert_eq!(
+        with(AgentLiveness::Finished, AgentLiveness::Finished),
+        None,
+        "every fixer finished"
+    );
+    assert_eq!(
+        with(AgentLiveness::Finished, AgentLiveness::Live),
+        Some(FixerEstimate {
+            fixers: 2,
+            phase: PhaseNum::parse("12"),
+            fixed: Some(2),
+            total: Some(48),
+        }),
+        "a finished fixer still counts inside a running run"
+    );
+
+    // The gate runs before any git call or file read.
+    let gone = root.join("does-not-exist");
+    let row = AgentRow {
+        path: gone.join(FIXER_A),
+        agent_type: Some(Untrusted::from_untrusted_source("gsd-code-fixer".into())),
+        liveness: AgentLiveness::Finished,
+        ..AgentRow::default()
+    };
+    assert_eq!(
+        fixers::estimate(
+            &gone,
+            Some(&gone),
+            Some("0123456789abcdef0123456789abcdef01234567"),
+            &[row]
+        ),
+        None
     );
 }
 
