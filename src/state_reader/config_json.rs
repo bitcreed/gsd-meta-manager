@@ -191,6 +191,37 @@ pub struct GsdConfig {
     // --- gsd-core re-sync at 1.15.0 (quick task 260926-gtk) ---
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<PlannerConfig>,
+    // --- top-level key promotion (quick task 260926-jnf) ---
+    /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tavily_search: Option<ApiKeySetting>,
+    /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_search: Option<ApiKeySetting>,
+    /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perplexity: Option<ApiKeySetting>,
+    /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
+    /// gsd-core treats an unset `jina` as available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jina: Option<ApiKeySetting>,
+    /// gsd-core's OWN runtime selector (`claude`, `codex`, or any string).
+    ///
+    /// **This manager does not read it (ID-2).** The manager's per-project
+    /// agent runtime lives in its own registry (`crate::config`'s
+    /// `RUNTIME_KEY`); `tests/driver_codex_runtime.rs` pins that a project
+    /// whose GSD config says `codex` still spawns the unchanged Claude argv.
+    /// Typed here only so the Defaults tab can show and edit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    /// gsd-core's execution-context preset: `dev`, `research` or `review`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_profile: Option<String>,
+    /// A map of agent type to the array of skill entries that agent gets
+    /// (`{"gsd-planner": ["skills/x"]}`); gsd-core's default is `{}`.
+    /// Surfaced read-only, like the other shape-varying values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_skills: Option<serde_json::Value>,
     /// Top-level gsd-core keys this build does not model — see [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,

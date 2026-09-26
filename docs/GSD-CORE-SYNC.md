@@ -21,7 +21,10 @@ in the tree said so, and by 1.14.0 gsd-core documented **57 scalar keys this
 build modelled nowhere** — including `workflow.compact_content`, the one a human
 happened to notice. The 1.14.0 re-sync (260916-vqw, at `v1.14.0-52-g651511d1e`)
 closed that gap; the release-1.15.0 re-sync (260926-gtk) is the first delta sync
-made FROM this record.
+made FROM this record. Quick task 260926-jnf then promoted the seven real
+top-level keys gtk had left pass-through and made every secret-bearing key
+display masked — see [Top-level key promotion](#top-level-key-promotion-quick-task-260926-jnf)
+and [Secret-bearing keys](#secret-bearing-keys).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -166,36 +169,151 @@ and therefore cannot save over the file, and gsd-core's own `config-set` coerces
 
 ### Step 3's output is not a gap list — read it with these buckets
 
-At `ec81d0d` against this build it reports **169 lines, 113 of them dotted**
-(was 171 before the two keys above were modelled):
+RE-MEASURED at quick task 260926-jnf, at `ec81d0d` against this build: **162
+lines, 113 of them dotted** (171 before gtk modelled its two keys, 169 after,
+162 after jnf promoted seven top-level keys):
 
 | Bucket | Count | What it is |
 |---|---:|---|
-| Undotted value rows, not keys | 48 | The grep matches any leading table cell, so enum *values* (`balanced`, `codex`, `true`, `v1`) and table headings come through as if they were keys. |
-| Undotted top-level keys, pass-through | 8 | `runtime`, `context_profile`, `agent_skills`, `kg_backend`, and the four search-provider overrides `tavily_search`, `ref_search`, `perplexity`, `jina`. Real keys with no typed row; each renders as a `Not modelled` row. Not new in this range. |
+| Undotted rows that are not config keys | 48 | The grep matches any leading table cell, so enum *values* (`balanced`, `codex`, `true`, `v1`, and `kg_backend` — see below), table headings, and the field names of tables that describe something other than config (`heading`/`source`/`template`/`fallback`/`enabled` of a custom PR-body section entry; `active_phase`/`next_action`/`next_phases`/`progress` of STATE.md frontmatter) come through as if they were keys. |
+| Undotted top-level keys, pass-through | 1 | `context` — see "Still pass-through at the top level" below. |
 | Dotted value rows, not keys | 3 | `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` — model ids from a value table. |
 | Modelled under an unprefixed row label | 30 | `git.base_branch` is this tab's `base_branch` row, `intel.enabled` is `intel_enabled`, and 21 `workflow.*` keys are spelled bare. The JSON path each row reads is correct; only the label is unprefixed. See "Known inconsistency" below. |
 | Pass-through families | 80 | The nested and templated keys in the [Pass-through](#pass-through) section, which get no typed row **by design**. |
 
-The 1.14.0 record described this output as containing no missing scalar key.
-Re-bucketing it here shows that was true of the dotted half only: the eight
-undotted top-level keys above are real, pre-date this range, and are recorded
-as pass-through rather than promoted, because this sync's scope is the 1.15.0
-delta.
+**Two corrections to the gtk bucketing.** gtk counted 48 value rows and 8
+undotted top-level keys. `kg_backend` was one of the 8, but it is not a key: it
+is an enum VALUE of the capability-registered `mempalace.memory_mode`
+(`capabilities/mempalace/capability.json:36`), and step 2's grep caught it in
+CONFIGURATION.md:1098's "Memory modes in detail" value table. It now sits in
+the value-row bucket. Conversely `context` (CONFIGURATION.md:255, and in
+`config-schema.manifest.json`'s `validKeys`) was counted as a value row, but it
+IS a real top-level key. The seven real keys of the 8 are promoted below;
+`context` is the only undotted top-level key still pass-through.
+
+### Still pass-through at the top level: `context`
+
+Upstream contradicts itself on its type. CONFIGURATION.md:255 documents it as a
+free-form string ("Custom context string injected into every agent prompt"),
+while `src/config.cts:903-904` makes `config-set context` an enum over
+`dev`/`research`/`review` — the same values as `context_profile`. A typed row
+would have to pick one, so quick task 260926-jnf left it as a read-only `Not
+modelled` row (visible, lossless on save) rather than guess (INFERRED I-13).
+
+---
+
+## Top-level key promotion (quick task 260926-jnf)
+
+The seven real top-level keys the release-1.15.0 re-sync left pass-through, now
+typed rows. `since` is step 5's recipe (earliest commit touching the key in
+`docs/CONFIGURATION.md src/ capabilities/`, then `tag --contains`), MEASURED
+against `upstream/release-1.15.0`:
+
+| Key | Type / default upstream | Row kind here | since | Introducing commit |
+|---|---|---|---|---|
+| `tavily_search` | `string \| boolean \| null`, `null` | Secret | v1.4.0 | 11afca296 ("feat(#656): Research module — content-addressed cache + provider seam") |
+| `ref_search` | `string \| boolean \| null`, `null` | Secret | v1.4.0 | 11afca296 |
+| `perplexity` | `string \| boolean \| null`, `null` | Secret | v1.4.0 | 11afca296 |
+| `jina` | `string \| boolean \| null`, `null` (effective default: available) | Secret | v1.4.0 | 11afca296 |
+| `runtime` | string, `claude` / `codex` / any; no default | String | v1.01.0 | d478e7f48 |
+| `context_profile` | enum `dev` / `research` / `review`; no default | Enum | v1.01.0 | 641ea8ad4 |
+| `agent_skills` | object, `{}` — agent type to an array of skill entries | ReadOnly | v1.01.0 | db3eeb8fe |
+
+- The four search keys' CONFIGURATION.md table rows arrived later, at fd576528a
+  (v1.7.0); step 5's earliest-commit rule wins (INFERRED I-7). `brave_search`,
+  `firecrawl` and `exa_search` predate this record and keep an empty `since`.
+- `runtime` is gsd-core's own selector. This manager does not read it (ID-2):
+  its per-project agent runtime lives in its own registry (`src/config.rs`
+  `RUNTIME_KEY`), and `tests/driver_codex_runtime.rs` pins that a project whose
+  GSD config says `codex` still spawns the unchanged Claude argv. gsd-core's
+  loader also fills it from `GSD_RUNTIME` / the install marker (#4717), so the
+  file value is not the whole story.
+- `context_profile` has no upstream default. From unset, the first toggle writes
+  `dev` (the first option) rather than stepping through `cycle`, which would
+  skip to `research` (INFERRED I-10).
+- `agent_skills` is read-only, like `review.reviewer_instances`: its value is a
+  map of arrays, edited in the file. Its `agent_skills.<agent-type>` members are
+  shown inside that value, with any secret-named member masked.
+- `kg_backend` gets no row: it is a `mempalace.memory_mode` value, not a key
+  (see the correction above). So the promotion is 7 rows, 132 -> 139.
+
+---
+
+## Secret-bearing keys
+
+The Config tab never draws a secret value (quick task 260926-jnf). The
+classification and masking live in `src/state_reader/config_secrets.rs`; every
+`ConfigEntry.value` for a secret-classified path is built from its helpers, so
+no render, prompt prefill, status message or log line can reach the raw value.
+
+**The explicit list — 7 keys, and upstream disagrees with itself.**
+
+| Source at `ec81d0d` | Keys |
+|---|---|
+| Code: `src/secrets.cts` `SECRET_CONFIG_KEYS` | `brave_search`, `firecrawl`, `exa_search` (3) |
+| Docs: CONFIGURATION.md "Search API keys" table, each "Masked in display" | the 3 above plus `tavily_search`, `ref_search`, `perplexity`, `jina` (7) |
+
+This build honours the documented promise: all seven are secret here
+(INFERRED I-3). Each is typed `string | boolean | null`: a string is the API
+key; `true`/`false` override auto-detection from `<X>_API_KEY` or
+`~/.gsd/<x>_api_key`. Before 260926-jnf, `brave_search`/`firecrawl`/`exa_search`
+were typed `Option<bool>`, so a project that stored its key the documented way
+failed to parse as a whole (and the serde error quoted the key into the log).
+All seven now share one untagged `ApiKeySetting { Flag(bool), Key(String) }`
+with a hand-written `Debug` that prints `Key(<redacted>)`.
+
+**The name heuristic** covers keys this build does not model — pass-through
+rows and members nested inside read-only JSON values. A full dotted path is
+secret when it contains, case-insensitively, one of `api_key`, `apikey`,
+`api-key`, `token`, `secret`, `password`, `passwd`. A census test makes it
+impossible to add an authored row whose key trips the heuristic unless the row
+is Secret-kind.
+
+**The measured exemptions — 4 budget keys.** Every upstream key cell matching
+the markers holds a number or a boolean, not a secret. They are exempt as the
+exact path or as a `<key>.` prefix:
+
+- `review.max_prompt_tokens`
+- `review.max_prompt_tokens_per_reviewer` (and its `.<slug>` entries)
+- `statusline.show_context_tokens`
+- `workflow.smart_zone_tokens`
+
+Measured with (`validKeys` in the schema manifest has the same four matches):
+
+```bash
+git -C "$CORE" show "$REF:docs/CONFIGURATION.md" \
+  | grep -oP '^\| `\K[a-z0-9_.<>-]+(?=`)' | sort -u \
+  | grep -iE 'api_key|apikey|api-key|token|secret|password|passwd'
+```
+
+**The masking format diverges from upstream on purpose (INFERRED I-1).** A set
+secret renders as `•••••••• (set)` — always eight bullets, no suffix, no
+length. null, missing and `""` render `(unset)`; a boolean renders `true` /
+`false`. Upstream's `maskSecret` renders `****<last-4>` (and `****` below 8
+characters). This build drops the last four because the README ships
+screenshots of this TUI: four characters leak 16-24 bits of key entropy, the
+length reveals the provider's key format, and nothing in the TUI needs to tell
+two keys apart. Editing opens an empty prompt that echoes one `•` per typed
+character; an empty Enter keeps the key; `x` clears.
+
+Detection is by NAME only. A secret stored under an innocent name, or embedded
+in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ---
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **132
+Every key `build_defaults_entries` pushes a row for, in display order. **139
 rows**: **57** carry a `since` measured at the 1.14.0 re-sync (260916-vqw), **2**
 carry the provisional `v1.15.0` added by the release-1.15.0 re-sync
-(260926-gtk), and the **73** without one predate this record and were not
+(260926-gtk), **7** carry a `since` measured when quick task 260926-jnf promoted
+them, and the **73** without one predate this record and were not
 retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 132,
-`RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` pin the two re-syncs' key lists, and
-three coverage assertions refuse a row with no `ConfigHelp`.
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 139
+(132 -> 139 at 260926-jnf), `RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` /
+`PROMOTED_TOP_LEVEL_KEYS` pin the three key lists, and three coverage
+assertions refuse a row with no `ConfigHelp`.
 
 ### Planning
 
@@ -291,6 +409,10 @@ three coverage assertions refuse a row with no `ConfigHelp`.
 | `brave_search` | |
 | `firecrawl` | |
 | `exa_search` | |
+| `tavily_search` | v1.4.0 |
+| `ref_search` | v1.4.0 |
+| `perplexity` | v1.4.0 |
+| `jina` | v1.4.0 |
 
 ### Model & Pipeline
 
@@ -299,6 +421,9 @@ three coverage assertions refuse a row with no `ConfigHelp`.
 | `mode` | |
 | `granularity` | |
 | `model_profile` | |
+| `runtime` | v1.01.0 |
+| `context_profile` | v1.01.0 |
+| `agent_skills` | v1.01.0 |
 | `parallelization` | |
 | `auto_advance` | |
 | `auto_chain_active` | |
@@ -417,14 +542,14 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 | `effort.*`, `fast_mode.*` | Both carry `agent_overrides.<agent-id>` and `routing_tier_defaults.*`; templated. |
 | `dynamic_routing.tier_models.<tier>` | Templated by tier name. |
 | `models.<phase_type>`, `granularities.<phase_type>` | Templated by phase type. |
-| `agent_tools.<selector>`, `agent_skills*`, `agent_skills_security.trusted_global_roots` | Templated by selector; the security roots key is a list. |
+| `agent_tools.<selector>`, `agent_skills_security.trusted_global_roots` | Templated by selector; the security roots key is a list. (`agent_skills` itself is a typed read-only row since 260926-jnf; its `agent_skills.<agent-type>` members are shown inside that row's value.) |
 | `code_quality.fallow.*` | Four keys of one opt-in subsystem this TUI surfaces nowhere else. |
 | `mempalace.*` (11 keys) | An optional integration this build has no other awareness of. |
 | `parallelization.*` (6 keys) | gsd-core's namespaced expansion of the top-level `parallelization` boolean this tab already edits; promoting them needs a decision about which wins. |
 | `refactor.*`, `safety.*`, `security.injection_blocking` | Small coherent blocks, no typed row yet. |
 | `executor.stall_*`, `planner.stall_detect_interval_minutes`, `planner.stall_threshold_minutes`, `manager.flags.*` | Runtime tuning knobs, rarely edited by hand. Since 260926-gtk `planner` is a TYPED block (`planner.stall_detection_enabled` is modelled), so its two remaining knobs render as separate `planner.<key>` rows; before it, the whole `planner` object was a single top-level `planner` row. |
-| `runtime`, `tavily_search`, `ref_search`, `perplexity`, `jina` | Undotted top-level keys that pre-date the 1.15.0 range. `runtime` is also filled by gsd-core's loader from `GSD_RUNTIME` / the install marker (#4717), so the file value is not the whole story. The four search-provider keys double as API-key slots that gsd-core masks in its own display; typing them needs a masking decision first. |
-| `claude_md_assembly.mode`, `learnings.max_inject`, `kg_backend`, `context_profile` | Singletons that did not fit an existing category. |
+| `context` | The one undotted top-level key still pass-through: upstream's docs call it a free-form string, its `config-set` an enum. See "Still pass-through at the top level". |
+| `claude_md_assembly.mode`, `learnings.max_inject` | Singletons that did not fit an existing category. |
 
 ### Known inconsistency — unprefixed row labels
 
@@ -464,6 +589,14 @@ Then, in priority order:
    and COMMIT disagree right now".
 2. **Re-measure the baseline pair.** If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do.
+   **Re-diff the secret-bearing keys every sync** (quick task 260926-jnf):
+   upstream `src/secrets.cts` `SECRET_CONFIG_KEYS`, the CONFIGURATION.md
+   "Search API keys" table, and the heuristic-matching key cells (the command
+   under [Secret-bearing keys](#secret-bearing-keys)). A new secret key goes
+   into `SECRET_CONFIG_KEYS` in `config_secrets.rs`; a new non-secret match
+   goes into `NON_SECRET_CONFIG_KEYS`.
+   **Decide `context`'s type** once upstream's docs and `config-set` agree,
+   then promote it.
 3. **Promote `parallelization.*` (6 keys).** The highest-value pass-through
    family: this tab already edits a top-level `parallelization` boolean, so a
    project carrying the namespaced block sees a row that disagrees with the file.

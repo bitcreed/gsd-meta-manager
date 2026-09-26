@@ -9864,7 +9864,7 @@ fn build_defaults_entries(
     use crate::state_reader::config_json::GsdConfig;
 
     let mut entries = Vec::new();
-    // `help` is REQUIRED and last (ID-01). A 133rd option added below without a
+    // `help` is REQUIRED and last (ID-01). A 140th option added below without a
     // `ConfigHelp` does not compile, which is the whole reason the help lives
     // here rather than in a key-indexed side table.
     let mut push = |cat: &'static str,
@@ -10335,6 +10335,23 @@ fn build_defaults_entries(
     push(cat, "exa_search", v, k, false, fd, ConfigHelp::new(
         "Exa semantic-search API key (hidden), or true/false to override detecting EXA_API_KEY / ~/.gsd/exa_api_key; x clears.",
     ));
+    // top-level key promotion (quick task 260926-jnf), INFERRED I-8.
+    let (v, k, fd) = secret_l(config.tavily_search.as_ref(), defaults.and_then(|d| d.tavily_search.as_ref()));
+    push(cat, "tavily_search", v, k, false, fd, ConfigHelp::new(
+        "Tavily Search API key for web discovery (hidden), or true/false to override detecting TAVILY_API_KEY / ~/.gsd/tavily_api_key; x clears.",
+    ).since("v1.4.0"));
+    let (v, k, fd) = secret_l(config.ref_search.as_ref(), defaults.and_then(|d| d.ref_search.as_ref()));
+    push(cat, "ref_search", v, k, false, fd, ConfigHelp::new(
+        "Ref docs-search API key (hidden), or true/false to override detecting REF_API_KEY / ~/.gsd/ref_api_key; x clears.",
+    ).since("v1.4.0"));
+    let (v, k, fd) = secret_l(config.perplexity.as_ref(), defaults.and_then(|d| d.perplexity.as_ref()));
+    push(cat, "perplexity", v, k, false, fd, ConfigHelp::new(
+        "Perplexity API key for web discovery (hidden), or true/false to override detecting PERPLEXITY_API_KEY / ~/.gsd/perplexity_api_key; x clears.",
+    ).since("v1.4.0"));
+    let (v, k, fd) = secret_l(config.jina.as_ref(), defaults.and_then(|d| d.jina.as_ref()));
+    push(cat, "jina", v, k, false, fd, ConfigHelp::new(
+        "Jina docs/scrape-fallback API key (hidden), or true/false to override detecting JINA_API_KEY; unset counts as available; x clears.",
+    ).since("v1.4.0"));
 
     // ── Model & Pipeline ──────────────────────────────────────
     let cat = "Model & Pipeline";
@@ -10363,6 +10380,32 @@ fn build_defaults_entries(
             ("inherit", "uses whatever model your session already runs"),
         ],
     ));
+    // top-level key promotion (quick task 260926-jnf), INFERRED I-8 / I-9.
+    let (v, k, fd) = str_l(config.runtime.as_deref(), defaults.and_then(|d| d.runtime.as_deref()));
+    push(cat, "runtime", v, k, false, fd, ConfigHelp::new(
+        "Agent runtime GSD itself targets, e.g. claude or codex; this manager's own agent driver does not read it.",
+    ).since("v1.01.0"));
+    let (v, k, fd) = enum_l(
+        config.context_profile.as_deref(),
+        defaults.and_then(|d| d.context_profile.as_deref()),
+        &["dev", "research", "review"],
+    );
+    push(cat, "context_profile", v, k, false, fd, ConfigHelp::with_choices(
+        "Execution context preset: one bundle of mode, model and workflow settings for the current type of work.",
+        &[
+            ("dev", "iterative development: balanced model, plan check on"),
+            ("research", "research-heavy work: higher model tier, research on"),
+            ("review", "code review work: verifier and code review on"),
+        ],
+    ).since("v1.01.0"));
+    let (v, k, fd) = opt_json_readonly(
+        "agent_skills",
+        config.agent_skills.as_ref(),
+        defaults.and_then(|d| d.agent_skills.as_ref()),
+    );
+    push(cat, "agent_skills", v, k, false, fd, ConfigHelp::new(
+        "Map of agent types to the skill entries each gets, e.g. gsd-planner to a skills list; edited in the file.",
+    ).since("v1.01.0"));
     let (v, k, fd) = bool_l(config.parallelization, defaults.and_then(|d| d.parallelization));
     push(cat, "parallelization", v, k, false, fd, ConfigHelp::new(
         "Runs plans that share no files at the same time instead of one after another.",
@@ -11179,6 +11222,7 @@ fn set_config_value(
         "mode" => { config.mode = value.to_string(); true }
         "granularity" => { config.granularity = value.to_string(); true }
         "model_profile" => { config.model_profile = value.to_string(); true }
+        "context_profile" => { config.context_profile = Some(value.to_string()); true }
         "branching_strategy" => {
             config.git.get_or_insert_with(GitConfig::default).branching_strategy = Some(value.to_string());
             true
@@ -11232,6 +11276,7 @@ fn set_string_value(
 
     match key {
         "project_code" => { config.project_code = Some(value.to_string()); true }
+        "runtime" => { config.runtime = Some(value.to_string()); true }
         "phase_naming" => { config.phase_naming = Some(value.to_string()); true }
         "response_language" => { config.response_language = Some(value.to_string()); true }
         "base_branch" => {
@@ -11294,6 +11339,10 @@ fn set_secret_value(
         "brave_search" => &mut config.brave_search,
         "firecrawl" => &mut config.firecrawl,
         "exa_search" => &mut config.exa_search,
+        "tavily_search" => &mut config.tavily_search,
+        "ref_search" => &mut config.ref_search,
+        "perplexity" => &mut config.perplexity,
+        "jina" => &mut config.jina,
         _ => return false,
     };
     *slot = Some(match trimmed {
@@ -11324,6 +11373,12 @@ fn clear_config_value(
         "brave_search" => { config.brave_search = None; true }
         "firecrawl" => { config.firecrawl = None; true }
         "exa_search" => { config.exa_search = None; true }
+        "tavily_search" => { config.tavily_search = None; true }
+        "ref_search" => { config.ref_search = None; true }
+        "perplexity" => { config.perplexity = None; true }
+        "jina" => { config.jina = None; true }
+        "runtime" => { config.runtime = None; true }
+        "context_profile" => { config.context_profile = None; true }
         "project_code" => { config.project_code = None; true }
         "phase_naming" => { config.phase_naming = None; true }
         "response_language" => { config.response_language = None; true }
@@ -11570,6 +11625,16 @@ fn mutate_config_entry(
                 "mode" => { config.mode = cycle(&config.mode); true }
                 "granularity" => { config.granularity = cycle(&config.granularity); true }
                 "model_profile" => { config.model_profile = cycle(&config.model_profile); true }
+                // Upstream has no default (INFERRED I-10): from unset the
+                // first press lands on the FIRST option, `dev`, rather than
+                // through `cycle`, whose `unwrap_or(0)` would skip to `research`.
+                "context_profile" => {
+                    config.context_profile = Some(match config.context_profile.as_deref() {
+                        None => options[0].to_string(),
+                        Some(current) => cycle(current),
+                    });
+                    true
+                }
                 "branching_strategy" => {
                     let git = config.git.get_or_insert_with(GitConfig::default);
                     let current = git.branching_strategy.as_deref().unwrap_or("none");
@@ -11951,16 +12016,18 @@ mod tests {
     /// The number of `push` call sites in `build_defaults_entries`, MEASURED at
     /// the time the help was authored and RE-measured at each gsd-core re-sync:
     /// 73 -> 130 at the 1.14.0 re-sync (quick task 260916-vqw) and 130 -> 132
-    /// at the release-1.15.0 re-sync (quick task 260926-gtk). It is asserted
-    /// rather than trusted so a 133rd option cannot slip past the coverage
-    /// assertions below by being added to a list nobody counted.
+    /// at the release-1.15.0 re-sync (quick task 260926-gtk), and 132 -> 139 at
+    /// quick task 260926-jnf (7 top-level keys; kg_backend is a value, not a
+    /// key). It is asserted rather than trusted so a 140th option cannot slip
+    /// past the coverage assertions below by being added to a list nobody
+    /// counted.
     ///
     /// **It counts STATIC rows only.** `append_passthrough_entries` emits one
     /// row per unmodelled key found in the config it is handed, so a fixture
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 132;
+    const DEFAULTS_OPTION_COUNT: usize = 139;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -12042,8 +12109,9 @@ mod tests {
             }
         }
 
+        // 12 -> 13 at quick task 260926-jnf (`context_profile`), MEASURED.
         assert_eq!(
-            enum_entries, 12,
+            enum_entries, 13,
             "the Defaults tab's Enum-kinded option count changed; each one needs a per-value \
              explanation"
         );
