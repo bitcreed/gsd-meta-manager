@@ -22,10 +22,10 @@ milestone_name: Roadmap Redesign
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-09-23)
+See: .planning/PROJECT.md (updated 2026-09-25)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 25 — Running Agents & Live Wave View
+**Current focus:** Phase 19 — GITSAFE — Git & Blast-Radius Envelope (gap-closure loop halted by user decision — ask before resuming) [inferred]
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
 cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-target).
@@ -33,6 +33,10 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 ## Current Position
 
 Status: Ready to plan
+  Phase 25 (Running Agents & Live Wave View) complete 2026-09-25: 7/7 plans, verification passed
+  7/7 (AGENT-01..07), CR-01/WR-01 closed by 25-07; WR-02..WR-06 deferred (see Blockers/Concerns).
+  Router's next is Phase 19, whose loop is halted by user decision — ask first.
+Earlier (v1.8.0 release):
   Phase 24, quick tasks 260922-hdh/hdi/hdj, 260923-lr8/lr9/lra/md1, 260924-drx and five debug
   fixes; README gained screenshots and a Codex section. `./scripts/pre-tag-check.sh --container
   v1.8.0` exit **0**, all five gates PASS, git banner MATCH, 49 suites / **2367 passed / 0 failed**
@@ -489,6 +493,14 @@ Recent decisions affecting current work:
 
 - [Phase 24] Advisory, not blocking: 24-REVIEW.md has 5 warnings / 6 info open — WR-01 colliding BandKeys deadlock j/k, WR-02 `declared_phase_count` u32 overflow on third-party input (roadmap_md.rs:898, debug-build panic), WR-03 build-phase range includes its own id (spurious cycles), WR-04 width measured in chars (wide glyphs overflow columns), WR-05 Roadmap cursor does not write back to Phases selection. Fix via `/gsd-code-review 24 --fix` or a quick task.
 - [Phase 24] Roadmap footer (91/87 cols) clips `[?]help` at 80 cols.
+- [Phase 25] Deferred review warnings from 25-REVIEW.md (advisory, not blocking; fix via `/gsd-code-review 25 --fix` or a quick task):
+  - WR-02: a hung git call (no timeout in `git_read_raw`) leaves `agents_scan_in_flight` set forever — scan never re-runs and the frozen view still reads live (`src/app.rs:1212-1234`, `src/state_reader/git_ops.rs:202-217`); needs a watchdog or per-call timeout
+  - WR-03: fixer estimate picks the first `*-REVIEW.md`, so `NN-EVAL-REVIEW.md`/`NN-UI-REVIEW.md` can supply the wrong `findings.total` (`src/agents/fixers.rs:152-171`)
+  - WR-04: earlier review runs inflate `fixed` (unbounded id union, can exceed total, unclamped) and any leftover `*-REVIEW-FIX.md` hides the count (`src/agents/fixers.rs:163-164,266-285`)
+  - WR-05: long-path (>200-unit) prefix fallback can adopt another project's Claude dir and list its live subagents as this project's (`src/agents/adapters/claude.rs:288-311`)
+  - WR-06: Finished orphan fixers still count in `N fixers`, outvote the running fixer's phase and inflate `fixed` — the CR-01 pattern left in `src/agents/fixers.rs:137-285`
+  - Info IN-01..IN-07 also open (redraw every scan for aged-out rows, tests reading real `~/.claude`, relative `gitdir:` ignored, `lock_released` premise, children not counted as running, `plan_state` re-spells `is_running`, gate-ordering test) — see 25-REVIEW.md
+- [Phase 25] deferred-items.md: `.planning/WINDOWS.md` ledger table disagrees with its fenced JSON (row 19), so `gsd-tools windows append` refuses to write; `cargo clippy --all-targets` has pre-existing warnings (browser.rs, project_creator.rs, several `tests/envelope_*`); repo is not `cargo fmt --check` clean
 
 ### Quick Tasks Completed
 
@@ -548,8 +560,14 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-26T04:31:32.338Z
+Last session: 2026-09-25
 Stopped at: Phase 25 complete, ready to plan Phase 19
+Transition: Phase 25 verified passed and closed; PROJECT.md evolved (AGENT-01..07 validated, four
+Phase 25 key decisions); WR-02..WR-06 recorded as deferred concerns. Phase 19's gap-closure loop is
+halted by user decision — do not resume without asking. [inferred]
+Resume file: None
+
+Previous session (v1.8.0 release, text truncated by earlier state tooling):
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
 lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
 unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,

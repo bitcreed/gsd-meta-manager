@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Rust TUI command center for managing multiple GSD-run projects from a single interface. Users register their GSD projects and get a unified dashboard showing phase status, workflow progress, and pending actions across all of them — with live filesystem watching, ASCII roadmap visualization, project creation, work enqueueing, paused project detection, and milestone archive browsing.
+A Rust TUI command center for managing multiple GSD-run projects from a single interface. Users register their GSD projects and get a unified dashboard showing phase status, workflow progress, and pending actions across all of them — with live filesystem watching, ASCII roadmap visualization, project creation, work enqueueing, paused project detection, milestone archive browsing, and a read-only view of running GSD agents with live executor-wave progress.
 
 ## Core Value
 
@@ -57,6 +57,7 @@ See the state of every GSD project at a glance and act on any of them without le
 
 - ✓ Roadmap tab redesign — dependency list with git-log lanes, transitive reduction (implied deps shown dim), milestone bands with folds, master-detail pane (side-by-side ≥100 cols, stacked below), build phases and goals read from ROADMAP.md — Phase 24
 - ✓ Detail-tab consolidation — eight tabs plus Driver (`1:Roadmap 2:Phases … 8:Docs`, `D:Drive`); PhaseList removed, Archive folded into Docs › Milestones; Roadmap/Phases share the selected phase — Phase 24
+- ✓ Running agents & live wave view — lock-free scan of agent worktrees (commits ahead, dirty count), pluggable runtime-adapter seam with a Claude Code adapter (subagent meta, transcript-mtime liveness, worktree-less subagents), plans grouped by PLAN `wave:` with done/finished/running/stalled/queued states, width-fitted dashboard Status summary, Sessions › Agents sub-view, and an estimated `~fixed/total` for code-fixer runs (AGENT-01..07) — Phase 25
 
 ### Active
 
@@ -101,7 +102,8 @@ in containers or on the host, watchable and interruptible from the TUI.
 
 - Shipped v1.6.0; ~7,000 LOC Rust across 7 milestones, distributed via crates.io
 - Tech stack: Rust, ratatui 0.30, crossterm 0.29, tokio, notify-debouncer-full
-- Screen trait architecture; detail view is 8 tabs + Driver since Phase 24 (Archive lives under Docs › Milestones)
+- Screen trait architecture; detail view is 8 tabs + Driver since Phase 24 (Archive lives under Docs › Milestones; Sessions › Agents since Phase 25)
+- Running-agent scan (`src/agents/`) rides the 5 s session poll in `spawn_blocking`; read-only, no locks taken in agent worktrees
 - Disk-based phase inference via /proc-like directory scanning
 - Queue is fully managed (CRUD) with execution design ready for v1.3
 - Claude session detection via pgrep + /proc (Linux-only)
@@ -145,6 +147,10 @@ in containers or on the host, watchable and interruptible from the TUI.
 | Roadmap list as a pure model (no ratatui types) with key-based cursor targets (Phase 24) | Layout/lanes testable as exact strings; folding can't strand a row-index cursor | ✓ Good — mockups pinned by unit tests on real-roadmap fixtures |
 | Archive kept as a Docs sub-view sharing Docs' tab index; `switch_to_sub_view` is the single arrival rule (Phase 24) | Removing the variant would churn archive discovery; one arrival path covers digits, Enter and `m` | — Inferred during autonomous run, audit |
 | Roadmap footer left at 91/87 cols (Phase 24) | Fitting 80 cols means dropping or renaming hints — a scope change | ⚠️ Revisit — `[?]help` clips at 80 cols |
+| Agent observation via a facts-only `AgentAdapter` seam with `catch_unwind` per adapter and per project (Phase 25) | Runtime metadata formats are third-party and unstable; a failing adapter must degrade a row to git facts, never drop it or fail the scan | ✓ Good — Claude Code adapter added as one module + registry entry |
+| Agent-worktree git reads use `--no-optional-locks` + `GIT_OPTIONAL_LOCKS=0` (Phase 25) | Scanning must never take a lock inside a live agent's worktree (non-intrusive constraint) | ✓ Good — real-worktree test proves the live index is untouched |
+| One running predicate, `AgentLiveness::is_running` (Live/Idle); agents silent > `MAX_AGENT_AGE_SECS` read `Ended` (Phase 25, 25-07) | Orphaned worktrees from aborted runs hijacked the Status cell (CR-01); one predicate stops activation, phase vote and counts from disagreeing | ✓ Good — CR-01/WR-01 resolved; WR-06 shows `fixers.rs` still counts Finished orphans [inferred: follow-up] |
+| Fixer progress shown as an estimate (`~F/T`) from REVIEW.md `findings.total` + `fix(NN)` commit ids (Phase 25) | No authoritative fix ledger exists mid-run; labelling it approximate is honest | ⚠️ Revisit — WR-03/WR-04 (wrong REVIEW file, inflated count) open |
 
 ## Evolution
 
@@ -164,4 +170,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-23 after Phase 24 (Roadmap tab redesign & detail-tab consolidation)*
+*Last updated: 2026-09-25 after Phase 25 (Running Agents & Live Wave View)*
