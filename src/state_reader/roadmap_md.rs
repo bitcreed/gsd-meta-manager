@@ -1767,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn test_depends_on_accepts_every_phase_id_form_and_rejects_a_plural_range() {
+    fn test_depends_on_accepts_every_phase_id_form_and_reads_a_plural_range_as_its_endpoints() {
         assert_eq!(
             depends_of("Phase 0.3, Phase M-2, Phase AB-29"),
             vec!["0.3", "M-2", "AB-29"],
@@ -1775,11 +1775,102 @@ mod tests {
         );
         assert_eq!(
             depends_of("Phase 15 only — parallel-eligible with Phases 17-21"),
-            vec!["15"],
-            "`Phases 17-21` is a prose range: the plural leaves no whitespace \
-             after `Phase`, so no identifier is invented from it"
+            vec!["15", "17", "21"],
+            "gsd-core 1.15.0 PHASE_DEP_REF (#4764) reads `Phases 17-21` as its \
+             range ENDPOINTS only — 17 and 21, never the interior 18-20"
         );
         assert!(depends_of("Nothing").is_empty());
+    }
+
+    // ── quick 260926-gtl: gsd-core 1.15.0 PHASE_DEP_REF parity (#4764) ──
+
+    /// Parse `### Phase {row}: X` carrying `text` as its dependency line and
+    /// return the declared dependencies of the phase numbered `row`.
+    fn depends_of_row(row: &str, text: &str) -> Vec<String> {
+        let content = format!("### Phase {row}: X\n\n**Depends on**: {text}\n");
+        parse_roadmap_phases(&content)
+            .into_iter()
+            .find(|p| p.number == row)
+            .unwrap_or_else(|| panic!("the fixture declares phase {row}"))
+            .depends_on
+    }
+
+    #[test]
+    fn depends_on_matches_gsd_1_15_dep_phases() {
+        // Every value MEASURED 2026-09-26 with the built 1.15.0 oracle's
+        // `init manager` dep_phases over a roadmap holding exactly this line.
+        let rows: &[(&str, &str, &[&str])] = &[
+            ("2", "phase 1", &["1"]),
+            (
+                "3",
+                "Phases 1, 2, and 12A; see 2026-09-14 and sha 8bf403100d",
+                &["1", "2", "12A"],
+            ),
+            ("12A", "Phase 1-3 and Phase 12A", &["1", "3"]),
+            ("21", "Phase 15 only — parallel-eligible with Phases 17-21", &["15", "17"]),
+            ("22", "Phase 1 & 2, phases 3 to 12A through 20", &["1", "2", "3", "12A", "20"]),
+            (
+                "22",
+                "Phase 15 only — parallel-eligible with Phases 17-21, but must land before Phase 20 closes",
+                &["15", "17", "21", "20"],
+            ),
+            ("07", "Phase 7, Phase 8, phase 08, PHASES 9 AND 10", &["8", "9", "10"]),
+            ("12A", "phase 12a, Phase 012A, Phase 11", &["11"]),
+            (
+                "30",
+                "Phase 16 and 17; Phases 18-20; Phase 19. then Phase 21,",
+                &["16", "17", "18", "20", "19", "21"],
+            ),
+            ("14", "Nothing (no v2.0 dependencies — parallel-safe, can ship any time)", &[]),
+            ("32", "None", &[]),
+        ];
+        for (row, text, expected) in rows {
+            assert_eq!(
+                depends_of_row(row, text),
+                expected.to_vec(),
+                "phase {row} `**Depends on**: {text}` must read as gsd-core 1.15.0's \
+                 router reads it (PHASE_DEP_REF, #4764)"
+            );
+        }
+    }
+
+    #[test]
+    fn depends_on_parenthetical_qualifier_stays_stripped_unlike_gsd_1_15() {
+        assert_eq!(
+            depends_of_row(
+                "20",
+                "Phase 16, Phase 17, Phase 19 (and Phase 22 must land before this phase closes)"
+            ),
+            vec!["16", "17", "19"],
+            "divergence A (T-20-16): 1.15.0 reads 16, 17, 19, 22 here, and with \
+             phase 22's line reading 15, 17, 21, 20 that is a measured 20<->22 \
+             cycle making both unsatisfiable. A parenthetical qualifier is never \
+             promoted into an identifier"
+        );
+    }
+
+    #[test]
+    fn depends_on_keeps_project_code_prefixed_refs_unlike_gsd_1_15() {
+        assert_eq!(
+            depends_of_row("31", "Subphase 4, Build phases 8-13, Phase M-2, phase 5 through 6"),
+            vec!["8", "13", "M-2", "5", "6"],
+            "divergence B: 1.15.0 reads 8, 13, 5, 6 — its token has no project-code \
+             prefix, so `Phase M-2` is skipped there and kept here"
+        );
+    }
+
+    #[test]
+    fn depends_on_reads_negation_prose_like_gsd_1_15() {
+        assert_eq!(
+            depends_of_row(
+                "12",
+                "Nothing in this milestone — opportunistic, and blocks on nothing in Phases 9-11"
+            ),
+            vec!["9", "11"],
+            "upstream: \"Negation prose ... is NOT detected: the issue's own minimum \
+             keeps such tokens\" — silently dropping a real dependency is the \
+             dangerous direction, so the tokens are kept as 1.15.0 keeps them"
+        );
     }
 
     #[test]
