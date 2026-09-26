@@ -1409,6 +1409,39 @@ pub struct AppContext {
     ///   phase's only remaining carry-forward obligation and it is a negative
     ///   one.
     pub driver_output: HashMap<String, DriverOutput>,
+    /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
+    ///
+    /// * A **sibling map**, shaped like `observed_runs` above, for the same
+    ///   reason: it must not live on `ProjectState`. That type derives
+    ///   `PartialEq` and `app.rs` uses the derived equality to suppress the
+    ///   "Updated: {alias}" status message; agent state moves on every scan, so
+    ///   a field there would flood the status bar for as long as a wave runs
+    ///   (ARCHITECTURE AP1).
+    /// * It holds ids, counts, strings and times — **never a file handle, a
+    ///   child process or a join handle** (D-20).
+    /// * It is **replaced wholesale** by every scan, and every scan covers the
+    ///   registered projects and nothing else (the `AgentsScanned` handler also
+    ///   drops any alias the registry does not hold). That replacement is its
+    ///   prune: an unregistered project's entry cannot outlive the next scan,
+    ///   so this map cannot reintroduce the Phase 16 leak and needs no entry in
+    ///   `App::prune_driver_maps`.
+    /// * A project with no agent rows and no worktree-less agents has **no
+    ///   entry**, which is what keeps its dashboard row byte-identical to one
+    ///   the scan never saw (D-C14).
+    /// * Derived in the handler, never at render time: the render reads
+    ///   [`AgentView::summary_forms`](crate::agents::waves::AgentView::summary_forms)
+    ///   and the view's fields only.
+    pub agent_views: HashMap<String, crate::agents::waves::AgentView>,
+    /// Whether an agents scan is running on a blocking task (RESEARCH
+    /// Pitfall 6).
+    ///
+    /// Set on the `Action::Tick` path **before** the `spawn_blocking`, and
+    /// cleared — first thing, unconditionally — by the `AgentsScanned`
+    /// handler. While it is set no second scan is spawned, so a slow scan (a
+    /// cold page cache, a fleet of worktrees) can never stack up behind
+    /// itself. The blocking closure always sends a result, an empty one after
+    /// a panic, so the flag cannot stick.
+    pub agents_scan_in_flight: bool,
     /// How the dashboard orders its rows (D-25, OBS-07).
     ///
     /// [`SortMode::Alphabetical`] is the default and that is load-bearing — see
@@ -2385,6 +2418,8 @@ mod tests {
             last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
+            agent_views: HashMap::new(),
+            agents_scan_in_flight: false,
             sort_mode: SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),

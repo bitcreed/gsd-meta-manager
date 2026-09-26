@@ -169,6 +169,26 @@ pub enum Action {
         /// `runs` follows.
         last_outcomes: std::collections::HashMap<String, String>,
     },
+    /// One running-agents scan completed (AGENT-05, D-C01).
+    ///
+    /// The payload is the **whole** scan over the registered projects, not a
+    /// delta, because the scan is authoritative: a project whose agents all
+    /// ended, or which was unregistered between two scans, is expressed by its
+    /// absence and by nothing else. The handler replaces
+    /// `AppContext.agent_views` rather than merging into it for exactly that
+    /// reason — the rule [`Action::RunsReconciled`] follows.
+    ///
+    /// Every field of every `ProjectAgents` is plain data — paths, counts,
+    /// strings and times — never a file handle, a child process or a join
+    /// handle, so `Action` stays `Clone` (D-20). The scan is read-only, so
+    /// there is no handle to leak in the first place.
+    ///
+    /// No `Box`: a `Vec` is a fixed 24 bytes whatever it holds, so this variant
+    /// is far below the `clippy::large_enum_variant` threshold the sizing note
+    /// on [`Action::DriverJournalAppended`] records.
+    AgentsScanned {
+        per_project: Vec<(String, crate::agents::ProjectAgents)>,
+    },
     /// The user asked for a run to be started on `alias` (CTRL-03, D-25).
     ///
     /// The sibling of [`Action::DriverStopRequested`], and it exists for the

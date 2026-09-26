@@ -11146,6 +11146,8 @@ mod tests {
             last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
+            agent_views: HashMap::new(),
+            agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),

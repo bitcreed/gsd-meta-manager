@@ -9,7 +9,7 @@ use crate::app::{classify_status, format_phase_display, DetailSubView, StatusCat
 use crate::state_reader::disk_status::DiskStatus;
 use crate::state_reader::ProjectPresence;
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
@@ -369,6 +369,67 @@ fn dashboard_columns(terminal_width: u16) -> (Vec<&'static str>, Vec<Constraint>
     }
 }
 
+/// The Status column's rendered width, in cells, for a terminal width (D-C14).
+///
+/// Re-runs the layout `Table` itself runs — `Layout::horizontal` over
+/// [`dashboard_columns`]' constraints, `Flex::Start`, one cell of column
+/// spacing — so the answer comes from the same single source of truth the
+/// render uses and never from a literal. The area is the block's inner width
+/// (`terminal_width` minus the two border cells) minus the two-cell `"> "`
+/// highlight symbol `Table` reserves while a row is selected. With no row
+/// selected ratatui reserves no highlight column, the real column is two cells
+/// wider, and this answer under-estimates — which is the safe direction for a
+/// fit check.
+///
+/// Saturates at 0 for a terminal too narrow to hold the column at all.
+fn status_column_cells(terminal_width: u16) -> u16 {
+    let (_, widths) = dashboard_columns(terminal_width);
+    let highlight = u16::try_from(Line::from(DASHBOARD_HIGHLIGHT_SYMBOL).width()).unwrap_or(u16::MAX);
+    let inner = terminal_width.saturating_sub(2).saturating_sub(highlight);
+    Layout::horizontal(widths)
+        .flex(Flex::Start)
+        .spacing(1)
+        .split(Rect::new(0, 0, inner, 1))
+        .get(DASHBOARD_STATUS_COLUMN)
+        .map_or(0, |r| r.width)
+}
+
+/// The Status column's index in every [`dashboard_columns`] tier.
+const DASHBOARD_STATUS_COLUMN: usize = 2;
+
+/// The selected-row marker [`dashboard_table`] draws, and whose width
+/// [`status_column_cells`] subtracts — one constant so the two cannot drift.
+const DASHBOARD_HIGHLIGHT_SYMBOL: &str = "> ";
+
+/// The running-agents summary for a Status cell `cells` wide (D-C14): the
+/// first — widest — of [`AgentView::summary_forms`] whose display width fits,
+/// so the cell always holds a whole ladder form and is never clipped
+/// mid-segment. `None` when the view has no forms or none fits, and the cell
+/// then renders exactly as it would without the view.
+///
+/// Widths are display cells from `Line::width`, never `str::len`: `·` is two
+/// bytes and one cell.
+///
+/// Cyan while agents run; yellow for the all-stalled form. The meaning is
+/// carried by the text (`13run`, `2 stalled`), never by the colour alone.
+///
+/// [`AgentView::summary_forms`]: crate::agents::waves::AgentView::summary_forms
+fn agent_summary_line(
+    view: &crate::agents::waves::AgentView,
+    cells: u16,
+) -> Option<Line<'static>> {
+    let form = view
+        .summary_forms()
+        .into_iter()
+        .find(|form| Line::from(form.as_str()).width() <= usize::from(cells))?;
+    let color = if form.ends_with("stalled") {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+    Some(Line::from(Span::styled(form, Style::default().fg(color))))
+}
+
 /// Build the dashboard `Table` for a terminal width from already-built rows.
 ///
 /// Pairs with [`dashboard_columns`] so the header cells and the constraint vector
@@ -384,7 +445,7 @@ fn dashboard_table<'a>(rows: Vec<Row<'a>>, terminal_width: u16) -> Table<'a> {
     Table::new(rows, widths)
         .header(header)
         .row_highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED))
-        .highlight_symbol("> ")
+        .highlight_symbol(DASHBOARD_HIGHLIGHT_SYMBOL)
 }
 
 crate::ui::screens::adjudicate_screen!(
@@ -741,6 +802,8 @@ impl NormalScreen {
             frame.render_widget(outer_block, area);
 
             let terminal_width = area.width;
+            // Measured once per frame, from the same layout the table runs.
+            let status_cells = status_column_cells(terminal_width);
 
             let rows: Vec<Row> = ctx
                 .filtered_aliases
@@ -826,7 +889,17 @@ impl NormalScreen {
                         None => false,
                     };
 
-                    let status_cell: Line = if is_milestone_complete {
+                    // While a project has agents to report, the running-agents
+                    // summary wins the Status cell (D-C14) — no new column, no
+                    // badge change. Otherwise, including a view with no form
+                    // that fits, the expression below runs exactly as before.
+                    let agent_summary = ctx
+                        .agent_views
+                        .get(alias)
+                        .and_then(|view| agent_summary_line(view, status_cells));
+                    let status_cell: Line = if let Some(summary) = agent_summary {
+                        summary
+                    } else if is_milestone_complete {
                         // D-03: Show milestone name for completed milestones
                         let milestone_text = match state {
                             Some(s) if !s.milestone.is_empty() => {
@@ -1235,6 +1308,8 @@ mod tests {
             last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
+            agent_views: HashMap::new(),
+            agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),

@@ -587,6 +587,8 @@ impl App {
             last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
+            agent_views: HashMap::new(),
+            agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),
@@ -1184,6 +1186,46 @@ impl App {
                     // than a `/proc` glance across the fleet.
                     self.rescan_driver_tab_if_open();
 
+                    // The running-agents scan rides THIS counter too and must
+                    // never get a timer of its own, for the reason the comment
+                    // on the reconciliation probe above gives (D-C01). Nor does
+                    // it add a `notify` watcher on `~/.claude` or on any agent
+                    // worktree: this poll already bounds staleness at about
+                    // five seconds, and a watcher per worktree would turn a
+                    // thirteen-agent wave into thirteen more inotify trees for
+                    // no extra freshness (D-B04).
+                    //
+                    // `spawn_blocking`, because the scan runs `git worktree
+                    // list`, `git status` and small reads per project. The
+                    // in-flight flag is set BEFORE the spawn and cleared by the
+                    // `AgentsScanned` handler, so a slow scan can never stack
+                    // up behind itself; the closure ALWAYS sends, an empty
+                    // result after a panic, so the flag cannot stick
+                    // (RESEARCH Pitfall 6).
+                    if !self.ctx.agents_scan_in_flight {
+                        if let Some(ref tx) = self.ctx.event_tx {
+                            let tx: UnboundedSender<Action> = tx.clone();
+                            let projects: Vec<(String, PathBuf)> = self
+                                .ctx
+                                .config
+                                .projects
+                                .iter()
+                                .map(|(alias, project)| (alias.clone(), project.path.clone()))
+                                .collect();
+                            self.ctx.agents_scan_in_flight = true;
+                            tokio::task::spawn_blocking(move || {
+                                let now = std::time::SystemTime::now();
+                                let per_project = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(|| {
+                                        crate::agents::scan_projects_guarded(&projects, now)
+                                    }),
+                                )
+                                .unwrap_or_default();
+                                let _ = tx.send(Action::AgentsScanned { per_project });
+                            });
+                        }
+                    }
+
                     // The prune rides the SAME counter, for the same reason the
                     // reconciliation probe above does (D-27 says so explicitly).
                     // It is pure in-memory map work — no syscall, no file read —
@@ -1642,6 +1684,54 @@ impl App {
                         "driver reconciliation scan applied",
                     );
                     self.ctx.observed_runs = observed;
+                    self.needs_redraw = true;
+                }
+            }
+            // The agents scan is authoritative, so `agent_views` is **replaced**
+            // and never merged — the `RunsReconciled` rule above (D-C01).
+            //
+            // The wave model is derived HERE, once per scan, against the
+            // already-parsed `ProjectState`, never at render time. `AgentView`
+            // carries the scan instant, so a project with agents compares
+            // unequal on every scan and redraws once per scan: that is what
+            // advances the age column. A fleet with no agents never redraws
+            // from this arm, because its map stays empty.
+            Action::AgentsScanned { per_project } => {
+                // First and unconditionally: whatever the payload holds, the
+                // scan that was in flight has ended (RESEARCH Pitfall 6).
+                self.ctx.agents_scan_in_flight = false;
+
+                let default_state = crate::state_reader::ProjectState::default();
+                let mut views: HashMap<String, crate::agents::waves::AgentView> = HashMap::new();
+                for (alias, agents) in per_project {
+                    // Registered aliases only: a project unregistered while the
+                    // scan ran must not come back through its result.
+                    if !self.ctx.config.projects.contains_key(&alias) {
+                        continue;
+                    }
+                    // No entry for a project with nothing to show, so its
+                    // dashboard row stays byte-identical to today's (D-C14).
+                    if agents.rows.is_empty() && agents.worktreeless.is_empty() {
+                        continue;
+                    }
+                    let state = self
+                        .ctx
+                        .project_states
+                        .get(&alias)
+                        .unwrap_or(&default_state);
+                    let view = crate::agents::waves::derive(&agents, state);
+                    views.insert(alias, view);
+                }
+
+                if self.ctx.agent_views != views {
+                    // Counts only. Descriptions, agent types and branch names
+                    // are agent-authored text and never reach a log (D-C13).
+                    tracing::debug!(
+                        projects = views.len(),
+                        rows = views.values().map(|v| v.agents.len()).sum::<usize>(),
+                        "agents scan applied",
+                    );
+                    self.ctx.agent_views = views;
                     self.needs_redraw = true;
                 }
             }
@@ -4661,6 +4751,12 @@ mod tests {
             // rewritten on every tab switch.
             project_states: _,
             detail_sub_view_per_project: _,
+            // `agent_views` is replaced wholesale by every agents scan, which
+            // covers the registered projects only and drops any alias the
+            // registry does not hold — the replacement is its prune, so an
+            // unregistered alias cannot outlive the next scan (AGENT-05).
+            agent_views: _,
+            agents_scan_in_flight: _,
 
             // Not alias-keyed at all. `session_spawned_runs` is a set of run
             // ids that grows by one per run this session starts, with
@@ -5174,5 +5270,88 @@ mod tests {
         let after = render_top_screen(&app);
         assert!(after.contains("[Milestones]"), "{after}");
         assert!(after.contains("v1.2"), "{after}");
+    }
+
+    // ── Running agents on the dashboard (AGENT-05, plan 25-04) ─────────────
+
+    /// A `ProjectState` whose phase 13 has three plans in two waves — w1:
+    /// 13-01, w2: 13-02 and 13-03 — with 13-01's SUMMARY paired in main.
+    fn wave_state() -> ProjectState {
+        use crate::state_reader::disk_status::DiskInference;
+        use crate::state_reader::plan_waves::PlanWave;
+
+        let mut state = ProjectState::default();
+        state.phase_disk_statuses.insert(
+            "13".to_string(),
+            DiskInference {
+                plan_waves: vec![
+                    PlanWave {
+                        wave: Some(1),
+                        plans: vec!["13-01".to_string()],
+                    },
+                    PlanWave {
+                        wave: Some(2),
+                        plans: vec!["13-02".to_string(), "13-03".to_string()],
+                    },
+                ],
+                summarized_plans: vec!["13-01".to_string()],
+                plan_count: 3,
+                summary_count: 1,
+                ..Default::default()
+            },
+        );
+        state
+    }
+
+    /// One scan holding one `Live` executor worktree on plan 13-02.
+    fn live_executor_scan(alias: &str) -> Action {
+        use crate::agents::{waves::PlanRef, AgentLiveness, AgentRow, ProjectAgents};
+
+        let row = AgentRow {
+            path: PathBuf::from("/nonexistent/.claude/worktrees/agent-a1b2c3d4"),
+            liveness: AgentLiveness::Live,
+            plan: PlanRef::from_id("13-02"),
+            ..Default::default()
+        };
+        Action::AgentsScanned {
+            per_project: vec![(
+                alias.to_string(),
+                ProjectAgents {
+                    rows: vec![row],
+                    scanned_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                    ..Default::default()
+                },
+            )],
+        }
+    }
+
+    /// The tracer: a scan result for a live executor turns into a derived wave
+    /// view and a fitted summary in that project's dashboard Status cell.
+    #[tokio::test]
+    async fn an_agents_scan_reaches_the_dashboard_status_cell() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .project_states
+            .insert(OBS_ALIAS.to_string(), wave_state());
+
+        app.update(live_executor_scan(OBS_ALIAS));
+        app.ctx.recompute_filtered_aliases();
+
+        assert!(
+            app.ctx.agent_views.contains_key(OBS_ALIAS),
+            "the handler must derive a view for a registered alias with a row"
+        );
+        let screen = render_top_screen(&app);
+        // 120 columns: the Status column is 13 cells, so the ladder settles on
+        // its fourth form (12 cells); the 17-cell third form does not fit.
+        assert!(
+            screen.contains("w2/2 \u{b7} 1 run"),
+            "the Status cell must carry the fitted agent summary:\n{screen}"
+        );
+        assert!(
+            !screen.contains("w2/2 \u{b7} 1 run \u{b7}"),
+            "a wider form must never be clipped into the cell:\n{screen}"
+        );
     }
 }
