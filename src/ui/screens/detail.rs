@@ -7687,6 +7687,23 @@ fn stage_block_lines(
                 format!(" \u{2713}{name}"),
                 Style::default().fg(Color::Green),
             ));
+            // gsd-core 1.15.0's REVIEW-DISPOSITION ledger (quick 260926-gtn):
+            // integers only, so no ledger text reaches the terminal. Only
+            // beside a present review — upstream writes the ledger after
+            // reading REVIEW.md, so an orphan ledger is not a state it makes.
+            if *name == "Code Review" {
+                if let Some(ledger) = inf.review_disposition {
+                    let color = if ledger.open > 0 {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    };
+                    b.push(Span::styled(
+                        format!(" ({} open, {} deferred)", ledger.open, ledger.deferred),
+                        Style::default().fg(color),
+                    ));
+                }
+            }
         }
         let missing = rows.iter().filter(|(_, present)| !present).count();
         if missing > 0 {

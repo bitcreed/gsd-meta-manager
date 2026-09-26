@@ -345,12 +345,68 @@ impl ReviewDisposition {
     }
 }
 
-/// The most of a `*-REVIEW-DISPOSITION.md` the scan reads.
+/// The most of a `*-REVIEW-DISPOSITION.md` the scan reads (T-gtn-03).
+///
+/// The same 256 KiB `crate::agents::fixers::REVIEW_READ_CAP` applies to a
+/// REVIEW.md; spelled here rather than imported because `state_reader` does not
+/// depend on `agents` (the dependency runs the other way).
 const REVIEW_DISPOSITION_READ_CAP: u64 = 256 * 1024;
 
-/// Count a disposition ledger's table rows.
-fn parse_review_disposition(_content: &str) -> Option<ReviewDisposition> {
-    None
+/// A ledger row's finding id: upstream's `(?:CR|BL|WR|IN)-\d+`, the whole cell.
+fn disposition_id_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"^(?:CR|BL|WR|IN)-\d+$").expect("static regex"))
+}
+
+/// Count a disposition ledger's TABLE rows — the grammar of upstream's
+/// prior-row regex (`code-review-disposition.md:390`).
+///
+/// A row counts when it starts with `|` outside a fenced block and its first
+/// cell is exactly a finding id. The third cell is the disposition, compared
+/// case-sensitively against `open`/`fixed`/`skipped`/`deferred`; anything else
+/// is `open`, upstream's safe default. A repeated id counts once, first
+/// occurrence winning. Line-linear; `None` when no row counted.
+fn parse_review_disposition(content: &str) -> Option<ReviewDisposition> {
+    let mut counts = ReviewDisposition::default();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut in_fence = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || !line.starts_with('|') {
+            continue;
+        }
+        let cells = split_markdown_row(line);
+        let Some(id) = cells.first().map(|c| c.trim()) else {
+            continue;
+        };
+        if !disposition_id_re().is_match(id) || !seen.insert(id.to_string()) {
+            continue;
+        }
+        match cells.get(2).map(|c| c.trim()) {
+            Some("fixed") => counts.fixed += 1,
+            Some("skipped") => counts.skipped += 1,
+            Some("deferred") => counts.deferred += 1,
+            _ => counts.open += 1,
+        }
+    }
+    (counts.total() > 0).then_some(counts)
+}
+
+/// The sorted-first ledger in `names`, read through the cap and counted.
+/// Every failure mode — none, unreadable, no rows — is `None`.
+fn read_review_disposition(phase_dir: &Path, mut names: Vec<String>) -> Option<ReviewDisposition> {
+    use std::io::Read;
+    names.sort();
+    let file = std::fs::File::open(phase_dir.join(names.first()?)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(REVIEW_DISPOSITION_READ_CAP)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    parse_review_disposition(&String::from_utf8_lossy(&bytes))
 }
 
 /// The largest `waves.json` the scan reads (T-2l4-03, [inferred I-13]).
@@ -405,7 +461,17 @@ pub struct DiskInference {
     pub has_ui_check: bool,
     pub has_ai_spec: bool,
     pub has_review: bool,
-    /// The phase's code-review disposition ledger counts.
+    /// Finding counts from the phase's `{PADDED}-REVIEW-DISPOSITION.md` —
+    /// gsd-core 1.15.0's per-finding ledger, a sibling of REVIEW.md written by
+    /// execute-phase's `code_review_gate` and code-review-fix's
+    /// `record_disposition`.
+    ///
+    /// Counted from the ledger's TABLE, not its frontmatter `open:`: the table
+    /// is the surface a human edits, and a hand-set `deferred` leaves the
+    /// frontmatter count stale. **Display only** — no upstream router, init or
+    /// progress code reads the ledger. `None` when there is no ledger, it cannot
+    /// be read, or it carries no finding row. The ledger never sets
+    /// `has_review`.
     pub review_disposition: Option<ReviewDisposition>,
     pub has_ui_review: bool,
     /// GSD 1.8.0 informational artifacts — never affect plan/summary counts.
@@ -941,6 +1007,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut verification_names: Vec<String> = Vec::new();
     // UAT artifacts are collected for the same reason, and read the same way.
     let mut uat_names: Vec<String> = Vec::new();
+    // Disposition ledgers: collected, and the sorted-first one read after.
+    let mut disposition_names: Vec<String> = Vec::new();
     let mut has_context = false;
     let mut has_research = false;
     let mut has_patterns = false;
@@ -987,6 +1055,13 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             continue;
         }
 
+        // gsd-core 1.15.0's code-review disposition ledger. BEFORE every
+        // *REVIEW arm, and it must never set `has_review`: it is the record of
+        // a review's findings, not the review.
+        if name == "REVIEW-DISPOSITION.md" || name.ends_with("-REVIEW-DISPOSITION.md") {
+            disposition_names.push(name);
+            continue;
+        }
         // Skip review (UI-REVIEW vs REVIEW) and validate before generic SUMMARY/PLAN
         // matches so we don't double-count.
         if name == "UI-REVIEW.md" || name.ends_with("-UI-REVIEW.md") {
@@ -1137,6 +1212,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let has_uat = !uat_names.is_empty();
     let uat_status = read_uat_status(phase_dir, uat_names);
     let continue_here_blocking = phase_continue_here_blocking(phase_dir);
+    let review_disposition = read_review_disposition(phase_dir, disposition_names);
 
     // Pass 2 (pairing) — a summary counts only if it names a surviving
     // (non-superseded) plan (matched-summary rule, #1988). Two tiers, tried in
@@ -1267,7 +1343,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_ui_check,
         has_ai_spec,
         has_review,
-        review_disposition: None,
+        review_disposition,
         has_ui_review,
         has_coverage,
         has_windows,
