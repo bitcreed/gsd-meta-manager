@@ -1390,7 +1390,8 @@ impl DetailScreen {
     ///   shipped-milestones row it opens Docs › Milestones (the `Archive`
     ///   sub-view, through [`switch_to_sub_view`] — an index would name only
     ///   the Docs tab, D-B04); on a build phase it explains
-    ///   that the phase is a planned placeholder with no Phases entry; on a
+    ///   that the phase is a planned placeholder with no Phases entry, and on
+    ///   a shipped phase that it shipped in an earlier milestone; on a
     ///   GSD phase it opens the Phases tab with that phase selected — the
     ///   index found by `phase_key`, the tab by [`tab_index`], never a literal
     ///   (T-24-15).
@@ -1459,12 +1460,21 @@ impl DetailScreen {
                 ctx,
             );
         }
-        match state.planned_phases.iter().find(|p| phase_key(&p.number) == key) {
-            // The id is third-party text: escaped before it reaches the
-            // status line (T-24-17).
-            Some(planned) => ScreenAction::SetStatusMessage(format!(
+        // The id is third-party text: escaped before it reaches the status
+        // line (T-24-17).
+        if let Some(planned) = state.planned_phases.iter().find(|p| phase_key(&p.number) == key) {
+            return ScreenAction::SetStatusMessage(format!(
                 "Build phase {} is a planned placeholder, not a GSD phase — it has no Phases entry",
                 crate::text::render_for_terminal(&planned.number)
+            ));
+        }
+        // A shipped phase (quick 260926-fi9) lives in a closed-milestone
+        // collapse GSD no longer counts, so it has no Phases entry either.
+        // Escaped like the planned arm (T-24-17, T-fi9-01).
+        match state.shipped_phases.iter().find(|p| phase_key(&p.number) == key) {
+            Some(shipped) => ScreenAction::SetStatusMessage(format!(
+                "Phase {} shipped in an earlier milestone — it has no Phases entry",
+                crate::text::render_for_terminal(&shipped.number)
             )),
             None => ScreenAction::None,
         }
@@ -18800,6 +18810,128 @@ mod tests {
             model.start_now.iter().all(|&u| !shipped_ids.contains(&model.phases[u].id.as_str())),
             "a shipped phase is never start-now"
         );
+    }
+
+    /// Open the shipped summary's fold for the test project.
+    fn unfold_shipped(ctx: &mut AppContext) {
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .roadmap_fold_toggles
+            .insert(roadmap_graph::BandKey::Shipped);
+    }
+
+    /// quick 260926-fi9: every shipped band of the v1-era fixture lists its
+    /// phases when unfolded; the rescoped 4 and the unplanned 10 are not done
+    /// and, being history, are never "start now".
+    #[test]
+    fn roadmap_model_for_v1_era_lists_every_shipped_band() {
+        let (_screen, mut ctx) = roadmap_fixture("v1-era-shapes");
+        unfold_shipped(&mut ctx);
+        let model = fixture_model(&ctx);
+        for (short, ids) in [
+            ("v1.0", &["1", "2", "2.1", "3", "4"][..]),
+            ("v1.1", &["5", "6", "07", "08"][..]),
+            ("v1.2", &["9", "10", "11"][..]),
+        ] {
+            let band = model
+                .bands
+                .iter()
+                .position(|b| b.short == short)
+                .unwrap_or_else(|| panic!("no band {short}"));
+            assert!(model.bands[band].shipped, "{short} is shipped");
+            let members: Vec<&str> = model
+                .phases
+                .iter()
+                .filter(|p| p.band == Some(band))
+                .map(|p| p.id.as_str())
+                .collect();
+            assert_eq!(members, ids, "{short}");
+        }
+        let rows = phase_row_ids(&model);
+        for id in ["1", "2.1", "07", "11"] {
+            assert_eq!(rows.iter().filter(|r| *r == id).count(), 1, "{id}: {rows:?}");
+        }
+        for id in ["4", "10"] {
+            let facts = &model.phases[model.phase_index(id).expect("listed")];
+            assert_ne!(facts.status, roadmap_graph::PhaseStatus::Done, "phase {id}");
+            assert!(
+                !model.start_now.contains(&model.phase_index(id).expect("listed")),
+                "shipped {id} is never start-now"
+            );
+        }
+        let facts = &model.phases[model.phase_index("9").expect("listed")];
+        assert_eq!(facts.status, roadmap_graph::PhaseStatus::Done);
+        assert_eq!(facts.plans, Some((2, 2)));
+    }
+
+    /// quick 260926-fi9 (T-fi9-03): a renumbered roadmap's current `Phase 1`
+    /// is one row, the GSD one, and its shipped namesake never completes it.
+    #[test]
+    fn roadmap_model_for_a_renumbered_roadmap_lists_the_current_phase_once() {
+        let roadmap = "# Roadmap\n\n## Milestones\n\n\
+            - \u{2705} **v1.0 Old** - Phases 1-1 (shipped 2026-01-01)\n\
+            - \u{1F6A7} **v2.0 New** - Phases 1-1 (in progress)\n\n\
+            ## Phases\n\n<details>\n\
+            <summary>\u{2705} v1.0 Old (Phases 1-1) - SHIPPED 2026-01-01</summary>\n\n\
+            - [x] Phase 1: Old One (2/2 plans) \u{2014} completed 2026-01-01\n\n</details>\n\n\
+            - [ ] **Phase 1: New One** - fresh\n\n## Phase Details\n\n### Phase 1: New One\n\n\
+            **Depends on**: Nothing\n";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        std::fs::create_dir_all(&planning).expect("create .planning");
+        std::fs::write(planning.join("ROADMAP.md"), roadmap).expect("write ROADMAP.md");
+        std::fs::write(
+            planning.join("STATE.md"),
+            "---\nmilestone: v2.0\nstatus: executing\n---\n# Project State\n",
+        )
+        .expect("write STATE.md");
+        let state = crate::state_reader::parse_project_state(&planning);
+        assert_eq!(state.phases[0].name, "New One");
+        assert!(!state.phases[0].completed);
+        assert_eq!(state.shipped_phases[0].name, "Old One");
+
+        let mut cache = crate::ui::screens::ProjectViewCache::default();
+        cache.roadmap_fold_toggles.insert(roadmap_graph::BandKey::Shipped);
+        let model = roadmap_model_for(&state, Some(&cache), false);
+        let ones: Vec<&roadmap_graph::PhaseFacts> =
+            model.phases.iter().filter(|p| p.key == "1").collect();
+        assert_eq!(ones.len(), 1, "{:?}", model.phases);
+        assert_eq!(ones[0].name, "New One");
+        assert_ne!(ones[0].status, roadmap_graph::PhaseStatus::Done);
+        assert_eq!(phase_row_ids(&model), ["1"]);
+    }
+
+    #[test]
+    fn roadmap_enter_on_a_shipped_phase_explains_itself() {
+        let (mut screen, mut ctx) = roadmap_fixture("v1-era-shapes");
+        unfold_shipped(&mut ctx);
+        set_roadmap_cursor(&mut ctx, phase_target("7"));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("7")));
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        match action {
+            ScreenAction::SetStatusMessage(msg) => {
+                assert!(msg.contains("07"), "{msg}");
+                assert!(msg.contains("earlier milestone"), "{msg}");
+            }
+            _ => panic!("Enter on a shipped phase must explain itself"),
+        }
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+    }
+
+    /// T-fi9-01: a shipped phase's name is third-party text; it reaches the
+    /// Roadmap pane only escaped.
+    #[test]
+    fn a_hostile_shipped_phase_name_renders_escaped() {
+        let (screen, mut ctx) = roadmap_fixture("v1-era-shapes");
+        let state = ctx.project_states.get_mut(TEST_ALIAS).expect("fixture state");
+        assert_eq!(state.shipped_phases[0].number, "1");
+        state.shipped_phases[0].name = "\u{1b}[31mHostileName".to_string();
+        unfold_shipped(&mut ctx);
+        set_roadmap_cursor(&mut ctx, phase_target("1"));
+        let text = render_detail_to_text_at(&screen, &ctx, 160, 60);
+        assert!(text.contains("HostileName"), "the shipped row is drawn:\n{text}");
+        assert!(!text.contains('\u{1b}'), "raw ESC reached the pane:\n{text}");
     }
 
     #[test]

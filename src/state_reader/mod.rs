@@ -1542,6 +1542,68 @@ mod tests {
         assert_eq!(planned, ["14", "15", "16", "17", "18"]);
     }
 
+    /// quick 260926-fi9: closed-milestone collapse lines reach
+    /// `shipped_phases` only — never `phases`, disk inference, the current
+    /// phase or the phase count.
+    #[test]
+    fn parse_project_state_keeps_shipped_phases_out_of_the_gsd_facing_state() {
+        let td = make_planning(&[
+            (
+                "STATE.md",
+                "---\nmilestone: v2.0\nstatus: executing\ncurrent_phase: 13\n---\n# Project State\n",
+            ),
+            (
+                "ROADMAP.md",
+                include_str!("../../tests/fixtures/roadmap-shapes/v1-era-ROADMAP.md"),
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        let gsd: Vec<&str> = state.phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(gsd, ["12", "13", "13.1", "14", "16"]);
+        let shipped: Vec<&str> = state.shipped_phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(
+            shipped,
+            ["1", "2", "2.1", "3", "4", "5", "6", "07", "08", "9", "10", "11"]
+        );
+        assert_eq!(state.current_phase_number, phase_num::PhaseNum::parse("12"));
+        for p in &state.shipped_phases {
+            assert!(
+                !state.phase_disk_statuses.contains_key(&p.number),
+                "shipped {} was disk-inferred",
+                p.number
+            );
+        }
+        assert_eq!(state.phase_progress().total, 5);
+    }
+
+    /// quick 260926-fi9 (T-fi9-03): after GSD's `--reset-phase-numbers`, an
+    /// archived `[x] Phase 1` never completes the current `Phase 1`.
+    #[test]
+    fn a_renumbered_current_phase_is_not_completed_by_its_shipped_namesake() {
+        let td = make_planning(&[
+            ("STATE.md", "---\nmilestone: v2.0\nstatus: executing\n---\n# Project State\n"),
+            ("ROADMAP.md", RENUMBERED_ROADMAP),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.phases.len(), 1);
+        assert_eq!(state.phases[0].name, "New One");
+        assert!(!state.phases[0].completed);
+        assert_eq!(state.shipped_phases.len(), 1);
+        assert_eq!(state.shipped_phases[0].name, "Old One");
+        assert!(state.shipped_phases[0].completed);
+    }
+
+    /// A roadmap renumbered by GSD's `--reset-phase-numbers`: the shipped
+    /// v1.0 and the current v2.0 both have a `Phase 1`.
+    const RENUMBERED_ROADMAP: &str = "# Roadmap\n\n## Milestones\n\n\
+        - \u{2705} **v1.0 Old** - Phases 1-1 (shipped 2026-01-01)\n\
+        - \u{1F6A7} **v2.0 New** - Phases 1-1 (in progress)\n\n\
+        ## Phases\n\n<details>\n\
+        <summary>\u{2705} v1.0 Old (Phases 1-1) - SHIPPED 2026-01-01</summary>\n\n\
+        - [x] Phase 1: Old One (2/2 plans) \u{2014} completed 2026-01-01\n\n</details>\n\n\
+        - [ ] **Phase 1: New One** - fresh\n\n## Phase Details\n\n### Phase 1: New One\n\n\
+        **Depends on**: Nothing\n";
+
     /// Phase 24-01: sentriq writes `milestone_name` AFTER the `progress:`
     /// block; it still reaches `ProjectState` for the synthetic band.
     #[test]
