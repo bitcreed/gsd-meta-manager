@@ -15,12 +15,16 @@
 
 mod common;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 use common::git;
 use gsd_meta_manager::agents::adapters::{AdapterReport, AgentAdapter, CoreSnapshot, Enrichment};
-use gsd_meta_manager::agents::{scan_project_with, AgentLiveness};
+use gsd_meta_manager::agents::worktrees::BranchPlan;
+use gsd_meta_manager::agents::{scan_project_with, AgentLiveness, ProjectAgents};
 use gsd_meta_manager::text::Untrusted;
 use tempfile::TempDir;
 
@@ -159,5 +163,243 @@ fn one_agent_worktree_is_found_with_its_commit_and_dirty_counts() {
     assert!(
         scan.base_sha.is_some(),
         "the main worktree's HEAD is the base"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Which worktrees are agent rows, and what degraded ones look like
+// ---------------------------------------------------------------------------
+
+/// Scan with no adapter: what git alone yields.
+fn scan_bare(root: &Path) -> ProjectAgents {
+    scan_project_with(root, &[], SystemTime::now())
+}
+
+/// `git -C dir <args>` stdout, trimmed; panics on failure.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("git is runnable");
+    assert!(out.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn the_main_worktree_and_a_plain_user_worktree_are_not_agent_rows() {
+    let Some((_tmp, root)) = agents_fixture() else {
+        return;
+    };
+    add_worktree(&root, "feature", "../side");
+    let side = root.parent().unwrap().join("side");
+    assert!(side.is_dir(), "the user worktree exists");
+
+    let scan = scan_bare(&root);
+    let paths: Vec<&PathBuf> = scan.rows.iter().map(|r| &r.path).collect();
+    assert_eq!(
+        paths,
+        vec![&agent_worktree(&root)],
+        "only the agent worktree"
+    );
+    assert_eq!(scan.main_worktree.as_deref(), Some(root.as_path()));
+}
+
+#[test]
+fn a_codex_style_branch_yields_its_plan_and_spawn_time() {
+    let Some((_tmp, root)) = plain_repo() else {
+        return;
+    };
+    add_worktree(
+        &root,
+        "worktree-agent-p13-02-1790386422",
+        ".claude/worktrees/agent-p13-02-1790386422",
+    );
+
+    let scan = scan_bare(&root);
+    assert_eq!(scan.rows.len(), 1, "{:?}", scan.rows);
+    let row = &scan.rows[0];
+    assert_eq!(
+        row.branch_plan,
+        Some(BranchPlan {
+            plan: "13-02".to_string(),
+            spawned_unix: 1_790_386_422,
+        })
+    );
+    assert_eq!(row.agent_id.as_deref(), Some("p13-02-1790386422"));
+}
+
+#[test]
+fn a_worktree_deleted_from_disk_keeps_its_row_with_unknown_counts() {
+    let Some((_tmp, root)) = agents_fixture() else {
+        return;
+    };
+    let wt = agent_worktree(&root);
+    std::fs::remove_dir_all(&wt).expect("delete the worktree directory, keep the admin dir");
+
+    let scan = scan_bare(&root);
+    assert_eq!(scan.rows.len(), 1, "the row survives: {:?}", scan.rows);
+    let row = &scan.rows[0];
+    assert_eq!(row.path, wt);
+    assert!(row.prunable, "git reports it prunable");
+    assert_eq!(row.commits_ahead, None);
+    assert_eq!(row.dirty, None);
+    assert!(
+        root.join(".git").join("worktrees").is_dir(),
+        "and nothing was pruned"
+    );
+}
+
+#[test]
+fn a_ledger_file_confirms_the_plan() {
+    let Some((_tmp, root)) = agents_fixture() else {
+        return;
+    };
+    add_worktree(
+        &root,
+        "worktree-agent-bbbbbbbbbbbbbbbb",
+        ".claude/worktrees/agent-bbbbbbbbbbbbbbbb",
+    );
+
+    let admin = |wt: &Path| PathBuf::from(git_out(wt, &["rev-parse", "--absolute-git-dir"]));
+    let first = agent_worktree(&root);
+    let second = root.join(".claude/worktrees/agent-bbbbbbbbbbbbbbbb");
+    std::fs::write(
+        admin(&first).join("gsd-plan-head-before-13-13"),
+        "deadbeef\n",
+    )
+    .unwrap();
+    std::fs::write(
+        admin(&second).join("gsd-plan-head-before-13x"),
+        "deadbeef\n",
+    )
+    .unwrap();
+
+    let scan = scan_bare(&root);
+    let ledger = |path: &Path| {
+        scan.rows
+            .iter()
+            .find(|r| r.path == path)
+            .map(|r| r.ledger_plan.clone())
+            .expect("row present")
+    };
+    assert_eq!(ledger(&first), Some("13-13".to_string()));
+    assert_eq!(
+        ledger(&second),
+        None,
+        "a ledger name failing the plan-id rule"
+    );
+}
+
+#[test]
+fn a_non_git_project_scans_to_no_worktree_rows() {
+    let tmp = TempDir::new().unwrap();
+    let scan = scan_bare(tmp.path());
+    assert!(scan.rows.is_empty());
+    assert!(scan.worktreeless.is_empty());
+    assert_eq!(scan.main_worktree, None);
+
+    // A repository with no linked worktree has no `.git/worktrees`, so the
+    // listing is skipped outright (D-C09 cost bound). The base is resolved only
+    // from that listing, so its absence is the observable proof it never ran.
+    let Some((_tmp, root)) = plain_repo() else {
+        return;
+    };
+    assert!(!root.join(".git").join("worktrees").exists());
+    let scan = scan_bare(&root);
+    assert!(scan.rows.is_empty());
+    assert_eq!(scan.base_sha, None, "worktree list was not run");
+}
+
+#[test]
+fn an_agent_worktree_just_spawned_reads_zero_commits_and_zero_dirty() {
+    let Some((_tmp, root)) = agents_fixture() else {
+        return;
+    };
+    let scan = scan_bare(&root);
+    assert_eq!(scan.rows.len(), 1);
+    let row = &scan.rows[0];
+    assert_eq!(row.commits_ahead, Some(0));
+    assert_eq!(row.dirty, Some(0));
+    assert_eq!(
+        row.liveness,
+        AgentLiveness::Unknown,
+        "zero counts are not a liveness verdict; with no adapter nothing is established"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Non-intrusion (RESEARCH Pitfall 8, D-B02)
+// ---------------------------------------------------------------------------
+
+/// The index file's content digest and mtime.
+///
+/// A digest, not a length: `tests/driver_dry_run.rs` records that the most
+/// likely unwanted write — an opportunistic index refresh — leaves the file
+/// exactly the same size, so a length-only check would miss it.
+fn index_fingerprint(index: &Path) -> (u64, SystemTime) {
+    let bytes = std::fs::read(index).expect("the index exists");
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let mtime = std::fs::metadata(index)
+        .and_then(|m| m.modified())
+        .expect("index mtime");
+    (hasher.finish(), mtime)
+}
+
+#[test]
+fn scanning_a_live_agent_worktree_never_touches_its_index() {
+    let Some((_tmp, root)) = agents_fixture() else {
+        return;
+    };
+    let wt = agent_worktree(&root);
+    let index = {
+        let reported = PathBuf::from(git_out(&wt, &["rev-parse", "--git-path", "index"]));
+        if reported.is_absolute() {
+            reported
+        } else {
+            wt.join(reported)
+        }
+    };
+    let lock = index.with_extension("lock");
+
+    // Make `tracked.txt` stat-dirty but content-identical: exactly the entry a
+    // refreshing read would rewrite the index for.
+    let tracked = wt.join("tracked.txt");
+    let bytes = std::fs::read(&tracked).unwrap();
+    std::fs::write(&tracked, &bytes).unwrap();
+    let past = SystemTime::now() - Duration::from_secs(100);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tracked)
+        .and_then(|f| f.set_modified(past))
+        .expect("set the tracked file's mtime into the past");
+
+    let before = index_fingerprint(&index);
+    let scan = scan_bare(&root);
+    assert_eq!(scan.rows.len(), 1);
+    assert_eq!(scan.rows[0].dirty, Some(0), "content-identical is clean");
+    assert_eq!(
+        index_fingerprint(&index),
+        before,
+        "the scan rewrote the index"
+    );
+    assert!(!lock.exists(), "the scan left an index.lock behind");
+
+    // Positive control: a plain `git status` (no lock flag) DOES refresh this
+    // index, so the fixture is able to detect the write the scan must not make.
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&wt)
+        .args(["status", "--porcelain"])
+        .env_remove("GIT_OPTIONAL_LOCKS")
+        .output()
+        .expect("git status runs");
+    assert!(status.status.success());
+    assert_ne!(
+        index_fingerprint(&index),
+        before,
+        "the control did not refresh the index, so this fixture proves nothing"
     );
 }

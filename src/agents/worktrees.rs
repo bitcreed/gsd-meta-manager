@@ -342,3 +342,182 @@ pub(crate) fn worktree_counts(
     let dirty = git_ops::dirty_count(&worktree.path);
     (ahead, dirty)
 }
+
+// Pure tests only: string fixtures, no git, no process of any kind. This
+// directory is not on the spawn allowlist, and that holds for test code too.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHA_A: &str = "1111111111111111111111111111111111111111";
+    const SHA_B: &str = "2222222222222222222222222222222222222222";
+
+    fn raw(path: &str, branch: Option<&str>) -> RawWorktree {
+        RawWorktree {
+            path: PathBuf::from(path),
+            branch: branch.map(str::to_string),
+            ..RawWorktree::default()
+        }
+    }
+
+    #[test]
+    fn porcelain_z_main_first_locked_with_and_without_reason() {
+        let listing = format!(
+            "worktree /repo\0HEAD {SHA_A}\0branch refs/heads/main\0\0\
+             worktree /repo/.claude/worktrees/agent-x\0HEAD {SHA_B}\0branch refs/heads/worktree-agent-x\0locked\0\0\
+             worktree /repo/wt2\0HEAD {SHA_B}\0branch refs/heads/b2\0locked claude agent agent-x (pid 1 start 2)\0\0"
+        );
+        let blocks = parse_porcelain_z(&listing);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].path, PathBuf::from("/repo"), "main comes first");
+        assert_eq!(blocks[0].head.as_deref(), Some(SHA_A));
+        assert_eq!(
+            blocks[0].branch.as_deref(),
+            Some("main"),
+            "refs/heads/ stripped"
+        );
+        assert_eq!(blocks[0].locked, None);
+        assert_eq!(blocks[1].locked, Some(None), "locked without a reason");
+        assert_eq!(
+            blocks[2].locked,
+            Some(Some("claude agent agent-x (pid 1 start 2)".to_string())),
+            "locked with a reason"
+        );
+    }
+
+    #[test]
+    fn porcelain_z_prunable_detached_bare_and_spaces() {
+        let listing = format!(
+            "worktree /repo\0bare\0\0\
+             worktree /tmp/my dir/wt\0HEAD {SHA_B}\0detached\0prunable gitdir file points to non-existent location\0frobnicate yes\0\0"
+        );
+        let blocks = parse_porcelain_z(&listing);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].bare, "bare main");
+        assert_eq!(blocks[0].head, None, "a bare main has no HEAD record");
+        assert_eq!(
+            blocks[1].path,
+            PathBuf::from("/tmp/my dir/wt"),
+            "spaces verbatim"
+        );
+        assert!(blocks[1].detached);
+        assert_eq!(blocks[1].branch, None);
+        assert!(blocks[1].prunable);
+        assert!(!blocks[1].bare, "the unknown `frobnicate` key is ignored");
+        assert!(parse_porcelain_z("").is_empty(), "empty input");
+    }
+
+    #[test]
+    fn porcelain_lines_fallback_unquotes_c_style_paths() {
+        let listing = format!(
+            "worktree /repo\nHEAD {SHA_A}\nbranch refs/heads/main\n\n\
+             worktree \"/tmp/a\\tb\"\nHEAD {SHA_B}\ndetached\n\n\
+             worktree \"/tmp/a\\\"b\"\nHEAD {SHA_B}\nbranch refs/heads/x\n\n\
+             worktree \"/tmp/a\\\\b\"\nHEAD {SHA_B}\nlocked\n\n\
+             worktree \"/tmp/a\\nb\"\nHEAD {SHA_B}\n\n\
+             worktree \"/tmp/caf\\303\\251\"\nHEAD {SHA_B}\n\n\
+             worktree \"/tmp/bad\\q\"\nHEAD {SHA_B}\n\n"
+        );
+        let blocks = parse_porcelain_lines(&listing);
+        assert_eq!(blocks.len(), 7);
+        assert_eq!(blocks[0].path, PathBuf::from("/repo"));
+        assert_eq!(blocks[0].branch.as_deref(), Some("main"));
+        assert_eq!(blocks[1].path, PathBuf::from("/tmp/a\tb"), "\\t");
+        assert!(blocks[1].detached);
+        assert_eq!(blocks[2].path, PathBuf::from("/tmp/a\"b"), "\\\"");
+        assert_eq!(blocks[3].path, PathBuf::from("/tmp/a\\b"), "\\\\");
+        assert_eq!(blocks[3].locked, Some(None));
+        assert_eq!(blocks[4].path, PathBuf::from("/tmp/a\nb"), "\\n");
+        assert_eq!(
+            blocks[5].path,
+            PathBuf::from("/tmp/café"),
+            "octal UTF-8 bytes"
+        );
+        assert_eq!(
+            blocks[6].path,
+            PathBuf::from("\"/tmp/bad\\q\""),
+            "an escape it cannot undo keeps the raw string"
+        );
+    }
+
+    #[test]
+    fn agent_branch_grammar_accepts_dashed_bare_and_decimal_plans() {
+        let plan = |plan: &str| {
+            Some(BranchPlan {
+                plan: plan.to_string(),
+                spawned_unix: 1_790_386_422,
+            })
+        };
+        assert_eq!(
+            parse_agent_branch("worktree-agent-p13-13-1790386422"),
+            plan("13-13")
+        );
+        assert_eq!(parse_agent_branch("agent-p22-1790386422"), plan("22"));
+        assert_eq!(
+            parse_agent_branch("worktree-agent-p07.1-02-1790386422"),
+            plan("07.1-02")
+        );
+    }
+
+    #[test]
+    fn agent_branch_grammar_rejects_claude_hex_ids_and_hostile_values() {
+        assert_eq!(parse_agent_branch("worktree-agent-a0123456789abcdef"), None);
+        assert_eq!(parse_agent_branch("agent-p13-13"), None);
+        assert_eq!(parse_agent_branch("agent-p13-13-12345678"), None);
+        assert_eq!(parse_agent_branch("agent-p../x-1790386422"), None);
+        assert_eq!(parse_agent_branch("agent-p13x-1790386422"), None);
+        assert_eq!(parse_agent_branch("feature-p13-1790386422"), None);
+        assert_eq!(parse_agent_branch(""), None);
+    }
+
+    #[test]
+    fn agent_id_validation_refuses_traversal_and_separators() {
+        assert!(valid_agent_id("a0123456789abcdef"));
+        assert!(valid_agent_id("p13-13-1790386422"));
+        assert!(valid_agent_id(&"a".repeat(64)));
+        assert!(!valid_agent_id(""));
+        assert!(!valid_agent_id(".."));
+        assert!(!valid_agent_id("a/b"));
+        assert!(!valid_agent_id("a.b"));
+        assert!(!valid_agent_id(&"a".repeat(65)));
+        assert!(!valid_agent_id(" a0123"));
+    }
+
+    #[test]
+    fn agent_predicate_matches_gsd_branch_families() {
+        let root = Path::new("/repo");
+        assert!(is_agent_worktree(
+            root,
+            &raw("/repo/.claude/worktrees/x", None)
+        ));
+        assert!(is_agent_worktree(
+            root,
+            &raw("/elsewhere/a", Some("agent-abc"))
+        ));
+        assert!(is_agent_worktree(
+            root,
+            &raw("/elsewhere/b", Some("worktree-agent-abc"))
+        ));
+        assert!(is_agent_worktree(
+            root,
+            &raw("/elsewhere/c", Some("worktree-wf_abc"))
+        ));
+        assert!(!is_agent_worktree(root, &raw("/repo/side", Some("main"))));
+        assert!(!is_agent_worktree(
+            root,
+            &raw("/repo/side", Some("feature/x"))
+        ));
+        assert!(!is_agent_worktree(
+            root,
+            &raw("/repo/sub/.claude/worktrees/x", Some("main"))
+        ));
+        assert!(!is_agent_worktree(
+            root,
+            &raw("/other/.claude/worktrees/x", None)
+        ));
+        assert!(!is_agent_worktree(
+            root,
+            &raw("/repo/.claude/worktrees", None)
+        ));
+    }
+}
