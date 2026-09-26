@@ -6,6 +6,9 @@ use super::help::HelpScreen;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
+use crate::agents::adapters::ChildAgent;
+use crate::agents::waves::{AgentView, WaveRow};
+use crate::agents::AgentLiveness;
 use crate::app::{classify_status, DetailSubView, StatusCategory};
 use crate::change_tracker::ChangeTracker;
 use crate::state_reader::disk_status::{DiskInference, DiskStatus, VerificationStatus};
@@ -1000,7 +1003,10 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Backlog => 2,
         DetailSubView::GitHistory => 3,
         DetailSubView::Queue => 4,
-        DetailSubView::Sessions => 5,
+        // Sessions has two sub-views sharing one index (D-C15): `Sessions`
+        // itself and `Agents`. The index is the tab, so digits and arrows land
+        // on Sessions; `m` picks the sub-view.
+        DetailSubView::Sessions | DetailSubView::Agents => 5,
         DetailSubView::Defaults => 6,
         // Docs has two sub-views sharing one index (D-B04): `Browse` is its
         // Files sub-tab and `Archive` its Milestones sub-tab. The index is the
@@ -1866,8 +1872,9 @@ crate::ui::screens::adjudicate_screen!(
     crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
     "The widest identity surface in the tree. Draws the registry key in its \
      tab-bar title, and in its nine tabs (eight plus the Driver; Docs has \
-     two sub-views, Files = Browse and Milestones = Archive, so ten \
-     sub-views) the values parsed out of the \
+     two sub-views, Files = Browse and Milestones = Archive, and Sessions \
+     two, Sessions and Agents, so eleven sub-views) the values parsed out \
+     of the \
      project's `.planning/`. Per tab, the values and where their bytes come \
      from: RoadmapViz's header draws the status, milestone and \
      `milestone_name` parsed from `ROADMAP.md`/`STATE.md` and the pause \
@@ -1883,7 +1890,10 @@ crate::ui::screens::adjudicate_screen!(
      `.md` file inside it, per line through `archive::render_markdown_lines`, \
      when expanded; GitHistory draws a third-party repository's commit hash, \
      date, author and subject; Sessions draws a session id scraped from \
-     another process's `--resume` argument via `/proc`; Archive draws \
+     another process's `--resume` argument via `/proc`; its Agents \
+     sub-view draws each running agent's description, agent type, branch \
+     and worktree path and its sub-agents' descriptions, written by the \
+     agent runtime and the cloned repository's branches (D-C13); Archive draws \
      milestone version strings, archive file names and phase display names \
      from `.planning/archive/` directory listings, at three different \
      depths that are three different renders of three different names; \
@@ -1896,7 +1906,7 @@ crate::ui::screens::adjudicate_screen!(
      goal, `gsd_command` and run directory read back out of a run's \
      committed `run.json`. All of it is third-party text under SAFE-07 and \
      none of it was authored by this build. Fixture states: one per \
-     sub-view, all ten, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
+     sub-view, all eleven, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
      four within-tab states for the fields that dispatch to a different \
      render — Backlog expanded, Archive at its phase list and file list \
      depths, Browse at its file view. Arrival is recorded per state by \
@@ -3255,6 +3265,24 @@ impl Screen for DetailScreen {
                 };
                 switch_to_sub_view(&self.alias, other, &mut self.scroll_offset, ctx)
             }
+            // Sessions tab: 'm' switches between its two sub-views, Sessions and
+            // Agents (D-C15). Guarded so it is inert on every other tab. Neither
+            // sub-view has a text-input mode that could want the letter: the
+            // Sessions list's only state is `sessions_selected` and the Agents
+            // list's only state is `agents_selected` — no filter, no editor, no
+            // buffer (T-25-23). Through `switch_to_sub_view`, the one arrival
+            // rule; arriving on Agents loads nothing, because the agents scan
+            // already runs on the tick and fills `ctx.agent_views`.
+            KeyCode::Char('m')
+                if matches!(current_view, DetailSubView::Sessions | DetailSubView::Agents) =>
+            {
+                let other = if current_view == DetailSubView::Sessions {
+                    DetailSubView::Agents
+                } else {
+                    DetailSubView::Sessions
+                };
+                switch_to_sub_view(&self.alias, other, &mut self.scroll_offset, ctx)
+            }
             // '/' key: open the Config tab's filter input (quick 260922-hdi),
             // seeded with the current filter so it can be refined ([INFERRED A4]).
             KeyCode::Char('/') if current_view == DetailSubView::Defaults => {
@@ -4008,6 +4036,7 @@ impl Screen for DetailScreen {
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
+            DetailSubView::Agents => self.render_agents_tab(frame, content_area, ctx),
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
@@ -4911,6 +4940,7 @@ impl DetailScreen {
     fn render_sessions_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
 
+        let area = sessions_sub_tab_row(frame, area, &DetailSubView::Sessions);
         let block = Block::default().borders(Borders::ALL);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -4996,6 +5026,99 @@ impl DetailScreen {
         let mut list_state = ListState::default();
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, inner, &mut list_state);
+    }
+
+    /// Render the Sessions tab's Agents sub-view (AGENT-06, D-C15): what is
+    /// running for this project right now, read from `ctx.agent_views` — the
+    /// view the agents-scan handler derived (25-04). Nothing here computes a
+    /// wave, reads a file or runs git.
+    ///
+    /// Top to bottom: the sub-tab strip; the widest [`AgentView::summary_forms`]
+    /// entry that fits (the dashboard's ladder); one row per wave, the current
+    /// one marked `▸` AND bold so the highlight is not colour-only; then a
+    /// scrollable list — one line per agent row, each child indented directly
+    /// below its row, and a `Worktree-less (live)` group. [`agent_list_len`]
+    /// counts exactly those list lines, for this render and for the keys.
+    ///
+    /// **Every agent-authored string goes through `Untrusted::shown()`**
+    /// (D-C13): description, agent type, branch, worktree path, child and
+    /// worktree-less text. The strip, the summary and the wave rows are
+    /// authored words and numbers only.
+    ///
+    /// Observes only: no key on this sub-view acts on an agent.
+    fn render_agents_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let area = sessions_sub_tab_row(frame, area, &DetailSubView::Agents);
+        let block = Block::default().borders(Borders::ALL).title(" Agents ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.height < 3 || inner.width < 10 {
+            return;
+        }
+
+        let view = ctx
+            .agent_views
+            .get(&self.alias)
+            .filter(|view| !view.agents.is_empty() || !view.worktreeless.is_empty());
+        let Some(view) = view else {
+            frame.render_widget(Paragraph::new("No running agents"), inner);
+            return;
+        };
+
+        let wave_rows = (view.waves.len() as u16).min(inner.height / 3);
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(wave_rows),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+        frame.render_widget(
+            Paragraph::new(agents_summary_line(view, inner.width)),
+            chunks[0],
+        );
+
+        // The wave window keeps the current wave in sight: it starts one wave
+        // before it, and never runs past the last wave.
+        let shown_waves = wave_rows as usize;
+        if shown_waves > 0 {
+            let current = view.waves.iter().position(|w| w.current).unwrap_or(0);
+            let start = current
+                .saturating_sub(1)
+                .min(view.waves.len().saturating_sub(shown_waves));
+            let lines: Vec<Line> = view.waves[start..start + shown_waves]
+                .iter()
+                .map(wave_line)
+                .collect();
+            frame.render_widget(Paragraph::new(lines), chunks[1]);
+        }
+
+        let list_area = chunks[2];
+        if list_area.height == 0 {
+            return;
+        }
+        // The highlight symbol takes two cells of every line.
+        let line_cells = (list_area.width as usize).saturating_sub(2);
+        let items: Vec<ListItem> = agent_list_lines(view, line_cells)
+            .into_iter()
+            .map(ListItem::new)
+            .collect();
+        let len = agent_list_len(view);
+        let selected = ctx
+            .view_cache
+            .get(&self.alias)
+            .map(|c| c.agents_selected.min(len.saturating_sub(1)))
+            .unwrap_or(0);
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ");
+        let mut list_state = ListState::default();
+        list_state.select(Some(selected));
+        frame.render_stateful_widget(list, list_area, &mut list_state);
     }
 
     /// Render the Docs tab's Milestones sub-tab: the archive with 4-level
@@ -5465,6 +5588,7 @@ impl DetailScreen {
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
+            DetailSubView::Agents => self.render_agents_tab(frame, content_area, ctx),
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
@@ -6462,7 +6586,14 @@ fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::Path
 /// Static, authored text only — no project value reaches it (T-24-24). Any
 /// other sub-view is treated as Files, the Docs tab's default.
 pub(crate) fn docs_sub_tab_strip(active: &DetailSubView) -> Line<'static> {
-    let on_milestones = *active == DetailSubView::Archive;
+    two_sub_tab_strip("Files", "Milestones", *active == DetailSubView::Archive)
+}
+
+/// A tab's two-sub-view strip, `[left] │ right   m switch` or
+/// `left │ [right]   m switch`: the active label bracketed AND cyan, bold and
+/// reversed, so it reads in a monochrome terminal and in a text scrape alike.
+/// Shared by the Docs and Sessions strips so the two cannot drift.
+fn two_sub_tab_strip(left: &'static str, right: &'static str, right_active: bool) -> Line<'static> {
     let active_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
@@ -6475,9 +6606,9 @@ pub(crate) fn docs_sub_tab_strip(active: &DetailSubView) -> Line<'static> {
         }
     };
     Line::from(vec![
-        label("Files", !on_milestones),
+        label(left, !right_active),
         Span::styled(" \u{2502} ", dim),
-        label("Milestones", on_milestones),
+        label(right, right_active),
         Span::styled("   m switch", dim),
     ])
 }
@@ -6488,6 +6619,214 @@ fn docs_sub_tab_row(frame: &mut Frame, area: Rect, active: &DetailSubView) -> Re
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     frame.render_widget(Paragraph::new(docs_sub_tab_strip(active)), chunks[0]);
     chunks[1]
+}
+
+/// The Sessions tab's sub-tab strip (D-C15): `[Sessions] │ Agents   m switch`
+/// on the Sessions sub-view, `Sessions │ [Agents]   m switch` on the Agents
+/// sub-view. Static, authored text only — no project or agent value reaches
+/// it. Any other sub-view is treated as Sessions, the tab's default.
+pub(crate) fn sessions_sub_tab_strip(active: &DetailSubView) -> Line<'static> {
+    two_sub_tab_strip("Sessions", "Agents", *active == DetailSubView::Agents)
+}
+
+/// Draw [`sessions_sub_tab_strip`] in the first row of `area` and return the
+/// rest, so both Sessions sub-view renders shrink their body by that one row.
+fn sessions_sub_tab_row(frame: &mut Frame, area: Rect, active: &DetailSubView) -> Rect {
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(sessions_sub_tab_strip(active)), chunks[0]);
+    chunks[1]
+}
+
+/// The ASCII state word an agent row or child shows (D-C15). A word for every
+/// state, so a state is never carried by colour alone.
+fn agent_state_word(liveness: AgentLiveness) -> &'static str {
+    match liveness {
+        AgentLiveness::Live => "live",
+        AgentLiveness::Idle => "idle",
+        AgentLiveness::Finished => "done",
+        AgentLiveness::Stalled => "stall",
+        AgentLiveness::Unknown => "?",
+        AgentLiveness::Ended => "ended",
+    }
+}
+
+/// The state word's colour — a second channel beside the word, never the only
+/// one.
+fn agent_state_style(liveness: AgentLiveness) -> Style {
+    let fg = match liveness {
+        AgentLiveness::Live => Color::Green,
+        AgentLiveness::Idle => Color::Yellow,
+        AgentLiveness::Finished => Color::Cyan,
+        AgentLiveness::Stalled => Color::Red,
+        AgentLiveness::Unknown | AgentLiveness::Ended => Color::DarkGray,
+    };
+    Style::default().fg(fg)
+}
+
+/// `text` cut to at most `cols` terminal cells, the cut marked with `…`.
+/// Measured with `Span::width` per character, never with `str::len`, so a
+/// wide or multi-byte glyph is never split and never miscounted.
+fn fit_cells(text: &str, cols: usize) -> String {
+    if Span::raw(text).width() <= cols {
+        return text.to_string();
+    }
+    if cols == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    let mut buf = [0u8; 4];
+    for ch in text.chars() {
+        let w = Span::raw(&*ch.encode_utf8(&mut buf)).width();
+        if used + w > cols - 1 {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+/// The widest [`AgentView::summary_forms`] entry whose `Line::width` fits
+/// `cells` — the dashboard's ladder. A view with no forms (nothing active)
+/// reads `no active agents` in dark gray.
+fn agents_summary_line(view: &AgentView, cells: u16) -> Line<'static> {
+    let forms = view.summary_forms();
+    if forms.is_empty() {
+        return Line::from(Span::styled(
+            "no active agents",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    forms
+        .into_iter()
+        .map(|form| Line::from(Span::styled(form, Style::default().fg(Color::Cyan))))
+        .find(|line| line.width() <= cells as usize)
+        .unwrap_or_default()
+}
+
+/// One wave row: `▸ w2  running 13 · done 8 (+2 unmerged) · queued 14`. The
+/// current wave is marked `▸` and bold; any other is indented two spaces.
+fn wave_line(wave: &WaveRow) -> Line<'static> {
+    let mut text = format!(
+        "{}  running {} \u{b7} done {}",
+        wave.label(),
+        wave.running,
+        wave.done
+    );
+    if wave.finished > 0 {
+        text.push_str(&format!(" (+{} unmerged)", wave.finished));
+    }
+    text.push_str(&format!(" \u{b7} queued {}", wave.queued));
+    if wave.stalled > 0 {
+        text.push_str(&format!(" \u{b7} stalled {}", wave.stalled));
+    }
+    if wave.current {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        Line::from(vec![Span::styled("\u{25b8} ", bold), Span::styled(text, bold)])
+    } else {
+        Line::from(vec![Span::raw("  "), Span::raw(text)])
+    }
+}
+
+/// How many lines the Agents sub-view's list draws for `view`: one per agent
+/// row, one per child, and — when there are worktree-less agents — a header
+/// plus one per agent. The ONE count both the render and the scroll keys
+/// clamp against, so the two cannot drift.
+pub(crate) fn agent_list_len(view: &AgentView) -> usize {
+    let rows: usize = view.agents.iter().map(|row| 1 + row.children.len()).sum();
+    let worktreeless = if view.worktreeless.is_empty() {
+        0
+    } else {
+        1 + view.worktreeless.len()
+    };
+    rows + worktreeless
+}
+
+/// `+{n}` / `~{n}`, or `?` in place of a count git could not produce.
+fn agent_count(prefix: &str, count: Option<u32>) -> String {
+    match count {
+        Some(n) => format!("{prefix}{n}"),
+        None => format!("{prefix}?"),
+    }
+}
+
+/// One list line: the state word padded to five cells, then `label`
+/// truncated to whatever `line_cells` leaves after `tail`.
+fn agent_line(
+    indent: &str,
+    liveness: AgentLiveness,
+    label: &str,
+    tail: String,
+    line_cells: usize,
+) -> Line<'static> {
+    let state = format!("{:<5}", agent_state_word(liveness));
+    let fixed = Span::raw(indent).width() + Span::raw(&*state).width() + 2 + Span::raw(&*tail).width();
+    let label = fit_cells(label, line_cells.saturating_sub(fixed).max(1));
+    Line::from(vec![
+        Span::raw(indent.to_string()),
+        Span::styled(state, agent_state_style(liveness)),
+        Span::raw("  "),
+        Span::raw(label),
+        Span::raw(tail),
+    ])
+}
+
+/// The Agents sub-view's list lines, in display order: each agent row, its
+/// children indented directly below it, then the worktree-less group.
+/// [`agent_list_len`] is this vector's length.
+fn agent_list_lines(view: &AgentView, line_cells: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::with_capacity(agent_list_len(view));
+    for row in &view.agents {
+        // Plan label, else the runtime's description, else the branch. Every
+        // one of the latter two is agent- or clone-authored: `shown()`.
+        let label = match (&row.plan, &row.description, &row.branch) {
+            (Some(plan), _, _) => plan.label(),
+            (None, Some(desc), _) => desc.shown().to_string(),
+            (None, None, Some(branch)) => branch.shown().to_string(),
+            (None, None, None) => String::new(),
+        };
+        let mut tail = String::new();
+        if let Some(agent_type) = &row.agent_type {
+            tail.push_str(&format!("  {}", agent_type.shown()));
+        }
+        tail.push_str(&format!(
+            "  {}  {}",
+            agent_count("+", row.commits_ahead),
+            agent_count("~", row.dirty)
+        ));
+        lines.push(agent_line("", row.liveness, &label, tail, line_cells));
+
+        for child in &row.children {
+            lines.push(child_line("    ", child, line_cells));
+        }
+    }
+    if !view.worktreeless.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Worktree-less (live)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for agent in &view.worktreeless {
+            lines.push(child_line("  ", agent, line_cells));
+        }
+    }
+    lines
+}
+
+/// A child or worktree-less agent: state, description, agent type.
+fn child_line(indent: &str, child: &ChildAgent, line_cells: usize) -> Line<'static> {
+    let label = child
+        .description
+        .as_ref()
+        .map(|d| d.shown().to_string())
+        .unwrap_or_default();
+    let tail = child
+        .agent_type
+        .as_ref()
+        .map(|t| format!("  {}", t.shown()))
+        .unwrap_or_default();
+    agent_line(indent, child.liveness, &label, tail, line_cells)
 }
 
 /// Width at or above which the Driver footer shows every hint.
@@ -10341,6 +10680,13 @@ mod tests {
             sub_view_from_index(tab_index(&DetailSubView::Archive), true),
             DetailSubView::Browse
         );
+        // Sessions › Agents is the same shape on the Sessions tab (D-C15): it
+        // shares Sessions' index, and that index resolves to Sessions.
+        assert_eq!(tab_index(&DetailSubView::Agents), tab_index(&DetailSubView::Sessions));
+        assert_eq!(
+            sub_view_from_index(tab_index(&DetailSubView::Agents), true),
+            DetailSubView::Sessions
+        );
         // The out-of-range fallback lands on the default (Roadmap) tab, not the
         // newest.
         assert_eq!(sub_view_from_index(TAB_COUNT, true), DetailSubView::RoadmapViz);
@@ -10961,21 +11307,127 @@ mod tests {
         );
     }
 
-    /// `m` is the Docs tab's key only: on every other tab it changes nothing.
+    /// `m` is the Docs and Sessions tabs' key only: on every other tab it
+    /// changes nothing.
     #[test]
-    fn m_is_inert_outside_docs() {
+    fn m_is_inert_outside_docs_and_sessions() {
         let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
         assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
 
         let docs = tab_index(&DetailSubView::Browse);
-        for index in (0..TAB_COUNT).filter(|index| *index != docs) {
+        let sessions = tab_index(&DetailSubView::Sessions);
+        for index in (0..TAB_COUNT).filter(|index| *index != docs && *index != sessions) {
             let view = sub_view_from_index(index, true);
             ctx.detail_sub_view_per_project
                 .insert(TEST_ALIAS.to_string(), view.clone());
             press(&mut screen, &mut ctx, KeyCode::Char('m'));
             assert_eq!(stored_view(&ctx), view, "`m` moved {view:?}");
         }
+    }
+
+    // ── 25-05: the Sessions tab's Sessions | Agents sub-views (D-C15) ─────
+
+    /// One agent row with adapter metadata, on `plan` when given.
+    fn agent_row(
+        path: &str,
+        liveness: AgentLiveness,
+        plan: Option<&str>,
+    ) -> crate::agents::AgentRow {
+        crate::agents::AgentRow {
+            path: std::path::PathBuf::from(path),
+            adapter: Some("claude-code"),
+            liveness,
+            plan: plan.map(|id| {
+                crate::agents::waves::PlanRef::from_id(id)
+                    .unwrap_or_else(|| panic!("{id} is a valid plan id"))
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A detail screen parked on Sessions › Agents, with `view` (if any) as
+    /// the project's agent view.
+    fn on_agents(view: Option<AgentView>) -> (DetailScreen, AppContext) {
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Agents);
+        if let Some(view) = view {
+            ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+        }
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    /// Phase 13 in wave 2 of 2: 13-01 done in wave 1, one `Live` executor on
+    /// 13-02 in wave 2.
+    fn two_wave_view() -> AgentView {
+        AgentView {
+            active_phase: crate::state_reader::phase_num::PhaseNum::parse("13"),
+            current_wave: Some(2),
+            max_wave: Some(2),
+            plan_total: 2,
+            done: 1,
+            running: 1,
+            waves: vec![
+                WaveRow {
+                    wave: Some(1),
+                    done: 1,
+                    ..WaveRow::default()
+                },
+                WaveRow {
+                    wave: Some(2),
+                    running: 1,
+                    current: true,
+                    ..WaveRow::default()
+                },
+            ],
+            agents: vec![agent_row("/wt/agent-a", AgentLiveness::Live, Some("13-02"))],
+            ..Default::default()
+        }
+    }
+
+    /// `m` flips the Sessions tab between Sessions and Agents; the strip marks
+    /// whichever is active, the tab bar keeps tab 6 active on both, and two
+    /// presses return to the start.
+    #[test]
+    fn m_switches_sessions_between_sessions_and_agents() {
+        let mut ctx = test_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Sessions);
+        let sessions = render_detail_to_text(&screen, &ctx);
+        assert!(sessions.contains("[Sessions] \u{2502} Agents   m switch"), "{sessions}");
+        let sessions_tab = active_tab_text(&screen, &ctx);
+        assert!(sessions_tab.starts_with("6:"), "{sessions_tab}");
+
+        press(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+        let agents = render_detail_to_text(&screen, &ctx);
+        assert!(agents.contains("Sessions \u{2502} [Agents]   m switch"), "{agents}");
+        assert_eq!(active_tab_text(&screen, &ctx), sessions_tab);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert_eq!(stored_view(&ctx), DetailSubView::Sessions);
+    }
+
+    /// The tracer: a two-wave view with one `Live` row on 13-02 renders its
+    /// summary, the current wave marked `▸ w2`, and the row's state word and
+    /// plan.
+    #[test]
+    fn the_agents_sub_view_draws_the_summary_waves_and_agent_rows() {
+        let (screen, ctx) = on_agents(Some(two_wave_view()));
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(
+            text.contains("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/2 done"),
+            "{text}"
+        );
+        assert!(text.contains("\u{25b8} w2  running 1 \u{b7} done 0 \u{b7} queued 0"), "{text}");
+        assert!(text.contains("  w1  running 0 \u{b7} done 1 \u{b7} queued 0"), "{text}");
+        let row = text
+            .lines()
+            .find(|line| line.contains("13-02"))
+            .unwrap_or_else(|| panic!("no 13-02 row: {text}"));
+        assert!(row.contains("live"), "{row}");
     }
 
     /// Eight tabs, eight digits (D-B10): `9` and `0` name no tab and fall

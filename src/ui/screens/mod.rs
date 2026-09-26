@@ -963,6 +963,9 @@ pub struct ProjectViewCache {
     pub roadmap_edge_walk: Option<crate::ui::roadmap_graph::EdgeWalk>,
     pub queue_selected: usize,
     pub sessions_selected: usize,
+    /// The highlighted line of the Sessions tab's Agents sub-view list,
+    /// clamped against `detail::agent_list_len` at every key and render.
+    pub agents_selected: usize,
     pub archive_depth: crate::archive::ArchiveDepth,
     /// Milestone version strings scanned out of `.planning/archive/`.
     ///

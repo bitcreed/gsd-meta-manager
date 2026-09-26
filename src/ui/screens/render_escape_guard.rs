@@ -1237,9 +1237,71 @@ fn probe_ctx(identity: &str) -> AppContext {
         injections: Vec::new(),
     }));
 
+    // The Sessions tab's Agents sub-view (25-05, D-C13). Every agent-authored
+    // field the sub-view draws carries the identity; see `hostile_agent_view`.
+    ctx.agent_views.insert(
+        identity.to_string(),
+        hostile_agent_view(identity, &project_path),
+    );
+
     ctx.recompute_filtered_aliases();
     ctx.table_state.select(Some(0));
     ctx
+}
+
+/// One project's running agents whose every agent-authored string carries
+/// `identity` (T-25-22): a `Live` row with no plan — so the list draws its
+/// description, not a plan label — whose description, agent type and branch
+/// carry it, plus a child whose description carries it; a row with no adapter
+/// metadata whose branch and path's final component carry it; and one
+/// worktree-less agent whose description carries it.
+///
+/// Built as a literal with `..Default::default()`, so a field a sibling plan
+/// adds to `AgentView` does not break it. Shared by `probe_ctx` and
+/// `the_dashboard_agent_summary_draws_no_identity`, so the view the Agents
+/// sub-view is probed with is the view the dashboard summary is checked on.
+fn hostile_agent_view(identity: &str, project_path: &std::path::Path) -> crate::agents::waves::AgentView {
+    use crate::agents::adapters::ChildAgent;
+    use crate::agents::{AgentLiveness, AgentRow};
+    use crate::text::Untrusted;
+
+    let text = || Some(Untrusted::from_untrusted_source(identity.to_string()));
+    let worktrees = project_path.join(".claude").join("worktrees");
+    crate::agents::waves::AgentView {
+        agents: vec![
+            AgentRow {
+                path: worktrees.join("agent-live"),
+                branch: text(),
+                adapter: Some("claude-code"),
+                agent_type: text(),
+                description: text(),
+                commits_ahead: Some(1),
+                dirty: Some(0),
+                last_activity: Some(std::time::UNIX_EPOCH),
+                liveness: AgentLiveness::Live,
+                children: vec![ChildAgent {
+                    description: text(),
+                    liveness: AgentLiveness::Live,
+                    ..ChildAgent::default()
+                }],
+                ..AgentRow::default()
+            },
+            AgentRow {
+                path: worktrees.join(identity),
+                branch: text(),
+                adapter: None,
+                liveness: AgentLiveness::Unknown,
+                ..AgentRow::default()
+            },
+        ],
+        worktreeless: vec![ChildAgent {
+            description: text(),
+            liveness: AgentLiveness::Live,
+            ..ChildAgent::default()
+        }],
+        scanned_at: Some(std::time::UNIX_EPOCH),
+        ..Default::default()
+    }
 }
 
 /// The authored half of the status footer's message, spelled exactly as
@@ -1393,11 +1455,16 @@ fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntr
 /// PhaseList tab is gone (D-B02), and `Archive` stays a sub-view state of its
 /// own — the Docs tab's Milestones sub-view (D-B04), which shares Docs' index
 /// with `Browse` (Files) but is a different render, so both are probed.
-const ALL_SUB_VIEWS: [crate::app::DetailSubView; 10] = {
+///
+/// `Agents` is the same case on the Sessions tab (D-C15, 25-05): the Sessions
+/// tab's Agents sub-view shares Sessions' index but is a different render of
+/// different values — agent descriptions, types, branches and paths — so it is
+/// probed as a state of its own, after `Sessions`.
+const ALL_SUB_VIEWS: [crate::app::DetailSubView; 11] = {
     use crate::app::DetailSubView::*;
     [
-        RoadmapViz, Pipeline, Backlog, GitHistory, Queue, Sessions, Defaults, Browse, Archive,
-        Driver,
+        RoadmapViz, Pipeline, Backlog, GitHistory, Queue, Sessions, Agents, Defaults, Browse,
+        Archive, Driver,
     ]
 };
 
@@ -1465,6 +1532,17 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         "Draws the session id of a `ClaudeSession` whose `working_dir` matches the \
          registered project — populated by 21-25 T2; before that the tab's filter \
          admitted nothing and it rendered `No active Claude or Codex sessions`.",
+    ),
+    (
+        "Agents sub-view",
+        true,
+        "The Sessions tab's Agents sub-view (D-C15). Draws each agent row's \
+         description, agentType and branch, a no-metadata row's branch and worktree \
+         path, a child's description and a worktree-less agent's description, all from \
+         `ctx.agent_views[alias]` — populated by 25-05 through `hostile_agent_view`; \
+         without it the sub-view renders `No running agents`. The Sessions sub-tab \
+         strip above it, the summary line and the wave rows are authored words and \
+         numbers and draw no identity.",
     ),
     (
         "Archive tab",
@@ -1624,6 +1702,7 @@ fn sub_view_label(view: &crate::app::DetailSubView) -> &'static str {
         Pipeline => "Pipeline tab",
         Queue => "Queue tab",
         Sessions => "Sessions tab",
+        Agents => "Agents sub-view",
         Archive => "Archive tab",
         Defaults => "Defaults tab",
         Browse => "Browse tab",

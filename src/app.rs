@@ -25,6 +25,13 @@ pub enum DetailSubView {
     GitHistory,
     Queue,
     Sessions,
+    /// The running agents: the Sessions tab's `Agents` sub-view (D-C15), not a
+    /// tab of its own. It shares Sessions' index, so a digit or arrow never
+    /// lands on it; it is reached with `m` on the Sessions tab. It observes
+    /// only — no key on it acts on an agent. Per-project view state is in
+    /// memory only, so a stored `Agents` needs no migration: it renders as
+    /// Sessions with Agents active.
+    Agents,
     /// The milestone archive: the Docs tab's `Milestones` sub-view (D-B04),
     /// not a tab of its own. It shares Docs' index with [`Self::Browse`], so a
     /// digit or arrow never lands on it; it is reached with `m` on the Docs
