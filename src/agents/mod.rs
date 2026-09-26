@@ -263,14 +263,24 @@ pub fn scan_project_with(
             let facts = claim.as_ref().map(|(_, facts)| facts);
             // Attribution BEFORE classification: the plan is what the SUMMARY
             // check (and so `Finished`) is keyed on.
-            let plan = waves::attribute(
-                facts
-                    .and_then(|f| f.description.as_ref())
-                    .map(Untrusted::as_raw_for_logic_only),
-                wt.branch_plan.as_ref().map(|bp| bp.plan.as_str()),
-                None,
-                wt.ledger_plan.as_deref(),
-            );
+            let description = facts
+                .and_then(|f| f.description.as_ref())
+                .map(Untrusted::as_raw_for_logic_only);
+            let branch_plan = wt.branch_plan.as_ref().map(|bp| bp.plan.as_str());
+            // Tiers 1-3 cost nothing; only a row they leave unattributed pays
+            // for one `git log` to read its commit scopes (tier 4) before the
+            // ledger is consulted (tier 5).
+            let plan = waves::attribute(description, branch_plan, None, None).or_else(|| {
+                let scope = base_sha
+                    .map(|base| worktrees::commit_subjects(wt, base))
+                    .and_then(|subjects| waves::commit_scope_plan(&subjects));
+                waves::attribute(
+                    description,
+                    branch_plan,
+                    scope.as_deref(),
+                    wt.ledger_plan.as_deref(),
+                )
+            });
             let liveness = classify_liveness(facts, false, now);
             let mut row = AgentRow {
                 plan,

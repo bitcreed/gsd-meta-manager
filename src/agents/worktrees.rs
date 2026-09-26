@@ -4,7 +4,8 @@
 //!
 //! **Read-only, and every git call goes through `git_ops`.** This file builds
 //! no git command of its own; it asks [`git_ops::worktree_list_porcelain`],
-//! [`git_ops::commits_ahead`] and [`git_ops::dirty_count`], which all route
+//! [`git_ops::commits_ahead`], [`git_ops::dirty_count`] and
+//! [`git_ops::log_subjects`], which all route
 //! through `git_read_raw` and therefore carry `--no-optional-locks` plus
 //! `GIT_OPTIONAL_LOCKS=0` (D-B02). A live agent owns these worktrees; a read
 //! that refreshed one of their indexes would be the observer perturbing the run
@@ -452,6 +453,27 @@ pub(crate) fn worktree_counts(
     let ahead = base_sha.and_then(|base| git_ops::commits_ahead(&worktree.path, base));
     let dirty = git_ops::dirty_count(&worktree.path);
     (ahead, dirty)
+}
+
+/// How many of a worktree's own commit subjects the commit-scope tier reads.
+const COMMIT_SCOPE_SUBJECTS: u32 = 50;
+
+/// The subjects of the commits `worktree`'s HEAD carries beyond `base_sha`,
+/// newest first — the input to the commit-scope attribution tier
+/// (`waves::commit_scope_plan`).
+///
+/// Empty for a `prunable` worktree (its directory is gone), and whenever
+/// `git_ops::log_subjects` refuses the range (a base that is not a full hex
+/// sha never reaches argv) or git fails.
+pub(crate) fn commit_subjects(worktree: &CoreWorktree, base_sha: &str) -> Vec<String> {
+    if worktree.prunable {
+        return Vec::new();
+    }
+    git_ops::log_subjects(
+        &worktree.path,
+        &format!("{base_sha}..HEAD"),
+        COMMIT_SCOPE_SUBJECTS,
+    )
 }
 
 // Pure tests only: string fixtures, no git, no process of any kind. This

@@ -612,8 +612,29 @@ pub(crate) fn dirty_count(worktree: &Path) -> Option<u32> {
 }
 
 /// The subjects of at most `max` commits in `range`, newest first.
-pub(crate) fn log_subjects(_dir: &Path, _range: &str, _max: u32) -> Vec<String> {
-    Vec::new()
+///
+/// **`range` is refused unless it is exactly `HEAD` or a full lowercase hex
+/// object id followed by `..HEAD`**, and then git is not run at all — the same
+/// rule, for the same reason, as [`commits_ahead`]: the value reaches argv, so
+/// `--all`, `--output=x` or a ref name must never get there. The count is
+/// bounded by `-n<max>`.
+///
+/// An empty `Vec` when refused, when git fails, or when the range is empty;
+/// never an error (D-C16). Blank subject lines are dropped.
+pub(crate) fn log_subjects(dir: &Path, range: &str, max: u32) -> Vec<String> {
+    let allowed = range == "HEAD" || range.strip_suffix("..HEAD").is_some_and(is_full_hex_sha);
+    if !allowed {
+        return Vec::new();
+    }
+    let limit = format!("-n{max}");
+    git_read_raw(dir, &["log", "--format=%s", &limit, range])
+        .map(|raw| {
+            raw.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One row of a THIRD-PARTY repository's `git log`, in a type that cannot reach
