@@ -236,3 +236,143 @@ fn a_description_outranks_the_branch() {
         "tier 1 (description) wins over tier 3 (branch p13-02)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Finished before the merge: the worktree SUMMARY check (Pitfalls 3 and 4)
+// ---------------------------------------------------------------------------
+
+/// A lock-released agent whose transcript is 30 s old: `Live` by age alone,
+/// so only the worktree SUMMARY can make it `Finished`.
+fn released_30s() -> Scripted {
+    Scripted {
+        age_secs: 30,
+        lock_released: Some(true),
+        description: None,
+    }
+}
+
+#[test]
+fn a_summary_committed_in_the_worktree_reads_finished_before_the_merge() {
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    let wt = add_agent_worktree(&root, P13_02);
+    commit_in(
+        &wt,
+        ".planning/phases/13-demo/13-02-SUMMARY.md",
+        "done\n",
+        "docs(13-02): complete plan",
+    );
+    assert!(
+        !root
+            .join(".planning/phases/13-demo/13-02-SUMMARY.md")
+            .exists(),
+        "main has not merged it"
+    );
+
+    let agents = scan(&root, released_30s());
+    assert_eq!(agents.rows.len(), 1, "{:?}", agents.rows);
+    let row = &agents.rows[0];
+    assert!(
+        row.summary_in_worktree,
+        "the worktree holds 13-02's SUMMARY"
+    );
+    assert_eq!(row.liveness, AgentLiveness::Finished);
+
+    let view = derive(&agents, &phase_13_state(&root));
+    assert_eq!((view.done, view.finished, view.running), (1, 1, 0));
+    assert_eq!(
+        view.summary_forms().first().map(String::as_str),
+        Some("P13 \u{b7} w2/2 \u{b7} 0 run \u{b7} 2/3 done"),
+        "done shown to the user is main-done plus finished-unmerged"
+    );
+}
+
+#[test]
+fn a_held_lock_with_a_worktree_summary_is_live_but_its_plan_is_finished() {
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    let wt = add_agent_worktree(&root, P13_02);
+    commit_in(
+        &wt,
+        ".planning/phases/13-demo/13-02-SUMMARY.md",
+        "done\n",
+        "docs(13-02): complete plan",
+    );
+
+    let agents = scan(
+        &root,
+        Scripted {
+            lock_released: Some(false),
+            ..released_30s()
+        },
+    );
+    assert_eq!(agents.rows.len(), 1, "{:?}", agents.rows);
+    assert!(agents.rows[0].summary_in_worktree);
+    assert_eq!(
+        agents.rows[0].liveness,
+        AgentLiveness::Live,
+        "a held lock is not finished liveness"
+    );
+    let view = derive(&agents, &phase_13_state(&root));
+    assert_eq!(
+        (view.finished, view.running),
+        (1, 0),
+        "the SUMMARY alone marks the plan finished"
+    );
+}
+
+#[test]
+fn another_plans_summary_does_not_mark_this_plan() {
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    let wt = add_agent_worktree(&root, P13_02);
+    commit_in(
+        &wt,
+        ".planning/phases/13-demo/13-03-SUMMARY.md",
+        "done\n",
+        "docs(13-03): complete plan",
+    );
+
+    let agents = scan(&root, released_30s());
+    assert_eq!(agents.rows.len(), 1, "{:?}", agents.rows);
+    assert!(
+        !agents.rows[0].summary_in_worktree,
+        "13-03's SUMMARY says nothing about 13-02"
+    );
+    assert_eq!(agents.rows[0].liveness, AgentLiveness::Live);
+}
+
+#[test]
+fn a_phase_missing_from_main_skips_the_summary_check() {
+    let Some((_tmp, root)) = phase_repo() else {
+        return;
+    };
+    let wt = add_agent_worktree(&root, "agent-a0123456789abcdef");
+    // The worktree has a phase directory main does not; the check resolves the
+    // directory from MAIN's listing only, so it never looks here.
+    commit_in(
+        &wt,
+        ".planning/phases/14-new/14-01-SUMMARY.md",
+        "done\n",
+        "docs(14-01): complete plan",
+    );
+
+    let agents = scan(
+        &root,
+        Scripted {
+            description: Some("Execute plan 14-01 of phase 14"),
+            ..released_30s()
+        },
+    );
+    assert_eq!(agents.rows.len(), 1, "{:?}", agents.rows);
+    let row = &agents.rows[0];
+    assert_eq!(
+        row.plan.as_ref().map(|p| p.label()),
+        Some("14-01".to_string())
+    );
+    assert!(!row.summary_in_worktree, "no directory in main, no stat");
+    assert_eq!(row.liveness, AgentLiveness::Live);
+}
