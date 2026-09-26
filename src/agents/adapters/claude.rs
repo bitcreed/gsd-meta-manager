@@ -24,6 +24,10 @@
 //! that pid is the top-level session every agent of that session shares: it is
 //! alive for as long as the user's terminal is, whatever the agent is doing.
 //! The only lock fact reported is whether the worktree is locked at all.
+//! (Quick 260926-06g: the core's `processes` module does read that pid, but
+//! solely as a DEATH signal — a gone owner means `Ended` — never as liveness,
+//! so a live owner never upgrades a row and D-A05 holds. This adapter still
+//! parses nothing of it.)
 //!
 //! **Where the files are.** The config root is `$CLAUDE_CONFIG_DIR` when set,
 //! non-empty and absolute, else `<home>/.claude` ([`resolve_config_root`]).

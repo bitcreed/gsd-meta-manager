@@ -66,6 +66,13 @@ pub struct ClaudeSession {
 /// dropped. Silently skips any PID where reads fail (stale/exited processes),
 /// and a missing `pgrep` yields no sessions of that kind.
 /// Uses std::process::Command (not tokio) — called from spawn_blocking.
+///
+/// The running-agents view reads the process table through a separate,
+/// narrower seam: [`process_probe`] is the ONE cfg-selected swap point for its
+/// backend (quick 260926-06g). On Linux it is the procfs `ProcfsProbe`; on
+/// every other target it is [`NoProcessProbe`], which answers "unknown" to
+/// everything. A future cross-platform backend (e.g. the `sysinfo` crate)
+/// replaces only that constructor's body.
 pub fn detect_sessions() -> Vec<ClaudeSession> {
     let claude = pgrep_exact(CLAUDE_PROGRAM)
         .unwrap_or_default()

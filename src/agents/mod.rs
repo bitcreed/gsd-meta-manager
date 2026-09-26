@@ -11,9 +11,15 @@
 //! * **No `worktree prune`, no fetch, no gc, no ref write, no index refresh.**
 //!   Every git call goes through `git_ops::git_read_raw`, which takes no
 //!   optional lock (D-B02). A `prunable` worktree is reported, never pruned.
-//! * **No process inspection and no runtime invocation** (D-B03): state comes
-//!   from git reads and file stats only, never from running Claude, Codex or
-//!   GSD, and never from the process table.
+//! * **`src/agents` performs no process inspection itself, and no runtime
+//!   invocation** (D-B03): state comes from git reads and file stats, never
+//!   from running Claude, Codex or GSD. On Linux an optional process snapshot,
+//!   taken by `crate::session_detector` and injected through
+//!   `crate::session_detector::ProcessProbe`, contributes two facts: the death
+//!   of a worktree lock's owner session, and a `codex` process working inside
+//!   a worktree (quick 260926-06g, [`processes`]). Off Linux, or whenever the
+//!   probe cannot answer (procfs not mounted, permission denied), liveness is
+//!   mtime-only exactly as D-B03 requires.
 //! * **A transcript's contents are never read**, only its mtime.
 //! * **Never `$TMPDIR`, never `WAVE_WORKTREE_MANIFEST`** (D-A09): the manifest
 //!   GSD writes there is a transient implementation detail of one orchestrator
@@ -23,8 +29,10 @@
 //!
 //! The split is two layers. [`worktrees`] is the runtime-agnostic core
 //! (D-A01a): git alone, for any runtime. [`adapters`] is the seam (D-A01b)
-//! through which a runtime reports facts about those worktrees. Liveness is
-//! classified here, once, by [`classify_liveness`].
+//! through which a runtime reports facts about those worktrees. [`processes`]
+//! turns an injected process snapshot into per-worktree evidence, as pure
+//! logic over data. Liveness is classified here, once, by
+//! [`classify_observed`] ([`classify_liveness`] is its mtime-only form).
 //!
 //! [`AgentLiveness`] is **not** the driver's `crate::driver::liveness::Liveness`
 //! (which answers "is this pid our driver"). Never glob-import one beside the
