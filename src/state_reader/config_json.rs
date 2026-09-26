@@ -74,6 +74,45 @@ pub const GSD_CORE_SYNCED_TREE_VERSION: &str = "1.15.0";
 /// `deny_unknown_fields`: the two attributes are incompatible.
 pub type ExtraKeys = serde_json::Map<String, serde_json::Value>;
 
+/// The value of one gsd-core search-provider slot (`brave_search`,
+/// `firecrawl`, `exa_search`, `tavily_search`, `ref_search`, `perplexity`,
+/// `jina`) — upstream types each `string | boolean | null` (quick task
+/// 260926-jnf).
+///
+/// - `Key(s)` — the provider's API KEY itself. SECRET.
+/// - `Flag(b)` — the legacy sentinel overriding auto-detection from the
+///   `<X>_API_KEY` env var or `~/.gsd/<x>_api_key` file.
+/// - JSON `null` / absent — `None` on the enclosing `Option`.
+///
+/// **The bug this fixes (T-jnf-05).** These slots were `Option<bool>`, so a
+/// project that stored its key the documented way made the WHOLE
+/// `config.json` a parse failure: no Defaults rows, no save — and the serde
+/// error, which quotes the offending value, went to the log.
+///
+/// `Flag` is listed first so an untagged JSON boolean can never become a key.
+/// A number or object in a slot is still a whole-file parse failure (INFERRED
+/// I-5, the accepted gtk I-5 divergence); the untagged-enum error names no
+/// value.
+///
+/// **`Debug` is written by hand** (T-jnf-04) so `Key` prints as
+/// `Key(<redacted>)`: `GsdConfig` derives `Debug`, and a derived one would
+/// print the key wherever a config is debug-formatted.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ApiKeySetting {
+    Flag(bool),
+    Key(String),
+}
+
+impl std::fmt::Debug for ApiKeySetting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiKeySetting::Flag(b) => f.debug_tuple("Flag").field(b).finish(),
+            ApiKeySetting::Key(_) => f.write_str("Key(<redacted>)"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct GsdConfig {
     #[serde(default)]
@@ -88,12 +127,15 @@ pub struct GsdConfig {
     pub parallelization: Option<bool>,
     #[serde(default)]
     pub search_gitignored: Option<bool>,
+    /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
     #[serde(default)]
-    pub brave_search: Option<bool>,
+    pub brave_search: Option<ApiKeySetting>,
+    /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
     #[serde(default)]
-    pub firecrawl: Option<bool>,
+    pub firecrawl: Option<ApiKeySetting>,
+    /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
     #[serde(default)]
-    pub exa_search: Option<bool>,
+    pub exa_search: Option<ApiKeySetting>,
     #[serde(default)]
     pub project_code: Option<String>,
     #[serde(default)]
@@ -645,6 +687,7 @@ mod tests {
         assert_eq!(config.model_profile, "quality");
         assert_eq!(config.commit_docs, Some(true));
         assert_eq!(config.project_code, Some("TST".to_string()));
+        assert_eq!(config.brave_search, Some(ApiKeySetting::Flag(false)));
 
         let git = config.git.as_ref().unwrap();
         assert_eq!(git.branching_strategy, Some("phase".to_string()));

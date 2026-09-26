@@ -907,6 +907,20 @@ impl EditBuffer {
         self.0.shown()
     }
 
+    /// How many CHARACTERS the buffer holds. A count, never content.
+    pub fn char_count(&self) -> usize {
+        self.0.as_raw_for_logic_only().chars().count()
+    }
+
+    /// **The SECRET prompt's only render route** (quick task 260926-jnf,
+    /// T-jnf-02): one `•` per typed character and nothing of the content, so
+    /// the operator can see keystrokes and Backspace land while an API key
+    /// being typed never reaches a cell. A secret prompt must draw this, never
+    /// [`shown`](Self::shown).
+    pub fn masked(&self) -> String {
+        "•".repeat(self.char_count())
+    }
+
     /// **The one raw take, and the one question it answers: what gets WRITTEN
     /// BACK to the operator's `.planning/config.json`.**
     ///

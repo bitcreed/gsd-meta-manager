@@ -1136,8 +1136,8 @@ impl DetailScreen {
         block
     }
 
-    /// The Config String entry being edited, if any — the first of
-    /// `handle_key`'s two text intercepts.
+    /// The Config String (or Secret) entry being edited, if any — the first
+    /// of `handle_key`'s two text intercepts.
     fn config_text_edit_index(&self, ctx: &AppContext) -> Option<usize> {
         let cache = ctx.view_cache.get(&self.alias);
         let editing = cache.and_then(|c| c.defaults_editing);
@@ -1145,7 +1145,7 @@ impl DetailScreen {
             cache
                 .map(entries_for_cache)
                 .and_then(|entries| entries.into_iter().nth(idx))
-                .filter(|e| matches!(e.kind.editable(), ConfigValueKind::String))
+                .filter(|e| e.kind.opens_text_prompt())
                 .map(|_| idx)
         })
     }
@@ -4314,6 +4314,13 @@ impl Screen for DetailScreen {
                                                 entry.value.clone(),
                                             )
                                         };
+                                } else if matches!(entry.kind.editable(), ConfigValueKind::Secret) {
+                                    // T-jnf-02: a secret prompt opens EMPTY.
+                                    // `entry.value` is only the mask anyway,
+                                    // but it is never seeded — replacing a key
+                                    // means typing the new one (INFERRED I-6).
+                                    cache.defaults_editing = Some(selected);
+                                    cache.defaults_text_buffer = super::EditBuffer::default();
                                 } else if matches!(entry.kind.editable(), ConfigValueKind::Integer) {
                                     if let Some(active) = active_config_mut(cache) {
                                         if mutate_config_entry(active, entry.key.as_ref(), &entry.kind) {
@@ -5462,7 +5469,29 @@ impl DetailScreen {
                 let entries = entries_for_cache(cache);
                 if let Some(entry) = entries.get(editing_idx).cloned() {
                     let key = entry.key;
-                    if let Some(active) = active_config_mut(cache) {
+                    if matches!(entry.kind.editable(), ConfigValueKind::Secret) {
+                        // SECRET prompt (quick task 260926-jnf, INFERRED I-6):
+                        // `buffer` is an API key — it goes to the config and
+                        // NOWHERE else; no status message may carry it.
+                        if buffer.trim().is_empty() {
+                            ctx.status_message = Some((
+                                format!(
+                                    "{} unchanged — type a new value, or x to clear",
+                                    shown(key.as_ref())
+                                ),
+                                std::time::Instant::now(),
+                            ));
+                        } else if let Some(active) = active_config_mut(cache) {
+                            if set_secret_value(active, key.as_ref(), &buffer) {
+                                persist_active_config(
+                                    target,
+                                    project_path.as_deref(),
+                                    active,
+                                    &mut ctx.status_message,
+                                );
+                            }
+                        }
+                    } else if let Some(active) = active_config_mut(cache) {
                         let applied = if buffer.is_empty() {
                             clear_config_value(active, key.as_ref())
                         } else {
@@ -7118,6 +7147,9 @@ impl DetailScreen {
                     ConfigValueKind::ReadOnly => Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
+                    // Always masked text (T-jnf-01); dim so it reads as a
+                    // placeholder rather than as a value to copy.
+                    ConfigValueKind::Secret => Style::default().fg(Color::Magenta),
                     _ => Style::default().fg(Color::Yellow),
                 };
                 // READ BY A HUMAN, through a `ListItem`: `entry.value` is the
@@ -7239,7 +7271,7 @@ impl DetailScreen {
         if let Some(cache) = cache {
             if let Some(editing_idx) = cache.defaults_editing {
                 if let Some(entry) = entries.get(editing_idx) {
-                    if matches!(entry.kind.editable(), ConfigValueKind::String) {
+                    if entry.kind.opens_text_prompt() {
                         // `Block::title` PRESERVES the invisible class (the
                         // per-widget-family table in `render_escape_guard.rs`),
                         // so the key is escaped here as well as in the list.
@@ -7250,7 +7282,16 @@ impl DetailScreen {
                         // READ BY A HUMAN, and the whole point of `EditBuffer`:
                         // there is no other route from the buffer to a cell.
                         // `Span::styled(buffer.clone(), ..)` does not compile.
-                        let rendered: String = cache.defaults_text_buffer.shown().into();
+                        //
+                        // A SECRET prompt draws `masked()` instead — one `•`
+                        // per character, no content (T-jnf-02) — and the width
+                        // arithmetic below then counts bullets.
+                        let rendered: String =
+                            if matches!(entry.kind.editable(), ConfigValueKind::Secret) {
+                                cache.defaults_text_buffer.masked()
+                            } else {
+                                cache.defaults_text_buffer.shown().into()
+                            };
                         // IN-02: CHARACTERS, not bytes. This read `.len()` on a
                         // value out of the project's `.planning/config.json`,
                         // so a CJK value (3 bytes/char) or an emoji one (4)
@@ -9440,6 +9481,16 @@ enum ConfigValueKind {
     /// Display-only: shape-varying keys (JSON value could be int/string/array)
     /// that we surface as a formatted string but never make editable.
     ReadOnly,
+    /// A secret-bearing slot (quick task 260926-jnf): an API key, or the
+    /// `true`/`false` auto-detection override. Editable through the TEXT
+    /// prompt, like `String` — but the prompt opens EMPTY and echoes bullets.
+    ///
+    /// **Its `ConfigEntry.value` is ALWAYS the output of the masking helpers
+    /// ([`opt_secret_layered`] / `config_secrets`), never the raw value**
+    /// (T-jnf-01), so no render, prefill or status path can reach the key.
+    /// Deliberately NOT `String`: `first_string_entry` and the String seed
+    /// path would otherwise treat the mask as a value to edit.
+    Secret,
 }
 
 impl ConfigValueKind {
@@ -9451,6 +9502,12 @@ impl ConfigValueKind {
             ConfigValueKind::Unset(inner) => inner.editable(),
             other => other,
         }
+    }
+
+    /// Does Enter on a row of this kind open the free-text prompt (rather
+    /// than a dropdown or an in-place step)? `String` and `Secret` do.
+    fn opens_text_prompt(&self) -> bool {
+        matches!(self.editable(), ConfigValueKind::String | ConfigValueKind::Secret)
     }
 }
 
@@ -9716,6 +9773,35 @@ fn opt_bool_layered(project: Option<bool>, defaults: Option<bool>) -> (String, C
     }
 }
 
+/// The display text of one search-provider slot — MASKED, never the key
+/// (quick task 260926-jnf, INFERRED I-1 / I-5).
+fn secret_setting_display(setting: &crate::state_reader::config_json::ApiKeySetting) -> String {
+    use crate::state_reader::config_json::ApiKeySetting;
+    use crate::state_reader::config_secrets::{MASKED_SECRET, UNSET_LABEL};
+    match setting {
+        ApiKeySetting::Flag(b) => b.to_string(),
+        // upstream `maskSecret('')` is `(unset)` too.
+        ApiKeySetting::Key(k) if k.is_empty() => UNSET_LABEL.to_string(),
+        ApiKeySetting::Key(_) => MASKED_SECRET.to_string(),
+    }
+}
+
+/// Layered accessor for a secret-bearing search-provider slot, mirroring
+/// [`opt_bool_layered`]. The value it returns is ALWAYS masked text
+/// (T-jnf-01) — including a key inherited from `~/.gsd/defaults.json`.
+fn opt_secret_layered(
+    project: Option<&crate::state_reader::config_json::ApiKeySetting>,
+    defaults: Option<&crate::state_reader::config_json::ApiKeySetting>,
+) -> (String, ConfigValueKind, bool) {
+    if let Some(s) = project {
+        (secret_setting_display(s), ConfigValueKind::Secret, false)
+    } else if let Some(s) = defaults {
+        (secret_setting_display(s), ConfigValueKind::Secret, true)
+    } else {
+        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Secret)), false)
+    }
+}
+
 fn opt_str_layered(project: Option<&str>, defaults: Option<&str>) -> (String, ConfigValueKind, bool) {
     if let Some(s) = project {
         (s.to_string(), ConfigValueKind::String, false)
@@ -9805,6 +9891,10 @@ fn build_defaults_entries(
     let bool_l = |proj: Option<bool>, def: Option<bool>| opt_bool_layered(proj, def);
     let u32_l = |proj: Option<u32>, def: Option<u32>| opt_u32_layered(proj, def);
     let str_l = |proj: Option<&str>, def: Option<&str>| opt_str_layered(proj, def);
+    let secret_l = |proj: Option<&crate::state_reader::config_json::ApiKeySetting>,
+                    def: Option<&crate::state_reader::config_json::ApiKeySetting>| {
+        opt_secret_layered(proj, def)
+    };
     let enum_l = |proj: Option<&str>,
                   def: Option<&str>,
                   options: &'static [&'static str]| { opt_enum_layered(proj, def, options) };
@@ -10229,17 +10319,19 @@ fn build_defaults_entries(
     push(cat, "graphify.auto_update", v, k, false, fd, ConfigHelp::new(
         "Rebuilds that graph in the background after a commit or merge on the default branch, instead of on request.",
     ).since("v1.01.0"));
-    let (v, k, fd) = bool_l(config.brave_search, defaults.and_then(|d| d.brave_search));
+    // Search-provider slots (quick task 260926-jnf): each holds the provider's
+    // API KEY (shown masked) or true/false overriding auto-detection.
+    let (v, k, fd) = secret_l(config.brave_search.as_ref(), defaults.and_then(|d| d.brave_search.as_ref()));
     push(cat, "brave_search", v, k, false, fd, ConfigHelp::new(
-        "Lets the research agent query Brave web search; without BRAVE_API_KEY in the environment it does nothing.",
+        "Brave Search API key for research (hidden), or true/false to override detecting BRAVE_API_KEY / ~/.gsd/brave_api_key; x clears.",
     ));
-    let (v, k, fd) = bool_l(config.firecrawl, defaults.and_then(|d| d.firecrawl));
+    let (v, k, fd) = secret_l(config.firecrawl.as_ref(), defaults.and_then(|d| d.firecrawl.as_ref()));
     push(cat, "firecrawl", v, k, false, fd, ConfigHelp::new(
-        "Lets the research agent scrape whole pages through Firecrawl; needs FIRECRAWL_API_KEY to have any effect.",
+        "Firecrawl API key for page scraping (hidden), or true/false to override detecting FIRECRAWL_API_KEY / ~/.gsd/firecrawl_api_key; x clears.",
     ));
-    let (v, k, fd) = bool_l(config.exa_search, defaults.and_then(|d| d.exa_search));
+    let (v, k, fd) = secret_l(config.exa_search.as_ref(), defaults.and_then(|d| d.exa_search.as_ref()));
     push(cat, "exa_search", v, k, false, fd, ConfigHelp::new(
-        "Lets the research agent use Exa semantic search; needs EXA_API_KEY in the environment to have any effect.",
+        "Exa semantic-search API key (hidden), or true/false to override detecting EXA_API_KEY / ~/.gsd/exa_api_key; x clears.",
     ));
 
     // ── Model & Pipeline ──────────────────────────────────────
@@ -10995,9 +11087,6 @@ fn set_config_value(
             "commit_docs" => { config.commit_docs = Some(b); return true; }
             "parallelization" => { config.parallelization = Some(b); return true; }
             "search_gitignored" => { config.search_gitignored = Some(b); return true; }
-            "brave_search" => { config.brave_search = Some(b); return true; }
-            "firecrawl" => { config.firecrawl = Some(b); return true; }
-            "exa_search" => { config.exa_search = Some(b); return true; }
             "research" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research = Some(b); return true; }
             "plan_check" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_check = Some(b); return true; }
             "verifier" => { config.workflow.get_or_insert_with(WorkflowConfig::default).verifier = Some(b); return true; }
@@ -11170,6 +11259,40 @@ fn set_string_value(
         "workflow.plan_bounce_script" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_script = Some(value.to_string()); true }
         _ => false,
     }
+}
+
+/// Commit what the operator typed into a SECRET row's prompt (quick task
+/// 260926-jnf, INFERRED I-6). Returns true only when a value was stored.
+///
+/// The input is trimmed. Empty -> nothing changes (the prompt is never
+/// prefilled, so an empty Enter must not wipe a key — T-jnf-06; `x` is the way
+/// to clear). Exactly `true` / `false` -> the auto-detection override
+/// `Flag`. Anything else -> the API key itself, `Key(trimmed)`.
+///
+/// **Never log, echo or format `input`** — it is an API key.
+fn set_secret_value(
+    config: &mut crate::state_reader::config_json::GsdConfig,
+    key: &str,
+    input: &str,
+) -> bool {
+    use crate::state_reader::config_json::ApiKeySetting;
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let slot = match key {
+        "brave_search" => &mut config.brave_search,
+        "firecrawl" => &mut config.firecrawl,
+        "exa_search" => &mut config.exa_search,
+        _ => return false,
+    };
+    *slot = Some(match trimmed {
+        "true" => ApiKeySetting::Flag(true),
+        "false" => ApiKeySetting::Flag(false),
+        key_material => ApiKeySetting::Key(key_material.to_string()),
+    });
+    true
 }
 
 /// Clear (set to None / unset) the config field identified by `key`.
@@ -11349,9 +11472,6 @@ fn mutate_config_entry(
                 "commit_docs" => { config.commit_docs = Some(!config.commit_docs.unwrap_or(false)); true }
                 "parallelization" => { config.parallelization = Some(!config.parallelization.unwrap_or(false)); true }
                 "search_gitignored" => { config.search_gitignored = Some(!config.search_gitignored.unwrap_or(false)); true }
-                "brave_search" => { config.brave_search = Some(!config.brave_search.unwrap_or(false)); true }
-                "firecrawl" => { config.firecrawl = Some(!config.firecrawl.unwrap_or(false)); true }
-                "exa_search" => { config.exa_search = Some(!config.exa_search.unwrap_or(false)); true }
                 "research" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.research = Some(!wf.research.unwrap_or(false)); true }
                 "plan_check" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_check = Some(!wf.plan_check.unwrap_or(false)); true }
                 "verifier" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.verifier = Some(!wf.verifier.unwrap_or(false)); true }
@@ -11610,6 +11730,9 @@ fn mutate_config_entry(
         }
         // Shape-varying keys are surfaced read-only; never mutated in place.
         ConfigValueKind::ReadOnly => false,
+        // A secret has no dropdown and no toggle: it is edited only through
+        // the masked text prompt (`set_secret_value`) or cleared with `x`.
+        ConfigValueKind::Secret => false,
     }
 }
 
@@ -12814,6 +12937,7 @@ mod tests {
             ConfigValueKind::Integer => "integer",
             ConfigValueKind::Null | ConfigValueKind::Unset(_) => "null",
             ConfigValueKind::ReadOnly => "readonly",
+            ConfigValueKind::Secret => "secret",
         }
     }
 
