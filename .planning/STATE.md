@@ -570,6 +570,7 @@ Recent decisions affecting current work:
 | 260926-gtk | Config re-sync to gsd-core 1.15.0: planner.stall_detection_enabled + workflow.ui_interaction_capture rows, DEFAULTS_OPTION_COUNT 132, synced commit v1.14.0-111-gec81d0d10 (version stays 1.14.0) | 2026-09-26 | 6da18c3 | .planning/quick/260926-gtk-config-re-sync-to-gsd-core-1-15-0-release-1-15-0-ec81d0d-add |
 | 260926-gtl | Roadmap parser parity with gsd-core 1.15.0: plural/range Depends-on refs, hard-wrapped Goal, letter-suffixed phase/plan ids | 2026-09-26 | dd3c835 | .planning/quick/260926-gtl-roadmap-parser-parity-with-gsd-core-1-15-0-port-phase-dep-re |
 | 260926-gtm | Codex install awareness for gsd-core 1.15.0: resolve ~/.codex gsd-tools, scrub inherited GSD_RUNTIME from codex child | 2026-09-26 | ea92175 | .planning/quick/260926-gtm-codex-install-awareness-for-gsd-core-1-15-0-gsd-tools-resolv |
+| 260926-gtn | Surface gsd-core 1.15.0 review/verification state: REVIEW-DISPOSITION open/deferred counts, VERIFICATION unparseable + router park, Verify hint | 2026-09-26 | 1d18eac | .planning/quick/260926-gtn-surface-gsd-core-1-15-0-review-verification-state-read-revie |
 
 ## Session Continuity
 

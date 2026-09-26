@@ -76,7 +76,7 @@
       "quick_id": "260926-gtn",
       "client_id": null,
       "description": "Surface gsd-core 1.15.0 review/verification state: read REVIEW-DISPOSITION.md ledger open/deferred counts, show VERIFICATION status unparseable, stale-verification hint names execute-phase",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [
         "260926-gtm"
       ],
@@ -96,7 +96,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 3,
-      "commit": null,
+      "commit": "1d18eac",
       "failure_reason": null
     }
   ]
