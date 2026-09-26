@@ -237,13 +237,20 @@ fn plan_branch_re() -> &'static Regex {
     })
 }
 
-/// A plan id: `13`, `13-02`, `07.1`, `07.1-02`.
+/// A plan id: `13`, `13-02`, `07.1`, `07.1-02`, `12A-01`, `23A.1.2-03`.
+///
+/// The phase part is gsd-core 1.15.0's phase token `\d+[A-Z]?(?:\.\d+)*`
+/// (`src/phase-id.cts:65`, #2128 / #4830): digits, one optional **uppercase**
+/// letter (the canonical spelling GSD writes — `init.cts` `normalizePhaseNumber`
+/// uppercases it), then any number of `.N` segments. Anchored, so the id can
+/// never contain `/`, and `..` is impossible because every dot must be
+/// followed by digits.
 fn plan_id_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[0-9]+(\.[0-9]+)?(-[0-9]+)?$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^[0-9]+[A-Z]?(\.[0-9]+)*(-[0-9]+)?$").unwrap())
 }
 
-/// Whether `id` is a plan id (`^[0-9]+(\.[0-9]+)?(-[0-9]+)?$`).
+/// Whether `id` is a plan id (`^[0-9]+[A-Z]?(\.[0-9]+)*(-[0-9]+)?$`).
 pub(crate) fn valid_plan_id(id: &str) -> bool {
     plan_id_re().is_match(id)
 }

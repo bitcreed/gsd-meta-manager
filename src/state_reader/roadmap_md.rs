@@ -43,10 +43,17 @@ pub struct RoadmapProgress {
 /// - bare numeric / decimal IDs (`4`, `0.3`, `14`, `26`)
 /// - project-code / milestone-prefixed IDs (`M-2`, `AB-29`)
 /// - a trailing letter (covers backlog sentinels like `999.x`)
+/// - letter-suffixed ids with dotted sub-phases (`12A`, `12A.1`, `23A.1.2`) —
+///   gsd-core's canonical `PHASE_NUMBER_TOKEN_SOURCE` `\d+[A-Z]?(?:\.\d+)*`
+///   (`src/phase-id.cts:65`, #2128 / #4830)
 ///
 /// The optional leading `[A-Za-z]{1,4}-` is the project-code/milestone prefix;
-/// the numeric body is `[0-9][0-9.]*` with an optional trailing `[A-Za-z]`.
-const PHASE_ID: &str = r"(?:[A-Za-z]{1,4}-)?[0-9][0-9.]*[A-Za-z]?";
+/// the numeric body is `[0-9][0-9.]*` with an optional trailing `[A-Za-z]`,
+/// then any number of `.N` segments. A strict superset of the upstream token:
+/// for letter-free input the `.N` tail adds nothing the greedy `[0-9.]*` body
+/// has not already consumed, so every decimal, padded, prefixed and sentinel
+/// match is unchanged; only a letter followed by `.N` segments newly matches.
+const PHASE_ID: &str = r"(?:[A-Za-z]{1,4}-)?[0-9][0-9.]*[A-Za-z]?(?:\.[0-9]+)*";
 
 /// The phase identifier a written phase reference names, in the forms this file
 /// already recognises.
@@ -348,12 +355,12 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
 /// line's tally and the scanned items. A heading is complete only in the
 /// closed region, and only when it lists plans and every one is checked.
 fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
-    static PLAN: OnceLock<Regex> = OnceLock::new();
     static DEPENDS: OnceLock<Regex> = OnceLock::new();
     // The phase part of a plan filename may be decimal: an inserted phase's
-    // plans are `07.1-01-PLAN.md`, and `\d+-` alone never counted them.
-    let plan_re =
-        PLAN.get_or_init(|| Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap());
+    // plans are `07.1-01-PLAN.md`, and `\d+-` alone never counted them. It
+    // may carry a letter too (`12A-01-PLAN.md`, `23A.1.2-01-PLAN.md`), the
+    // same token [`PHASE_ID`] recognises in the phase line itself.
+    let plan_re = plan_checklist_re();
     // `**Depends on**: …`, with the emphasis markers optional.
     let depends_re =
         DEPENDS.get_or_init(|| Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap());
@@ -409,6 +416,17 @@ fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
     }
 
     merge_duplicate_phases(phases)
+}
+
+/// A plan-checklist item, `- [x] 07.1-01-PLAN.md …` or a bare `- [ ] PLAN.md`.
+/// Group 1 is the checkbox. The phase part of the optional `NN-NN-` prefix is
+/// `\d+[A-Za-z]?(?:\.\d+)*`, so a letter-suffixed phase's `12A-01-PLAN.md` and
+/// `23A.1.2-01-PLAN.md` items count.
+fn plan_checklist_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^\s*- \[([ xX])\] (?:\d+[A-Za-z]?(?:\.\d+)*-\d+-)?PLAN\.md").unwrap()
+    })
 }
 
 /// Collapse repeated sightings of the same phase number into one entry.
@@ -835,7 +853,7 @@ fn parse_build_depends_on(text: &str, known_ids: &[String]) -> Vec<String> {
 /// count these headings, so merging them into the GSD phase list would let the
 /// driver router and the frontier target a phase GSD does not know exists.
 pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
-    let plan_re = Regex::new(r"^\s*- \[([ xX])\] (?:\d+(?:\.\d+)*-\d+-)?PLAN\.md").unwrap();
+    let plan_re = plan_checklist_re();
     let depends_re = Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap();
     let heading = build_heading_re();
     let any_heading = any_heading_re();
