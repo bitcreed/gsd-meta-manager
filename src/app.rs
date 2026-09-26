@@ -5354,4 +5354,159 @@ mod tests {
             "a wider form must never be clipped into the cell:\n{screen}"
         );
     }
+
+    /// Wait up to five seconds for an `AgentsScanned`, draining every other
+    /// action the 20-tick block produces (sessions, reconciliation) meanwhile.
+    async fn next_agents_scan(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        within: std::time::Duration,
+    ) -> Option<Action> {
+        tokio::time::timeout(within, async {
+            while let Some(action) = rx.recv().await {
+                if matches!(action, Action::AgentsScanned { .. }) {
+                    return Some(action);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    #[tokio::test]
+    async fn the_agents_scan_rides_the_session_poll_counter() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+
+        for _ in 0..19 {
+            app.update(Action::Tick);
+        }
+        assert!(
+            !app.ctx.agents_scan_in_flight,
+            "no scan before the 20th tick: the scan has no timer of its own"
+        );
+        app.update(Action::Tick);
+        assert!(
+            app.ctx.agents_scan_in_flight,
+            "the 20th tick sets the flag before the spawn"
+        );
+
+        let scan = next_agents_scan(&mut rx, std::time::Duration::from_secs(5))
+            .await
+            .expect("an AgentsScanned arrives within 5 s");
+        let Action::AgentsScanned { ref per_project } = scan else {
+            unreachable!("next_agents_scan returns AgentsScanned only");
+        };
+        assert_eq!(
+            per_project.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
+            vec![OBS_ALIAS],
+            "the scan covers the registered projects"
+        );
+
+        app.update(scan);
+        assert!(!app.ctx.agents_scan_in_flight, "the handler clears the flag");
+        assert!(
+            app.ctx.agent_views.is_empty(),
+            "a non-git directory has no agent rows, so no view"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_second_agents_scan_spawns_while_one_is_in_flight() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx.agents_scan_in_flight = true;
+
+        for _ in 0..20 {
+            app.update(Action::Tick);
+        }
+
+        assert!(
+            next_agents_scan(&mut rx, std::time::Duration::from_millis(500))
+                .await
+                .is_none(),
+            "a scan already in flight must not be joined by a second one"
+        );
+        assert!(app.ctx.agents_scan_in_flight, "only the handler clears it");
+    }
+
+    #[test]
+    fn the_agents_scan_handler_clears_the_in_flight_flag_for_an_empty_result() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.agents_scan_in_flight = true;
+
+        // What the blocking closure sends after a panic.
+        app.update(Action::AgentsScanned {
+            per_project: Vec::new(),
+        });
+
+        assert!(!app.ctx.agents_scan_in_flight);
+        assert!(app.ctx.agent_views.is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_agents_scan_does_not_request_a_redraw() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .project_states
+            .insert(OBS_ALIAS.to_string(), wave_state());
+
+        app.needs_redraw = false;
+        app.update(live_executor_scan(OBS_ALIAS));
+        assert!(
+            app.needs_redraw,
+            "control arm: the first scan with an agent changes the map"
+        );
+
+        app.needs_redraw = false;
+        app.update(live_executor_scan(OBS_ALIAS));
+        assert!(
+            !app.needs_redraw,
+            "the same scan applied again must not repaint the frame"
+        );
+    }
+
+    #[test]
+    fn an_agents_scan_for_an_unregistered_alias_is_dropped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.update(live_executor_scan("gone"));
+
+        assert!(
+            app.ctx.agent_views.is_empty(),
+            "an alias the registry does not hold must not come back through a scan"
+        );
+
+        // Control arm: the same scan for the registered alias does land.
+        app.update(live_executor_scan(OBS_ALIAS));
+        assert_eq!(
+            app.ctx.agent_views.keys().collect::<Vec<_>>(),
+            vec![OBS_ALIAS]
+        );
+    }
+
+    #[test]
+    fn a_project_with_no_agent_rows_gets_no_view() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(live_executor_scan(OBS_ALIAS));
+        assert!(app.ctx.agent_views.contains_key(OBS_ALIAS));
+
+        // The agents ended: the scan reports the project with nothing in it,
+        // and the wholesale replacement drops its view.
+        app.needs_redraw = false;
+        app.update(Action::AgentsScanned {
+            per_project: vec![(
+                OBS_ALIAS.to_string(),
+                crate::agents::ProjectAgents::default(),
+            )],
+        });
+
+        assert!(app.ctx.agent_views.is_empty());
+        assert!(app.needs_redraw, "the row reverts, so the frame repaints");
+    }
 }
