@@ -51,7 +51,7 @@
       "quick_id": "260926-gtm",
       "client_id": null,
       "description": "Codex install awareness for gsd-core 1.15.0: gsd-tools resolvers also check ~/.codex/gsd-core/bin/gsd-tools.cjs, and handle inherited GSD_RUNTIME in the codex child env",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [
         "260926-gtl"
       ],
@@ -69,7 +69,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 2,
-      "commit": null,
+      "commit": "ea92175",
       "failure_reason": null
     },
     {
