@@ -1995,6 +1995,16 @@ mod tests {
     /// equal column offsets — which is what makes the alignment assertion in
     /// `test_status_column_aligns_with_plain_status_text` sound.
     fn render_dashboard_interior(width: u16, rows: Vec<Vec<Line<'static>>>) -> Vec<String> {
+        render_dashboard_interior_selecting(width, rows, None)
+    }
+
+    /// [`render_dashboard_interior`] with row `selected` highlighted, so the
+    /// table reserves its `"> "` highlight column as it does in the app.
+    fn render_dashboard_interior_selecting(
+        width: u16,
+        rows: Vec<Vec<Line<'static>>>,
+        selected: Option<usize>,
+    ) -> Vec<String> {
         use ratatui::backend::TestBackend;
         use ratatui::widgets::TableState;
         use ratatui::Terminal;
@@ -2021,6 +2031,7 @@ mod tests {
                 let table_rows: Vec<Row> = rows.into_iter().map(Row::new).collect();
                 let table = dashboard_table(table_rows, area.width);
                 let mut table_state = TableState::default();
+                table_state.select(selected);
                 frame.render_stateful_widget(table, inner, &mut table_state);
             })
             .expect("draw dashboard frame");
@@ -2717,5 +2728,247 @@ mod tests {
         search(&mut NormalScreen::new(), &mut ctx, "missing");
 
         assert_eq!(ctx.filtered_aliases, vec!["vanished".to_string()]);
+    }
+
+    // --- 25-04: the running-agents summary in the Status cell (D-C14) -------
+
+    use crate::agents::waves::{AgentView, PlanRef};
+    use crate::agents::{AgentLiveness, AgentRow};
+    use crate::state_reader::phase_num::PhaseNum;
+
+    /// The widths the Status-cell ladder is checked at; RESEARCH Pattern 6
+    /// measured 13/13/13/13/19/25 at 60/80/100/120/160/200.
+    const LADDER_WIDTHS: [u16; 5] = [60, 80, 120, 160, 200];
+
+    /// One agent worktree row in `liveness`, attributed to plan `id`.
+    fn agent_row(n: usize, liveness: AgentLiveness, id: Option<&str>) -> AgentRow {
+        AgentRow {
+            path: PathBuf::from(format!("/nonexistent/.claude/worktrees/agent-{n:08x}")),
+            liveness,
+            plan: id.and_then(PlanRef::from_id),
+            ..Default::default()
+        }
+    }
+
+    /// The observed 13-executor shape: wave 2 of 11, 8 of 35 plans done, 13
+    /// executors live on phase 13. A literal, so fields later plans add to
+    /// `AgentView` cannot break it.
+    fn thirteen_executor_view() -> AgentView {
+        AgentView {
+            active_phase: PhaseNum::parse("13"),
+            current_wave: Some(2),
+            max_wave: Some(11),
+            plan_total: 35,
+            done: 8,
+            running: 13,
+            agents: (0..13)
+                .map(|i| {
+                    let id = format!("13-{:02}", i + 9);
+                    agent_row(i, AgentLiveness::Live, Some(&id))
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Render the real dashboard with row 0 selected, as the app does.
+    fn render_selected(ctx: &mut AppContext, width: u16) -> Vec<Vec<(String, Color)>> {
+        ctx.recompute_filtered_aliases();
+        ctx.table_state.select(Some(0));
+        render_dashboard_cells(ctx, width, 12)
+    }
+
+    /// The trimmed text of `row` between the `Status` and `Progress` headers'
+    /// columns — measured from the rendered header, not from
+    /// `status_column_cells`, so the two are independent.
+    fn status_cell_text(rows: &[Vec<(String, Color)>], row: &[(String, Color)]) -> String {
+        let header = row_with(rows, "Status");
+        let start = find_in_row(header, "Status").expect("Status header");
+        let end = find_in_row(header, "Progress").expect("Progress header");
+        row[start..end]
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// The form `agent_summary_line` must pick: the first that fits.
+    fn expected_form(view: &AgentView, cells: u16) -> String {
+        view.summary_forms()
+            .into_iter()
+            .find(|f| Line::from(f.as_str()).width() <= usize::from(cells))
+            .expect("some form fits")
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn status_column_cells_matches_the_rendered_status_column() {
+        for width in [50u16, 60, 80, 100, 120, 160, 200] {
+            let (headers, _) = dashboard_columns(width);
+            let mut row: Vec<Line<'static>> = vec![Line::from("a"), Line::from("b")];
+            row.push(Line::from("X".repeat(200)));
+            row.extend((3..headers.len()).map(|_| Line::from("-")));
+
+            let rendered = render_dashboard_interior_selecting(width, vec![row], Some(0));
+            let data = &rendered[1];
+            let run = data
+                .split(|c| c != 'X')
+                .map(str::len)
+                .max()
+                .unwrap_or(0);
+            assert_eq!(
+                data.matches('X').count(),
+                run,
+                "the Status cell's X cells must be contiguous at width {width}: {data:?}"
+            );
+            assert_eq!(
+                usize::from(status_column_cells(width)),
+                run,
+                "status_column_cells disagrees with the rendered column at width {width}: {data:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_agent_summary_is_a_whole_ladder_form_at_every_width() {
+        let view = thirteen_executor_view();
+        for width in LADDER_WIDTHS {
+            let mut ctx = ctx_with_aliases(&["orbit"]);
+            ctx.agent_views.insert("orbit".to_string(), view.clone());
+            let rows = render_selected(&mut ctx, width);
+            let row = row_with(&rows, "orbit");
+
+            let want = expected_form(&view, status_column_cells(width));
+            assert_eq!(
+                status_cell_text(&rows, row),
+                want,
+                "width {width} must show one whole ladder form"
+            );
+            if width == 80 || width == 120 {
+                assert_eq!(want, "w2/11 13run", "the common-case form at {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_form_exactly_as_wide_as_the_column_is_chosen() {
+        let view = thirteen_executor_view();
+        let forms = view.summary_forms();
+        for (k, form) in forms.iter().enumerate() {
+            let cells = u16::try_from(Line::from(form.as_str()).width()).expect("narrow");
+            let exact = agent_summary_line(&view, cells).expect("the form fits exactly");
+            assert_eq!(&line_text(&exact), form, "form {k} at exactly its width");
+
+            let narrower = agent_summary_line(&view, cells - 1).map(|l| line_text(&l));
+            assert_eq!(
+                narrower,
+                forms.get(k + 1).cloned(),
+                "one cell narrower than form {k} must choose the next form"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_without_active_agents_is_byte_identical() {
+        let baseline = {
+            let mut ctx = ctx_with_aliases(&["alpha", "beta"]);
+            render_selected(&mut ctx, 120)
+        };
+
+        // A view with only `Unknown` rows has no summary form: the frame must
+        // be the one the scan never touched.
+        let mut ctx = ctx_with_aliases(&["alpha", "beta"]);
+        let unknown_only = AgentView {
+            agents: vec![
+                agent_row(0, AgentLiveness::Unknown, None),
+                agent_row(1, AgentLiveness::Unknown, Some("13-02")),
+            ],
+            ..Default::default()
+        };
+        assert!(unknown_only.summary_forms().is_empty());
+        ctx.agent_views.insert("alpha".to_string(), unknown_only);
+        assert_eq!(
+            render_selected(&mut ctx, 120),
+            baseline,
+            "an Unknown-only view must not change a single cell"
+        );
+
+        // A project with no entry at all is unchanged while its neighbour
+        // shows a summary.
+        let mut ctx = ctx_with_aliases(&["alpha", "beta"]);
+        ctx.agent_views
+            .insert("alpha".to_string(), thirteen_executor_view());
+        let with_neighbour = render_selected(&mut ctx, 120);
+        assert_eq!(
+            row_with(&with_neighbour, "beta"),
+            row_with(&baseline, "beta"),
+            "a row with no agent view must render exactly as before"
+        );
+        assert_ne!(
+            row_with(&with_neighbour, "alpha"),
+            row_with(&baseline, "alpha"),
+            "control arm: the row with a view does change"
+        );
+    }
+
+    #[test]
+    fn the_stalled_form_replaces_the_status_cell() {
+        let mut ctx = ctx_with_aliases(&["orbit"]);
+        ctx.agent_views.insert(
+            "orbit".to_string(),
+            AgentView {
+                agents: vec![
+                    agent_row(0, AgentLiveness::Stalled, Some("13-02")),
+                    agent_row(1, AgentLiveness::Stalled, None),
+                ],
+                ..Default::default()
+            },
+        );
+        let rows = render_selected(&mut ctx, 120);
+        let row = row_with(&rows, "orbit");
+        assert_eq!(status_cell_text(&rows, row), "2 stalled");
+        assert!(
+            text_is_colored(row, "2 stalled", Color::Yellow),
+            "the all-stalled form is yellow; its text carries the meaning"
+        );
+    }
+
+    #[test]
+    fn the_agent_summary_replaces_a_milestone_complete_cell() {
+        let mut ctx = ctx_with_aliases(&["orbit"]);
+        let state = ctx.project_states.get_mut("orbit").expect("state");
+        state.completed_phases = 3;
+        state.total_phases = 3;
+        state.milestone = "v1.0".to_string();
+
+        let before = render_selected(&mut ctx, 120);
+        assert_eq!(
+            status_cell_text(&before, row_with(&before, "orbit")),
+            "v1.0 Complete",
+            "control arm: without agents the milestone cell renders"
+        );
+
+        ctx.agent_views
+            .insert("orbit".to_string(), thirteen_executor_view());
+        let after = render_selected(&mut ctx, 120);
+        let row = row_with(&after, "orbit");
+        assert_eq!(status_cell_text(&after, row), "w2/11 13run");
+        assert!(text_is_colored(row, "w2/11 13run", Color::Cyan));
+    }
+
+    /// U+00B7 MIDDLE DOT is one cell under `unicode-width`, which is what
+    /// `Line::width` and ratatui's layout use. It is East-Asian-Ambiguous
+    /// (measured), so a CJK-locale terminal may draw it two cells wide — the
+    /// same class as the `│` borders ratatui already draws on every screen.
+    /// The 13-cell common-case forms (`w2/11 13run`, `13run`) contain no `·`
+    /// at all [inferred — audit].
+    #[test]
+    fn the_middle_dot_is_one_cell() {
+        assert_eq!(Line::from("\u{b7}").width(), 1);
+        assert_eq!("\u{b7}".len(), 2, "two bytes, one cell: never measure with len");
     }
 }
