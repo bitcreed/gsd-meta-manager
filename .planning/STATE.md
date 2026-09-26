@@ -1,13 +1,13 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.8.0
+milestone: v1.9.0
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
-status: planning
-stopped_at: Phase 25 complete, ready to plan Phase 19
-last_updated: "2026-09-26T04:44:07.189Z"
-last_activity: 2026-09-25
-last_activity_desc: Phase 25 complete, transitioned to Phase 19
+status: shipped
+stopped_at: v1.9.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
+last_updated: "2026-09-26T23:00:00.000Z"
+last_activity: 2026-09-26
+last_activity_desc: v1.9.0 released — Running Agents & GSD 1.15.0 Sync
 state_head: bc5b1f557bf3ff050d18f49ba2acdc122f370e0d
 progress:
   total_phases: 10
@@ -15,7 +15,7 @@ progress:
   total_plans: 7
   completed_plans: 112
   percent: 58
-milestone_name: Roadmap Redesign
+milestone_name: Running Agents & GSD 1.15.0 Sync
 ---
 
 # Project State
@@ -32,9 +32,13 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Ready to plan
-  Phase 25 (Running Agents & Live Wave View) complete 2026-09-25: 7/7 plans, verification passed
-  7/7 (AGENT-01..07), CR-01/WR-01 closed by 25-07; WR-02..WR-06 deferred (see Blockers/Concerns).
+Status: v1.9.0 shipped 2026-09-26 (interim release; v2.0 milestone still open)
+  Phase 25 (Running Agents & Live Wave View) with WR-02..WR-06 fixed; quick tasks 260925-x0v,
+  260926-06g/0u3/16t/1t1/2l4/dyf/kes/fcp/fi9/gd5/j0a/jnf and the gsd-core 1.15.0 sync batch
+  260926-gtj (gtk/gtl/gtm/gtn). Config surface synced to gsd-core release/1.15.0
+  (v1.14.0-111-gec81d0d10); oracle still pinned to published 1.14.0 — bump GSD_CORE_SYNCED_VERSION
+  once 1.15.0 is on npm. `./scripts/pre-tag-check.sh --container v1.9.0` exit **0**, all five gates
+  PASS, git banner MATCH, 56 suites / **2798 passed / 0 failed** / 15 ignored.
   Router's next is Phase 19, whose loop is halted by user decision — ask first.
 Earlier (v1.8.0 release):
   Phase 24, quick tasks 260922-hdh/hdi/hdj, 260923-lr8/lr9/lra/md1, 260924-drx and five debug
@@ -577,12 +581,18 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-25
-Stopped at: Phase 25 complete, ready to plan Phase 19
-Transition: Phase 25 verified passed and closed; PROJECT.md evolved (AGENT-01..07 validated, four
-Phase 25 key decisions); WR-02..WR-06 recorded as deferred concerns. Phase 19's gap-closure loop is
-halted by user decision — do not resume without asking. [inferred]
+Last session: 2026-09-26
+Stopped at: v1.9.0 released (Running Agents & GSD 1.15.0 Sync)
+Release: `Cargo.toml` 1.8.0 -> 1.9.0; `cargo update` moved cc 1.5.1, find-msvc-tools 0.1.14,
+js-sys 0.3.106, siphasher 1.0.4, smallvec 1.16.2, wasm-bindgen* 0.2.129; still held by upstream `=`
+pins: generic-array 0.14.7 (0.14.9), unicode-width 0.2.0 (0.2.2). Container pre-tag check green
+(see Current Position). Open follow-ups: GSD_CORE_SYNCED_VERSION -> 1.15.0 once published on npm;
+help/footer vs keymap mismatches F1-F8 (quick 260926-gd5 SUMMARY); Phase 25 IN-01..IN-07.
+Phase 19's gap-closure loop is halted by user decision — do not resume without asking.
 Resume file: None
+
+Previous session (2026-09-25): Phase 25 verified passed and closed; PROJECT.md evolved
+(AGENT-01..07 validated, four Phase 25 key decisions).
 
 Previous session (v1.8.0 release, text truncated by earlier state tooling):
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
