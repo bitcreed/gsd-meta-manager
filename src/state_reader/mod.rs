@@ -82,7 +82,8 @@ pub struct ProjectState {
     /// directory: in `phases` it would infer `NoDirectory`, take the
     /// current-phase cell, and become a legal driver goal target.
     pub shipped_phases: Vec<roadmap_md::RoadmapPhase>,
-    /// Each phase's and build phase's `**Goal**:` line
+    /// Each phase's and build phase's `**Goal**:` field, hard-wrapped
+    /// continuation lines included and joined with spaces
     /// ([`roadmap_md::parse_phase_goals`]), keyed by `phase_key`; shown in the
     /// Roadmap's detail pane. Display-only.
     ///

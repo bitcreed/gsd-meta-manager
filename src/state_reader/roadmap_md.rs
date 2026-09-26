@@ -998,23 +998,70 @@ pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
 /// Walks every ordinary `## Phase N: Title` heading (the shape
 /// [`parse_roadmap_phases`] reads) and every `#### Build phase N` heading;
 /// inside each entry — up to the next markdown heading of any level — the first
-/// line reading `**Goal**: text` or `**Goal:** text` (case-insensitive) yields
-/// the trimmed text. An empty goal is skipped; the first entry for a key wins,
-/// so `### Phase 07:` and a later `### Phase 7:` do not overwrite each other.
-/// Single-line goals only: every roadmap seen writes the goal on one line.
+/// goal label (`**Goal**: text`, `**Goal:** text`, `**Goal** text`,
+/// case-insensitive) opens the goal. An empty goal is skipped; the first entry
+/// for a key wins, so `### Phase 07:` and a later `### Phase 7:` do not
+/// overwrite each other.
+///
+/// **Hard-wrapped goals are read in full** — a port of gsd-core 1.15.0's
+/// `extractPhaseFieldMultiline` (`src/roadmap-parser.cts:2294`, #4731 / #4837).
+/// Following lines are joined with single spaces, each trimmed, until the first
+/// line that [`ends_field_continuation`]: a blank line, a `-` / `*` / `+` list
+/// item (numbered items are NOT boundaries, as upstream), any `**Label**` line
+/// of either case, a heading, a table row, or a code fence. A fence on the label
+/// line itself means no goal, as upstream returns null. Two recorded
+/// divergences:
+///
+/// * **C** — a `#####` / `######` heading ends the goal (upstream stops only at
+///   `#{1,4}` and folds a deeper heading's text into the goal): here every
+///   heading already ends the entry, one boundary for goals, the phase list and
+///   sections.
+/// * **D** — continuation always starts on the line AFTER the label line and
+///   the same boundaries apply to it. Upstream's label regex crosses the newline
+///   when the label line is empty, borrowing the next non-blank line even
+///   across a blank line or when it is another field (`**Goal**:` then
+///   `**Depends on**: Phase 1` reads as the goal upstream); here both yield no
+///   goal, while an empty label line followed by plain prose still reads it.
 ///
 /// **`Untrusted` values**: the text is the project's own prose and reaches a
-/// cell only through `shown()`.
+/// cell only through `shown()`. Lines are joined with spaces, so no raw
+/// newline from the roadmap reaches a cell.
 pub fn parse_phase_goals(content: &str) -> HashMap<String, crate::text::Untrusted> {
     static GOAL: OnceLock<Regex> = OnceLock::new();
     let phase_heading = phase_heading_re();
-    let goal = GOAL.get_or_init(|| Regex::new(r"(?i)^\s*\*\*Goal(?:\*\*\s*:|:\*\*)\s*(.*)$").unwrap());
+    let goal = GOAL.get_or_init(|| {
+        Regex::new(r"(?i)^[ \t]*\*\*Goal(?::\*\*|\*\*[ \t]*:?)[ \t]*(.*)$").unwrap()
+    });
     let build_heading = build_heading_re();
     let any_heading = any_heading_re();
 
     let mut goals: HashMap<String, crate::text::Untrusted> = HashMap::new();
+    let finalise = |pending: Option<(String, Vec<String>)>,
+                    goals: &mut HashMap<String, crate::text::Untrusted>| {
+        let Some((key, parts)) = pending else {
+            return;
+        };
+        let text = parts.join(" ").trim().to_string();
+        if !text.is_empty() {
+            goals
+                .entry(key)
+                .or_insert_with(|| crate::text::Untrusted::from_untrusted_source(text));
+        }
+    };
+
     let mut open: Option<String> = None;
+    // (key, parts) of a goal whose continuation lines are still being read.
+    let mut pending: Option<(String, Vec<String>)> = None;
     for line in content.lines() {
+        if let Some((_, parts)) = &mut pending {
+            if !ends_field_continuation(line) {
+                parts.push(line.trim().to_string());
+                continue;
+            }
+            // The boundary line still goes through the loop below, so a
+            // heading keeps opening / closing entries.
+            finalise(pending.take(), &mut goals);
+        }
         if any_heading.is_match(line) {
             open = phase_heading
                 .captures(line)
@@ -1026,17 +1073,40 @@ pub fn parse_phase_goals(content: &str) -> HashMap<String, crate::text::Untruste
             continue;
         };
         if let Some(caps) = goal.captures(line) {
-            let text = caps[1].trim();
-            if !text.is_empty() {
-                goals
-                    .entry(key.clone())
-                    .or_insert_with(|| crate::text::Untrusted::from_untrusted_source(text.to_string()));
+            let first = caps[1].trim();
+            // A fence on the label line: upstream returns null, so no goal.
+            if !is_fence_line(first) {
+                pending = Some((key.clone(), vec![first.to_string()]));
             }
             // The first Goal line inside the entry wins, empty or not.
             open = None;
         }
     }
+    finalise(pending.take(), &mut goals);
     goals
+}
+
+/// Whether `line` ends a multi-line field's continuation — gsd-core 1.15.0's
+/// `extractPhaseFieldMultiline` boundary set, checked on the raw line: blank,
+/// a `-` / `*` / `+` list item, a `**Label**` / `**Label:**` line of either
+/// case, a heading ([`any_heading_re`], any level — divergence C), a table
+/// row, or a code-fence opener.
+fn ends_field_continuation(line: &str) -> bool {
+    static LIST_ITEM: OnceLock<Regex> = OnceLock::new();
+    static LABEL: OnceLock<Regex> = OnceLock::new();
+    static TABLE_ROW: OnceLock<Regex> = OnceLock::new();
+    static FENCE: OnceLock<Regex> = OnceLock::new();
+    let list_item = LIST_ITEM.get_or_init(|| Regex::new(r"^\s*[-*+]\s").unwrap());
+    let label = LABEL.get_or_init(|| Regex::new(r"^\s*\*\*[A-Za-z][A-Za-z ]*:?(?:\*\*)?:?\s").unwrap());
+    let table_row = TABLE_ROW.get_or_init(|| Regex::new(r"^\s*\|").unwrap());
+    let fence = FENCE.get_or_init(|| Regex::new(r"^\s*(?:`{3,}|~{3,})").unwrap());
+
+    line.trim().is_empty()
+        || list_item.is_match(line)
+        || label.is_match(line)
+        || any_heading_re().is_match(line)
+        || table_row.is_match(line)
+        || fence.is_match(line)
 }
 
 /// The full text of the roadmap entry for `phase_id` — its `Phase N:` heading
