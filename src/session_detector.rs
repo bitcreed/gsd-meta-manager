@@ -117,10 +117,21 @@ const CODEX_FD_SCAN_LIMIT: usize = 4096;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const CODEX_PROCESS_SCAN_LIMIT: usize = 1024;
 
+/// How long one `pgrep` may take before it is killed and read as "could not be
+/// run" (Phase 25 review WR-02). `pgrep` walks `/proc` and answers in
+/// milliseconds; two seconds only ever trips on a wedged process table, and
+/// then it keeps the session poll and the agents scan — both of which wait for
+/// this answer on a blocking task — from hanging with it [inferred budget].
+const PGREP_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// PIDs of processes whose name is exactly `name`. `None` when `pgrep` could
-/// not be run; an empty list when it ran and matched nothing.
+/// not be run or did not answer within [`PGREP_BUDGET`]; an empty list when it
+/// ran and matched nothing.
 fn pgrep_exact(name: &str) -> Option<Vec<u32>> {
-    let output = Command::new("pgrep").args(["-x", name]).output().ok()?;
+    let output = crate::bounded_output::stdout_within(
+        Command::new("pgrep").args(["-x", name]),
+        PGREP_BUDGET,
+    )?;
 
     if !output.status.success() {
         return Some(Vec::new());

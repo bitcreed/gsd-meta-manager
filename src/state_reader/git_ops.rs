@@ -1,5 +1,6 @@
 use crate::text::Untrusted;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Read a project's last-activity timestamp from its most recent git commit
 /// (committer date), falling back to filesystem mtimes for non-git or empty
@@ -200,14 +201,56 @@ pub fn is_dirty(project_root: &Path) -> Option<bool> {
 /// place for one of those properties to go missing, and it would not be the
 /// spawn-seam allowlist entry that noticed.
 pub(crate) fn git_read_raw(project_root: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = git_read_command(project_root, args).output().ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The one place a read-only git invocation is spelled: `git
+/// --no-optional-locks -C <root> <args…>` under `GIT_OPTIONAL_LOCKS=0`. Both
+/// [`git_read_raw`] and [`git_read_raw_within`] run exactly this, so the no-lock
+/// property cannot go missing from one of them.
+fn git_read_command(project_root: &Path, args: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
         .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("--no-optional-locks")
         .arg("-C")
         .arg(project_root)
-        .args(args)
-        .output()
-        .ok()?;
+        .args(args);
+    command
+}
+
+/// How long one git read of the agents scan may take before it is killed and
+/// read as a failure (Phase 25 review WR-02).
+///
+/// The agents scan runs on a blocking task and is re-spawned only after its
+/// result arrives, so a `git status` that never returns — a stuck mount, a
+/// hanging `core.fsmonitor` — used to freeze the scan for the rest of the
+/// session. Ten seconds is far above any healthy read of these commands (a
+/// `status` of a large worktree on a cold cache takes a few seconds) and still
+/// short enough that a wedged worktree costs one late scan rather than every
+/// later one. A read that runs out renders as `?`, like any other git failure
+/// (D-C16) [inferred budget].
+pub(crate) const AGENT_GIT_BUDGET: Duration = Duration::from_secs(10);
+
+/// [`git_read_raw`], killed after `budget` (Phase 25 review WR-02).
+///
+/// The same command, the same no-lock flags and the same failure-as-`None`
+/// contract; a read that outlives `budget` is one more failure. Stdout is
+/// drained while git runs ([`crate::bounded_output::stdout_within`]), so a
+/// large answer is never mistaken for a hang.
+pub(crate) fn git_read_raw_within(
+    project_root: &Path,
+    args: &[&str],
+    budget: Duration,
+) -> Option<String> {
+    let output =
+        crate::bounded_output::stdout_within(&mut git_read_command(project_root, args), budget)?;
 
     if !output.status.success() {
         return None;
@@ -562,9 +605,11 @@ pub fn push_refspecs(project_root: &Path) -> PushPreview {
 // project and of each of its agent worktrees: which worktrees exist, how many
 // commits a worktree's HEAD carries beyond the main worktree's HEAD, and how
 // many paths it has changed. A running agent owns those worktrees, so every
-// call goes through `git_read_raw` and inherits its no-lock property (D-B02):
-// a `git status` that refreshed the index of a live agent's worktree, or took
-// its `index.lock`, would be the observer perturbing the thing it observes.
+// call goes through `git_read_raw_within` and inherits its no-lock property
+// (D-B02): a `git status` that refreshed the index of a live agent's worktree,
+// or took its `index.lock`, would be the observer perturbing the thing it
+// observes. Every call is also killed after [`AGENT_GIT_BUDGET`] (WR-02), so
+// one wedged worktree cannot freeze the agents scan for the session.
 //
 // Failure is data: every helper answers `None` rather than erroring, and the
 // caller renders that as `?` (D-C16).
@@ -590,13 +635,22 @@ pub(crate) struct PorcelainListing {
 /// newline form is still parseable (C-quoted paths aside). `None` when both
 /// fail — not a repository, or no git. Never panics.
 pub(crate) fn worktree_list_porcelain(project_root: &Path) -> Option<PorcelainListing> {
-    if let Some(raw) = git_read_raw(project_root, &["worktree", "list", "--porcelain", "-z"]) {
+    if let Some(raw) = git_read_raw_within(
+        project_root,
+        &["worktree", "list", "--porcelain", "-z"],
+        AGENT_GIT_BUDGET,
+    ) {
         return Some(PorcelainListing {
             raw,
             nul_separated: true,
         });
     }
-    git_read_raw(project_root, &["worktree", "list", "--porcelain"]).map(|raw| PorcelainListing {
+    git_read_raw_within(
+        project_root,
+        &["worktree", "list", "--porcelain"],
+        AGENT_GIT_BUDGET,
+    )
+    .map(|raw| PorcelainListing {
         raw,
         nul_separated: false,
     })
@@ -624,18 +678,18 @@ pub(crate) fn commits_ahead(worktree: &Path, base_sha: &str) -> Option<u32> {
         return None;
     }
     let range = format!("{base_sha}..HEAD");
-    let raw = git_read_raw(worktree, &["rev-list", "--count", &range])?;
+    let raw = git_read_raw_within(worktree, &["rev-list", "--count", &range], AGENT_GIT_BUDGET)?;
     raw.trim().parse::<u32>().ok()
 }
 
 /// How many paths `git status --porcelain` reports in `worktree` — modified,
 /// staged and untracked alike.
 ///
-/// Read through `git_read_raw`, so it takes no optional lock and never
+/// Read through `git_read_raw_within`, so it takes no optional lock and never
 /// refreshes the worktree's index. `None` when git fails or the count does not
 /// fit a `u32`.
 pub(crate) fn dirty_count(worktree: &Path) -> Option<u32> {
-    let raw = git_read_raw(worktree, &["status", "--porcelain"])?;
+    let raw = git_read_raw_within(worktree, &["status", "--porcelain"], AGENT_GIT_BUDGET)?;
     let lines = raw.lines().filter(|line| !line.trim().is_empty()).count();
     u32::try_from(lines).ok()
 }
@@ -656,14 +710,18 @@ pub(crate) fn log_subjects(dir: &Path, range: &str, max: u32) -> Vec<String> {
         return Vec::new();
     }
     let limit = format!("-n{max}");
-    git_read_raw(dir, &["log", "--format=%s", &limit, range])
-        .map(|raw| {
-            raw.lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    git_read_raw_within(
+        dir,
+        &["log", "--format=%s", &limit, range],
+        AGENT_GIT_BUDGET,
+    )
+    .map(|raw| {
+        raw.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// One row of a THIRD-PARTY repository's `git log`, in a type that cannot reach
