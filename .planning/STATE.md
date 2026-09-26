@@ -142,7 +142,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-26 - Completed quick task 260926-j0a: README GSD compatibility note + installed-GSD version detection
+Last activity: 2026-09-26 - Completed quick task 260926-jnf: Mask secret config values in Cfg tab + typed rows for missing gsd-core keys
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -572,6 +572,7 @@ Recent decisions affecting current work:
 | 260926-gtm | Codex install awareness for gsd-core 1.15.0: resolve ~/.codex gsd-tools, scrub inherited GSD_RUNTIME from codex child | 2026-09-26 | ea92175 | .planning/quick/260926-gtm-codex-install-awareness-for-gsd-core-1-15-0-gsd-tools-resolv |
 | 260926-gtn | Surface gsd-core 1.15.0 review/verification state: REVIEW-DISPOSITION open/deferred counts, VERIFICATION unparseable + router park, Verify hint | 2026-09-26 | 1d18eac | .planning/quick/260926-gtn-surface-gsd-core-1-15-0-review-verification-state-read-revie |
 | 260926-j0a | README GSD compatibility note (synced 1.15.0 branch / oracle 1.14.0, drift test) + installed-gsd-core detection (project-local over global, claude/codex; Config tab, dashboard newer-only warning, startup line) | 2026-09-26 | ac7a64a | .planning/quick/260926-j0a-readme-gsd-compatibility-note-installed- |
+| 260926-jnf | Mask secret config values in Cfg tab (`•••••••• (set)`/`(unset)`, known-key list + name heuristic, edit never prefills) + typed rows for runtime/context_profile/agent_skills/tavily_search/ref_search/perplexity/jina (count 139) | 2026-09-26 | 845a706 | .planning/quick/260926-jnf-mask-secret-config-values-in-cfg-tab-add |
 
 ## Session Continuity
 
