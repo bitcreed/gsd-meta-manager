@@ -31,6 +31,7 @@
 //! other.
 
 pub mod adapters;
+pub mod waves;
 pub mod worktrees;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -171,6 +172,12 @@ pub struct AgentRow {
     pub liveness: AgentLiveness,
     /// Sub-agents inside this worktree, each classified.
     pub children: Vec<ChildAgent>,
+    /// The plan this agent executes, from [`waves::attribute`] at scan time;
+    /// `None` when no tier yielded a valid plan id (quick tasks, fixers).
+    pub plan: Option<waves::PlanRef>,
+    /// Whether this worktree's own `.planning/` holds this plan's SUMMARY —
+    /// finished, but not yet merged into main (RESEARCH Pitfall 3).
+    pub summary_in_worktree: bool,
 }
 
 /// One project's agents, as of one scan.
@@ -253,8 +260,20 @@ pub fn scan_project_with(
         .filter(|(wt, claim)| wt.agent_pattern || claim.is_some())
         .map(|(wt, claim)| {
             let (commits_ahead, dirty) = worktrees::worktree_counts(wt, base_sha);
-            let liveness = classify_liveness(claim.as_ref().map(|(_, facts)| facts), false, now);
+            let facts = claim.as_ref().map(|(_, facts)| facts);
+            // Attribution BEFORE classification: the plan is what the SUMMARY
+            // check (and so `Finished`) is keyed on.
+            let plan = waves::attribute(
+                facts
+                    .and_then(|f| f.description.as_ref())
+                    .map(Untrusted::as_raw_for_logic_only),
+                wt.branch_plan.as_ref().map(|bp| bp.plan.as_str()),
+                None,
+                wt.ledger_plan.as_deref(),
+            );
+            let liveness = classify_liveness(facts, false, now);
             let mut row = AgentRow {
+                plan,
                 path: wt.path.clone(),
                 branch: wt.branch.clone(),
                 agent_id: wt.agent_id.clone(),

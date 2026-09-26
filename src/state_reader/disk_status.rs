@@ -310,6 +310,22 @@ pub struct DiskInference {
     /// unspecified while this struct's `PartialEq` drives the dashboard's
     /// unchanged-state suppression. [`plan_waves::group_into_waves`] sorts.
     pub plan_waves: Vec<plan_waves::PlanWave>,
+    /// The surviving plans whose summary paired — the plans this phase's own
+    /// directory records as done (D-C11).
+    ///
+    /// Each entry is the plan's id exactly as [`DiskInference::plan_waves`]
+    /// carries it (the plan's filename stem minus `-PLAN.md`, slug included),
+    /// so the wave model can join the two without a second spelling. Filled out
+    /// of the SAME Pass 2 pairing that computes `summary_count`, so it costs no
+    /// extra I/O and can never disagree with that count: `summarized_plans.len()`
+    /// IS `summary_count`.
+    ///
+    /// **Ordered, and the order is load-bearing** for the same reason
+    /// [`DiskInference::plan_tokens`] is: the pairing collects into a
+    /// `HashSet`, whose iteration order is not stable across runs, while this
+    /// struct's `PartialEq` drives the dashboard's unchanged-state suppression.
+    /// Sorted by numeric plan index, ids without one last.
+    pub summarized_plans: Vec<String>,
 }
 
 /// Read a scalar key out of a file's **leading** YAML frontmatter block.
@@ -396,7 +412,7 @@ pub(crate) fn leading_frontmatter_value(content: &str, key: &str) -> Option<Stri
 /// `13-SUMMARY.md` (stem `13`) has no plan index and so pairs with no plan, a
 /// standalone `SUMMARY.md` (stem ``) likewise, and `14-REMEDIATION-SUMMARY.md`
 /// likewise. Those fall back to the exact-stem rule, which is what they want.
-fn plan_index(stem: &str) -> Option<(super::phase_num::PhaseNum, u32)> {
+pub(crate) fn plan_index(stem: &str) -> Option<(super::phase_num::PhaseNum, u32)> {
     let mut parts = stem.splitn(3, '-');
     let phase = super::phase_num::PhaseNum::parse(parts.next()?)?;
     let plan = parts.next()?.parse::<u32>().ok()?;
@@ -440,7 +456,11 @@ fn plan_index(stem: &str) -> Option<(super::phase_num::PhaseNum, u32)> {
 /// Returns the trimmed value of the first matching child. Every failure mode —
 /// no leading block, no such parent, no such child — yields `None`, fail-safe,
 /// never an error.
-fn leading_frontmatter_nested_value(content: &str, parent: &str, key: &str) -> Option<String> {
+pub(crate) fn leading_frontmatter_nested_value(
+    content: &str,
+    parent: &str,
+    key: &str,
+) -> Option<String> {
     let mut lines = content.lines();
     if lines.next().map(str::trim) != Some("---") {
         return None;
@@ -952,12 +972,12 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             })
         })
         .collect();
-    plan_tokens.sort_by(|a, b| {
-        // `None` sorts last: an id with no plan index follows every indexed one.
-        let key_a = plan_index(&a.id);
-        let key_b = plan_index(&b.id);
-        (key_a.is_none(), key_a, &a.id).cmp(&(key_b.is_none(), key_b, &b.id))
-    });
+    plan_tokens.sort_by(|a, b| plan_id_order(&a.id, &b.id));
+
+    // The paired plans themselves, in the same numeric order — see the field's
+    // doc comment. Collected from the pairing above, never re-derived.
+    let mut summarized_plans: Vec<String> = matched_plans.into_iter().collect();
+    summarized_plans.sort_by(|a, b| plan_id_order(a, b));
 
     // Waves, from the `wave:` key each surviving plan's own frontmatter carries.
     // Sorted inside `group_into_waves` — see the field's doc comment.
@@ -1019,7 +1039,17 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_skeleton,
         plan_tokens,
         plan_waves,
+        summarized_plans,
     }
+}
+
+/// The one ordering every per-plan vector in [`DiskInference`] uses: numeric
+/// plan index first (`13-2` before `13-10`), an id with no plan index after
+/// every indexed one, and the id itself as the tie-break so the order is total.
+fn plan_id_order(a: &str, b: &str) -> std::cmp::Ordering {
+    let key_a = plan_index(a);
+    let key_b = plan_index(b);
+    (key_a.is_none(), key_a, a).cmp(&(key_b.is_none(), key_b, b))
 }
 
 /// Test whether a phase directory name belongs to the given phase number.
@@ -2635,6 +2665,40 @@ actuals:
         // This task changes no count.
         assert_eq!(result.plan_count, 3);
         assert_eq!(result.summary_count, 1);
+    }
+
+    #[test]
+    fn test_summarized_plans_collected_and_sorted_by_pass_2() {
+        let dir = tempdir().unwrap();
+        let plan = "---\nphase: 13\n---\nbody";
+        fs::write(dir.path().join("13-02-PLAN.md"), plan).unwrap();
+        fs::write(dir.path().join("13-10-PLAN.md"), plan).unwrap();
+        fs::write(dir.path().join("13-01-slug-PLAN.md"), plan).unwrap();
+        fs::write(dir.path().join("13-10-SUMMARY.md"), "done").unwrap();
+        fs::write(dir.path().join("13-01-SUMMARY.md"), "done").unwrap();
+        // A superseded plan's summary pairs with nothing (#2349).
+        fs::write(
+            dir.path().join("13-03-PLAN.md"),
+            "---\nstatus: superseded\n---\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("13-03-SUMMARY.md"), "done").unwrap();
+
+        let result = infer_disk_status(dir.path());
+
+        // The pairing stores the PLAN's stem (slug included), not the
+        // summary's, and orders numerically: 13-01 before 13-10.
+        assert_eq!(
+            result.summarized_plans,
+            vec!["13-01-slug".to_string(), "13-10".to_string()]
+        );
+        assert_eq!(result.summary_count, 2, "the field IS the count");
+        assert_eq!(result.plan_count, 3, "superseded 13-03 excluded");
+        assert_eq!(
+            infer_disk_status(dir.path()),
+            result,
+            "two scans of one directory compare equal"
+        );
     }
 
     #[test]
