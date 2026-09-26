@@ -34,6 +34,7 @@ pub mod adapters;
 pub mod waves;
 pub mod worktrees;
 
+use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -41,6 +42,8 @@ use std::time::SystemTime;
 use adapters::{AdapterReport, AgentAdapter, ChildAgent, CoreSnapshot, Enrichment};
 use worktrees::BranchPlan;
 
+use crate::state_reader::disk_status;
+use crate::state_reader::phase_num::PhaseNum;
 use crate::text::Untrusted;
 
 /// What the core concluded about one agent from its adapter's facts.
@@ -213,14 +216,42 @@ fn run_adapter(
     }
 }
 
+/// Whether `phase_dir` (a worktree's copy of a phase directory main also has)
+/// holds `plan`'s SUMMARY — the plan finished in that worktree, unmerged.
+///
+/// Only entry NAMES are read, never contents. A name matches when it ends in
+/// `-SUMMARY.md` and its stem's plan index equals `plan` (`13-2-SUMMARY.md`
+/// matches 13-02); FIX and GAPCLOSURE summaries are never plan partners, the
+/// same exclusion the main-worktree pairing makes. An unreadable or missing
+/// directory is `false`.
+fn worktree_holds_summary(phase_dir: &Path, plan: &waves::PlanRef) -> bool {
+    let Ok(entries) = std::fs::read_dir(phase_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        if name.contains("-FIX-") || name.ends_with("-GAPCLOSURE-SUMMARY.md") {
+            return false;
+        }
+        name.strip_suffix("-SUMMARY.md")
+            .and_then(disk_status::plan_index)
+            .is_some_and(|(phase, number)| phase == plan.phase && number == plan.plan)
+    })
+}
+
 /// Scan one project with an explicit adapter list.
 ///
 /// Core scan → [`CoreSnapshot`] → each adapter's `enrich` (panics caught) →
 /// claims accepted in registration order, first claim wins, out-of-range
 /// indexes ignored → a row for every worktree matching the agent predicate or
 /// claimed by an adapter → git counts per row (skipped for a `prunable`
-/// worktree) → liveness per row and child → only `Live` worktree-less agents
-/// kept (D-C07).
+/// worktree) → plan attribution per row ([`waves::attribute`]; one `git log`
+/// only for a row the free tiers leave unattributed) → one worktree SUMMARY
+/// check per attributed row → liveness per row and child → only `Live`
+/// worktree-less agents kept (D-C07).
 ///
 /// Public so an adapter's own tests — and the D-A07 proof in
 /// `tests/agents_scan.rs` — can feed a test-only adapter through the real core.
@@ -253,6 +284,11 @@ pub fn scan_project_with(
     }
 
     let base_sha = core.base_sha.as_deref();
+    let planning = project_root.join(".planning");
+    // Phase → its directory relative to `<project>/.planning`, or `None` when
+    // main has no directory for it. `find_phase_dir` runs at most once per
+    // distinct phase per scan.
+    let mut phase_dirs: HashMap<PhaseNum, Option<PathBuf>> = HashMap::new();
     let mut rows: Vec<AgentRow> = core
         .worktrees
         .iter()
@@ -281,9 +317,22 @@ pub fn scan_project_with(
                     wt.ledger_plan.as_deref(),
                 )
             });
-            let liveness = classify_liveness(facts, false, now);
+            // One `read_dir` per attributed row; the phase directory is
+            // resolved once per distinct phase, from MAIN's own listing.
+            let summary_in_worktree = plan.as_ref().is_some_and(|plan| {
+                let relative = phase_dirs.entry(plan.phase.clone()).or_insert_with(|| {
+                    disk_status::find_phase_dir(&planning, &plan.phase.padded())
+                        .and_then(|dir| dir.strip_prefix(&planning).ok().map(Path::to_path_buf))
+                });
+                !wt.prunable
+                    && relative.as_deref().is_some_and(|relative| {
+                        worktree_holds_summary(&wt.path.join(".planning").join(relative), plan)
+                    })
+            });
+            let liveness = classify_liveness(facts, summary_in_worktree, now);
             let mut row = AgentRow {
                 plan,
+                summary_in_worktree,
                 path: wt.path.clone(),
                 branch: wt.branch.clone(),
                 agent_id: wt.agent_id.clone(),
