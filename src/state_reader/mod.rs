@@ -756,7 +756,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
 /// the real HOME, `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 pub fn parse_project_state_with(
     planning_dir: &Path,
-    _roots: &gsd_install::InstallRoots,
+    roots: &gsd_install::InstallRoots,
 ) -> ProjectState {
     let mut state = ProjectState {
         status: "unknown".to_string(),
@@ -769,6 +769,11 @@ pub fn parse_project_state_with(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| planning_dir.to_path_buf());
+
+    // The effective gsd-core install (quick 260926-j0a): VERSION file reads
+    // only, on every load and refresh — this function runs in spawn_blocking
+    // off the render path, synchronously only at startup (inferred I-12).
+    state.gsd_install = gsd_install::detect_gsd_install(Some(&state.project_root), roots);
 
     // Presence, decided here and nowhere else. No early return: every read
     // below already fails silently on a missing path, and a single code path

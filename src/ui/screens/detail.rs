@@ -84,6 +84,21 @@ fn shown(value: &str) -> String {
     crate::text::render_for_terminal(value).to_string()
 }
 
+/// The Config tab's installed-GSD label and its colour by severity: in sync is
+/// dim, older / unknown / missing is informational, newer is a warning.
+fn gsd_install_label_and_style(
+    status: &crate::state_reader::gsd_install::GsdInstallStatus,
+) -> (String, Style) {
+    use crate::state_reader::gsd_install::{install_label, Severity};
+    let (label, severity) = install_label(status);
+    let colour = match severity {
+        Severity::Ok => Color::DarkGray,
+        Severity::Info => Color::Cyan,
+        Severity::Warning => Color::Yellow,
+    };
+    (label, Style::default().fg(colour))
+}
+
 /// The banner shown when `.planning/STATE.md` exists but its frontmatter could
 /// not be read.
 ///
@@ -7011,6 +7026,14 @@ impl DetailScreen {
             None => Vec::new(),
         };
 
+        // The project's effective gsd-core install (quick 260926-j0a, inferred
+        // I-8): a label built only from enum words, validated semver and
+        // constants, and still drawn through `shown()` at the render site.
+        let gsd_install = ctx
+            .project_states
+            .get(&self.alias)
+            .map(|state| gsd_install_label_and_style(&state.gsd_install));
+
         if entries.is_empty() {
             let msg_text = match edit_target {
                 DefaultsEditTarget::Project => {
@@ -7020,9 +7043,14 @@ impl DetailScreen {
                     "  No global defaults loaded (~/.gsd/defaults.json missing — saving will create it)"
                 }
             };
-            let msg =
-                Paragraph::new(msg_text).style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(msg, area);
+            let mut lines = vec![Line::from(Span::styled(
+                msg_text,
+                Style::default().fg(Color::DarkGray),
+            ))];
+            if let Some((label, style)) = &gsd_install {
+                lines.push(Line::from(Span::styled(format!("  {}", shown(label)), *style)));
+            }
+            frame.render_widget(Paragraph::new(lines), area);
             return;
         }
 
@@ -7154,11 +7182,18 @@ impl DetailScreen {
                 entries.len()
             ));
         }
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .title(title),
-        );
+        // The install label sits right-aligned on the same border, fitted to
+        // the room the left title leaves — `tab_bar_block`'s pattern.
+        let title_cells = Line::from(title.as_str()).width();
+        let mut block = Block::default().borders(Borders::TOP).title(title);
+        if let Some((label, style)) = &gsd_install {
+            let room = usize::from(area.width).saturating_sub(title_cells + 3);
+            if room >= 8 {
+                let text = fit_cells(&format!(" {} ", shown(label)), room);
+                block = block.title_top(Line::from(Span::styled(text, *style)).right_aligned());
+            }
+        }
+        let list = List::new(items).block(block);
 
         // ID-04: the pane YIELDS to the list on a short terminal. Below the
         // floor the split is skipped entirely and the list keeps the full

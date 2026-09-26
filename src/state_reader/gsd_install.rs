@@ -78,6 +78,42 @@ impl InstallRoots {
             codex_home: std::env::var_os("CODEX_HOME"),
         }
     }
+
+    /// The global Claude home: `${CLAUDE_CONFIG_DIR:-~/.claude}`.
+    pub fn claude_home(&self) -> Option<PathBuf> {
+        self.config_home(self.claude_config_dir.as_ref(), ".claude")
+    }
+
+    /// The global Codex home: `${CODEX_HOME:-~/.codex}`.
+    pub fn codex_home_dir(&self) -> Option<PathBuf> {
+        self.config_home(self.codex_home.as_ref(), ".codex")
+    }
+
+    /// Upstream `runtime-homes.cts` `dot-home`: a NON-BLANK override wins
+    /// (`hasNonBlankOverride`, whitespace-only counts as unset) and has a
+    /// leading `~` expanded against home (`expandTilde`); otherwise
+    /// `<home>/<name>`. Inferred I-5.
+    fn config_home(&self, override_: Option<&OsString>, name: &str) -> Option<PathBuf> {
+        match override_.filter(|v| !v.to_string_lossy().trim().is_empty()) {
+            Some(value) => Some(expand_tilde(value, self.home.as_deref())),
+            None => self.home.as_ref().map(|home| home.join(name)),
+        }
+    }
+}
+
+/// `~` and `~/rest` expand against `home`; anything else (including `~user`)
+/// is taken literally, as upstream's `expandTilde` does. Without a home the
+/// value stays literal and simply will not exist.
+fn expand_tilde(value: &OsString, home: Option<&Path>) -> PathBuf {
+    if let (Some(home), Some(s)) = (home, value.to_str()) {
+        if s == "~" {
+            return home.to_path_buf();
+        }
+        if let Some(rest) = s.strip_prefix("~/") {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(value)
 }
 
 /// Which runtime's layout a candidate belongs to.
@@ -117,10 +153,30 @@ pub struct InstallCandidate {
 /// Without a project root only the two global candidates are returned; without
 /// a home and without overrides only the project-local ones.
 pub fn install_candidates(
-    _project_root: Option<&Path>,
-    _roots: &InstallRoots,
+    project_root: Option<&Path>,
+    roots: &InstallRoots,
 ) -> Vec<InstallCandidate> {
-    Vec::new()
+    fn candidate(dir: PathBuf, runtime: InstallRuntime, scope: InstallScope) -> InstallCandidate {
+        InstallCandidate {
+            gsd_core_dir: dir.join("gsd-core"),
+            runtime,
+            scope,
+        }
+    }
+    let mut out = Vec::with_capacity(5);
+    if let Some(root) = project_root {
+        use InstallRuntime::*;
+        out.push(candidate(root.to_path_buf(), ProjectRoot, InstallScope::ProjectLocal));
+        out.push(candidate(root.join(".claude"), Claude, InstallScope::ProjectLocal));
+        out.push(candidate(root.join(".codex"), Codex, InstallScope::ProjectLocal));
+    }
+    if let Some(home) = roots.claude_home() {
+        out.push(candidate(home, InstallRuntime::Claude, InstallScope::Global));
+    }
+    if let Some(home) = roots.codex_home_dir() {
+        out.push(candidate(home, InstallRuntime::Codex, InstallScope::Global));
+    }
+    out
 }
 
 /// A validated semver version.
@@ -140,13 +196,97 @@ pub struct GsdVersion {
 impl GsdVersion {
     /// Parse `MAJOR.MINOR.PATCH[-pre][+build]`, trimmed, with an optional
     /// leading `v`. Anything else is `None`.
-    pub fn parse(_raw: &str) -> Option<Self> {
-        None
+    pub fn parse(raw: &str) -> Option<Self> {
+        let s = raw.trim();
+        let s = s.strip_prefix('v').unwrap_or(s);
+        let s = match s.split_once('+') {
+            Some((rest, build)) => {
+                if !valid_identifiers(build) {
+                    return None;
+                }
+                rest
+            }
+            None => s,
+        };
+        let (core, pre) = match s.split_once('-') {
+            Some((core, pre)) => {
+                if !valid_identifiers(pre) {
+                    return None;
+                }
+                (core, Some(pre.to_string()))
+            }
+            None => (s, None),
+        };
+        let mut parts = core.split('.');
+        let mut number = || -> Option<u64> {
+            let part = parts.next()?;
+            if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            part.parse().ok()
+        };
+        let (major, minor, patch) = (number()?, number()?, number()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            major,
+            minor,
+            patch,
+            pre,
+        })
     }
 
-    /// Semver precedence (build metadata already dropped).
-    pub fn precedence_cmp(&self, _other: &Self) -> Ordering {
-        Ordering::Equal
+    /// Semver precedence (build metadata already dropped): the numeric triple
+    /// first, then a release above any of its prereleases, then prerelease
+    /// identifiers left to right — numeric by value, numeric below
+    /// alphanumeric, alphanumeric by ASCII, and a shorter prefix lower.
+    pub fn precedence_cmp(&self, other: &Self) -> Ordering {
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| match (&self.pre, &other.pre) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(a), Some(b)) => compare_prerelease(a, b),
+            })
+    }
+}
+
+/// Non-empty dot-separated identifiers of `[0-9A-Za-z-]` only.
+fn valid_identifiers(s: &str) -> bool {
+    s.split('.').all(|id| {
+        !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
+fn compare_prerelease(a: &str, b: &str) -> Ordering {
+    fn numeric(id: &str) -> bool {
+        id.bytes().all(|b| b.is_ascii_digit())
+    }
+    let (mut left, mut right) = (a.split('.'), b.split('.'));
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let ord = match (numeric(x), numeric(y)) {
+                    (true, true) => {
+                        // By value without overflow: fewer significant digits
+                        // is smaller, then digit-wise.
+                        let (x, y) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                        x.len().cmp(&y.len()).then_with(|| x.cmp(y))
+                    }
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    (false, false) => x.cmp(y),
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
     }
 }
 
@@ -172,14 +312,33 @@ pub enum SyncRelation {
 }
 
 /// `v` against an explicit `[floor, ceiling]` range.
-pub fn relation_between(_v: &GsdVersion, _floor: &GsdVersion, _ceiling: &GsdVersion) -> SyncRelation {
-    SyncRelation::InRange
+pub fn relation_between(v: &GsdVersion, floor: &GsdVersion, ceiling: &GsdVersion) -> SyncRelation {
+    if v.precedence_cmp(ceiling) == Ordering::Greater {
+        SyncRelation::Newer
+    } else if v.precedence_cmp(floor) == Ordering::Less {
+        SyncRelation::Older
+    } else {
+        SyncRelation::InRange
+    }
+}
+
+/// The synced floor ([`GSD_CORE_SYNCED_VERSION`]).
+fn synced_floor() -> GsdVersion {
+    GsdVersion::parse(GSD_CORE_SYNCED_VERSION)
+        .expect("GSD_CORE_SYNCED_VERSION parses — pinned by the_gsd_core_sync_baseline_is_recorded")
+}
+
+/// The synced ceiling ([`GSD_CORE_SYNCED_TREE_VERSION`]).
+fn synced_ceiling() -> GsdVersion {
+    GsdVersion::parse(GSD_CORE_SYNCED_TREE_VERSION).expect(
+        "GSD_CORE_SYNCED_TREE_VERSION parses — pinned by the_gsd_core_sync_baseline_is_recorded",
+    )
 }
 
 /// `v` against [`GSD_CORE_SYNCED_VERSION`] (floor) and
-/// [`GSD_CORE_SYNCED_TREE_VERSION`] (ceiling).
-pub fn relation_to_synced(_v: &GsdVersion) -> SyncRelation {
-    SyncRelation::InRange
+/// [`GSD_CORE_SYNCED_TREE_VERSION`] (ceiling) — the rule of inferred I-1.
+pub fn relation_to_synced(v: &GsdVersion) -> SyncRelation {
+    relation_between(v, &synced_floor(), &synced_ceiling())
 }
 
 /// What a `VERSION` file said.
@@ -194,8 +353,27 @@ pub enum InstalledVersion {
 
 /// Read `path` as a gsd-core `VERSION` file. `None` unless it is a regular
 /// file.
-fn read_version_file(_path: &Path) -> Option<InstalledVersion> {
-    None
+///
+/// The `is_file` gate runs first, so a FIFO or device is never opened
+/// (T-j0a-02), and at most [`VERSION_READ_CAP`] + 1 bytes are read, so a huge
+/// file costs a handful of bytes.
+fn read_version_file(path: &Path) -> Option<InstalledVersion> {
+    use std::io::Read;
+    if !path.is_file() {
+        return None;
+    }
+    let mut buf = Vec::new();
+    let read = std::fs::File::open(path)
+        .and_then(|file| file.take(VERSION_READ_CAP + 1).read_to_end(&mut buf));
+    if read.is_err() || buf.len() as u64 > VERSION_READ_CAP {
+        return Some(InstalledVersion::Unrecognised);
+    }
+    Some(
+        std::str::from_utf8(&buf)
+            .ok()
+            .and_then(GsdVersion::parse)
+            .map_or(InstalledVersion::Unrecognised, InstalledVersion::Parsed),
+    )
 }
 
 /// The effective install [`detect_gsd_install`] found.
@@ -220,8 +398,37 @@ pub enum GsdInstallStatus {
 
 /// Walk [`install_candidates`] and return the first one whose `VERSION` is a
 /// regular file. File reads only.
-pub fn detect_gsd_install(_project_root: Option<&Path>, _roots: &InstallRoots) -> GsdInstallStatus {
-    GsdInstallStatus::NotFound
+///
+/// A garbage `VERSION` still wins and reports
+/// [`InstalledVersion::Unrecognised`]: falling through to the next candidate
+/// would misreport which install GSD would actually load (inferred I-3).
+pub fn detect_gsd_install(project_root: Option<&Path>, roots: &InstallRoots) -> GsdInstallStatus {
+    install_candidates(project_root, roots)
+        .into_iter()
+        .find_map(|c| {
+            read_version_file(&c.gsd_core_dir.join("VERSION")).map(|version| DetectedInstall {
+                runtime: c.runtime,
+                scope: c.scope,
+                gsd_core_dir: c.gsd_core_dir,
+                version,
+            })
+        })
+        .map_or(GsdInstallStatus::NotFound, GsdInstallStatus::Found)
+}
+
+impl DetectedInstall {
+    /// `project-local Claude`, `global Codex`, `project-local (root)`, ...
+    /// Built from the enums only, never from the path (inferred I-10).
+    pub fn source_label(&self) -> &'static str {
+        match (self.scope, self.runtime) {
+            (InstallScope::ProjectLocal, InstallRuntime::ProjectRoot) => "project-local (root)",
+            (InstallScope::ProjectLocal, InstallRuntime::Claude) => "project-local Claude",
+            (InstallScope::ProjectLocal, InstallRuntime::Codex) => "project-local Codex",
+            (InstallScope::Global, InstallRuntime::ProjectRoot) => "global (root)",
+            (InstallScope::Global, InstallRuntime::Claude) => "global Claude",
+            (InstallScope::Global, InstallRuntime::Codex) => "global Codex",
+        }
+    }
 }
 
 /// How loudly a label should be drawn.
@@ -233,8 +440,31 @@ pub enum Severity {
 }
 
 /// The one-line label for `status`, and its severity.
-pub fn install_label(_status: &GsdInstallStatus) -> (String, Severity) {
-    (String::new(), Severity::Ok)
+///
+/// Every piece is an enum word, a validated [`GsdVersion`] or a constant, so
+/// no byte of a `VERSION` file that failed to parse can reach it.
+pub fn install_label(status: &GsdInstallStatus) -> (String, Severity) {
+    let GsdInstallStatus::Found(install) = status else {
+        return (
+            format!("GSD not found · app synced to {GSD_CORE_SYNCED_TREE_VERSION}"),
+            Severity::Info,
+        );
+    };
+    let source = install.source_label();
+    let InstalledVersion::Parsed(v) = &install.version else {
+        return (format!("GSD (unrecognised VERSION) · {source}"), Severity::Info);
+    };
+    match relation_to_synced(v) {
+        SyncRelation::InRange => (format!("GSD {v} · {source}"), Severity::Ok),
+        SyncRelation::Newer => (
+            format!("GSD {v} · {source} · newer than synced {GSD_CORE_SYNCED_TREE_VERSION}"),
+            Severity::Warning,
+        ),
+        SyncRelation::Older => (
+            format!("GSD {v} · {source} · older than {GSD_CORE_SYNCED_VERSION}"),
+            Severity::Info,
+        ),
+    }
 }
 
 #[cfg(test)]
