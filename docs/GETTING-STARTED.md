@@ -71,7 +71,10 @@ On first launch:
 - Active `claude` sessions whose working directory contains `.planning/` are
   auto-registered. If you happen to have a Claude session running in a GSD
   project, it will appear immediately; otherwise the list stays empty until
-  you register a project manually.
+  you register a project manually. A git linked worktree (such as an agent
+  worktree under `.claude/worktrees/`) is never auto-registered, `add` refuses
+  it and names the main worktree to register instead, and stale worktree
+  entries are pruned from the config on launch.
 
 ### 2. Register a GSD project
 

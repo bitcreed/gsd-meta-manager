@@ -1197,6 +1197,125 @@ pub fn auto_register_from_sessions(
     added
 }
 
+/// Why [`prune_worktree_entries`] removed a registry entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PruneReason {
+    /// The path exists and is a git linked worktree of `main_worktree`.
+    LinkedWorktree {
+        /// The main worktree the entry belonged to.
+        main_worktree: PathBuf,
+    },
+    /// The path no longer exists and is shaped like an agent worktree
+    /// (`.claude/worktrees/agent-*`, or under another registered project's
+    /// `.claude/worktrees/`).
+    MissingAgentWorktree,
+}
+
+/// One registry entry removed by [`prune_worktree_entries`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrunedEntry {
+    /// The registry key, raw.
+    pub alias: String,
+    /// The registered path.
+    pub path: PathBuf,
+    /// Why it was removed.
+    pub reason: PruneReason,
+}
+
+/// Remove registry entries that are git linked worktrees, or missing paths
+/// shaped like `.claude/worktrees/<x>`, from `config`. Returns what was removed,
+/// alias-sorted. Does NOT save (quick 260925-x0v).
+///
+/// Every entry is judged against the ORIGINAL entry set before anything is
+/// removed, so no entry is judged against another that is itself being pruned
+/// in the same pass. A missing path that is not worktree-shaped is always kept
+/// — a temporarily unmounted project must survive — and an existing directory
+/// under `.claude/worktrees/` that is not a linked worktree is kept too.
+pub fn prune_worktree_entries(config: &mut Config) -> Vec<PrunedEntry> {
+    // (alias, raw path, canonical path) of every entry, before any removal.
+    let originals: Vec<(String, PathBuf, PathBuf)> = config
+        .projects
+        .iter()
+        .map(|(alias, p)| (alias.clone(), p.path.clone(), canon_or_raw(&p.path)))
+        .collect();
+
+    let mut pruned: Vec<PrunedEntry> = Vec::new();
+    for (alias, path, _) in &originals {
+        let reason = if path.exists() {
+            linked_worktree_main(path).map(|main_worktree| PruneReason::LinkedWorktree {
+                main_worktree,
+            })
+        } else {
+            let under_other = originals.iter().any(|(other, raw, canonical)| {
+                other != alias
+                    && (crate::agents::worktrees::path_under_claude_worktrees(raw, path)
+                        || crate::agents::worktrees::path_under_claude_worktrees(canonical, path))
+            });
+            (under_other || crate::agents::worktrees::has_claude_agent_worktree_segment(path))
+                .then_some(PruneReason::MissingAgentWorktree)
+        };
+        if let Some(reason) = reason {
+            pruned.push(PrunedEntry {
+                alias: alias.clone(),
+                path: path.clone(),
+                reason,
+            });
+        }
+    }
+
+    for entry in &pruned {
+        config.projects.remove(&entry.alias);
+    }
+    pruned.sort_by(|a, b| a.alias.cmp(&b.alias));
+    pruned
+}
+
+/// [`crate::config::load_config`], then [`prune_worktree_entries`], saving the
+/// config exactly once when anything was pruned (quick 260925-x0v).
+///
+/// **Why this is a separate function and not inside `load_config`:**
+/// `load_config` is also called from the envelope `PreToolUse` hook path
+/// (`src/envelope/hooks.rs`) and from `src/envelope/cred.rs`, which must never
+/// write the config — a guard-path process must not rewrite `config.json` under
+/// a running TUI — and the `src/config.rs` fixtures rely on its purity. Only the
+/// TUI launch and the CLI `add`/`list` arms call this.
+///
+/// Each pruned entry is logged with `tracing::warn!`. A save failure is logged
+/// too, and the pruned in-memory config is still returned [inferred: a
+/// read-only config location must not block startup; the prune simply retries
+/// on the next launch]. A missing file yields `Config::new()` and is not
+/// created.
+pub fn load_config_pruning_worktrees(path: &Path) -> Result<(Config, Vec<PrunedEntry>)> {
+    let mut config = crate::config::load_config(path)?;
+    let pruned = prune_worktree_entries(&mut config);
+    if !pruned.is_empty() {
+        for entry in &pruned {
+            let reason = match &entry.reason {
+                PruneReason::LinkedWorktree { main_worktree } => {
+                    format!("git linked worktree of {}", main_worktree.display())
+                }
+                PruneReason::MissingAgentWorktree => "missing agent worktree".to_string(),
+            };
+            // RAW alias: a log line is a machine record (see
+            // `auto_register_from_sessions`).
+            tracing::warn!(
+                alias = %entry.alias,
+                path = %entry.path.display(),
+                reason = %reason,
+                "registry: pruned worktree entry from config",
+            );
+        }
+        if let Err(e) = crate::config::save_config(&config, path) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "registry: failed to save config after pruning worktree entries",
+            );
+        }
+    }
+    Ok((config, pruned))
+}
+
 /// A FAKE linked-worktree layout built with `std::fs` alone — no git binary, so
 /// it is usable from any in-source test module (none of which may spawn; see
 /// `tests/spawn_seam_guard.rs`). Quick 260925-x0v.
@@ -1372,6 +1491,136 @@ mod linked_worktree_tests {
         );
         assert_eq!(added, vec![("agent-z".to_string(), no_dot)]);
         assert_eq!(cfg.projects.len(), 2);
+    }
+
+    fn entry(path: PathBuf) -> crate::config::RegisteredProject {
+        crate::config::RegisteredProject {
+            path,
+            added: "2026-09-25T00:00:00+00:00".to_string(),
+            driver_opt_in: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn prune_removes_worktree_entries_and_keeps_everything_else() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let ttbook = t.join("ttbook");
+        std::fs::create_dir_all(ttbook.join(".planning")).unwrap();
+        let (main, fake_wt) = fake_linked_worktree(&t);
+        let plain = t.join("plain");
+        std::fs::create_dir_all(plain.join(".planning")).unwrap();
+        let existing_under = ttbook.join(".claude/worktrees/kept-dir");
+        std::fs::create_dir_all(existing_under.join(".planning")).unwrap();
+
+        let mut cfg = Config::new();
+        for (alias, path) in [
+            ("ttbook", ttbook.clone()),
+            ("agent-gone", ttbook.join(".claude/worktrees/agent-gone")),
+            ("stray", t.join("other/.claude/worktrees/agent-z")),
+            ("feature", ttbook.join(".claude/worktrees/feature")),
+            ("alpha", PathBuf::from("/nonexistent/projects/alpha")),
+            ("fake-wt", fake_wt.clone()),
+            ("plain", plain.clone()),
+            ("existing-under", existing_under.clone()),
+        ] {
+            cfg.projects.insert(alias.to_string(), entry(path));
+        }
+
+        let pruned = prune_worktree_entries(&mut cfg);
+        let summary: Vec<(&str, &PruneReason)> =
+            pruned.iter().map(|p| (p.alias.as_str(), &p.reason)).collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("agent-gone", &PruneReason::MissingAgentWorktree),
+                (
+                    "fake-wt",
+                    &PruneReason::LinkedWorktree {
+                        main_worktree: main.clone()
+                    }
+                ),
+                ("feature", &PruneReason::MissingAgentWorktree),
+                ("stray", &PruneReason::MissingAgentWorktree),
+            ]
+        );
+        let mut kept: Vec<&str> = cfg.projects.keys().map(String::as_str).collect();
+        kept.sort();
+        assert_eq!(kept, vec!["alpha", "existing-under", "plain", "ttbook"]);
+
+        // Idempotent.
+        assert!(prune_worktree_entries(&mut cfg).is_empty());
+    }
+
+    #[test]
+    fn the_pruning_loader_saves_once_and_preserves_surviving_fields() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let ttbook = t.join("ttbook");
+        std::fs::create_dir_all(ttbook.join(".planning")).unwrap();
+        let gone = ttbook.join(".claude/worktrees/agent-ad8ab6d33e06a2f84");
+        let json = format!(
+            r#"{{
+  "version": 2,
+  "projects": {{
+    "ttbook": {{
+      "path": {ttbook},
+      "added": "2026-01-04T09:15:00+00:00",
+      "driver_opt_in": {{
+        "opted_in_at": "2026-07-29T11:59:00Z",
+        "claude_md_digest": null,
+        "prompt_inputs": []
+      }},
+      "a_future_key": "kept verbatim"
+    }},
+    "agent-ad8ab6d33e06a2f84": {{
+      "path": {gone},
+      "added": "2026-09-01T00:00:00+00:00"
+    }}
+  }},
+  "preferences": {{}}
+}}"#,
+            ttbook = serde_json::to_string(&ttbook.display().to_string()).unwrap(),
+            gone = serde_json::to_string(&gone.display().to_string()).unwrap(),
+        );
+        let path = t.join("config.json");
+        std::fs::write(&path, &json).unwrap();
+        let before = crate::config::load_config(&path).unwrap();
+        let before_entry = serde_json::to_value(&before.projects["ttbook"]).unwrap();
+
+        let (cfg, pruned) = load_config_pruning_worktrees(&path).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].alias, "agent-ad8ab6d33e06a2f84");
+        assert!(!cfg.projects.contains_key("agent-ad8ab6d33e06a2f84"));
+
+        let reread = crate::config::load_config(&path).unwrap();
+        assert_eq!(reread.projects.len(), 1);
+        assert!(!reread.projects.contains_key("agent-ad8ab6d33e06a2f84"));
+        let after_entry = serde_json::to_value(&reread.projects["ttbook"]).unwrap();
+        assert_eq!(before_entry, after_entry);
+        assert!(reread.projects["ttbook"].driver_opt_in.is_some());
+        assert_eq!(
+            reread.projects["ttbook"].extra.get("a_future_key"),
+            Some(&serde_json::json!("kept verbatim"))
+        );
+
+        // Nothing left to prune: the loader does not write.
+        let bytes = std::fs::read(&path).unwrap();
+        let (_, pruned) = load_config_pruning_worktrees(&path).unwrap();
+        assert!(pruned.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn the_pruning_loader_does_not_create_a_missing_config() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("absent/config.json");
+        let (cfg, pruned) = load_config_pruning_worktrees(&path).unwrap();
+        assert!(cfg.projects.is_empty());
+        assert!(pruned.is_empty());
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
     }
 }
 

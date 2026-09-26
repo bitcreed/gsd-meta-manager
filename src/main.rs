@@ -105,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             };
-            let config = load_config(&config_path)?;
+            // Pruning loader: stale git-worktree entries are removed (and the
+            // config saved once) before the new entry is judged (quick 260925-x0v).
+            let (config, _pruned) =
+                gsd_meta_manager::registry::load_config_pruning_worktrees(&config_path)?;
             // The membership check keeps the RAW bytes (`as_str`) — it is a
             // lookup into `config.projects` and an escaped key would miss every
             // entry. The sentence beneath it is READ, so it carries the escaped
@@ -217,7 +220,11 @@ async fn main() -> anyhow::Result<()> {
             println!("Removed project '{}'", key.escaped_for_display());
         }
         Some(Commands::List) => {
-            let config = load_config(&config_path)?;
+            // Pruning loader (quick 260925-x0v); `remove` deliberately keeps
+            // plain `load_config` so `remove agent-…` still finds its entry
+            // [inferred].
+            let (config, _pruned) =
+                gsd_meta_manager::registry::load_config_pruning_worktrees(&config_path)?;
             let projects = list_projects(&config);
             if projects.is_empty() {
                 println!("No projects registered.");

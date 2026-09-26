@@ -1,6 +1,6 @@
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
-use crate::config::{load_config, save_config, Config};
+use crate::config::{save_config, Config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::{self, ProjectPresence, ProjectState};
@@ -538,7 +538,11 @@ pub fn editor_args(editor: &str, path: &std::path::Path, line: Option<usize>) ->
 
 impl App {
     pub fn new(config_path: PathBuf) -> anyhow::Result<Self> {
-        let config = load_config(&config_path)?;
+        // The pruning loader, not plain `load_config`: TUI launch is where stale
+        // git-worktree entries (e.g. a finished agent's `.claude/worktrees/agent-*`)
+        // are removed from `config.json` (quick 260925-x0v). Log-only — no banner
+        // [inferred].
+        let (config, _pruned) = registry::load_config_pruning_worktrees(&config_path)?;
         Ok(Self::from_config(config, config_path))
     }
 
