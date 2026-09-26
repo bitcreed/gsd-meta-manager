@@ -74,10 +74,14 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   last activity, wave by wave
 - Auto-registration of GSD projects from active Claude sessions -- any running
   `claude` whose working directory contains `.planning/` is added to the
-  registry automatically; git linked worktrees (e.g. agent worktrees under
-  `.claude/worktrees/`) are never auto-registered, `add` refuses them and names
-  the main worktree to add instead, and stale worktree entries are pruned from
-  the config on launch
+  registry automatically; a git linked worktree (e.g. an agent worktree under
+  `.claude/worktrees/`) is never registered itself -- a session inside one, or
+  in any subdirectory of it, resolves to its main worktree, and the
+  main worktree is auto-registered instead when it has `.planning/` and is not
+  already registered, so many concurrent agent sessions of one project yield a
+  single entry; `add` still refuses a linked worktree and names the main
+  worktree to add instead, and stale worktree entries are pruned from the
+  config on launch
 - Paused project detection (parses HANDOFF files)
 - Milestone archive browser with inline markdown rendering, in the Docs tab's
   Milestones sub-tab (`m` switches Files / Milestones)
@@ -131,8 +135,12 @@ The binary is at `target/release/gsd-meta-manager`.
 4. Active `claude` sessions whose working directory contains `.planning/` are
    auto-registered on launch and during the ~5s session poll. A git linked
    worktree (such as an agent worktree under `.claude/worktrees/`) is never
-   registered: `add` refuses it and names the main worktree to register
-   instead, and stale worktree entries are pruned from the config on launch.
+   registered itself. A session running inside one, or in any subdirectory of
+   it, resolves to its main worktree, and that main worktree is auto-registered
+   instead when it has `.planning/` and is not already registered, so many
+   concurrent agent sessions of one project yield a single entry. `add` still
+   refuses a linked worktree and names the main worktree to register instead,
+   and stale worktree entries are pruned from the config on launch.
 
 ## Usage
 
