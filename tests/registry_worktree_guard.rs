@@ -1,5 +1,7 @@
 // ============================================================================
 // Quick 260925-x0v: a git LINKED worktree is never registered as a project.
+// Quick 260926-0u3: auto-discovery registers the MAIN of a worktree session
+// instead; the worktree itself is still never registered.
 //
 // Integration test rather than in-source because every proof here needs a real
 // `git worktree add` — the shape a GSD executor worktree actually has — and
@@ -102,21 +104,42 @@ fn a_linked_worktree_names_its_main_and_the_main_names_nothing() {
     );
 }
 
+/// No registry entry's canonical path equals any of `worktrees` (UD-6).
+fn assert_no_worktree_registered(config: &Config, worktrees: &[&Path]) {
+    for (alias, entry) in &config.projects {
+        let registered = canon(&entry.path);
+        for wt in worktrees {
+            assert_ne!(
+                registered,
+                canon(wt),
+                "worktree registered under alias {alias}"
+            );
+        }
+    }
+}
+
 #[test]
-fn auto_discovery_skips_a_linked_worktree_even_when_the_main_is_unregistered() {
+fn auto_discovery_registers_the_main_when_a_session_sits_in_its_linked_worktree() {
     let Some((_tmp, main, worktree)) = worktree_fixture() else {
         return;
     };
     let mut config = Config::new();
     let added = auto_register_from_sessions(&mut config, &[session_at(worktree.clone())]);
-    assert!(added.is_empty(), "worktree registered: {added:?}");
-    assert!(config.projects.is_empty());
-
-    // The main worktree still registers exactly as before.
-    let added = auto_register_from_sessions(&mut config, &[session_at(main.clone())]);
-    assert_eq!(added.len(), 1);
+    assert_eq!(added.len(), 1, "exactly the main registers: {added:?}");
+    assert_eq!(added[0].0, "main");
     assert_eq!(canon(&added[0].1), canon(&main));
     assert_eq!(config.projects.len(), 1);
+    assert_eq!(canon(&config.projects["main"].path), canon(&main));
+    assert_no_worktree_registered(&config, &[&worktree]);
+
+    // A later poll with sessions at the worktree AND at the main is a no-op.
+    let added = auto_register_from_sessions(
+        &mut config,
+        &[session_at(worktree.clone()), session_at(main.clone())],
+    );
+    assert!(added.is_empty(), "second poll registered: {added:?}");
+    assert_eq!(config.projects.len(), 1);
+    assert_no_worktree_registered(&config, &[&worktree]);
 }
 
 #[test]

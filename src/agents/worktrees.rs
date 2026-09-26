@@ -266,12 +266,30 @@ pub(crate) fn path_under_claude_worktrees(root: &Path, path: &Path) -> bool {
 /// `worktrees`, `agent-*` — the shape a GSD/Claude executor worktree has,
 /// regardless of which project it sits under.
 pub(crate) fn has_claude_agent_worktree_segment(path: &Path) -> bool {
-    let comps: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
-    comps.windows(3).any(|w| {
-        w[0] == ".claude"
-            && w[1] == "worktrees"
-            && w[2].to_str().is_some_and(|s| s.starts_with("agent-"))
-    })
+    claude_agent_worktree_prefix(path).is_some()
+}
+
+/// The path built from the components BEFORE the first (outermost) window of
+/// three consecutive components `.claude`, `worktrees`, `agent-*`, or `None`
+/// when `path` has no such window. The result may be empty for a relative
+/// input.
+///
+/// The prefix-derivation half of the auto-discovery path heuristic (quick
+/// 260926-0u3, UD-3): a session cwd shaped like an agent worktree that git no
+/// longer (or never) recognises resolves to the project it sits under. The
+/// OUTERMOST window wins [inferred]: a worktree created from inside a worktree
+/// still belongs to the outer repository.
+pub(crate) fn claude_agent_worktree_prefix(path: &Path) -> Option<PathBuf> {
+    let comps: Vec<_> = path.components().collect();
+    let start = comps.windows(3).position(|w| {
+        w[0].as_os_str() == ".claude"
+            && w[1].as_os_str() == "worktrees"
+            && w[2]
+                .as_os_str()
+                .to_str()
+                .is_some_and(|s| s.starts_with("agent-"))
+    })?;
+    Some(comps[..start].iter().collect())
 }
 
 /// The D-C03 agent-worktree predicate, widened to GSD's branch families.
@@ -554,6 +572,29 @@ mod tests {
         assert!(!has_claude_agent_worktree_segment(Path::new(
             "/x/p/.claude/agent-y"
         )));
+    }
+
+    #[test]
+    fn claude_agent_worktree_prefix_is_the_path_before_the_outermost_triple() {
+        assert_eq!(
+            claude_agent_worktree_prefix(Path::new("/x/p/.claude/worktrees/agent-a/src")),
+            Some(PathBuf::from("/x/p"))
+        );
+        assert_eq!(
+            claude_agent_worktree_prefix(Path::new(
+                "/x/p/.claude/worktrees/agent-a/.claude/worktrees/agent-b"
+            )),
+            Some(PathBuf::from("/x/p")),
+            "a nested worktree belongs to the outer repository"
+        );
+        assert_eq!(
+            claude_agent_worktree_prefix(Path::new("/x/p/.claude/worktrees/feature")),
+            None
+        );
+        assert_eq!(
+            claude_agent_worktree_prefix(Path::new("/x/p/claude/worktrees/agent-a")),
+            None
+        );
     }
 
     #[test]

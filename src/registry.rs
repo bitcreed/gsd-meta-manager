@@ -1089,17 +1089,87 @@ fn unique_alias(config: &Config, base: &str) -> String {
     format!("{}-{}", base, chrono::Utc::now().timestamp())
 }
 
-/// Scan active agent sessions (Claude or Codex) and auto-register any whose
-/// `working_dir` is a GSD project (contains `.planning/`) and is not already in
-/// the registry.
+/// The canonical project root a session cwd points at, or `None` to skip the
+/// session. Auto-discovery only (quick 260926-0u3); manual add never calls it.
 ///
-/// Returns the list of `(alias, canonical_path)` pairs that were newly added.
-/// Callers are responsible for persisting the config and starting file
-/// watchers on the new entries.
+/// `cwd` is already canonical. Resolution order:
+/// 1. Structural: `cwd` is inside a git linked worktree (the worktree root or
+///    any subdirectory — the classifier walks ancestors) -> its MAIN worktree
+///    (UD-1, UD-2).
+/// 2. Path heuristic: `cwd` carries a `.claude/worktrees/agent-*` segment that
+///    git does not (or no longer) recognise -> the prefix before the outermost
+///    such segment, but only when that prefix is NOT itself a linked worktree
+///    (UD-3; [inferred, per brief] no second-level resolution).
+/// 3. `cwd` under an already-registered project's `.claude/worktrees/` -> skip;
+///    the prefix is registered, so resolving would be a no-op (x0v's skip).
+/// 4. Otherwise `cwd` itself — today's direct rule. A plain subdirectory of a
+///    MAIN worktree is not walked up [inferred].
+fn discovery_root(cwd: &Path, registered: &HashSet<PathBuf>) -> Option<PathBuf> {
+    // `debug`, not `warn`: the poll runs every ~5s [inferred].
+    if let Some(main_worktree) = linked_worktree_main(cwd) {
+        tracing::debug!(
+            path = %cwd.display(),
+            main_worktree = %main_worktree.display(),
+            "auto-register: session in a git linked worktree resolves to its main worktree",
+        );
+        return Some(canon_or_raw(&main_worktree));
+    }
+    if let Some(prefix) = crate::agents::worktrees::claude_agent_worktree_prefix(cwd) {
+        // An empty prefix (a relative cwd that failed to canonicalize) names
+        // no project; skip rather than fall through to registering the
+        // agent-shaped cwd itself [inferred].
+        if prefix.as_os_str().is_empty() {
+            tracing::debug!(
+                path = %cwd.display(),
+                "auto-register: skipping .claude/worktrees path with no project prefix",
+            );
+            return None;
+        }
+        if let Some(main_worktree) = linked_worktree_main(&prefix) {
+            tracing::debug!(
+                path = %cwd.display(),
+                prefix = %prefix.display(),
+                main_worktree = %main_worktree.display(),
+                "auto-register: skipping .claude/worktrees path whose prefix is a linked worktree",
+            );
+            return None;
+        }
+        return Some(canon_or_raw(&prefix));
+    }
+    if registered
+        .iter()
+        .any(|p| crate::agents::worktrees::path_under_claude_worktrees(p, cwd))
+    {
+        tracing::debug!(
+            path = %cwd.display(),
+            "auto-register: skipping .claude/worktrees path under a registered project",
+        );
+        return None;
+    }
+    Some(cwd.to_path_buf())
+}
+
+/// Scan active agent sessions (Claude or Codex) and auto-register the GSD
+/// project each session's `working_dir` points at.
 ///
-/// Dedup is canonical-path based — paths that resolve to the same target
-/// (e.g. symlinked variants, trailing slashes) register at most once per call
-/// and won't double-register if already present in the config.
+/// Per session: a cwd exactly equal to a registered project's canonical path
+/// is skipped at once [inferred: keeps the ~5s poll as cheap as before]. Every
+/// other cwd is resolved by [`discovery_root`] — a git linked worktree (or any
+/// subdirectory of one) resolves to its MAIN worktree, a `.claude/worktrees/agent-*`
+/// path git does not recognise resolves to its prefix, anything else is the
+/// cwd itself (a plain subdirectory of a main worktree is not walked up
+/// [inferred]). The resolved root must hold `.planning/` and must not already
+/// be registered.
+///
+/// Returns the list of `(alias, root)` pairs that were newly added, where
+/// `root` is the canonical RESOLVED root — not the session cwd — and the alias
+/// is derived from the root's directory name. Callers are responsible for
+/// persisting the config and starting file watchers on the new entries.
+///
+/// Dedup is canonical-path based on the resolved root — paths that resolve to
+/// the same target (symlinked variants, trailing slashes, and every concurrent
+/// worktree session of one project) register at most once per call and won't
+/// double-register if already present in the config.
 pub fn auto_register_from_sessions(
     config: &mut Config,
     sessions: &[ClaudeSession],
@@ -1115,47 +1185,43 @@ pub fn auto_register_from_sessions(
 
     for session in sessions {
         let canonical = canon_or_raw(&session.working_dir);
-
-        if !canonical.join(".planning").is_dir() {
-            continue;
-        }
-        if registered.contains(&canonical) || !seen_this_pass.insert(canonical.clone()) {
+        if registered.contains(&canonical) {
             continue;
         }
 
-        // A linked worktree (e.g. a GSD executor's `.claude/worktrees/agent-*`)
-        // carries a checked-out `.planning/`, so it passes the check above. It
-        // is never registered — even when its main worktree is not registered
-        // [inferred, per brief]. `add_project` would refuse it anyway; this
-        // pre-check exists so discovery does not log an `add_project failed`
-        // warning on every ~5s poll. `debug`, not `warn`, for the same reason
-        // [inferred].
-        if let Some(main_worktree) = linked_worktree_main(&canonical) {
-            tracing::debug!(
-                path = %canonical.display(),
-                main_worktree = %main_worktree.display(),
-                "auto-register: skipping git linked worktree",
-            );
+        // A git linked worktree (e.g. a GSD executor's
+        // `.claude/worktrees/agent-*`) is never registered itself: it resolves
+        // to its main worktree, which registers instead. Quick 260926-0u3 —
+        // a user decision superseding 260925-x0v's [inferred] choice to skip
+        // the worktree even when its main was unregistered.
+        let Some(root) = discovery_root(&canonical, &registered) else {
+            continue;
+        };
+        if !root.join(".planning").is_dir() {
             continue;
         }
-        // Secondary, path-shaped signal — discovery only. A cwd shaped like an
-        // agent worktree, or under a registered project's `.claude/worktrees/`,
-        // is skipped even when it is not (or no longer) a git linked worktree.
-        // Manual add does NOT apply this [inferred: a user explicitly adding a
-        // non-git directory keeps that right].
-        if crate::agents::worktrees::has_claude_agent_worktree_segment(&canonical)
-            || registered
-                .iter()
-                .any(|p| crate::agents::worktrees::path_under_claude_worktrees(p, &canonical))
+        if registered.contains(&root) || !seen_this_pass.insert(root.clone()) {
+            continue;
+        }
+        // A resolved root passes the same worktree gate a direct cwd passed
+        // inside `discovery_root` (UD-1c). `add_project` would refuse a linked
+        // worktree anyway; this pre-check keeps an `add_project failed` warning
+        // off every ~5s poll.
+        if root != canonical
+            && (linked_worktree_main(&root).is_some()
+                || crate::agents::worktrees::has_claude_agent_worktree_segment(&root)
+                || registered
+                    .iter()
+                    .any(|p| crate::agents::worktrees::path_under_claude_worktrees(p, &root)))
         {
             tracing::debug!(
                 path = %canonical.display(),
-                "auto-register: skipping .claude/worktrees path",
+                root = %root.display(),
+                "auto-register: skipping resolved root that is itself a worktree",
             );
             continue;
         }
-
-        let base = derive_alias(&canonical);
+        let base = derive_alias(&root);
         let alias = unique_alias(config, &base);
 
         // The derived alias goes through the same judgment as a typed one
@@ -1168,7 +1234,7 @@ pub fn auto_register_from_sessions(
             Err(refusal) => {
                 tracing::warn!(
                     alias = %alias,
-                    path = %canonical.display(),
+                    path = %root.display(),
                     error = %refusal,
                     "auto-register: alias refused",
                 );
@@ -1176,7 +1242,7 @@ pub fn auto_register_from_sessions(
             }
         };
 
-        if let Err(e) = add_project(config, &alias, &canonical) {
+        if let Err(e) = add_project(config, &alias, &root) {
             // RAW (`as_str`). A log line is a machine record read by grep and by
             // whoever is debugging a registration that did not happen, and it
             // has to carry the bytes that were actually used as the key. It is
@@ -1184,14 +1250,14 @@ pub fn auto_register_from_sessions(
             // question `display_identity` answers.
             tracing::warn!(
                 alias = %alias.as_str(),
-                path = %canonical.display(),
+                path = %root.display(),
                 error = %e,
                 "auto-register: add_project failed",
             );
             continue;
         }
         let alias = alias.as_str().to_string();
-        added.push((alias, canonical));
+        added.push((alias, root));
     }
 
     added
