@@ -550,6 +550,56 @@ fn a_missing_oracle_is_a_failure_unless_the_environment_says_otherwise() {
 }
 
 #[test]
+fn the_oracle_looks_for_a_claude_install_then_a_codex_install() {
+    let home = PathBuf::from("/h");
+    assert_eq!(
+        oracle_candidates(Some(home.clone()), None),
+        vec![
+            home.join(".claude/gsd-core/bin/gsd-tools.cjs"),
+            home.join(".codex/gsd-core/bin/gsd-tools.cjs"),
+        ],
+        "a dual install must keep answering from the Claude install, and a \
+         Codex-only one (gsd-core 1.15.0, #4667) must still be found"
+    );
+}
+
+#[test]
+fn the_oracle_honours_a_non_empty_codex_home() {
+    let home = PathBuf::from("/h");
+    let explicit = oracle_candidates(Some(home.clone()), Some(OsString::from("/x/codex")));
+    assert_eq!(
+        explicit.last(),
+        Some(&PathBuf::from("/x/codex/gsd-core/bin/gsd-tools.cjs"))
+    );
+    assert_eq!(explicit.len(), 2, "CODEX_HOME replaces ~/.codex, it does not add");
+    let empty = oracle_candidates(Some(home.clone()), Some(OsString::new()));
+    assert_eq!(
+        empty.last(),
+        Some(&home.join(".codex/gsd-core/bin/gsd-tools.cjs")),
+        "an empty CODEX_HOME falls back like the shell's `${{CODEX_HOME:-$HOME/.codex}}`"
+    );
+}
+
+#[test]
+fn the_oracle_is_asked_for_the_canonical_claude_spelling() {
+    let oracle = Oracle {
+        program: PathBuf::from("node"),
+        script: Some(PathBuf::from("/h/.codex/gsd-core/bin/gsd-tools.cjs")),
+    };
+    let command = oracle.query_command(ORACLE_VERB);
+    let runtime = command
+        .get_envs()
+        .find(|(key, _)| *key == OsStr::new("GSD_RUNTIME"))
+        .and_then(|(_, value)| value);
+    assert_eq!(
+        runtime,
+        Some(OsStr::new("claude")),
+        "the rule table stores `/gsd-…`; a Codex-marked oracle or an inherited \
+         GSD_RUNTIME would otherwise answer `$gsd-…`"
+    );
+}
+
+#[test]
 fn every_fixture_reaches_the_state_it_is_named_for() {
     // A guard on the fixtures themselves, independent of the oracle. A fixture
     // that stopped producing its state would make the conformance run above
