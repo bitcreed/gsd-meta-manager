@@ -11430,6 +11430,126 @@ mod tests {
         assert!(row.contains("live"), "{row}");
     }
 
+    /// A view whose list draws `lines` lines: one `Live` row per line.
+    fn view_with_list_lines(lines: usize) -> AgentView {
+        AgentView {
+            agents: (0..lines)
+                .map(|n| agent_row(&format!("/wt/agent-{n}"), AgentLiveness::Live, None))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn agents_selected(ctx: &AppContext) -> usize {
+        ctx.view_cache
+            .get(TEST_ALIAS)
+            .map(|cache| cache.agents_selected)
+            .unwrap_or(0)
+    }
+
+    /// `j`/`Down` stops at the last list line and `k`/`Up` at the first; a
+    /// one-line list never moves.
+    #[test]
+    fn agents_selection_clamps_at_both_ends() {
+        let (mut screen, mut ctx) = on_agents(Some(view_with_list_lines(5)));
+        assert_eq!(agent_list_len(&view_with_list_lines(5)), 5);
+        for _ in 0..10 {
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        assert_eq!(agents_selected(&ctx), 4);
+        for _ in 0..10 {
+            press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        }
+        assert_eq!(agents_selected(&ctx), 0);
+        for _ in 0..10 {
+            press(&mut screen, &mut ctx, KeyCode::Down);
+        }
+        assert_eq!(agents_selected(&ctx), 4);
+        for _ in 0..10 {
+            press(&mut screen, &mut ctx, KeyCode::Up);
+        }
+        assert_eq!(agents_selected(&ctx), 0);
+
+        let (mut screen, mut ctx) = on_agents(Some(view_with_list_lines(1)));
+        for key in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::PageDown,
+            KeyCode::Char('k'),
+            KeyCode::Up,
+            KeyCode::PageUp,
+        ] {
+            press(&mut screen, &mut ctx, key);
+            assert_eq!(agents_selected(&ctx), 0, "{key:?} moved a one-line list");
+        }
+
+        // No view at all counts as zero lines.
+        let (mut screen, mut ctx) = on_agents(None);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(agents_selected(&ctx), 0);
+    }
+
+    /// `PageDown` from the top stops at the last line; `PageUp` from the last
+    /// line stops at the first.
+    #[test]
+    fn agents_paging_clamps_at_both_ends() {
+        let (mut screen, mut ctx) = on_agents(Some(view_with_list_lines(5)));
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(agents_selected(&ctx), 4);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(agents_selected(&ctx), 4);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(agents_selected(&ctx), 0);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(agents_selected(&ctx), 0);
+    }
+
+    /// The Agents sub-view observes only (phase boundary, T-25-24): `Enter`
+    /// acts on no agent and `n` launches no session from it.
+    #[test]
+    fn enter_and_n_do_nothing_on_the_agents_sub_view() {
+        let mut ctx_registered = super::super::tests::ctx_with_aliases(&[TEST_ALIAS]);
+        ctx_registered
+            .detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Agents);
+        ctx_registered
+            .agent_views
+            .insert(TEST_ALIAS.to_string(), view_with_list_lines(3));
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx_registered, KeyCode::Char('j'));
+        let before = agents_selected(&ctx_registered);
+        assert_eq!(before, 1);
+
+        for key in [KeyCode::Enter, KeyCode::Char('n')] {
+            let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx_registered);
+            assert!(
+                matches!(action, ScreenAction::None),
+                "{key:?} on Agents returned an action"
+            );
+            assert!(
+                ctx_registered.status_message.is_none(),
+                "{key:?} on Agents set a status message"
+            );
+            assert_eq!(stored_view(&ctx_registered), DetailSubView::Agents);
+            assert_eq!(agents_selected(&ctx_registered), before);
+            assert_eq!(ctx_registered.view_cache[TEST_ALIAS].sessions_selected, 0);
+        }
+    }
+
+    /// Sessions advertises `m` to Agents, and Agents advertises scrolling and
+    /// `m` back to Sessions.
+    #[test]
+    fn the_sessions_and_agents_footers_advertise_m() {
+        let sessions = footer_text(&DetailSubView::Sessions);
+        assert!(sessions.contains("[m] agents  "), "{sessions}");
+        let agents = footer_text(&DetailSubView::Agents);
+        assert!(agents.contains("[j/k]"), "{agents}");
+        assert!(agents.contains("[m] sessions  "), "{agents}");
+        assert!(!agents.contains("[n]"), "Agents offers no new-session key: {agents}");
+        assert!(!agents.contains("[Enter]"), "Agents offers no Enter action: {agents}");
+    }
+
     /// Eight tabs, eight digits (D-B10): `9` and `0` name no tab and fall
     /// through to the no-op arm, and `8` is Docs, landing on its Files
     /// sub-view.

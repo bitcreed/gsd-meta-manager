@@ -933,12 +933,13 @@ mod tests {
         }
     }
 
-    /// Phase 24-07 (D-B04): the Docs tab's `m` sub-tab switch is documented
-    /// as a WHOLE row, exactly once, with the flag on and off (it is not a
-    /// driver key).
+    /// Phase 24-07 (D-B04) and 25-05 (D-C15): `m` switches sub-view on the
+    /// Docs tab (Files / Milestones) and on the Sessions tab (Sessions /
+    /// Agents). One shared row documents both, as a WHOLE row, exactly once,
+    /// with the flag on and off (it is not a driver key).
     #[test]
-    fn the_docs_milestones_switch_is_documented() {
-        let expected = row("m", "Docs tab: switch Files / Milestones (detail view)").spans[0]
+    fn the_m_sub_view_switch_is_documented() {
+        let expected = row("m", "Docs / Sessions tab: switch sub-view (detail view)").spans[0]
             .content
             .to_string();
         for experimental in [true, false] {
