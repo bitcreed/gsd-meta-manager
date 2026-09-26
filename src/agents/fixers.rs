@@ -488,6 +488,8 @@ mod tests {
             "12-EVAL-REVIEW.md",
             "12-UI-REVIEW.md",
             "12-REVIEW-FIX.md",
+            // gsd-core 1.15.0's per-finding ledger, a sibling of the review.
+            "12-REVIEW-DISPOSITION.md",
             "13-REVIEW.md",
             "07-REVIEW.md",
             "REVIEW.md",

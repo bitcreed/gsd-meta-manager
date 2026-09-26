@@ -327,6 +327,32 @@ fn objective_line(content: &str) -> Option<usize> {
     None
 }
 
+/// Per-disposition finding counts out of a phase's
+/// `{PADDED}-REVIEW-DISPOSITION.md` ledger (gsd-core 1.15.0). See
+/// [`DiskInference::review_disposition`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReviewDisposition {
+    pub open: u32,
+    pub fixed: u32,
+    pub skipped: u32,
+    pub deferred: u32,
+}
+
+impl ReviewDisposition {
+    /// Every counted finding, whatever its disposition.
+    pub fn total(&self) -> u32 {
+        self.open + self.fixed + self.skipped + self.deferred
+    }
+}
+
+/// The most of a `*-REVIEW-DISPOSITION.md` the scan reads.
+const REVIEW_DISPOSITION_READ_CAP: u64 = 256 * 1024;
+
+/// Count a disposition ledger's table rows.
+fn parse_review_disposition(_content: &str) -> Option<ReviewDisposition> {
+    None
+}
+
 /// The largest `waves.json` the scan reads (T-2l4-03, [inferred I-13]).
 const MAX_WAVES_MANIFEST_BYTES: u64 = 1024 * 1024;
 
@@ -379,6 +405,8 @@ pub struct DiskInference {
     pub has_ui_check: bool,
     pub has_ai_spec: bool,
     pub has_review: bool,
+    /// The phase's code-review disposition ledger counts.
+    pub review_disposition: Option<ReviewDisposition>,
     pub has_ui_review: bool,
     /// GSD 1.8.0 informational artifacts — never affect plan/summary counts.
     pub has_coverage: bool,
@@ -1239,6 +1267,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_ui_check,
         has_ai_spec,
         has_review,
+        review_disposition: None,
         has_ui_review,
         has_coverage,
         has_windows,
@@ -2178,6 +2207,154 @@ mod tests {
         let result = infer_disk_status(dir.path());
         assert!(result.has_eval_review);
         assert!(!result.has_review, "EVAL-REVIEW.md must not be misclassified as REVIEW.md");
+    }
+
+    // ── quick 260926-gtn: the 1.15.0 REVIEW-DISPOSITION ledger ──
+
+    /// The shape `code-review-disposition.md:974-999` renders. The frontmatter
+    /// `open: 2` is deliberately stale: the table is the human-edit surface.
+    const LEDGER_SAMPLE: &str = "---\nphase: 05\nreview: 05-REVIEW.md\ntitles: json\nfindings:\n  - id: CR-01\n    severity: critical\n    disposition: open\n    title: \"Parser: loses data\"\nopen: 2\ntotal: 4\nrecorded: 2026-09-26T10:00:00.000Z\n---\n\n# Phase 05: Code Review Disposition\n\n| Finding | Severity | Disposition | Source |\n|---------|----------|-------------|--------|\n| CR-01 | critical | open | - |\n| WR-02 | warning | fixed | 05-REVIEW-FIX.md |\n| WR-03 | warning | deferred | waiting on team A \\| team B |\n| IN-01 | info | skipped | 05-REVIEW-FIX.md (not in the current review) |\n\nDispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.\n";
+
+    fn disposition(open: u32, fixed: u32, skipped: u32, deferred: u32) -> ReviewDisposition {
+        ReviewDisposition {
+            open,
+            fixed,
+            skipped,
+            deferred,
+        }
+    }
+
+    #[test]
+    fn test_review_disposition_ledger_alone_is_not_a_review() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-REVIEW-DISPOSITION.md"), LEDGER_SAMPLE).unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(
+            !result.has_review,
+            "the ledger is a sibling of REVIEW.md, never the review itself"
+        );
+        assert_eq!(result.review_disposition, Some(disposition(1, 1, 1, 1)));
+        assert_eq!(result.status, DiskStatus::Empty);
+        assert_eq!((result.plan_count, result.summary_count), (0, 0));
+        for (flag, set) in [
+            ("has_plans", result.has_plans),
+            ("has_summaries", result.has_summaries),
+            ("has_context", result.has_context),
+            ("has_research", result.has_research),
+            ("has_verification", result.has_verification),
+            ("has_eval_review", result.has_eval_review),
+            ("has_ui_review", result.has_ui_review),
+            ("has_uat", result.has_uat),
+            ("has_security", result.has_security),
+        ] {
+            assert!(!set, "the ledger must set no other flag: {flag}");
+        }
+    }
+
+    #[test]
+    fn test_review_disposition_counts_come_from_the_table() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-REVIEW.md"), "---\nphase: 05\n---\n").unwrap();
+        fs::write(dir.path().join("05-REVIEW-DISPOSITION.md"), LEDGER_SAMPLE).unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_review);
+        let counts = result.review_disposition.expect("a ledger with rows");
+        assert_eq!(
+            counts,
+            disposition(1, 1, 1, 1),
+            "the TABLE wins over the frontmatter `open: 2`"
+        );
+        assert_eq!(counts.total(), 4);
+    }
+
+    #[test]
+    fn test_review_disposition_row_grammar() {
+        let table = |rows: &str| {
+            format!(
+                "# Ledger\n\n| Finding | Severity | Disposition | Source |\n|---|---|---|---|\n{rows}"
+            )
+        };
+        // Outside the case-sensitive enum falls back to `open` (upstream :390).
+        assert_eq!(
+            parse_review_disposition(&table("| WR-07 | warning | Deferred | x |\n")),
+            Some(disposition(1, 0, 0, 0))
+        );
+        // A duplicate id counts once; the first occurrence wins.
+        assert_eq!(
+            parse_review_disposition(&table(
+                "| CR-01 | critical | fixed | a |\n| CR-01 | critical | open | b |\n"
+            )),
+            Some(disposition(0, 1, 0, 0))
+        );
+        // BL ids count; prose, non-finding rows and fenced rows do not.
+        assert_eq!(
+            parse_review_disposition(&table(
+                "| BL-01 | blocker | deferred | later |\n| Note | - | open | - |\n\nSee | CR-09 | x | open |\n```\n| CR-02 | critical | open | - |\n```\n~~~\n| CR-03 | critical | open | - |\n~~~\n"
+            )),
+            Some(disposition(0, 0, 0, 1))
+        );
+        assert_eq!(parse_review_disposition(&table("")), None, "zero rows is None");
+        assert_eq!(parse_review_disposition(""), None);
+    }
+
+    #[test]
+    fn test_review_disposition_absent_is_none() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-REVIEW.md"), "review").unwrap();
+        assert_eq!(infer_disk_status(dir.path()).review_disposition, None);
+        fs::write(dir.path().join("05-REVIEW-DISPOSITION.md"), "# no table\n").unwrap();
+        assert_eq!(infer_disk_status(dir.path()).review_disposition, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_unreadable_review_disposition_is_none() {
+        let dir = tempdir().unwrap();
+        // A dangling symlink: collected by name, and the open fails.
+        std::os::unix::fs::symlink(
+            dir.path().join("missing-target"),
+            dir.path().join("05-REVIEW-DISPOSITION.md"),
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.review_disposition, None);
+        assert!(!result.has_review);
+    }
+
+    #[test]
+    fn test_review_disposition_read_is_capped() {
+        let dir = tempdir().unwrap();
+        let mut content = String::from("| CR-01 | critical | open | - |\n");
+        // Padding past the cap, then a row that must never be read.
+        content.push_str(&"x".repeat(REVIEW_DISPOSITION_READ_CAP as usize + 1024));
+        content.push_str("\n| WR-01 | warning | fixed | - |\n");
+        fs::write(dir.path().join("05-REVIEW-DISPOSITION.md"), content).unwrap();
+        assert_eq!(
+            infer_disk_status(dir.path()).review_disposition,
+            Some(disposition(1, 0, 0, 0)),
+            "only the capped prefix is read"
+        );
+    }
+
+    #[test]
+    fn test_review_disposition_sorted_first_ledger_is_read() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("05-REVIEW-DISPOSITION.md"),
+            "| CR-01 | critical | deferred | - |\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("REVIEW-DISPOSITION.md"),
+            "| CR-01 | critical | fixed | - |\n",
+        )
+        .unwrap();
+        for _ in 0..4 {
+            assert_eq!(
+                infer_disk_status(dir.path()).review_disposition,
+                Some(disposition(0, 0, 0, 1))
+            );
+        }
     }
 
     #[test]

@@ -20851,6 +20851,82 @@ mod tests {
     }
 
     #[test]
+    fn checks_line_shows_the_review_ledger_counts_beside_code_review() {
+        use crate::state_reader::disk_status::ReviewDisposition;
+        let checks = |inf: &DiskInference| -> (String, Line<'static>) {
+            let statuses = derive_all_stage_statuses(inf);
+            let [_, b] = stage_block_lines(inf, &statuses, 200);
+            (b.spans.iter().map(|s| s.content.to_string()).collect(), b)
+        };
+        let base = DiskInference {
+            status: DiskStatus::Executed,
+            plan_count: 1,
+            summary_count: 1,
+            has_plans: true,
+            has_summaries: true,
+            has_review: true,
+            ..Default::default()
+        };
+        let ledger = ReviewDisposition {
+            open: 2,
+            fixed: 3,
+            skipped: 0,
+            deferred: 1,
+        };
+
+        let (without, without_line) = checks(&base);
+        assert!(!without.contains(" open,"), "{without}");
+
+        let with = DiskInference {
+            review_disposition: Some(ledger),
+            ..base.clone()
+        };
+        let (text, line) = checks(&with);
+        assert!(
+            text.contains("\u{2713}Code Review (2 open, 1 deferred)"),
+            "{text}"
+        );
+        let counts = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains(" open,"))
+            .expect("a counts span");
+        assert_eq!(counts.style.fg, Some(Color::Yellow), "open > 0 is Yellow");
+        // Removing the counts span gives back today's line exactly.
+        let stripped: Vec<Span<'static>> = line
+            .spans
+            .iter()
+            .filter(|s| !s.content.contains(" open,"))
+            .cloned()
+            .collect();
+        assert_eq!(stripped, without_line.spans);
+
+        let settled = DiskInference {
+            review_disposition: Some(ReviewDisposition { open: 0, ..ledger }),
+            ..base.clone()
+        };
+        let (_, settled_line) = checks(&settled);
+        let counts = settled_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains(" open,"))
+            .expect("both numbers are always printed");
+        assert_eq!(counts.content, " (0 open, 1 deferred)");
+        assert_eq!(counts.style.fg, Some(Color::DarkGray));
+
+        let orphan = DiskInference {
+            has_review: false,
+            review_disposition: Some(ledger),
+            ..base
+        };
+        let (text, _) = checks(&orphan);
+        assert!(
+            !text.contains(" open,"),
+            "a ledger without its REVIEW.md draws no counts: {text}"
+        );
+    }
+
+    #[test]
     fn waves_pane_focus_in_and_out() {
         let mut ctx = tracer_ctx();
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
