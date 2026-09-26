@@ -15,6 +15,15 @@
 //! the executor's enum dispatch (`src/executor/runtime.rs`) does not, because
 //! every new variant there is an edit to every `match` over it.
 //!
+//! **Adding a runtime** (D-A07, D-A08). One new file,
+//! `src/agents/adapters/<runtime>.rs`, implementing [`AgentAdapter`]; plus a
+//! `pub mod <runtime>;` line and one line in [`registered_adapters`], both in
+//! THIS file. Nothing in `src/agents/mod.rs`, `worktrees.rs`, the wave model
+//! or the UI changes. The proof that the seam needs no core edit is the
+//! test-only adapter in `tests/agents_scan.rs`, fed through
+//! [`crate::agents::scan_project_with`]. The Codex adapter is deferred (D-A08);
+//! its design notes live in the Phase 25 CONTEXT.md, § Deferred Ideas.
+//!
 //! **Failure is data.** An adapter that cannot read its runtime's files
 //! reports nothing for that worktree, and the row degrades to what git knows.
 //! The core also wraps every `enrich` call in `catch_unwind`, but that is

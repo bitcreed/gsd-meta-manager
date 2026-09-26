@@ -306,13 +306,44 @@ pub fn scan_project_with(
     }
 }
 
-/// Scan every registered project with the registered adapters.
+/// Scan every registered project with the registered adapters, one project's
+/// failure never costing another project its rows (D-A03).
+///
+/// [`registered_adapters`](adapters::registered_adapters) is called once per
+/// call. Each project is scanned inside `catch_unwind`: a panic yields
+/// [`ProjectAgents::default()`] for that alias plus a `tracing::warn!` naming
+/// the alias only. The result is sorted by alias, so two scans of the same
+/// state compare equal.
+///
+/// **What the unwinding guard does and does not buy (Pitfall 6).** It keeps
+/// the scan — and therefore its caller's in-flight flag, which is cleared only
+/// when a result arrives — alive through a panicking adapter. It cannot undo
+/// the process-wide panic hook `ratatui::init` installs, which restores the
+/// terminal *before* unwinding starts: a caught panic can still leave the TUI
+/// visibly disturbed. So adapters must be panic-free by construction — failure
+/// as data, no `unwrap` on external input — and this guard is defence in
+/// depth, not a licence.
 pub fn scan_projects_guarded(
     projects: &[(String, PathBuf)],
     now: SystemTime,
 ) -> Vec<(String, ProjectAgents)> {
-    let _ = (projects, now);
-    Vec::new()
+    let adapters = catch_unwind(adapters::registered_adapters).unwrap_or_else(|_| {
+        tracing::warn!("constructing the agent adapters panicked; scanning with none");
+        Vec::new()
+    });
+    let mut scans: Vec<(String, ProjectAgents)> = projects
+        .iter()
+        .map(|(alias, path)| {
+            let scan = catch_unwind(AssertUnwindSafe(|| scan_project_with(path, &adapters, now)))
+                .unwrap_or_else(|_| {
+                    tracing::warn!(alias = %alias, "agent scan panicked; this project reports no agents this scan");
+                    ProjectAgents::default()
+                });
+            (alias.clone(), scan)
+        })
+        .collect();
+    scans.sort_by(|a, b| a.0.cmp(&b.0));
+    scans
 }
 
 #[cfg(test)]

@@ -784,7 +784,7 @@ Plans:
 
 **Goal**: For each registered project, show which GSD agents are currently running in parallel and, for executors, which wave and plans are running / queued / done — read-only from files and git, no Claude invocation, non-intrusive to the running GSD session
 **Depends on**: Nothing (TUI-only; independent of the v2.0 orchestration phases 15-23 — parallel-safe, like Phases 14 and 24) [inferred — the `phase.add` default was "Phase 24"; nothing here needs Phase 24's code]
-**Requirements**: TBD (to be derived in discuss)
+**Requirements**: AGENT-01, AGENT-02, AGENT-03, AGENT-04, AGENT-05, AGENT-06, AGENT-07
 
 **Seed evidence** (live inspection of `~/projects/python/ttbook` across three different runs; verified data sources):
 
