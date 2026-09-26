@@ -71,7 +71,10 @@ A typical update cycle proceeds as follows:
 4. **Background completion re-enters the loop.** When the blocking task finishes, its result is
    sent through the same channel as a new `Action`, which `App::update` then applies to
    `AppContext.project_states` and invokes `change_tracker::detect_changes` to surface
-   user-facing change notifications.
+   user-facing change notifications. The running-agents observer rides the same shape on the
+   tick: `Action::Tick` every 20 ticks → `spawn_blocking(agents::scan_projects_guarded)` →
+   `Action::AgentsScanned` → `waves::derive` → `AppContext.agent_views`, which the dashboard
+   Status cell and the detail view's Sessions › Agents sub-view read without computing anything.
 5. **Render decision.** When state changes flip `app.needs_redraw = true`, the loop calls
    `terminal.draw(|frame| ui::render(frame, app))`. `ui::render` delegates to the top screen on
    `app.screen_stack` (a `Vec<Box<dyn Screen>>`), which calls into ratatui widgets.
@@ -146,6 +149,7 @@ src/
 ├── change_tracker.rs        In-memory change log
 ├── archive.rs               Milestone archive parsing for the Archive sub-view
 ├── browser.rs               .planning/ docs browser (directory listing + file view)
+├── agents/                  read-only agent-worktree scan, runtime adapters, wave model
 ├── error.rs                 Reserved for custom error types (currently empty)
 ├── state_reader/            All `.planning/` file parsers
 │   ├── mod.rs               ProjectState struct + parse_project_state aggregator
@@ -163,7 +167,8 @@ src/
         ├── mod.rs           Screen trait, ScreenAction, AppContext, ProjectViewCache
         ├── normal.rs        Project list (default screen)
         ├── detail.rs        Per-project detail with sub-views (RoadmapViz,
-        │                    Pipeline (Phases), Backlog, GitHistory, Queue, Sessions,
+        │                    Pipeline (Phases), Backlog, GitHistory, Queue,
+        │                    Sessions + Agents (Sessions: Sessions / Agents),
         │                    Defaults, Browse + Archive (Docs: Files / Milestones),
         │                    Driver)
         ├── add_project.rs   Add existing project to the registry

@@ -57,7 +57,8 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
 - 8-tab detail view (plus the experimental Driver tab): Roadmap (phase list
   with git-log-style dependency lanes and a detail pane showing each phase's
   goal, needs, unblocks and parallel phases), Phases, Backlog, Git History,
-  Queue, Sessions, Config, Docs (Files: rendered `.planning/` browser rooted at
+  Queue, Sessions (with an Agents sub-view), Config, Docs (Files: rendered
+  `.planning/` browser rooted at
   the active phase, with quick jumps to `.planning/` and back; Milestones: the
   shipped-milestone archive)
 - Queue management: create, edit, delete, and reorder items
@@ -65,6 +66,12 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
 - Session detection -- shows which projects have a live Claude instance;
   interactive Codex sessions are detected best-effort, without resume. Linux
   only -- see [Platform support](#platform-support)
+- Running agents -- for each project, which GSD agents are running right now,
+  read from git worktrees and Claude Code's subagent metadata without invoking
+  Claude: the dashboard Status cell summarises the live wave (e.g. `w2/11 13run`,
+  or an estimated `~5/12 fixed` for code-review fix runs), and the Sessions tab's
+  Agents sub-view (`m`) lists every agent with its plan, commits, dirty files and
+  last activity, wave by wave
 - Auto-registration of GSD projects from active Claude sessions -- any running
   `claude` whose working directory contains `.planning/` is added to the
   registry automatically

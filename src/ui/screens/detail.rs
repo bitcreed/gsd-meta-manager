@@ -6817,27 +6817,48 @@ fn agent_line(
 fn agent_list_lines(view: &AgentView, line_cells: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(agent_list_len(view));
     for row in &view.agents {
-        // Plan label, else the runtime's description, else the branch. Every
-        // one of the latter two is agent- or clone-authored: `shown()`.
-        let label = match (&row.plan, &row.description, &row.branch) {
-            (Some(plan), _, _) => plan.label(),
-            (None, Some(desc), _) => desc.shown().to_string(),
-            (None, None, Some(branch)) => branch.shown().to_string(),
-            (None, None, None) => String::new(),
+        // No adapter recognised the worktree (D-C16): it is still shown, as
+        // its branch and path plus a marker, never hidden.
+        let no_metadata = row.adapter.is_none();
+        let label = if no_metadata {
+            // Plan (from a Codex-style branch, if any), branch, path. The
+            // branch and path are clone-authored: `shown()`.
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(plan) = &row.plan {
+                parts.push(plan.label());
+            }
+            if let Some(branch) = &row.branch {
+                parts.push(branch.shown().to_string());
+            }
+            parts.push(shown(&row.path.to_string_lossy()));
+            parts.join("  ")
+        } else {
+            // Plan label, else the runtime's description, else the branch.
+            // The latter two are agent- or clone-authored: `shown()`.
+            match (&row.plan, &row.description, &row.branch) {
+                (Some(plan), _, _) => plan.label(),
+                (None, Some(desc), _) => desc.shown().to_string(),
+                (None, None, Some(branch)) => branch.shown().to_string(),
+                (None, None, None) => shown(&row.path.to_string_lossy()),
+            }
         };
         let mut tail = String::new();
         if let Some(agent_type) = &row.agent_type {
             tail.push_str(&format!("  {}", agent_type.shown()));
         }
+        if no_metadata {
+            tail.push_str("  (no agent metadata)");
+        }
         tail.push_str(&format!(
-            "  {}  {}",
+            "  {}  {}  {}",
             agent_count("+", row.commits_ahead),
-            agent_count("~", row.dirty)
+            agent_count("~", row.dirty),
+            agent_age(view.scanned_at, row.last_activity)
         ));
         lines.push(agent_line("", row.liveness, &label, tail, line_cells));
 
         for child in &row.children {
-            lines.push(child_line("    ", child, line_cells));
+            lines.push(child_line("    ", child, view.scanned_at, line_cells));
         }
     }
     if !view.worktreeless.is_empty() {
@@ -6846,24 +6867,54 @@ fn agent_list_lines(view: &AgentView, line_cells: usize) -> Vec<Line<'static>> {
             Style::default().add_modifier(Modifier::BOLD),
         )));
         for agent in &view.worktreeless {
-            lines.push(child_line("  ", agent, line_cells));
+            lines.push(child_line("  ", agent, view.scanned_at, line_cells));
         }
     }
     lines
 }
 
-/// A child or worktree-less agent: state, description, agent type.
-fn child_line(indent: &str, child: &ChildAgent, line_cells: usize) -> Line<'static> {
+/// How long before the scan an agent was last active, floor-rounded to the
+/// largest whole unit: `45s`, `3m` (199 s), `2h`, `1d`. Measured from the
+/// SCAN instant, never from a render-time clock, so a view renders the same
+/// on every frame. Activity after the scan is `0s`; no activity, or no scan
+/// instant to measure from, is `-`.
+fn agent_age(
+    scanned_at: Option<std::time::SystemTime>,
+    last_activity: Option<std::time::SystemTime>,
+) -> String {
+    let (Some(scanned_at), Some(last)) = (scanned_at, last_activity) else {
+        return "-".to_string();
+    };
+    let secs = scanned_at
+        .duration_since(last)
+        .map(|age| age.as_secs())
+        .unwrap_or(0);
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3_599 => format!("{}m", secs / 60),
+        3_600..=86_399 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
+/// A child or worktree-less agent: state, description, agent type, age.
+fn child_line(
+    indent: &str,
+    child: &ChildAgent,
+    scanned_at: Option<std::time::SystemTime>,
+    line_cells: usize,
+) -> Line<'static> {
     let label = child
         .description
         .as_ref()
         .map(|d| d.shown().to_string())
         .unwrap_or_default();
-    let tail = child
+    let mut tail = child
         .agent_type
         .as_ref()
         .map(|t| format!("  {}", t.shown()))
         .unwrap_or_default();
+    tail.push_str(&format!("  {}", agent_age(scanned_at, child.last_activity)));
     agent_line(indent, child.liveness, &label, tail, line_cells)
 }
 
