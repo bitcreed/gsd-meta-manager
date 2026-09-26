@@ -909,6 +909,14 @@ pub(crate) enum ClickTarget {
     Nothing,
 }
 
+/// What a wheel step scrolls ([inferred I-10]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WheelTarget {
+    WavesPane,
+    Content,
+    Nothing,
+}
+
 impl DetailRegions {
     /// The click hit test: tabs, sub-tabs, Waves-pane rows, list rows, the
     /// Waves pane, content, then nothing (the tab bar outside a tab, the
@@ -934,6 +942,21 @@ impl DetailRegions {
             return ClickTarget::Content;
         }
         ClickTarget::Nothing
+    }
+
+    /// The wheel hit test: inside the Waves pane (its rows included) it is the
+    /// pane; otherwise inside content but outside the sub-tab strip it is the
+    /// content; anywhere else — the tab bar, the strip, the footer — nothing,
+    /// so the wheel never switches tabs ([inferred I-10]).
+    pub(crate) fn wheel_target(&self, column: u16, row: u16) -> WheelTarget {
+        let at = ratatui::layout::Position::new(column, row);
+        if self.waves_pane.is_some_and(|p| p.contains(at)) {
+            return WheelTarget::WavesPane;
+        }
+        if self.content.contains(at) && !self.sub_tab_strip.is_some_and(|s| s.contains(at)) {
+            return WheelTarget::Content;
+        }
+        WheelTarget::Nothing
     }
 }
 
@@ -1070,11 +1093,32 @@ impl DetailScreen {
     }
 
     /// The tab bar's block, built ONCE for both tab-bar sites: the bottom
-    /// border and the ` Project: {alias} ` title.
-    fn tab_bar_block(&self, _tab_area: Rect, _ctx: &AppContext) -> Block<'static> {
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .title(format!(" Project: {} ", shown(&self.alias)))
+    /// border and the ` Project: {alias} ` title, plus — while a status
+    /// message is live — the message right-aligned in the same title row
+    /// (quick 260926-dyf, [inferred I-4]). Without it `M`, and every other
+    /// detail-view status message, would say nothing here. A title does not
+    /// change `Block::inner`, so the recorded tab rects are unaffected.
+    fn tab_bar_block(&self, tab_area: Rect, ctx: &AppContext) -> Block<'static> {
+        let project = format!(" Project: {} ", shown(&self.alias));
+        let project_cells = Line::from(project.as_str()).width();
+        let mut block = Block::default().borders(Borders::BOTTOM).title(project);
+        if let Some((msg, _)) = &ctx.status_message {
+            // THE ESCAPE LIVES HERE, at the render site, for the reason the
+            // dashboard's WR-03 block records (`normal.rs` `render_footer`):
+            // the message's producer set is not closed — screens forward any
+            // text through `ScreenAction::SetStatusMessage`, and app.rs
+            // interpolates registry keys and run ids — so it is escaped where
+            // it is drawn.
+            let room = usize::from(tab_area.width).saturating_sub(project_cells + 3);
+            if room >= 8 {
+                let text = fit_cells(crate::text::render_for_terminal(msg).as_ref(), room);
+                block = block.title_top(
+                    Line::from(Span::styled(text, Style::default().fg(Color::Yellow)))
+                        .right_aligned(),
+                );
+            }
+        }
+        block
     }
 
     /// The Config String entry being edited, if any — the first of
@@ -2794,7 +2838,13 @@ crate::ui::screens::adjudicate_screen!(
      `.planning/`, each listing entry's name, and — in its file view — the \
      file name and the whole markdown body; Driver draws the run id suffix, \
      goal, `gsd_command` and run directory read back out of a run's \
-     committed `run.json`. All of it is third-party text under SAFE-07 and \
+     committed `run.json`. Since quick 260926-dyf the tab bar's TITLE ROW \
+     also draws `ctx.status_message`, right-aligned: composed sentences that \
+     interpolate registry keys and run ids, from a producer set that is not \
+     closed — built by `src/app.rs` and forwarded from any screen's \
+     `ScreenAction::SetStatusMessage`; THE ESCAPE FOR THIS SURFACE LIVES AT \
+     THE RENDER SITE, `DetailScreen::tab_bar_block`, as the dashboard status \
+     footer's does. All of it is third-party text under SAFE-07 and \
      none of it was authored by this build. Fixture states: one per \
      sub-view, all eleven, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
      four within-tab states for the fields that dispatch to a different \
@@ -2852,6 +2902,13 @@ impl Screen for DetailScreen {
             if self.config_filter_typing(ctx) {
                 return self.handle_config_filter_key(code, ctx);
             }
+        }
+
+        // The mouse-capture toggle (quick 260926-dyf, D-06, [inferred I-2]).
+        // Focus-neutral at every level, like `?`; AFTER the Config intercepts,
+        // so an `M` typed into a value or the filter stays text.
+        if code == KeyCode::Char('M') {
+            return ScreenAction::ToggleMouseCapture;
         }
 
         // The tab-bar level (quick 260926-1t1, D-01, D-02). AFTER both Config
@@ -5137,15 +5194,50 @@ impl Screen for DetailScreen {
                 let target = self.regions().click_target(column, row);
                 self.click(target, &current_view, ctx)
             }
-            MouseInput::Wheel { .. } => {
+            MouseInput::Wheel { column, row, down } => {
                 self.mouse_row_armed = false;
-                ScreenAction::None
+                self.wheel(column, row, down, &current_view, ctx)
             }
         }
     }
 }
 
 impl DetailScreen {
+    /// One wheel step (quick 260926-dyf, D-03, [inferred I-10]): one event is
+    /// one `Down`/`Up` in the region under the pointer, which takes focus —
+    /// the Waves pane draws its cursor only while focused and the tab-bar
+    /// level dims content, so scrolling an unfocused region would be
+    /// invisible. The arrow codes, never `j`/`k`: every list arm and the
+    /// Config dropdown/filter arms accept them.
+    fn wheel(
+        &mut self,
+        column: u16,
+        row: u16,
+        down: bool,
+        current_view: &DetailSubView,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        let key = if down { KeyCode::Down } else { KeyCode::Up };
+        match self.regions().wheel_target(column, row) {
+            // The pane intercept handles it; `↑` on its first row stays put.
+            WheelTarget::WavesPane => {
+                self.focus = DetailFocus::Pane;
+                ctx.needs_redraw = true;
+                self.handle_key(key, KeyModifiers::NONE, ctx)
+            }
+            WheelTarget::Content => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                // The wheel never climbs to the tab bar.
+                if !down && self.content_at_first_row(current_view, ctx) {
+                    return ScreenAction::None;
+                }
+                self.handle_key(key, KeyModifiers::NONE, ctx)
+            }
+            WheelTarget::Nothing => ScreenAction::None,
+        }
+    }
+
     /// One single click on `target` ([inferred I-8]).
     fn click(
         &mut self,
@@ -21442,5 +21534,213 @@ mod tests {
         assert_eq!(ctx.view_cache[TEST_ALIAS].agents_selected, list.offset);
         render_detail_to_text_at(&screen, &ctx, 100, 20);
         assert_eq!(mouse_list(&screen).offset, list.offset);
+    }
+
+    // ── quick 260926-dyf: mouse — wheel, `M`, the status title ───────────
+
+    fn mouse_wheel(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16, down: bool) -> ScreenAction {
+        screen.handle_mouse(MouseInput::Wheel { column, row, down }, ctx)
+    }
+
+    #[test]
+    fn mouse_wheel_target_is_a_pure_function_of_the_regions() {
+        use super::super::WavesCursor;
+        let regions = DetailRegions {
+            tab_bar: Rect::new(0, 0, 80, 3),
+            sub_tab_strip: Some(Rect::new(0, 3, 80, 1)),
+            content: Rect::new(0, 3, 80, 20),
+            waves_pane: Some(Rect::new(40, 6, 40, 10)),
+            waves_rows: vec![WavesRowRegion {
+                rect: Rect::new(41, 7, 38, 1),
+                target: WavesCursor::Plan("1-01".to_string()),
+            }],
+            ..DetailRegions::default()
+        };
+        assert_eq!(regions.wheel_target(50, 10), WheelTarget::WavesPane);
+        assert_eq!(regions.wheel_target(50, 7), WheelTarget::WavesPane, "on a pane row");
+        assert_eq!(regions.wheel_target(5, 10), WheelTarget::Content);
+        assert_eq!(regions.wheel_target(5, 1), WheelTarget::Nothing, "the tab bar");
+        assert_eq!(regions.wheel_target(5, 3), WheelTarget::Nothing, "the sub-tab strip");
+        assert_eq!(regions.wheel_target(5, 23), WheelTarget::Nothing, "the footer");
+    }
+
+    #[test]
+    fn mouse_wheel_moves_the_pane_under_the_pointer() {
+        // Phases, list focused: the wheel over the pane is one pane `Down`.
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let pane = screen.regions().waves_pane.expect("the pane");
+        mouse_wheel(&mut screen, &mut ctx, pane.x + 3, pane.y + 2, true);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let mut kctx = tracer_ctx();
+        let mut keyed = DetailScreen::new(TEST_ALIAS.to_string());
+        keyed.focus = DetailFocus::Pane;
+        press(&mut keyed, &mut kctx, KeyCode::Down);
+        let cursor = |c: &AppContext| c.view_cache.get(TEST_ALIAS).and_then(|v| v.waves_cursor.clone());
+        assert!(cursor(&ctx).is_some());
+        assert_eq!(cursor(&ctx), cursor(&kctx));
+
+        // Pane focused: the wheel over the phase list moves the list.
+        let mut ctx = mouse_phases_ctx(5);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let list = mouse_list(&screen);
+        mouse_wheel(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y, true);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_cursor, None);
+
+        // Sessions: +1, clamped at the last row.
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        for _ in 0..3 {
+            mouse_wheel(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y, true);
+        }
+        assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 1);
+
+        // Roadmap list and Git: one wheel step is one `Down`.
+        for (mut screen, mut ctx, mut keyed, mut kctx) in [
+            {
+                let (a, b) = roadmap_fixture("ttbook");
+                let (c, d) = roadmap_fixture("ttbook");
+                (a, b, c, d)
+            },
+            {
+                let rows = [("one", None), ("two", None), ("three", None)];
+                let (a, b) = git_rows_fixture(&rows);
+                let (c, d) = git_rows_fixture(&rows);
+                (a, b, c, d)
+            },
+        ] {
+            render_detail_to_text(&screen, &ctx);
+            let content = screen.regions().content;
+            mouse_wheel(&mut screen, &mut ctx, content.x + 5, content.y + 5, true);
+            press(&mut keyed, &mut kctx, KeyCode::Down);
+            let (m, k) = (&ctx.view_cache[TEST_ALIAS], &kctx.view_cache[TEST_ALIAS]);
+            assert_eq!(format!("{:?}", m.roadmap_cursor), format!("{:?}", k.roadmap_cursor));
+            assert_eq!(m.git_selected, k.git_selected);
+            assert!(
+                m.git_selected == 1 || m.roadmap_cursor.is_some(),
+                "the wheel moved something"
+            );
+        }
+    }
+
+    #[test]
+    fn mouse_wheel_up_never_climbs_to_the_tab_bar() {
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        mouse_wheel(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y, false);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 0);
+        // The guard matters: the key does climb.
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+
+        // From the tab bar, the wheel over content focuses it and moves one row.
+        mouse_wheel(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y, true);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 1);
+    }
+
+    #[test]
+    fn mouse_wheel_never_switches_tabs() {
+        for focus in [DetailFocus::TabBar, DetailFocus::Content] {
+            let (mut screen, mut ctx) = two_sessions_fixture();
+            screen.focus = focus;
+            render_detail_to_text(&screen, &ctx);
+            let regions = screen.regions();
+            let strip = regions.sub_tab_strip.expect("a strip");
+            for (c, r) in [(5, 1), (60, 1), (5, strip.y), (60, strip.y)] {
+                for down in [true, false] {
+                    mouse_wheel(&mut screen, &mut ctx, c, r, down);
+                    assert_eq!(stored_view(&ctx), DetailSubView::Sessions);
+                    assert_eq!(screen.focus, focus);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_toggle_key_in_the_detail_view_is_focus_neutral() {
+        for focus in [DetailFocus::TabBar, DetailFocus::Content] {
+            let (mut screen, mut ctx) = two_sessions_fixture();
+            screen.focus = focus;
+            let action = screen.handle_key(KeyCode::Char('M'), KeyModifiers::SHIFT, &mut ctx);
+            assert!(matches!(action, ScreenAction::ToggleMouseCapture), "{focus:?}");
+            assert_eq!(screen.focus, focus);
+        }
+        let mut ctx = tracer_ctx();
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let action = screen.handle_key(KeyCode::Char('M'), KeyModifiers::SHIFT, &mut ctx);
+        assert!(matches!(action, ScreenAction::ToggleMouseCapture));
+        assert_eq!(screen.focus, DetailFocus::Pane);
+
+        // A typed `M` is text: the Config String edit ...
+        let config = crate::state_reader::config_json::parse_gsd_config(
+            r#"{"mode":"yolo","project_code":"GMM"}"#,
+        )
+        .expect("the fixture parses");
+        let (mut ctx, _) = ctx_on_config_row(config, "project_code");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = screen.handle_key(KeyCode::Char('M'), KeyModifiers::SHIFT, &mut ctx);
+        assert!(!matches!(action, ScreenAction::ToggleMouseCapture));
+        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
+        assert!(buffer.ends_with('M'), "{buffer:?}");
+        // ... and the filter.
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Char('/'));
+        let action = screen.handle_key(KeyCode::Char('M'), KeyModifiers::SHIFT, &mut ctx);
+        assert!(!matches!(action, ScreenAction::ToggleMouseCapture));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_filter, "M");
+    }
+
+    #[test]
+    fn mouse_status_message_shows_in_the_detail_tab_bar() {
+        let msg = crate::ui::mouse::mouse_status_text(false);
+        let (screen, mut ctx) = two_sessions_fixture();
+        let plain = render_detail_to_text(&screen, &ctx);
+        let plain_row0 = plain.lines().next().unwrap_or_default().to_string();
+
+        ctx.status_message = Some((msg.to_string(), std::time::Instant::now()));
+        let text = render_detail_to_text(&screen, &ctx);
+        let row0 = text.lines().next().unwrap_or_default();
+        assert!(row0.starts_with(" Project: "), "{row0:?}");
+        assert!(row0.trim_end().ends_with(msg), "right-aligned: {row0:?}");
+
+        // The overlay path draws it too.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
+        terminal
+            .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        assert!(buffer_row(&buffer, 0).trim_end().ends_with(msg));
+
+        // Fewer than 8 cells left: absent, and the project title is intact.
+        let project_cells = format!(" Project: {TEST_ALIAS} ").chars().count() as u16;
+        let width = project_cells + 3 + 7;
+        let narrow = render_detail_to_text_at(&screen, &ctx, width, 30);
+        let row0 = narrow.lines().next().unwrap_or_default();
+        assert!(row0.contains(&format!(" Project: {TEST_ALIAS} ")), "{row0:?}");
+        assert!(!row0.contains("Mouse"), "{row0:?}");
+        let wider = render_detail_to_text_at(&screen, &ctx, width + 1, 30);
+        assert!(wider.lines().next().unwrap_or_default().contains("Mous"), "8 cells fit");
+
+        // No message: row 0 is unchanged.
+        ctx.status_message = None;
+        let again = render_detail_to_text(&screen, &ctx);
+        assert_eq!(again.lines().next().unwrap_or_default(), plain_row0);
+        assert!(!plain_row0.contains("Mouse"));
     }
 }

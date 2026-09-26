@@ -282,6 +282,19 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Left / Esc", "Waves pane: back to the phase list"),
         row("Enter", "Agents sub-tab: open the agent's plan in the Phases Waves pane"),
         Line::from(""),
+        // ── The mouse (quick 260926-dyf, D-07). Every description is unique
+        // in this body. Ends with one blank row.
+        heading("Mouse"),
+        Line::from(""),
+        row("Click", "Mouse: switch tab / sub-tab; select a row and focus its pane"),
+        row("Double-click", "Mouse: open the row, the same as Enter"),
+        row("Wheel", "Mouse: move the selection in the pane under the pointer"),
+        row("M", "Toggle mouse capture on / off (dashboard and detail view)"),
+        row(
+            "Shift+drag",
+            "Select and copy text while mouse capture is on (terminal-dependent)",
+        ),
+        Line::from(""),
     ]);
 
     // ── The Driver tab (Phase 18). There is deliberately no pane-focus
@@ -1087,6 +1100,44 @@ mod tests {
                      exactly once:\n{text}"
                 );
             }
+        }
+    }
+
+    /// quick 260926-dyf D-07: the mouse block, as whole rows, in both flag
+    /// states.
+    #[test]
+    fn mouse_help_block_is_documented_as_whole_rows() {
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            assert_eq!(
+                text.lines().filter(|line| *line == "Mouse").count(),
+                1,
+                "experimental={experimental}: the heading must appear once:\n{text}"
+            );
+            for (key, description) in [
+                ("Click", "Mouse: switch tab / sub-tab; select a row and focus its pane"),
+                ("Double-click", "Mouse: open the row, the same as Enter"),
+                ("Wheel", "Mouse: move the selection in the pane under the pointer"),
+                ("M", "Toggle mouse capture on / off (dashboard and detail view)"),
+                (
+                    "Shift+drag",
+                    "Select and copy text while mouse capture is on (terminal-dependent)",
+                ),
+            ] {
+                let expected = row(key, description).spans[0].content.to_string();
+                assert_eq!(
+                    text.lines().filter(|line| *line == expected).count(),
+                    1,
+                    "experimental={experimental}: the row {expected:?} must appear \
+                     exactly once:\n{text}"
+                );
+                assert_eq!(
+                    text.matches(description).count(),
+                    1,
+                    "{description:?} must be unique in the body"
+                );
+            }
+            assert!(text.contains("terminal-dependent"));
         }
     }
 }

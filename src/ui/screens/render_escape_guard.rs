@@ -1681,6 +1681,18 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          families. The index and the seed are derived from `defaults_config` by \
          `detail::first_string_entry`, never spelled.",
     ),
+    (
+        "Detail view with a status message",
+        true,
+        "The Queue tab (its body draws `queued_actions[..].command`, as the Queue tab \
+         row records) with `ctx.status_message` set the way `src/app.rs` builds it. \
+         Since quick 260926-dyf the tab bar's TITLE ROW draws that message \
+         right-aligned, escaped at the render site. The arrange sets the message on \
+         the chrome baseline too, so the measured arrival here is the body's; the \
+         title row's own reach is asserted by \
+         `mouse_status_title_state_reaches_the_title`, and the hostile probe covers \
+         its escape like every other state's.",
+    ),
 ];
 
 /// How many times `clean` appears in each `DetailScreen` state rendered with
@@ -1974,6 +1986,17 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
         };
         cache.defaults_editing = Some(idx);
         cache.defaults_text_buffer = super::EditBuffer::seed_from_untrusted_source(value);
+    }),
+    // The detail tab bar's status title (quick 260926-dyf, [inferred I-4]): a
+    // new surface for `ctx.status_message`, whose producer set is not closed —
+    // the same WR-03 hazard as the dashboard footer, drawn at a second site.
+    ("Detail view with a status message", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Queue);
+        ctx.status_message = Some((
+            status_message_like_app_builds_it(identity),
+            std::time::Instant::now(),
+        ));
     }),
 ];
 
@@ -3344,6 +3367,38 @@ mod tests {
              {STATUS_BRANCH_TOKEN:?}, so the token is not specific to the status \
              branch and the assertion above proves nothing about which branch \
              ran. Find a token only `render_footer`'s status arm can produce."
+        );
+    }
+
+    /// **The detail tab bar's status title is reached** (quick 260926-dyf).
+    ///
+    /// The `Detail view with a status message` state must render the message
+    /// in the tab bar's title row — asserted with [`STATUS_BRANCH_TOKEN`], which
+    /// nothing else on the Queue tab draws — and the same state without the
+    /// message must not, so the token proves which render ran.
+    #[test]
+    fn mouse_status_title_state_reaches_the_title() {
+        let clean = clean_identity();
+        let arrange = DETAIL_SUB_STATES
+            .iter()
+            .find(|(label, _)| *label == "Detail view with a status message")
+            .map(|(_, arrange)| *arrange)
+            .expect("the state is in DETAIL_SUB_STATES");
+        let mut ctx = probe_ctx(&clean);
+        arrange(&clean, &mut ctx);
+        let screen = crate::ui::screens::detail::DetailScreen::new(clean.clone());
+        let text = render_to_text(&screen, &ctx);
+        let title_row = text.lines().next().unwrap_or_default();
+        assert!(
+            title_row.contains(STATUS_BRANCH_TOKEN),
+            "the status title did not reach the tab bar's title row: {title_row:?}\n{text}"
+        );
+
+        ctx.status_message = None;
+        let without = render_to_text(&screen, &ctx);
+        assert!(
+            !without.contains(STATUS_BRANCH_TOKEN),
+            "the token is drawn without a status message, so it proves nothing"
         );
     }
 
