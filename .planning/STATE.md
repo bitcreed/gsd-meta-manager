@@ -4,17 +4,16 @@ milestone: v1.8.0
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
-stopped_at: v1.8.0 released (Roadmap Redesign) — Phase 19 next, halted by user decision
-last_updated: "2026-09-24T04:58:18.993Z"
-last_activity: 2026-09-23
+stopped_at: Phase 25 context gathered
+last_updated: "2026-09-26T01:32:27.532Z"
+last_activity: 2026-09-24
 last_activity_desc: Phase 24 complete, transitioned to Phase 19
-state_head: 551ecc277ac30cb04836490571da6c0792d0c60c
+state_head: e93d9d3d98da92f0164eab6cc7d8a334114415c6
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 7
   completed_plans: 112
-  percent: 55
 milestone_name: Roadmap Redesign
 ---
 
@@ -513,13 +512,13 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-24
-Stopped at: v1.8.0 released. `Cargo.toml` 1.7.2 -> 1.8.0 (minor: Phase 24 and the quick tasks add
+Last session: 2026-09-26T01:32:27.010Z
+Stopped at: Phase 25 context gathered
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
 lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
 unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,
 but its gap-closure loop is halted by user decision — do not resume without asking.
-Resume file: None
+Resume file: .planning/phases/25-running-agents-live-wave-view/25-CONTEXT.md
 
 Previous session (v1.7.2 release):
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
