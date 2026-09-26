@@ -32,6 +32,7 @@ use std::time::SystemTime;
 use regex::Regex;
 
 use super::adapters::ChildAgent;
+use super::fixers::FixerEstimate;
 use super::{AgentLiveness, AgentRow, ProjectAgents};
 use crate::state_reader::disk_status::{plan_index, DiskInference};
 use crate::state_reader::phase_num::{same_phase, PhaseNum};
@@ -163,6 +164,9 @@ pub struct AgentView {
     pub agents: Vec<AgentRow>,
     pub worktreeless: Vec<ChildAgent>,
     pub scanned_at: Option<SystemTime>,
+    /// The code-review fix-run estimate, copied from
+    /// [`ProjectAgents::fixer_estimate`]; drives the fixer summary forms.
+    pub fixers: Option<FixerEstimate>,
 }
 
 /// Strip the punctuation a sentence wraps around a captured token.
@@ -417,6 +421,7 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
         agents: rows,
         worktreeless: agents.worktreeless.clone(),
         scanned_at: agents.scanned_at,
+        fixers: agents.fixer_estimate.clone(),
     }
 }
 
@@ -439,9 +444,11 @@ impl AgentView {
     /// would keep `P13 · w2/11` and hide the running count, which is the point.
     ///
     /// Executor mode (the active phase has plans, and some row is attributed to
-    /// one of them) yields the wave ladder; otherwise an active view yields
-    /// `N agents`; an inactive view whose rows include stalled ones yields
-    /// `N stalled`; anything else yields no forms and the cell is left alone.
+    /// one of them) yields the wave ladder; otherwise fixer mode (an estimate
+    /// with at least one active fixer, [`Self::fixer_forms`]) yields the fixer
+    /// ladder; otherwise an active view yields `N agents`; an inactive view
+    /// whose rows include stalled ones yields `N stalled`; anything else yields
+    /// no forms and the cell is left alone.
     pub fn summary_forms(&self) -> Vec<String> {
         if !self.is_active() {
             let stalled = self
@@ -467,6 +474,9 @@ impl AgentView {
             None => false,
         };
         if !executor_mode {
+            if let Some(forms) = self.fixer_forms() {
+                return forms;
+            }
             let n = self
                 .agents
                 .iter()
@@ -504,6 +514,28 @@ impl AgentView {
                 format!("{r}run"),
             ],
         }
+    }
+
+    /// The fixer ladder (AGENT-07, D-C12, D-C14), widest first, or `None`
+    /// when there is no estimate or it counts no fixer.
+    ///
+    /// With both counts: `3 fixers · ~5/48 fixed`, `3 fixers · ~5/48`,
+    /// `3fix ~5/48`, `3fix`. Without: `3 fixers`, `3fix`. `fixer` is singular
+    /// for one. The count is an estimate and every form carrying it says so
+    /// with `~`; the widest keeps the word `fixed` (T-25-26).
+    fn fixer_forms(&self) -> Option<Vec<String>> {
+        let est = self.fixers.as_ref().filter(|e| e.fixers >= 1)?;
+        let n = est.fixers;
+        let noun = if n == 1 { "fixer" } else { "fixers" };
+        Some(match (est.fixed, est.total) {
+            (Some(f), Some(t)) => vec![
+                format!("{n} {noun} \u{b7} ~{f}/{t} fixed"),
+                format!("{n} {noun} \u{b7} ~{f}/{t}"),
+                format!("{n}fix ~{f}/{t}"),
+                format!("{n}fix"),
+            ],
+            _ => vec![format!("{n} {noun}"), format!("{n}fix")],
+        })
     }
 }
 

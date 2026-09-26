@@ -31,6 +31,7 @@
 //! other.
 
 pub mod adapters;
+pub mod fixers;
 pub mod waves;
 pub mod worktrees;
 
@@ -196,6 +197,9 @@ pub struct ProjectAgents {
     pub base_sha: Option<String>,
     /// When the scan ran.
     pub scanned_at: Option<SystemTime>,
+    /// The code-review fix-run estimate ([`fixers::estimate`]); `None` unless
+    /// an active unattributed `gsd-code-fixer` row exists.
+    pub fixer_estimate: Option<fixers::FixerEstimate>,
 }
 
 /// Run one adapter, turning a panic into an empty report.
@@ -375,12 +379,20 @@ pub fn scan_project_with(
         (raw(&a.agent_type), raw(&a.description)).cmp(&(raw(&b.agent_type), raw(&b.description)))
     });
 
+    let fixer_estimate = fixers::estimate(
+        project_root,
+        core.main_worktree.as_deref(),
+        core.base_sha.as_deref(),
+        &rows,
+    );
+
     ProjectAgents {
         rows,
         worktreeless,
         main_worktree: core.main_worktree.clone(),
         base_sha: core.base_sha.clone(),
         scanned_at: Some(now),
+        fixer_estimate,
     }
 }
 
