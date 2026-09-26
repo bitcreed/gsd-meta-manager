@@ -41,12 +41,14 @@ pub enum DiskStatus {
 
 /// The status read from a phase's `*-VERIFICATION.md` leading frontmatter.
 ///
-/// Six values, matching `verification.cjs:72-113`'s `VERIFICATION_ROUTING_TABLE`
-/// keys exactly. Only three are ever *written* by GSD's verifier
-/// (`VERIFIER_STATUSES = ['passed', 'gaps_found', 'human_needed']`,
-/// `verification.cjs:50`); `stale`, `missing` and `unknown` are constructed
-/// internally. All six are modelled here because a driven agent, a hand edit or
-/// a future GSD version can put any of them on disk.
+/// Seven values, matching gsd-core 1.15.0's `VERIFICATION_ROUTING_TABLE` keys
+/// (`src/verification.cts:91-146`) exactly; 1.15.0 added `unparseable`
+/// (#4806). Only three are ever *written* by GSD's verifier
+/// (`VERIFIER_STATUSES = ['passed', 'gaps_found', 'human_needed']`);
+/// `stale`, `unparseable`, `missing` and `unknown` are constructed internally.
+/// All seven are modelled here because a driven agent, a hand edit or a future
+/// GSD version can put any of them on disk — and 1.15.0 accepts a literal
+/// `status: unparseable` as a table key.
 ///
 /// **Matched as a string with an explicit fallback that keeps the value**, in
 /// the tolerant-wire-enum posture `executor::outcome` and `executor::stream_json`
@@ -54,11 +56,13 @@ pub enum DiskStatus {
 /// one fact a human needs to see when GSD ships a seventh status.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum VerificationStatus {
-    /// No `*-VERIFICATION.md`, no leading frontmatter block, or no `status` key.
+    /// No `*-VERIFICATION.md`, no leading frontmatter block, an UNTERMINATED
+    /// leading block (upstream's `extractFrontmatter` returns `{}` for one), or
+    /// no `status` key.
     ///
-    /// The default, and fail-safe by construction: an unreadable or malformed
-    /// artifact yields "nothing observed", never an error and never a claim that
-    /// verification passed.
+    /// The default, and fail-safe by construction: an unreadable artifact yields
+    /// "nothing observed", never an error and never a claim that verification
+    /// passed.
     #[default]
     Missing,
     /// Verification passed. The **only** value that admits `DiskStatus::Complete`.
@@ -68,8 +72,21 @@ pub enum VerificationStatus {
     GapsFound,
     /// The verifier needs a human judgement. The definitional DRIVE-05 gate.
     HumanNeeded,
-    /// A `*-SUMMARY.md` is newer than the `*-VERIFICATION.md`.
+    /// The report is stale: upstream's remedy is `/gsd-execute-phase N`, which
+    /// re-runs the verifier (1.15.0, #4682) — verify-work cannot refresh it.
+    ///
+    /// **Read only from a literal `status: stale`.** Upstream also DERIVES
+    /// staleness (a `covered_files`/`covered_digest` fingerprint scan with a
+    /// SUMMARY-mtime fallback); that scan is not modelled by this reader, so a
+    /// report upstream calls stale by fingerprint reads here as whatever its
+    /// literal status says.
     Stale,
+    /// The report has a closed leading frontmatter block that is not YAML —
+    /// gsd-core 1.15.0's `unparseable` (#4806). The verifier ran, but nothing it
+    /// concluded can be read, so a `status: passed` line that survives the
+    /// breakage must never be believed. Also the reading of a literal
+    /// `status: unparseable`, which 1.15.0 accepts as a table key.
+    Unparseable,
     /// A value outside the table, carried **verbatim**.
     ///
     /// Never mapped onto a known arm and never dropped: an unrecognised status
@@ -88,6 +105,7 @@ impl VerificationStatus {
             "gaps_found" => VerificationStatus::GapsFound,
             "human_needed" => VerificationStatus::HumanNeeded,
             "stale" => VerificationStatus::Stale,
+            "unparseable" => VerificationStatus::Unparseable,
             "missing" => VerificationStatus::Missing,
             _ => VerificationStatus::Unknown(trimmed.to_string()),
         }
@@ -101,6 +119,7 @@ impl VerificationStatus {
             VerificationStatus::GapsFound => "gaps_found",
             VerificationStatus::HumanNeeded => "human_needed",
             VerificationStatus::Stale => "stale",
+            VerificationStatus::Unparseable => "unparseable",
             VerificationStatus::Unknown(observed) => observed,
         }
     }
@@ -652,16 +671,73 @@ fn plan_frontmatter_superseded(content: &str) -> bool {
 /// yields the same status on every read rather than whatever the filesystem
 /// happened to hand back first.
 ///
-/// Every failure mode — no artifact, an unreadable file, no leading block, no
-/// `status` key — yields [`VerificationStatus::Missing`].
+/// No artifact, an unreadable file, no leading block, an UNTERMINATED leading
+/// block, or no `status` key yields [`VerificationStatus::Missing`]. A closed
+/// leading block that is not YAML yields [`VerificationStatus::Unparseable`]
+/// (gsd-core 1.15.0, #4806) — checked BEFORE the line scan, because a
+/// `status: passed` line that survives a broken block is exactly what upstream
+/// (1.14.0 and 1.15.0 alike) refuses to believe, and believing it is a false
+/// `Complete` and a false `GoalMet`.
+///
+/// Unterminated is upstream's `extractFrontmatter` returning `{}`, i.e.
+/// `missing`: a body `status:` line is never frontmatter (the
+/// `DEFECT.FRONTMATTER-SCALAR-BROAD-GREP` class, one step further).
 fn read_verification_status(phase_dir: &Path, mut names: Vec<String>) -> VerificationStatus {
     names.sort();
-    names
+    let Some(content) = names
         .first()
         .and_then(|name| std::fs::read_to_string(phase_dir.join(name)).ok())
-        .and_then(|content| leading_frontmatter_value(&content, "status"))
-        .map(|raw| VerificationStatus::from_raw(&raw))
-        .unwrap_or_default()
+    else {
+        return VerificationStatus::Missing;
+    };
+    verification_status_of(&content)
+}
+
+/// The verification status one document's content expresses. Split out of
+/// [`read_verification_status`] so the classification is testable on strings.
+fn verification_status_of(content: &str) -> VerificationStatus {
+    match leading_block(content) {
+        LeadingBlock::Absent | LeadingBlock::Unterminated => VerificationStatus::Missing,
+        LeadingBlock::Closed(yaml) => {
+            if !super::state_md::frontmatter_block_parses(&yaml) {
+                return VerificationStatus::Unparseable;
+            }
+            leading_frontmatter_value(content, "status")
+                .map(|raw| VerificationStatus::from_raw(&raw))
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// How a document's leading frontmatter block is shaped.
+#[derive(Debug, PartialEq, Eq)]
+enum LeadingBlock {
+    /// The first line is not a bare `---`.
+    Absent,
+    /// The first line opens a block that no later line closes.
+    Unterminated,
+    /// A closed block, carrying the text of the lines strictly between the
+    /// fences joined by `\n`.
+    Closed(String),
+}
+
+/// Classify a document's leading block by exactly
+/// [`leading_frontmatter_value`]'s byte-zero rule: the first line trimmed is
+/// `---`, and the block ends at the first later line whose trimmed form is
+/// `---`. `str::lines` strips a `\r`, so a CRLF document classifies the same.
+fn leading_block(content: &str) -> LeadingBlock {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return LeadingBlock::Absent;
+    }
+    let mut inner: Vec<&str> = Vec::new();
+    for line in lines {
+        if line.trim() == "---" {
+            return LeadingBlock::Closed(inner.join("\n"));
+        }
+        inner.push(line);
+    }
+    LeadingBlock::Unterminated
 }
 
 /// Read the `status` out of the phase directory's UAT artifact.
@@ -1697,6 +1773,125 @@ mod tests {
              implementation is still unfinished"
         );
         assert_eq!(result.verification_status, VerificationStatus::Passed);
+    }
+
+    // ── quick 260926-gtn: gsd-core 1.15.0 `unparseable` (#4806) ──
+    //
+    // Shapes and expectations are the probe table in the gtn PLAN: each was run
+    // through 1.14.0 and 1.15.0 `init.manager` and `serde_yml` 0.0.13.
+
+    /// Closed blocks that are not YAML, each carrying a surviving
+    /// `status: passed` line a line scan would believe.
+    const UNPARSEABLE_BLOCKS: &[(&str, &str)] = &[
+        ("unclosed flow", "---\nstatus: passed\nscore: [unclosed\n---\nbody\n"),
+        ("bad indent", "---\nstatus: passed\n  bad: indent\n---\nbody\n"),
+        ("tab indent", "---\nstatus: passed\n\tbad: tab\n---\nbody\n"),
+        (
+            "re_verification + indented children (v1.1-phases/06)",
+            "---\nphase: 06\nstatus: passed\nre_verification: true\n  previous_status: gaps_found\n  previous_score: 3/5\n---\n# V\n",
+        ),
+    ];
+
+    #[test]
+    fn test_broken_yaml_verification_is_unparseable_and_never_complete() {
+        for (label, content) in UNPARSEABLE_BLOCKS {
+            assert_eq!(
+                verification_status_of(content),
+                VerificationStatus::Unparseable,
+                "{label}: a closed block that is not YAML is upstream 1.15.0's \
+                 `unparseable`; the surviving `status: passed` line must not be read"
+            );
+            let dir = implementation_complete_dir();
+            fs::write(dir.path().join("19-VERIFICATION.md"), content).unwrap();
+            let result = infer_disk_status(dir.path());
+            assert_eq!(result.verification_status, VerificationStatus::Unparseable, "{label}");
+            assert_eq!(
+                result.status,
+                DiskStatus::Executed,
+                "{label}: both 1.14.0 and 1.15.0 read this `executed`, never `complete`"
+            );
+            assert!(result.has_verification, "{label}");
+        }
+    }
+
+    #[test]
+    fn test_crlf_broken_block_is_still_unparseable() {
+        assert_eq!(
+            verification_status_of("---\r\nstatus: passed\r\n  bad: indent\r\n---\r\n"),
+            VerificationStatus::Unparseable
+        );
+        assert_eq!(
+            verification_status_of("---\r\nstatus: passed\r\n---\r\n"),
+            VerificationStatus::Passed
+        );
+    }
+
+    #[test]
+    fn test_unterminated_verification_block_is_missing_not_passed() {
+        let dir = implementation_complete_dir();
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "---\nphase: 19\nstatus: passed\n\n# Verification\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.verification_status,
+            VerificationStatus::Missing,
+            "upstream's extractFrontmatter returns {{}} for an unterminated block, \
+             i.e. `missing`; the `status:` line is not frontmatter"
+        );
+        assert!(result.has_verification);
+        assert_eq!(result.status, DiskStatus::Executed);
+    }
+
+    #[test]
+    fn test_literal_unparseable_status_is_unparseable() {
+        assert_eq!(
+            verification_status_of("---\nstatus: unparseable\n---\n"),
+            VerificationStatus::Unparseable
+        );
+        assert_eq!(VerificationStatus::from_raw("UNPARSEABLE"), VerificationStatus::Unparseable);
+        assert_eq!(VerificationStatus::Unparseable.as_str(), "unparseable");
+        assert!(!VerificationStatus::Unparseable.is_passed());
+    }
+
+    #[test]
+    fn test_repairable_and_duplicate_key_blocks_stay_passed() {
+        // Probe table rows 7-8: both oracles read these `complete`/`passed`.
+        // `5/5: all verified` fails serde_yml's raw parse, so this pins that the
+        // one-shot ambiguous-colon repair runs (upstream
+        // loadWithAmbiguousColonRepair); serde_yml accepts duplicate keys.
+        for content in [
+            "---\nstatus: passed\nscore: 5/5: all verified\n---\n",
+            "---\nstatus: passed\nstatus: passed\n---\n",
+        ] {
+            assert_eq!(verification_status_of(content), VerificationStatus::Passed, "{content}");
+            let dir = implementation_complete_dir();
+            fs::write(dir.path().join("19-VERIFICATION.md"), content).unwrap();
+            assert_eq!(infer_disk_status(dir.path()).status, DiskStatus::Complete, "{content}");
+        }
+    }
+
+    #[test]
+    fn test_closed_empty_block_is_missing_not_unparseable() {
+        assert_eq!(verification_status_of("---\n---\nbody\n"), VerificationStatus::Missing);
+        assert_eq!(
+            verification_status_of("---\nphase: 19\n---\n\nstatus: passed\n"),
+            VerificationStatus::Missing,
+            "a body `status:` below a correctly closed block is still body text"
+        );
+    }
+
+    #[test]
+    fn test_leading_block_classification() {
+        assert_eq!(leading_block("# no block\n"), LeadingBlock::Absent);
+        assert_eq!(leading_block("---\na: 1\n"), LeadingBlock::Unterminated);
+        assert_eq!(
+            leading_block("---\na: 1\nb: 2\n---\nbody\n---\n"),
+            LeadingBlock::Closed("a: 1\nb: 2".to_string())
+        );
+        assert_eq!(leading_block(""), LeadingBlock::Absent);
     }
 
     // ── Plan 20-03 Task 2: the rest of the disk-observable gate set ──

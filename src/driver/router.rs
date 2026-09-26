@@ -94,6 +94,15 @@ pub const REASON_GATE_VERIFICATION_STALE: &str = "gate_verification_stale";
 pub const REASON_GATE_VERIFICATION_MISSING: &str = "gate_verification_missing";
 /// G5: the target's verification status is outside the routing table.
 pub const REASON_GATE_VERIFICATION_UNKNOWN: &str = "gate_verification_unknown";
+/// G5-adjacent: the target's verification report has a closed frontmatter block
+/// that is not YAML.
+///
+/// Mirrors gsd-core 1.15.0's own `unparseable` routing-table key (#4806,
+/// `verification.cts:131-139`) 1:1, the way G1-G5 mirror theirs. Named rather
+/// than folded into G6 because upstream keys it separately from `missing`, and
+/// a journal reader should see which one fired: this one means "fix the YAML",
+/// which re-running execute-phase cannot do.
+pub const REASON_GATE_VERIFICATION_UNPARSEABLE: &str = "gate_verification_unparseable";
 /// G6: the staleness check could not be run, which is not the same as running
 /// it and finding nothing stale.
 pub const REASON_GATE_STALE_CHECK_INDETERMINATE: &str = "gate_stale_check_indeterminate";
@@ -142,6 +151,8 @@ pub enum RouterReason {
     GateVerificationMissing,
     /// G5.
     GateVerificationUnknown,
+    /// G5-adjacent. Upstream 1.15.0's `unparseable`, 1:1.
+    GateVerificationUnparseable,
     /// G6. "Could not check" is not "checked, nothing is stale".
     GateStaleCheckIndeterminate,
     /// G7.
@@ -173,6 +184,7 @@ impl RouterReason {
             RouterReason::GateVerificationStale => REASON_GATE_VERIFICATION_STALE,
             RouterReason::GateVerificationMissing => REASON_GATE_VERIFICATION_MISSING,
             RouterReason::GateVerificationUnknown => REASON_GATE_VERIFICATION_UNKNOWN,
+            RouterReason::GateVerificationUnparseable => REASON_GATE_VERIFICATION_UNPARSEABLE,
             RouterReason::GateStaleCheckIndeterminate => REASON_GATE_STALE_CHECK_INDETERMINATE,
             RouterReason::GateUatOutstanding => REASON_GATE_UAT_OUTSTANDING,
             RouterReason::GateContinueHereProject => REASON_GATE_CONTINUE_HERE_PROJECT,
@@ -200,6 +212,7 @@ impl RouterReason {
         RouterReason::GateVerificationStale,
         RouterReason::GateVerificationMissing,
         RouterReason::GateVerificationUnknown,
+        RouterReason::GateVerificationUnparseable,
         RouterReason::GateStaleCheckIndeterminate,
         RouterReason::GateUatOutstanding,
         RouterReason::GateContinueHereProject,
@@ -694,7 +707,13 @@ fn phase_identity(text: &str) -> String {
 ///   was nothing to check.
 /// - **an artifact exists but yielded no status** → G6 *could not check*. The
 ///   scan ran and produced no conclusion, which is precisely the case the
-///   upstream source insists is not the same as a clean result.
+///   upstream source insists is not the same as a clean result. Since gsd-core
+///   1.15.0 this means a readable (or unterminated) block with no `status` —
+///   upstream's `missing`.
+/// - **an artifact whose closed block is not YAML** is NOT in this split: the
+///   reader classifies it [`Unparseable`](crate::state_reader::disk_status::VerificationStatus::Unparseable),
+///   upstream's own distinct key (#4806), and it parks under
+///   [`RouterReason::GateVerificationUnparseable`].
 ///
 /// Both park, so nothing turns on getting the split wrong; the split exists so
 /// a reader of the journal can tell an unwritten verification from an unreadable
@@ -713,6 +732,7 @@ fn verification_gate(inference: &DiskInference) -> Option<RouterReason> {
             RouterReason::GateVerificationMissing
         }),
         VerificationStatus::Unknown(_) => Some(RouterReason::GateVerificationUnknown),
+        VerificationStatus::Unparseable => Some(RouterReason::GateVerificationUnparseable),
         // The only status that is not a gate. It is also the goal-met predicate,
         // and an `executed` phase cannot carry it — the reader's own derivation
         // promotes such a phase to `complete` — so this arm is the reader's
@@ -1526,6 +1546,11 @@ mod tests {
                 true,
                 RouterReason::GateVerificationUnknown,
             ),
+            (
+                VerificationStatus::Unparseable,
+                true,
+                RouterReason::GateVerificationUnparseable,
+            ),
         ];
 
         for (status, has_verification, expected) in cases {
@@ -1813,6 +1838,7 @@ mod tests {
             VerificationStatus::Stale,
             VerificationStatus::Missing,
             VerificationStatus::Unknown("invented".to_string()),
+            VerificationStatus::Unparseable,
         ] {
             for disk in [
                 DiskStatus::NoDirectory,
@@ -1963,6 +1989,7 @@ mod tests {
             (VerificationStatus::Missing, false),
             (VerificationStatus::Missing, true),
             (VerificationStatus::Unknown("x".to_string()), true),
+            (VerificationStatus::Unparseable, true),
         ] {
             record(decide(&executed_with(status, has_verification), "20"));
         }

@@ -385,6 +385,41 @@ const FIXTURES: &[Fixture] = &[
             verification(root, "gaps_found");
         },
     },
+    // gsd-core 1.15.0's `unparseable` (#4806): a closed leading block that is not
+    // YAML. The shape is the real one from this repository's own
+    // v1.1-phases/06-read-only-views/06-VERIFICATION.md — a scalar key followed
+    // by indented children. Both oracles (1.14.0: `missing`; 1.15.0:
+    // `unparseable`) read it `executed` / `verify`, never `complete`, while a
+    // line scan finds `status: passed` and would call it GoalMet.
+    Fixture {
+        name: "executed_unparseable",
+        upstream: Upstream::VerifyGate,
+        build: |root| {
+            skeleton(root);
+            plan(root, "01");
+            summary(root, "01");
+            write(
+                &phase_dir(root).join("01-VERIFICATION.md"),
+                "---\nphase: 01\nstatus: passed\nre_verification: true\n  previous_status: gaps_found\n  previous_score: 3/5\n---\n\n# Verification\n",
+            );
+        },
+    },
+    // A leading `---` that is never closed. Upstream's extractFrontmatter
+    // returns `{}` for it, i.e. `missing`: a body `status:` line is not
+    // frontmatter.
+    Fixture {
+        name: "executed_unterminated",
+        upstream: Upstream::VerifyGate,
+        build: |root| {
+            skeleton(root);
+            plan(root, "01");
+            summary(root, "01");
+            write(
+                &phase_dir(root).join("01-VERIFICATION.md"),
+                "---\nphase: 01\nstatus: passed\n\n# Verification\n",
+            );
+        },
+    },
     Fixture {
         name: "complete",
         upstream: Upstream::NoAction,
@@ -667,6 +702,8 @@ fn every_fixture_reaches_the_state_it_is_named_for() {
             .split("_gaps")
             .next()
             .and_then(|n| n.split("_human").next())
+            .and_then(|n| n.split("_unparseable").next())
+            .and_then(|n| n.split("_unterminated").next())
             .unwrap_or(fixture.name);
         assert_eq!(
             observed, expected,

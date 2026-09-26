@@ -6135,6 +6135,12 @@ impl DetailScreen {
         )));
         head.push(build_pipeline_line(inf, &stage_statuses));
         head.extend(stage_block_lines(inf, &stage_statuses, cols));
+        // The Verify line (quick 260926-gtn): present only when the report is
+        // present and not passed, so the Waves pane simply starts one row
+        // lower when it is drawn.
+        if let Some(spans) = verification_hint_spans(inf, &phase.number) {
+            head.push(fit_spans(spans, cols));
+        }
         // External-job indicator: distinguish a legitimately blocked phase
         // (waiting on an async job) from a stuck one.
         if state.external_job_waiting {
@@ -7688,6 +7694,68 @@ fn stage_block_lines(
         }
     }
     [fit_spans(a, cols), fit_spans(b, cols)]
+}
+
+/// The Phases tab's `Verify:` line (quick 260926-gtn): what the selected
+/// phase's verification report concluded and what to run next, or `None` when
+/// there is nothing to say — no report at all, or one that passed.
+///
+/// The remedies are gsd-core 1.15.0's `VERIFICATION_ROUTING_TABLE`
+/// `next_command`s, measured through the 1.15.0 oracle's
+/// `init.manager` `verification_next_command` and spelled in this tab's `/gsd:`
+/// convention (the neighbouring `No plans yet — /gsd:plan-phase N` hint):
+///
+/// - `stale` → `/gsd:execute-phase N`, which re-runs the verifier (#4682 —
+///   verify-work never rewrites VERIFICATION.md);
+/// - `unparseable` → no command: fix the YAML (#4806 — re-running execute-phase
+///   cannot fix a typo in an existing report);
+/// - `human_needed` → `/gsd:verify-work N`; `gaps_found` →
+///   `/gsd:plan-phase N --gaps`;
+/// - an unknown value, or a report with no status (upstream `missing`) →
+///   `/gsd:execute-phase N`.
+///
+/// Display only: the router still parks on every one of these (DRIVE-05). The
+/// phase number and an unknown status value are third-party text and go through
+/// [`shown`] (T-gtn-04).
+fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Vec<Span<'static>>> {
+    let n = shown(phase_number);
+    let (word, remedy) = match &inf.verification_status {
+        VerificationStatus::Passed => return None,
+        VerificationStatus::Missing if !inf.has_verification => return None,
+        VerificationStatus::Missing => (
+            "no status".to_string(),
+            format!(" \u{2014} /gsd:execute-phase {n}"),
+        ),
+        VerificationStatus::Stale => (
+            "stale".to_string(),
+            format!(
+                " \u{2014} /gsd:execute-phase {n} re-runs the verifier (a stale report is not refreshed by re-verifying)"
+            ),
+        ),
+        VerificationStatus::Unparseable => (
+            "unparseable".to_string(),
+            " \u{2014} fix the YAML frontmatter in the phase's VERIFICATION.md; re-running execute-phase cannot fix it"
+                .to_string(),
+        ),
+        VerificationStatus::HumanNeeded => (
+            "human_needed".to_string(),
+            format!(" \u{2014} /gsd:verify-work {n}"),
+        ),
+        VerificationStatus::GapsFound => (
+            "gaps_found".to_string(),
+            format!(" \u{2014} /gsd:plan-phase {n} --gaps"),
+        ),
+        VerificationStatus::Unknown(value) => (
+            shown(value),
+            format!(" \u{2014} /gsd:execute-phase {n}"),
+        ),
+    };
+    let dim = Style::default().fg(Color::DarkGray);
+    Some(vec![
+        Span::styled("  Verify: ", dim),
+        Span::styled(word, Style::default().fg(Color::Yellow)),
+        Span::styled(remedy, dim),
+    ])
 }
 
 /// The Waves pane's per-plan state vocabulary ([inferred I-1]): the five
@@ -20703,6 +20771,83 @@ mod tests {
         ] {
             assert!(!text.contains(gone), "{gone} is still drawn: {text}");
         }
+    }
+
+    fn verify_hint_text(status: VerificationStatus, has_verification: bool) -> Option<String> {
+        let inf = DiskInference {
+            verification_status: status,
+            has_verification,
+            ..Default::default()
+        };
+        verification_hint_spans(&inf, "7")
+            .map(|spans| spans.iter().map(|s| s.content.to_string()).collect())
+    }
+
+    #[test]
+    fn verify_hint_names_the_1_15_0_remedy_per_status() {
+        assert_eq!(verify_hint_text(VerificationStatus::Passed, true), None);
+        assert_eq!(
+            verify_hint_text(VerificationStatus::Missing, false),
+            None,
+            "no report at all draws nothing"
+        );
+        let stale = verify_hint_text(VerificationStatus::Stale, true).unwrap();
+        assert!(stale.contains("stale") && stale.contains("/gsd:execute-phase 7"), "{stale}");
+        assert!(
+            !stale.contains("verify-work"),
+            "1.15.0 (#4682): verify-work cannot refresh a stale report: {stale}"
+        );
+        let broken = verify_hint_text(VerificationStatus::Unparseable, true).unwrap();
+        assert!(broken.contains("unparseable") && broken.contains("YAML"), "{broken}");
+        assert!(!broken.contains("/gsd:"), "unparseable has no command upstream: {broken}");
+        assert!(
+            verify_hint_text(VerificationStatus::HumanNeeded, true)
+                .unwrap()
+                .contains("/gsd:verify-work 7")
+        );
+        assert!(
+            verify_hint_text(VerificationStatus::GapsFound, true)
+                .unwrap()
+                .contains("/gsd:plan-phase 7 --gaps")
+        );
+        let unknown =
+            verify_hint_text(VerificationStatus::Unknown("odd\x1b[31m".to_string()), true).unwrap();
+        assert!(unknown.contains("/gsd:execute-phase 7"), "{unknown}");
+        assert!(!unknown.contains('\x1b'), "the unknown value is escaped: {unknown:?}");
+        let no_status = verify_hint_text(VerificationStatus::Missing, true).unwrap();
+        assert!(
+            no_status.contains("no status") && no_status.contains("/gsd:execute-phase 7"),
+            "{no_status}"
+        );
+    }
+
+    #[test]
+    fn waves_pane_verify_line_sits_between_stage_block_and_pane_at_100x32() {
+        let mut ctx = tracer_ctx();
+        let inf = ctx
+            .project_states
+            .get_mut(TEST_ALIAS)
+            .and_then(|s| s.phase_disk_statuses.get_mut("13"))
+            .expect("the tracer phase");
+        inf.has_verification = true;
+        inf.verification_status = VerificationStatus::Unparseable;
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+        let lines: Vec<&str> = text.lines().collect();
+        let name_row = lines
+            .iter()
+            .position(|l| l.contains("Phase 13: Demo phase"))
+            .unwrap_or_else(|| panic!("no phase line: {text}"));
+        let pane_top = lines
+            .iter()
+            .position(|l| l.contains(" Waves 2 "))
+            .unwrap_or_else(|| panic!("no Waves pane: {text}"));
+        assert!(lines[name_row + 3].contains("Checks"), "{text}");
+        assert!(
+            lines[name_row + 4].contains("Verify: unparseable"),
+            "the Verify line follows the stage block: {text}"
+        );
+        assert_eq!(pane_top, name_row + 5, "and the pane starts one row lower: {text}");
     }
 
     #[test]

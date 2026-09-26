@@ -562,6 +562,40 @@ fn repair_frontmatter_block(yaml: &str) -> Option<(String, u32)> {
     (repaired_lines > 0).then_some((out, repaired_lines))
 }
 
+/// Whether the text BETWEEN a closed leading frontmatter block's fences parses
+/// as YAML — the one `serde_yml` parse site `disk_status` uses to tell gsd-core
+/// 1.15.0's `unparseable` verification report (#4806) from a readable one.
+///
+/// Mirrors upstream's `loadWithAmbiguousColonRepair` (`src/frontmatter.cts`):
+/// a raw parse, then ONE [`repair_frontmatter_block`] rewrite and ONE reparse —
+/// the same single attempt [`read_frontmatter`] makes, never a loop. So
+/// `score: 5/5: all verified`, which the raw parse refuses, still reads as
+/// parseable here exactly as it does upstream.
+///
+/// **Any** value counts, including `Null` for an empty block: upstream treats a
+/// non-mapping root as an empty mapping (`missing`), not as unparseable.
+///
+/// Two named residuals, both accepted rather than modelled:
+///
+/// - Anchors/aliases (`&x`, `*x`) and the U+E000 sentinel are refused upstream
+///   (`refuseAnchorsAndAliases`) and accepted here, so an anchor-bearing
+///   `status: passed` reads Passed where upstream reads `unparseable`. There is
+///   no security delta: whoever can plant that file can write a clean
+///   `status: passed`.
+/// - A YAML alias bomb is bounded by `serde_yml`'s "alias expansion limit
+///   exceeded" (~2.4 s in release, measured). The caller runs on the refresh
+///   `spawn_blocking` thread, never the render loop — the same exposure
+///   STATE.md parsing already has.
+pub(crate) fn frontmatter_block_parses(yaml: &str) -> bool {
+    if serde_yml::from_str::<Value>(yaml).is_ok() {
+        return true;
+    }
+    match repair_frontmatter_block(yaml) {
+        Some((repaired, _)) => serde_yml::from_str::<Value>(&repaired).is_ok(),
+        None => false,
+    }
+}
+
 /// The candidate rule for a single line. `None` means "leave it alone".
 fn repair_line(line: &str) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
