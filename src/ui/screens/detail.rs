@@ -810,6 +810,30 @@ pub struct DetailScreen {
     /// Which level of the view has the keyboard: the tab bar or the tab's
     /// content (quick 260926-1t1). Content on every opening.
     focus: DetailFocus,
+    /// The rects of the last frame's tab bar, sub-tab strip, content and
+    /// focused pane — written by the render pass through `&self`, the same
+    /// interior-mutability reason as the viewports above (quick 260926-1t1).
+    regions: Cell<DetailRegions>,
+}
+
+/// Where the last frame drew each focusable region of the detail view (quick
+/// 260926-1t1).
+///
+/// The plug-in point for a mouse hit test and for task 4b's Phases waves
+/// pane: both need to know which rect a click or a focus cue belongs to, and
+/// the render pass is the only place that knows. Both render paths reset it
+/// and refill it every frame ([inferred I-17]), so the rects never mix two
+/// frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct DetailRegions {
+    /// The tab bar, its bottom border included.
+    pub tab_bar: Rect,
+    /// The one-row sub-tab strip, on the Sessions and Docs tabs only.
+    pub sub_tab_strip: Option<Rect>,
+    /// The whole content area between the tab bar and the footer.
+    pub content: Rect,
+    /// A focused pane inside the content — in 4a, the open Backlog pane.
+    pub pane: Option<Rect>,
 }
 
 /// The detail view's focus levels (quick 260926-1t1, D-01).
@@ -859,7 +883,76 @@ impl DetailScreen {
             roadmap_list_offset: Cell::new(0),
             roadmap_list_viewport: Cell::new(0),
             focus: DetailFocus::Content,
+            regions: Cell::default(),
         }
+    }
+
+    /// The regions the last frame drew (see [`DetailRegions`]).
+    ///
+    /// Read only by tests in 4a; its consumers are the mouse hit test and task
+    /// 4b's waves pane, which is why the lint is silenced for non-test builds
+    /// rather than the accessor left out.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn regions(&self) -> DetailRegions {
+        self.regions.get()
+    }
+
+    /// Record the frame's tab bar and content rects and clear the rest — the
+    /// first write of every frame, on both render paths ([inferred I-17]).
+    fn reset_regions(&self, tab_bar: Rect, content: Rect) {
+        self.regions.set(DetailRegions {
+            tab_bar,
+            sub_tab_strip: None,
+            content,
+            pane: None,
+        });
+    }
+
+    /// One sub-tab step on a tab that has sub-tabs — `←`/`→` inside content,
+    /// `[`/`]` (quick 260926-1t1, D-03, D-04). Clamped: `←` on the left
+    /// sub-tab and `→` on the right one do nothing, so the sub-tab boundary
+    /// stays visible instead of spilling into the next tab. Through
+    /// [`switch_to_sub_view`], the one arrival rule, so Milestones discovery
+    /// and the sub-tab memory happen exactly as for every other way onto it.
+    /// A no-op on a tab without sub-tabs.
+    fn step_sub_tab(
+        &mut self,
+        current: &DetailSubView,
+        forward: bool,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        let Some((left, right)) = sub_tab_pair(current) else {
+            return ScreenAction::None;
+        };
+        let target = if forward { right } else { left };
+        if *current == target {
+            return ScreenAction::None;
+        }
+        switch_to_sub_view(&self.alias, target, &mut self.scroll_offset, ctx)
+    }
+
+    /// Record this frame's sub-tab strip rect.
+    fn record_sub_tab_strip(&self, strip: Rect) {
+        let mut regions = self.regions.get();
+        regions.sub_tab_strip = Some(strip);
+        self.regions.set(regions);
+    }
+
+    /// Record this frame's focused pane rect.
+    fn record_pane(&self, pane: Rect) {
+        let mut regions = self.regions.get();
+        regions.pane = Some(pane);
+        self.regions.set(regions);
+    }
+
+    /// Draw a two-sub-view `strip` in the first row of `area`, record that row
+    /// as the frame's sub-tab strip, and return the rest — so every Docs and
+    /// Sessions sub-view render shrinks its body by exactly that one row.
+    fn sub_tab_row(&self, frame: &mut Frame, area: Rect, strip: Line<'static>) -> Rect {
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        frame.render_widget(Paragraph::new(strip), chunks[0]);
+        self.record_sub_tab_strip(chunks[0]);
+        chunks[1]
     }
 
     /// A detail screen that is ALREADY on `sub_view`, with that tab's arrival
@@ -1225,13 +1318,15 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::GitHistory => 3,
         DetailSubView::Queue => 4,
         // Sessions has two sub-views sharing one index (D-C15): `Sessions`
-        // itself and `Agents`. The index is the tab, so digits and arrows land
-        // on Sessions; `m` picks the sub-view.
+        // itself and `Agents`. The index is the tab, so digits and tab-bar
+        // arrows land on the Sessions tab — on its last-used sub-view (quick
+        // 260926-1t1); `←`/`→`, `[`/`]` or `m` inside it pick the sub-view.
         DetailSubView::Sessions | DetailSubView::Agents => 5,
         DetailSubView::Defaults => 6,
         // Docs has two sub-views sharing one index (D-B04): `Browse` is its
         // Files sub-tab and `Archive` its Milestones sub-tab. The index is the
-        // tab, so digits and arrows land on Docs; `m` picks the sub-tab.
+        // tab, so digits and tab-bar arrows land on Docs — on its last-used
+        // sub-tab; `←`/`→`, `[`/`]` or `m` inside it pick the sub-tab.
         DetailSubView::Browse | DetailSubView::Archive => 7,
         // Index 8 — the last tab, reachable by `Left`/`Right`, by `Shift+D`,
         // and rendered by `tab_titles` at every width.
@@ -1249,8 +1344,10 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
 ///
 /// Index 7 is the Docs tab and resolves to its Files sub-view (`Browse`); the
 /// Milestones sub-view (`Archive`) shares that index and is reached only by
-/// [`switch_to_sub_view`] — the Docs tab's `m` key, the Roadmap's shipped row
-/// and [`DetailScreen::opened_on`].
+/// [`switch_to_sub_view`] — the Docs tab's `←`/`→`, `[`/`]` and `m` keys, the
+/// Roadmap's shipped row, [`DetailScreen::opened_on`], and [`switch_to_tab`]'s
+/// last-used sub-tab memory, which is consulted BEFORE this function (quick
+/// 260926-1t1). This mapping itself stays memory-free, so its round trip holds.
 pub(crate) fn sub_view_from_index(index: usize, experimental: bool) -> DetailSubView {
     if index == DRIVER_TAB_INDEX && !experimental {
         return DetailSubView::RoadmapViz;
@@ -1901,25 +1998,33 @@ fn share_pipeline_selection(
 
 /// Switch to the tab at `new_index` — a thin adapter over
 /// [`switch_to_sub_view`] for the digit and arrow keys, which name a tab by
-/// its index. An index names a tab, not a sub-tab: Docs' index resolves to its
-/// Files sub-view.
+/// its index.
+///
+/// An index names a tab, not a sub-tab, so a tab with sub-tabs re-opens the
+/// one this project last used there — `6` on Agents, `8` on Milestones
+/// (quick 260926-1t1, D-04) — from `last_sub_view_per_tab`, which
+/// [`switch_to_sub_view`] writes. With nothing remembered the index resolves
+/// through [`sub_view_from_index`] (unchanged), so Docs lands on Files.
 fn switch_to_tab(
     alias: &str,
     new_index: usize,
     scroll_offset: &mut u16,
     ctx: &mut AppContext,
 ) -> ScreenAction {
-    switch_to_sub_view(
-        alias,
-        sub_view_from_index(new_index, ctx.experimental),
-        scroll_offset,
-        ctx,
-    )
+    let remembered = ctx
+        .view_cache
+        .get(alias)
+        .and_then(|cache| cache.last_sub_view_per_tab.get(&new_index).cloned());
+    let new_view =
+        remembered.unwrap_or_else(|| sub_view_from_index(new_index, ctx.experimental));
+    switch_to_sub_view(alias, new_view, scroll_offset, ctx)
 }
 
 /// Switch to `new_view`: the ONE arrival rule (scroll reset plus each tab's
-/// data loading). Every way onto a tab — digits, arrows, `Shift+D`, the Docs
-/// tab's `m`, the Roadmap's `Enter`, [`DetailScreen::opened_on`] — ends here.
+/// data loading). Every way onto a tab — digits, arrows, `Shift+D`, the
+/// sub-tab keys (`←`/`→` and `[`/`]` inside Sessions or Docs, and the `m`
+/// alias), the Roadmap's `Enter`, [`DetailScreen::opened_on`] — ends here,
+/// which is why the sub-tab memory is written here and nowhere else.
 fn switch_to_sub_view(
     alias: &str,
     new_view: DetailSubView,
@@ -1930,6 +2035,18 @@ fn switch_to_sub_view(
         .insert(alias.to_string(), new_view.clone());
     *scroll_offset = 0;
     ctx.needs_redraw = true;
+
+    // Every arrival on a tab with sub-tabs is remembered as that tab's
+    // last-used sub-tab — the arrows, `[`/`]`, `m`, the digits, the Roadmap's
+    // shipped-row jump and `opened_on` alike ([inferred I-11]) — so the tab's
+    // digit re-opens it (D-04).
+    if sub_tab_pair(&new_view).is_some() {
+        ctx.view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .last_sub_view_per_tab
+            .insert(tab_index(&new_view), new_view.clone());
+    }
 
     // Load data for backlog tab synchronously (fast filesystem reads)
     if new_view == DetailSubView::Backlog {
@@ -3050,9 +3167,32 @@ impl Screen for DetailScreen {
                 self.focus = DetailFocus::Content;
                 switch_to_tab(&self.alias, DRIVER_TAB_INDEX, &mut self.scroll_offset, ctx)
             }
-            // Tab switching via arrow keys, clamped by `stepped_tab_index`.
+            // The arrows inside content (quick 260926-1t1, D-03), in order:
+            // an open Backlog pane first ([inferred I-9]), then the sub-tabs of
+            // a tab that has them, clamped at the ends; otherwise they switch
+            // tab as they always did and land focus on the TAB BAR — even at
+            // the clamped end, where no tab changes ([inferred I-1]).
             KeyCode::Left | KeyCode::Right => {
-                match stepped_tab_index(current_idx, code == KeyCode::Right, ctx.experimental) {
+                let forward = code == KeyCode::Right;
+                if current_view == DetailSubView::Backlog {
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    if cache.backlog_expanded {
+                        // `←` closes the pane exactly as Esc's pane branch
+                        // does; `→` has nothing to its right.
+                        if !forward {
+                            cache.backlog_expanded = false;
+                            cache.backlog_scroll = 0;
+                            ctx.needs_redraw = true;
+                        }
+                        return ScreenAction::None;
+                    }
+                }
+                if sub_tab_pair(&current_view).is_some() {
+                    return self.step_sub_tab(&current_view, forward, ctx);
+                }
+                self.focus = DetailFocus::TabBar;
+                ctx.needs_redraw = true;
+                match stepped_tab_index(current_idx, forward, ctx.experimental) {
                     Some(index) => {
                         switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
                     }
@@ -3556,10 +3696,24 @@ impl Screen for DetailScreen {
                 }
                 ScreenAction::None
             }
+            // Sub-tab `[` / `]` (quick 260926-1t1, D-04): previous / next
+            // sub-tab on the Sessions and Docs tabs, clamped, exactly like the
+            // arrows inside content. Guarded by `sub_tab_pair`, which is `None`
+            // on Roadmap — so these can never overlap the Roadmap list's
+            // same-wave `[` / `]` arms below. On every other tab both keys
+            // fall through to the no-op `_` arm ([inferred I-15]).
+            KeyCode::Char('[') if sub_tab_pair(&current_view).is_some() => {
+                self.step_sub_tab(&current_view, false, ctx)
+            }
+            KeyCode::Char(']') if sub_tab_pair(&current_view).is_some() => {
+                self.step_sub_tab(&current_view, true, ctx)
+            }
             // Docs tab: 'm' switches between its two sub-tabs, Files (`Browse`)
-            // and Milestones (`Archive`) (D-B04). Guarded so it is inert on every
-            // other tab; neither Docs sub-view has a text-input mode that could
-            // want the letter (T-24-25). Through `switch_to_sub_view`, so
+            // and Milestones (`Archive`) (D-B04). Since quick 260926-1t1 it is
+            // an ALIAS of `←`/`→` and `[`/`]`, kept working but no longer
+            // advertised in the strip or the footer. Guarded so it is inert on
+            // every other tab; neither Docs sub-view has a text-input mode that
+            // could want the letter (T-24-25). Through `switch_to_sub_view`, so
             // arriving on Milestones schedules milestone discovery exactly as
             // every other way onto it does.
             KeyCode::Char('m')
@@ -3573,7 +3727,8 @@ impl Screen for DetailScreen {
                 switch_to_sub_view(&self.alias, other, &mut self.scroll_offset, ctx)
             }
             // Sessions tab: 'm' switches between its two sub-views, Sessions and
-            // Agents (D-C15). Guarded so it is inert on every other tab. Neither
+            // Agents (D-C15) — an alias of `←`/`→` and `[`/`]` since quick
+            // 260926-1t1. Guarded so it is inert on every other tab. Neither
             // sub-view has a text-input mode that could want the letter: the
             // Sessions list's only state is `sessions_selected` and the Agents
             // list's only state is `agents_selected` — no filter, no editor, no
@@ -4266,7 +4421,9 @@ impl Screen for DetailScreen {
             // Roadmap list cursor keys (D-A10), live on the list view only —
             // the box view leaves them unbound, as they were before. `g` and
             // `G` are also bound on Browse / Driver, behind their own guards;
-            // `h`, `l`, `[`, `]` are bound nowhere else on this screen.
+            // `[` and `]` also switch sub-tabs on Sessions / Docs, behind the
+            // `sub_tab_pair` guard above, which Roadmap never passes; `h` and
+            // `l` are bound nowhere else on this screen.
             KeyCode::Char('g') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::First),
             KeyCode::Char('G') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::Last),
             KeyCode::Char('h') if roadmap_list => {
@@ -4311,6 +4468,7 @@ impl Screen for DetailScreen {
         let tab_area = chunks[0];
         let content_area = chunks[1];
         let footer_area = chunks[2];
+        self.reset_regions(tab_area, content_area);
 
         // Render tab bar. Both this site and its duplicate in
         // `render_main_only` take their titles from `tab_titles` and their
@@ -4637,7 +4795,16 @@ impl DetailScreen {
     fn render_backlog_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let cache = ctx.view_cache.get(&self.alias);
 
-        let block = Block::default().borders(Borders::ALL);
+        // While the content pane is open it has the focus, so the tab's own
+        // frame recedes to dark gray and the pane carries the cyan `▸` cue
+        // (quick 260926-1t1, D-06). Closed, the frame is as it always was.
+        let pane_open = cache.is_some_and(|c| {
+            c.backlog_expanded && !c.loading_backlog && !c.backlog_items.is_empty()
+        });
+        let mut block = Block::default().borders(Borders::ALL);
+        if pane_open {
+            block = block.border_style(Style::default().fg(Color::DarkGray));
+        }
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -4718,7 +4885,10 @@ impl DetailScreen {
             let title = selected_item
                 .map(|item| format!(" Content: {} ", item.dir_name.shown()))
                 .unwrap_or_else(|| " Content ".to_string());
-            let content_block = Block::default().borders(Borders::ALL).title(title);
+            // The title is ALREADY ESCAPED above, which is `focus_block`'s
+            // contract (T-1t1-03). The open pane always has the focus.
+            let content_block = focus_block(title, true);
+            self.record_pane(chunks[1]);
 
             // READ BY A HUMAN: the item's ROADMAP.md entry plus any `.md`
             // bodies from its `999.*` directory (`backlog::load_backlog_content`).
@@ -5255,14 +5425,7 @@ impl DetailScreen {
     fn render_sessions_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
 
-        let area = sessions_sub_tab_row(frame, area, &DetailSubView::Sessions);
-        let block = Block::default().borders(Borders::ALL);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        if inner.height < 3 || inner.width < 10 {
-            return;
-        }
+        let area = self.sub_tab_row(frame, area, sessions_sub_tab_strip(&DetailSubView::Sessions));
 
         // Filter sessions by project path
         let filtered_sessions: Vec<_> = ctx
@@ -5276,6 +5439,19 @@ impl DetailScreen {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+
+        // ONE border, titled with the count — the empty state included
+        // ([inferred I-16]). An outer frame around the titled list block drew
+        // `│┌ Sessions (1) ──┐│` (quick 260926-1t1, D-08).
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Sessions ({}) ", filtered_sessions.len()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.height < 3 || inner.width < 10 {
+            return;
+        }
 
         if filtered_sessions.is_empty() {
             let lines = vec![
@@ -5327,10 +5503,7 @@ impl DetailScreen {
             })
             .collect();
 
-        let title = format!(" Sessions ({}) ", filtered_sessions.len());
-        let list_block = Block::default().borders(Borders::ALL).title(title);
         let list = List::new(items)
-            .block(list_block)
             .highlight_style(
                 Style::default()
                     .fg(Color::Cyan)
@@ -5362,7 +5535,7 @@ impl DetailScreen {
     ///
     /// Observes only: no key on this sub-view acts on an agent.
     fn render_agents_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let area = sessions_sub_tab_row(frame, area, &DetailSubView::Agents);
+        let area = self.sub_tab_row(frame, area, sessions_sub_tab_strip(&DetailSubView::Agents));
         let block = Block::default().borders(Borders::ALL).title(" Agents ");
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -5441,7 +5614,7 @@ impl DetailScreen {
     fn render_archive_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         use crate::archive::ArchiveDepth;
 
-        let area = docs_sub_tab_row(frame, area, &DetailSubView::Archive);
+        let area = self.sub_tab_row(frame, area, docs_sub_tab_strip(&DetailSubView::Archive));
         let cache = if let Some(c) = ctx.view_cache.get(&self.alias) {
             c
         } else {
@@ -5627,7 +5800,7 @@ impl DetailScreen {
     fn render_browser_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         use crate::browser::BrowserDepth;
 
-        let area = docs_sub_tab_row(frame, area, &DetailSubView::Browse);
+        let area = self.sub_tab_row(frame, area, docs_sub_tab_strip(&DetailSubView::Browse));
         let cache = match ctx.view_cache.get(&self.alias) {
             Some(c) => c,
             None => {
@@ -5873,6 +6046,7 @@ impl DetailScreen {
         let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(main_area);
         let tab_area = chunks[0];
         let content_area = chunks[1];
+        self.reset_regions(tab_area, content_area);
 
         // Render tab bar — the duplicate of the site in `render`, and the reason
         // `tab_titles` and `tab_bar_widget` exist as one function each rather
@@ -6887,9 +7061,9 @@ fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::Path
     Ok(candidate)
 }
 
-/// The Docs tab's sub-tab strip (D-B04): `[Files] │ Milestones   m switch` on
-/// the Files sub-view (`Browse`), `Files │ [Milestones]   m switch` on the
-/// Milestones sub-view (`Archive`). The active sub-tab is bracketed AND
+/// The Docs tab's sub-tab strip (D-B04): ` [Files] │ Milestones   ←/→ switch`
+/// on the Files sub-view (`Browse`), ` Files │ [Milestones]   ←/→ switch` on
+/// the Milestones sub-view (`Archive`). The active sub-tab is bracketed AND
 /// reversed, so it reads in a monochrome terminal and in a text scrape alike.
 ///
 /// Static, authored text only — no project value reaches it (T-24-24). Any
@@ -6898,10 +7072,16 @@ pub(crate) fn docs_sub_tab_strip(active: &DetailSubView) -> Line<'static> {
     two_sub_tab_strip("Files", "Milestones", *active == DetailSubView::Archive)
 }
 
-/// A tab's two-sub-view strip, `[left] │ right   m switch` or
-/// `left │ [right]   m switch`: the active label bracketed AND cyan, bold and
-/// reversed, so it reads in a monochrome terminal and in a text scrape alike.
-/// Shared by the Docs and Sessions strips so the two cannot drift.
+/// A tab's two-sub-view strip, ` [left] │ right   ←/→ switch` or
+/// ` left │ [right]   ←/→ switch`: the active label bracketed AND cyan, bold
+/// and reversed, so it reads in a monochrome terminal and in a text scrape
+/// alike. Shared by the Docs and Sessions strips so the two cannot drift.
+///
+/// The leading one-cell gutter lines the strip up with the bordered content
+/// under it, and the hint names the arrows rather than `m`, which stays a
+/// working alias but is no longer advertised (quick 260926-1t1, D-07, D-08,
+/// [inferred I-12]). At the tab bar the strip is dimmed with the rest of the
+/// content.
 fn two_sub_tab_strip(left: &'static str, right: &'static str, right_active: bool) -> Line<'static> {
     let active_style = Style::default()
         .fg(Color::Cyan)
@@ -6915,35 +7095,67 @@ fn two_sub_tab_strip(left: &'static str, right: &'static str, right_active: bool
         }
     };
     Line::from(vec![
+        Span::raw(" "),
         label(left, !right_active),
         Span::styled(" \u{2502} ", dim),
         label(right, right_active),
-        Span::styled("   m switch", dim),
+        Span::styled("   \u{2190}/\u{2192} switch", dim),
     ])
 }
 
-/// Draw [`docs_sub_tab_strip`] in the first row of `area` and return the rest,
-/// so both Docs sub-view renders shrink their body by exactly that one row.
-fn docs_sub_tab_row(frame: &mut Frame, area: Rect, active: &DetailSubView) -> Rect {
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    frame.render_widget(Paragraph::new(docs_sub_tab_strip(active)), chunks[0]);
-    chunks[1]
-}
-
-/// The Sessions tab's sub-tab strip (D-C15): `[Sessions] │ Agents   m switch`
-/// on the Sessions sub-view, `Sessions │ [Agents]   m switch` on the Agents
+/// The Sessions tab's sub-tab strip (D-C15): ` [Sessions] │ Agents   ←/→ switch`
+/// on the Sessions sub-view, ` Sessions │ [Agents]   ←/→ switch` on the Agents
 /// sub-view. Static, authored text only — no project or agent value reaches
 /// it. Any other sub-view is treated as Sessions, the tab's default.
 pub(crate) fn sessions_sub_tab_strip(active: &DetailSubView) -> Line<'static> {
     two_sub_tab_strip("Sessions", "Agents", *active == DetailSubView::Agents)
 }
 
-/// Draw [`sessions_sub_tab_strip`] in the first row of `area` and return the
-/// rest, so both Sessions sub-view renders shrink their body by that one row.
-fn sessions_sub_tab_row(frame: &mut Frame, area: Rect, active: &DetailSubView) -> Rect {
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    frame.render_widget(Paragraph::new(sessions_sub_tab_strip(active)), chunks[0]);
-    chunks[1]
+/// The two sub-views of a tab that has sub-tabs, left one first — the ONE
+/// definition of "this tab has sub-tabs" (quick 260926-1t1), read by the
+/// arrows, `[`/`]`, the sub-tab memory and the footer. `None` on every tab
+/// without sub-tabs, Roadmap included, which is what keeps the sub-tab `[`/`]`
+/// arms from ever overlapping the Roadmap's same-wave walk.
+fn sub_tab_pair(view: &DetailSubView) -> Option<(DetailSubView, DetailSubView)> {
+    match view {
+        DetailSubView::Sessions | DetailSubView::Agents => {
+            Some((DetailSubView::Sessions, DetailSubView::Agents))
+        }
+        DetailSubView::Browse | DetailSubView::Archive => {
+            Some((DetailSubView::Browse, DetailSubView::Archive))
+        }
+        _ => None,
+    }
+}
+
+/// A focus-aware bordered frame (quick 260926-1t1, D-06, [inferred I-8]).
+///
+/// Focused: a cyan border, and the title's single leading space replaced by
+/// `▸`, so the cue is text as well as colour and the title's width does not
+/// change. Unfocused: a dark-gray border and the title as given. This is the
+/// shared cue for a focused PANE — the Backlog content pane in 4a, task 4b's
+/// waves pane next.
+///
+/// **`title` must be ALREADY ESCAPED** (T-1t1-03): the helper draws it
+/// through `Block::title` verbatim, the widget family that preserves the
+/// invisible class most completely, so a caller holding project text passes
+/// its `shown()` form, never the raw bytes.
+fn focus_block(title: String, focused: bool) -> Block<'static> {
+    if focused {
+        let title = match title.strip_prefix(' ') {
+            Some(rest) => format!("\u{25b8}{rest}"),
+            None => format!("\u{25b8}{title}"),
+        };
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(title)
+    } else {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(title)
+    }
 }
 
 /// The ASCII state word an agent row or child shows (D-C15). A word for every
@@ -11374,6 +11586,9 @@ mod tests {
         assert_ne!(last, DetailSubView::Driver);
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), last.clone());
+        // Docs has sub-tabs since quick 260926-1t1, so inside its content
+        // Right is the Milestones sub-tab; the tab walk is the tab bar's.
+        screen.focus = DetailFocus::TabBar;
 
         press(&mut screen, &mut ctx, KeyCode::Right);
 
@@ -11393,6 +11608,9 @@ mod tests {
             TEST_ALIAS.to_string(),
             sub_view_from_index(DRIVER_TAB_INDEX - 1, true),
         );
+        // Docs has sub-tabs since quick 260926-1t1, so inside its content
+        // Right is the Milestones sub-tab; the tab walk is the tab bar's.
+        screen.focus = DetailFocus::TabBar;
 
         press(&mut screen, &mut ctx, KeyCode::Right);
 
@@ -11596,6 +11814,9 @@ mod tests {
             "meta-mgr".to_string(),
             sub_view_from_index(DRIVER_TAB_INDEX - 1, true),
         );
+        // Docs has sub-tabs since quick 260926-1t1, so inside its content
+        // Right is the Milestones sub-tab; the tab walk is the tab bar's.
+        screen.focus = DetailFocus::TabBar;
         screen.handle_key(KeyCode::Right, KeyModifiers::NONE, &mut ctx);
         assert_eq!(
             ctx.detail_sub_view_per_project.get("meta-mgr"),
@@ -11669,7 +11890,7 @@ mod tests {
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::Browse);
         let files = render_detail_to_text(&screen, &ctx);
-        assert!(files.contains("[Files] \u{2502} Milestones   m switch"), "{files}");
+        assert!(files.contains("[Files] \u{2502} Milestones   ←/→ switch"), "{files}");
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
         assert_eq!(
@@ -11681,7 +11902,7 @@ mod tests {
             "arriving on Milestones by `m` schedules milestone discovery"
         );
         let milestones = render_detail_to_text(&screen, &ctx);
-        assert!(milestones.contains("Files \u{2502} [Milestones]   m switch"), "{milestones}");
+        assert!(milestones.contains("Files \u{2502} [Milestones]   ←/→ switch"), "{milestones}");
         assert_eq!(active_tab_text(&screen, &ctx), "8:Docs");
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
@@ -11780,14 +12001,14 @@ mod tests {
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::Sessions);
         let sessions = render_detail_to_text(&screen, &ctx);
-        assert!(sessions.contains("[Sessions] \u{2502} Agents   m switch"), "{sessions}");
+        assert!(sessions.contains("[Sessions] \u{2502} Agents   ←/→ switch"), "{sessions}");
         let sessions_tab = active_tab_text(&screen, &ctx);
         assert!(sessions_tab.starts_with("6:"), "{sessions_tab}");
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
         assert_eq!(stored_view(&ctx), DetailSubView::Agents);
         let agents = render_detail_to_text(&screen, &ctx);
-        assert!(agents.contains("Sessions \u{2502} [Agents]   m switch"), "{agents}");
+        assert!(agents.contains("Sessions \u{2502} [Agents]   ←/→ switch"), "{agents}");
         assert_eq!(active_tab_text(&screen, &ctx), sessions_tab);
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
@@ -12289,8 +12510,10 @@ mod tests {
         assert!(!footer_text(&DetailSubView::RoadmapViz).contains("[m]"));
     }
 
-    /// From either Docs sub-tab, `Right` reaches the Driver tab with the
-    /// experimental surfaces on, and stays put with them off.
+    /// From either Docs sub-tab, `Right` ON THE TAB BAR reaches the Driver tab
+    /// with the experimental surfaces on, and stays put with them off. (Inside
+    /// Docs' content `Right` is the Milestones sub-tab since quick 260926-1t1,
+    /// so the tab walk is the tab bar's.)
     #[test]
     fn right_from_docs_reaches_the_driver_tab_only_with_the_flag_on() {
         for docs in [DetailSubView::Browse, DetailSubView::Archive] {
@@ -12298,12 +12521,14 @@ mod tests {
             let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
             ctx.detail_sub_view_per_project
                 .insert(TEST_ALIAS.to_string(), docs.clone());
+            screen.focus = DetailFocus::TabBar;
             press(&mut screen, &mut ctx, KeyCode::Right);
             assert_eq!(stored_view(&ctx), DetailSubView::Driver, "from {docs:?}");
 
             let mut ctx = test_ctx().with_experimental(false);
             ctx.detail_sub_view_per_project
                 .insert(TEST_ALIAS.to_string(), docs.clone());
+            screen.focus = DetailFocus::TabBar;
             press(&mut screen, &mut ctx, KeyCode::Right);
             assert_eq!(stored_view(&ctx), docs, "from {docs:?}, flag off");
         }
@@ -18087,5 +18312,232 @@ mod tests {
         assert_eq!(fg_at_row(&screen), Color::DarkGray);
         screen.focus = DetailFocus::Content;
         assert_ne!(fg_at_row(&screen), Color::DarkGray);
+    }
+
+    // --- quick 260926-1t1: sub-tabs by arrow, memory, pane cue (D-03..D-08) --
+
+    /// A screen on `view` at content level, through the real arrival rule.
+    fn arrived_on(view: DetailSubView) -> (DetailScreen, AppContext) {
+        let mut ctx = test_ctx();
+        let screen = DetailScreen::opened_on(TEST_ALIAS.to_string(), view, &mut ctx);
+        (screen, ctx)
+    }
+
+    #[test]
+    fn left_right_inside_sessions_switch_sub_tabs_and_clamp() {
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Sessions);
+        for (key, expected) in [
+            (KeyCode::Right, DetailSubView::Agents),
+            (KeyCode::Right, DetailSubView::Agents),
+            (KeyCode::Left, DetailSubView::Sessions),
+            (KeyCode::Left, DetailSubView::Sessions),
+        ] {
+            press(&mut screen, &mut ctx, key);
+            assert_eq!(stored_view(&ctx), expected, "{key:?}");
+            assert_eq!(screen.focus, DetailFocus::Content, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn left_right_inside_docs_switch_files_and_milestones_and_clamp() {
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Browse);
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(stored_view(&ctx), DetailSubView::Archive);
+        assert!(
+            ctx.view_cache[TEST_ALIAS].archive_loading,
+            "arriving on Milestones by arrow schedules milestone discovery"
+        );
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(stored_view(&ctx), DetailSubView::Archive, "clamped");
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        assert_eq!(stored_view(&ctx), DetailSubView::Browse);
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        assert_eq!(stored_view(&ctx), DetailSubView::Browse, "clamped");
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    /// [inferred I-1]: on a tab with no sub-tabs the arrows switch tab and land
+    /// on the TAB BAR — even at the clamped end, where no tab changes.
+    #[test]
+    fn left_right_inside_a_tab_without_sub_tabs_switch_tabs_and_land_on_the_tab_bar() {
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Queue);
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(stored_view(&ctx), DetailSubView::Sessions);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::RoadmapViz);
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    #[test]
+    fn brackets_switch_sub_tabs_and_leave_the_roadmap_wave_walk_alone() {
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Sessions);
+        for (key, expected) in [
+            (']', DetailSubView::Agents),
+            (']', DetailSubView::Agents),
+            ('[', DetailSubView::Sessions),
+            ('[', DetailSubView::Sessions),
+        ] {
+            press(&mut screen, &mut ctx, KeyCode::Char(key));
+            assert_eq!(stored_view(&ctx), expected, "{key}");
+            assert_eq!(screen.focus, DetailFocus::Content);
+        }
+
+        // [inferred I-15]: a tab with no sub-tabs ignores them.
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Queue);
+        for key in ['[', ']'] {
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::None));
+            assert_eq!(stored_view(&ctx), DetailSubView::Queue, "{key}");
+            assert_eq!(screen.focus, DetailFocus::Content);
+        }
+    }
+
+    #[test]
+    fn digit_six_reopens_the_last_used_agents_sub_tab() {
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Sessions);
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents, "precondition");
+        press(&mut screen, &mut ctx, KeyCode::Char('2'));
+        press(&mut screen, &mut ctx, KeyCode::Char('6'));
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+
+        // The tab-bar arrows go through the same resolution.
+        screen.focus = DetailFocus::TabBar;
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+    }
+
+    #[test]
+    fn digit_eight_reopens_the_last_used_milestones_sub_tab() {
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Browse);
+        // `m` is still a working alias, and it records the memory too.
+        press(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert_eq!(stored_view(&ctx), DetailSubView::Archive, "precondition");
+        press(&mut screen, &mut ctx, KeyCode::Char('1'));
+        press(&mut screen, &mut ctx, KeyCode::Char('8'));
+        assert_eq!(stored_view(&ctx), DetailSubView::Archive);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('m'));
+        press(&mut screen, &mut ctx, KeyCode::Char('1'));
+        press(&mut screen, &mut ctx, KeyCode::Char('8'));
+        assert_eq!(stored_view(&ctx), DetailSubView::Browse, "the memory follows `m` back");
+    }
+
+    /// [inferred I-9]: the Backlog pane follows the P column of UX-RESEARCH
+    /// §3.2 — `←` closes it, `→` does nothing, `↑` never leaves it.
+    #[test]
+    fn left_closes_the_open_backlog_pane_and_up_never_leaves_it() {
+        let (mut screen, mut ctx, _td) = focused_long_backlog_fixture();
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_scroll, 0, "precondition");
+
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Content, "Up left the pane");
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(stored_view(&ctx), DetailSubView::Backlog, "Right switched tab");
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded, "Right closed the pane");
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        assert_eq!(stored_view(&ctx), DetailSubView::Backlog);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert!(!cache.backlog_expanded, "Left closes the pane");
+        assert_eq!(cache.backlog_scroll, 0);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    #[test]
+    fn the_open_backlog_pane_has_a_cyan_border_and_a_pointer_title() {
+        let (screen, mut ctx, _td) = focused_long_backlog_fixture();
+        let buffer = render_detail_buffer(&screen, &ctx, 120, 30);
+        let pane = screen.regions().pane.expect("the open pane is recorded");
+        let title_row = buffer_row(&buffer, pane.y);
+        assert!(title_row.contains("▸Content:"), "{title_row}");
+        let corner = buffer.cell((pane.x, pane.y)).expect("the pane corner");
+        assert_eq!(corner.symbol(), "┌");
+        assert_eq!(corner.fg, Color::Cyan, "the focused pane's border");
+        let content = screen.regions().content;
+        let outer = buffer.cell((content.x, content.y)).expect("the tab's corner");
+        assert_eq!(outer.symbol(), "┌");
+        assert_eq!(outer.fg, Color::DarkGray, "the tab's outer frame recedes");
+
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .expect("the fixture's cache")
+            .backlog_expanded = false;
+        let closed = render_detail_to_text(&screen, &ctx);
+        assert!(!closed.contains('▸'), "a closed pane leaves no pointer:\n{closed}");
+        assert!(screen.regions().pane.is_none());
+    }
+
+    #[test]
+    fn the_sessions_view_draws_one_border() {
+        for sessions in [1usize, 0] {
+            let (screen, mut ctx) = sessions_fixture("abc12345");
+            ctx.active_sessions.truncate(sessions);
+            let text = render_detail_to_text(&screen, &ctx);
+            let content = screen.regions().content;
+            let rows: Vec<&str> = text
+                .lines()
+                .skip(content.y as usize)
+                .take(content.height as usize)
+                .collect();
+            let corners: usize = rows.iter().map(|row| row.matches('┌').count()).sum();
+            assert_eq!(corners, 1, "{sessions} session(s):\n{text}");
+            assert!(!rows.iter().any(|row| row.contains("│┌")), "{text}");
+            if sessions == 0 {
+                assert!(text.contains("No active Claude or Codex sessions"), "{text}");
+                assert!(text.contains(" Sessions (0) "), "{text}");
+            } else {
+                assert!(text.contains(" Sessions (1) "), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_sub_tab_strip_has_a_gutter_and_the_arrow_hint() {
+        for (view, first) in [
+            (DetailSubView::Sessions, "[Sessions]"),
+            (DetailSubView::Agents, "Sessions"),
+            (DetailSubView::Browse, "[Files]"),
+            (DetailSubView::Archive, "Files"),
+        ] {
+            let (screen, ctx) = arrived_on(view.clone());
+            let text = render_detail_to_text(&screen, &ctx);
+            let strip = screen.regions().sub_tab_strip.expect("the strip is recorded");
+            let row = text.lines().nth(strip.y as usize).expect("the strip row");
+            assert!(row.starts_with(&format!(" {first}")), "{view:?}: {row:?}");
+            assert!(row.contains("←/→ switch"), "{view:?}: {row:?}");
+            assert!(!row.contains("m switch"), "{view:?}: {row:?}");
+        }
+    }
+
+    #[test]
+    fn render_records_the_regions_a_mouse_hit_test_needs() {
+        let (screen, ctx) = arrived_on(DetailSubView::Sessions);
+        render_detail_to_text(&screen, &ctx);
+        let regions = screen.regions();
+        assert_eq!(regions.tab_bar, Rect::new(0, 0, 120, 3));
+        assert_eq!(regions.content, Rect::new(0, 3, 120, 26), "above the footer");
+        assert_eq!(regions.sub_tab_strip, Some(Rect::new(0, 3, 120, 1)));
+        assert_eq!(regions.pane, None);
+
+        let (screen, ctx) = arrived_on(DetailSubView::Browse);
+        render_detail_to_text(&screen, &ctx);
+        assert!(screen.regions().sub_tab_strip.is_some(), "Docs has a strip");
+
+        let (screen, ctx) = arrived_on(DetailSubView::Queue);
+        render_detail_to_text(&screen, &ctx);
+        assert_eq!(screen.regions().sub_tab_strip, None, "Queue has none");
+
+        let (screen, ctx, _td) = focused_long_backlog_fixture();
+        render_detail_to_text(&screen, &ctx);
+        assert!(screen.regions().pane.is_some(), "the open pane is recorded");
     }
 }

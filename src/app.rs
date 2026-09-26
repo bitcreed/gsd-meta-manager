@@ -26,18 +26,20 @@ pub enum DetailSubView {
     Queue,
     Sessions,
     /// The running agents: the Sessions tab's `Agents` sub-view (D-C15), not a
-    /// tab of its own. It shares Sessions' index, so a digit or arrow never
-    /// lands on it; it is reached with `m` on the Sessions tab. It observes
-    /// only — no key on it acts on an agent. Per-project view state is in
-    /// memory only, so a stored `Agents` needs no migration: it renders as
-    /// Sessions with Agents active.
+    /// tab of its own. It shares Sessions' index; inside the Sessions tab it
+    /// is reached with `→`, `]` or the `m` alias, and the tab's digit (or the
+    /// tab-bar arrows) re-open it when it was the tab's last-used sub-tab
+    /// (quick 260926-1t1). It observes only — no key on it acts on an agent.
+    /// Per-project view state is in memory only, so a stored `Agents` needs no
+    /// migration: it renders as Sessions with Agents active.
     Agents,
     /// The milestone archive: the Docs tab's `Milestones` sub-view (D-B04),
-    /// not a tab of its own. It shares Docs' index with [`Self::Browse`], so a
-    /// digit or arrow never lands on it; it is reached with `m` on the Docs
-    /// tab or by `Enter` on the Roadmap's collapsed shipped-milestones row.
-    /// Per-project view state is in memory only, so a stored `Archive` needs
-    /// no migration: it renders as Docs with Milestones active.
+    /// not a tab of its own. It shares Docs' index with [`Self::Browse`];
+    /// inside the Docs tab it is reached with `→`, `]` or the `m` alias, or by
+    /// `Enter` on the Roadmap's collapsed shipped-milestones row, and the
+    /// tab's digit re-opens it when it was the tab's last-used sub-tab (quick
+    /// 260926-1t1). Per-project view state is in memory only, so a stored
+    /// `Archive` needs no migration: it renders as Docs with Milestones active.
     Archive,
     Defaults,
     /// The Docs tab's `Files` sub-view (index 7) — the `.planning/` browser,

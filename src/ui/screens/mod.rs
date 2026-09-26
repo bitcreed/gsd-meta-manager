@@ -966,6 +966,13 @@ pub struct ProjectViewCache {
     /// The highlighted line of the Sessions tab's Agents sub-view list,
     /// clamped against `detail::agent_list_len` at every key and render.
     pub agents_selected: usize,
+    /// The last-used sub-view of each tab that has two (Sessions › Agents,
+    /// Docs › Milestones), keyed by `detail::tab_index` — so the tab's digit
+    /// re-opens the sub-tab the operator left it on (quick 260926-1t1, D-04).
+    /// Written by every arrival through `detail::switch_to_sub_view`, read by
+    /// `detail::switch_to_tab`. Per project and in memory only, like
+    /// `detail_sub_view_per_project`.
+    pub last_sub_view_per_tab: HashMap<usize, DetailSubView>,
     pub archive_depth: crate::archive::ArchiveDepth,
     /// Milestone version strings scanned out of `.planning/archive/`.
     ///
