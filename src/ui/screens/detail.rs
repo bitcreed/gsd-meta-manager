@@ -23078,10 +23078,44 @@ mod tests {
             }),
             // Quick 260926-kes: a fold marker on list row 5.
             fold_marks: vec![FoldMarkRegion { rect: Rect::new(3, 6, 2, 1), row: 5 }],
+            config_rows: None,
+            dropdown: None,
+            scroll_panes: Vec::new(),
         };
         assert_eq!(regions.click_target(3, 6), ClickTarget::FoldMarker(5), "the marker beats its row");
         assert_eq!(regions.click_target(4, 6), ClickTarget::FoldMarker(5), "its trailing space");
         assert_eq!(regions.click_target(5, 6), ClickTarget::ListRow(5), "the label is the row");
+
+        // Config rows beat the list: visible position -> underlying index,
+        // `on_value` from the row's own value column.
+        let mut config = regions.clone();
+        config.config_rows = Some(ConfigRowsRegion {
+            list: crate::ui::mouse::ListRegion { rect: Rect::new(1, 5, 30, 10), offset: 1, len: 3 },
+            rows: vec![
+                ConfigRowHit { underlying: 10, value_x: 20 },
+                ConfigRowHit { underlying: 12, value_x: 20 },
+                ConfigRowHit { underlying: 17, value_x: 25 },
+            ],
+        });
+        config.fold_marks.clear();
+        assert_eq!(config.click_target(2, 5), ClickTarget::ConfigRow { index: 12, on_value: false });
+        assert_eq!(config.click_target(20, 5), ClickTarget::ConfigRow { index: 12, on_value: true });
+        assert_eq!(config.click_target(22, 6), ClickTarget::ConfigRow { index: 17, on_value: false });
+        assert_eq!(config.click_target(25, 6), ClickTarget::ConfigRow { index: 17, on_value: true });
+        assert_eq!(config.click_target(2, 7), ClickTarget::ListRow(6), "past the Config rows");
+
+        // An open chooser is modal: its options, its border, everything else.
+        let mut chooser = config.clone();
+        chooser.dropdown = Some(DropdownRegion {
+            popup: Rect::new(30, 8, 20, 5),
+            options: crate::ui::mouse::ListRegion { rect: Rect::new(31, 9, 18, 3), offset: 0, len: 2 },
+        });
+        assert_eq!(chooser.click_target(35, 10), ClickTarget::DropdownOption(1));
+        assert_eq!(chooser.click_target(35, 11), ClickTarget::Nothing, "a row past the options");
+        assert_eq!(chooser.click_target(30, 9), ClickTarget::Nothing, "the popup border");
+        assert_eq!(chooser.click_target(12, 1), ClickTarget::DropdownOutside, "beats a tab");
+        assert_eq!(chooser.click_target(2, 5), ClickTarget::DropdownOutside, "beats a row");
+        assert_eq!(chooser.click_target(5, 23), ClickTarget::DropdownOutside, "the footer too");
         assert_eq!(regions.click_target(12, 1), ClickTarget::Tab(1));
         assert_eq!(regions.click_target(3, 3), ClickTarget::SubTab(DetailSubView::Agents));
         assert_eq!(
@@ -23137,6 +23171,42 @@ mod tests {
             .expect("draw");
         assert!(screen.regions().fold_marks.is_empty(), "render_main_only resets them");
         assert_eq!(screen.regions().list, None);
+
+        // The Config rows, the chooser and the scroll panes (Task 2).
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "workflow.context_drift_action");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        render_detail_to_text(&screen, &ctx);
+        assert!(screen.regions().config_rows.is_some());
+        assert!(screen.regions().dropdown.is_some());
+        let backlog = |ctx: &mut AppContext| {
+            ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
+            let cache = ctx.view_cache.get_mut(TEST_ALIAS).unwrap();
+            cache.backlog_items = vec![crate::state_reader::backlog::BacklogItem {
+                dir_name: Untrusted::from_untrusted_source("999.1-x".to_string()),
+                number: Untrusted::from_untrusted_source("999.1".to_string()),
+                description: Untrusted::from_untrusted_source("X".to_string()),
+                content: Some(Untrusted::from_untrusted_source("body\n".to_string())),
+                path: None,
+            }];
+            cache.backlog_expanded = true;
+        };
+        backlog(&mut ctx);
+        render_detail_to_text(&screen, &ctx);
+        let regions = screen.regions();
+        assert_eq!(regions.config_rows, None);
+        assert_eq!(regions.dropdown, None);
+        assert_eq!(regions.scroll_panes.len(), 1);
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        render_detail_to_text(&screen, &ctx);
+        assert!(screen.regions().scroll_panes.is_empty());
+        backlog(&mut ctx);
+        render_detail_to_text(&screen, &ctx);
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        terminal
+            .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
+            .expect("draw");
+        assert!(screen.regions().scroll_panes.is_empty(), "render_main_only resets them");
     }
 
     #[test]
@@ -23232,6 +23302,17 @@ mod tests {
         assert_eq!(regions.wheel_target(5, 1), WheelTarget::Nothing, "the tab bar");
         assert_eq!(regions.wheel_target(5, 3), WheelTarget::Nothing, "the sub-tab strip");
         assert_eq!(regions.wheel_target(5, 23), WheelTarget::Nothing, "the footer");
+
+        // Quick 260926-kes: text panes win over content inside their rect;
+        // the Waves pane still wins first.
+        for pane in [ScrollPane::Backlog, ScrollPane::GitCommit, ScrollPane::DriverOutput] {
+            let mut with_pane = regions.clone();
+            with_pane.scroll_panes = vec![ScrollPaneRegion { rect: Rect::new(20, 4, 40, 12), pane }];
+            assert_eq!(with_pane.wheel_target(25, 5), WheelTarget::Pane(pane));
+            assert_eq!(with_pane.wheel_target(50, 10), WheelTarget::WavesPane, "Waves first");
+            assert_eq!(with_pane.wheel_target(5, 10), WheelTarget::Content, "outside it");
+            assert_eq!(with_pane.wheel_target(25, 20), WheelTarget::Content, "below it");
+        }
     }
 
     #[test]
@@ -23818,5 +23899,634 @@ mod tests {
             mouse_wheel(&mut screen, &mut ctx, content.x + 10, content.y + 6, false);
             assert_eq!(offset(&ctx), bottom - 1);
         }
+    }
+
+    // ── quick 260926-kes: Cfg, Backlog, Git, Queue, Driver (Task 2) ───────
+
+    fn mouse_config_rows(screen: &DetailScreen) -> ConfigRowsRegion {
+        screen.regions().config_rows.expect("the Config rows were drawn")
+    }
+
+    /// The screen row of VISIBLE Config position `pos`.
+    fn mouse_config_y(region: &ConfigRowsRegion, pos: usize) -> u16 {
+        mouse_row_y(&region.list, pos)
+    }
+
+    /// A key-column cell of any Config row: inside the 30-cell key column.
+    fn mouse_config_key_x(region: &ConfigRowsRegion) -> u16 {
+        region.list.rect.x + 25
+    }
+
+    fn mouse_visible_config(ctx: &AppContext) -> Vec<usize> {
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        visible_defaults_indices(cache, &entries_for_cache(cache))
+    }
+
+    fn mouse_drift_action(ctx: &AppContext) -> Option<String> {
+        ctx.view_cache[TEST_ALIAS]
+            .defaults_config
+            .as_ref()
+            .and_then(|c| c.workflow.as_ref())
+            .and_then(|w| w.context_drift_action.clone())
+    }
+
+    #[test]
+    fn mouse_config_click_on_key_or_value_selects_the_row() {
+        let (mut ctx, _) = ctx_on_config_row(populated_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.focus = DetailFocus::TabBar;
+        render_detail_to_text(&screen, &ctx);
+        let region = mouse_config_rows(&screen);
+        let (three, five) = (region.rows[3], region.rows[5]);
+        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, 3));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, three.underlying);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        render_detail_to_text(&screen, &ctx);
+        mouse_click(&mut screen, &mut ctx, five.value_x + 1, mouse_config_y(&region, 5));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, five.underlying);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None, "an unselected value only selects");
+
+        // Filtered: visible position k selects `visible[k]`, not k.
+        let (mut ctx, _) = ctx_on_config_row(populated_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        type_config_filter(&mut screen, &mut ctx, "workflow");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        render_detail_to_text(&screen, &ctx);
+        let visible = mouse_visible_config(&ctx);
+        assert!(visible.len() > 2 && visible[1] != 1, "a filter that moves the indices");
+        let region = mouse_config_rows(&screen);
+        assert_eq!(region.list.len, visible.len());
+        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, 1));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[1]);
+
+        // Scrolled: the first drawn row is the recorded offset's entry.
+        let (mut ctx, _) = ctx_on_config_row(populated_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        for _ in 0..3 {
+            press(&mut screen, &mut ctx, KeyCode::PageDown);
+        }
+        render_detail_to_text_at(&screen, &ctx, 120, 20);
+        let region = mouse_config_rows(&screen);
+        assert!(region.list.offset > 0, "a scrolled Config list: {:?}", region.list);
+        assert_eq!(region.list.offset, screen.config_list_offset.get());
+        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_selected,
+            region.rows[region.list.offset].underlying
+        );
+        render_detail_to_text_at(&screen, &ctx, 120, 20);
+        assert_eq!(mouse_config_rows(&screen).list.offset, region.list.offset, "no scroll");
+    }
+
+    #[test]
+    fn mouse_config_rows_value_column_matches_the_rendered_value() {
+        let long_key = "a_passthrough_key_much_longer_than_thirty_cells";
+        let config = crate::state_reader::config_json::parse_gsd_config(&format!(
+            r#"{{"mode":"yolo","{long_key}":"passvalue"}}"#
+        ))
+        .expect("the fixture parses");
+        let (mut ctx, idx) = ctx_on_config_row(config, long_key);
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let buffer = render_detail_buffer(&screen, &ctx, 200, 50);
+        let region = mouse_config_rows(&screen);
+        let entries = entries_for_cache(&ctx.view_cache[TEST_ALIAS]);
+        let drawn = usize::from(region.list.rect.height).min(region.rows.len() - region.list.offset);
+        assert!(drawn > 3);
+        let mut short_x = None;
+        let mut long_x = None;
+        for pos in region.list.offset..region.list.offset + drawn {
+            let hit = region.rows[pos];
+            let y = mouse_config_y(&region, pos);
+            let text: String = (hit.value_x..region.list.rect.right())
+                .map(|x| buffer.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                .collect();
+            let value = shown(&entries[hit.underlying].value).to_string();
+            let head: String = value.chars().take(6).collect();
+            assert!(text.starts_with(&head), "row {pos}: {text:?} does not start with {value:?}");
+            if entries[hit.underlying].key.as_ref() == long_key {
+                long_x = Some(hit.value_x);
+            } else {
+                short_x = Some(hit.value_x);
+            }
+        }
+        let (short_x, long_x) = (short_x.expect("a short key"), long_x.expect("the long key row"));
+        assert!(long_x > short_x, "the long key pushes its value right: {long_x} vs {short_x}");
+    }
+
+    #[test]
+    fn mouse_config_value_click_on_the_selected_row_is_enter() {
+        let key = "workflow.context_drift_action";
+        // Selected enum row: its value click opens the chooser.
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), key);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text(&screen, &ctx);
+        let region = mouse_config_rows(&screen);
+        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
+        let hit = region.rows[pos];
+        mouse_click(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the chooser opened");
+        // Its completing double press is swallowed: the chooser stays open.
+        mouse_double(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx));
+
+        // An UNselected row's value: select only.
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), key);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text(&screen, &ctx);
+        let region = mouse_config_rows(&screen);
+        let pos = region.rows.iter().position(|r| r.underlying != idx).expect("another row");
+        let hit = region.rows[pos];
+        mouse_click(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, hit.underlying);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
+
+        // An integer row: a double-click on the selected value steps it ONCE.
+        let budget = |ctx: &AppContext| {
+            ctx.view_cache[TEST_ALIAS]
+                .defaults_config
+                .as_ref()
+                .and_then(|c| c.workflow.as_ref())
+                .and_then(|w| w.node_repair_budget)
+        };
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), "node_repair_budget");
+        let before = budget(&ctx);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text(&screen, &ctx);
+        let region = mouse_config_rows(&screen);
+        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
+        let hit = region.rows[pos];
+        mouse_click_twice(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
+        assert_eq!(budget(&ctx), Some(before.unwrap_or(0) + 1), "stepped exactly once");
+
+        // A filter hiding the selected row: the first value click only selects.
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
+        let cache = ctx.view_cache.get_mut(TEST_ALIAS).unwrap();
+        cache.defaults_filter = "context_drift".to_string();
+        cache.defaults_filter_typing = false;
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text(&screen, &ctx);
+        assert!(!defaults_selection_visible(&ctx.view_cache[TEST_ALIAS]), "precondition");
+        let region = mouse_config_rows(&screen);
+        let hit = region.rows[0];
+        mouse_click(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, 0));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, hit.underlying);
+    }
+
+    #[test]
+    fn mouse_config_double_click_is_enter_and_a_secret_prompt_opens_empty() {
+        use crate::state_reader::config_json::ApiKeySetting;
+        let mut config = populated_gsd_config();
+        config.brave_search = Some(ApiKeySetting::Key("OLD-SECRET-Q7Z9".to_string()));
+        let (mut ctx, idx) = ctx_on_config_row(config, "brave_search");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 160, 40);
+        let region = mouse_config_rows(&screen);
+        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
+        mouse_click_twice(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, pos));
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.defaults_editing, Some(idx), "the double-click opened the prompt");
+        assert_eq!(cache.defaults_text_buffer.char_count(), 0, "a secret prompt opens EMPTY");
+        let text = render_detail_to_text_at(&screen, &ctx, 160, 40);
+        for leak in ["OLD-SECRET", "Q7Z9"] {
+            assert!(!text.contains(leak), "the tab leaked {leak:?}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn mouse_config_chooser_click_highlights_then_applies_and_outside_closes() {
+        let key = "workflow.context_drift_action";
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), key);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        render_detail_to_text(&screen, &ctx);
+        let dropdown = screen.regions().dropdown.expect("the chooser was drawn");
+        assert!(dropdown.options.len >= 2);
+        let option_y = |j: usize| mouse_row_y(&dropdown.options, j);
+        let x = dropdown.options.rect.x + 3;
+        mouse_click(&mut screen, &mut ctx, x, option_y(1));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_dropdown_selected, 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "not applied yet");
+        assert_eq!(mouse_drift_action(&ctx), None);
+        render_detail_to_text(&screen, &ctx);
+        mouse_click(&mut screen, &mut ctx, x, option_y(1));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None, "applied and closed");
+        assert_eq!(mouse_drift_action(&ctx).as_deref(), Some("block"));
+
+        // A double-click on an option applies it too.
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), key);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        render_detail_to_text(&screen, &ctx);
+        mouse_click_twice(&mut screen, &mut ctx, x, option_y(1));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
+        assert_eq!(mouse_drift_action(&ctx).as_deref(), Some("block"));
+
+        // Outside the popup: closed, nothing applied.
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), key);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        render_detail_to_text(&screen, &ctx);
+        let content = screen.regions().content;
+        let dropdown = screen.regions().dropdown.expect("the chooser");
+        let outside = ratatui::layout::Position::new(content.x + 1, content.y + 1);
+        assert!(!dropdown.popup.contains(outside));
+        mouse_click(&mut screen, &mut ctx, outside.x, outside.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
+        assert_eq!(mouse_drift_action(&ctx), None, "nothing applied");
+
+        // A tab while it is open: only closes it.
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), key);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        render_detail_to_text(&screen, &ctx);
+        let (c, r) = mouse_mid(mouse_tab_rect(&screen, 3));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
+        assert_eq!(stored_view(&ctx), DetailSubView::Defaults, "the chooser is modal");
+        assert_eq!(mouse_drift_action(&ctx), None);
+    }
+
+    #[test]
+    fn mouse_config_wheel_moves_the_selection_and_steps_an_open_chooser() {
+        let (mut ctx, idx) = ctx_on_config_row(populated_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text(&screen, &ctx);
+        let region = mouse_config_rows(&screen);
+        let visible = mouse_visible_config(&ctx);
+        let pos = visible.iter().position(|&i| i == idx).expect("mode is visible");
+        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, true);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[pos + 1]);
+
+        // Filtered: the next VISIBLE row.
+        let (mut ctx, _) = ctx_on_config_row(populated_gsd_config(), "mode");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        type_config_filter(&mut screen, &mut ctx, "workflow");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let visible = mouse_visible_config(&ctx);
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = visible[0];
+        render_detail_to_text(&screen, &ctx);
+        let region = mouse_config_rows(&screen);
+        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, true);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[1]);
+        // Wheel-up at the first visible row never climbs.
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = visible[0];
+        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, false);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[0]);
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        // The chooser open: the wheel steps it and applies nothing.
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), "workflow.context_drift_action");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        render_detail_to_text(&screen, &ctx);
+        let content = screen.regions().content;
+        mouse_wheel(&mut screen, &mut ctx, content.x + 4, content.y + 4, true);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.defaults_dropdown_selected, 1);
+        assert_eq!(cache.defaults_editing, Some(idx));
+        assert_eq!(mouse_drift_action(&ctx), None);
+    }
+
+    #[test]
+    fn mouse_config_text_prompt_still_ignores_the_mouse() {
+        let config = crate::state_reader::config_json::parse_gsd_config(
+            r#"{"mode":"yolo","project_code":"GMM"}"#,
+        )
+        .expect("the fixture parses");
+        let (mut ctx, idx) = ctx_on_config_row(config, "project_code");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text(&screen, &ctx);
+        let region = mouse_config_rows(&screen);
+        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
+        mouse_click_twice(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, pos));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the String prompt opened");
+        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
+        render_detail_to_text(&screen, &ctx);
+        let other = region.rows[(pos + 1) % region.rows.len()];
+        mouse_click(&mut screen, &mut ctx, other.value_x + 1, region.list.rect.y);
+        mouse_click_twice(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y + 1);
+        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, true);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.defaults_editing, Some(idx));
+        assert_eq!(cache.defaults_selected, idx);
+        assert_eq!(cache.defaults_text_buffer.shown().to_string(), buffer);
+    }
+
+    /// The Backlog tab holding `n` items, each with `lines` lines of content
+    /// already loaded (so Enter reads nothing off disk).
+    fn mouse_backlog_ctx(n: usize, lines: usize) -> (DetailScreen, AppContext) {
+        let field = |s: String| Untrusted::from_untrusted_source(s);
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
+        let body: String = (0..lines).map(|i| format!("content line {i}\n")).collect();
+        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().backlog_items = (0..n)
+            .map(|i| crate::state_reader::backlog::BacklogItem {
+                dir_name: field(format!("999.{i}-item")),
+                number: field(format!("999.{i}")),
+                description: field(format!("Item {i}")),
+                content: Some(field(body.clone())),
+                path: None,
+            })
+            .collect();
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    #[test]
+    fn mouse_backlog_click_selects_and_double_click_opens_the_pane() {
+        let (mut screen, mut ctx) = mouse_backlog_ctx(4, 100);
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 4);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 1);
+        assert!(!ctx.view_cache[TEST_ALIAS].backlog_expanded);
+
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 2);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 2);
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded, "the double opened the pane");
+
+        // The wheel over the open pane scrolls it ...
+        render_detail_to_text(&screen, &ctx);
+        let pane = screen
+            .regions()
+            .scroll_panes
+            .iter()
+            .find(|p| p.pane == ScrollPane::Backlog)
+            .map(|p| p.rect)
+            .expect("the Backlog pane is a scroll pane");
+        mouse_wheel(&mut screen, &mut ctx, pane.x + 5, pane.y + 3, true);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_scroll, 1);
+        // ... and over the list beside it does nothing.
+        let list = mouse_list(&screen);
+        for down in [true, false] {
+            mouse_wheel(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1, down);
+        }
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 2);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_scroll, 1);
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded);
+
+        // A click on another row closes the pane and selects that row.
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert!(!cache.backlog_expanded);
+        assert_eq!(cache.backlog_scroll, 0);
+        assert_eq!(cache.backlog_selected, 0);
+    }
+
+    /// The Git tab with `rows` commits and, when `pane_lines` is `Some`, an
+    /// open commit pane on commit 0 with that many message lines.
+    fn mouse_git_ctx(rows: usize, pane_lines: Option<usize>) -> (DetailScreen, AppContext) {
+        use crate::state_reader::git_ops::{GitCommitDetail, GitDiffStat};
+        let subjects: Vec<String> = (0..rows).map(|i| format!("subject {i}")).collect();
+        let spec: Vec<(&str, Option<&str>)> = subjects.iter().map(|s| (s.as_str(), None)).collect();
+        let (screen, mut ctx) = git_rows_fixture(&spec);
+        if let Some(lines) = pane_lines {
+            let field = |s: &str| Untrusted::from_untrusted_source(s.to_string());
+            let cache = ctx.view_cache.get_mut(TEST_ALIAS).unwrap();
+            cache.git_commit_detail = Some(GitCommitDetail {
+                hash: field("hash000"),
+                body: (0..lines).map(|i| field(&format!("line {i:02}"))).collect(),
+                stat: GitDiffStat {
+                    files_changed: 1,
+                    insertions: 2,
+                    deletions: 1,
+                    file_stats: vec![" src/probe_file.rs | 3 ++-".to_string()],
+                },
+            });
+        }
+        (screen, ctx)
+    }
+
+    #[test]
+    fn mouse_git_click_selects_and_double_click_loads_the_commit() {
+        let (mut screen, mut ctx) = mouse_git_ctx(5, None);
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 5);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 2);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_selected, 2);
+
+        // An open pane: a different row closes it, the same row keeps it.
+        let (mut screen, mut ctx) = mouse_git_ctx(5, Some(40));
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        assert!(ctx.view_cache[TEST_ALIAS].git_commit_detail.is_some(), "the same row keeps it");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_selected, 1);
+        assert!(ctx.view_cache[TEST_ALIAS].git_commit_detail.is_none(), "a new row closes it");
+
+        // A double-click loads the clicked commit.
+        let (mut screen, mut ctx) = mouse_git_ctx(5, None);
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 3);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_selected, 3);
+        assert!(ctx.view_cache[TEST_ALIAS].loading_commit_detail);
+    }
+
+    #[test]
+    fn mouse_git_wheel_over_the_commit_pane_scrolls_the_message() {
+        let (mut screen, mut ctx) = mouse_git_ctx(5, Some(60));
+        render_detail_to_text_at(&screen, &ctx, 120, 40);
+        let pane = screen
+            .regions()
+            .scroll_panes
+            .iter()
+            .find(|p| p.pane == ScrollPane::GitCommit)
+            .map(|p| p.rect)
+            .expect("the commit pane is a scroll pane");
+        let scroll = |ctx: &AppContext| ctx.view_cache[TEST_ALIAS].git_commit_scroll;
+        // Up at 0 stays at 0.
+        mouse_wheel(&mut screen, &mut ctx, pane.x + 5, pane.y + 2, false);
+        assert_eq!(scroll(&ctx), 0);
+        // Down over the message, then over the Files pane: +1 each.
+        mouse_wheel(&mut screen, &mut ctx, pane.x + 5, pane.y + 2, true);
+        assert_eq!(scroll(&ctx), 1);
+        mouse_wheel(&mut screen, &mut ctx, pane.x + 5, pane.bottom() - 2, true);
+        assert_eq!(scroll(&ctx), 2);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_selected, 0);
+        // Clamped at the bottom.
+        for _ in 0..200 {
+            mouse_wheel(&mut screen, &mut ctx, pane.x + 5, pane.y + 2, true);
+        }
+        let vp = screen.git_commit_viewport.get();
+        assert_eq!(scroll(&ctx), vp.total_lines - vp.visible_height);
+        // The wheel over the log is the j path: moves and closes the pane.
+        let list = mouse_list(&screen);
+        mouse_wheel(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y, true);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_selected, 1);
+        assert!(ctx.view_cache[TEST_ALIAS].git_commit_detail.is_none());
+    }
+
+    /// The Queue tab over a real `.planning/` holding `n` queued actions, on
+    /// disk and in the parsed state.
+    fn mouse_queue_ctx(n: usize) -> (DetailScreen, AppContext, tempfile::TempDir) {
+        use crate::config::RegisteredProject;
+        use crate::state_reader::queue_md::QueuedAction;
+        let td = tempfile::TempDir::new().expect("temp dir");
+        let planning = td.path().join(".planning");
+        std::fs::create_dir_all(&planning).expect(".planning");
+        let actions: Vec<QueuedAction> =
+            (0..n).map(|i| QueuedAction { command: format!("/gsd:task-{i:02}") }).collect();
+        crate::state_reader::queue_md::save_queue(&planning, &actions).expect("save the queue");
+        let mut ctx = test_ctx();
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: td.path().to_path_buf(),
+                added: "2026-09-26".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState {
+                queued_actions: actions,
+                ..crate::state_reader::ProjectState::default()
+            },
+        );
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx, td)
+    }
+
+    /// Every file under `dir` with its bytes, sorted — a whole-tree snapshot.
+    fn mouse_tree_snapshot(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d).expect("read_dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let bytes = std::fs::read(&path).expect("read");
+                    out.push((path, bytes));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn mouse_queue_click_selects_and_double_click_never_marks_done() {
+        let (mut screen, mut ctx, td) = mouse_queue_ctx(2);
+        let before = mouse_tree_snapshot(td.path());
+        let queued = |ctx: &AppContext| {
+            ctx.project_states[TEST_ALIAS]
+                .queued_actions
+                .iter()
+                .map(|a| a.command.clone())
+                .collect::<Vec<_>>()
+        };
+        let original = queued(&ctx);
+        render_detail_to_text(&screen, &ctx);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].queue_selected, 1);
+
+        render_detail_to_text(&screen, &ctx);
+        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].queue_selected, 0);
+        assert_eq!(queued(&ctx), original, "a double-click never marks an action done");
+        assert!(ctx.status_message.is_none(), "{:?}", ctx.status_message);
+        assert_eq!(mouse_tree_snapshot(td.path()), before, "no queue file was written");
+
+        // The guard matters: the key does mark it done.
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(queued(&ctx).len(), 1);
+    }
+
+    /// The Driver tab (flag on) with `n` runs, run 0 selected, and a 100-line
+    /// output ring attributed to run 0.
+    fn mouse_driver_ctx(n: usize) -> (DetailScreen, AppContext) {
+        let mut ctx = test_ctx();
+        assert!(ctx.experimental);
+        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.driver_runs = (0..n).map(|i| test_run(&format!("run-{i:02}"))).collect();
+        cache.driver_selected_run = 0;
+        cache.driver_follow = true;
+        let mut ring = super::super::DriverOutput::for_run("run-00");
+        for i in 0..100 {
+            ring.push_record(super::super::DriverLineKind::Output, &format!("output line {i}"));
+        }
+        ctx.driver_output.insert(TEST_ALIAS.to_string(), ring);
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    #[test]
+    fn mouse_driver_click_selects_a_run_and_wheel_scrolls_its_output() {
+        // Wheel over the run detail: up clears follow, down to the tail re-arms.
+        let (mut screen, mut ctx) = mouse_driver_ctx(2);
+        render_detail_to_text_at(&screen, &ctx, 140, 40);
+        let output = screen
+            .regions()
+            .scroll_panes
+            .iter()
+            .find(|p| p.pane == ScrollPane::DriverOutput)
+            .map(|p| p.rect)
+            .expect("the run detail is a scroll pane");
+        let vp = screen.driver_viewport.get();
+        let tail = tail_offset(vp);
+        assert!(tail > 2, "the ring overflows the pane: {} in {}", vp.total_lines, vp.visible_height);
+        mouse_wheel(&mut screen, &mut ctx, output.x + 5, output.y + 5, false);
+        assert!(!driver_following(&ctx), "an upward step clears follow");
+        assert_eq!(driver_offset(&ctx), tail - 1);
+        mouse_wheel(&mut screen, &mut ctx, output.x + 5, output.y + 5, true);
+        assert_eq!(driver_offset(&ctx), tail);
+        assert!(driver_following(&ctx), "reaching the tail re-arms follow");
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+
+        // A click on run row 1: the j/k path, which resets the pane.
+        render_detail_to_text_at(&screen, &ctx, 140, 40);
+        mouse_wheel(&mut screen, &mut ctx, output.x + 5, output.y + 5, false);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+        assert!(driver_following(&ctx), "a new run re-arms follow");
+        // A double arms nothing: the tab has no Enter.
+        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert!(matches!(action, ScreenAction::None));
+
+        // The wheel over the run list moves the selection.
+        let (mut screen, mut ctx) = mouse_driver_ctx(3);
+        render_detail_to_text_at(&screen, &ctx, 140, 40);
+        let list = mouse_list(&screen);
+        mouse_wheel(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y, true);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+    }
+
+    #[test]
+    fn mouse_scrolled_lists_map_clicks_through_their_persisted_offset() {
+        let check = |mut screen: DetailScreen, mut ctx: AppContext, key: KeyCode, presses: usize,
+                     selected: fn(&AppContext) -> usize, what: &str| {
+            for _ in 0..presses {
+                press(&mut screen, &mut ctx, key);
+            }
+            render_detail_to_text_at(&screen, &ctx, 140, 20);
+            let list = mouse_list(&screen);
+            assert!(list.offset > 0, "{what}: a scrolled list: {list:?}");
+            mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
+            assert_eq!(selected(&ctx), list.offset, "{what}");
+            render_detail_to_text_at(&screen, &ctx, 140, 20);
+            assert_eq!(mouse_list(&screen).offset, list.offset, "{what}: the click did not scroll");
+        };
+        let (screen, ctx) = mouse_backlog_ctx(40, 1);
+        check(screen, ctx, KeyCode::PageDown, 1, |c| c.view_cache[TEST_ALIAS].backlog_selected, "Backlog");
+        let (screen, ctx) = mouse_git_ctx(40, None);
+        check(screen, ctx, KeyCode::PageDown, 1, |c| c.view_cache[TEST_ALIAS].git_selected, "Git");
+        let (screen, ctx, _td) = mouse_queue_ctx(40);
+        check(screen, ctx, KeyCode::PageDown, 1, |c| c.view_cache[TEST_ALIAS].queue_selected, "Queue");
+        let (screen, ctx) = mouse_driver_ctx(40);
+        check(screen, ctx, KeyCode::Char('j'), 30, |c| c.view_cache[TEST_ALIAS].driver_selected_run, "Driver");
     }
 }
