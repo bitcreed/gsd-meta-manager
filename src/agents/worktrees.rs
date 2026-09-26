@@ -165,8 +165,57 @@ pub fn parse_porcelain_z(raw: &str) -> Vec<RawWorktree> {
 
 /// Parse the newline-separated `git worktree list --porcelain` output older git
 /// produces (no `-z` before 2.36). A blank line ends a block.
+///
+/// Without `-z`, git C-quotes an unusual path: surrounding `"`, with `\\`,
+/// `\"`, `\t`, `\n` and three-digit octal byte escapes (how git spells
+/// non-ASCII bytes under the default `core.quotePath`). Those are undone; a
+/// path with any other escape, or whose bytes are not UTF-8 once unescaped, is
+/// kept as the raw string — best effort, never a failed scan.
 pub fn parse_porcelain_lines(raw: &str) -> Vec<RawWorktree> {
-    parse_records(raw.lines(), str::to_string)
+    parse_records(raw.lines(), unquote_c_style)
+}
+
+/// Undo git's C-style path quoting, or return the input unchanged.
+fn unquote_c_style(quoted: &str) -> String {
+    try_unquote_c_style(quoted).unwrap_or_else(|| quoted.to_string())
+}
+
+/// `None` when `quoted` is not quoted, or carries an escape this cannot undo.
+fn try_unquote_c_style(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('"')?.strip_suffix('"')?;
+    let bytes = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b != b'\\' {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        let next = *bytes.get(i + 1)?;
+        match next {
+            b'\\' => out.push(b'\\'),
+            b'"' => out.push(b'"'),
+            b't' => out.push(b'\t'),
+            b'n' => out.push(b'\n'),
+            b'0'..=b'3' => {
+                let digits = bytes.get(i + 1..i + 4)?;
+                if !digits.iter().all(|d| (b'0'..=b'7').contains(d)) {
+                    return None;
+                }
+                let value = digits
+                    .iter()
+                    .fold(0u16, |acc, d| acc * 8 + u16::from(d - b'0'));
+                out.push(u8::try_from(value).ok()?);
+                i += 4;
+                continue;
+            }
+            _ => return None,
+        }
+        i += 2;
+    }
+    String::from_utf8(out).ok()
 }
 
 /// GSD's own agent-branch regex, `WORKTREE_AGENT_BRANCH_RE` in
@@ -269,6 +318,52 @@ fn agent_id_of(roots: &[&Path], raw: &RawWorktree) -> Option<String> {
         .or_else(|| from_branch().filter(|id| valid_agent_id(id)))
 }
 
+/// The prefix of GSD's per-plan commit ledger in a worktree's admin dir
+/// (`gsd-plan-head-before-<phase>-<plan>`, written by GSD's executor).
+const LEDGER_PREFIX: &str = "gsd-plan-head-before-";
+
+/// How much of a worktree's `.git` file is read. The file is one
+/// `gitdir: <path>` line; a larger one is not a worktree pointer.
+const DOT_GIT_FILE_CAP: u64 = 4096;
+
+/// The plan id GSD's commit ledger names, when one is present (D-C10 tier 4).
+///
+/// Confirmation only, and usually absent (it was missing on 9 of 13 live
+/// agents measured), so absence is normal and yields `None`. The worktree's
+/// `.git` must be a FILE reading `gitdir: <admin dir>`; the admin dir must be
+/// absolute and exist. Entries are read in sorted order so the answer does not
+/// depend on directory iteration order, and a ledger id is accepted only when
+/// it passes the plan-id rule — it never becomes a path.
+fn read_ledger_plan(worktree: &Path) -> Option<String> {
+    use std::io::Read;
+
+    let dot_git = worktree.join(".git");
+    if !std::fs::symlink_metadata(&dot_git).ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(&dot_git)
+        .ok()?
+        .take(DOT_GIT_FILE_CAP)
+        .read_to_string(&mut text)
+        .ok()?;
+    let admin = PathBuf::from(text.lines().next()?.strip_prefix("gitdir: ")?.trim());
+    if !admin.is_absolute() || !admin.is_dir() {
+        return None;
+    }
+    let mut ids: Vec<String> = std::fs::read_dir(&admin)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let id = name.strip_prefix(LEDGER_PREFIX)?;
+            valid_plan_id(id).then(|| id.to_string())
+        })
+        .collect();
+    ids.sort();
+    ids.into_iter().next()
+}
+
 /// Enumerate a project's worktrees, classify each against the agent predicate,
 /// and resolve the base the commit counts are measured from.
 ///
@@ -277,7 +372,23 @@ fn agent_id_of(roots: &[&Path], raw: &RawWorktree) -> Option<String> {
 ///
 /// Any failure — not a repository, no git, unparseable output — yields an
 /// empty [`CoreScan`], never an error.
+///
+/// **Prefilter (D-C09 cost bound) [inferred].** When `<project_root>/.git` is
+/// a directory with no `worktrees/` inside it, the repository has no linked
+/// worktree and git is not run at all: the scan reports `project_root` as the
+/// main worktree, no base, and no worktrees. Most registered projects are in
+/// this state most of the time. A `.git` file (the project is itself a linked
+/// worktree or a submodule) or a missing `.git` goes through the listing as
+/// usual.
 pub fn scan_worktrees(project_root: &Path) -> CoreScan {
+    let dot_git = project_root.join(".git");
+    if dot_git.is_dir() && !dot_git.join("worktrees").exists() {
+        return CoreScan {
+            main_worktree: Some(project_root.to_path_buf()),
+            base_sha: None,
+            worktrees: Vec::new(),
+        };
+    }
     let Some(listing) = git_ops::worktree_list_porcelain(project_root) else {
         return CoreScan::default();
     };
@@ -313,7 +424,7 @@ pub fn scan_worktrees(project_root: &Path) -> CoreScan {
                     .map(|reason| reason.map(Untrusted::from_untrusted_source)),
                 prunable: raw.prunable,
                 agent_pattern,
-                ledger_plan: None,
+                ledger_plan: read_ledger_plan(&raw.path),
                 path: raw.path,
             }
         })
