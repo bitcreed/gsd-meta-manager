@@ -1568,8 +1568,8 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          path, a child's description and a worktree-less agent's description, all from \
          `ctx.agent_views[alias]` — populated by 25-05 through `hostile_agent_view`; \
          without it the sub-view renders `No running agents`. The Sessions sub-tab \
-         strip above it, the summary line and the wave rows are authored words and \
-         numbers and draw no identity.",
+         strip above it, the summary line and the one-line wave strip (quick \
+         260926-2l4) are authored words and numbers and draw no identity.",
     ),
     (
         "Archive tab",

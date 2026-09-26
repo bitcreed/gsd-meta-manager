@@ -268,6 +268,20 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Tab", "Detail view: switch the terminal to this project's session"),
         row("Enter", "Sessions tab: resume the selected session (detail view)"),
         Line::from(""),
+        // ── The Phases tab's Waves pane and the Agents cross-jump (quick
+        // 260926-2l4, D-01, D-05). Every description is unique in this body,
+        // so the whole-row assertions can tell them from the Roadmap's
+        // `j/k g/G` and the Driver's `PgUp / PgDn`. Ends with one blank row.
+        heading("Phases Waves Pane (detail view)"),
+        Line::from(""),
+        row("Right / Enter", "Phases tab: focus the Waves pane (detail view)"),
+        row("j/k g/G", "Waves pane: move the row cursor / top / bottom"),
+        row("PgUp / PgDn", "Waves pane: page the rows"),
+        row("Enter / Space", "Waves pane: fold / unfold a wave; on a plan, jump to its agent"),
+        row("e", "Waves pane: edit the plan's PLAN.md at its objective"),
+        row("Left / Esc", "Waves pane: back to the phase list"),
+        row("Enter", "Agents sub-tab: open the agent's plan in the Phases Waves pane"),
+        Line::from(""),
     ]);
 
     // ── The Driver tab (Phase 18). There is deliberately no pane-focus
@@ -1034,5 +1048,45 @@ mod tests {
             );
         }
         assert!(!body().contains("Toggle roadmap visualization"));
+    }
+
+    /// Quick 260926-2l4 (D-01, D-05): the Phases Waves pane's keys and the
+    /// Agents `Enter` cross-jump are documented under their own heading as
+    /// WHOLE rows, each exactly once, with the flag on and off.
+    #[test]
+    fn the_waves_pane_block_is_documented_as_whole_rows() {
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            assert_eq!(
+                text.lines()
+                    .filter(|line| *line == "Phases Waves Pane (detail view)")
+                    .count(),
+                1,
+                "experimental={experimental}: the heading must appear once:\n{text}"
+            );
+            for (key, description) in [
+                ("Right / Enter", "Phases tab: focus the Waves pane (detail view)"),
+                ("j/k g/G", "Waves pane: move the row cursor / top / bottom"),
+                ("PgUp / PgDn", "Waves pane: page the rows"),
+                (
+                    "Enter / Space",
+                    "Waves pane: fold / unfold a wave; on a plan, jump to its agent",
+                ),
+                ("e", "Waves pane: edit the plan's PLAN.md at its objective"),
+                ("Left / Esc", "Waves pane: back to the phase list"),
+                (
+                    "Enter",
+                    "Agents sub-tab: open the agent's plan in the Phases Waves pane",
+                ),
+            ] {
+                let expected = row(key, description).spans[0].content.to_string();
+                assert_eq!(
+                    text.lines().filter(|line| *line == expected).count(),
+                    1,
+                    "experimental={experimental}: the row {expected:?} must appear \
+                     exactly once:\n{text}"
+                );
+            }
+        }
     }
 }

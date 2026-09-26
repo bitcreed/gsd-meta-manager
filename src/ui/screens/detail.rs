@@ -1310,10 +1310,9 @@ impl DetailScreen {
         let covered = match row.kind {
             WavesRowKind::Header { wave, .. } => wave..=wave,
             WavesRowKind::Merged { first, last } => first..=last,
-            WavesRowKind::Plan { .. } => {
-                return ScreenAction::SetStatusMessage(
-                    "No agent is attributed to this plan".to_string(),
-                );
+            WavesRowKind::Plan { wave, plan } => {
+                let id = model.waves[wave].plans[plan].id.clone();
+                return self.focus_agent_of_plan(&id, ctx);
             }
         };
         for wave in &model.waves[covered] {
@@ -1325,6 +1324,129 @@ impl DetailScreen {
         cache.waves_cursor = Some(row.target.clone());
         ctx.needs_redraw = true;
         ScreenAction::None
+    }
+
+    /// `Enter` on a Waves-pane plan row (quick 260926-2l4, D-05, [inferred
+    /// I-10]): switch to Sessions › Agents with the plan's agent line selected
+    /// — a running (`Live`/`Idle`) row attributed to it, else the first
+    /// attributed row of any liveness — and the focus on content. Navigation
+    /// only. With no attributed agent, a status message and the pane keeps
+    /// the keyboard.
+    fn focus_agent_of_plan(&mut self, stem: &str, ctx: &mut AppContext) -> ScreenAction {
+        const NO_AGENT: &str = "No agent is attributed to this plan";
+        let Some(key) = crate::state_reader::disk_status::plan_index(stem) else {
+            return ScreenAction::SetStatusMessage(NO_AGENT.to_string());
+        };
+        let line = ctx.agent_views.get(&self.alias).and_then(|view| {
+            let attributed = |row: &crate::agents::AgentRow| {
+                row.plan
+                    .as_ref()
+                    .is_some_and(|p| p.phase == key.0 && p.plan == key.1)
+            };
+            view.agents
+                .iter()
+                .position(|row| attributed(row) && row.liveness.is_running())
+                .or_else(|| view.agents.iter().position(attributed))
+                .map(|index| agent_line_index(view, index))
+        });
+        let Some(line) = line else {
+            return ScreenAction::SetStatusMessage(NO_AGENT.to_string());
+        };
+        let action = switch_to_sub_view(
+            &self.alias,
+            DetailSubView::Agents,
+            &mut self.scroll_offset,
+            ctx,
+        );
+        ctx.view_cache
+            .entry(self.alias.clone())
+            .or_default()
+            .agents_selected = line;
+        self.focus = DetailFocus::Content;
+        action
+    }
+
+    /// `Enter` on the Agents sub-view (quick 260926-2l4, D-05, [inferred
+    /// I-10]): open the selected row's plan — a child line uses its parent's
+    /// — in the Phases tab's Waves pane. A worktree-less or unattributed line
+    /// sets a status message and stays. Navigation only (T-2l4-04).
+    fn agents_enter(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let plan = ctx.agent_views.get(&self.alias).and_then(|view| {
+            let last = agent_list_len(view).checked_sub(1)?;
+            let line = ctx
+                .view_cache
+                .get(&self.alias)
+                .map_or(0, |c| c.agents_selected.min(last));
+            agent_row_for_line(view, line).and_then(|index| view.agents[index].plan.clone())
+        });
+        match plan {
+            Some(plan) => self.focus_plan_in_phases(&plan, ctx),
+            None => ScreenAction::SetStatusMessage(
+                "This agent is not attributed to a plan".to_string(),
+            ),
+        }
+    }
+
+    /// Open the Phases tab on `plan`'s phase with its Waves pane focused and
+    /// the cursor on the plan (quick 260926-2l4, D-05). The phase index is
+    /// found by `phase_key`, the tab by [`tab_index`], as `roadmap_activate`
+    /// does; the arrival goes through [`switch_to_tab`], the one arrival rule.
+    /// A plan whose wave is folded has that wave flipped open. A plan whose
+    /// phase is not in this project sets a status message naming it by its
+    /// authored-digits label.
+    fn focus_plan_in_phases(
+        &mut self,
+        plan: &crate::agents::waves::PlanRef,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        use crate::state_reader::phase_num::phase_key;
+        let Some(state) = ctx.project_states.get(&self.alias) else {
+            return ScreenAction::None;
+        };
+        let wanted = phase_key(&plan.phase.to_string());
+        let Some(index) = state.phases.iter().position(|p| phase_key(&p.number) == wanted)
+        else {
+            return ScreenAction::SetStatusMessage(format!(
+                "Plan {} is not a phase in this project",
+                plan.label()
+            ));
+        };
+        {
+            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+            cache.pipeline_selected = index;
+            cache.waves_cursor = None;
+            share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
+        }
+        let action = switch_to_tab(
+            &self.alias,
+            tab_index(&DetailSubView::Pipeline),
+            &mut self.scroll_offset,
+            ctx,
+        );
+        if let Some((model, rows)) = self.selected_waves(ctx) {
+            let stem = model
+                .plans()
+                .find(|p| {
+                    crate::state_reader::disk_status::plan_index(&p.id)
+                        .is_some_and(|(phase, n)| phase == plan.phase && n == plan.plan)
+                })
+                .map(|p| p.id.clone());
+            if let Some(stem) = stem {
+                let target = super::WavesCursor::Plan(stem.clone());
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if !rows.iter().any(|row| row.target == target) {
+                    if let Some(wave) = model.wave_of(&stem) {
+                        let toggle = (model.phase_key.clone(), model.waves[wave].wave);
+                        if !cache.waves_toggles.remove(&toggle) {
+                            cache.waves_toggles.insert(toggle);
+                        }
+                    }
+                }
+                cache.waves_cursor = Some(target);
+            }
+        }
+        self.focus = DetailFocus::Pane;
+        action
     }
 
     /// `e` in the Waves pane: open the plan under the cursor in `$EDITOR` at
@@ -3595,8 +3717,10 @@ impl Screen for DetailScreen {
                         ScreenAction::None
                     }
                     // The Agents sub-view observes only: Enter acts on no
-                    // agent (phase boundary, T-25-24).
-                    DetailSubView::Agents => ScreenAction::None,
+                    // agent (phase boundary, T-25-24). It NAVIGATES — to the
+                    // row's plan in the Phases Waves pane (quick 260926-2l4,
+                    // D-05, T-2l4-04) — and sends nothing anywhere.
+                    DetailSubView::Agents => self.agents_enter(ctx),
                     DetailSubView::Sessions => {
                         // Resume selected session in a new terminal
                         let filtered_sessions: Vec<_> = ctx
@@ -5851,8 +5975,9 @@ impl DetailScreen {
     /// wave, reads a file or runs git.
     ///
     /// Top to bottom: the sub-tab strip; the widest [`AgentView::summary_forms`]
-    /// entry that fits (the dashboard's ladder); one row per wave, the current
-    /// one marked `▸` AND bold so the highlight is not colour-only; then a
+    /// entry that fits (the dashboard's ladder); a one-line wave strip
+    /// ([`agents_wave_strip`]), the current wave marked `▸` AND bold so the
+    /// highlight is not colour-only; then a
     /// scrollable list — one line per agent row, each child indented directly
     /// below its row, and a `Worktree-less (live)` group. [`agent_list_len`]
     /// counts exactly those list lines, for this render and for the keys.
@@ -5862,7 +5987,9 @@ impl DetailScreen {
     /// worktree-less text. The strip, the summary and the wave rows are
     /// authored words and numbers only.
     ///
-    /// Observes only: no key on this sub-view acts on an agent.
+    /// Observes only: no key on this sub-view acts on an agent. `Enter` jumps
+    /// to the row's plan in the Phases tab's Waves pane — navigation, nothing
+    /// sent to any agent (quick 260926-2l4, D-05).
     fn render_agents_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let area = self.sub_tab_row(frame, area, sessions_sub_tab_strip(&DetailSubView::Agents));
         let block = Block::default().borders(Borders::ALL).title(" Agents ");
@@ -5882,10 +6009,10 @@ impl DetailScreen {
             return;
         };
 
-        let wave_rows = (view.waves.len() as u16).min(inner.height / 3);
+        let strip_rows = u16::from(!view.waves.is_empty());
         let chunks = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(wave_rows),
+            Constraint::Length(strip_rows),
             Constraint::Min(0),
         ])
         .split(inner);
@@ -5894,20 +6021,13 @@ impl DetailScreen {
             Paragraph::new(agents_summary_line(view, inner.width)),
             chunks[0],
         );
-
-        // The wave window keeps the current wave in sight: it starts one wave
-        // before it, and never runs past the last wave.
-        let shown_waves = wave_rows as usize;
-        if shown_waves > 0 {
-            let current = view.waves.iter().position(|w| w.current).unwrap_or(0);
-            let start = current
-                .saturating_sub(1)
-                .min(view.waves.len().saturating_sub(shown_waves));
-            let lines: Vec<Line> = view.waves[start..start + shown_waves]
-                .iter()
-                .map(wave_line)
-                .collect();
-            frame.render_widget(Paragraph::new(lines), chunks[1]);
+        // One strip row, not one row per wave (quick 260926-2l4, D-05): the
+        // per-plan detail lives in the Phases tab's Waves pane.
+        if strip_rows > 0 {
+            frame.render_widget(
+                Paragraph::new(agents_wave_strip(view, inner.width as usize)),
+                chunks[1],
+            );
         }
 
         let list_area = chunks[2];
@@ -8165,28 +8285,121 @@ fn agents_summary_line(view: &AgentView, cells: u16) -> Line<'static> {
         .unwrap_or_default()
 }
 
-/// One wave row: `▸ w2  running 13 · done 8 (+2 unmerged) · queued 14`. The
-/// current wave is marked `▸` and bold; any other is indented two spaces.
-fn wave_line(wave: &WaveRow) -> Line<'static> {
-    let mut text = format!(
-        "{}  running {} \u{b7} done {}",
-        wave.label(),
-        wave.running,
-        wave.done
-    );
-    if wave.finished > 0 {
-        text.push_str(&format!(" (+{} unmerged)", wave.finished));
+/// The Agents sub-view's one-line wave strip (quick 260926-2l4, D-05,
+/// [inferred I-11]), at most `cells` wide.
+///
+/// Fully done waves read `wN✓`, consecutive ones merged as `w1–w8✓`; the
+/// current wave reads `▸wN` then ` {count} {word}` per non-zero, not-done
+/// state in the Waves pane's vocabulary, joined with ` · `; any other wave
+/// reads `wN·`. Tokens are two spaces apart and windowed around the current
+/// wave, a cut end marked `…`; `waves → 2:Phases` is appended only when it
+/// fits. The `▸` is text, so the current wave is never marked by colour alone.
+/// Authored words and integers only: counts come from [`WaveRow`], never a
+/// file.
+fn agents_wave_strip(view: &AgentView, cells: usize) -> Line<'static> {
+    let not_done = |w: &WaveRow| w.finished + w.running + w.stalled + w.queued;
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut index = 0;
+    while index < view.waves.len() {
+        let wave = &view.waves[index];
+        if not_done(wave) == 0 {
+            let mut last = index;
+            while last + 1 < view.waves.len() && not_done(&view.waves[last + 1]) == 0 {
+                last += 1;
+            }
+            tokens.push(if last == index {
+                format!("{}\u{2713}", wave.label())
+            } else {
+                format!("{}\u{2013}{}\u{2713}", wave.label(), view.waves[last].label())
+            });
+            index = last + 1;
+            continue;
+        }
+        if wave.current {
+            let counts: Vec<String> = [
+                (wave.running, PaneState::Running),
+                (wave.finished, PaneState::Leftover),
+                (wave.stalled, PaneState::Stalled),
+                (wave.queued, PaneState::Queued),
+            ]
+            .iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, s)| format!("{n} {}", s.word()))
+            .collect();
+            current = Some(tokens.len());
+            tokens.push(format!("\u{25b8}{} {}", wave.label(), counts.join(" \u{b7} ")));
+        } else {
+            tokens.push(format!("{}\u{b7}", wave.label()));
+        }
+        index += 1;
     }
-    text.push_str(&format!(" \u{b7} queued {}", wave.queued));
-    if wave.stalled > 0 {
-        text.push_str(&format!(" \u{b7} stalled {}", wave.stalled));
+    let width = |s: &str| Span::raw(s).width();
+    let join = |from: usize, to: usize| -> String {
+        let mut text = String::new();
+        if from > 0 {
+            text.push_str("\u{2026}  ");
+        }
+        text.push_str(&tokens[from..to].join("  "));
+        if to < tokens.len() {
+            text.push_str("  \u{2026}");
+        }
+        text
+    };
+    // Grow the window from the current wave (else the first token) outwards,
+    // right first, while it fits.
+    let anchor = current.unwrap_or(0);
+    let (mut from, mut to) = (anchor, (anchor + 1).min(tokens.len()));
+    loop {
+        let mut grew = false;
+        if to < tokens.len() && width(&join(from, to + 1)) <= cells {
+            to += 1;
+            grew = true;
+        }
+        if from > 0 && width(&join(from - 1, to)) <= cells {
+            from -= 1;
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
     }
-    if wave.current {
-        let bold = Style::default().add_modifier(Modifier::BOLD);
-        Line::from(vec![Span::styled("\u{25b8} ", bold), Span::styled(text, bold)])
+    let mut text = if tokens.is_empty() {
+        String::new()
     } else {
-        Line::from(vec![Span::raw("  "), Span::raw(text)])
+        join(from, to)
+    };
+    const HINT: &str = "  waves \u{2192} 2:Phases";
+    if !text.is_empty() && width(&text) + width(HINT) <= cells {
+        text.push_str(HINT);
     }
+    Line::from(fit_cells(&text, cells))
+}
+
+/// The first list line of agent row `row_index` in the Agents sub-view: each
+/// earlier row takes one line plus one per child. Beside [`agent_list_len`] so
+/// the line counting stays single-sourced.
+fn agent_line_index(view: &AgentView, row_index: usize) -> usize {
+    view.agents
+        .iter()
+        .take(row_index)
+        .map(|row| 1 + row.children.len())
+        .sum()
+}
+
+/// The inverse of [`agent_line_index`]: the agent row whose line — or one of
+/// whose child lines — is list line `line`. `None` for the worktree-less group
+/// (its header and agents have no worktree and so no plan) and past the end.
+fn agent_row_for_line(view: &AgentView, line: usize) -> Option<usize> {
+    let mut start = 0;
+    for (index, row) in view.agents.iter().enumerate() {
+        let end = start + 1 + row.children.len();
+        if line < end {
+            return Some(index);
+        }
+        start = end;
+    }
+    None
 }
 
 /// How many lines the Agents sub-view's list draws for `view`: one per agent
@@ -8526,9 +8739,13 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("ew session  "));
         }
         // The Sessions tab's Agents sub-view (D-C15): it observes only, so it
-        // offers no Enter or `n`. Scrolling is the shared prefix's `[j/k]`,
-        // and the way back to Sessions is the prefix's `[←/→]` token.
-        DetailSubView::Agents => {}
+        // offers no `n`; `Enter` only navigates, to the row's plan in the
+        // Phases Waves pane (quick 260926-2l4, D-05). Scrolling is the shared
+        // prefix's `[j/k]`, and the way back to Sessions is its `[←/→]`.
+        DetailSubView::Agents => {
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("\u{2192}Phases  "));
+        }
         // The Docs tab's two sub-views name each other through the prefix's
         // `[←/→]Files|Milestones` token (D-B04, quick 260926-1t1).
         DetailSubView::Archive => {
@@ -12979,8 +13196,9 @@ mod tests {
             text.contains("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/2 done"),
             "{text}"
         );
-        assert!(text.contains("\u{25b8} w2  running 1 \u{b7} done 0 \u{b7} queued 0"), "{text}");
-        assert!(text.contains("  w1  running 0 \u{b7} done 1 \u{b7} queued 0"), "{text}");
+        // Quick 260926-2l4: ONE strip line, not a row per wave.
+        assert!(text.contains("w1\u{2713}  \u{25b8}w2 1 running"), "{text}");
+        assert!(!text.contains("running 0 \u{b7} done 1 \u{b7} queued 0"), "{text}");
         let row = text
             .lines()
             .find(|line| line.contains("13-02"))
@@ -13064,7 +13282,9 @@ mod tests {
     }
 
     /// The Agents sub-view observes only (phase boundary, T-25-24): `Enter`
-    /// acts on no agent and `n` launches no session from it.
+    /// acts on no agent and `n` launches no session from it. Since quick
+    /// 260926-2l4 `Enter` NAVIGATES to the row's plan; on these unattributed
+    /// rows that is the not-attributed status message and nothing else.
     #[test]
     fn enter_and_n_do_nothing_on_the_agents_sub_view() {
         let mut ctx_registered = super::super::tests::ctx_with_aliases(&[TEST_ALIAS]);
@@ -13081,10 +13301,17 @@ mod tests {
 
         for key in [KeyCode::Enter, KeyCode::Char('n')] {
             let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx_registered);
-            assert!(
-                matches!(action, ScreenAction::None),
-                "{key:?} on Agents returned an action"
-            );
+            if key == KeyCode::Enter {
+                assert!(
+                    matches!(&action, ScreenAction::SetStatusMessage(m) if m == "This agent is not attributed to a plan"),
+                    "Enter on an unattributed Agents row only explains itself"
+                );
+            } else {
+                assert!(
+                    matches!(action, ScreenAction::None),
+                    "{key:?} on Agents returned an action"
+                );
+            }
             assert!(
                 ctx_registered.status_message.is_none(),
                 "{key:?} on Agents set a status message"
@@ -13108,7 +13335,8 @@ mod tests {
         assert!(agents.contains("[←/→]Sessions|Agents  "), "{agents}");
         assert!(!agents.contains("[m]"), "{agents}");
         assert!(!agents.contains("[n]"), "Agents offers no new-session key: {agents}");
-        assert!(!agents.contains("[Enter]"), "Agents offers no Enter action: {agents}");
+        // Quick 260926-2l4: `Enter` jumps to the row's plan in Phases.
+        assert!(agents.contains("[Enter]\u{2192}Phases"), "{agents}");
     }
 
     /// The first rendered line containing `needle`.
@@ -13323,8 +13551,7 @@ mod tests {
         // 1. One executor in a single-plan wave.
         let (screen, ctx) = on_agents(Some(two_wave_view()));
         let one = render_detail_to_text_at(&screen, &ctx, 80, 24);
-        assert!(one.contains("  w1  running 0"), "{one}");
-        assert!(one.contains("\u{25b8} w2  running 1"), "{one}");
+        assert!(one.contains("w1\u{2713}  \u{25b8}w2 1 running"), "{one}");
         assert_eq!(one.lines().filter(|l| l.contains("> live") || l.contains("  live  ")).count(), 1, "{one}");
 
         // 2. Three code-fixers with descriptions and no plans.
@@ -13355,12 +13582,15 @@ mod tests {
             three.contains("P13 \u{b7} w2/11 \u{b7} 13 run \u{b7} 8/35 done"),
             "{three}"
         );
-        assert!(three.contains("\u{25b8} w2  running 13 \u{b7} done 0 \u{b7} queued 1"), "{three}");
+        assert!(three.contains("\u{25b8}w2 13 running \u{b7} 1 queued"), "{three}");
         let first_row = agent_line_with(&three, "13-09");
         assert!(first_row.contains("live"), "{three}");
         assert!(first_row.contains("+2  ~0  0s"), "{three}");
-        // More rows than fit: the list scrolls rather than overflowing.
-        assert!(!three.contains("13-21"), "{three}");
+        // Quick 260926-2l4: the wave block is ONE strip line now, so all
+        // thirteen rows fit at 80×24 where the per-wave rows used to push the
+        // last ones out (the scrolling itself is pinned by the j/k tests).
+        assert!(three.contains("13-21"), "{three}");
+        assert_eq!(three.matches('\u{25b8}').count(), 1, "{three}");
     }
 
     /// Tiny areas never panic: the whole screen at 12×4, and the sub-view
@@ -13397,8 +13627,11 @@ mod tests {
         let (screen, ctx) = on_agents(Some(two_wave_view()));
         let text = render_detail_to_text(&screen, &ctx);
         assert_eq!(text.matches('\u{25b8}').count(), 1, "{text}");
-        assert!(agent_line_with(&text, "w2  running").contains("\u{25b8} w2"), "{text}");
-        assert!(!agent_line_with(&text, "w1  running").contains('\u{25b8}'), "{text}");
+        // One strip (quick 260926-2l4): the marker sits on w2's token, and
+        // w1's token carries none.
+        let strip = agent_line_with(&text, "w1\u{2713}");
+        assert!(strip.contains("\u{25b8}w2"), "{text}");
+        assert!(!strip.contains("\u{25b8}w1"), "{text}");
     }
 
     /// Eight tabs, eight digits (D-B10): `9` and `0` name no tab and fall
@@ -20193,5 +20426,226 @@ mod tests {
         // Clamped to the end.
         let (offset, visible) = waves_window(40, 10, 0, 39, false);
         assert_eq!(offset + visible, 40);
+    }
+
+    #[test]
+    fn agents_strip_is_one_line_and_marks_the_current_wave_in_text() {
+        let (screen, ctx) = on_agents(Some(two_wave_view()));
+        let text = render_detail_to_text(&screen, &ctx);
+        let lines: Vec<&str> = text.lines().collect();
+        let summary = lines
+            .iter()
+            .position(|l| l.contains("P13 \u{b7} w2/2"))
+            .unwrap_or_else(|| panic!("no summary: {text}"));
+        assert!(lines[summary + 1].contains("w1\u{2713}  \u{25b8}w2 1 running"), "{text}");
+        assert!(lines[summary + 2].contains("13-02"), "the list starts next: {text}");
+        assert!(!text.contains("running 0 \u{b7} done 1 \u{b7} queued 0"), "{text}");
+
+        // Thirteen waves: finished ones merge, and the strip fits and keeps ▸w11.
+        let mut waves: Vec<WaveRow> = (1..=10)
+            .map(|n| WaveRow {
+                wave: Some(n),
+                done: 3,
+                ..WaveRow::default()
+            })
+            .collect();
+        waves.push(WaveRow {
+            wave: Some(11),
+            running: 1,
+            queued: 2,
+            current: true,
+            ..WaveRow::default()
+        });
+        for n in [12, 13] {
+            waves.push(WaveRow {
+                wave: Some(n),
+                queued: 2,
+                ..WaveRow::default()
+            });
+        }
+        let view = AgentView {
+            waves,
+            ..AgentView::default()
+        };
+        let wide = line_text(&agents_wave_strip(&view, 120));
+        assert_eq!(
+            wide,
+            "w1\u{2013}w10\u{2713}  \u{25b8}w11 1 running \u{b7} 2 queued  w12\u{b7}  w13\u{b7}  waves \u{2192} 2:Phases"
+        );
+        for cells in [60, 40, 24] {
+            let strip = agents_wave_strip(&view, cells);
+            assert!(strip.width() <= cells, "{cells}: {:?}", line_text(&strip));
+            assert!(line_text(&strip).contains("\u{25b8}w11"), "{cells}: {:?}", line_text(&strip));
+        }
+        let narrow = line_text(&agents_wave_strip(&view, 40));
+        assert!(narrow.contains('\u{2026}') && !narrow.contains("2:Phases"), "{narrow}");
+    }
+
+    /// Phases 12 and 13; phase 13 as in [`tracer_ctx`]; on Sessions › Agents
+    /// with rows: a `Live` executor on 13-02 with one child, an unattributed
+    /// row, and one worktree-less agent.
+    fn cross_jump_ctx() -> AppContext {
+        let p13 = waves_inference(
+            &[
+                ("13-01-alpha", Some("Build the alpha"), Some(1)),
+                ("13-02-beta", Some("Wire the beta seam"), Some(2)),
+            ],
+            &["13-01-alpha"],
+        );
+        let p12 = waves_inference(&[("12-01", None, Some(1))], &["12-01"]);
+        let mut ctx = waves_ctx(vec![("12", "Before", p12), ("13", "Demo", p13)], "13");
+        let mut view = tracer_ctx().agent_views.remove(TEST_ALIAS).expect("a view");
+        view.agents[0].children = vec![ChildAgent {
+            description: Some(Untrusted::from_untrusted_source("helper".to_string())),
+            liveness: AgentLiveness::Live,
+            ..ChildAgent::default()
+        }];
+        view.agents.push(agent_row("/wt/agent-b", AgentLiveness::Live, None));
+        view.worktreeless = vec![ChildAgent {
+            description: Some(Untrusted::from_untrusted_source("loose".to_string())),
+            liveness: AgentLiveness::Live,
+            ..ChildAgent::default()
+        }];
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Agents);
+        ctx
+    }
+
+    #[test]
+    fn cross_jump_agent_row_enter_focuses_its_plan_in_phases() {
+        // Lines: 0 the 13-02 row, 1 its child, 2 the unattributed row,
+        // 3 the worktree-less header, 4 the worktree-less agent.
+        for line in [0, 1] {
+            let mut ctx = cross_jump_ctx();
+            let before = ctx.agent_views[TEST_ALIAS].clone();
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().agents_selected = line;
+            let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::None), "navigation only (line {line})");
+            assert_eq!(ctx.agent_views[TEST_ALIAS], before, "no agent is touched");
+            assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
+            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 1, "phase 13's index");
+            assert_eq!(screen.focus, DetailFocus::Pane);
+            assert_eq!(
+                ctx.view_cache[TEST_ALIAS].waves_cursor,
+                Some(super::super::WavesCursor::Plan("13-02-beta".to_string()))
+            );
+            let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
+            assert!(
+                text.lines().any(|l| l.contains("> ") && l.contains("13-02")),
+                "the cursor is drawn on 13-02: {text}"
+            );
+        }
+        for line in [2, 3, 4] {
+            let mut ctx = cross_jump_ctx();
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().agents_selected = line;
+            let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+            assert!(
+                matches!(&action, ScreenAction::SetStatusMessage(m) if m == "This agent is not attributed to a plan"),
+                "line {line}"
+            );
+            assert_eq!(stored_view(&ctx), DetailSubView::Agents, "no tab switch (line {line})");
+        }
+
+        // A plan whose phase this project does not have.
+        let mut ctx = cross_jump_ctx();
+        ctx.agent_views.get_mut(TEST_ALIAS).unwrap().agents[0].plan =
+            crate::agents::waves::PlanRef::from_id("77-03");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(&action, ScreenAction::SetStatusMessage(m) if m == "Plan 77-03 is not a phase in this project")
+        );
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+    }
+
+    #[test]
+    fn cross_jump_expands_a_folded_wave_to_reach_the_plan() {
+        // Phase 13 complete except that an agent still points at 13-01: its
+        // wave is folded by default, and the jump opens it.
+        let p13 = waves_inference(
+            &[("13-01", None, Some(1)), ("13-02", None, Some(2))],
+            &["13-01"],
+        );
+        let mut ctx = waves_ctx(vec![("13", "Demo", p13)], "13");
+        ctx.agent_views.insert(
+            TEST_ALIAS.to_string(),
+            AgentView {
+                agents: vec![agent_row("/wt/a", AgentLiveness::Finished, Some("13-01"))],
+                ..AgentView::default()
+            },
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Agents);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let (_, rows) = screen.selected_waves(&ctx).expect("a model");
+        let target = super::super::WavesCursor::Plan("13-01".to_string());
+        assert!(rows.iter().any(|r| r.target == target), "the wave was opened: {rows:?}");
+    }
+
+    #[test]
+    fn cross_jump_pane_enter_on_a_running_plan_selects_its_agent() {
+        let mut ctx = cross_jump_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
+        // Put an `Ended` row for the same plan FIRST: the running one wins.
+        {
+            let view = ctx.agent_views.get_mut(TEST_ALIAS).unwrap();
+            view.agents
+                .insert(0, agent_row("/wt/old", AgentLiveness::Ended, Some("13-02")));
+        }
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].waves_cursor,
+            Some(super::super::WavesCursor::Plan("13-02-beta".to_string()))
+        );
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(stored_view(&ctx), DetailSubView::Agents);
+        // Line 0 is the Ended row; the Live row on 13-02 is line 1.
+        assert_eq!(ctx.view_cache[TEST_ALIAS].agents_selected, 1);
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        // A plan with no attributed agent: a status message, and the pane stays.
+        let mut ctx = cross_jump_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
+        ctx.agent_views.get_mut(TEST_ALIAS).unwrap().agents[0].plan = None;
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(&action, ScreenAction::SetStatusMessage(m) if m == "No agent is attributed to this plan")
+        );
+        assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+    }
+
+    #[test]
+    fn agents_strip_footer_and_help_advertise_the_jumps() {
+        let footer = footer_text_at(&DetailSubView::Agents, 120, true);
+        assert!(footer.contains("[Enter]\u{2192}Phases"), "{footer}");
+        let help: String = super::super::help::help_lines(false)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>() + "\n")
+            .collect();
+        for needle in [
+            "Phases tab: focus the Waves pane",
+            "Waves pane: move the row cursor / top / bottom",
+            "Waves pane: page the rows",
+            "Waves pane: fold / unfold a wave; on a plan, jump to its agent",
+            "Waves pane: edit the plan's PLAN.md at its objective",
+            "Waves pane: back to the phase list",
+            "Agents sub-tab: open the agent's plan in the Phases Waves pane",
+        ] {
+            assert_eq!(help.matches(needle).count(), 1, "{needle}: {help}");
+        }
     }
 }
