@@ -800,12 +800,12 @@ Plans:
 
   UI implication: the dashboard row gets a compact summary (`P13 · wave 2/11 · 13 running · 8/35 done`); the detail view gets a scrollable per-agent list (plan/description, commits, dirty count, last activity) plus per-wave done/running/queued.
 
-**Plans**: 6 plans
+**Plans**: 1/6 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 25-01-PLAN.md — Core agent-worktree scan (lock-free git), adapter seam, liveness thresholds, AGENT requirement ids (wave 1)
+- [x] 25-01-PLAN.md — Core agent-worktree scan (lock-free git), adapter seam, liveness thresholds, AGENT requirement ids (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -836,7 +836,7 @@ Plans:
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
-| 25. Running Agents & Live Wave View | 0/6 | Not started | - |
+| 25. Running Agents & Live Wave View | 1/6 | In Progress|  |
 
 ## Backlog
 

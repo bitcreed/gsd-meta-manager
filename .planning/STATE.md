@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.8.0
 current_phase: 25
 current_phase_name: Running Agents & Live Wave View
-status: shipped
-stopped_at: Phase 25 context gathered
-last_updated: "2026-09-26T02:28:00.743Z"
-last_activity: 2026-09-24
-last_activity_desc: Phase 24 complete, transitioned to Phase 19
-state_head: c45da7697800d76d9fb4595e2fcf922c6404eaec
+status: executing
+stopped_at: Completed 25-01-PLAN.md
+last_updated: "2026-09-26T02:46:57.185Z"
+last_activity: 2026-09-25
+last_activity_desc: Phase 25 execution started
+state_head: 98337e207e47b177c89af28df875551339bb663c
 progress:
   total_phases: 10
   completed_phases: 6
@@ -24,14 +24,14 @@ milestone_name: Roadmap Redesign
 See: .planning/PROJECT.md (updated 2026-09-23)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 24 complete (Roadmap Tab Redesign & Detail-Tab Consolidation). Router's next phase is 19 (GITSAFE), whose gap-closure loop is halted by user decision — awaiting user direction, do not auto-resume.
+**Current focus:** Phase 25 — Running Agents & Live Wave View
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
 cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-target).
 
 ## Current Position
 
-Status: Shipped v1.8.0 — Roadmap Redesign (2026-09-24). Interim release cut mid-v2.0 carrying
+Status: Ready to execute
   Phase 24, quick tasks 260922-hdh/hdi/hdj, 260923-lr8/lr9/lra/md1, 260924-drx and five debug
   fixes; README gained screenshots and a Codex section. `./scripts/pre-tag-check.sh --container
   v1.8.0` exit **0**, all five gates PASS, git banner MATCH, 49 suites / **2367 passed / 0 failed**
@@ -102,8 +102,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (unchanged by the release, resume here):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
-Phase: 25 (Running Agents & Live Wave View) — READY TO EXECUTE
-Plan: Not started
+Phase: 25 (Running Agents & Live Wave View) — EXECUTING
+Plan: 2 of 6
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -137,7 +137,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-24 - Completed quick task 260924-drx: Backlog tab Enter-to-focus scrollable content pane + edit opens ROADMAP.md section
+Last activity: 2026-09-25 — Phase 25 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -318,6 +318,7 @@ verify-phase if the gate is fixed.
 | Phase 24 P05 | 12 min | 3 tasks | 3 files |
 | Phase 24 P06 | 16 min | 3 tasks | 5 files |
 | Phase 24 P07 | 13min | 3 tasks | 7 files |
+| Phase 25 P01 | 15 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -419,6 +420,9 @@ Recent decisions affecting current work:
 - [Phase 24]: RoadmapView splits side-by-side at >=100 cols, stacked below; stacked detail pane shrinks 9->6 rows and shortens the goal before edge lines
 - [Phase 24]: Final tabs 1:Roadmap 2:Phases 3:Backlog 4:Git 5:Queue 6:Sess 7:Cfg 8:Docs + D:Drive; Archive is Docs › Milestones (`m`), switch_to_sub_view is the one arrival rule [INFERRED — audit]
 - [Phase 24]: Roadmap footer left at 91/87 cols — trimming hints is a scope change, deferred
+- [Phase 25]: 25-01: agent git counts live in worktrees::worktree_counts so every src/agents git call stays in worktrees.rs [inferred]
+- [Phase 25]: 25-01: no-linked-worktree prefilter reports main_worktree=project_root, base_sha=None [inferred]
+- [Phase 25]: 25-01: non-z porcelain fallback also decodes octal byte escapes (non-ASCII paths) [inferred]
 
 ### Roadmap Evolution
 
@@ -512,13 +516,13 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-26T01:32:27.010Z
-Stopped at: Phase 25 context gathered
+Last session: 2026-09-26T02:46:56.725Z
+Stopped at: Completed 25-01-PLAN.md
 user-facing features); `cargo update` moved cc, find-msvc-tools, finl_unicode, instability, libredox,
 lru, pest*, process-wrap, thiserror*; still held by upstream `=` pins: generic-array 0.14.7 (0.14.9),
 unicode-width 0.2.0 (0.2.2). `assets/` excluded from the crate package. Router names Phase 19 next,
 but its gap-closure loop is halted by user decision — do not resume without asking.
-Resume file: .planning/phases/25-running-agents-live-wave-view/25-CONTEXT.md
+Resume file: None
 
 Previous session (v1.7.2 release):
 Release: `Cargo.toml` at 1.7.2. `cargo update` relocked **only this crate's own entry**
