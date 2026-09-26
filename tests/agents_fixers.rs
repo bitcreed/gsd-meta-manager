@@ -292,6 +292,24 @@ fn a_review_fix_report_hides_the_estimate() {
     );
 }
 
+/// WR-03: the denominator is the code review's, even when an eval review and a
+/// UI review sit beside it — `12-EVAL-REVIEW.md` sorts before `12-REVIEW.md`.
+#[test]
+fn eval_and_ui_reviews_never_supply_the_total() {
+    let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
+        return;
+    };
+    let dir = root.join(".planning/phases/12-cli");
+    let other = "---\nfindings:\n  total: 5\n---\n";
+    std::fs::write(dir.join("12-EVAL-REVIEW.md"), other).expect("fixture write");
+    std::fs::write(dir.join("12-UI-REVIEW.md"), other).expect("fixture write");
+    let wt = add_agent_worktree(&root, FIXER_A);
+    commit(&wt, "fix(12): WR-08 x");
+
+    let agents = scan(&root, Scripted::fixer());
+    assert_eq!(counts(&agents), Some((1, Some(1), Some(48))));
+}
+
 #[test]
 fn a_missing_or_unreadable_review_total_gives_no_count() {
     let no_total = "---\nfindings:\n  critical: 2\n  warning: 22\n---\n";

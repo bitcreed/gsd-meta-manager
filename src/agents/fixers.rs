@@ -11,7 +11,7 @@
 //!
 //! What it reads, and nothing else:
 //!
-//! * one `*-REVIEW.md`'s leading frontmatter, through the existing nested
+//! * the phase's `NN-REVIEW.md` leading frontmatter, through the existing nested
 //!   reader [`disk_status::leading_frontmatter_nested_value`] (no second YAML
 //!   reader, D-C11), capped at [`REVIEW_READ_CAP`] bytes;
 //! * the entry NAMES of that phase's directory in the main worktree;
@@ -147,9 +147,21 @@ fn is_active_fixer(row: &AgentRow) -> bool {
             .is_some_and(|t| t.as_raw_for_logic_only() == FIXER_AGENT_TYPE)
 }
 
+/// Whether `name` is the code review of `phase`: exactly `<NN>-REVIEW.md`,
+/// where `<NN>` is that phase in any padding (`05-REVIEW.md` and
+/// `5-REVIEW.md` for phase 5).
+///
+/// WR-03: a bare `ends_with("-REVIEW.md")` also took `NN-EVAL-REVIEW.md` and
+/// `NN-UI-REVIEW.md`, and the eval review sorts first (`E` < `R`), so an
+/// eval-reviewed phase read its denominator from the wrong file.
+fn is_code_review_name(name: &str, phase: &PhaseNum) -> bool {
+    name.strip_suffix("-REVIEW.md")
+        .is_some_and(|stem| PhaseNum::parse(stem).is_some() && same_phase(stem, &phase.to_string()))
+}
+
 /// What the phase directory says about the review: whether its fix report
 /// exists, and which REVIEW.md to read. Entry names only.
-fn review_files(phase_dir: &Path) -> (bool, Option<PathBuf>) {
+fn review_files(phase_dir: &Path, phase: &PhaseNum) -> (bool, Option<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(phase_dir) else {
         return (false, None);
     };
@@ -162,7 +174,7 @@ fn review_files(phase_dir: &Path) -> (bool, Option<PathBuf>) {
         };
         if name.ends_with("-REVIEW-FIX.md") {
             fix_report = true;
-        } else if name.ends_with("-REVIEW.md") {
+        } else if is_code_review_name(name, phase) {
             reviews.push(entry.path());
         }
     }
@@ -200,7 +212,9 @@ fn review_total(path: &Path) -> Option<u32> {
 ///    higher phase; with none, only the fixer count is returned.
 /// 4. When the phase directory in the main worktree holds a
 ///    `*-REVIEW-FIX.md`, the run is over: no counts.
-/// 5. Otherwise `total` is `findings.total` from its `*-REVIEW.md`.
+/// 5. Otherwise `total` is `findings.total` from its `NN-REVIEW.md` — the
+///    code review itself, never `NN-EVAL-REVIEW.md` or `NN-UI-REVIEW.md`
+///    ([`is_code_review_name`], WR-03).
 /// 6. `fixed` is the size of the union of [`finding_ids`] over every fixer's
 ///    subjects plus the main worktree's last 300 — an id fixed twice, on two
 ///    worktrees or on a worktree and main, counts once.
@@ -263,7 +277,7 @@ pub fn estimate(
     else {
         return Some(estimate);
     };
-    let (fix_report, review) = review_files(&phase_dir);
+    let (fix_report, review) = review_files(&phase_dir, &phase);
     if fix_report {
         return Some(estimate);
     }
@@ -387,5 +401,29 @@ mod tests {
             None,
             "only digits are ever a phase"
         );
+    }
+
+    #[test]
+    fn only_the_phases_own_code_review_is_the_review() {
+        assert!(is_code_review_name("12-REVIEW.md", &phase("12")));
+        assert!(is_code_review_name("05-REVIEW.md", &phase("5")));
+        assert!(is_code_review_name("07.1-REVIEW.md", &phase("7.1")));
+        for other in [
+            "12-EVAL-REVIEW.md",
+            "12-UI-REVIEW.md",
+            "12-REVIEW-FIX.md",
+            "13-REVIEW.md",
+            "07-REVIEW.md",
+            "REVIEW.md",
+            "-REVIEW.md",
+            "x12-REVIEW.md",
+        ] {
+            let target = if other.starts_with("07") {
+                phase("7.1")
+            } else {
+                phase("12")
+            };
+            assert!(!is_code_review_name(other, &target), "{other}");
+        }
     }
 }
