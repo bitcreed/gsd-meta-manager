@@ -1397,18 +1397,29 @@ pub(crate) mod worktree_fixture {
     pub(crate) fn fake_linked_worktree(root: &Path) -> (PathBuf, PathBuf) {
         let root = root.canonicalize().expect("canonical root");
         let main = root.join("main");
-        let admin = main.join(".git").join("worktrees").join("agent-x");
+        std::fs::create_dir_all(main.join(".planning")).unwrap();
+        let worktree = add_fake_worktree(&main, "agent-x");
+        (main, worktree)
+    }
+
+    /// One more fake linked worktree of `main` (which must already hold a
+    /// `.git/` directory or will get one): admin dir
+    /// `main/.git/worktrees/<name>` with `commondir` = `../..`, and the
+    /// worktree `main/.claude/worktrees/<name>/` holding `.planning/` and the
+    /// absolute gitfile `gitdir: <admin>`. Returns the canonical worktree.
+    /// Quick 260926-0u3.
+    pub(crate) fn add_fake_worktree(main: &Path, name: &str) -> PathBuf {
+        let admin = main.join(".git").join("worktrees").join(name);
         std::fs::create_dir_all(&admin).unwrap();
         std::fs::write(admin.join("commondir"), "../..\n").unwrap();
-        std::fs::create_dir_all(main.join(".planning")).unwrap();
-        let worktree = main.join(".claude").join("worktrees").join("agent-x");
+        let worktree = main.join(".claude").join("worktrees").join(name);
         std::fs::create_dir_all(worktree.join(".planning")).unwrap();
         std::fs::write(
             worktree.join(".git"),
             format!("gitdir: {}\n", admin.display()),
         )
         .unwrap();
-        (main, worktree)
+        worktree.canonicalize().expect("canonical worktree")
     }
 }
 
@@ -1687,6 +1698,197 @@ mod linked_worktree_tests {
         assert!(pruned.is_empty());
         assert!(!path.exists());
         assert!(!path.parent().unwrap().exists());
+    }
+}
+
+/// Quick 260926-0u3: a session in a linked worktree (or a subdirectory of
+/// one) registers the worktree's MAIN, once, however many sessions are live;
+/// the worktree itself never registers. std::fs fixtures only — this file may
+/// not spawn (`tests/spawn_seam_guard.rs`); the real-git counterparts live in
+/// `tests/registry_worktree_guard.rs`.
+#[cfg(test)]
+mod worktree_session_discovery_tests {
+    use super::worktree_fixture::{add_fake_worktree, fake_linked_worktree};
+    use super::*;
+    use tempfile::tempdir;
+
+    fn session(working_dir: PathBuf) -> ClaudeSession {
+        ClaudeSession {
+            pid: 1,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir,
+            start_time: None,
+            tty: None,
+        }
+    }
+
+    /// UD-6: no entry is, or sits under, a `.claude/worktrees/` dir, and none
+    /// classifies as a git linked worktree.
+    fn assert_no_worktree_registered(cfg: &Config) {
+        for (alias, entry) in &cfg.projects {
+            let path = canon_or_raw(&entry.path);
+            let comps: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+            assert!(
+                !comps
+                    .windows(2)
+                    .any(|w| w[0] == ".claude" && w[1] == "worktrees"),
+                "{alias} is under .claude/worktrees: {}",
+                path.display()
+            );
+            assert_eq!(
+                linked_worktree_main(&path),
+                None,
+                "{alias} is a linked worktree: {}",
+                path.display()
+            );
+        }
+    }
+
+    fn aliases(cfg: &Config) -> Vec<&str> {
+        let mut keys: Vec<&str> = cfg.projects.keys().map(String::as_str).collect();
+        keys.sort();
+        keys
+    }
+
+    /// `main` with worktrees agent-x (from the fixture) and agent-1..agent-13;
+    /// returns (main, the 13 numbered worktrees).
+    fn thirteen_worktrees(root: &Path) -> (PathBuf, Vec<PathBuf>) {
+        let (main, _) = fake_linked_worktree(root);
+        let worktrees = (1..=13)
+            .map(|n| add_fake_worktree(&main, &format!("agent-{n}")))
+            .collect();
+        (main, worktrees)
+    }
+
+    #[test]
+    fn thirteen_worktree_sessions_in_one_poll_register_the_main_exactly_once() {
+        let tmp = tempdir().unwrap();
+        let (main, worktrees) = thirteen_worktrees(tmp.path());
+        let mut sessions: Vec<ClaudeSession> =
+            worktrees.iter().cloned().map(session).collect();
+        for wt in &worktrees[..3] {
+            let sub = wt.join("src");
+            std::fs::create_dir_all(&sub).unwrap();
+            sessions.push(session(sub));
+            sessions.push(session(wt.join(".planning")));
+        }
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &sessions);
+        assert_eq!(added, vec![("main".to_string(), main.clone())]);
+        assert_eq!(aliases(&cfg), vec!["main"]);
+        assert!(cfg.projects.keys().all(|k| !k.ends_with("-2")));
+        assert_no_worktree_registered(&cfg);
+
+        assert!(auto_register_from_sessions(&mut cfg, &sessions).is_empty());
+        assert_eq!(cfg.projects.len(), 1);
+        assert_no_worktree_registered(&cfg);
+    }
+
+    #[test]
+    fn thirteen_worktree_sessions_split_across_polls_register_the_main_exactly_once() {
+        let tmp = tempdir().unwrap();
+        let (main, worktrees) = thirteen_worktrees(tmp.path());
+        let sessions: Vec<ClaudeSession> = worktrees.iter().cloned().map(session).collect();
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &sessions[..6]);
+        assert_eq!(added, vec![("main".to_string(), main)]);
+        assert!(auto_register_from_sessions(&mut cfg, &sessions[6..]).is_empty());
+        assert_eq!(aliases(&cfg), vec!["main"]);
+        assert_no_worktree_registered(&cfg);
+    }
+
+    #[test]
+    fn a_main_registered_under_any_alias_and_spelling_makes_worktree_sessions_a_no_op() {
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = fake_linked_worktree(tmp.path());
+        // A non-canonical spelling of main: dedupe must compare canonically.
+        let spelled = main.join("..").join("main");
+        let mut cfg = Config::new();
+        add_project(&mut cfg, &Alias::new("custom").unwrap(), &spelled).unwrap();
+        assert_ne!(cfg.projects["custom"].path, main, "stored non-canonical");
+
+        let sub = worktree.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        let added =
+            auto_register_from_sessions(&mut cfg, &[session(worktree.clone()), session(sub)]);
+        assert!(added.is_empty(), "registered again: {added:?}");
+        assert_eq!(aliases(&cfg), vec!["custom"]);
+        assert_no_worktree_registered(&cfg);
+    }
+
+    #[test]
+    fn a_main_without_planning_registers_nothing_even_though_its_worktree_has_one() {
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = fake_linked_worktree(tmp.path());
+        std::fs::remove_dir_all(main.join(".planning")).unwrap();
+        assert!(worktree.join(".planning").is_dir());
+        let sub = worktree.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &[session(worktree), session(sub)]);
+        assert!(added.is_empty(), "registered: {added:?}");
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn a_deep_subdirectory_of_a_worktree_alone_registers_the_main() {
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = fake_linked_worktree(tmp.path());
+        let deep = worktree.join("src/deep");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &[session(deep)]);
+        assert_eq!(added, vec![("main".to_string(), main)]);
+        assert_no_worktree_registered(&cfg);
+    }
+
+    #[test]
+    fn a_non_git_agent_path_falls_back_to_its_claude_worktrees_prefix() {
+        let tmp = tempdir().unwrap();
+        let proj = tmp.path().canonicalize().unwrap().join("proj");
+        std::fs::create_dir_all(proj.join(".planning")).unwrap();
+        let gone = proj.join(".claude/worktrees/agent-gone/src");
+        let q = proj.join(".claude/worktrees/agent-q");
+        std::fs::create_dir_all(q.join(".planning")).unwrap();
+        assert!(!gone.exists());
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &[session(gone), session(q)]);
+        assert_eq!(added, vec![("proj".to_string(), proj)]);
+        assert_eq!(aliases(&cfg), vec!["proj"]);
+        assert_no_worktree_registered(&cfg);
+    }
+
+    /// [inferred, per brief] a heuristic prefix that is itself a linked
+    /// worktree registers nothing — no second-level resolution to its main.
+    #[test]
+    fn a_heuristic_prefix_that_is_a_linked_worktree_registers_nothing() {
+        let tmp = tempdir().unwrap();
+        let (main, _) = fake_linked_worktree(tmp.path());
+        let admin = main.join(".git/worktrees/wt2");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        let wt2 = main.join("wt2");
+        std::fs::create_dir_all(wt2.join(".planning")).unwrap();
+        std::fs::write(wt2.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        assert_eq!(linked_worktree_main(&wt2), Some(main.clone()));
+
+        // agent-n's own `.git/` DIRECTORY makes the cwd classify "not linked",
+        // so resolution reaches the path heuristic with a linked-worktree prefix.
+        let agent_n = wt2.join(".claude/worktrees/agent-n");
+        std::fs::create_dir_all(agent_n.join(".git")).unwrap();
+        std::fs::create_dir_all(agent_n.join(".planning")).unwrap();
+        assert_eq!(linked_worktree_main(&agent_n), None);
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &[session(agent_n)]);
+        assert!(added.is_empty(), "registered: {added:?}");
+        assert!(cfg.projects.is_empty());
     }
 }
 

@@ -143,6 +143,81 @@ fn auto_discovery_registers_the_main_when_a_session_sits_in_its_linked_worktree(
 }
 
 #[test]
+fn thirteen_real_worktree_sessions_register_the_main_exactly_once() {
+    let Some((_tmp, main, worktree)) = worktree_fixture() else {
+        return;
+    };
+    let mut worktrees = vec![worktree.clone()];
+    for n in 1..=12 {
+        let rel = format!(".claude/worktrees/agent-{n}");
+        let branch = format!("worktree-agent-{n}");
+        assert!(
+            git(&main, &["worktree", "add", "--quiet", "-b", &branch, &rel]),
+            "git worktree add {rel}"
+        );
+        worktrees.push(main.join(rel));
+    }
+    let mut sessions: Vec<ClaudeSession> = worktrees.iter().cloned().map(session_at).collect();
+    sessions.push(session_at(worktree.join(".planning")));
+    let refs: Vec<&Path> = worktrees.iter().map(PathBuf::as_path).collect();
+
+    let mut config = Config::new();
+    let added = auto_register_from_sessions(&mut config, &sessions);
+    assert_eq!(added.len(), 1, "{added:?}");
+    assert_eq!(added[0].0, "main");
+    assert_eq!(canon(&added[0].1), canon(&main));
+    assert_eq!(config.projects.len(), 1);
+    assert!(config.projects.keys().all(|k| !k.ends_with("-2")));
+    assert_no_worktree_registered(&config, &refs);
+
+    assert!(auto_register_from_sessions(&mut config, &sessions).is_empty());
+    assert_eq!(config.projects.len(), 1);
+    assert_no_worktree_registered(&config, &refs);
+}
+
+#[test]
+fn a_registered_main_makes_a_worktree_session_a_no_op() {
+    let Some((_tmp, main, worktree)) = worktree_fixture() else {
+        return;
+    };
+    let mut config = Config::new();
+    add_project(&mut config, &Alias::new("custom").unwrap(), &main).expect("main registers");
+    let added = auto_register_from_sessions(&mut config, &[session_at(worktree.clone())]);
+    assert!(added.is_empty(), "registered again: {added:?}");
+    assert_eq!(config.projects.len(), 1);
+    assert!(config.projects.contains_key("custom"));
+    assert_no_worktree_registered(&config, &[&worktree]);
+}
+
+#[test]
+fn a_main_without_planning_registers_nothing_from_its_worktree() {
+    let Some((_tmp, main, worktree)) = worktree_fixture() else {
+        return;
+    };
+    std::fs::remove_dir_all(main.join(".planning")).expect("rm main/.planning");
+    assert!(worktree.join(".planning").is_dir());
+    let mut config = Config::new();
+    let added = auto_register_from_sessions(&mut config, &[session_at(worktree.clone())]);
+    assert!(added.is_empty(), "registered: {added:?}");
+    assert!(config.projects.is_empty());
+}
+
+#[test]
+fn a_subdirectory_of_a_real_worktree_resolves_to_the_main() {
+    let Some((_tmp, main, worktree)) = worktree_fixture() else {
+        return;
+    };
+    let deep = worktree.join("src/deep");
+    std::fs::create_dir_all(&deep).expect("mkdir deep");
+    let mut config = Config::new();
+    let added = auto_register_from_sessions(&mut config, &[session_at(deep)]);
+    assert_eq!(added.len(), 1, "{added:?}");
+    assert_eq!(added[0].0, "main");
+    assert_eq!(canon(&added[0].1), canon(&main));
+    assert_no_worktree_registered(&config, &[&worktree]);
+}
+
+#[test]
 fn both_registration_primitives_refuse_a_linked_worktree_naming_the_main() {
     let Some((_tmp, main, worktree)) = worktree_fixture() else {
         return;
