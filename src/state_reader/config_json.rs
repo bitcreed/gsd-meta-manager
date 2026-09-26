@@ -1254,6 +1254,37 @@ mod tests {
         );
     }
 
+    /// Quick task 260926-jnf (T-jnf-05, T-jnf-04). gsd-core types the three
+    /// search-provider slots `string | boolean | null` — a string is the API
+    /// key itself. Typed `Option<bool>` here, a key made the WHOLE file a parse
+    /// failure (no Defaults rows, and the serde error quoted it into the log).
+    #[test]
+    fn a_search_provider_slot_holding_an_api_key_parses_and_round_trips_secret() {
+        let content = r#"{"brave_search":"BSA-SECRET-Q7Z9","firecrawl":true,"exa_search":null}"#;
+        let config = parse_gsd_config(content).expect("an API-key string in a search slot parses");
+        assert_eq!(
+            config.brave_search,
+            Some(ApiKeySetting::Key("BSA-SECRET-Q7Z9".to_string()))
+        );
+        assert_eq!(config.firecrawl, Some(ApiKeySetting::Flag(true)));
+        assert_eq!(config.exa_search, None);
+
+        let serialized = serialize_gsd_config(&config).expect("serialises");
+        let reparsed = parse_gsd_config(&serialized).expect("re-parses");
+        assert_eq!(
+            serialized,
+            serialize_gsd_config(&reparsed).unwrap(),
+            "the save path is not a fixed point over the search-provider slots"
+        );
+        assert_eq!(reparsed.brave_search, config.brave_search);
+
+        let debug = format!("{config:?}");
+        assert!(
+            !debug.contains("BSA-SECRET-Q7Z9") && !debug.contains("Q7Z9"),
+            "Debug of a config printed the API key: {debug}"
+        );
+    }
+
     #[test]
     fn test_default_config_omits_new_toplevel_keys() {
         let config = GsdConfig::default();

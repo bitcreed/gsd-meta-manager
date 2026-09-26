@@ -18502,6 +18502,112 @@ mod tests {
             .collect()
     }
 
+    // --- quick 260926-jnf: secret config values never reach a cell -------
+
+    /// Every Defaults row drawn at once: tall enough that no row scrolls out
+    /// of the viewport, so a leak on ANY row is on screen to be caught.
+    const SECRET_PROBE_WIDTH: u16 = 220;
+    const SECRET_PROBE_HEIGHT: u16 = 240;
+
+    /// The tracer (Task 1): `brave_search` holding an API KEY renders as the
+    /// fixed-width mask, never as the key or its last four characters.
+    #[test]
+    fn a_secret_search_key_never_reaches_a_rendered_cell() {
+        use crate::state_reader::config_json::ApiKeySetting;
+        use crate::state_reader::config_secrets::MASKED_SECRET;
+
+        let mut config = populated_gsd_config();
+        config.brave_search = Some(ApiKeySetting::Key("BSA-SECRET-Q7Z9".to_string()));
+        let entries = build_defaults_entries(&config, None);
+        assert!(
+            entries.len() + 8 < SECRET_PROBE_HEIGHT as usize,
+            "the probe is too short to draw every row"
+        );
+
+        let text = render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
+        assert!(text.contains("brave_search"), "ARRIVAL: the row was not drawn:\n{text}");
+        assert!(text.contains(MASKED_SECRET), "ARRIVAL: the mask was not drawn:\n{text}");
+        for leak in ["SECRET-", "Q7Z9"] {
+            assert!(!text.contains(leak), "the render leaked {leak:?}:\n{text}");
+        }
+    }
+
+    /// T-jnf-02 / T-jnf-06, through the REAL `handle_key`: the secret prompt
+    /// opens EMPTY, echoes bullets, persists `Key`/`Flag`, and an empty Enter
+    /// keeps the stored key.
+    #[test]
+    fn editing_a_secret_row_never_prefills_and_masks_typed_input() {
+        use crate::state_reader::config_json::ApiKeySetting;
+
+        let mut config = populated_gsd_config();
+        config.brave_search = Some(ApiKeySetting::Key("OLD-SECRET-Q7Z9".to_string()));
+        let (mut ctx, idx) = ctx_on_config_row(config, "brave_search");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let brave = |ctx: &AppContext| {
+            ctx.view_cache[TEST_ALIAS]
+                .defaults_config
+                .as_ref()
+                .and_then(|c| c.brave_search.clone())
+        };
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        {
+            let cache = &ctx.view_cache[TEST_ALIAS];
+            assert_eq!(cache.defaults_editing, Some(idx), "Enter opens the secret prompt");
+            assert_eq!(
+                cache.defaults_text_buffer.char_count(),
+                0,
+                "the secret prompt must open EMPTY, never seeded with the stored key"
+            );
+        }
+
+        for c in "NEW-SECRET-X4K8".chars() {
+            press(&mut screen, &mut ctx, KeyCode::Char(c));
+        }
+        let lines = draw_config_tab(&screen, &ctx, 160, 60);
+        let joined = lines.join("\n");
+        assert!(
+            lines.iter().any(|l| l.contains(&"•".repeat(15))),
+            "ARRIVAL: the prompt must echo one bullet per typed character:\n{joined}"
+        );
+        for leak in ["NEW-SECRET", "X4K8", "Q7Z9"] {
+            assert!(!joined.contains(leak), "the prompt leaked {leak:?}:\n{joined}");
+        }
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            brave(&ctx),
+            Some(ApiKeySetting::Key("NEW-SECRET-X4K8".to_string()))
+        );
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
+        if let Some((msg, _)) = &ctx.status_message {
+            assert!(!msg.contains("X4K8"), "a status message carried the key: {msg}");
+        }
+
+        // An empty Enter is a no-op, never a clear (T-jnf-06).
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            brave(&ctx),
+            Some(ApiKeySetting::Key("NEW-SECRET-X4K8".to_string())),
+            "an empty Enter on the secret prompt changed the stored key"
+        );
+        let status = ctx.status_message.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(
+            status.contains("brave_search unchanged"),
+            "an empty Enter must say the key is unchanged, got {status:?}"
+        );
+
+        // `true` / `false` are the auto-detection overrides, stored as booleans.
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        for c in "false".chars() {
+            press(&mut screen, &mut ctx, KeyCode::Char(c));
+        }
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(brave(&ctx), Some(ApiKeySetting::Flag(false)));
+        assert_eq!(config_row_values(&ctx)[idx], "false");
+    }
+
     /// Underlying indices of the rows whose key contains "drift", computed
     /// here and NOT through the production filter helper.
     fn drift_row_indices() -> Vec<usize> {
