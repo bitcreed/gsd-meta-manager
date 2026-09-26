@@ -567,6 +567,7 @@ Recent decisions affecting current work:
 | 260923-lra | README macOS note: /proc-based session detection, best-effort Codex | 2026-09-23 | 25dce1e | .planning/quick/260923-lra-readme-macos-note-live-session-detection-claude-and-codex-re |
 | 260923-md1 | Roadmap tab renders phases as a left-to-right dependency graph (pure layout in `src/ui/roadmap_graph.rs`: longest-path layering, chain rows, ┬/└/┘ fan-out/fan-in junctions, reference rows for undrawable edges, cycle/unknown-dep notes) with milestone boundaries (ROADMAP `Phases A-B` ranges → header band + row-end `(M3 → M4: name)` labels, active milestone highlighted); graph default, `v` toggles the old box list | 2026-09-23 | 10a0bf3 | [260923-md1-roadmap-dependency-graph-view-with-miles](./quick/260923-md1-roadmap-dependency-graph-view-with-miles/) |
 | 260924-drx | Backlog tab: Enter focuses a scrollable content pane (side-by-side at >=100 cols), j/k PgUp/PgDn scroll it, Enter/Esc close; `e` opens ROADMAP.md at the item's heading line (`$EDITOR +N`) | 2026-09-24 | a723b3a | [260924-drx-backlog-tab-enter-to-focus-scrollable-co](./quick/260924-drx-backlog-tab-enter-to-focus-scrollable-co/) |
+| 260926-gtk | Config re-sync to gsd-core 1.15.0: planner.stall_detection_enabled + workflow.ui_interaction_capture rows, DEFAULTS_OPTION_COUNT 132, synced commit v1.14.0-111-gec81d0d10 (version stays 1.14.0) | 2026-09-26 | 6da18c3 | .planning/quick/260926-gtk-config-re-sync-to-gsd-core-1-15-0-release-1-15-0-ec81d0d-add |
 
 ## Session Continuity
 

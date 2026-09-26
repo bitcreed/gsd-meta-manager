@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "batch_id": "260926-gtj",
+  "created_at": "2026-09-26T17:06:39.163Z",
+  "options": {},
+  "base_revision": "228a063b9b0a74f1a46b365ff71f73240a671c11",
+  "items": [
+    {
+      "quick_id": "260926-gtk",
+      "client_id": null,
+      "description": "Config re-sync to gsd-core 1.15.0 (release-1.15.0 ec81d0d): add Defaults-tab rows planner.stall_detection_enabled and workflow.ui_interaction_capture, bump DEFAULTS_OPTION_COUNT, move GSD_CORE_SYNCED_COMMIT to ec81d0d while keeping GSD_CORE_SYNCED_VERSION 1.14.0, rewrite docs/GSD-CORE-SYNC.md",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/config_json.rs",
+        "src/ui/screens/detail.rs",
+        "docs/GSD-CORE-SYNC.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "6da18c3",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260926-gtl",
+      "client_id": null,
+      "description": "Roadmap parser parity with gsd-core 1.15.0: port PHASE_DEP_REF_SOURCE to parse_depends_on, port extractPhaseFieldMultiline to parse_phase_goals, accept letter-suffixed phase ids (12A, 23A.1.2) in PHASE_ID and plan_id_re",
+      "status": "pending",
+      "depends_on": [
+        "260926-gtk"
+      ],
+      "planned_files": [
+        "src/state_reader/roadmap_md.rs",
+        "src/state_reader/mod.rs",
+        "src/agents/worktrees.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260926-gtm",
+      "client_id": null,
+      "description": "Codex install awareness for gsd-core 1.15.0: gsd-tools resolvers also check ~/.codex/gsd-core/bin/gsd-tools.cjs, and handle inherited GSD_RUNTIME in the codex child env",
+      "status": "pending",
+      "depends_on": [
+        "260926-gtl"
+      ],
+      "planned_files": [
+        "src/state_reader/queue_md.rs",
+        "tests/driver_router_conformance.rs",
+        "src/executor/codex.rs",
+        "tests/driver_codex_runtime.rs",
+        "tests/fixtures/fake-codex.sh",
+        "README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 2,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260926-gtn",
+      "client_id": null,
+      "description": "Surface gsd-core 1.15.0 review/verification state: read REVIEW-DISPOSITION.md ledger open/deferred counts, show VERIFICATION status unparseable, stale-verification hint names execute-phase",
+      "status": "pending",
+      "depends_on": [
+        "260926-gtm"
+      ],
+      "planned_files": [
+        "src/state_reader/state_md.rs",
+        "src/state_reader/disk_status.rs",
+        "src/driver/router.rs",
+        "tests/driver_router_conformance.rs",
+        "src/ui/screens/detail.rs",
+        "src/agents/fixers.rs",
+        "README.md",
+        "docs/GETTING-STARTED.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 3,
+      "commit": null,
+      "failure_reason": null
+    }
+  ]
+}
