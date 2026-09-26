@@ -104,6 +104,12 @@ const CODEX_THREAD_LOCK_DIR: &str = "thread-writer-locks";
 /// process, bounding the per-poll work a process named `codex` can cause.
 const CODEX_FD_SCAN_LIMIT: usize = 4096;
 
+/// At most this many `codex` pids have their cwd read per process probe
+/// (quick 260926-06g), bounding the per-poll work a fleet of processes named
+/// `codex` can cause.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const CODEX_PROCESS_SCAN_LIMIT: usize = 1024;
+
 /// PIDs of processes whose name is exactly `name`. `None` when `pgrep` could
 /// not be run; an empty list when it ran and matched nothing.
 fn pgrep_exact(name: &str) -> Option<Vec<u32>> {
@@ -908,10 +914,29 @@ impl ProcessProbe for ProcfsProbe {
         observation
     }
 
+    /// The cwd of every process `pgrep -x codex` matches, taken at most once
+    /// per probe instance (one poll) and only when first asked — which the
+    /// agents core does only for an agent row, so a fleet with no agent
+    /// worktree never runs this `pgrep`.
+    ///
+    /// Every match counts, not only interactive TUIs: the GSD Codex executor
+    /// runs `codex exec`, which [`detect_sessions`] deliberately drops. The
+    /// sandbox helper that shares the comm only ever runs as a child of a live
+    /// codex, so counting it is harmless. At most
+    /// [`CODEX_PROCESS_SCAN_LIMIT`] pids are read; only absolute cwds are kept.
+    /// `pgrep` that cannot run is `None`, never an empty list.
     fn codex_cwds(&self) -> Option<&[PathBuf]> {
-        // Filled by the codex scan (quick 260926-06g, task 2); until then the
-        // cell stays empty and the answer is "could not say".
-        self.codex.get().and_then(|cwds| cwds.as_deref())
+        self.codex
+            .get_or_init(|| {
+                pgrep_exact(CODEX_PROGRAM).map(|pids| {
+                    pids.into_iter()
+                        .take(CODEX_PROCESS_SCAN_LIMIT)
+                        .filter_map(read_cwd)
+                        .filter(|cwd| cwd.is_absolute())
+                        .collect()
+                })
+            })
+            .as_deref()
     }
 }
 
@@ -1008,6 +1033,70 @@ mod tests {
         assert_eq!(parse_stat_starttime("1234 claude S 1 2 3"), None, "no comm");
         let bad = stat_line("claude", 999_999).replacen(" 999999 ", " x999999 ", 1);
         assert_eq!(parse_stat_starttime(&bad), None, "non-numeric field 22");
+    }
+
+    /// The real procfs probe, against this test process and a pid that
+    /// cannot exist.
+    #[cfg(target_os = "linux")]
+    mod procfs_probe {
+        use super::*;
+        use crate::agents::processes::{owner_verdict, ProcessEvidence};
+
+        fn own_start() -> u64 {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", std::process::id()))
+                .expect("this process's stat is readable");
+            parse_stat_starttime(&stat).expect("this process has a starttime")
+        }
+
+        #[test]
+        fn this_process_is_present_with_its_start_and_cwd() {
+            let probe = process_probe();
+            let expected = PidObservation::Present {
+                start_time: Some(own_start()),
+                cwd: Some(std::env::current_dir().expect("a cwd")),
+            };
+            assert_eq!(probe.observe(std::process::id()), expected);
+            assert_eq!(
+                probe.observe(std::process::id()),
+                expected,
+                "a second observe of the same pid is the memoised value"
+            );
+        }
+
+        #[test]
+        fn a_pid_that_cannot_exist_is_absent() {
+            let probe = process_probe();
+            assert_eq!(probe.observe(u32::MAX), PidObservation::Absent);
+            assert_eq!(probe.observe(u32::MAX), PidObservation::Absent);
+        }
+
+        #[test]
+        fn codex_cwds_is_none_or_absolute_paths() {
+            let probe = process_probe();
+            if let Some(cwds) = probe.codex_cwds() {
+                assert!(cwds.iter().all(|cwd| cwd.is_absolute()), "{cwds:?}");
+            }
+            assert_eq!(
+                probe.codex_cwds(),
+                probe.codex_cwds(),
+                "one pgrep per probe instance"
+            );
+        }
+
+        #[test]
+        fn the_owner_verdict_on_this_process_is_start_exact() {
+            let probe = process_probe();
+            let own = probe.observe(std::process::id());
+            let start = own_start();
+            assert_eq!(
+                owner_verdict(&own, Some(start), &[]),
+                ProcessEvidence::OwnerAlive
+            );
+            assert_eq!(
+                owner_verdict(&own, Some(start + 1), &[]),
+                ProcessEvidence::OwnerGone
+            );
+        }
     }
 
     #[test]

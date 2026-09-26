@@ -117,14 +117,31 @@ pub fn owner_verdict(
 
 /// The process evidence for one agent worktree.
 ///
+/// First the runtime check: a `codex` process whose cwd is the worktree or
+/// inside it (component-wise) is [`ProcessEvidence::RuntimeInside`] — unless
+/// the worktree is `prunable`, whose directory is gone. That takes precedence
+/// over a dead owner: something is demonstrably running there. Only then the
+/// lock owner, through [`owner_verdict`].
+///
 /// `roots` are the project root (as given and canonical), the main worktree
 /// and every worktree of the project: where a live owner may legitimately
 /// work.
+///
+/// **Cost bound.** This is the only caller of
+/// [`ProcessProbe::codex_cwds`], and it runs only for agent rows, so the
+/// probe's one `pgrep` per poll never runs for a fleet with no agent worktree.
 pub(crate) fn worktree_evidence(
     wt: &CoreWorktree,
     probe: &dyn ProcessProbe,
     roots: &[PathBuf],
 ) -> ProcessEvidence {
+    if !wt.prunable
+        && probe
+            .codex_cwds()
+            .is_some_and(|cwds| cwds.iter().any(|cwd| cwd.starts_with(&wt.path)))
+    {
+        return ProcessEvidence::RuntimeInside;
+    }
     let Some(owner) = lock_owner(wt) else {
         return ProcessEvidence::Unknown;
     };
@@ -352,6 +369,70 @@ mod tests {
             ),
             Unknown,
             "no probe, no verdict"
+        );
+    }
+
+    const WT: &str = "/repo/.claude/worktrees/agent-a1";
+
+    fn codex_probe(cwds: &[&str]) -> FakeProbe {
+        FakeProbe {
+            codex: Some(cwds.iter().map(PathBuf::from).collect()),
+            ..FakeProbe::default()
+        }
+    }
+
+    #[test]
+    fn a_codex_cwd_inside_the_worktree_is_a_runtime_inside() {
+        let r = roots();
+        let wt = worktree(WT, None);
+        for cwd in [WT, "/repo/.claude/worktrees/agent-a1/src/deep"] {
+            assert_eq!(
+                worktree_evidence(&wt, &codex_probe(&["/elsewhere", cwd]), &r),
+                ProcessEvidence::RuntimeInside,
+                "{cwd}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_codex_cwd_elsewhere_is_no_runtime_inside() {
+        use ProcessEvidence::*;
+        let r = roots();
+        let wt = worktree(WT, None);
+        for cwd in [
+            "/repo",
+            "/repo/.claude/worktrees/agent-a1-other",
+            "/repo/.claude",
+        ] {
+            assert_eq!(
+                worktree_evidence(&wt, &codex_probe(&[cwd]), &r),
+                Unknown,
+                "{cwd}"
+            );
+        }
+        let mut prunable = worktree(WT, None);
+        prunable.prunable = true;
+        assert_eq!(
+            worktree_evidence(&prunable, &codex_probe(&[WT]), &r),
+            Unknown,
+            "a prunable worktree has no directory to work in"
+        );
+        assert_eq!(
+            worktree_evidence(&wt, &FakeProbe::default(), &r),
+            Unknown,
+            "no codex list"
+        );
+    }
+
+    #[test]
+    fn a_runtime_inside_outranks_a_dead_owner() {
+        let r = roots();
+        let wt = worktree(WT, Some(Some("claude agent a (pid 43 start 7)")));
+        let probe = codex_probe(&[WT]);
+        assert_eq!(probe.observe(43), PidObservation::Absent);
+        assert_eq!(
+            worktree_evidence(&wt, &probe, &r),
+            ProcessEvidence::RuntimeInside
         );
     }
 }

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use common::git;
 use gsd_meta_manager::agents::adapters::{AdapterReport, AgentAdapter, CoreSnapshot, Enrichment};
 use gsd_meta_manager::agents::{scan_project_with, scan_project_with_probe, AgentLiveness};
-use gsd_meta_manager::session_detector::NoProcessProbe;
+use gsd_meta_manager::session_detector::{NoProcessProbe, PidObservation, ProcessProbe};
 use std::time::SystemTime;
 use tempfile::TempDir;
 
@@ -158,6 +158,57 @@ fn without_a_probe_every_lock_owner_reads_as_the_mtime_says() {
             "{name}: NoProcessProbe is exactly scan_project_with"
         );
     }
+}
+
+/// A process table injected as data: every pid unknown, and a fixed list of
+/// `codex` cwds.
+struct CodexProbe(Vec<PathBuf>);
+
+impl ProcessProbe for CodexProbe {
+    fn observe(&self, _pid: u32) -> PidObservation {
+        PidObservation::Unknown
+    }
+
+    fn codex_cwds(&self) -> Option<&[PathBuf]> {
+        Some(&self.0)
+    }
+}
+
+/// A Codex executor has no adapter (D-A08): with no probe its worktree reads
+/// `Unknown`, and a `codex` working inside it makes it `Live`.
+#[test]
+fn a_codex_process_inside_an_agent_worktree_reads_live() {
+    let Some((_tmp, root)) = locked_fixture(None) else {
+        return;
+    };
+    let wt = root
+        .join(".claude")
+        .join("worktrees")
+        .join(format!("agent-{AGENT_ID}"));
+    let now = SystemTime::now();
+    let no_adapters: Vec<Box<dyn AgentAdapter>> = Vec::new();
+
+    let before = scan_project_with_probe(&root, &no_adapters, &NoProcessProbe, now);
+    assert_eq!(only_liveness(&before), AgentLiveness::Unknown);
+    assert_eq!(before, scan_project_with(&root, &no_adapters, now));
+
+    for cwd in [wt.clone(), wt.join("src")] {
+        let probe = CodexProbe(vec![PathBuf::from("/elsewhere"), cwd.clone()]);
+        let scan = scan_project_with_probe(&root, &no_adapters, &probe, now);
+        assert_eq!(only_liveness(&scan), AgentLiveness::Live, "{cwd:?}");
+    }
+
+    let main_only = CodexProbe(vec![root.clone()]);
+    assert_eq!(
+        only_liveness(&scan_project_with_probe(
+            &root,
+            &no_adapters,
+            &main_only,
+            now
+        )),
+        AgentLiveness::Unknown,
+        "a codex in the main worktree is not inside the agent worktree"
+    );
 }
 
 // ---------------------------------------------------------------------------

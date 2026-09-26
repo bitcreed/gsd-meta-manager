@@ -122,6 +122,11 @@ fn classify_facts(
     evidence: ProcessEvidence,
     now: SystemTime,
 ) -> AgentLiveness {
+    // A runtime process working in the worktree right now is the freshest
+    // evidence there is, ahead of every recorded fact.
+    if evidence == ProcessEvidence::RuntimeInside {
+        return AgentLiveness::Live;
+    }
     if ended {
         return AgentLiveness::Ended;
     }
@@ -175,10 +180,19 @@ pub fn classify_liveness(
 /// said about its worktree ([`processes::worktree_evidence`], quick
 /// 260926-06g).
 ///
-/// In order: `ended` → `Ended`; [`ProcessEvidence::OwnerGone`] → `Ended`,
-/// with or without facts; then exactly [`classify_liveness`]'s rules.
+/// The full rule order, with or without facts where noted:
+///
+/// 1. [`ProcessEvidence::RuntimeInside`] → `Live` (with or without facts).
+/// 2. `ended` → `Ended`.
+/// 3. [`ProcessEvidence::OwnerGone`] → `Ended` (with or without facts).
+/// 4. No facts, or no `last_activity` → `Unknown`.
+/// 5. Activity older than [`MAX_AGENT_AGE_SECS`] → `Ended` (CR-01).
+/// 6. A released lock plus (a SUMMARY in the worktree, or activity older than
+///    [`LIVE_SECS`]) → `Finished`.
+/// 7. Otherwise `Live`, `Idle` or `Stalled` by age.
+///
 /// [`ProcessEvidence::Unknown`] and [`ProcessEvidence::OwnerAlive`] never
-/// change the result (D-A05).
+/// change the result (D-A05): it is exactly [`classify_liveness`]'s.
 pub fn classify_observed(
     facts: Option<&Enrichment>,
     summary_in_worktree: bool,
@@ -187,8 +201,9 @@ pub fn classify_observed(
 ) -> AgentLiveness {
     let Some(facts) = facts else {
         return match evidence {
+            ProcessEvidence::RuntimeInside => AgentLiveness::Live,
             ProcessEvidence::OwnerGone => AgentLiveness::Ended,
-            _ => AgentLiveness::Unknown,
+            ProcessEvidence::Unknown | ProcessEvidence::OwnerAlive => AgentLiveness::Unknown,
         };
     };
     classify_facts(
@@ -714,6 +729,36 @@ mod tests {
                 classify_observed(f.as_ref(), summary, ProcessEvidence::OwnerGone, now),
                 AgentLiveness::Ended,
                 "{f:?} summary={summary}"
+            );
+        }
+    }
+
+    /// A process working in the worktree right now reads `Live`, whatever the
+    /// recorded facts say.
+    #[test]
+    fn runtime_inside_is_live_for_every_combination() {
+        let now = SystemTime::now();
+        for (f, summary) in evidence_grid(now) {
+            assert_eq!(
+                classify_observed(f.as_ref(), summary, ProcessEvidence::RuntimeInside, now),
+                AgentLiveness::Live,
+                "{f:?} summary={summary}"
+            );
+        }
+        let stale = facts(now, 86_401, None);
+        let mut ended = facts(now, 0, None);
+        ended.ended = true;
+        let released = facts(now, 30, Some(true));
+        for (name, f, summary) in [
+            ("no facts", None, false),
+            ("stale past the age bound", Some(&stale), false),
+            ("ended", Some(&ended), false),
+            ("released lock with a SUMMARY", Some(&released), true),
+        ] {
+            assert_eq!(
+                classify_observed(f, summary, ProcessEvidence::RuntimeInside, now),
+                AgentLiveness::Live,
+                "{name}"
             );
         }
     }
