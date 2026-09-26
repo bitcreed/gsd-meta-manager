@@ -124,10 +124,29 @@ pub struct ProjectState {
     /// exists — [`Self::active_phase_number`] lets it lead the disk frontier,
     /// but clamps it up to that frontier rather than below it.
     pub state_md_phase_number: Option<phase_num::PhaseNum>,
-    /// Whether the project has a non-empty HANDOFF.md or HANDOFF.json in .planning/
+    /// Whether the project has a non-empty HANDOFF.md or HANDOFF.json in
+    /// .planning/ **that is not stale** (see [`Self::stale_handoff`]).
     pub paused: bool,
-    /// Extracted context from HANDOFF file (next_action from JSON, or first content line from MD)
+    /// Extracted context from HANDOFF file (next_action from JSON, or first
+    /// content line from MD). `None` whenever the handoff is stale.
     pub pause_context: Option<String>,
+    /// A non-empty HANDOFF that the parser judged **stale** and therefore
+    /// ignored: [`Self::paused`] is `false` and [`Self::pause_context`] is
+    /// `None` whenever this is `Some`.
+    ///
+    /// A handoff is stale when its phase is numerically behind STATE.md's
+    /// declared `current_phase` ([`StaleHandoffReason::PhaseBehind`]), or when
+    /// STATE.md's `last_updated` is more than an hour newer than the handoff's
+    /// written time ([`StaleHandoffReason::StateNewer`]) — see
+    /// [`handoff_staleness`]. GSD moved on after the handoff was written, so
+    /// its `next_action` is an instruction about a past state; showing it as
+    /// the project's current pause (ttbook: "Dispatch /gsd-discuss-phase 12"
+    /// while executing phase 13) is worse than not showing it at all, so it is
+    /// dropped rather than kept.
+    ///
+    /// Holds no `String` — phase numbers, a timestamp and an enum — so the
+    /// free-string census in `tests/spawn_seam_guard.rs` stays unchanged.
+    pub stale_handoff: Option<StaleHandoff>,
     /// True when `.planning/async-jobs/` holds at least one `*.json` manifest —
     /// the phase is legitimately waiting on an external job (not stuck).
     pub external_job_waiting: bool,
@@ -444,25 +463,114 @@ pub fn phase_plan_counts(
         .map(|inf| (inf.summary_count.min(inf.plan_count), inf.plan_count))
 }
 
+/// Why a HANDOFF was judged stale. See [`handoff_staleness`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleHandoffReason {
+    /// The handoff names a phase numerically lower than STATE.md's declared
+    /// `current_phase`.
+    PhaseBehind,
+    /// STATE.md's `last_updated` is later than the handoff's written time
+    /// plus [`HANDOFF_STALE_GRACE_SECS`].
+    StateNewer,
+}
+
+/// A HANDOFF the parser ignored as stale ([`ProjectState::stale_handoff`]).
+///
+/// Every field is reader-generated (a numeric parse, a timestamp, an enum),
+/// never the handoff's prose, so it can reach a terminal cell without
+/// carrying third-party text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaleHandoff {
+    /// The phase the handoff names, when it names a parsable one.
+    pub phase: Option<phase_num::PhaseNum>,
+    /// STATE.md's declared `current_phase`, when it declares one.
+    pub state_phase: Option<phase_num::PhaseNum>,
+    /// When the handoff was written: its JSON `timestamp`, else its mtime.
+    pub written: Option<chrono::DateTime<chrono::Utc>>,
+    pub reason: StaleHandoffReason,
+}
+
+/// How much later than a handoff STATE.md may be written before the handoff
+/// counts as stale ([`StaleHandoffReason::StateNewer`]).
+///
+/// An hour absorbs same-session STATE writes and hand-written timestamps that
+/// drift by tens of minutes (ttbook's JSON `timestamp` is 41 minutes after its
+/// own file mtime); the real stale gaps observed are 20 hours to 4 months.
+const HANDOFF_STALE_GRACE_SECS: i64 = 3600;
+
+/// What [`detect_handoff`] found in a non-empty HANDOFF file.
+#[derive(Debug, Clone, PartialEq)]
+struct HandoffFile {
+    /// `next_action` (JSON) or the first non-heading line (MD).
+    context: Option<String>,
+    /// The JSON `phase` (string or number), normalised; never set for MD.
+    phase: Option<phase_num::PhaseNum>,
+    /// The JSON `timestamp` (RFC 3339) when parseable, else the file mtime.
+    written: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A file's mtime as a UTC timestamp, `None` when the platform cannot say.
+fn file_mtime(path: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .map(chrono::DateTime::<chrono::Utc>::from)
+}
+
+/// Normalise a HANDOFF.json `phase` value: `"12"`, `12`, `"04"`, `"18.1"`,
+/// `18.1` and `"Phase 12"` all parse; anything else is `None`.
+fn handoff_phase(value: &serde_json::Value) -> Option<phase_num::PhaseNum> {
+    let text = match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    roadmap_md::extract_phase_id(&text).and_then(|id| phase_num::PhaseNum::parse(&id))
+}
+
 /// Detect HANDOFF.md or HANDOFF.json in a planning directory.
-/// Returns (is_paused, optional_context_string).
-/// HANDOFF.json: extracts `next_action` field.
-/// HANDOFF.md: extracts first non-empty line after any `#` heading, or first non-empty line.
-/// Empty files (after trim) are ignored -- not considered paused.
-fn detect_handoff(planning_dir: &Path) -> (bool, Option<String>) {
+///
+/// `None` when neither exists non-empty (after trim) -- not considered
+/// paused. HANDOFF.json wins over HANDOFF.md.
+///
+/// - HANDOFF.json: context is the `next_action` field; `phase` and
+///   `timestamp` feed [`handoff_staleness`]. Non-empty invalid JSON is still
+///   a handoff, with no context and no phase.
+/// - HANDOFF.md: context is the first non-empty line after any `#` heading,
+///   or the first non-empty line.
+///
+/// The written time falls back to the file's mtime whenever no parseable
+/// `timestamp` is declared (always, for HANDOFF.md). The declared timestamp is
+/// preferred because a handoff can be touched after the fact: cdr-configurator's
+/// HANDOFF.json has a later mtime than its STATE.md, but declares a timestamp
+/// older than it — and it asks to plan a phase that is complete on disk.
+fn detect_handoff(planning_dir: &Path) -> Option<HandoffFile> {
     // Try HANDOFF.json first
     let json_path = planning_dir.join("HANDOFF.json");
     if let Ok(content) = std::fs::read_to_string(&json_path) {
         if !content.trim().is_empty() {
+            let mut handoff = HandoffFile {
+                context: None,
+                phase: None,
+                written: None,
+            };
+            // Non-empty but invalid JSON -- still paused, no context
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                let ctx = val
+                handoff.context = val
                     .get("next_action")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                return (true, ctx);
+                handoff.phase = val.get("phase").and_then(handoff_phase);
+                handoff.written = val
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s.trim()).ok())
+                    .map(|t| t.with_timezone(&chrono::Utc));
             }
-            // Non-empty but invalid JSON -- still paused, no context
-            return (true, None);
+            if handoff.written.is_none() {
+                handoff.written = file_mtime(&json_path);
+            }
+            return Some(handoff);
         }
     }
 
@@ -470,27 +578,57 @@ fn detect_handoff(planning_dir: &Path) -> (bool, Option<String>) {
     let md_path = planning_dir.join("HANDOFF.md");
     if let Ok(content) = std::fs::read_to_string(&md_path) {
         if !content.trim().is_empty() {
-            // Extract first non-empty line after any # heading line, or first non-empty line
-            let mut found_heading = false;
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with('#') {
-                    found_heading = true;
-                    continue;
-                }
-                if !trimmed.is_empty() {
-                    return (true, Some(trimmed.to_string()));
-                }
-            }
-            // File has content but only headings or whitespace
-            if found_heading {
-                return (true, None);
-            }
-            return (true, None);
+            // Extract first non-empty line after any # heading line, or first
+            // non-empty line. A file of only headings has no context.
+            let context = content
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_string);
+            return Some(HandoffFile {
+                context,
+                phase: None,
+                written: file_mtime(&md_path),
+            });
         }
     }
 
-    (false, None)
+    None
+}
+
+/// Decide whether a handoff is stale; `None` means it is current.
+///
+/// - **R1, [`StaleHandoffReason::PhaseBehind`]:** the handoff's phase is
+///   numerically lower than STATE.md's declared `current_phase`. Compared
+///   against the DECLARED number only, not
+///   [`ProjectState::active_phase_number`]: the disk frontier can
+///   legitimately lead a phase whose plans are executed but still being
+///   verified, and a handoff for that phase is still current. GSD advances
+///   `current_phase` deliberately.
+/// - **R2, [`StaleHandoffReason::StateNewer`]:** STATE.md's `last_updated` is
+///   later than the handoff's written time plus [`HANDOFF_STALE_GRACE_SECS`].
+///
+/// R1 is reported when both hold. A missing input disables only the rule
+/// that needs it, so a state with no STATE signals never judges a handoff
+/// stale. The handoff's own `status` field is deliberately not consulted:
+/// GSD's pause-work template always writes `paused`.
+fn handoff_staleness(
+    handoff_phase: Option<&phase_num::PhaseNum>,
+    handoff_written: Option<chrono::DateTime<chrono::Utc>>,
+    state_phase: Option<&phase_num::PhaseNum>,
+    state_last_updated: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<StaleHandoffReason> {
+    if let (Some(handoff), Some(state)) = (handoff_phase, state_phase) {
+        if handoff < state {
+            return Some(StaleHandoffReason::PhaseBehind);
+        }
+    }
+    if let (Some(written), Some(updated)) = (handoff_written, state_last_updated) {
+        if updated > written + chrono::Duration::seconds(HANDOFF_STALE_GRACE_SECS) {
+            return Some(StaleHandoffReason::StateNewer);
+        }
+    }
+    None
 }
 
 /// Parse a GSD project's .planning/ directory into a ProjectState.
@@ -520,6 +658,11 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     };
 
     state.last_activity = git_ops::project_last_activity(&state.project_root);
+
+    // STATE.md's `last_updated`, kept only as a local: it feeds the stale
+    // HANDOFF decision below and is not stored on `ProjectState` (no free
+    // `String` joins the census). Unparseable values are ignored.
+    let mut state_last_updated: Option<chrono::DateTime<chrono::Utc>> = None;
 
     // Parse STATE.md
     let state_md_path = planning_dir.join("STATE.md");
@@ -566,6 +709,9 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
                 .current_phase
                 .as_deref()
                 .and_then(phase_num::PhaseNum::parse);
+            state_last_updated = chrono::DateTime::parse_from_rfc3339(fm.last_updated.trim())
+                .ok()
+                .map(|t| t.with_timezone(&chrono::Utc));
             state.current_phase_name = fm.current_phase_name.clone().unwrap_or_default();
             state.current_plan = fm.current_plan.clone().unwrap_or_default();
 
@@ -705,10 +851,32 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     // Load queued actions from QUEUE.md
     state.queued_actions = queue_md::load_queue(planning_dir);
 
-    // Detect HANDOFF files for pause state
-    let (paused, pause_context) = detect_handoff(planning_dir);
-    state.paused = paused;
-    state.pause_context = pause_context;
+    // Detect HANDOFF files for pause state. Staleness is decided here, once,
+    // so every consumer of `paused` / `pause_context` (the dashboard badge,
+    // needs-human and its /h filter, the Roadmap header banner) agrees.
+    if let Some(handoff) = detect_handoff(planning_dir) {
+        match handoff_staleness(
+            handoff.phase.as_ref(),
+            handoff.written,
+            state.state_md_phase_number.as_ref(),
+            state_last_updated,
+        ) {
+            Some(reason) => {
+                state.paused = false;
+                state.pause_context = None;
+                state.stale_handoff = Some(StaleHandoff {
+                    phase: handoff.phase,
+                    state_phase: state.state_md_phase_number.clone(),
+                    written: handoff.written,
+                    reason,
+                });
+            }
+            None => {
+                state.paused = true;
+                state.pause_context = handoff.context;
+            }
+        }
+    }
 
     // Detect async external jobs (a phase waiting on an external job is
     // legitimately blocked, not stuck).
@@ -758,11 +926,274 @@ pub fn count_backlog_items(planning_dir: &Path) -> u32 {
     backlog::count_backlog_dirs(planning_dir) as u32
 }
 
+/// Write the ttbook-shaped "phase 13 executing, stale phase-12 HANDOFF"
+/// fixture into `planning` (quick 260926-16t): the three sanitised files under
+/// `tests/fixtures/roadmaps/ttbook-phase13-*`, phases 8-12 executed with a
+/// passing verification, and phase 13 part-way (2 plans, 1 summary).
+///
+/// Shared by the state reader's, the Detail screen's and the dashboard's
+/// tests, so all three pin the same project.
+#[cfg(test)]
+pub(crate) fn write_ttbook_phase13_fixture(planning: &Path) {
+    use std::fs;
+    fs::create_dir_all(planning).unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        include_str!("../../tests/fixtures/roadmaps/ttbook-phase13-ROADMAP.md"),
+    )
+    .unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        include_str!("../../tests/fixtures/roadmaps/ttbook-phase13-STATE.md"),
+    )
+    .unwrap();
+    fs::write(
+        planning.join("HANDOFF.json"),
+        include_str!("../../tests/fixtures/roadmaps/ttbook-phase13-HANDOFF.json"),
+    )
+    .unwrap();
+    for (num, slug) in [("08", "a"), ("09", "b"), ("10", "c"), ("11", "d"), ("12", "e")] {
+        let dir = planning.join("phases").join(format!("{num}-{slug}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{num}-01-PLAN.md")), "# plan\n").unwrap();
+        fs::write(dir.join(format!("{num}-01-SUMMARY.md")), "# summary\n").unwrap();
+        // Written last, so no SUMMARY is newer than it (a stale verification).
+        fs::write(
+            dir.join(format!("{num}-VERIFICATION.md")),
+            "---\nstatus: passed\n---\n",
+        )
+        .unwrap();
+    }
+    let dir = planning.join("phases").join("13-f");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("13-01-PLAN.md"), "# plan\n").unwrap();
+    fs::write(dir.join("13-02-PLAN.md"), "# plan\n").unwrap();
+    fs::write(dir.join("13-01-SUMMARY.md"), "# summary\n").unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    // --- quick-260926-16t: stale HANDOFF --------------------------------------
+
+    fn pn(s: &str) -> phase_num::PhaseNum {
+        phase_num::PhaseNum::parse(s).unwrap()
+    }
+
+    fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    /// Set a file's mtime (std `File::set_modified`, stable since 1.75).
+    fn set_mtime(path: &Path, when: chrono::DateTime<chrono::Utc>) {
+        let file = fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::from(when)).unwrap();
+    }
+
+    #[test]
+    fn stale_handoff_phase_behind_regardless_of_times() {
+        let t = ts("2026-09-25T00:00:00Z");
+        assert_eq!(
+            handoff_staleness(Some(&pn("12")), Some(t), Some(&pn("13")), Some(t)),
+            Some(StaleHandoffReason::PhaseBehind)
+        );
+        // Handoff written long after STATE: still behind.
+        assert_eq!(
+            handoff_staleness(
+                Some(&pn("12")),
+                Some(ts("2026-12-01T00:00:00Z")),
+                Some(&pn("13")),
+                Some(t)
+            ),
+            Some(StaleHandoffReason::PhaseBehind)
+        );
+    }
+
+    #[test]
+    fn stale_handoff_state_newer_beyond_grace() {
+        assert_eq!(
+            handoff_staleness(
+                Some(&pn("13")),
+                Some(ts("2026-09-25T00:00:00Z")),
+                Some(&pn("13")),
+                Some(ts("2026-09-25T02:00:00Z"))
+            ),
+            Some(StaleHandoffReason::StateNewer)
+        );
+    }
+
+    #[test]
+    fn stale_handoff_state_newer_within_grace_is_current() {
+        assert_eq!(
+            handoff_staleness(
+                Some(&pn("13")),
+                Some(ts("2026-09-25T00:00:00Z")),
+                Some(&pn("13")),
+                Some(ts("2026-09-25T00:10:00Z"))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_handoff_phase_ahead_is_not_behind() {
+        assert_eq!(
+            handoff_staleness(
+                Some(&pn("21")),
+                Some(ts("2026-09-25T00:00:00Z")),
+                Some(&pn("19")),
+                Some(ts("2026-09-01T00:00:00Z"))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_handoff_no_inputs_is_current() {
+        assert_eq!(handoff_staleness(None, None, None, None), None);
+    }
+
+    #[test]
+    fn stale_handoff_both_rules_report_phase_behind() {
+        assert_eq!(
+            handoff_staleness(
+                Some(&pn("7.1")),
+                Some(ts("2026-01-01T00:00:00Z")),
+                Some(&pn("08")),
+                Some(ts("2026-09-01T00:00:00Z"))
+            ),
+            Some(StaleHandoffReason::PhaseBehind)
+        );
+    }
+
+    #[test]
+    fn handoff_phase_accepts_strings_numbers_and_prefixes() {
+        use serde_json::json;
+        assert_eq!(handoff_phase(&json!("12")), Some(pn("12")));
+        assert_eq!(handoff_phase(&json!("04")), Some(pn("4")));
+        assert_eq!(handoff_phase(&json!("18.1")), Some(pn("18.1")));
+        assert_eq!(handoff_phase(&json!("Phase 12")), Some(pn("12")));
+        assert_eq!(handoff_phase(&json!(12)), Some(pn("12")));
+        assert_eq!(handoff_phase(&json!("TBD")), None);
+        assert_eq!(handoff_phase(&json!(null)), None);
+    }
+
+    #[test]
+    fn stale_handoff_json_phase_behind_state_is_not_paused() {
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\ncurrent_phase: 13\n---\n"),
+            (
+                "HANDOFF.json",
+                "{\"phase\":\"12\",\"next_action\":\"Dispatch /gsd-discuss-phase 12\"}",
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(!state.paused);
+        assert!(state.pause_context.is_none());
+        let stale = state.stale_handoff.expect("stale handoff");
+        assert_eq!(stale.reason, StaleHandoffReason::PhaseBehind);
+        assert_eq!(stale.phase, Some(pn("12")));
+        assert_eq!(stale.state_phase, Some(pn("13")));
+    }
+
+    #[test]
+    fn stale_handoff_json_timestamp_older_than_state_is_not_paused() {
+        let td = make_planning(&[
+            (
+                "STATE.md",
+                "---\nstatus: executing\ncurrent_phase: 12\nlast_updated: \"2026-09-25T22:34:52.070Z\"\n---\n",
+            ),
+            (
+                "HANDOFF.json",
+                "{\"phase\":\"12\",\"timestamp\":\"2026-09-24T21:30:00-05:00\",\"next_action\":\"x\"}",
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(!state.paused);
+        assert!(state.pause_context.is_none());
+        let stale = state.stale_handoff.expect("stale handoff");
+        assert_eq!(stale.reason, StaleHandoffReason::StateNewer);
+        assert_eq!(stale.written, Some(ts("2026-09-25T02:30:00Z")));
+    }
+
+    #[test]
+    fn current_handoff_json_timestamp_after_state_still_pauses() {
+        let td = make_planning(&[
+            (
+                "STATE.md",
+                "---\nstatus: executing\ncurrent_phase: 12\nlast_updated: \"2026-09-25T22:34:52.070Z\"\n---\n",
+            ),
+            (
+                "HANDOFF.json",
+                "{\"phase\":\"12\",\"timestamp\":\"2026-09-26T08:00:00Z\",\"next_action\":\"Resume 12-04\"}",
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(state.paused);
+        assert_eq!(state.pause_context.as_deref(), Some("Resume 12-04"));
+        assert!(state.stale_handoff.is_none());
+    }
+
+    #[test]
+    fn stale_handoff_json_without_timestamp_falls_back_to_mtime() {
+        let state_md = "---\nstatus: executing\nlast_updated: \"2026-01-01T00:00:00Z\"\n---\n";
+        let td = make_planning(&[
+            ("STATE.md", state_md),
+            ("HANDOFF.json", "{\"next_action\":\"Resume\"}"),
+        ]);
+        let planning = td.path().join(".planning");
+        // Natural (now) mtime: after STATE, so still a current pause.
+        let state = parse_project_state(&planning);
+        assert!(state.paused);
+        assert!(state.stale_handoff.is_none());
+
+        set_mtime(&planning.join("HANDOFF.json"), ts("2020-01-01T00:00:00Z"));
+        let state = parse_project_state(&planning);
+        assert!(!state.paused);
+        assert!(state.pause_context.is_none());
+        let stale = state.stale_handoff.expect("stale handoff");
+        assert_eq!(stale.reason, StaleHandoffReason::StateNewer);
+        assert_eq!(stale.written, Some(ts("2020-01-01T00:00:00Z")));
+    }
+
+    #[test]
+    fn stale_handoff_md_uses_mtime() {
+        let td = make_planning(&[
+            (
+                "STATE.md",
+                "---\nstatus: executing\nlast_updated: \"2026-01-01T00:00:00Z\"\n---\n",
+            ),
+            ("HANDOFF.md", "# Handoff\n\nPick up at plan 14-02\n"),
+        ]);
+        let planning = td.path().join(".planning");
+        set_mtime(&planning.join("HANDOFF.md"), ts("2020-01-01T00:00:00Z"));
+        let state = parse_project_state(&planning);
+        assert!(!state.paused);
+        assert!(state.pause_context.is_none());
+        assert_eq!(
+            state.stale_handoff.map(|s| s.reason),
+            Some(StaleHandoffReason::StateNewer)
+        );
+    }
+
+    #[test]
+    fn ttbook_phase13_fixture_handoff_is_stale_phase_behind() {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        write_ttbook_phase13_fixture(&planning);
+        let state = parse_project_state(&planning);
+        assert!(!state.paused);
+        assert!(state.pause_context.is_none());
+        let stale = state.stale_handoff.expect("stale handoff");
+        assert_eq!(stale.reason, StaleHandoffReason::PhaseBehind);
+        assert_eq!(stale.phase, Some(pn("12")));
+        assert_eq!(stale.state_phase, Some(pn("13")));
+    }
 
     /// Build a temp project with a `.planning/` dir and the given files
     /// (relative paths under `.planning/`). Returns the TempDir (keep it alive).

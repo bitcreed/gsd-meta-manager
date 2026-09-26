@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-09-24T21:30:00-05:00",
+  "phase": "12",
+  "phase_name": "Service layer and command line",
+  "status": "ready",
+  "next_action": "Dispatch /gsd-discuss-phase 12 in a subagent (no CONTEXT yet)."
+}

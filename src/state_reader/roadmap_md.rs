@@ -2260,6 +2260,18 @@ Plans:
                 "ttbook-STATE.md",
                 include_str!("../../tests/fixtures/roadmaps/ttbook-STATE.md"),
             ),
+            (
+                "ttbook-phase13-ROADMAP.md",
+                include_str!("../../tests/fixtures/roadmaps/ttbook-phase13-ROADMAP.md"),
+            ),
+            (
+                "ttbook-phase13-STATE.md",
+                include_str!("../../tests/fixtures/roadmaps/ttbook-phase13-STATE.md"),
+            ),
+            (
+                "ttbook-phase13-HANDOFF.json",
+                include_str!("../../tests/fixtures/roadmaps/ttbook-phase13-HANDOFF.json"),
+            ),
         ];
         let mut goal_lines = 0;
         for (name, content) in fixtures {
@@ -2275,7 +2287,7 @@ Plans:
                 }
             }
         }
-        assert_eq!(goal_lines, 6 + 4 + 11, "the guard saw every fixture goal");
+        assert_eq!(goal_lines, 6 + 4 + 11 + 11, "the guard saw every fixture goal");
     }
 
     // --- phase_section (debug backlog-content-empty) -----------------------

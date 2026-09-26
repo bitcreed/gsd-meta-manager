@@ -79,7 +79,7 @@ const POPUP_HEIGHT_PCT: u16 = 90;
 const BADGE_LEGEND: [(&str, &str); 5] = [
     (BADGE_DRIVEN, "an agent is driving this repo right now"),
     (BADGE_NEEDS_HUMAN, "waiting on a human"),
-    (BADGE_PAUSED, "paused - a non-empty HANDOFF"),
+    (BADGE_PAUSED, "paused - a current (non-stale) HANDOFF"),
     (BADGE_EXTERNAL_JOB, "blocked on an external job, not stuck"),
     (BADGE_SESSION, "an active Claude or Codex session in this directory"),
 ];

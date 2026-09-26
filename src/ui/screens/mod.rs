@@ -1502,7 +1502,8 @@ pub enum SortMode {
 /// four sources, each of which something already writes:
 ///
 /// * `state.paused` — a non-empty HANDOFF, the existing v1.4 signal that is
-///   already badged elsewhere.
+///   already badged elsewhere. A stale HANDOFF is not `paused` (the parser
+///   decides, quick 260926-16t), so it does not summon anyone.
 /// * `state.external_job_waiting` — an external job the project is blocked on.
 /// * The last finished run's outcome being [`TerminalState::PermissionDenied`],
 ///   [`TerminalState::Failed`], [`TerminalState::Stalled`] or

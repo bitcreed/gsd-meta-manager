@@ -1,7 +1,7 @@
 # Real-roadmap fixtures (sanitised excerpts)
 
 Structural excerpts of three real GSD projects' `.planning/ROADMAP.md` and
-`.planning/STATE.md`, vendored on 2026-09-24 for Phase 24 (Roadmap tab
+`.planning/STATE.md` (and one `HANDOFF.json`), vendored on 2026-09-24 for Phase 24 (Roadmap tab
 redesign). Each one reproduces a roadmap shape, or a defect of the old Roadmap
 graph, that the state reader and the Roadmap list must handle. Quoted in
 `.planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-RESEARCH.md`,
@@ -15,6 +15,9 @@ section "Real Fixtures".
 | `daily-vow-STATE.md` | daily-vow | `abc11af` | 2026-09-24 | `milestone: v1.5` + `milestone_name` |
 | `sentriq-ROADMAP.md` | sentriq | `49533e9` | 2026-09-24 | no `## Milestones` list: the active milestone is only a bold `**v0.12 — Actuation Routines** (phases 9-12)` line, so no roadmap milestone holds phases 9-12 (a synthetic band is needed); `## v0.11 Phases (4-7)` carries its range in parentheses; phase 11 declares `Phase 10 (…), Phase 9 (…)`, so 9 is implied via 10 and the old graph drew `9` twice; phase 12 declares no dependency; `## Scope Explicitly Excluded from v0.12` reads as a spurious member-less milestone. Known difference from Mockup C: its "earlier" row also names `pre-GSD 1–3` and `TASK-111 (quick)`, but those are index-only table sections, not milestones under any detector the reader has, so only `v0.11` is reported shipped |
 | `sentriq-STATE.md` | sentriq | `dfc6d2c` | 2026-09-24 | `milestone_name` written AFTER the `progress:` block |
+| `ttbook-phase13-ROADMAP.md` | ttbook | `3f51b43` | 2026-09-26 | a copy of `ttbook-ROADMAP.md` with phases 8-11 ticked `[x]` and the `## Progress` rows 8-11 `Complete`, 12-13 `In Progress` — ttbook's real bookkeeping of 4 of 6 while phase 12 is executed and verified on disk (quick 260926-16t: the dashboard said `4/6 phases`, the Roadmap header `5 of 11 phases done`) |
+| `ttbook-phase13-STATE.md` | ttbook | `e4e5db2` | 2026-09-26 | `current_phase: 13`, `status: executing`, `last_updated` later than the handoff |
+| `ttbook-phase13-HANDOFF.json` | ttbook | `a5a7733` | 2026-09-26 | a stale handoff: `phase: "12"` behind STATE.md's 13, `status: ready`, `timestamp` with a `-05:00` offset. Only the keys the reader uses, with a neutral `phase_name`; none of the source's task, decision or note content is copied. Written into a temp `.planning/` together with phase directories 08-13 by `state_reader::write_ttbook_phase13_fixture` |
 
 ## These are SANITISED excerpts, not copies
 

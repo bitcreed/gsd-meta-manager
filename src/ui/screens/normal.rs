@@ -129,7 +129,7 @@ struct BadgeInputs {
     driven_and_live: bool,
     /// 18-04's `needs_human` predicate over evidence that exists today (D-14).
     needs_human: bool,
-    /// `ProjectState::paused` — a non-empty HANDOFF.
+    /// `ProjectState::paused` — a non-empty HANDOFF that is not stale.
     is_paused: bool,
     /// `ProjectState::external_job_waiting`.
     external_job_waiting: bool,
@@ -1440,6 +1440,27 @@ mod tests {
             }),
             Some(NEEDS_HUMAN_BADGE)
         );
+    }
+
+    // --- quick-260926-16t: a stale HANDOFF raises no badge and no flag ----
+
+    #[test]
+    fn stale_handoff_raises_no_pause_badge_and_no_needs_human_end_to_end() {
+        // ttbook-shaped: STATE.md executing phase 13, HANDOFF.json for phase 12.
+        let td = tempfile::TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::write_ttbook_phase13_fixture(&planning);
+        let state = parse_project_state(&planning);
+
+        assert!(!state.paused);
+        assert!(state.stale_handoff.is_some());
+        let inputs = BadgeInputs {
+            is_paused: state.paused,
+            ..Default::default()
+        };
+        assert!(!inputs.is_paused);
+        assert_eq!(alias_badge(inputs), None);
+        assert!(!crate::ui::screens::needs_human(&state, None, None, false));
     }
 
     // --- UIFIX-01: badge priority (flag -> badge) -------------------------

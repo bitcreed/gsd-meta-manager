@@ -140,6 +140,69 @@ fn recovered_state_line(state: &state_reader::ProjectState) -> Option<Line<'stat
     )))
 }
 
+/// A handoff's age as `{N}m`/`{N}h`/`{N}d`, or `just now` under a minute —
+/// the buckets of [`ChangeTracker::format_elapsed`], against an explicit `now`
+/// so a test can pin it. A written time in the future reads `just now`.
+fn handoff_age(
+    written: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let elapsed = (now - written).num_seconds().max(0);
+    if elapsed < 60 {
+        "just now".to_string()
+    } else if elapsed < 3600 {
+        format!("{}m old", elapsed / 60)
+    } else if elapsed < 86400 {
+        format!("{}h old", elapsed / 3600)
+    } else {
+        format!("{}d old", elapsed / 86400)
+    }
+}
+
+/// The dimmed line shown, where the `Paused:` banner would sit, for a HANDOFF
+/// the parser ignored as stale ([`state_reader::ProjectState::stale_handoff`]).
+///
+/// The file stays visible as a cleanup hint, but it no longer claims to be the
+/// current state — which is why it is DarkGray and dim rather than the pause
+/// banner's cyan, and why the handoff's `next_action` is never shown. Every
+/// interpolated value is reader-generated (a numeric phase parse, a computed
+/// age); the phase numbers still pass through `shown` like every other header
+/// value.
+fn stale_handoff_line(
+    stale: &state_reader::StaleHandoff,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Line<'static> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(phase) = &stale.phase {
+        parts.push(format!("phase {}", shown(&phase.to_string())));
+    }
+    if let Some(written) = stale.written {
+        parts.push(handoff_age(written, now));
+    }
+    let mut text = "  Stale HANDOFF ignored".to_string();
+    if !parts.is_empty() {
+        text.push_str(&format!(" ({})", parts.join(", ")));
+    }
+    match (stale.reason, &stale.state_phase) {
+        (state_reader::StaleHandoffReason::PhaseBehind, Some(state_phase)) => {
+            text.push_str(&format!(
+                " - STATE.md is at phase {}",
+                shown(&state_phase.to_string())
+            ));
+        }
+        (state_reader::StaleHandoffReason::PhaseBehind, None) => {}
+        (state_reader::StaleHandoffReason::StateNewer, _) => {
+            text.push_str(" - STATE.md updated since");
+        }
+    }
+    Line::from(Span::styled(
+        text,
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    ))
+}
+
 /// The Sessions tab's answer to Enter on a Codex row (260923-lr9).
 const CODEX_RESUME_UNSUPPORTED: &str =
     "Resume is not supported for Codex sessions — press Tab to switch to it";
@@ -4272,6 +4335,8 @@ impl DetailScreen {
                     ))
                 };
                 header_lines.push(pause_line);
+            } else if let Some(stale) = &state.stale_handoff {
+                header_lines.push(stale_handoff_line(stale, chrono::Utc::now()));
             }
 
             if let Some(event) = ctx.change_tracker.latest_change(alias) {
@@ -16537,6 +16602,13 @@ mod tests {
     /// into a temp `.planning/` and read by the real reader — never a path
     /// on the developer's machine (portability constraint).
     fn fixture_state(name: &str) -> crate::state_reader::ProjectState {
+        if name == "ttbook-phase13" {
+            // Phase dirs and a stale HANDOFF.json too (quick 260926-16t).
+            let dir = tempfile::tempdir().expect("temp dir");
+            let planning = dir.path().join(".planning");
+            crate::state_reader::write_ttbook_phase13_fixture(&planning);
+            return crate::state_reader::parse_project_state(&planning);
+        }
         let (roadmap, state) = match name {
             "daily-vow" => (
                 include_str!("../../../tests/fixtures/roadmaps/daily-vow-ROADMAP.md"),
@@ -17296,6 +17368,55 @@ mod tests {
         let text = render_detail_to_text(&screen, &ctx);
         assert!(text.contains("No state data available for this project."), "{text}");
         assert!(!text.contains("No state data available for roadmap"), "{text}");
+    }
+
+    // --- quick-260926-16t: a stale HANDOFF is not a pause ----------------
+
+    #[test]
+    fn ttbook_phase13_stale_handoff_is_not_shown_as_paused() {
+        let (screen, ctx) = roadmap_fixture("ttbook-phase13");
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        assert!(!text.contains("Paused"), "{text}");
+        assert!(!text.contains("gsd-discuss-phase 12"), "{text}");
+        assert!(text.contains("Stale HANDOFF ignored"), "{text}");
+        assert!(text.contains("phase 12"), "{text}");
+    }
+
+    #[test]
+    fn stale_handoff_line_names_phase_age_and_state_phase() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-26T03:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let written = chrono::DateTime::parse_from_rfc3339("2026-09-24T21:30:00-05:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let stale = state_reader::StaleHandoff {
+            phase: state_reader::phase_num::PhaseNum::parse("12"),
+            state_phase: state_reader::phase_num::PhaseNum::parse("13"),
+            written: Some(written),
+            reason: state_reader::StaleHandoffReason::PhaseBehind,
+        };
+        let line = stale_handoff_line(&stale, now);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            text,
+            "  Stale HANDOFF ignored (phase 12, 1d old) - STATE.md is at phase 13"
+        );
+        assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::DIM));
+
+        let newer = state_reader::StaleHandoff {
+            phase: None,
+            state_phase: None,
+            written: None,
+            reason: state_reader::StaleHandoffReason::StateNewer,
+        };
+        let text: String = stale_handoff_line(&newer, now)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "  Stale HANDOFF ignored - STATE.md updated since");
     }
 
     #[test]
