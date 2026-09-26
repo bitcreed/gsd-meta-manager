@@ -12688,7 +12688,7 @@ mod tests {
     #[test]
     fn the_sync_record_names_every_modelled_key_and_the_measured_baseline() {
         use crate::state_reader::config_json::{
-            GSD_CORE_SYNCED_COMMIT, GSD_CORE_SYNCED_VERSION,
+            GSD_CORE_SYNCED_COMMIT, GSD_CORE_SYNCED_TREE_VERSION, GSD_CORE_SYNCED_VERSION,
         };
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12696,6 +12696,17 @@ mod tests {
         let doc = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!("the sync record is missing at {}: {e}", path.display())
         });
+
+        assert!(
+            doc.contains("GSD_CORE_SYNCED_TREE_VERSION") && doc.contains(GSD_CORE_SYNCED_TREE_VERSION),
+            "the record does not name GSD_CORE_SYNCED_TREE_VERSION \
+             ({GSD_CORE_SYNCED_TREE_VERSION:?}), the ceiling of the in-sync range"
+        );
+        assert!(
+            doc.contains("GSD compatibility"),
+            "the record's procedure does not mention README.md's GSD compatibility \
+             note — a sync that forgets it leaves README naming a stale version"
+        );
 
         assert!(
             doc.contains(GSD_CORE_SYNCED_VERSION),
@@ -12731,6 +12742,47 @@ mod tests {
              the record and the tab have drifted, which is the exact failure the \
              record exists to prevent. Update both in the SAME commit."
         );
+    }
+
+    /// README.md tells a reader up front which gsd-core this build understands
+    /// (quick 260926-j0a, inferred I-11). Exactly one paragraph spells the
+    /// three values, and it has to be the ones config_json.rs carries — so a
+    /// sync that moves a constant and forgets README goes red here.
+    #[test]
+    fn the_readme_compatibility_note_names_the_synced_baseline() {
+        use crate::state_reader::config_json::{
+            GSD_CORE_SYNCED_COMMIT, GSD_CORE_SYNCED_TREE_VERSION, GSD_CORE_SYNCED_VERSION,
+        };
+        const MARKER: &str = "**GSD compatibility:**";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("README.md");
+        let readme = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("README is missing at {}: {e}", path.display()));
+
+        assert_eq!(
+            readme.matches(MARKER).count(),
+            1,
+            "README.md must carry exactly one `{MARKER}` paragraph"
+        );
+        let paragraph: String = readme
+            .lines()
+            .skip_while(|line| !line.contains(MARKER))
+            .take_while(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (name, value) in [
+            ("GSD_CORE_SYNCED_TREE_VERSION", GSD_CORE_SYNCED_TREE_VERSION),
+            ("GSD_CORE_SYNCED_COMMIT", GSD_CORE_SYNCED_COMMIT),
+            ("GSD_CORE_SYNCED_VERSION", GSD_CORE_SYNCED_VERSION),
+            ("the sync record link", "docs/GSD-CORE-SYNC.md"),
+        ] {
+            assert!(
+                paragraph.contains(value),
+                "README.md's GSD compatibility note does not name {name} ({value:?}). \
+                 Update README in the SAME commit as config_json.rs's constants.\n\
+                 paragraph: {paragraph}"
+            );
+        }
     }
 
     #[test]
