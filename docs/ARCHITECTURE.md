@@ -104,7 +104,9 @@ A typical update cycle proceeds as follows:
   signal navigation and side effects without owning the screen stack.
 - **`ProjectState` (`src/state_reader/mod.rs`)** — Parsed snapshot of one project's
   `.planning/` directory: status, current phase, completion counts, milestone, phases,
-  queued actions, per-phase disk inferences, pause state, etc.
+  queued actions, per-phase disk inferences, pause state, etc. `ProjectState::phase_progress()`
+  is the single phase-count definition (dashboard cell and Roadmap header), and
+  `paused` / `stale_handoff` are decided once in the parser, so no consumer re-judges a HANDOFF.
 - **`FileWatcher` (`src/watcher.rs`)** — Wraps a `notify_debouncer_full::Debouncer` with a
   200ms debounce. The callback extracts the project root (parent of `.planning/`) from each
   changed path and emits one `Action::FileChanged` per unique root.

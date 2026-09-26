@@ -51,7 +51,11 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
 
 ## Features
 
-- Unified dashboard with color-coded project status (active, paused, idle)
+- Unified dashboard with color-coded project status (active, paused, idle).
+  The dashboard's `k/n phases` and the Roadmap header's `k of n phases done`
+  count the current milestone's phases; a phase is done once its
+  implementation is finished (executed on disk, or ticked in ROADMAP.md when
+  it has no phase directory). Verification state is shown separately
 - Live filesystem watching -- auto-refreshes when `.planning/` files change
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
 - 8-tab detail view (plus the experimental Driver tab): Roadmap (phase list
@@ -82,7 +86,12 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   single entry; `add` still refuses a linked worktree and names the main
   worktree to add instead, and stale worktree entries are pruned from the
   config on launch
-- Paused project detection (parses HANDOFF files)
+- Paused project detection (parses HANDOFF files). A handoff is ignored as
+  stale when its phase is behind STATE.md's `current_phase`, or when STATE.md's
+  `last_updated` is more than an hour newer than the handoff's `timestamp`
+  (the file's mtime when it has none); the detail view then shows a dimmed
+  "Stale HANDOFF ignored" hint instead of "Paused", and the dashboard raises
+  no pause badge or needs-human flag for it
 - Milestone archive browser with inline markdown rendering, in the Docs tab's
   Milestones sub-tab (`m` switches Files / Milestones)
 - Search and filter across projects
