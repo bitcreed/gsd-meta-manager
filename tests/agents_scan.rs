@@ -562,7 +562,11 @@ fn a_projects_scan_is_sorted_by_alias_and_isolates_failures() {
         ("alpha".to_string(), plain),
     ];
 
-    let scans = scan_projects_guarded(&projects, SystemTime::now());
+    let scans = scan_projects_guarded(
+        &projects,
+        &gsd_meta_manager::session_detector::NoProcessProbe,
+        SystemTime::now(),
+    );
     let aliases: Vec<&str> = scans.iter().map(|(alias, _)| alias.as_str()).collect();
     assert_eq!(
         aliases,

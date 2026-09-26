@@ -123,10 +123,8 @@ fn pgrep_exact(name: &str) -> Option<Vec<u32>> {
 }
 
 fn build_session(pid: u32) -> Option<ClaudeSession> {
-    let proc_path = PathBuf::from(format!("/proc/{}", pid));
-
     // Read working directory from /proc/PID/cwd symlink
-    let working_dir = std::fs::read_link(proc_path.join("cwd")).ok()?;
+    let working_dir = read_cwd(pid)?;
 
     // Read session_id from /proc/PID/cmdline (null-byte separated)
     let session_id = read_session_id(pid);
@@ -161,7 +159,7 @@ fn build_codex_session(pid: u32) -> Option<ClaudeSession> {
         return None;
     }
     let tty = read_tty(pid).filter(|tty| is_terminal_device(tty))?;
-    let working_dir = std::fs::read_link(format!("/proc/{}/cwd", pid)).ok()?;
+    let working_dir = read_cwd(pid)?;
 
     Some(ClaudeSession {
         pid,
@@ -785,13 +783,156 @@ pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
 
 fn read_start_time(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
-    // /proc/PID/stat fields are space-separated, but field 2 (comm) can contain spaces
-    // and is enclosed in parentheses. Find the closing paren, then count from there.
-    let after_comm = stat.find(')')?.checked_add(2)?;
+    parse_stat_starttime(&stat)
+}
+
+/// Field 22 (`starttime`, clock ticks since boot) of a `/proc/<pid>/stat` line.
+///
+/// The fields are space-separated, but field 2 (comm) is enclosed in
+/// parentheses and may itself contain spaces AND `)`, so the comm is closed by
+/// the LAST `)` in the line — the kernel's own rule, and the one Claude Code
+/// uses for its pid-reuse check. Counting from there, `starttime` is the 20th
+/// whitespace-separated field. Truncated or non-numeric input is `None`.
+pub(crate) fn parse_stat_starttime(stat: &str) -> Option<u64> {
+    let after_comm = stat.rfind(')')?.checked_add(1)?;
     let rest = stat.get(after_comm..)?;
     // Field 22 (starttime) is at index 19 after the comm field (0-indexed from field 3)
     let field = rest.split_whitespace().nth(19)?;
     field.parse::<u64>().ok()
+}
+
+/// The readlink of `pid`'s cwd entry, or `None` when it cannot be read (the
+/// process is gone, or belongs to another user).
+fn read_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{}/cwd", pid)).ok()
+}
+
+/// What a [`ProcessProbe`] could establish about one pid.
+///
+/// Facts only, taken read-only: nothing that produces one signals a process or
+/// opens another process's files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PidObservation {
+    /// The probe could not say — no process table, or an error other than
+    /// "no such pid". Never to be read as absent.
+    Unknown,
+    /// The process table was readable and holds no such pid.
+    Absent,
+    /// The pid exists. Either fact may be `None` when it was unreadable.
+    Present {
+        /// procfs `starttime` (clock ticks since boot), from [`parse_stat_starttime`].
+        start_time: Option<u64>,
+        /// The process's current working directory.
+        cwd: Option<PathBuf>,
+    },
+}
+
+/// A read-only snapshot of the facts the running-agents view may take from the
+/// process table (quick 260926-06g). `crate::agents` receives one of these as
+/// data and never reads the process table itself.
+///
+/// Facts only: `None` and [`PidObservation::Unknown`] mean "could not say", and
+/// must never be read as "absent". No implementation signals a process, traces
+/// it, or opens its files. No `Send`/`Sync` bound: a probe is built and used
+/// inside one blocking task.
+pub trait ProcessProbe {
+    /// What is known about `pid`.
+    fn observe(&self, pid: u32) -> PidObservation;
+    /// The cwd of every process named exactly `codex`, or `None` when that
+    /// could not be established.
+    fn codex_cwds(&self) -> Option<&[PathBuf]>;
+}
+
+/// The probe that knows nothing: every pid is [`PidObservation::Unknown`] and
+/// there is no codex list. Compiled on EVERY platform — it is the non-Linux
+/// backend of [`process_probe`], and Linux tests exercise it directly, so the
+/// exact non-Linux behaviour is tested everywhere. Read-only by construction:
+/// it reads nothing at all.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoProcessProbe;
+
+impl ProcessProbe for NoProcessProbe {
+    fn observe(&self, _pid: u32) -> PidObservation {
+        PidObservation::Unknown
+    }
+
+    fn codex_cwds(&self) -> Option<&[PathBuf]> {
+        None
+    }
+}
+
+/// The Linux procfs backend of [`ProcessProbe`].
+///
+/// Read-only: it reads a pid's stat file and readlinks its cwd, nothing else —
+/// no `kill(pid, 0)`, no ptrace, no fd of another process opened. Memoised per
+/// pid, so every agent of one session costs one read per probe instance, and
+/// one instance lives for one agents scan (one poll).
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+pub struct ProcfsProbe {
+    observed: std::cell::RefCell<std::collections::HashMap<u32, PidObservation>>,
+    codex: std::cell::OnceCell<Option<Vec<PathBuf>>>,
+}
+
+#[cfg(target_os = "linux")]
+impl ProcfsProbe {
+    /// A probe with an empty memo.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn observe_uncached(pid: u32) -> PidObservation {
+        // procfs not mounted (or not ours to read): never guess.
+        if std::fs::read_to_string("/proc/self/stat").is_err() {
+            return PidObservation::Unknown;
+        }
+        match std::fs::symlink_metadata(format!("/proc/{}", pid)) {
+            Ok(_) => PidObservation::Present {
+                start_time: read_start_time(pid),
+                cwd: read_cwd(pid),
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => PidObservation::Absent,
+            Err(_) => PidObservation::Unknown,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ProcessProbe for ProcfsProbe {
+    fn observe(&self, pid: u32) -> PidObservation {
+        if let Some(hit) = self.observed.borrow().get(&pid) {
+            return hit.clone();
+        }
+        let observation = Self::observe_uncached(pid);
+        self.observed.borrow_mut().insert(pid, observation.clone());
+        observation
+    }
+
+    fn codex_cwds(&self) -> Option<&[PathBuf]> {
+        // Filled by the codex scan (quick 260926-06g, task 2); until then the
+        // cell stays empty and the answer is "could not say".
+        self.codex.get().and_then(|cwds| cwds.as_deref())
+    }
+}
+
+/// The process probe for this platform — the ONE cfg-selected swap point.
+///
+/// On Linux, a fresh [`ProcfsProbe`]. A later cross-platform backend (e.g. the
+/// `sysinfo` crate) replaces only this function's body; nothing downstream
+/// changes.
+#[cfg(target_os = "linux")]
+pub fn process_probe() -> Box<dyn ProcessProbe> {
+    Box::new(ProcfsProbe::new())
+}
+
+/// The process probe for this platform — the ONE cfg-selected swap point.
+///
+/// Off Linux, [`NoProcessProbe`]: every answer is "unknown", so the
+/// running-agents view is mtime-only exactly as before. A later cross-platform
+/// backend (e.g. the `sysinfo` crate) replaces only this function's body.
+#[cfg(not(target_os = "linux"))]
+pub fn process_probe() -> Box<dyn ProcessProbe> {
+    Box::new(NoProcessProbe)
 }
 
 #[cfg(test)]
@@ -815,6 +956,66 @@ mod tests {
     #[test]
     fn test_read_start_time_nonexistent_pid() {
         assert!(read_start_time(999_999_999).is_none());
+    }
+
+    // --- Process probe (quick 260926-06g) -----------------------------------
+
+    /// A stat line whose fields 3..=52 are their own field numbers, except
+    /// field 22 (`starttime`), which is `start`.
+    fn stat_line(comm: &str, start: u64) -> String {
+        let rest: Vec<String> = (3..=52)
+            .map(|field| {
+                if field == 22 {
+                    start.to_string()
+                } else {
+                    field.to_string()
+                }
+            })
+            .collect();
+        format!("1234 ({comm}) {}\n", rest.join(" "))
+    }
+
+    #[test]
+    fn stat_starttime_is_field_22() {
+        assert_eq!(
+            parse_stat_starttime(&stat_line("claude", 32844)),
+            Some(32844)
+        );
+        assert_eq!(
+            parse_stat_starttime(&stat_line("a b c", 77)),
+            Some(77),
+            "spaces in comm"
+        );
+    }
+
+    #[test]
+    fn stat_starttime_uses_the_last_close_paren() {
+        assert_eq!(
+            parse_stat_starttime(&stat_line("x) S 9 9 9", 32844)),
+            Some(32844),
+            "a comm containing `) S 9 9 9` still yields the true field 22"
+        );
+    }
+
+    #[test]
+    fn malformed_stat_lines_have_no_starttime() {
+        assert_eq!(parse_stat_starttime(""), None);
+        assert_eq!(
+            parse_stat_starttime("1234 (claude) S 1 2 3"),
+            None,
+            "truncated"
+        );
+        assert_eq!(parse_stat_starttime("1234 claude S 1 2 3"), None, "no comm");
+        let bad = stat_line("claude", 999_999).replacen(" 999999 ", " x999999 ", 1);
+        assert_eq!(parse_stat_starttime(&bad), None, "non-numeric field 22");
+    }
+
+    #[test]
+    fn the_no_process_probe_knows_nothing() {
+        let probe = NoProcessProbe;
+        assert_eq!(probe.observe(std::process::id()), PidObservation::Unknown);
+        assert_eq!(probe.observe(u32::MAX), PidObservation::Unknown);
+        assert_eq!(probe.codex_cwds(), None);
     }
 
     // --- Codex detection (260923-lr9) ---------------------------------------

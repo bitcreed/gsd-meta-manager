@@ -1213,6 +1213,12 @@ impl App {
                     // up behind itself; the closure ALWAYS sends, an empty
                     // result after a panic, so the flag cannot stick
                     // (RESEARCH Pitfall 6).
+                    //
+                    // The process probe rides this same task, once per poll
+                    // (quick 260926-06g): it is built INSIDE the catch_unwind,
+                    // so a panic while building it still yields the empty
+                    // result and the send. Off Linux it answers "unknown" to
+                    // everything and the scan is mtime-only.
                     if !self.ctx.agents_scan_in_flight {
                         if let Some(ref tx) = self.ctx.event_tx {
                             let tx: UnboundedSender<Action> = tx.clone();
@@ -1228,7 +1234,12 @@ impl App {
                                 let now = std::time::SystemTime::now();
                                 let per_project = std::panic::catch_unwind(
                                     std::panic::AssertUnwindSafe(|| {
-                                        crate::agents::scan_projects_guarded(&projects, now)
+                                        let probe = crate::session_detector::process_probe();
+                                        crate::agents::scan_projects_guarded(
+                                            &projects,
+                                            probe.as_ref(),
+                                            now,
+                                        )
                                     }),
                                 )
                                 .unwrap_or_default();

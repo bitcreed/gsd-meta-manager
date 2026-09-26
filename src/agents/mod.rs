@@ -32,6 +32,7 @@
 
 pub mod adapters;
 pub mod fixers;
+pub mod processes;
 pub mod waves;
 pub mod worktrees;
 
@@ -41,8 +42,10 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use adapters::{AdapterReport, AgentAdapter, ChildAgent, CoreSnapshot, Enrichment};
+use processes::ProcessEvidence;
 use worktrees::BranchPlan;
 
+use crate::session_detector::{NoProcessProbe, ProcessProbe};
 use crate::state_reader::disk_status;
 use crate::state_reader::phase_num::PhaseNum;
 use crate::text::Untrusted;
@@ -116,9 +119,16 @@ fn classify_facts(
     last_activity: Option<SystemTime>,
     lock_released: Option<bool>,
     summary_in_worktree: bool,
+    evidence: ProcessEvidence,
     now: SystemTime,
 ) -> AgentLiveness {
     if ended {
+        return AgentLiveness::Ended;
+    }
+    // The session that owned the lock is gone, so every agent of it is over,
+    // whatever its transcript mtime, SUMMARY or lock says (the CR-01
+    // precedent). A LIVE owner never reaches here as a verdict (D-A05).
+    if evidence == ProcessEvidence::OwnerGone {
         return AgentLiveness::Ended;
     }
     let Some(last) = last_activity else {
@@ -150,26 +160,57 @@ fn classify_facts(
 /// activity older than [`LIVE_SECS`]) → `Finished`; activity within [`LIVE_SECS`] →
 /// `Live`; within [`IDLE_SECS`] → `Idle`; otherwise `Stalled`. A future mtime
 /// is age 0.
+///
+/// This is [`classify_observed`] with no process evidence
+/// ([`ProcessEvidence::Unknown`]): the mtime-only answer.
 pub fn classify_liveness(
     facts: Option<&Enrichment>,
     summary_in_worktree: bool,
     now: SystemTime,
 ) -> AgentLiveness {
+    classify_observed(facts, summary_in_worktree, ProcessEvidence::Unknown, now)
+}
+
+/// Classify one agent from its adapter's facts plus what the process table
+/// said about its worktree ([`processes::worktree_evidence`], quick
+/// 260926-06g).
+///
+/// In order: `ended` → `Ended`; [`ProcessEvidence::OwnerGone`] → `Ended`,
+/// with or without facts; then exactly [`classify_liveness`]'s rules.
+/// [`ProcessEvidence::Unknown`] and [`ProcessEvidence::OwnerAlive`] never
+/// change the result (D-A05).
+pub fn classify_observed(
+    facts: Option<&Enrichment>,
+    summary_in_worktree: bool,
+    evidence: ProcessEvidence,
+    now: SystemTime,
+) -> AgentLiveness {
     let Some(facts) = facts else {
-        return AgentLiveness::Unknown;
+        return match evidence {
+            ProcessEvidence::OwnerGone => AgentLiveness::Ended,
+            _ => AgentLiveness::Unknown,
+        };
     };
     classify_facts(
         facts.ended,
         facts.last_activity,
         facts.lock_released,
         summary_in_worktree,
+        evidence,
         now,
     )
 }
 
 /// A child agent classified with the same rules; a child has no lock of its own.
 fn classify_child(mut child: ChildAgent, now: SystemTime) -> ChildAgent {
-    child.liveness = classify_facts(child.ended, child.last_activity, None, false, now);
+    child.liveness = classify_facts(
+        child.ended,
+        child.last_activity,
+        None,
+        false,
+        ProcessEvidence::Unknown,
+        now,
+    );
     child
 }
 
@@ -291,12 +332,38 @@ fn worktree_holds_summary(phase_dir: &Path, plan: &waves::PlanRef) -> bool {
 /// Public so an adapter's own tests — and the D-A07 proof in
 /// `tests/agents_scan.rs` — can feed a test-only adapter through the real core.
 /// A non-git project still runs its adapters, over an empty worktree list.
+///
+/// No process evidence: this is [`scan_project_with_probe`] with
+/// [`NoProcessProbe`], the mtime-only scan every non-Linux build runs.
 pub fn scan_project_with(
     project_root: &Path,
     adapters: &[Box<dyn AgentAdapter>],
     now: SystemTime,
 ) -> ProjectAgents {
+    scan_project_with_probe(project_root, adapters, &NoProcessProbe, now)
+}
+
+/// [`scan_project_with`], plus one [`ProcessEvidence`] per row from `probe`
+/// ([`processes::worktree_evidence`]), computed before the row's liveness is
+/// classified by [`classify_observed`] (quick 260926-06g).
+///
+/// The roots a live lock owner may legitimately work in are built once per
+/// project: `project_root`, its canonical form, the main worktree and every
+/// worktree git reported. `probe` is consulted only for agent rows, so a
+/// project with none costs it nothing.
+pub fn scan_project_with_probe(
+    project_root: &Path,
+    adapters: &[Box<dyn AgentAdapter>],
+    probe: &dyn ProcessProbe,
+    now: SystemTime,
+) -> ProjectAgents {
     let core = worktrees::scan_worktrees(project_root);
+    let mut roots: Vec<PathBuf> = vec![project_root.to_path_buf()];
+    if let Ok(canonical) = std::fs::canonicalize(project_root) {
+        roots.push(canonical);
+    }
+    roots.extend(core.main_worktree.iter().cloned());
+    roots.extend(core.worktrees.iter().map(|wt| wt.path.clone()));
     let snap = CoreSnapshot {
         project_root,
         main_worktree: core.main_worktree.as_deref(),
@@ -364,7 +431,8 @@ pub fn scan_project_with(
                         worktree_holds_summary(&wt.path.join(".planning").join(relative), plan)
                     })
             });
-            let liveness = classify_liveness(facts, summary_in_worktree, now);
+            let evidence = processes::worktree_evidence(wt, probe, &roots);
+            let liveness = classify_observed(facts, summary_in_worktree, evidence, now);
             let mut row = AgentRow {
                 plan,
                 summary_in_worktree,
@@ -444,8 +512,16 @@ pub fn scan_project_with(
 /// visibly disturbed. So adapters must be panic-free by construction — failure
 /// as data, no `unwrap` on external input — and this guard is defence in
 /// depth, not a licence.
+///
+/// `probe` is the one process snapshot for this whole scan (quick
+/// 260926-06g): the caller builds it with
+/// `crate::session_detector::process_probe()` inside the same blocking task,
+/// and every project's rows consult it through [`scan_project_with_probe`]. Its
+/// memo means one read per distinct lock pid per scan. [`NoProcessProbe`]
+/// gives the mtime-only scan.
 pub fn scan_projects_guarded(
     projects: &[(String, PathBuf)],
+    probe: &dyn ProcessProbe,
     now: SystemTime,
 ) -> Vec<(String, ProjectAgents)> {
     let adapters = catch_unwind(adapters::registered_adapters).unwrap_or_else(|_| {
@@ -455,8 +531,10 @@ pub fn scan_projects_guarded(
     let mut scans: Vec<(String, ProjectAgents)> = projects
         .iter()
         .map(|(alias, path)| {
-            let scan = catch_unwind(AssertUnwindSafe(|| scan_project_with(path, &adapters, now)))
-                .unwrap_or_else(|_| {
+            let scan = catch_unwind(AssertUnwindSafe(|| {
+                scan_project_with_probe(path, &adapters, probe, now)
+            }))
+            .unwrap_or_else(|_| {
                     tracing::warn!(alias = %alias, "agent scan panicked; this project reports no agents this scan");
                     ProjectAgents::default()
                 });
@@ -590,6 +668,53 @@ mod tests {
             (Unknown, false),
         ] {
             assert_eq!(liveness.is_running(), running, "{liveness:?}");
+        }
+    }
+
+    /// Every (facts, summary) combination of the process-evidence grid.
+    fn evidence_grid(now: SystemTime) -> Vec<(Option<Enrichment>, bool)> {
+        let mut grid = Vec::new();
+        for summary in [false, true] {
+            grid.push((None, summary));
+            grid.push((Some(Enrichment::default()), summary));
+            for age in [0, 120, 121, 600, 601, 86_400, 86_401] {
+                for lock in [None, Some(false), Some(true)] {
+                    grid.push((Some(facts(now, age, lock)), summary));
+                    let mut ended = facts(now, age, lock);
+                    ended.ended = true;
+                    grid.push((Some(ended), summary));
+                }
+            }
+        }
+        grid
+    }
+
+    /// D-A05: an unknown or live owner never changes the mtime-only answer.
+    #[test]
+    fn unknown_and_owner_alive_equal_the_mtime_only_classifier() {
+        let now = SystemTime::now();
+        for (f, summary) in evidence_grid(now) {
+            let expected = classify_liveness(f.as_ref(), summary, now);
+            for evidence in [ProcessEvidence::Unknown, ProcessEvidence::OwnerAlive] {
+                assert_eq!(
+                    classify_observed(f.as_ref(), summary, evidence, now),
+                    expected,
+                    "{evidence:?} {f:?} summary={summary}"
+                );
+            }
+        }
+    }
+
+    /// A gone owner ends every agent of its session, whatever the mtime says.
+    #[test]
+    fn owner_gone_is_ended_for_every_combination() {
+        let now = SystemTime::now();
+        for (f, summary) in evidence_grid(now) {
+            assert_eq!(
+                classify_observed(f.as_ref(), summary, ProcessEvidence::OwnerGone, now),
+                AgentLiveness::Ended,
+                "{f:?} summary={summary}"
+            );
         }
     }
 
