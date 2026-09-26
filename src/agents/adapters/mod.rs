@@ -30,6 +30,8 @@
 //! defence in depth, not a licence: adapters must be panic-free by
 //! construction (no `unwrap` on external input).
 
+pub mod claude;
+
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -105,7 +107,8 @@ pub trait AgentAdapter: Send + Sync {
 
 /// Every adapter this build ships, in registration order (first claim wins).
 pub fn registered_adapters() -> Vec<Box<dyn AgentAdapter>> {
-    // Claude Code (25-02): `pub mod claude;` above and one line here.
-    // Codex (deferred, D-A08): `pub mod codex;` above and one line here.
-    Vec::new()
+    vec![
+        Box::new(claude::ClaudeCodeAdapter::from_env()),
+        // Codex (deferred, D-A08): `pub mod codex;` above and one line here.
+    ]
 }
