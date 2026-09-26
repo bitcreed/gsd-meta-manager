@@ -621,6 +621,40 @@ pub(crate) fn tab_titles(
     windowed_tab_titles(width, active, driver_live, experimental)
 }
 
+/// The tab bar widget, built ONCE for both tab-bar sites (`render` and
+/// `render_main_only`) — the file's standing rule for [`tab_titles`].
+///
+/// The active tab is BRACKETED at every focus level, `[6:Sess]`, so it can be
+/// read in a monochrome terminal and in a text scrape (quick 260926-1t1,
+/// D-06, [inferred I-6]); at the tab bar it is also reversed. The framing is
+/// width-neutral: the brackets replace the `Tabs` widget's one-cell pads,
+/// which are set to empty, and every other entry (overflow markers included)
+/// carries a space on each side instead. So each entry is exactly as wide as
+/// before, and `TAB_BAR_*_CELLS`, `tab_titles` and its tier tests are untouched.
+fn tab_bar_widget(titles: Vec<Line<'static>>, select: usize, focus: DetailFocus) -> Tabs<'static> {
+    let framed: Vec<Line<'static>> = titles
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let (open, close) = if i == select { ("[", "]") } else { (" ", " ") };
+            let mut spans = Vec::with_capacity(line.spans.len() + 2);
+            spans.push(Span::raw(open));
+            spans.extend(line.spans);
+            spans.push(Span::raw(close));
+            Line::from(spans)
+        })
+        .collect();
+    let mut highlight = Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan);
+    if focus == DetailFocus::TabBar {
+        highlight = highlight.add_modifier(Modifier::REVERSED);
+    }
+    Tabs::new(framed)
+        .select(select)
+        .padding("", "")
+        .highlight_style(highlight)
+        .divider("|")
+}
+
 /// One tab's `Line`. The Driver entry gets its marker cell as a second span so
 /// the label's width is identical live and idle.
 ///
@@ -773,6 +807,32 @@ pub struct DetailScreen {
     /// render pass (plan 24-06); `0` until the first frame, which the key
     /// handler treats as a one-row page.
     roadmap_list_viewport: Cell<u16>,
+    /// Which level of the view has the keyboard: the tab bar or the tab's
+    /// content (quick 260926-1t1). Content on every opening.
+    focus: DetailFocus,
+}
+
+/// The detail view's focus levels (quick 260926-1t1, D-01).
+///
+/// `↓`/`Enter` go down a level, `↑` on the first row and `Esc` go up one, and
+/// `←`/`→` move between siblings on the level that has focus. **`Content` is
+/// where every opening lands** — dashboard `Enter`, `b`, and every overlay's
+/// backdrop build through [`DetailScreen::new`] — so `6` then `j` still moves
+/// the Sessions list exactly as it did before the tab bar was a level.
+///
+/// A third level, `Pane`, is reserved for task 4b's Phases waves pane and is
+/// deliberately NOT a variant yet. The Backlog content pane is not a focus
+/// level of its own: `backlog_expanded` stays its single source of truth
+/// ([inferred I-10]), because a second flag that had to agree with it would
+/// be a bug waiting to happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DetailFocus {
+    /// The tab bar: `←`/`→` walk tabs, `↓`/`j`/`Enter`/`Space` descend with
+    /// no action, `Esc`/`q` leave.
+    TabBar,
+    /// The active tab's content (and its sub-tab strip, when it has one).
+    #[default]
+    Content,
 }
 
 impl DetailScreen {
@@ -798,6 +858,7 @@ impl DetailScreen {
             backlog_viewport: Cell::default(),
             roadmap_list_offset: Cell::new(0),
             roadmap_list_viewport: Cell::new(0),
+            focus: DetailFocus::Content,
         }
     }
 
@@ -1033,6 +1094,103 @@ impl DetailScreen {
             )),
             None => ScreenAction::None,
         }
+    }
+
+    /// Whether `↑`/`k` on `view` has nothing above it to move to — the test
+    /// that sends focus up to the tab bar (quick 260926-1t1, D-01).
+    ///
+    /// Exhaustive and wildcard-free on purpose, the T-24-09 convention
+    /// [`tab_index`] follows: a new sub-view must decide what its first row
+    /// is, or the crate does not compile. Per [inferred I-5]:
+    ///
+    /// * a scroll view (the Roadmap box view, a Browse or Archive file view)
+    ///   is "on its first row" when scrolled to the top;
+    /// * an open Backlog pane or an open Config dropdown never is, so `↑`
+    ///   never leaves a pane;
+    /// * Git ignores its commit pane — `↑` on row 0 goes to the tab bar and
+    ///   leaves the pane as it is.
+    ///
+    /// A missing view cache counts as at the top. Every branch is an O(1)
+    /// read of in-memory state, except the Roadmap list, which reuses
+    /// [`Self::roadmap_model_and_cursor`] as its key arms already do (T-1t1-05).
+    fn content_at_first_row(&self, view: &DetailSubView, ctx: &AppContext) -> bool {
+        let cache = ctx.view_cache.get(&self.alias);
+        match view {
+            DetailSubView::RoadmapViz => {
+                if self.roadmap_list_active(ctx) {
+                    match self.roadmap_model_and_cursor(ctx) {
+                        None => true,
+                        Some((model, cursor)) => model
+                            .first_target()
+                            .is_none_or(|first| first == cursor),
+                    }
+                } else {
+                    let vp = self.generic_viewport.get();
+                    clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height) == 0
+                }
+            }
+            DetailSubView::Pipeline => cache.is_none_or(|c| c.pipeline_selected == 0),
+            DetailSubView::Backlog => {
+                cache.is_none_or(|c| !c.backlog_expanded && c.backlog_selected == 0)
+            }
+            DetailSubView::GitHistory => {
+                cache.is_none_or(|c| c.git_selected == 0 || c.git_entries.is_empty())
+            }
+            DetailSubView::Queue => cache.is_none_or(|c| c.queue_selected == 0),
+            DetailSubView::Sessions => cache.is_none_or(|c| c.sessions_selected == 0),
+            DetailSubView::Agents => cache.is_none_or(|c| {
+                c.agents_selected.min(agents_list_max(ctx, &self.alias)) == 0
+            }),
+            DetailSubView::Archive => cache.is_none_or(|c| {
+                use crate::archive::ArchiveDepth;
+                match &c.archive_depth {
+                    ArchiveDepth::MilestoneList => c.archive_selected[0] == 0,
+                    ArchiveDepth::PhaseList { .. } => c.archive_selected[1] == 0,
+                    ArchiveDepth::FileList { .. } => c.archive_selected[2] == 0,
+                    ArchiveDepth::FileView { .. } => {
+                        let vp = self.archive_viewport.get();
+                        clamp_scroll(c.archive_scroll_offset, vp.total_lines, vp.visible_height)
+                            == 0
+                    }
+                }
+            }),
+            DetailSubView::Browse => cache.is_none_or(|c| {
+                use crate::browser::BrowserDepth;
+                match c.browser_depth {
+                    BrowserDepth::List => c.browser_selected == 0,
+                    BrowserDepth::View => {
+                        let vp = self.browser_viewport.get();
+                        clamp_scroll(c.browser_scroll_offset, vp.total_lines, vp.visible_height)
+                            == 0
+                    }
+                }
+            }),
+            DetailSubView::Defaults => cache.is_none_or(|c| {
+                if c.defaults_editing.is_some() {
+                    return false;
+                }
+                let entries = entries_for_cache(c);
+                visible_defaults_indices(c, &entries)
+                    .first()
+                    .is_none_or(|&first| c.defaults_selected <= first)
+            }),
+            DetailSubView::Driver => cache.is_none_or(|c| c.driver_selected_run == 0),
+        }
+    }
+}
+
+/// The tab index one step left (`forward == false`) or right of `current`,
+/// or `None` at the clamped end — the ONE copy of the arrow-key tab clamp,
+/// shared by the tab-bar level and the content level (quick 260926-1t1).
+///
+/// The visible count, not `TAB_COUNT - 1`: with the flag off the last tab is
+/// index 7 (Docs), and walking to 8 (the Driver index) would park the user on
+/// a tab the bar does not draw.
+fn stepped_tab_index(current: usize, forward: bool, experimental: bool) -> Option<usize> {
+    if forward {
+        (current < visible_tab_count(experimental) - 1).then(|| current + 1)
+    } else {
+        current.checked_sub(1)
     }
 }
 
@@ -2041,15 +2199,70 @@ impl Screen for DetailScreen {
             }
         }
 
+        // The tab-bar level (quick 260926-1t1, D-01, D-02). AFTER both Config
+        // intercepts, so an arrow or a `q` typed into a value or the filter is
+        // still text (T-1t1-02); BEFORE the main match, so no content arm —
+        // above all the Sessions resume — is reachable from here (T-1t1-01).
+        if self.focus == DetailFocus::TabBar {
+            match code {
+                KeyCode::Left | KeyCode::Right => {
+                    return match stepped_tab_index(
+                        current_idx,
+                        code == KeyCode::Right,
+                        ctx.experimental,
+                    ) {
+                        Some(index) => {
+                            switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
+                        }
+                        None => ScreenAction::None,
+                    };
+                }
+                // Descend with NO other state change ([inferred I-3]: Space
+                // too — on Queue it would otherwise mark an item done).
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.focus = DetailFocus::Content;
+                    ctx.needs_redraw = true;
+                    return ScreenAction::None;
+                }
+                KeyCode::Up | KeyCode::Char('k') => return ScreenAction::None,
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.scroll_offset = 0;
+                    ctx.needs_redraw = true;
+                    return ScreenAction::Pop;
+                }
+                // Focus-neutral: they act as they always have and leave the
+                // tab bar focused ([inferred I-2]).
+                KeyCode::Char('?') | KeyCode::Tab => {}
+                // Every other key is a content key: focus follows it down,
+                // then it runs exactly as it does in content, so no shortcut
+                // costs an extra keypress ([inferred I-2]). Digits landing in
+                // content (D-04) is this rule.
+                _ => {
+                    self.focus = DetailFocus::Content;
+                    ctx.needs_redraw = true;
+                }
+            }
+        }
+
         match code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                // Archive: pop depth level before popping screen
+            // `q` leaves the detail view from every level, WITHOUT popping
+            // inner levels first ([inferred I-4]): an open pane, an Archive
+            // depth or a Config dropdown stays in the view cache, exactly as
+            // any exit has always left it (quick 260926-1t1 split `q` from
+            // `Esc`, which steps up one level).
+            KeyCode::Char('q') => {
+                self.scroll_offset = 0;
+                ctx.needs_redraw = true;
+                ScreenAction::Pop
+            }
+            KeyCode::Esc => {
+                // Archive: pop depth level before moving to the tab bar
                 if current_view == DetailSubView::Archive {
                     let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                     use crate::archive::ArchiveDepth;
                     match &cache.archive_depth {
                         ArchiveDepth::MilestoneList => {
-                            // At root level -- fall through to pop screen
+                            // At root level -- fall through to the tab bar
                         }
                         ArchiveDepth::PhaseList { .. } => {
                             cache.archive_depth = ArchiveDepth::MilestoneList;
@@ -2109,7 +2322,8 @@ impl Screen for DetailScreen {
                         return ScreenAction::None;
                     }
                 }
-                // Browse: drop View→List, walk up one dir, or fall through to pop
+                // Browse: drop View→List, walk up one dir, or fall through to
+                // the tab bar
                 if current_view == DetailSubView::Browse {
                     let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                     use crate::browser::BrowserDepth;
@@ -2138,7 +2352,7 @@ impl Screen for DetailScreen {
                                     }
                                 }
                             }
-                            // At the .planning/ root: fall through to pop screen
+                            // At the .planning/ root: fall through to the tab bar
                         }
                     }
                 }
@@ -2152,8 +2366,9 @@ impl Screen for DetailScreen {
                         ctx.needs_redraw = true;
                         return ScreenAction::None;
                     }
-                    // Then a confirmed `/` filter: Esc and q clear it and keep
-                    // the screen ([INFERRED A3], the arm is shared).
+                    // Then a confirmed `/` filter: Esc clears it and keeps the
+                    // screen ([INFERRED A3]). Since quick 260926-1t1 split the
+                    // arm, `q` no longer does — it leaves from every level.
                     if !cache.defaults_filter.is_empty() {
                         cache.defaults_filter.clear();
                         cache.defaults_filter_typing = false;
@@ -2161,9 +2376,11 @@ impl Screen for DetailScreen {
                         return ScreenAction::None;
                     }
                 }
-                self.scroll_offset = 0;
+                // No inner level left: Esc steps up to the tab bar, and a
+                // second Esc there leaves (D-01).
+                self.focus = DetailFocus::TabBar;
                 ctx.needs_redraw = true;
-                ScreenAction::Pop
+                ScreenAction::None
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 match current_view {
@@ -2342,6 +2559,13 @@ impl Screen for DetailScreen {
                 ScreenAction::None
             }
             KeyCode::Char('k') | KeyCode::Up => {
+                // Nothing above to move to: `↑` goes up a level, to the tab
+                // bar (D-01). Otherwise each tab's arm runs unchanged.
+                if self.content_at_first_row(&current_view, ctx) {
+                    self.focus = DetailFocus::TabBar;
+                    ctx.needs_redraw = true;
+                    return ScreenAction::None;
+                }
                 match current_view {
                     DetailSubView::GitHistory => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
@@ -2802,14 +3026,16 @@ impl Screen for DetailScreen {
             // through to the no-op `_` arm at the bottom of this match, so
             // neither can land the user on a tab by an old habit (`9` was the
             // interim Archive tab, `0` the old Docs tab).
-            KeyCode::Char('1') => switch_to_tab(&self.alias, 0, &mut self.scroll_offset, ctx),
-            KeyCode::Char('2') => switch_to_tab(&self.alias, 1, &mut self.scroll_offset, ctx),
-            KeyCode::Char('3') => switch_to_tab(&self.alias, 2, &mut self.scroll_offset, ctx),
-            KeyCode::Char('4') => switch_to_tab(&self.alias, 3, &mut self.scroll_offset, ctx),
-            KeyCode::Char('5') => switch_to_tab(&self.alias, 4, &mut self.scroll_offset, ctx),
-            KeyCode::Char('6') => switch_to_tab(&self.alias, 5, &mut self.scroll_offset, ctx),
-            KeyCode::Char('7') => switch_to_tab(&self.alias, 6, &mut self.scroll_offset, ctx),
-            KeyCode::Char('8') => switch_to_tab(&self.alias, 7, &mut self.scroll_offset, ctx),
+            //
+            // A digit is an explicit jump, so it lands in CONTENT (D-04). The
+            // tab-bar dispatch above already moved focus down before any digit
+            // reaches here; setting it again keeps the landing rule local and
+            // greppable.
+            KeyCode::Char(digit @ '1'..='8') => {
+                self.focus = DetailFocus::Content;
+                let index = usize::from(digit as u8 - b'1');
+                switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
+            }
             // The Driver tab (D-15), always the last. It has no digit, uppercase is
             // entirely unclaimed in the detail view, and `KeyCode::Char('D')`
             // arrives without needing the `_modifiers` parameter this handler
@@ -2821,24 +3047,16 @@ impl Screen for DetailScreen {
             // the Driver tab existed, rather than being consumed by an arm that
             // does nothing (260917-fko D2).
             KeyCode::Char('D') if ctx.experimental => {
+                self.focus = DetailFocus::Content;
                 switch_to_tab(&self.alias, DRIVER_TAB_INDEX, &mut self.scroll_offset, ctx)
             }
-            // Tab switching via arrow keys
-            KeyCode::Left => {
-                if current_idx > 0 {
-                    switch_to_tab(&self.alias, current_idx - 1, &mut self.scroll_offset, ctx)
-                } else {
-                    ScreenAction::None
-                }
-            }
-            KeyCode::Right => {
-                // The visible count, not `TAB_COUNT - 1`: with the flag off the
-                // last tab is index 7 (Docs), and walking to 8 (the Driver
-                // index) would park the user on a tab the bar does not draw.
-                if current_idx < visible_tab_count(ctx.experimental) - 1 {
-                    switch_to_tab(&self.alias, current_idx + 1, &mut self.scroll_offset, ctx)
-                } else {
-                    ScreenAction::None
+            // Tab switching via arrow keys, clamped by `stepped_tab_index`.
+            KeyCode::Left | KeyCode::Right => {
+                match stepped_tab_index(current_idx, code == KeyCode::Right, ctx.experimental) {
+                    Some(index) => {
+                        switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
+                    }
+                    None => ScreenAction::None,
                 }
             }
             // Enter/Space: expand backlog item, load diff stat, or mark queue item done
@@ -4095,23 +4313,17 @@ impl Screen for DetailScreen {
         let footer_area = chunks[2];
 
         // Render tab bar. Both this site and its duplicate in
-        // `render_main_only` take their titles from `tab_titles`; a tier applied
-        // to only one of them would leave the Driver tab visible on one render
-        // path and invisible on the other.
+        // `render_main_only` take their titles from `tab_titles` and their
+        // widget from `tab_bar_widget`; a tier applied to only one of them
+        // would leave the Driver tab visible on one render path and invisible
+        // on the other.
         let (titles, select) = tab_titles(
             tab_area.width,
             tab_idx,
             driver_live_for(ctx, alias),
             ctx.experimental,
         );
-        let tabs_widget = Tabs::new(titles)
-            .select(select)
-            .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan),
-            )
-            .divider("|");
+        let tabs_widget = tab_bar_widget(titles, select, self.focus);
         let tab_block = Block::default()
             .borders(Borders::BOTTOM)
             .title(format!(" Project: {} ", shown(alias)));
@@ -4139,6 +4351,17 @@ impl Screen for DetailScreen {
                 ctx.view_cache.get(alias),
                 &self.driver_viewport,
             ),
+        }
+
+        // The tab-bar focus cue, part two (the reversed label is part one):
+        // while the tab bar has the keyboard, the whole content area is
+        // dimmed. One style pass over the area after the content render, so it
+        // is uniform across all eleven sub-views and needs no per-tab code
+        // ([inferred I-7]).
+        if self.focus == DetailFocus::TabBar {
+            frame
+                .buffer_mut()
+                .set_style(content_area, Style::default().fg(Color::DarkGray));
         }
 
         // Render footer with tab-appropriate hints
@@ -5652,21 +5875,15 @@ impl DetailScreen {
         let content_area = chunks[1];
 
         // Render tab bar — the duplicate of the site in `render`, and the reason
-        // `tab_titles` exists as one function rather than two constructions.
+        // `tab_titles` and `tab_bar_widget` exist as one function each rather
+        // than two constructions.
         let (titles, select) = tab_titles(
             tab_area.width,
             tab_idx,
             driver_live_for(ctx, alias),
             ctx.experimental,
         );
-        let tabs_widget = Tabs::new(titles)
-            .select(select)
-            .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan),
-            )
-            .divider("|");
+        let tabs_widget = tab_bar_widget(titles, select, self.focus);
         let tab_block = Block::default()
             .borders(Borders::BOTTOM)
             .title(format!(" Project: {} ", shown(alias)));
@@ -11396,7 +11613,10 @@ mod tests {
     // ── 24-07: the Docs tab's Files | Milestones sub-tabs (D-B04) ─────────
 
     /// The text of the active tab in the rendered tab bar: the row-1 cells
-    /// drawn in the bar's cyan highlight, trimmed.
+    /// drawn in the bar's cyan highlight, trimmed, with the focus brackets
+    /// every active label carries since quick 260926-1t1 (`[8:Docs]`) taken
+    /// off — those are pinned by
+    /// `the_active_tab_label_is_bracketed_at_every_level_and_reversed_on_the_tab_bar`.
     fn active_tab_text(screen: &DetailScreen, ctx: &AppContext) -> String {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -11414,6 +11634,8 @@ mod tests {
             .map(|cell| cell.symbol().to_string())
             .collect::<String>()
             .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
             .to_string()
     }
 
@@ -15763,8 +15985,13 @@ mod tests {
         assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded);
         press(&mut screen, &mut ctx, KeyCode::Enter);
         assert!(!ctx.view_cache[TEST_ALIAS].backlog_expanded, "Enter again closes it");
+        // With the pane closed Esc steps up to the tab bar, and a second Esc
+        // leaves (quick 260926-1t1, D-01).
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::Pop), "with the pane closed Esc leaves");
+        assert!(matches!(action, ScreenAction::None), "with the pane closed Esc goes up");
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "Esc at the tab bar leaves");
     }
 
     /// Wide: the pane sits to the RIGHT of the list (same rows). Narrow: it
@@ -16312,25 +16539,39 @@ mod tests {
             );
         }
 
-        // Esc, then q, on a CONFIRMED filter: clears, no Pop ([INFERRED A3]).
-        for key in [KeyCode::Esc, KeyCode::Char('q')] {
-            type_config_filter(&mut screen, &mut ctx, "drift");
-            press(&mut screen, &mut ctx, KeyCode::Enter);
-            let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
-            assert!(
-                matches!(action, ScreenAction::None),
-                "{key:?} popped a filtered tab"
-            );
+        // Esc on a CONFIRMED filter: clears, no Pop ([INFERRED A3]).
+        type_config_filter(&mut screen, &mut ctx, "drift");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "Esc popped a filtered tab"
+        );
+        {
             let cache = &ctx.view_cache[TEST_ALIAS];
-            assert!(cache.defaults_filter.is_empty(), "{key:?} kept the filter");
+            assert!(cache.defaults_filter.is_empty(), "Esc kept the filter");
             assert!(!cache.defaults_filter_typing);
         }
 
-        // No filter: Esc pops exactly as before.
+        // q on a confirmed filter leaves from every level since quick
+        // 260926-1t1 split it from Esc ([inferred I-4]); the filter stays in
+        // the view cache.
+        type_config_filter(&mut screen, &mut ctx, "drift");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q must leave");
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_filter, "drift");
+        press(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(ctx.view_cache[TEST_ALIAS].defaults_filter.is_empty());
+
+        // No filter: Esc steps up to the tab bar, and Esc there pops.
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "Esc with no filter goes up");
+        assert_eq!(screen.focus, DetailFocus::TabBar);
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(
             matches!(action, ScreenAction::Pop),
-            "Esc with no filter must pop"
+            "Esc at the tab bar must pop"
         );
 
         // Popup first, then filter, then pop.
@@ -16353,6 +16594,9 @@ mod tests {
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
         assert!(ctx.view_cache[TEST_ALIAS].defaults_filter.is_empty());
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "then the tab bar");
+        assert_eq!(screen.focus, DetailFocus::TabBar);
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::Pop));
     }
@@ -17535,5 +17779,313 @@ mod tests {
             .find(|l| l.contains("phase 8 executing"))
             .unwrap_or_else(|| panic!("no summary line:\n{narrow}"));
         assert!(line.contains("· 0/6 done"), "{line}");
+    }
+
+    // --- quick 260926-1t1: the tab-bar focus level (D-01, D-02, D-06) ------
+
+    /// [`sessions_fixture`] with a second session (PID 5151) on the same
+    /// project, so the list has a row below the first.
+    fn two_sessions_fixture() -> (DetailScreen, AppContext) {
+        let (screen, mut ctx) = sessions_fixture("abc12345");
+        let mut second = ctx.active_sessions[0].clone();
+        second.pid = 5151;
+        ctx.active_sessions.push(second);
+        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        (screen, ctx)
+    }
+
+    /// Render into a `width`×`height` `TestBackend` and hand back the buffer,
+    /// for the tests that read a cell's STYLE rather than its text.
+    fn render_detail_buffer(
+        screen: &DetailScreen,
+        ctx: &AppContext,
+        width: u16,
+        height: u16,
+    ) -> ratatui::buffer::Buffer {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), ctx))
+            .expect("draw the detail screen");
+        terminal.backend().buffer().clone()
+    }
+
+    /// One buffer row as text, one symbol per cell.
+    fn buffer_row(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+            .collect()
+    }
+
+    /// The CELL column of `needle` in `row` (every cell here is one char).
+    fn cell_column(row: &str, needle: &str) -> Option<u16> {
+        row.find(needle)
+            .map(|byte| row[..byte].chars().count() as u16)
+    }
+
+    #[test]
+    fn opening_the_detail_view_lands_on_content_of_the_remembered_tab() {
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Agents);
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Agents),
+            "opening must not touch the remembered sub-view"
+        );
+
+        let opened = DetailScreen::opened_on(
+            TEST_ALIAS.to_string(),
+            DetailSubView::Backlog,
+            &mut ctx,
+        );
+        assert_eq!(opened.focus, DetailFocus::Content);
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Backlog)
+        );
+    }
+
+    /// T-1t1-01: the resume arm is unreachable from the tab bar. A Codex row is
+    /// the probe, because its resume gate would otherwise answer with a
+    /// status message.
+    #[test]
+    fn enter_on_the_sessions_tab_bar_descends_without_resuming() {
+        let (mut screen, mut ctx) = sessions_fixture("unused");
+        ctx.active_sessions[0].kind = crate::session_detector::SessionKind::Codex;
+        ctx.active_sessions[0].session_id = None;
+        screen.focus = DetailFocus::TabBar;
+
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "Enter at the tab bar acted");
+        assert!(ctx.status_message.is_none(), "Enter at the tab bar reached the resume arm");
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    #[test]
+    fn enter_on_a_session_row_after_descending_still_resumes() {
+        let (mut screen, mut ctx) = sessions_fixture("unused");
+        ctx.active_sessions[0].kind = crate::session_detector::SessionKind::Codex;
+        ctx.active_sessions[0].session_id = None;
+        screen.focus = DetailFocus::TabBar;
+
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        let ScreenAction::SetStatusMessage(message) = action else {
+            panic!("the second Enter must reach the resume arm");
+        };
+        assert_eq!(message, CODEX_RESUME_UNSUPPORTED);
+    }
+
+    #[test]
+    fn up_on_the_first_row_goes_to_the_tab_bar_and_down_returns_without_moving() {
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].sessions_selected, 0,
+            "descending must not move the selection"
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 1);
+    }
+
+    #[test]
+    fn up_below_the_first_row_moves_the_selection_and_keeps_content_focus() {
+        for up in [KeyCode::Up, KeyCode::Char('k')] {
+            let (mut screen, mut ctx) = two_sessions_fixture();
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .sessions_selected = 1;
+            press(&mut screen, &mut ctx, up);
+            assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 0, "{up:?}");
+            assert_eq!(screen.focus, DetailFocus::Content, "{up:?}");
+        }
+    }
+
+    #[test]
+    fn esc_steps_up_one_level_at_a_time_then_leaves() {
+        let (mut screen, mut ctx, _td) = focused_long_backlog_fixture();
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded, "precondition");
+
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(!ctx.view_cache[TEST_ALIAS].backlog_expanded, "Esc closes the pane first");
+        assert_eq!(screen.focus, DetailFocus::Content);
+
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(screen.focus, DetailFocus::TabBar, "then Esc goes to the tab bar");
+
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "Esc at the tab bar leaves");
+    }
+
+    #[test]
+    fn q_leaves_to_the_dashboard_from_content_and_from_an_open_pane() {
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q at content");
+
+        let (mut screen, mut ctx, _td) = focused_long_backlog_fixture();
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q with the pane open");
+
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        screen.focus = DetailFocus::TabBar;
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q at the tab bar");
+    }
+
+    /// T-1t1-02: the Config text-edit intercept still runs before the Esc/q
+    /// split, so a `q` typed into a value is text.
+    #[test]
+    fn q_typed_into_a_config_text_edit_is_text_not_a_pop() {
+        let config = crate::state_reader::config_json::parse_gsd_config(
+            r#"{"mode":"yolo","project_code":"GMM"}"#,
+        )
+        .expect("the fixture parses");
+        let (mut ctx, idx) = ctx_on_config_row(config, "project_code");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "precondition: the String editor is open"
+        );
+
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "q popped out of a text edit");
+        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
+        assert!(buffer.ends_with('q'), "q did not reach the buffer: {buffer:?}");
+    }
+
+    #[test]
+    fn digits_land_in_content_so_six_then_j_moves_the_list() {
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        screen.focus = DetailFocus::TabBar;
+
+        press(&mut screen, &mut ctx, KeyCode::Char('6'));
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Sessions)
+        );
+        assert_eq!(screen.focus, DetailFocus::Content);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 1);
+    }
+
+    #[test]
+    fn tab_bar_left_right_walk_tabs_and_stay_on_the_tab_bar() {
+        for experimental in [true, false] {
+            let mut ctx = test_ctx().with_experimental(experimental);
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            screen.focus = DetailFocus::TabBar;
+            let current = |ctx: &AppContext| {
+                tab_index(
+                    &ctx.detail_sub_view_per_project
+                        .get(TEST_ALIAS)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            };
+
+            press(&mut screen, &mut ctx, KeyCode::Left);
+            assert_eq!(current(&ctx), 0, "Left clamps at the first tab");
+            assert_eq!(screen.focus, DetailFocus::TabBar);
+
+            let last = visible_tab_count(experimental) - 1;
+            for expected in 1..=last {
+                press(&mut screen, &mut ctx, KeyCode::Right);
+                assert_eq!(current(&ctx), expected, "experimental={experimental}");
+                assert_eq!(screen.focus, DetailFocus::TabBar);
+            }
+            press(&mut screen, &mut ctx, KeyCode::Right);
+            assert_eq!(current(&ctx), last, "Right clamps at the last visible tab");
+            assert_eq!(screen.focus, DetailFocus::TabBar);
+
+            press(&mut screen, &mut ctx, KeyCode::Left);
+            assert_eq!(current(&ctx), last - 1);
+            assert_eq!(screen.focus, DetailFocus::TabBar);
+        }
+    }
+
+    #[test]
+    fn tab_keeps_its_terminal_switch_meaning_at_both_levels() {
+        let (mut screen, mut ctx) = sessions_fixture("unused");
+        ctx.active_sessions.clear();
+        for focus in [DetailFocus::TabBar, DetailFocus::Content] {
+            screen.focus = focus;
+            ctx.status_message = None;
+            press(&mut screen, &mut ctx, KeyCode::Tab);
+            assert_eq!(
+                ctx.status_message.as_ref().map(|(m, _)| m.clone()),
+                Some(super::super::normal::no_active_session_status(TEST_ALIAS)),
+                "{focus:?}"
+            );
+            assert_eq!(screen.focus, focus, "Tab moved focus");
+            assert_eq!(
+                ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+                Some(&DetailSubView::Sessions),
+                "Tab changed the tab"
+            );
+        }
+    }
+
+    #[test]
+    fn the_active_tab_label_is_bracketed_at_every_level_and_reversed_on_the_tab_bar() {
+        let (mut screen, ctx) = two_sessions_fixture();
+        let (titles, select) = tab_titles(120, 5, false, ctx.experimental);
+        let label: String = titles[select]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        let needle = format!("[{label}]");
+
+        for focus in [DetailFocus::TabBar, DetailFocus::Content] {
+            screen.focus = focus;
+            let buffer = render_detail_buffer(&screen, &ctx, 120, 30);
+            let row = buffer_row(&buffer, 1);
+            let x = cell_column(&row, &needle)
+                .unwrap_or_else(|| panic!("{focus:?}: no {needle:?} in {row:?}"));
+            let reversed = buffer
+                .cell((x, 1))
+                .expect("the bracket cell")
+                .modifier
+                .contains(Modifier::REVERSED);
+            assert_eq!(reversed, focus == DetailFocus::TabBar, "{focus:?}: {row:?}");
+        }
+    }
+
+    #[test]
+    fn the_content_is_dimmed_while_the_tab_bar_has_focus() {
+        let (mut screen, ctx) = two_sessions_fixture();
+        let fg_at_row = |screen: &DetailScreen| {
+            let buffer = render_detail_buffer(screen, &ctx, 120, 30);
+            let (x, y) = (0..buffer.area.height)
+                .find_map(|y| {
+                    cell_column(&buffer_row(&buffer, y), "PID 4242").map(|x| (x, y))
+                })
+                .expect("the session row renders");
+            buffer.cell((x, y)).expect("a row cell").fg
+        };
+
+        screen.focus = DetailFocus::TabBar;
+        assert_eq!(fg_at_row(&screen), Color::DarkGray);
+        screen.focus = DetailFocus::Content;
+        assert_ne!(fg_at_row(&screen), Color::DarkGray);
     }
 }
