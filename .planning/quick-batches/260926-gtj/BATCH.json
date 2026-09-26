@@ -29,7 +29,7 @@
       "quick_id": "260926-gtl",
       "client_id": null,
       "description": "Roadmap parser parity with gsd-core 1.15.0: port PHASE_DEP_REF_SOURCE to parse_depends_on, port extractPhaseFieldMultiline to parse_phase_goals, accept letter-suffixed phase ids (12A, 23A.1.2) in PHASE_ID and plan_id_re",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [
         "260926-gtk"
       ],
@@ -44,7 +44,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 1,
-      "commit": null,
+      "commit": "dd3c835",
       "failure_reason": null
     },
     {
