@@ -23,8 +23,12 @@ use std::time::{Duration, SystemTime};
 
 use common::git;
 use gsd_meta_manager::agents::adapters::claude::{encode_project_dir, ClaudeCodeAdapter};
-use gsd_meta_manager::agents::adapters::{registered_adapters, AgentAdapter};
-use gsd_meta_manager::agents::{scan_project_with, AgentLiveness, ProjectAgents};
+use gsd_meta_manager::agents::adapters::{
+    registered_adapters, AdapterReport, AgentAdapter, CoreSnapshot,
+};
+use gsd_meta_manager::agents::{
+    scan_project_with, AgentLiveness, ProjectAgents, MAX_AGENT_AGE_SECS,
+};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -290,4 +294,178 @@ fn a_worktree_without_metadata_degrades_to_the_core_row() {
 fn only_row(scan: &ProjectAgents) -> &gsd_meta_manager::agents::AgentRow {
     assert_eq!(scan.rows.len(), 1, "exactly one agent row: {:?}", scan.rows);
     &scan.rows[0]
+}
+
+// ---------------------------------------------------------------------------
+// Live worktree-less subagents and the scan-cost bound (D-C07, D-C09 as
+// amended by RESEARCH Pitfall 2)
+// ---------------------------------------------------------------------------
+
+/// A worktree-less meta: no `worktreePath`, no parent in any worktree.
+fn loose_meta(agent_type: &str, description: &str) -> serde_json::Value {
+    json!({
+        "agentType": agent_type,
+        "description": description,
+        "spawnDepth": 1,
+        "toolUseId": "toolu_0",
+    })
+}
+
+/// The shown `(agentType, description)` of every worktree-less agent.
+fn loose(scan: &ProjectAgents) -> Vec<(Option<String>, Option<String>)> {
+    scan.worktreeless
+        .iter()
+        .map(|child| (shown(&child.agent_type), shown(&child.description)))
+        .collect()
+}
+
+/// What the adapter itself reports, before the core filters anything.
+fn adapter_report(fx: &ClaudeFixture, now: SystemTime) -> AdapterReport {
+    let snap = CoreSnapshot {
+        project_root: &fx.work,
+        main_worktree: Some(&fx.work),
+        worktrees: &[],
+        now,
+    };
+    ClaudeCodeAdapter::new(fx.root.clone()).enrich(&snap)
+}
+
+#[test]
+fn a_live_worktree_less_subagent_is_listed_and_a_stale_one_is_not() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let now = SystemTime::now();
+    fx.write_meta(
+        "aresearcher00000",
+        &loose_meta("gsd-phase-researcher", "Research phase 26"),
+    );
+    fx.write_transcript("aresearcher00000", now, Duration::from_secs(30));
+    fx.write_meta(
+        "astale000000000",
+        &loose_meta("gsd-planner", "Plan phase 26"),
+    );
+    fx.write_transcript("astale000000000", now, Duration::from_secs(121));
+    // A stale transcript's meta is never read, so garbage there costs nothing.
+    std::fs::write(
+        fx.subagents.join("agent-astalegarbage00.meta.json"),
+        b"\x00{not json",
+    )
+    .expect("garbage meta");
+    fx.write_transcript("astalegarbage00", now, Duration::from_secs(121));
+
+    let expected = vec![(
+        Some("gsd-phase-researcher".to_string()),
+        Some("Research phase 26".to_string()),
+    )];
+    assert_eq!(loose(&fx.scan(now)), expected);
+
+    let report = adapter_report(&fx, now);
+    assert_eq!(
+        report.worktreeless.len(),
+        1,
+        "the adapter itself reports only the live agent, before any core filter: {:?}",
+        report.worktreeless
+    );
+}
+
+#[test]
+fn agent_type_is_shown_verbatim_without_a_gsd_filter() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let now = SystemTime::now();
+    fx.write_meta(
+        "ageneral00000000",
+        &loose_meta("general-purpose", "Survey crates"),
+    );
+    fx.write_transcript("ageneral00000000", now, Duration::from_secs(5));
+    fx.write_meta(
+        "aexplore00000000",
+        &loose_meta("Explore", "Find the reader"),
+    );
+    fx.write_transcript("aexplore00000000", now, Duration::from_secs(5));
+
+    let types: Vec<Option<String>> = loose(&fx.scan(now)).into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        types,
+        vec![
+            Some("Explore".to_string()),
+            Some("general-purpose".to_string())
+        ],
+        "every live agent, its type verbatim, sorted by type"
+    );
+}
+
+#[test]
+fn a_long_running_agent_in_an_old_subagents_dir_is_still_live() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let now = SystemTime::now();
+    fx.write_meta(
+        "alongrunner00000",
+        &loose_meta("gsd-debugger", "Bisect the hang"),
+    );
+    fx.write_transcript("alongrunner00000", now, Duration::from_secs(5));
+    // The directory's mtime moves only when an agent is spawned into it: this
+    // agent was spawned ten minutes ago and is working right now.
+    set_mtime(&fx.subagents, now - Duration::from_secs(600));
+
+    assert_eq!(
+        loose(&fx.scan(now)),
+        vec![(
+            Some("gsd-debugger".to_string()),
+            Some("Bisect the hang".to_string())
+        )],
+        "a spawn clock ten minutes old must not hide a live agent"
+    );
+}
+
+#[test]
+fn a_day_old_session_is_skipped_for_worktree_less_agents_only() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let wt = fx.add_agent_worktree(AGENT_ID, Some(1));
+    let now = SystemTime::now();
+    let old_subagents = fx
+        .subagents
+        .parent()
+        .and_then(Path::parent)
+        .expect("project dir")
+        .join("9a9a9a9a-2222-4333-8444-955566667777")
+        .join("subagents");
+    std::fs::create_dir_all(&old_subagents).expect("old session");
+    write_meta_in(&old_subagents, AGENT_ID, &executor_meta(&wt));
+    write_transcript_in(&old_subagents, AGENT_ID, now - Duration::from_secs(5));
+    write_meta_in(
+        &old_subagents,
+        "aoldloose0000000",
+        &loose_meta("general-purpose", "Old session"),
+    );
+    write_transcript_in(
+        &old_subagents,
+        "aoldloose0000000",
+        now - Duration::from_secs(5),
+    );
+    set_mtime(
+        &old_subagents,
+        now - Duration::from_secs(MAX_AGENT_AGE_SECS + 60),
+    );
+
+    let scan = fx.scan(now);
+    let row = only_row(&scan);
+    assert_eq!(
+        row.adapter,
+        Some("claude-code"),
+        "the per-id lookup is not bounded"
+    );
+    assert_eq!(shown(&row.agent_type), Some("gsd-executor".to_string()));
+    assert_eq!(row.liveness, AgentLiveness::Live);
+    assert!(
+        scan.worktreeless.is_empty(),
+        "a session with no spawn for a day is skipped for the worktree-less group: {:?}",
+        scan.worktreeless
+    );
 }
