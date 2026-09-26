@@ -286,9 +286,14 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         // in this body. Ends with one blank row.
         heading("Mouse"),
         Line::from(""),
-        row("Click", "Mouse: switch tab / sub-tab; select a row and focus its pane"),
-        row("Double-click", "Mouse: open the row, the same as Enter"),
-        row("Wheel", "Mouse: move the selection in the pane under the pointer"),
+        // Quick 260926-kes: row clicks on every tab, the Config value click,
+        // the Roadmap fold glyph (escaped, per the house rule), the band
+        // double-click, and the wheel over text panes.
+        row("Click", "Mouse: switch tab / sub-tab; select a row on any tab and focus its pane"),
+        row("Click value", "Mouse: Config tab: on the selected row, the same as Enter"),
+        row("Click \u{25B8}/\u{25BE}", "Mouse: Roadmap: fold / unfold that milestone band"),
+        row("Double-click", "Mouse: open the row, the same as Enter (Space on a Roadmap band)"),
+        row("Wheel", "Mouse: move the selection, or scroll the pane, under the pointer"),
         row("M", "Toggle mouse capture on / off (dashboard and detail view)"),
         row(
             "Shift+drag",
@@ -1115,9 +1120,14 @@ mod tests {
                 "experimental={experimental}: the heading must appear once:\n{text}"
             );
             for (key, description) in [
-                ("Click", "Mouse: switch tab / sub-tab; select a row and focus its pane"),
-                ("Double-click", "Mouse: open the row, the same as Enter"),
-                ("Wheel", "Mouse: move the selection in the pane under the pointer"),
+                ("Click", "Mouse: switch tab / sub-tab; select a row on any tab and focus its pane"),
+                ("Click value", "Mouse: Config tab: on the selected row, the same as Enter"),
+                ("Click \u{25B8}/\u{25BE}", "Mouse: Roadmap: fold / unfold that milestone band"),
+                (
+                    "Double-click",
+                    "Mouse: open the row, the same as Enter (Space on a Roadmap band)",
+                ),
+                ("Wheel", "Mouse: move the selection, or scroll the pane, under the pointer"),
                 ("M", "Toggle mouse capture on / off (dashboard and detail view)"),
                 (
                     "Shift+drag",

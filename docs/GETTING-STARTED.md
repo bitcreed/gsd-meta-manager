@@ -153,10 +153,13 @@ keystrokes:
   `←` / `Esc` go back to the phase list
 - `/` — filter projects
 - `c` — create a new project (name, path, confirm)
-- The mouse works too: click a tab, a sub-tab or a row, double-click a row to
-  open it (the same as `Enter`), and use the wheel to move the selection in the
-  pane under the pointer. `M` turns the mouse off and on; while it is on, use
-  Shift+drag to select text (terminal-dependent)
+- The mouse works too: click a tab, a sub-tab or a row on any tab, double-click
+  a row to open it (the same as `Enter`; on a Roadmap milestone band it folds
+  or unfolds the band, as does a click on its `▸` / `▾`), and use the wheel over
+  a pane to scroll it or move its selection. On the Config tab a click on the
+  selected row's value opens it. A Queue double-click does nothing — `Enter`
+  there marks the action done. `M` turns the mouse off and on; while it is on,
+  use Shift+drag to select text (terminal-dependent)
 - `?` — show the help overlay
 - `q` — quit (on the dashboard)
 

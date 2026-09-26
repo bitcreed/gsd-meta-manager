@@ -68,8 +68,9 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   it has no phase directory). Verification state is shown separately.
 - Live filesystem watching -- auto-refreshes when `.planning/` files change
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
-- Mouse support: click tabs, sub-tabs and rows, double-click to open, and
-  scroll with the wheel; `M` turns mouse capture off and on
+- Mouse support: click tabs, sub-tabs and rows on every tab, double-click to
+  open, click a Roadmap band's `▸` / `▾` to fold it, and scroll lists and panes
+  with the wheel; `M` turns mouse capture off and on
 - 8-tab detail view (plus the experimental Driver tab): Roadmap (phase list
   with git-log-style dependency lanes and a detail pane showing each phase's
   goal, needs, unblocks and parallel phases), Phases (the selected phase's
@@ -291,11 +292,24 @@ Config filter) ignore the mouse.
 
 | Mouse | Action |
 |-------|--------|
-| Click | Select a dashboard row; in the detail view, switch tab or sub-tab (exactly like its digit key), or select a Phases, Sessions, Agents or Waves-pane row and focus that pane |
-| Double-click | Open the row, the same as `Enter` (a project's detail view, session resume, the Agents <-> Waves-pane jumps, wave fold / unfold) |
-| Wheel | Move the selection in the pane under the pointer, one row per step; it never switches tabs or climbs to the tab bar |
+| Click | Select a dashboard row; in the detail view, switch tab or sub-tab (exactly like its digit key, including Docs › Files / Milestones), or select a row on any tab — Roadmap, Phases, Backlog, Git, Queue, Sessions, Agents, Config (key or value column), Docs Files and Milestones, the Waves pane, the Driver runs — and focus that pane |
+| Click `▸` / `▾` | Roadmap: fold or unfold that milestone band, or the shipped-milestones row |
+| Click a Config value | On the row that is already selected, the same as `Enter`: opens the chooser or the editor (a secret's prompt opens empty) or steps an integer |
+| Config chooser | Click an option to highlight it, click it again to apply; a click outside the chooser closes it without applying |
+| Double-click | Open the row, the same as `Enter`: a project's detail view, a phase from the Roadmap, a Docs folder or file, a milestone level, a Backlog item's content, a Git commit, a Config chooser or editor, session resume, the Agents <-> Waves-pane jumps, wave fold / unfold. On a Roadmap band or the shipped row it folds / unfolds instead |
+| Wheel | Over a list, move its selection one row per step; over the Backlog content, the Git commit or the Driver output, scroll it one line per step; over an open Docs file, scroll it. It never switches tabs or climbs to the tab bar |
 | `M` | Toggle mouse capture on / off (not saved) |
 | Shift+drag | Select and copy text while mouse capture is on (terminal-dependent) |
+
+Not mouse-driven, on purpose: a Queue double-click does nothing, because
+`Enter` there marks the action done and saves the queue (select with a click,
+then press `Enter`); the Config `d` scope switch, breadcrumbs, the Git mode
+line, footers and titles are labels, not controls; the Roadmap box view (`v`)
+has no cursor, and the phase names in its detail pane's Needs / Unblocks /
+Parallel lines are not links (`h` / `l` follow them); the wheel over the Backlog
+list while its content pane is open does nothing; dialogs, the help overlay and
+text entry ignore the mouse; drag, right / middle click, hover and horizontal
+scroll are ignored.
 
 To start with mouse capture off, set `"mouse": false` under `preferences` in
 `config.json` (see [Configuration](docs/CONFIGURATION.md)).
