@@ -269,7 +269,7 @@ Tab-specific keys:
 | Sessions | `Enter` | Resume the selected Claude session (Codex sessions cannot be resumed) |
 | Sessions | `n` | Launch a new Claude session in this project |
 | Sessions › Agents | `Enter` | Jump to the agent's plan in the Phases Waves pane (navigation only; nothing is sent to the agent) |
-| Config | `Enter` | Edit the selected value; in an open dropdown, apply the choice |
+| Config | `Enter` | Edit the selected value; in an open dropdown, apply the choice. On a secret row (an API key, shown as `•••••••• (set)`) the prompt opens empty with hidden input, and an empty `Enter` keeps the current key — see [Secret values](docs/CONFIGURATION.md#secret-values-in-gsd-project-config-config-tab) |
 | Config | `x` | Clear (unset) the selected value |
 | Config | `d` | Switch between the project's config and `~/.gsd/defaults.json` |
 | Config | `r` | Reload the config from disk |

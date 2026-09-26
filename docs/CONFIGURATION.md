@@ -193,6 +193,39 @@ There is no first-class notion of development/staging/production environments in
 - **Per-platform paths**: the defaults adapt automatically because they are derived from the `dirs` crate (`config_dir` and `data_local_dir`), so the same binary picks `XDG`-style paths on Linux, `Application Support` on macOS, and `%APPDATA%` / `%LOCALAPPDATA%` on Windows without configuration.
 - **Atomic writes**: `save_config` uses `tempfile::NamedTempFile` plus `persist` (rename) to update the config file atomically, so a partial write cannot corrupt the registry. Concurrent invocations are not coordinated; the last writer wins.
 
+## Secret values in GSD project config (Config tab)
+
+A GSD project's `.planning/config.json` (and `~/.gsd/defaults.json`) can hold API keys. The Config tab (`7:Cfg`) never draws one — not in a row, not in the edit prompt, not in a status message, and not in the log file. Assume anything the TUI draws ends up in a screenshot or a screen share.
+
+**Which keys are secret.**
+
+- Seven keys by name, all gsd-core search providers: `brave_search`, `firecrawl`, `exa_search`, `tavily_search`, `ref_search`, `perplexity`, `jina`. Each holds the provider's API key, or `true` / `false` to override gsd-core's auto-detection of `<X>_API_KEY` / `~/.gsd/<x>_api_key`.
+- Any key this build does not model (a `Not modelled` row, or a member nested inside a read-only JSON value such as `review.reviewer_instances`) whose full dotted path contains, case-insensitively, `api_key`, `apikey`, `api-key`, `token`, `secret`, `password` or `passwd`.
+- Four gsd-core keys match those markers but hold budgets, not secrets, and are shown normally: `review.max_prompt_tokens`, `review.max_prompt_tokens_per_reviewer` (and its `.<slug>` entries), `statusline.show_context_tokens` and `workflow.smart_zone_tokens`.
+
+Detection is by key name only. A secret stored under an innocent name, or embedded in another value (for example inside `workflow.test_command`), is displayed like any other value.
+
+**What is displayed.**
+
+| Stored value | Shown as |
+|---|---|
+| a key (any non-empty string, or any number, list or object) | `•••••••• (set)` |
+| `true` / `false` | `true` / `false` (the auto-detection override carries no secret) |
+| `null`, missing, or `""` | `(unset)` |
+
+The mask is always exactly eight bullets. Unlike gsd-core's own `****<last-4>`, it shows no trailing characters and no length: the last four characters leak part of the key, and the length reveals the provider's key format. Nothing in the TUI needs to tell two keys apart.
+
+**Editing a secret row.**
+
+- `Enter` opens an EMPTY prompt — the stored key is never pre-filled. Each typed character is shown as one `•`.
+- `Enter` again stores what you typed (surrounding whitespace is trimmed). Typing exactly `true` or `false` stores that override as a boolean; anything else is stored as the key.
+- An empty `Enter` keeps the current value and says `<key> unchanged`. It never clears a key.
+- `x` clears the value back to `(unset)`, as on any other row.
+
+**Storage.** The key is still written in plaintext to `.planning/config.json` (or `~/.gsd/defaults.json` in the `d` view) — masking is a display rule. As gsd-core itself states, that file is the security boundary, so its permissions are yours to set.
+
+**Logs.** When a `config.json` fails to parse, the log line names only the error category and its line and column, never the offending value.
+
 ## Related files in the repository
 
 - `src/config.rs` — `Config`, `RegisteredProject`, `Preferences`, `HooksConfig` types; `default_path`, `load_config`, `save_config`.
@@ -200,4 +233,5 @@ There is no first-class notion of development/staging/production environments in
 - `src/main.rs` — log directory setup, editor launch, TUI bootstrap.
 - `src/project_creator.rs` — `pre_create` / `post_create` hook execution and `GSD_PROJECT_*` env vars.
 - `src/state_reader/config_json.rs` — separate concern: parses each registered project's own `.planning/config.json` (GSD project config), not the meta-manager's config. `~/.gsd/defaults.json` is also read here.
+- `src/state_reader/config_secrets.rs` — which GSD config keys are secret (the explicit list, the name heuristic and its exemptions) and the masking the Config tab applies to them.
 - `Cargo.toml` — declares the `version` printed by `--version`.
