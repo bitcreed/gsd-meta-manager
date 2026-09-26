@@ -11985,6 +11985,122 @@ mod tests {
             .join("\n")
     }
 
+    /// Draw ONLY the Defaults tab for a project whose `ProjectState` carries
+    /// `gsd_install` (quick 260926-j0a). `config: None` exercises the empty
+    /// branch.
+    fn render_defaults_with_gsd_install_to_text(
+        config: Option<crate::state_reader::config_json::GsdConfig>,
+        gsd_install: crate::state_reader::gsd_install::GsdInstallStatus,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut ctx = test_ctx();
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .defaults_config = config;
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState {
+                gsd_install,
+                ..Default::default()
+            },
+        );
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render_defaults_tab(frame, frame.area(), &ctx))
+            .expect("draw the Defaults tab");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    fn gsd_install_found(
+        runtime: crate::state_reader::gsd_install::InstallRuntime,
+        scope: crate::state_reader::gsd_install::InstallScope,
+        version: &str,
+    ) -> crate::state_reader::gsd_install::GsdInstallStatus {
+        use crate::state_reader::gsd_install::*;
+        GsdInstallStatus::Found(DetectedInstall {
+            runtime,
+            scope,
+            gsd_core_dir: std::path::PathBuf::from("/not/drawn/gsd-core"),
+            version: InstalledVersion::Parsed(GsdVersion::parse(version).expect("fixture parses")),
+        })
+    }
+
+    #[test]
+    fn config_tab_shows_the_effective_gsd_install() {
+        use crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION;
+        use crate::state_reader::gsd_install::{GsdVersion, InstallRuntime, InstallScope};
+        let ceiling = GsdVersion::parse(GSD_CORE_SYNCED_TREE_VERSION).unwrap();
+        let newer = format!("{}.0.0", ceiling.major + 1);
+        let rows = render_defaults_with_gsd_install_to_text(
+            Some(populated_gsd_config()),
+            gsd_install_found(InstallRuntime::Codex, InstallScope::Global, &newer),
+            120,
+            30,
+        );
+        let top = &rows[0];
+        assert!(top.contains(" Config Settings "), "the left title is intact: {top:?}");
+        assert!(top.contains(&format!("GSD {newer}")), "{top:?}");
+        assert!(top.contains("global Codex"), "{top:?}");
+        assert!(
+            top.contains(&format!("newer than synced {GSD_CORE_SYNCED_TREE_VERSION}")),
+            "{top:?}"
+        );
+        assert!(!rows.join("\n").contains("/not/drawn"), "the path is never drawn");
+    }
+
+    #[test]
+    fn config_tab_shows_a_missing_gsd_install() {
+        use crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION;
+        use crate::state_reader::gsd_install::GsdInstallStatus;
+        let rows = render_defaults_with_gsd_install_to_text(
+            Some(populated_gsd_config()),
+            GsdInstallStatus::NotFound,
+            120,
+            30,
+        );
+        assert!(
+            rows[0].contains(&format!("GSD not found · app synced to {GSD_CORE_SYNCED_TREE_VERSION}")),
+            "{:?}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn config_tab_empty_branch_shows_the_gsd_install_on_a_second_line() {
+        use crate::state_reader::config_json::GSD_CORE_SYNCED_VERSION;
+        use crate::state_reader::gsd_install::{InstallRuntime, InstallScope};
+        let rows = render_defaults_with_gsd_install_to_text(
+            None,
+            gsd_install_found(InstallRuntime::Claude, InstallScope::ProjectLocal, GSD_CORE_SYNCED_VERSION),
+            120,
+            10,
+        );
+        assert!(rows[0].contains("No config loaded"), "{:?}", rows[0]);
+        assert!(
+            rows[1].contains(&format!("GSD {GSD_CORE_SYNCED_VERSION} · project-local Claude")),
+            "{:?}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn config_tab_without_a_project_state_draws_no_gsd_install() {
+        let text = render_defaults_to_text(120, 30, 0);
+        let top = text.lines().next().unwrap_or_default();
+        assert!(top.contains(" Config Settings "), "{top:?}");
+        assert!(!top.contains("GSD "), "no state, no label: {top:?}");
+    }
+
     /// Collapse every run of whitespace to one space.
     ///
     /// The pane wraps with `Wrap { trim: true }`, so a summary that runs past

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 /// ```text
 /// CORE=~/projects/node/gsd-core REF=upstream/release-1.15.0
 /// git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
-/// git -C "$CORE" show "$REF:package.json"          # the tree's own version
+/// git -C "$CORE" show "$REF:package.json"          # -> GSD_CORE_SYNCED_TREE_VERSION
 /// npm view @opengsd/gsd-core version               # -> GSD_CORE_SYNCED_VERSION
 /// ```
 pub const GSD_CORE_SYNCED_VERSION: &str = "1.14.0";
@@ -43,6 +43,21 @@ pub const GSD_CORE_SYNCED_VERSION: &str = "1.14.0";
 /// still contains [`GSD_CORE_SYNCED_VERSION`]; that stops holding once
 /// `v1.15.0` is tagged, and is the signal to bump both together.
 pub const GSD_CORE_SYNCED_COMMIT: &str = "v1.14.0-111-gec81d0d10";
+
+/// The `package.json` version of the gsd-core tree at
+/// [`GSD_CORE_SYNCED_COMMIT`], measured with `git -C "$CORE" show
+/// "$REF:package.json"` (quick task 260926-j0a, inferred I-2).
+///
+/// It is the CEILING of the in-sync range the installed-GSD comparison uses
+/// ([`crate::state_reader::gsd_install::relation_to_synced`]);
+/// [`GSD_CORE_SYNCED_VERSION`] is the floor. README.md's `**GSD
+/// compatibility:**` paragraph must name it —
+/// `the_readme_compatibility_note_names_the_synced_baseline` fails otherwise.
+///
+/// Named so that the declaration regex `scripts/install-conformance-oracle.sh`
+/// greps for [`GSD_CORE_SYNCED_VERSION`] cannot match it: that grep must keep
+/// matching exactly one line, the oracle pin.
+pub const GSD_CORE_SYNCED_TREE_VERSION: &str = "1.15.0";
 
 /// Every key of a parsed block that this build has no typed field for.
 ///
@@ -1221,6 +1236,21 @@ mod tests {
             "the commit describe {GSD_CORE_SYNCED_COMMIT:?} does not name version \
              {GSD_CORE_SYNCED_VERSION:?} — the two halves of the baseline were \
              measured at different times"
+        );
+
+        // The installed-GSD comparison (quick 260926-j0a) uses these two as the
+        // floor and ceiling of the in-sync range, and `relation_to_synced`
+        // `.expect()`s that both parse.
+        use crate::state_reader::gsd_install::GsdVersion;
+        let floor = GsdVersion::parse(GSD_CORE_SYNCED_VERSION)
+            .expect("GSD_CORE_SYNCED_VERSION must be a semver version");
+        let ceiling = GsdVersion::parse(GSD_CORE_SYNCED_TREE_VERSION)
+            .expect("GSD_CORE_SYNCED_TREE_VERSION must be a semver version");
+        assert_ne!(
+            floor.precedence_cmp(&ceiling),
+            std::cmp::Ordering::Greater,
+            "the oracle pin {GSD_CORE_SYNCED_VERSION:?} is above the synced tree \
+             {GSD_CORE_SYNCED_TREE_VERSION:?} — the in-sync range is empty"
         );
     }
 

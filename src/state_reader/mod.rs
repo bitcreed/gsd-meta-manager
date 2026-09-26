@@ -2,6 +2,7 @@ pub mod backlog;
 pub mod config_json;
 pub mod disk_status;
 pub mod git_ops;
+pub mod gsd_install;
 pub mod phase_num;
 pub mod plan_waves;
 pub mod queue_md;
@@ -235,6 +236,14 @@ pub struct ProjectState {
     /// Whether the project folder and its `.planning/` still exist, as of the
     /// last parse. See [`ProjectPresence`].
     pub presence: ProjectPresence,
+    /// The effective gsd-core install this project would load — project-local
+    /// or global, Claude or Codex — and its version, from `VERSION` file reads
+    /// only ([`gsd_install::detect_gsd_install`], quick 260926-j0a).
+    ///
+    /// A typed enum, not a free string: the version is validated semver and
+    /// the source is an enum, so `tests/spawn_seam_guard.rs`'s census of free
+    /// `String` fields on this struct stays unchanged.
+    pub gsd_install: gsd_install::GsdInstallStatus,
 }
 
 impl ProjectState {
@@ -736,7 +745,19 @@ fn handoff_staleness(
 
 /// Parse a GSD project's .planning/ directory into a ProjectState.
 /// Gracefully handles missing or malformed files -- never panics.
+///
+/// Resolves the installed gsd-core against the process's home and runtime-home
+/// overrides; [`parse_project_state_with`] is the seam tests use instead.
 pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
+    parse_project_state_with(planning_dir, &gsd_install::InstallRoots::from_env())
+}
+
+/// [`parse_project_state`] with the install roots injected, so no test reads
+/// the real HOME, `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
+pub fn parse_project_state_with(
+    planning_dir: &Path,
+    _roots: &gsd_install::InstallRoots,
+) -> ProjectState {
     let mut state = ProjectState {
         status: "unknown".to_string(),
         ..Default::default()
@@ -1464,6 +1485,35 @@ mod tests {
         let td = TempDir::new().unwrap();
         let state = parse_project_state(&td.path().join(".planning"));
         assert_eq!(state.presence, ProjectPresence::NoPlanning);
+    }
+
+    // --- quick-260926-j0a: the effective gsd-core install -------------------
+
+    #[test]
+    fn parse_project_state_with_detects_a_project_local_gsd_install() {
+        use gsd_install::{
+            DetectedInstall, GsdInstallStatus, GsdVersion, InstallRoots, InstallRuntime,
+            InstallScope, InstalledVersion,
+        };
+        let td = make_planning(&[("STATE.md", "---\nstatus: executing\n---\n")]);
+        let core = td.path().join(".claude/gsd-core");
+        std::fs::create_dir_all(&core).unwrap();
+        // The installer writes the bare version with no trailing newline.
+        std::fs::write(core.join("VERSION"), config_json::GSD_CORE_SYNCED_VERSION).unwrap();
+
+        let state =
+            parse_project_state_with(&td.path().join(".planning"), &InstallRoots::default());
+        assert_eq!(
+            state.gsd_install,
+            GsdInstallStatus::Found(DetectedInstall {
+                runtime: InstallRuntime::Claude,
+                scope: InstallScope::ProjectLocal,
+                gsd_core_dir: core,
+                version: InstalledVersion::Parsed(
+                    GsdVersion::parse(config_json::GSD_CORE_SYNCED_VERSION).unwrap()
+                ),
+            })
+        );
     }
 
     #[test]
