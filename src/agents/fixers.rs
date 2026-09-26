@@ -53,8 +53,7 @@ pub const REVIEW_READ_CAP: u64 = 256 * 1024;
 /// One project's fix-run estimate, as of one scan.
 ///
 /// `fixed` and `total` are shown only when BOTH are `Some`; either is `None`
-/// when no phase was determined, the phase has no readable `findings.total`,
-/// or its `*-REVIEW-FIX.md` already exists (the run is over).
+/// when no phase was determined or the phase has no readable `findings.total`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FixerEstimate {
     /// Active (`Live`, `Idle` or `Finished`) unattributed fixer agents: the
@@ -64,7 +63,8 @@ pub struct FixerEstimate {
     pub fixers: u32,
     /// The phase whose REVIEW.md the fixers are working through.
     pub phase: Option<PhaseNum>,
-    /// Distinct finding ids named in that phase's `fix(NN…)` subjects.
+    /// Distinct finding ids named in that phase's `fix(NN…)` subjects that are
+    /// findings of its current REVIEW.md, never more than `total` (WR-04).
     pub fixed: Option<u32>,
     /// `findings.total` from the phase's REVIEW.md frontmatter, verbatim.
     pub total: Option<u32>,
@@ -80,6 +80,20 @@ fn fix_subject_re() -> &'static Regex {
 fn finding_id_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\b(?:CR|WR|IN)-\d+\b").expect("static regex"))
+}
+
+/// A finding heading of a REVIEW.md: `### WR-03: …`, capturing the kind and
+/// the number.
+fn finding_heading_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?m)^###\s+(CR|WR|IN)-(\d+)\b").expect("static regex"))
+}
+
+/// A finding id with its number's padding dropped, so `WR-1` and `WR-01` are
+/// one finding. `None` for anything [`finding_id_re`] would not match.
+fn id_key(id: &str) -> Option<(String, u32)> {
+    let (kind, number) = id.split_once('-')?;
+    Some((kind.to_string(), number.parse().ok()?))
 }
 
 /// `phase 12`, `Phase 07.1`, `FIX PHASE 12` in a fixer's description.
@@ -159,40 +173,74 @@ fn is_code_review_name(name: &str, phase: &PhaseNum) -> bool {
         .is_some_and(|stem| PhaseNum::parse(stem).is_some() && same_phase(stem, &phase.to_string()))
 }
 
-/// What the phase directory says about the review: whether its fix report
-/// exists, and which REVIEW.md to read. Entry names only.
-fn review_files(phase_dir: &Path, phase: &PhaseNum) -> (bool, Option<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(phase_dir) else {
-        return (false, None);
-    };
-    let mut fix_report = false;
-    let mut reviews: Vec<PathBuf> = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if name.ends_with("-REVIEW-FIX.md") {
-            fix_report = true;
-        } else if is_code_review_name(name, phase) {
-            reviews.push(entry.path());
-        }
-    }
+/// Which REVIEW.md in the phase directory to read. Entry names only.
+///
+/// A `*-REVIEW-FIX.md` beside it no longer ends the estimate (WR-04): one left
+/// by an earlier run, or by `--auto` iteration 1, hid the count for every later
+/// iteration. Whether the run is over is the running-fixer gate's call alone.
+fn review_file(phase_dir: &Path, phase: &PhaseNum) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(phase_dir).ok()?;
+    let mut reviews: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| is_code_review_name(name, phase))
+        })
+        .map(|entry| entry.path())
+        .collect();
     reviews.sort();
-    (fix_report, reviews.into_iter().next())
+    reviews.into_iter().next()
 }
 
-/// `findings.total` of the REVIEW.md at `path`, read through a
-/// [`REVIEW_READ_CAP`]-byte cap. A trailing ` # comment` and surrounding quotes
-/// are dropped; anything that is not a `u32` is `None`.
-fn review_total(path: &Path) -> Option<u32> {
+/// What one REVIEW.md says the run is working through.
+struct Review {
+    /// `findings.total` from the leading frontmatter.
+    total: u32,
+    /// The ids of its `### CR-/WR-/IN-NN` finding headings, padding dropped.
+    findings: BTreeSet<(String, u32)>,
+}
+
+/// `findings.total` and the finding headings of `content`. A trailing
+/// ` # comment` and surrounding quotes are dropped from the total; anything
+/// that is not a `u32` is `None`.
+fn parse_review(content: &str) -> Option<Review> {
+    let value = disk_status::leading_frontmatter_nested_value(content, "findings", "total")?;
+    let value = value.split(" #").next().unwrap_or_default().trim();
+    let total = value.trim_matches(['"', '\'']).parse::<u32>().ok()?;
+    let findings = finding_heading_re()
+        .captures_iter(content)
+        .filter_map(|caps| Some((caps[1].to_string(), caps[2].parse().ok()?)))
+        .collect();
+    Some(Review { total, findings })
+}
+
+/// The REVIEW.md at `path`, read through a [`REVIEW_READ_CAP`]-byte cap.
+fn read_review(path: &Path) -> Option<Review> {
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     file.take(REVIEW_READ_CAP).read_to_end(&mut bytes).ok()?;
-    let content = String::from_utf8_lossy(&bytes);
-    let value = disk_status::leading_frontmatter_nested_value(&content, "findings", "total")?;
-    let value = value.split(" #").next().unwrap_or_default().trim();
-    value.trim_matches(['"', '\'']).parse::<u32>().ok()
+    parse_review(&String::from_utf8_lossy(&bytes))
+}
+
+/// How many of the collected `ids` count as fixed findings of `review`.
+///
+/// WR-04: the ids come from up to 300 of main's subjects with no lower bound,
+/// and a re-review renumbers from `CR-01`/`WR-01`, so an id fixed in an earlier
+/// review's run can be collected again. Only the ids that are findings of the
+/// current review count, padding-insensitively; and the answer never exceeds
+/// `total`, so `~52/48` cannot reach the Status cell. A review whose headings
+/// the cap cut off, or that has none, falls back to every collected id, still
+/// clamped [inferred].
+fn fixed_count(ids: &BTreeSet<String>, review: &Review) -> u32 {
+    let keys: BTreeSet<(String, u32)> = ids.iter().filter_map(|id| id_key(id)).collect();
+    let counted = if review.findings.is_empty() {
+        keys.len()
+    } else {
+        keys.intersection(&review.findings).count()
+    };
+    u32::try_from(counted).unwrap_or(u32::MAX).min(review.total)
 }
 
 /// The fix-run estimate for one project's scanned rows, or `None` when no
@@ -210,15 +258,15 @@ fn review_total(path: &Path) -> Option<u32> {
 ///    when `base_sha` is known and the worktree is not prunable.
 /// 3. The phase is the one most fixers yield ([`fixer_phase`]), ties to the
 ///    higher phase; with none, only the fixer count is returned.
-/// 4. When the phase directory in the main worktree holds a
-///    `*-REVIEW-FIX.md`, the run is over: no counts.
-/// 5. Otherwise `total` is `findings.total` from its `NN-REVIEW.md` — the
-///    code review itself, never `NN-EVAL-REVIEW.md` or `NN-UI-REVIEW.md`
-///    ([`is_code_review_name`], WR-03).
-/// 6. `fixed` is the size of the union of [`finding_ids`] over every fixer's
+/// 4. `total` is `findings.total` from the phase directory's `NN-REVIEW.md` —
+///    the code review itself, never `NN-EVAL-REVIEW.md` or `NN-UI-REVIEW.md`
+///    ([`is_code_review_name`], WR-03). A `*-REVIEW-FIX.md` beside it does not
+///    matter: the gate in step 1 already says whether the run is over (WR-04).
+/// 5. `fixed` is the size of the union of [`finding_ids`] over every fixer's
 ///    subjects plus the main worktree's last 300 — an id fixed twice, on two
-///    worktrees or on a worktree and main, counts once.
-/// 7. `fixed` and `total` are `Some` only when the total parsed.
+///    worktrees or on a worktree and main, counts once — kept to the findings
+///    that REVIEW.md lists and clamped to `total` ([`fixed_count`], WR-04).
+/// 6. `fixed` and `total` are `Some` only when the total parsed.
 ///
 /// **Assumption A7 (flagged for audit, not changed).** The denominator is
 /// `findings.total` verbatim (D-C12). It includes the `info` findings fixers
@@ -277,11 +325,10 @@ pub fn estimate(
     else {
         return Some(estimate);
     };
-    let (fix_report, review) = review_files(&phase_dir, &phase);
-    if fix_report {
-        return Some(estimate);
-    }
-    let Some(total) = review.as_deref().and_then(review_total) else {
+    let Some(review) = review_file(&phase_dir, &phase)
+        .as_deref()
+        .and_then(read_review)
+    else {
         return Some(estimate);
     };
 
@@ -295,8 +342,8 @@ pub fn estimate(
             &phase,
         ));
     }
-    estimate.fixed = Some(u32::try_from(ids.len()).unwrap_or(u32::MAX));
-    estimate.total = Some(total);
+    estimate.fixed = Some(fixed_count(&ids, &review));
+    estimate.total = Some(review.total);
     Some(estimate)
 }
 
@@ -425,5 +472,28 @@ mod tests {
             };
             assert!(!is_code_review_name(other, &target), "{other}");
         }
+    }
+
+    #[test]
+    fn only_the_current_reviews_findings_count_and_never_past_the_total() {
+        let review = parse_review(
+            "---\nfindings:\n  total: 3\n---\n\n### CR-01: a\n\n### WR-01: b\n\n#### WR-09: not a finding heading\n### WR-2: c\n",
+        )
+        .expect("the total parses");
+        assert_eq!(review.total, 3);
+        let collected = ids(&["CR-01", "WR-1", "WR-01", "WR-05", "IN-07"]);
+        assert_eq!(
+            fixed_count(&collected, &review),
+            2,
+            "CR-01 and WR-01 (in either padding); WR-05 and IN-07 are an earlier review's"
+        );
+
+        let headless = parse_review("---\nfindings:\n  total: 2\n---\n").expect("the total parses");
+        assert!(headless.findings.is_empty());
+        assert_eq!(
+            fixed_count(&ids(&["CR-01", "WR-01", "WR-05"]), &headless),
+            2,
+            "no headings to intersect with: every id, clamped to the total"
+        );
     }
 }

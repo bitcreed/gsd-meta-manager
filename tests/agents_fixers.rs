@@ -255,8 +255,12 @@ fn finding_ids_dedupe_across_worktrees_and_main() {
     );
 }
 
+/// WR-04: a `*-REVIEW-FIX.md` left by an earlier run, or by `--auto`
+/// iteration 1, no longer hides the count of a run that is still going —
+/// whether the run is over is the running-fixer gate's call. (Until WR-04 this
+/// test pinned the opposite: any REVIEW-FIX.md meant "no counts".)
 #[test]
-fn a_review_fix_report_hides_the_estimate() {
+fn a_leftover_review_fix_report_does_not_hide_a_running_estimate() {
     let Some((_tmp, root)) = review_repo(Some(REVIEW_48)) else {
         return;
     };
@@ -272,7 +276,7 @@ fn a_review_fix_report_hides_the_estimate() {
     );
     for (n, name) in [FIXER_A, FIXER_B, FIXER_C].into_iter().enumerate() {
         let wt = add_agent_worktree(&root, name);
-        commit(&wt, &format!("fix(12): WR-0{n} fixed"));
+        commit(&wt, &format!("fix(12): WR-0{} fixed", n + 1));
     }
 
     let agents = scan(&root, Scripted::fixer());
@@ -281,15 +285,47 @@ fn a_review_fix_report_hides_the_estimate() {
         Some(FixerEstimate {
             fixers: 3,
             phase: PhaseNum::parse("12"),
-            fixed: None,
-            total: None,
+            fixed: Some(3),
+            total: Some(48),
         }),
-        "the run is over: no counts"
+        "three fixers are running: the counts stay"
     );
     assert_eq!(
-        derive(&agents, &ProjectState::default()).summary_forms(),
-        vec!["3 fixers".to_string(), "3fix".to_string()]
+        derive(&agents, &ProjectState::default())
+            .summary_forms()
+            .first()
+            .map(String::as_str),
+        Some("3 fixers \u{b7} ~3/48 fixed")
     );
+}
+
+/// WR-04: ids an earlier review's run fixed are not this review's findings,
+/// and `fixed` never exceeds `total`.
+#[test]
+fn only_the_current_reviews_findings_count_and_fixed_never_exceeds_total() {
+    let review = "---\nphase: 12\nfindings:\n  total: 2\n---\n\n### CR-01: a\n\n### WR-01: b\n";
+    let Some((_tmp, root)) = review_repo(Some(review)) else {
+        return;
+    };
+    // An earlier review of phase 12, fixed and merged: WR-05 and IN-02 are
+    // not findings of the current review.
+    commit(&root, "fix(12): WR-05 earlier review");
+    commit(&root, "fix(12): IN-02 earlier review");
+    let wt = add_agent_worktree(&root, FIXER_A);
+    commit(&wt, "fix(12): CR-01 x");
+    commit(&wt, "fix(12): WR-1 y");
+
+    let agents = scan(&root, Scripted::fixer());
+    assert_eq!(counts(&agents), Some((1, Some(2), Some(2))));
+
+    // A review without finding headings: every id counts, but at most the total.
+    let Some((_tmp2, headless)) = review_repo(Some("---\nfindings:\n  total: 2\n---\n")) else {
+        return;
+    };
+    let wt = add_agent_worktree(&headless, FIXER_A);
+    commit(&wt, "fix(12): CR-01 WR-01 WR-02 x");
+    let agents = scan(&headless, Scripted::fixer());
+    assert_eq!(counts(&agents), Some((1, Some(2), Some(2))), "clamped to the total");
 }
 
 /// WR-03: the denominator is the code review's, even when an eval review and a
