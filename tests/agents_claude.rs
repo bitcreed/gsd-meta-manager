@@ -202,3 +202,92 @@ fn registered_adapters_includes_claude_code() {
     let names: Vec<&'static str> = registered_adapters().iter().map(|a| a.name()).collect();
     assert!(names.contains(&"claude-code"), "{names:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle facts the core classifies (D-C08, D-A05, RESEARCH Pitfall 4)
+// ---------------------------------------------------------------------------
+
+/// A plain executor meta joined to `wt` by path.
+fn executor_meta(wt: &Path) -> serde_json::Value {
+    json!({
+        "agentType": "gsd-executor",
+        "description": "Execute plan 13-02 of phase 13",
+        "worktreePath": wt,
+        "spawnDepth": 2,
+    })
+}
+
+#[test]
+fn a_released_lock_with_a_stale_transcript_reads_finished() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let wt = fx.add_agent_worktree(AGENT_ID, None);
+    let now = SystemTime::now();
+    fx.write_meta(AGENT_ID, &executor_meta(&wt));
+    fx.write_transcript(AGENT_ID, now, Duration::from_secs(121));
+
+    let scan = fx.scan(now);
+    let row = only_row(&scan);
+    assert!(!row.locked, "the runtime released the lock");
+    assert_eq!(row.adapter, Some("claude-code"));
+    assert_eq!(row.liveness, AgentLiveness::Finished);
+}
+
+#[test]
+fn a_locked_worktree_with_a_stale_transcript_reads_stalled_even_with_a_live_pid() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    // The lock reason names THIS process — as alive as a pid can be. It is
+    // the session's pid, shared by every agent, so it proves nothing (D-A05).
+    let wt = fx.add_agent_worktree(AGENT_ID, Some(std::process::id()));
+    let now = SystemTime::now();
+    fx.write_meta(AGENT_ID, &executor_meta(&wt));
+    fx.write_transcript(AGENT_ID, now, Duration::from_secs(601));
+
+    let scan = fx.scan(now);
+    let row = only_row(&scan);
+    assert!(row.locked);
+    assert_eq!(row.adapter, Some("claude-code"));
+    assert_eq!(row.liveness, AgentLiveness::Stalled);
+}
+
+#[test]
+fn a_stopped_by_user_meta_reads_ended() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let wt = fx.add_agent_worktree(AGENT_ID, Some(1));
+    let now = SystemTime::now();
+    let mut meta = executor_meta(&wt);
+    meta["stoppedByUser"] = json!(true);
+    fx.write_meta(AGENT_ID, &meta);
+    fx.write_transcript(AGENT_ID, now, Duration::from_secs(5));
+
+    let scan = fx.scan(now);
+    assert_eq!(only_row(&scan).liveness, AgentLiveness::Ended);
+}
+
+#[test]
+fn a_worktree_without_metadata_degrades_to_the_core_row() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let wt = fx.add_agent_worktree(AGENT_ID, Some(1));
+    let now = SystemTime::now();
+
+    let scan = fx.scan(now);
+    let row = only_row(&scan);
+    assert_eq!(row.path, wt);
+    assert_eq!(row.adapter, None);
+    assert_eq!(row.agent_type, None);
+    assert_eq!(row.liveness, AgentLiveness::Unknown);
+    assert_eq!(row.commits_ahead, Some(0), "git's facts are still there");
+    assert_eq!(row.dirty, Some(0));
+}
+
+fn only_row(scan: &ProjectAgents) -> &gsd_meta_manager::agents::AgentRow {
+    assert_eq!(scan.rows.len(), 1, "exactly one agent row: {:?}", scan.rows);
+    &scan.rows[0]
+}
