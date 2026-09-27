@@ -504,7 +504,8 @@ fn transitive_reduction(
     (reduced, implied)
 }
 
-/// One entry of the unfolded row sequence the lane assigner walks.
+/// One entry of a row sequence: the full list order ([`row_sequence`]) or
+/// its visible part, which the lane assigner walks (quick 260927-gi9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Slot {
     Summary,
@@ -512,7 +513,7 @@ enum Slot {
     Phase(usize),
 }
 
-/// What a laid-out row is, before folding.
+/// What a laid-out (visible) row is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaneKind {
     Summary,
@@ -616,9 +617,12 @@ fn connector_row(active: &[Option<usize>], lane: usize, others: &[usize], fork: 
     join_cells(&cells, Some((lo, hi)))
 }
 
-/// Assign git-log lanes over the unfolded row sequence (RESEARCH Pattern 2).
+/// Assign git-log lanes over the row sequence it is given — the visible rows,
+/// folds already applied (RESEARCH Pattern 2; quick 260927-gi9).
 ///
-/// Edges run only from an earlier row to a later one along REDUCED parents.
+/// Edges run only from an earlier row to a later one along REDUCED parents,
+/// and only when both endpoints are in `seq`: an edge touching a folded
+/// phase draws no lane.
 /// A node sits on its lowest incoming lane (several → one merge connector
 /// before it); a root takes the lowest free lane that is not the previous
 /// phase row's (a band row resets that). After a node, its first later child
@@ -714,8 +718,11 @@ fn assign_lanes(seq: &[Slot], reduced: &ParentLists, glyphs: &[&str]) -> Vec<Lan
 
 /// Lay out `input` as the vertical Roadmap list (D-A01, D-A07, D-A08).
 ///
-/// Pure: no ratatui types, no I/O. Lanes are computed on the unfolded list,
-/// then rows hidden by `fold_toggles` (see [`is_folded`]) are dropped.
+/// Pure: no ratatui types, no I/O. Rows hidden by `fold_toggles` (see
+/// [`is_folded`]) are dropped first, then lanes are laid out over the visible
+/// rows only, so a folded milestone reserves no gutter width and an edge
+/// touching a folded phase draws no lane (quick 260927-gi9). Facts, bands,
+/// `start_now` and waves stay computed over the full graph.
 pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> RoadmapModel {
     let nodes = &input.nodes;
     let n = nodes.len();
@@ -778,14 +785,29 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
     let shipped: Vec<usize> = (0..bands.len()).filter(|&b| bands[b].shipped).collect();
 
     let seq = row_sequence(&bands, &members, &band_of);
-    let glyphs: Vec<&str> = status.iter().map(|s| s.glyph()).collect();
-    let laid = assign_lanes(&seq, &reduced, &glyphs);
 
-    // Folding happens after layout, so rows outside a fold never move.
+    // Folding happens BEFORE lane layout (quick 260927-gi9, D-01): lanes
+    // exist only for the rows that are drawn, so a folded milestone reserves
+    // no gutter and visible rows pack into the leftmost columns. An edge with
+    // a folded endpoint has no position in the visible sequence, so
+    // `assign_lanes` draws no lane for it (I-1). The price: toggling a fold
+    // may move the lanes of rows outside it (I-4). With nothing folded the
+    // visible sequence is `seq` itself, so the unfolded layout is unchanged.
     let summary_folded = is_folded(&BandKey::Shipped, fold_toggles);
     let band_hidden = |b: usize| bands[b].shipped && summary_folded;
     let phases_hidden = |b: usize| band_hidden(b) || is_folded(&bands[b].key, fold_toggles);
     let node_hidden = |u: usize| band_of[u].is_some_and(phases_hidden);
+    let visible: Vec<Slot> = seq
+        .iter()
+        .copied()
+        .filter(|slot| match *slot {
+            Slot::Summary => true,
+            Slot::Band(b) => !band_hidden(b),
+            Slot::Phase(u) => !node_hidden(u),
+        })
+        .collect();
+    let glyphs: Vec<&str> = status.iter().map(|s| s.glyph()).collect();
+    let laid = assign_lanes(&visible, &reduced, &glyphs);
 
     // List order of the nodes.
     let order: Vec<usize> = seq
@@ -860,17 +882,19 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
         })
         .fold(0u32, u32::saturating_add);
 
+    // Every laid row is visible: the `visible` filter above is the single
+    // place folding is decided.
     let rows: Vec<ListRow> = laid
         .into_iter()
-        .filter_map(|row| match row.kind {
-            LaneKind::Summary => Some(ListRow::ShippedSummary {
+        .map(|row| match row.kind {
+            LaneKind::Summary => ListRow::ShippedSummary {
                 text: summary_text.clone(),
                 milestones: shipped.len(),
                 phases: summary_phases,
                 folded: summary_folded,
                 lanes: row.lanes,
-            }),
-            LaneKind::Band(b) if !band_hidden(b) => Some(ListRow::Band {
+            },
+            LaneKind::Band(b) => ListRow::Band {
                 band: b,
                 key: bands[b].key.clone(),
                 label: bands[b].label.clone(),
@@ -879,16 +903,13 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 total: bands[b].total,
                 folded: is_folded(&bands[b].key, fold_toggles),
                 lanes: row.lanes,
-            }),
-            LaneKind::Connector(u) if !node_hidden(u) => {
-                Some(ListRow::Connector { lanes: row.lanes })
-            }
-            LaneKind::Phase(node, lane) if !node_hidden(node) => Some(ListRow::Phase {
+            },
+            LaneKind::Connector(_) => ListRow::Connector { lanes: row.lanes },
+            LaneKind::Phase(node, lane) => ListRow::Phase {
                 node,
                 lane,
                 lanes: row.lanes,
-            }),
-            _ => None,
+            },
         })
         .collect();
 
