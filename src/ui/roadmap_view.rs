@@ -1859,7 +1859,16 @@ mod tests {
     #[test]
     fn mouse_roadmap_view_records_the_list_body_and_fold_glyph_cells() {
         let unfolded = daily_vow(std::iter::once(BandKey::Shipped).collect());
-        for model in [daily_vow(HashSet::new()), unfolded, bookly()] {
+        // Quick 260927-gi9 (D-05): the compact folded gutter and the wide
+        // unfolded one.
+        let models = [
+            daily_vow(HashSet::new()),
+            unfolded,
+            bookly(),
+            cross_fold(HashSet::new()),
+            cross_fold(std::iter::once(BandKey::Shipped).collect()),
+        ];
+        for model in models {
             for (w, h) in [(120u16, 30u16), (80, 24), (120, 12)] {
                 for start in [0usize, 4] {
                     let at = format!("{w}x{h}, offset {start}");
@@ -2048,6 +2057,22 @@ mod tests {
                 );
             }
         }
+
+        // Unfolded, v2's lanes really are drawn on the v3 row, so the gutter
+        // widens and the fold mark moves right with the drawn glyph.
+        let open = cross_fold(std::iter::once(BandKey::Shipped).collect());
+        let mut state = RoadmapViewState::default();
+        render(&open, Some(&phase("14")), 120, 40, &mut state);
+        let v3 = state
+            .fold_marks
+            .iter()
+            .find(|(i, _)| matches!(&open.rows[*i], ListRow::Band { short, .. } if short == "v3"))
+            .expect("unfolded v3 fold mark");
+        assert!(
+            v3.1.x > state.list_body.x + u16::try_from(MIN_LANE_CELLS).unwrap(),
+            "{v3:?} vs {:?}",
+            state.list_body
+        );
     }
 
     /// `1` forks into eight children that all merge into `10`: eight lanes
