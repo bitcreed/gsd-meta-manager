@@ -5,10 +5,10 @@ current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
 stopped_at: v1.9.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-09-26T23:00:00.000Z"
+last_updated: "2026-09-27T17:09:21.774Z"
 last_activity: 2026-09-26
 last_activity_desc: v1.9.0 released — Running Agents & GSD 1.15.0 Sync
-state_head: bc5b1f557bf3ff050d18f49ba2acdc122f370e0d
+state_head: 2860a120acb6f28781305f6f398706f95b2ffb3b
 progress:
   total_phases: 10
   completed_phases: 7
@@ -146,7 +146,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-26 - Completed quick task 260926-kes: Mouse row interaction on remaining detail tabs (Roadmap, Cfg, Docs, Backlog, Queue, Git, Driver)
+Last activity: 2026-09-27 - Completed quick task 260927-gi9: Fix Roadmap lane gutter reserving width for folded milestones
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -578,6 +578,7 @@ Recent decisions affecting current work:
 | 260926-j0a | README GSD compatibility note (synced 1.15.0 branch / oracle 1.14.0, drift test) + installed-gsd-core detection (project-local over global, claude/codex; Config tab, dashboard newer-only warning, startup line) | 2026-09-26 | ac7a64a | .planning/quick/260926-j0a-readme-gsd-compatibility-note-installed- |
 | 260926-jnf | Mask secret config values in Cfg tab (`•••••••• (set)`/`(unset)`, known-key list + name heuristic, edit never prefills) + typed rows for runtime/context_profile/agent_skills/tavily_search/ref_search/perplexity/jina (count 139) | 2026-09-26 | 845a706 | .planning/quick/260926-jnf-mask-secret-config-values-in-cfg-tab-add |
 | 260926-kes | Mouse row interaction on remaining detail tabs: click-select through scroll offsets, double-click=Enter (Queue excluded), Roadmap fold markers, Docs tree/sub-tabs, Cfg key+value columns and chooser, pane-under-pointer wheel for Backlog/Git/Driver | 2026-09-26 | c9ac9af | .planning/quick/260926-kes-mouse-row-interaction-on-remaining-detai |
+| 260927-gi9 | Fix Roadmap lane gutter reserving width for folded milestones (lanes laid out over visible rows only) | 2026-09-27 | 2860a12 | [260927-gi9-fix-roadmap-lane-gutter-reserving-width-](./quick/260927-gi9-fix-roadmap-lane-gutter-reserving-width-/) |
 
 ## Session Continuity
 
