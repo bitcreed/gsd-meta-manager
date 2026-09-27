@@ -1953,6 +1953,103 @@ mod tests {
         assert!(state.fold_marks.is_empty());
     }
 
+    /// Quick 260927-gi9 (I-7): the reported shape. Shipped v1 lists no
+    /// phases; shipped v2's six independent phases all feed v3's 14.
+    const CROSS_FOLD: Spec<'static> = &[
+        ("8", "Booking model", &[], D, Some(1)),
+        ("9", "Availability", &[], D, Some(1)),
+        ("10", "Slot picker", &[], D, Some(1)),
+        ("11", "Calendar sync", &[], D, Some(1)),
+        ("12", "Checkout", &[], D, Some(1)),
+        ("13", "Confirmation", &[], D, Some(1)),
+        (
+            "14",
+            "Supervised first live booking",
+            &["8", "9", "10", "11", "12", "13"],
+            C,
+            Some(2),
+        ),
+        ("15", "Unattended window runs", &["14"], F, Some(2)),
+        ("16", "Five9 client and transcript store", &[], D, Some(2)),
+        ("17", "Autonomous responder", &["16"], F, Some(2)),
+        ("18", "Telegram commands, users and group", &[], D, Some(2)),
+        ("19", "Telegram Mini App and LAN HTTPS", &["18"], F, Some(2)),
+        ("20", "Web frontend", &["19"], F, Some(3)),
+    ];
+
+    const CROSS_FOLD_BANDS: Bands<'static> = &[
+        ("v1 Foundations", true, 8),
+        ("v2 Core booking", true, 6),
+        ("v3 Live booking, support chat and Telegram", false, 6),
+        ("Milestone 6: Web frontend", false, 1),
+    ];
+
+    fn cross_fold(toggles: HashSet<BandKey>) -> RoadmapModel {
+        build(
+            CROSS_FOLD,
+            CROSS_FOLD_BANDS,
+            &Extras {
+                toggles,
+                ..Extras::default()
+            },
+        )
+    }
+
+    /// Quick 260927-gi9 (D-01, D-05): with v1 … v2 folded, the lane column
+    /// is the minimum width, so the ids and the v3 fold mark sit right after
+    /// it. Columns are measured from the recorded list body.
+    #[test]
+    fn folded_milestones_do_not_widen_the_lane_column() {
+        let model = cross_fold(HashSet::new());
+        for (w, h) in [(120u16, 30u16), (80, 30)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&phase("14")), w, h, &mut state);
+            let body = state.list_body;
+            let rows = rect_text(&buf, body);
+            let dump = || rows.join("\n");
+
+            // (a) The phase id column starts right after lanes and marker.
+            let row = rows
+                .iter()
+                .find(|r| r.contains("Supervised first live booking"))
+                .unwrap_or_else(|| panic!("{w}x{h}: no row for 14 in\n{}", dump()));
+            let id: String = row
+                .chars()
+                .skip(MIN_LANE_CELLS + MARK_CELLS)
+                .take(2)
+                .collect();
+            assert_eq!(id, "14", "{w}x{h}:\n{}", dump());
+
+            // (b) The v3 fold mark sits right after the minimum lane column.
+            let v3 = state
+                .fold_marks
+                .iter()
+                .find(|(i, _)| matches!(&model.rows[*i], ListRow::Band { short, .. } if short == "v3"))
+                .unwrap_or_else(|| panic!("{w}x{h}: no v3 fold mark in\n{}", dump()));
+            assert_eq!(
+                v3.1.x,
+                body.x + u16::try_from(MIN_LANE_CELLS).unwrap(),
+                "{w}x{h}:\n{}",
+                dump()
+            );
+
+            // (c) No lane is drawn past the minimum lane column.
+            for r in &rows {
+                let past: String = r
+                    .chars()
+                    .skip(MIN_LANE_CELLS)
+                    .take(MARK_CELLS)
+                    .collect();
+                assert!(
+                    !past
+                        .chars()
+                        .any(|c| LANE_GLYPHS.contains(c) || LANE_OVERFLOW.contains(c)),
+                    "{w}x{h}: lane glyph in the marker cells of {r:?}"
+                );
+            }
+        }
+    }
+
     /// `1` forks into eight children that all merge into `10`: eight lanes
     /// run side by side.
     fn eight_lanes() -> RoadmapModel {

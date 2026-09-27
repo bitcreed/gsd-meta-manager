@@ -1688,22 +1688,158 @@ mod tests {
         ));
     }
 
+    /// Quick 260927-gi9 (I-5, G3): folding M4 drops 13's fork lane to the
+    /// hidden 16, so lane 2 is no longer reserved on the rows below 13.
     #[test]
-    fn folding_a_band_hides_its_rows_but_not_the_lanes_elsewhere() {
+    fn folding_a_band_drops_the_lanes_only_its_phases_owned() {
         let m4 = BandKey::Named("m4 support chat".to_string());
         let model = build(BOOKLY, BOOKLY_BANDS, &toggles(&[m4]));
-        let expected: Vec<&str> = MOCKUP_A_LANES
-            .iter()
-            .copied()
-            .filter(|line| !line.ends_with(" 16") && !line.ends_with(" 17"))
-            .collect();
-        assert_eq!(lane_text(&model), expected);
+        let expected: &[&str] = &[
+            "          [M3]",
+            "o         8",
+            "o         9",
+            "├─┐",
+            "o │       10",
+            "│ o       11",
+            "├─┘",
+            "o         12",
+            "├─┐",
+            "o │       13",
+            "o │       14",
+            "o │       15",
+            "  │       [M4]",
+            "  │       [M5]",
+            "  o       18",
+        ];
+        assert_eq!(lane_text(&model), expected.to_vec());
         assert!(model.rows.iter().any(|row| matches!(
             row,
-            ListRow::Band { short, folded: true, lanes, .. } if short == "M4" && lanes == "  │ │"
+            ListRow::Band { short, folded: true, lanes, .. } if short == "M4" && lanes == "  │"
         )));
         // The facts still cover every phase.
         assert_eq!(model.phases.len(), BOOKLY.len());
+    }
+
+    /// Quick 260927-gi9 (I-7): the reported shape. Shipped v1 lists no
+    /// phases; shipped v2's six independent phases all feed v3's 14.
+    const CROSS_FOLD: LSpec<'static> = &[
+        ("8", "Booking model", &[], D),
+        ("9", "Availability", &[], D),
+        ("10", "Slot picker", &[], D),
+        ("11", "Calendar sync", &[], D),
+        ("12", "Checkout", &[], D),
+        ("13", "Confirmation", &[], D),
+        (
+            "14",
+            "Supervised first live booking",
+            &["8", "9", "10", "11", "12", "13"],
+            C,
+        ),
+        ("15", "Unattended window runs", &["14"], F),
+        ("16", "Five9 client and transcript store", &[], D),
+        ("17", "Autonomous responder", &["16"], F),
+        ("18", "Telegram commands, users and group", &[], D),
+        ("19", "Telegram Mini App and LAN HTTPS", &["18"], F),
+        ("20", "Web frontend", &["19"], F),
+    ];
+
+    const CROSS_FOLD_BANDS: BSpec<'static> = &[
+        ("v1 Foundations", true, 8, &[]),
+        ("v2 Core booking", true, 6, &["8", "9", "10", "11", "12", "13"]),
+        (
+            "v3 Live booking, support chat and Telegram",
+            false,
+            6,
+            &["14", "15", "16", "17", "18", "19"],
+        ),
+        ("Milestone 6: Web frontend", false, 1, &["20"]),
+    ];
+
+    fn v3_key() -> BandKey {
+        BandKey::Named("v3 live booking, support chat and telegram".to_string())
+    }
+
+    /// Quick 260927-gi9 (D-01, D-02, D-03, I-1, I-3; G1, G1b): folded
+    /// milestones reserve no lanes, and an edge with a hidden endpoint draws
+    /// nothing.
+    #[test]
+    fn folding_the_shipped_summary_drops_lanes_of_hidden_phases() {
+        let model = build(CROSS_FOLD, CROSS_FOLD_BANDS, &HashSet::new());
+        let g1: &[&str] = &[
+            "          [shipped]",
+            "          [v3]",
+            "o         14",
+            "o         15",
+            "  o       16",
+            "  o       17",
+            "o         18",
+            "o         19",
+            "│         [M6]",
+            "o         20",
+        ];
+        assert_eq!(lane_text(&model), g1.to_vec());
+        assert!(
+            !model
+                .rows
+                .iter()
+                .any(|row| matches!(row, ListRow::Connector { .. })),
+            "{:#?}",
+            lane_text(&model)
+        );
+        // 14 is the first visible phase row, on lane 0.
+        assert_eq!(phase_lanes(&model).first(), Some(&0));
+        let fourteen = idx(&model, "14");
+        assert!(model.rows.iter().any(
+            |row| matches!(row, ListRow::Phase { node, lane: 0, .. } if *node == fourteen)
+        ));
+
+        let both = build(CROSS_FOLD, CROSS_FOLD_BANDS, &toggles(&[v3_key()]));
+        let g1b: &[&str] = &[
+            "          [shipped]",
+            "          [v3]",
+            "          [M6]",
+            "o         20",
+        ];
+        assert_eq!(lane_text(&both), g1b.to_vec());
+
+        // The facts are fold-independent (I-3).
+        let open = build(CROSS_FOLD, CROSS_FOLD_BANDS, &toggles(&[BandKey::Shipped]));
+        for m in [&model, &both, &open] {
+            assert_eq!(
+                ids(m, &facts(m, "14").needs),
+                vec!["8", "9", "10", "11", "12", "13"]
+            );
+            assert_eq!(ids(m, &m.start_now), ids(&open, &open.start_now));
+        }
+    }
+
+    /// Quick 260927-gi9 (D-04, G2): with every fold open the layout is what
+    /// the pre-fix code drew.
+    #[test]
+    fn unfolded_cross_fold_layout_is_pinned() {
+        let model = build(CROSS_FOLD, CROSS_FOLD_BANDS, &toggles(&[BandKey::Shipped]));
+        let g2: &[&str] = &[
+            "          [shipped]",
+            "          [v1]",
+            "          [v2]",
+            "o         8",
+            "│ o       9",
+            "│ │ o     10",
+            "│ │ │ o   11",
+            "│ │ │ │ o 12",
+            "│ │ │ │ │ o13",
+            "│ │ │ │ │ │[v3]",
+            "├─┴─┴─┴─┴─┘",
+            "o         14",
+            "o         15",
+            "  o       16",
+            "  o       17",
+            "o         18",
+            "o         19",
+            "│         [M6]",
+            "o         20",
+        ];
+        assert_eq!(lane_text(&model), g2.to_vec());
     }
 
     #[test]
