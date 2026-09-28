@@ -938,6 +938,9 @@ pub(crate) struct DetailRegions {
     /// open Backlog content pane, the Git commit pane, the Driver output pane
     /// (quick 260926-kes).
     pub scroll_panes: Vec<ScrollPaneRegion>,
+    /// The two Config scope labels (`Project`, `Global`), on the Config tab
+    /// only (quick 260927-t3s, I-8).
+    pub config_scope_tabs: Vec<ConfigScopeRegion>,
 }
 
 /// One drawn Roadmap fold glyph: the two cells of its `"{glyph} "` span and
@@ -1002,12 +1005,22 @@ pub(crate) struct SubTabRegion {
     pub view: DetailSubView,
 }
 
+/// One drawn Config scope label: its rect and the scope it selects (quick
+/// 260927-t3s, I-8).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ConfigScopeRegion {
+    pub rect: Rect,
+    pub target: super::DefaultsEditTarget,
+}
+
 /// What a click lands on, in [`DetailRegions::click_target`]'s priority order
 /// (quick 260926-dyf, [inferred I-8]).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ClickTarget {
     Tab(usize),
     SubTab(DetailSubView),
+    /// A Config scope label: selects that scope (quick 260927-t3s, I-8).
+    ConfigScope(super::DefaultsEditTarget),
     WavesRow(super::WavesCursor),
     /// A Roadmap band or shipped-summary row's fold glyph (quick 260926-kes).
     FoldMarker(usize),
@@ -1059,6 +1072,9 @@ impl DetailRegions {
         }
         if let Some(s) = self.sub_tabs.iter().find(|s| s.rect.contains(at)) {
             return ClickTarget::SubTab(s.view.clone());
+        }
+        if let Some(s) = self.config_scope_tabs.iter().find(|s| s.rect.contains(at)) {
+            return ClickTarget::ConfigScope(s.target);
         }
         if let Some(w) = self.waves_rows.iter().find(|w| w.rect.contains(at)) {
             return ClickTarget::WavesRow(w.target.clone());
@@ -1212,6 +1228,7 @@ impl DetailScreen {
             config_rows: None,
             dropdown: None,
             scroll_panes: Vec::new(),
+            config_scope_tabs: Vec::new(),
         };
     }
 
@@ -1417,19 +1434,11 @@ impl DetailScreen {
         let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
         let row = chunks[0];
         if let Some((left, right)) = sub_tab_pair(view) {
-            let cells = |i: usize| {
-                strip.spans.get(i).map_or(0, |s| u16::try_from(s.width()).unwrap_or(u16::MAX))
-            };
-            let label = |start: u16, width: u16| {
-                let x = row.x.saturating_add(start).min(row.right());
-                Rect::new(x, row.y, width.min(row.right() - x), row.height.min(1))
-            };
-            let left_x = cells(0);
-            let right_x = cells(0) + cells(1) + cells(2);
+            let [left_rect, right_rect] = strip_label_rects(row, &strip);
             let mut regions = self.regions.borrow_mut();
-            regions.sub_tabs = [(left_x, cells(1), left), (right_x, cells(3), right)]
+            regions.sub_tabs = [(left_rect, left), (right_rect, right)]
                 .into_iter()
-                .map(|(start, width, view)| SubTabRegion { rect: label(start, width), view })
+                .map(|(rect, view)| SubTabRegion { rect, view })
                 .filter(|s| !s.rect.is_empty())
                 .collect();
         }
@@ -1450,9 +1459,19 @@ impl DetailScreen {
         area: Rect,
         target: super::DefaultsEditTarget,
     ) -> Rect {
+        use super::DefaultsEditTarget;
         let strip = config_scope_strip(target);
         let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
         let row = chunks[0];
+        let [project_rect, global_rect] = strip_label_rects(row, &strip);
+        self.regions.borrow_mut().config_scope_tabs = [
+            (project_rect, DefaultsEditTarget::Project),
+            (global_rect, DefaultsEditTarget::Global),
+        ]
+        .into_iter()
+        .map(|(rect, target)| ConfigScopeRegion { rect, target })
+        .filter(|s| !s.rect.is_empty())
+        .collect();
         frame.render_widget(Paragraph::new(strip), row);
         self.record_sub_tab_strip(row);
         chunks[1]
@@ -5612,6 +5631,20 @@ impl DetailScreen {
                     ScreenAction::None
                 }
             }
+            // A Config scope label SETS that scope through the same helper
+            // as `g`, so a click on the active one — and the double `App`
+            // delivers after a single click — is a no-op (quick 260927-t3s,
+            // I-8).
+            ClickTarget::ConfigScope(target) => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if set_config_scope(cache, target) {
+                    ctx.status_message =
+                        Some((config_scope_status(target).to_string(), std::time::Instant::now()));
+                }
+                ScreenAction::None
+            }
             ClickTarget::WavesRow(cursor) => {
                 self.focus = DetailFocus::Pane;
                 ctx.view_cache.entry(self.alias.clone()).or_default().waves_cursor = Some(cursor);
@@ -9290,6 +9323,23 @@ fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::Path
     }
 
     Ok(candidate)
+}
+
+/// The left and right label rects of a two-label strip drawn in `row`,
+/// measured from the strip's own first four spans (gutter, left label,
+/// separator, right label; see [`sub_tab_strip_spans`]) and clamped to the
+/// row, so a click target cannot drift from what is drawn (quick 260926-dyf;
+/// shared with the Config scope strip since quick 260927-t3s).
+fn strip_label_rects(row: Rect, strip: &Line) -> [Rect; 2] {
+    let cells =
+        |i: usize| strip.spans.get(i).map_or(0, |s| u16::try_from(s.width()).unwrap_or(u16::MAX));
+    let label = |start: u16, width: u16| {
+        let x = row.x.saturating_add(start).min(row.right());
+        Rect::new(x, row.y, width.min(row.right() - x), row.height.min(1))
+    };
+    let left_x = cells(0);
+    let right_x = cells(0) + cells(1) + cells(2);
+    [label(left_x, cells(1)), label(right_x, cells(3))]
 }
 
 /// The Docs tab's sub-tab strip (D-B04): ` [Files] │ Milestones   ←/→ switch`
@@ -22277,6 +22327,13 @@ mod tests {
         let (screen, ctx) = arrived_on(DetailSubView::Queue);
         render_detail_to_text(&screen, &ctx);
         assert_eq!(screen.regions().sub_tab_strip, None, "Queue has none");
+        assert_eq!(screen.regions().config_scope_tabs.len(), 0, "Queue has no scope labels");
+
+        // Quick 260927-t3s: the Config tab's scope strip and its two labels.
+        let (screen, ctx) = arrived_on(DetailSubView::Defaults);
+        render_detail_to_text(&screen, &ctx);
+        assert_eq!(screen.regions().sub_tab_strip, Some(Rect::new(0, 3, 120, 1)));
+        assert_eq!(screen.regions().config_scope_tabs.len(), 2);
 
         let (screen, ctx, _td) = focused_long_backlog_fixture();
         render_detail_to_text(&screen, &ctx);
@@ -23597,6 +23654,77 @@ mod tests {
         assert_eq!(stored_view(&ctx), DetailSubView::Driver);
     }
 
+    /// The rect of the Config scope label for `target`, as recorded this frame.
+    fn mouse_config_scope_rect(
+        screen: &DetailScreen,
+        target: super::super::DefaultsEditTarget,
+    ) -> Rect {
+        screen
+            .regions()
+            .config_scope_tabs
+            .iter()
+            .find(|t| t.target == target)
+            .map(|t| t.rect)
+            .unwrap_or_else(|| panic!("no {target:?} scope label: {:?}", screen.regions()))
+    }
+
+    /// Quick 260927-t3s (I-8): clicking a scope label SELECTS that scope —
+    /// idempotent, so the double-click `App` delivers never flips twice. No
+    /// global path is resolved and nothing mutating follows.
+    #[test]
+    fn mouse_click_on_a_config_scope_label_switches_it() {
+        use super::super::DefaultsEditTarget;
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Defaults);
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_user_path = None;
+        let label_text = |screen: &DetailScreen, ctx: &AppContext, target| {
+            let text = render_detail_to_text(screen, ctx);
+            let rect = mouse_config_scope_rect(screen, target);
+            text.lines()
+                .nth(usize::from(rect.y))
+                .unwrap_or_default()
+                .chars()
+                .skip(usize::from(rect.x))
+                .take(usize::from(rect.width))
+                .collect::<String>()
+        };
+        render_detail_to_text(&screen, &ctx);
+        assert_eq!(screen.regions().config_scope_tabs.len(), 2);
+        assert_eq!(label_text(&screen, &ctx, DefaultsEditTarget::Global), "Global");
+        assert_eq!(label_text(&screen, &ctx, DefaultsEditTarget::Project), "[Project]");
+
+        screen.focus = DetailFocus::TabBar;
+        let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Global));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Editing global defaults (~/.gsd/defaults.json)")
+        );
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(label_text(&screen, &ctx, DefaultsEditTarget::Global), "[Global]");
+
+        // A click on the now-active label is a no-op.
+        let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Global));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+
+        // A double-click on Project ends on Project, not back on Global.
+        render_detail_to_text(&screen, &ctx);
+        let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Project));
+        mouse_click_twice(&mut screen, &mut ctx, c, r);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Project);
+
+        // The `g switch` hint changes nothing but focus.
+        screen.focus = DetailFocus::TabBar;
+        let text = render_detail_to_text(&screen, &ctx);
+        let strip = screen.regions().sub_tab_strip.expect("a strip");
+        let line = text.lines().nth(usize::from(strip.y)).unwrap_or_default().to_string();
+        let hint = cell_column(&line, "g switch").expect("the hint is drawn");
+        mouse_click(&mut screen, &mut ctx, hint, strip.y);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Project);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
     #[test]
     fn mouse_click_on_a_sub_tab_switches_it() {
         let (mut screen, mut ctx) = two_sessions_fixture();
@@ -23830,6 +23958,7 @@ mod tests {
             config_rows: None,
             dropdown: None,
             scroll_panes: Vec::new(),
+            config_scope_tabs: Vec::new(),
         };
         assert_eq!(regions.click_target(3, 6), ClickTarget::FoldMarker(5), "the marker beats its row");
         assert_eq!(regions.click_target(4, 6), ClickTarget::FoldMarker(5), "its trailing space");
@@ -23867,6 +23996,19 @@ mod tests {
         assert_eq!(chooser.click_target(5, 23), ClickTarget::DropdownOutside, "the footer too");
         assert_eq!(regions.click_target(12, 1), ClickTarget::Tab(1));
         assert_eq!(regions.click_target(3, 3), ClickTarget::SubTab(DetailSubView::Agents));
+
+        // Quick 260927-t3s (I-8): a Config scope label, below a modal chooser.
+        let mut scope = regions.clone();
+        scope.config_scope_tabs = vec![ConfigScopeRegion {
+            rect: Rect::new(12, 3, 8, 1),
+            target: super::super::DefaultsEditTarget::Global,
+        }];
+        assert_eq!(
+            scope.click_target(14, 3),
+            ClickTarget::ConfigScope(super::super::DefaultsEditTarget::Global)
+        );
+        scope.dropdown = chooser.dropdown;
+        assert_eq!(scope.click_target(14, 3), ClickTarget::DropdownOutside, "the chooser is modal");
         assert_eq!(
             regions.click_target(50, 7),
             ClickTarget::WavesRow(WavesCursor::Plan("1-01".to_string())),
