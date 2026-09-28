@@ -5,10 +5,10 @@ current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
 stopped_at: v1.9.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-09-27T17:09:21.774Z"
-last_activity: 2026-09-26
+last_updated: "2026-09-28T02:29:53.543Z"
+last_activity: 2026-09-27
 last_activity_desc: v1.9.0 released — Running Agents & GSD 1.15.0 Sync
-state_head: 2860a120acb6f28781305f6f398706f95b2ffb3b
+state_head: 6c93cae068ebbcbc6c000be19eb1e59672f83984
 progress:
   total_phases: 10
   completed_phases: 7
@@ -146,7 +146,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-27 - Completed quick task 260927-gi9: Fix Roadmap lane gutter reserving width for folded milestones
+Last activity: 2026-09-27 - Completed quick task 260927-t3s: [g] toggles 7:Cfg between project and global settings with an always-visible scope strip
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -579,6 +579,7 @@ Recent decisions affecting current work:
 | 260926-jnf | Mask secret config values in Cfg tab (`•••••••• (set)`/`(unset)`, known-key list + name heuristic, edit never prefills) + typed rows for runtime/context_profile/agent_skills/tavily_search/ref_search/perplexity/jina (count 139) | 2026-09-26 | 845a706 | .planning/quick/260926-jnf-mask-secret-config-values-in-cfg-tab-add |
 | 260926-kes | Mouse row interaction on remaining detail tabs: click-select through scroll offsets, double-click=Enter (Queue excluded), Roadmap fold markers, Docs tree/sub-tabs, Cfg key+value columns and chooser, pane-under-pointer wheel for Backlog/Git/Driver | 2026-09-26 | c9ac9af | .planning/quick/260926-kes-mouse-row-interaction-on-remaining-detai |
 | 260927-gi9 | Fix Roadmap lane gutter reserving width for folded milestones (lanes laid out over visible rows only) | 2026-09-27 | 2860a12 | [260927-gi9-fix-roadmap-lane-gutter-reserving-width-](./quick/260927-gi9-fix-roadmap-lane-gutter-reserving-width-/) |
+| 260927-t3s | In 7:cfg, let me type [g] to switch to editing global settings instead of project settings. UX: It should always be clear whether I'm editing global or project settings. | 2026-09-28 | 6c93cae | [260927-t3s-in-7-cfg-let-me-type-g-to-switch-to-edit](./quick/260927-t3s-in-7-cfg-let-me-type-g-to-switch-to-edit/) |
 
 ## Session Continuity
 
