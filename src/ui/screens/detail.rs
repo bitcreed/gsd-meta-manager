@@ -19235,6 +19235,115 @@ mod tests {
             .expect("the sparse fixture parses")
     }
 
+    // --- quick 260927-t3s: `g` switches the Config scope ------------------
+
+    /// The tracer (Task 1, D-01..D-03): `g` flips the Config tab between the
+    /// project's `.planning/config.json` and the global defaults, the scope
+    /// strip shows which one is active, and an edit lands ONLY in the active
+    /// scope's file. Both files live in TempDirs; the global path is asserted
+    /// to be inside one before the first global mutation (T-t3s-02).
+    #[test]
+    fn g_switches_the_config_scope_and_writes_land_in_that_scopes_file() {
+        use super::super::DefaultsEditTarget;
+        use crate::config::RegisteredProject;
+        use crate::state_reader::config_json::parse_gsd_config;
+
+        let proj_td = tempfile::TempDir::new().expect("project temp dir");
+        let home_td = tempfile::TempDir::new().expect("home temp dir");
+        let project_file = proj_td.path().join(".planning/config.json");
+        std::fs::create_dir_all(project_file.parent().unwrap()).unwrap();
+        std::fs::write(&project_file, r#"{"mode":"yolo"}"#).unwrap();
+        let global_file = home_td.path().join(".gsd/defaults.json");
+
+        let mut ctx = test_ctx();
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: proj_td.path().to_path_buf(),
+                added: "2026-09-27".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Defaults);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.defaults_config =
+                parse_gsd_config(&std::fs::read_to_string(&project_file).unwrap());
+            cache.defaults_user_path = Some(global_file.clone());
+            cache.defaults_user_config = None;
+        }
+        // T-t3s-02: the global write path is inside a TempDir.
+        assert!(
+            ctx.view_cache[TEST_ALIAS]
+                .defaults_user_path
+                .as_ref()
+                .is_some_and(|p| p.starts_with(home_td.path())),
+            "precondition: the global defaults path must be inside a TempDir"
+        );
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        let rows = draw_config_tab(&screen, &ctx, 120, 30);
+        assert!(rows[0].starts_with(" [Project] \u{2502} Global"), "{:?}", rows[0]);
+        assert!(rows[1].contains(" Project Config (.planning/config.json) "), "{:?}", rows[1]);
+
+        let commit_docs_idx = |ctx: &AppContext| {
+            entries_for_cache(&ctx.view_cache[TEST_ALIAS])
+                .iter()
+                .position(|e| e.key.as_ref() == "commit_docs")
+                .expect("a commit_docs row")
+        };
+
+        // A project-scope edit: commit_docs -> false.
+        let idx = commit_docs_idx(&ctx);
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let on_disk = parse_gsd_config(&std::fs::read_to_string(&project_file).unwrap())
+            .expect("the project file parses");
+        assert_eq!(on_disk.commit_docs, Some(false), "the project edit lands in the project file");
+        assert!(!global_file.exists(), "a project edit must not create the global file");
+        let project_bytes = std::fs::read(&project_file).unwrap();
+
+        // `g` flips to Global. Asserted FIRST, before any global mutation.
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Global,
+            "`g` must switch the Config tab to global scope"
+        );
+
+        let rows = draw_config_tab(&screen, &ctx, 120, 30);
+        assert!(rows[0].starts_with(" Project \u{2502} [Global]"), "{:?}", rows[0]);
+        assert!(rows[1].contains(" Global Defaults (~/.gsd/defaults.json) "), "{:?}", rows[1]);
+
+        // A global-scope edit: the unset row's chooser opens on `true`.
+        let idx = commit_docs_idx(&ctx);
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let global = parse_gsd_config(
+            &std::fs::read_to_string(&global_file).expect("the global edit created the file"),
+        )
+        .expect("the global file parses");
+        assert_eq!(global.commit_docs, Some(true), "the global edit lands in the global file");
+        assert_eq!(
+            std::fs::read(&project_file).unwrap(),
+            project_bytes,
+            "a global edit must leave the project file byte-identical"
+        );
+
+        // `g` flips back; `d` is the alias. Nothing mutating follows.
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Project);
+        let rows = draw_config_tab(&screen, &ctx, 120, 30);
+        assert!(rows[0].starts_with(" [Project]"), "{:?}", rows[0]);
+        press(&mut screen, &mut ctx, KeyCode::Char('d'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+    }
+
     /// The reported symptom, end to end: Enter on an enum row the project's
     /// `config.json` leaves unset drew nothing, because an unset row carried
     /// no kind for the Enter arm to open a chooser for.

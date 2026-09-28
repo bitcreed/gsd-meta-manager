@@ -1055,8 +1055,15 @@ pub struct ProjectViewCache {
     pub archive_file_name: Option<crate::text::Untrusted>,
     pub defaults_config: Option<crate::state_reader::config_json::GsdConfig>,
     /// Parsed contents of ~/.gsd/defaults.json — layered under
-    /// `defaults_config` for display and editable via the [d] toggle.
+    /// `defaults_config` for display and editable via the `g` scope switch
+    /// (`d` is its alias; quick 260927-t3s D-01, I-2).
     pub defaults_user_config: Option<crate::state_reader::config_json::GsdConfig>,
+    /// The global-defaults file resolved at Config arrival and on `r`
+    /// (`~/.gsd/defaults.json` in production). The Config tab reads it and
+    /// writes to it, so the file that was loaded is the file that gets
+    /// written; `None` means global edits are not persisted (quick
+    /// 260927-t3s, I-7). Tests point it at a TempDir.
+    pub defaults_user_path: Option<std::path::PathBuf>,
     /// Which file the Defaults tab is currently editing.
     pub defaults_edit_target: DefaultsEditTarget,
     pub defaults_selected: usize,
