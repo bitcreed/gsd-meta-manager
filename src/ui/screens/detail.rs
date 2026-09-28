@@ -902,7 +902,8 @@ enum MouseArm {
 pub(crate) struct DetailRegions {
     /// The tab bar, its bottom border included.
     pub tab_bar: Rect,
-    /// The one-row sub-tab strip, on the Sessions and Docs tabs only.
+    /// The one-row sub-tab strip, on the Sessions, Docs and Config tabs (the
+    /// Config tab's is its scope strip, quick 260927-t3s).
     pub sub_tab_strip: Option<Rect>,
     /// The whole content area between the tab bar and the footer.
     pub content: Rect,
@@ -1432,6 +1433,26 @@ impl DetailScreen {
                 .filter(|s| !s.rect.is_empty())
                 .collect();
         }
+        frame.render_widget(Paragraph::new(strip), row);
+        self.record_sub_tab_strip(row);
+        chunks[1]
+    }
+
+    /// Draw the Config tab's scope strip ([`config_scope_strip`]) in the first
+    /// row of `area`, record that row as the frame's sub-tab strip so the
+    /// wheel and content hit tests treat it like the other strips, and return
+    /// the rest. Called before anything else on the tab, so the empty message,
+    /// the list and every popup are laid out below it and nothing can cover
+    /// it (quick 260927-t3s, D-02, I-3).
+    fn config_scope_row(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        target: super::DefaultsEditTarget,
+    ) -> Rect {
+        let strip = config_scope_strip(target);
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        let row = chunks[0];
         frame.render_widget(Paragraph::new(strip), row);
         self.record_sub_tab_strip(row);
         chunks[1]
@@ -2960,8 +2981,13 @@ fn switch_to_sub_view(
                 cache.defaults_config = None;
             }
         }
-        cache.defaults_user_config =
-            crate::state_reader::config_json::load_user_defaults();
+        // The global file is resolved once here and stored, so the file the
+        // tab loads is the file it writes (quick 260927-t3s, I-7).
+        cache.defaults_user_path = crate::state_reader::config_json::user_defaults_path();
+        cache.defaults_user_config = cache
+            .defaults_user_path
+            .as_deref()
+            .and_then(crate::state_reader::config_json::load_user_defaults_from);
         cache.defaults_selected = 0;
         cache.defaults_editing = None;
         cache.defaults_dropdown_selected = 0;
@@ -4442,6 +4468,7 @@ impl Screen for DetailScreen {
                             .map(|p| p.path.clone());
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         let target = cache.defaults_edit_target;
+                        let user_path = cache.defaults_user_path.clone();
                         if let Some(editing_idx) = cache.defaults_editing {
                             // Dropdown is open — Enter applies the selected option.
                             let entries = entries_for_cache(cache);
@@ -4451,7 +4478,7 @@ impl Screen for DetailScreen {
                                 if let Some(value) = options.get(dropdown_idx).cloned() {
                                     if let Some(active) = active_config_mut(cache) {
                                         if set_config_value(active, entry.key.as_ref(), &value) {
-                                            persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
+                                            persist_active_config(target, project_path.as_deref(), user_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
                                 }
@@ -4496,7 +4523,7 @@ impl Screen for DetailScreen {
                                 } else if matches!(entry.kind.editable(), ConfigValueKind::Integer) {
                                     if let Some(active) = active_config_mut(cache) {
                                         if mutate_config_entry(active, entry.key.as_ref(), &entry.kind) {
-                                            persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
+                                            persist_active_config(target, project_path.as_deref(), user_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
                                 }
@@ -4639,6 +4666,7 @@ impl Screen for DetailScreen {
                     .map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 let target = cache.defaults_edit_target;
+                let user_path = cache.defaults_user_path.clone();
                 // Never clear a row the filter hides (T-HDI-04).
                 if cache.defaults_editing.is_none() && defaults_selection_visible(cache) {
                     let entries = entries_for_cache(cache);
@@ -4659,6 +4687,7 @@ impl Screen for DetailScreen {
                                 persist_active_config(
                                     target,
                                     project_path.as_deref(),
+                                    user_path.as_deref(),
                                     active,
                                     &mut ctx.status_message,
                                 );
@@ -4690,8 +4719,12 @@ impl Screen for DetailScreen {
                         cache.defaults_config = None;
                     }
                 }
-                cache.defaults_user_config =
-                    crate::state_reader::config_json::load_user_defaults();
+                // Same two statements as arrival (quick 260927-t3s, I-7).
+                cache.defaults_user_path = crate::state_reader::config_json::user_defaults_path();
+                cache.defaults_user_config = cache
+                    .defaults_user_path
+                    .as_deref()
+                    .and_then(crate::state_reader::config_json::load_user_defaults_from);
                 // The pass-through row set may have changed under the filter.
                 snap_defaults_selection(cache);
                 ctx.status_message = Some(("Config reloaded".to_string(), std::time::Instant::now()));
@@ -4739,35 +4772,23 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
-            // 'd' key: toggle between editing project config and ~/.gsd/defaults.json
-            KeyCode::Char('d') if current_view == DetailSubView::Defaults => {
+            // `g`: switch the Config tab between editing the project's
+            // `.planning/config.json` and the global ~/.gsd/defaults.json
+            // (quick 260927-t3s, D-01). `d` is the old key, kept as a working
+            // alias that only the help popup names (I-2). Typed `g`/`d` never
+            // reach here while a value or the filter is being typed — the
+            // intercepts above route them to the input (I-9).
+            KeyCode::Char('g') | KeyCode::Char('d') if current_view == DetailSubView::Defaults => {
                 use super::DefaultsEditTarget;
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                if cache.defaults_editing.is_some() {
-                    return ScreenAction::None;
-                }
-                cache.defaults_edit_target = match cache.defaults_edit_target {
+                let other = match cache.defaults_edit_target {
                     DefaultsEditTarget::Project => DefaultsEditTarget::Global,
                     DefaultsEditTarget::Global => DefaultsEditTarget::Project,
                 };
-                // Bootstrap an empty global defaults so toggling into the
-                // Global view always has something editable, even before
-                // ~/.gsd/defaults.json exists on disk.
-                if cache.defaults_edit_target == DefaultsEditTarget::Global
-                    && cache.defaults_user_config.is_none()
-                {
-                    cache.defaults_user_config =
-                        Some(crate::state_reader::config_json::GsdConfig::default());
+                if set_config_scope(cache, other) {
+                    ctx.status_message =
+                        Some((config_scope_status(other).to_string(), std::time::Instant::now()));
                 }
-                cache.defaults_selected = 0;
-                // The filter is kept across targets ([INFERRED A8]); row 0 may
-                // be one it hides.
-                snap_defaults_selection(cache);
-                let label = match cache.defaults_edit_target {
-                    DefaultsEditTarget::Project => "Editing project config",
-                    DefaultsEditTarget::Global => "Editing ~/.gsd/defaults.json",
-                };
-                ctx.status_message = Some((label.to_string(), std::time::Instant::now()));
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
@@ -5873,6 +5894,7 @@ impl DetailScreen {
                     .map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 let target = cache.defaults_edit_target;
+                let user_path = cache.defaults_user_path.clone();
                 // PERSISTENCE — the one question the raw take answers. These
                 // are the bytes the operator typed, going back to their
                 // `.planning/config.json` byte-identical; a `U+XXXX` display
@@ -5901,6 +5923,7 @@ impl DetailScreen {
                                 persist_active_config(
                                     target,
                                     project_path.as_deref(),
+                                    user_path.as_deref(),
                                     active,
                                     &mut ctx.status_message,
                                 );
@@ -5916,6 +5939,7 @@ impl DetailScreen {
                             persist_active_config(
                                 target,
                                 project_path.as_deref(),
+                                user_path.as_deref(),
                                 active,
                                 &mut ctx.status_message,
                             );
@@ -7557,6 +7581,10 @@ impl DetailScreen {
             .get(&self.alias)
             .map(|state| gsd_install_label_and_style(&state.gsd_install));
 
+        // The scope strip first: everything below, popups included, is laid
+        // out in what it leaves (quick 260927-t3s, D-02).
+        let area = self.config_scope_row(frame, area, edit_target);
+
         if entries.is_empty() {
             let msg_text = match edit_target {
                 DefaultsEditTarget::Project => {
@@ -7701,7 +7729,7 @@ impl DetailScreen {
         };
 
         let mut title = match edit_target {
-            DefaultsEditTarget::Project => " Config Settings ".to_string(),
+            DefaultsEditTarget::Project => " Project Config (.planning/config.json) ".to_string(),
             DefaultsEditTarget::Global => " Global Defaults (~/.gsd/defaults.json) ".to_string(),
         };
         // Filter echo + count ([INFERRED A5]). The filter is operator-typed
@@ -9289,6 +9317,24 @@ fn two_sub_tab_strip(left: &'static str, right: &'static str, right_active: bool
     let active_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    let mut spans = sub_tab_strip_spans(left, right, right_active, active_style);
+    spans.push(Span::styled(
+        "   \u{2190}/\u{2192} switch",
+        Style::default().fg(Color::DarkGray),
+    ));
+    Line::from(spans)
+}
+
+/// The four spans every two-label strip on this screen starts with: the
+/// one-cell gutter, the left label, the dim ` │ ` separator and the right
+/// label, the active one bracketed and drawn in `active_style`. The label
+/// click rects are measured from exactly these spans ([`strip_label_rects`]).
+fn sub_tab_strip_spans(
+    left: &'static str,
+    right: &'static str,
+    right_active: bool,
+    active_style: Style,
+) -> Vec<Span<'static>> {
     let dim = Style::default().fg(Color::DarkGray);
     let label = |name: &'static str, is_active: bool| -> Span<'static> {
         if is_active {
@@ -9297,13 +9343,37 @@ fn two_sub_tab_strip(left: &'static str, right: &'static str, right_active: bool
             Span::raw(name)
         }
     };
-    Line::from(vec![
+    vec![
         Span::raw(" "),
         label(left, !right_active),
         Span::styled(" \u{2502} ", dim),
         label(right, right_active),
-        Span::styled("   \u{2190}/\u{2192} switch", dim),
-    ])
+    ]
+}
+
+/// The Config tab's scope strip (quick 260927-t3s, D-02, D-03, I-3):
+/// ` [Project] │ Global   g switch   * = inherited from global` in project
+/// scope, ` Project │ [Global]   g switch` in global scope. The active label is
+/// bracketed AND reversed — cyan for Project, magenta for Global to match the
+/// magenta ` *` inherited-value marker (I-4). The hint names `g`, not the
+/// arrows, which keep switching tabs here (I-5); only the project strip
+/// carries the ` *` legend, because global scope has no fallback (I-6).
+///
+/// Static, authored text only — no project value reaches it (T-t3s-05).
+pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget) -> Line<'static> {
+    use super::DefaultsEditTarget;
+    let global = target == DefaultsEditTarget::Global;
+    let active_style = Style::default()
+        .fg(if global { Color::Magenta } else { Color::Cyan })
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    let hint = if global {
+        "   g switch"
+    } else {
+        "   g switch   * = inherited from global"
+    };
+    let mut spans = sub_tab_strip_spans("Project", "Global", global, active_style);
+    spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+    Line::from(spans)
 }
 
 /// The Sessions tab's sub-tab strip (D-C15): ` [Sessions] │ Agents   ←/→ switch`
@@ -11601,6 +11671,46 @@ pub(super) fn first_passthrough_entry(cache: &super::ProjectViewCache) -> Option
         .position(|entry| entry.category == PASSTHROUGH_CATEGORY)
 }
 
+/// Select the Config tab's editing scope — the ONE way scope changes, shared
+/// by the `g`/`d` keys and a click on a scope label, so the guard, the global
+/// bootstrap and the cursor snap cannot drift apart (quick 260927-t3s).
+///
+/// Returns `false` (nothing changed) while a chooser or prompt is open (I-9)
+/// or when `target` is already active, which is what makes a click
+/// idempotent (I-8).
+fn set_config_scope(
+    cache: &mut super::ProjectViewCache,
+    target: super::DefaultsEditTarget,
+) -> bool {
+    use super::DefaultsEditTarget;
+    if cache.defaults_editing.is_some() || cache.defaults_edit_target == target {
+        return false;
+    }
+    cache.defaults_edit_target = target;
+    // Bootstrap an empty global defaults so switching into the Global view
+    // always has something editable, even before ~/.gsd/defaults.json exists
+    // on disk.
+    if target == DefaultsEditTarget::Global && cache.defaults_user_config.is_none() {
+        cache.defaults_user_config = Some(crate::state_reader::config_json::GsdConfig::default());
+    }
+    cache.defaults_selected = 0;
+    // The filter is kept across targets ([INFERRED A8]); row 0 may be one it
+    // hides.
+    snap_defaults_selection(cache);
+    true
+}
+
+/// The status message shown when the Config scope switches to `target`
+/// (quick 260927-t3s, I-11). Static text only: the resolved absolute path
+/// never reaches a cell (I-12).
+fn config_scope_status(target: super::DefaultsEditTarget) -> &'static str {
+    use super::DefaultsEditTarget;
+    match target {
+        DefaultsEditTarget::Project => "Editing project config (.planning/config.json)",
+        DefaultsEditTarget::Global => "Editing global defaults (~/.gsd/defaults.json)",
+    }
+}
+
 /// Get a mutable reference to whichever config the user is currently
 /// editing (project or ~/.gsd/defaults.json).
 fn active_config_mut(
@@ -11613,19 +11723,38 @@ fn active_config_mut(
     }
 }
 
+/// The file an edit in `target` scope is written to: the project's
+/// `.planning/config.json`, or the global-defaults path resolved into the
+/// cache at arrival. `None` when that scope's path is unknown — in particular
+/// a cache that never resolved a global path cannot write a global file
+/// (quick 260927-t3s, I-7, T-t3s-01).
+fn config_write_path(
+    target: super::DefaultsEditTarget,
+    project_path: Option<&std::path::Path>,
+    user_defaults_path: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    use super::DefaultsEditTarget;
+    match target {
+        DefaultsEditTarget::Project => project_path.map(|p| p.join(".planning/config.json")),
+        DefaultsEditTarget::Global => user_defaults_path.map(std::path::Path::to_path_buf),
+    }
+}
+
 /// Persist the active config to disk and surface a status message.
+///
+/// The destination comes from [`config_write_path`]; the global path is the
+/// one resolved into the cache, never re-read from `$HOME` here (I-7).
 fn persist_active_config(
     target: super::DefaultsEditTarget,
     project_path: Option<&std::path::Path>,
+    user_defaults_path: Option<&std::path::Path>,
     config: &crate::state_reader::config_json::GsdConfig,
     status_message: &mut Option<(String, std::time::Instant)>,
 ) {
     use super::DefaultsEditTarget;
-    let path = match target {
-        DefaultsEditTarget::Project => project_path.map(|p| p.join(".planning/config.json")),
-        DefaultsEditTarget::Global => crate::state_reader::config_json::user_defaults_path(),
+    let Some(path) = config_write_path(target, project_path, user_defaults_path) else {
+        return;
     };
-    let Some(path) = path else { return };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -12820,8 +12949,12 @@ mod tests {
             120,
             30,
         );
-        let top = &rows[0];
-        assert!(top.contains(" Config Settings "), "the left title is intact: {top:?}");
+        // Row 0 is the scope strip since quick 260927-t3s; the title is row 1.
+        let top = &rows[1];
+        assert!(
+            top.contains(" Project Config (.planning/config.json) "),
+            "the left title is intact: {top:?}"
+        );
         assert!(top.contains(&format!("GSD {newer}")), "{top:?}");
         assert!(top.contains("global Codex"), "{top:?}");
         assert!(
@@ -12842,9 +12975,9 @@ mod tests {
             30,
         );
         assert!(
-            rows[0].contains(&format!("GSD not found · app synced to {GSD_CORE_SYNCED_TREE_VERSION}")),
+            rows[1].contains(&format!("GSD not found · app synced to {GSD_CORE_SYNCED_TREE_VERSION}")),
             "{:?}",
-            rows[0]
+            rows[1]
         );
     }
 
@@ -12858,19 +12991,21 @@ mod tests {
             120,
             10,
         );
-        assert!(rows[0].contains("No config loaded"), "{:?}", rows[0]);
+        assert!(rows[0].starts_with(" [Project]"), "the scope strip leads: {:?}", rows[0]);
+        assert!(rows[1].contains("No config loaded"), "{:?}", rows[1]);
         assert!(
-            rows[1].contains(&format!("GSD {GSD_CORE_SYNCED_VERSION} · project-local Claude")),
+            rows[2].contains(&format!("GSD {GSD_CORE_SYNCED_VERSION} · project-local Claude")),
             "{:?}",
-            rows[1]
+            rows[2]
         );
     }
 
     #[test]
     fn config_tab_without_a_project_state_draws_no_gsd_install() {
         let text = render_defaults_to_text(120, 30, 0);
-        let top = text.lines().next().unwrap_or_default();
-        assert!(top.contains(" Config Settings "), "{top:?}");
+        // Row 0 is the scope strip since quick 260927-t3s; the title is row 1.
+        let top = text.lines().nth(1).unwrap_or_default();
+        assert!(top.contains(" Project Config (.planning/config.json) "), "{top:?}");
         assert!(!top.contains("GSD "), "no state, no label: {top:?}");
     }
 
@@ -19342,6 +19477,40 @@ mod tests {
         assert!(rows[0].starts_with(" [Project]"), "{:?}", rows[0]);
         press(&mut screen, &mut ctx, KeyCode::Char('d'));
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+    }
+
+    /// The write destination is decided in one pure function (T-t3s-01): a
+    /// scope whose path is unknown writes nothing — in particular a cache that
+    /// never resolved a global path cannot write a global file.
+    #[test]
+    fn config_write_path_resolves_per_scope() {
+        use super::super::DefaultsEditTarget;
+        use std::path::{Path, PathBuf};
+        let p = Path::new("/proj");
+        let q = Path::new("/home/someone/.gsd/defaults.json");
+        assert_eq!(
+            config_write_path(DefaultsEditTarget::Project, Some(p), None),
+            Some(PathBuf::from("/proj/.planning/config.json"))
+        );
+        assert_eq!(
+            config_write_path(DefaultsEditTarget::Project, Some(p), Some(q)),
+            Some(PathBuf::from("/proj/.planning/config.json"))
+        );
+        assert_eq!(config_write_path(DefaultsEditTarget::Global, None, Some(q)), Some(q.to_path_buf()));
+        assert_eq!(config_write_path(DefaultsEditTarget::Global, Some(p), Some(q)), Some(q.to_path_buf()));
+        assert_eq!(config_write_path(DefaultsEditTarget::Global, Some(p), None), None);
+        assert_eq!(config_write_path(DefaultsEditTarget::Project, None, Some(q)), None);
+    }
+
+    /// Arrival resolves the global-defaults path into the cache (I-7), so the
+    /// file the tab loads is the file it writes. Read-only: nothing is written.
+    #[test]
+    fn arrival_resolves_the_global_defaults_path() {
+        let (_screen, ctx) = arrived_on(DetailSubView::Defaults);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_user_path,
+            crate::state_reader::config_json::user_defaults_path()
+        );
     }
 
     /// The reported symptom, end to end: Enter on an enum row the project's

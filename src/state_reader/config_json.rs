@@ -661,14 +661,31 @@ pub fn user_defaults_path() -> Option<std::path::PathBuf> {
 /// we surface it in the TUI so users can see which fields fall back
 /// to global defaults.
 pub fn load_user_defaults() -> Option<GsdConfig> {
-    let path = user_defaults_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
+    load_user_defaults_from(&user_defaults_path()?)
+}
+
+/// Load a GSD defaults file from an explicit `path`, if present and
+/// parsable. The Config tab resolves the global path once and loads it
+/// through here, so the file it reads is the file it writes (quick
+/// 260927-t3s, I-7).
+pub fn load_user_defaults_from(path: &std::path::Path) -> Option<GsdConfig> {
+    let content = std::fs::read_to_string(path).ok()?;
     parse_gsd_config(&content)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_user_defaults_from_reads_a_given_path() {
+        let td = tempfile::TempDir::new().expect("temp dir");
+        let path = td.path().join("defaults.json");
+        std::fs::write(&path, r#"{"mode":"yolo"}"#).unwrap();
+        let config = load_user_defaults_from(&path).expect("a present file loads");
+        assert_eq!(config.mode, "yolo");
+        assert!(load_user_defaults_from(&td.path().join("missing.json")).is_none());
+    }
 
     #[test]
     fn test_parse_gsd_config() {
