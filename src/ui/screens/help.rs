@@ -243,6 +243,10 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         // since quick 260926-1t1 it is an alias of the arrows and `[` / `]`,
         // documented here only (the strip and footer no longer show it).
         row("m", "Docs / Sessions tab: switch sub-tab (alias of Left / Right) (detail view)"),
+        // Quick 260927-t3s (D-01): `g` switches the Config tab's editing
+        // scope. `d`, the old key, is a working alias documented here only
+        // (I-2), as `m` is.
+        row("g", "Config tab: switch between project and global (~/.gsd/defaults.json) settings; d is an alias (detail view)"),
         // Still true on the dashboard; the detail view's split of the two is
         // documented in the navigation block below.
         row("q / Esc", "Quit / Back"),
@@ -993,6 +997,29 @@ mod tests {
     /// Agents) — since quick 260926-1t1 as an alias of the arrows. One shared
     /// row documents both, as a WHOLE row, exactly once, with the flag on and
     /// off (it is not a driver key).
+    /// Quick 260927-t3s (D-01, I-2): `g` switches the Config tab between
+    /// project and global settings; `d` is its alias, named only here. One
+    /// WHOLE row, exactly once, with the flag on and off.
+    #[test]
+    fn the_g_config_scope_switch_is_documented() {
+        let expected = row(
+            "g",
+            "Config tab: switch between project and global (~/.gsd/defaults.json) settings; d is an alias (detail view)",
+        )
+        .spans[0]
+            .content
+            .to_string();
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            assert_eq!(
+                text.lines().filter(|line| *line == expected).count(),
+                1,
+                "experimental={experimental}: the row {expected:?} must appear \
+                 exactly once:\n{text}"
+            );
+        }
+    }
+
     #[test]
     fn the_m_sub_view_switch_is_documented() {
         let expected = row(

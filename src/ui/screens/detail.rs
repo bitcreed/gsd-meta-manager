@@ -9986,8 +9986,10 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
             spans.push(Span::raw("edit  "));
             spans.push(Span::styled("[x]", b));
             spans.push(Span::raw(" clear  "));
-            spans.push(Span::styled("[d]", b));
-            spans.push(Span::raw(" defaults  "));
+            // The Config scope switch (quick 260927-t3s, I-11). Its `d`
+            // alias is documented in the help popup only (I-2).
+            spans.push(Span::styled("[g]", b));
+            spans.push(Span::raw(" project/global  "));
             spans.push(Span::styled("[r]", b));
             spans.push(Span::raw("eload  "));
             spans.push(Span::styled("[/]", b));
@@ -14250,7 +14252,7 @@ mod tests {
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
             "  [↑]tab bar  [←/→]tabs  [1-8/D]jump  [j/k]move  [Enter]edit  [x] clear  \
-             [d] defaults  [r]eload  [/]filter  [?]help"
+             [g] project/global  [r]eload  [/]filter  [?]help"
         );
     }
 
@@ -19513,6 +19515,140 @@ mod tests {
         );
     }
 
+    /// Park the Config cursor on `key`'s row of whatever `entries_for_cache`
+    /// lists in the active scope.
+    fn park_config_cursor(ctx: &mut AppContext, key: &str) {
+        let idx = entries_for_cache(&ctx.view_cache[TEST_ALIAS])
+            .iter()
+            .position(|e| e.key.as_ref() == key)
+            .unwrap_or_else(|| panic!("no `{key}` row in the active scope"));
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+    }
+
+    /// I-9: `g` pressed while a chooser is open does nothing — no scope flip,
+    /// the chooser stays on its row, and no status message is set.
+    #[test]
+    fn g_is_inert_while_a_config_chooser_is_open() {
+        use super::super::DefaultsEditTarget;
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), "commit_docs");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the chooser is open");
+        ctx.status_message = None;
+
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.defaults_edit_target, DefaultsEditTarget::Project);
+        assert_eq!(cache.defaults_editing, Some(idx), "the chooser is unchanged");
+        assert!(ctx.status_message.is_none(), "`g` set a status: {:?}", ctx.status_message);
+    }
+
+    /// I-9: `g` typed into a value prompt is text, not a scope switch.
+    #[test]
+    fn g_is_text_while_typing_a_config_value() {
+        use super::super::DefaultsEditTarget;
+        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), "project_code");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the prompt is open");
+
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(cache.defaults_edit_target, DefaultsEditTarget::Project);
+        assert_eq!(cache.defaults_editing, Some(idx), "the prompt is still open");
+        let buffer = cache.defaults_text_buffer.shown().to_string();
+        assert!(buffer.ends_with('g'), "the typed `g` reached the buffer: {buffer:?}");
+    }
+
+    /// D-02, T-t3s-03: the scope strip is on screen in every editing state —
+    /// chooser open, prompt open — at 120 and 80 columns, in both scopes.
+    /// Switches to Global and never mutates, so no path is needed.
+    #[test]
+    fn config_scope_stays_visible_while_editing() {
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "commit_docs");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let global = " Project \u{2502} [Global]";
+        let project = " [Project] \u{2502} Global";
+
+        // The chooser, in global scope.
+        park_config_cursor(&mut ctx, "commit_docs");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_some(), "the chooser is open");
+        for (w, h) in [(120u16, 30u16), (80, 24)] {
+            let rows = draw_config_tab(&screen, &ctx, w, h);
+            assert!(rows[0].starts_with(global), "chooser {w}x{h}: {:?}", rows[0]);
+            assert!(
+                rows.iter().any(|r| r.contains("┌ commit_docs ")),
+                "chooser {w}x{h}: the popup was not drawn"
+            );
+        }
+        press(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(), "Esc closed the chooser");
+
+        // The text prompt, in global scope.
+        park_config_cursor(&mut ctx, "project_code");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_some(), "the prompt is open");
+        for (w, h) in [(120u16, 30u16), (80, 24)] {
+            let rows = draw_config_tab(&screen, &ctx, w, h);
+            assert!(rows[0].starts_with(global), "prompt {w}x{h}: {:?}", rows[0]);
+            assert!(
+                rows.iter().any(|r| r.contains(DEFAULTS_EDIT_BRANCH_TOKEN)),
+                "prompt {w}x{h}: the popup was not drawn"
+            );
+        }
+        press(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(), "Esc closed the prompt");
+
+        // Once more in project scope.
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        park_config_cursor(&mut ctx, "project_code");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        for (w, h) in [(120u16, 30u16), (80, 24)] {
+            let rows = draw_config_tab(&screen, &ctx, w, h);
+            assert!(rows[0].starts_with(project), "project prompt {w}x{h}: {:?}", rows[0]);
+            assert!(
+                rows.iter().any(|r| r.contains(DEFAULTS_EDIT_BRANCH_TOKEN)),
+                "project prompt {w}x{h}: the popup was not drawn"
+            );
+        }
+    }
+
+    /// D-03, I-4..I-6: the strip's text per scope, the active label's colour
+    /// and reverse, and no arrow hint (the arrows keep switching tabs).
+    #[test]
+    fn config_scope_strip_marks_the_active_scope() {
+        use super::super::DefaultsEditTarget;
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+
+        let project = config_scope_strip(DefaultsEditTarget::Project);
+        assert_eq!(text(&project), " [Project] \u{2502} Global   g switch   * = inherited from global");
+        let active = project.spans.iter().find(|s| s.content == "[Project]").expect("[Project] span");
+        assert_eq!(active.style.fg, Some(Color::Cyan));
+        assert!(active.style.add_modifier.contains(Modifier::REVERSED));
+
+        let global = config_scope_strip(DefaultsEditTarget::Global);
+        assert_eq!(text(&global), " Project \u{2502} [Global]   g switch");
+        let active = global.spans.iter().find(|s| s.content == "[Global]").expect("[Global] span");
+        assert_eq!(active.style.fg, Some(Color::Magenta));
+        assert!(active.style.add_modifier.contains(Modifier::REVERSED));
+
+        assert!(!text(&project).contains("\u{2190}/\u{2192}"));
+        assert!(!text(&global).contains("\u{2190}/\u{2192}"));
+    }
+
+    /// D-02: the empty branch keeps the strip above its message.
+    #[test]
+    fn config_empty_branch_keeps_the_scope_strip() {
+        let mut ctx = test_ctx();
+        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().defaults_config = None;
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let rows = draw_config_tab(&screen, &ctx, 120, 10);
+        assert!(rows[0].starts_with(" [Project]"), "{:?}", rows[0]);
+        assert!(rows[1].contains("No config loaded"), "{:?}", rows[1]);
+    }
+
     /// The reported symptom, end to end: Enter on an enum row the project's
     /// `config.json` leaves unset drew nothing, because an unset row carried
     /// no kind for the Enter arm to open a chooser for.
@@ -20121,8 +20257,9 @@ mod tests {
     }
 
     /// T-HDI-01: while the input has focus, NO key reaches its global arm.
-    /// `d` goes last: it would flip the target to Global, whose persist path
-    /// is the operator's real `~/.gsd/defaults.json`.
+    /// `g` and `d` (the scope switch and its alias, quick 260927-t3s) go last:
+    /// either would flip the target to Global. This fixture never resolves a
+    /// global path, so even then nothing could be written (I-7).
     #[test]
     fn config_filter_typing_swallows_shortcut_keys() {
         let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
@@ -20131,7 +20268,7 @@ mod tests {
 
         let action = screen.handle_key(KeyCode::Char('/'), KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
-        for c in ['x', 'q', '3', 'r', '?', 'j', 'k', 'd'] {
+        for c in ['x', 'q', '3', 'r', '?', 'j', 'k', 'g', 'd'] {
             let action = screen.handle_key(KeyCode::Char(c), KeyModifiers::NONE, &mut ctx);
             assert!(
                 matches!(action, ScreenAction::None),
@@ -20140,7 +20277,7 @@ mod tests {
         }
         {
             let cache = &ctx.view_cache[TEST_ALIAS];
-            assert_eq!(cache.defaults_filter, "xq3r?jkd");
+            assert_eq!(cache.defaults_filter, "xq3r?jkgd");
             assert!(matches!(
                 cache.defaults_edit_target,
                 super::super::DefaultsEditTarget::Project
