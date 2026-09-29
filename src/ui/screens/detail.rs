@@ -1161,6 +1161,14 @@ pub(crate) enum DetailFocus {
     /// The Phases tab's Waves pane: `j`/`k` walk its rows, `←`/`Esc` return
     /// to the phase list.
     Pane,
+    /// The Config tab's ` Project │ Global` scope strip (quick 260929-g9u,
+    /// D-01, D-02): `←`/`→` select the scope, `↓`/`j`/`Enter`/`Space`
+    /// descend to the rows, and `↑`/`k`/`Esc` return to the tab bar.
+    ///
+    /// Modelled on `Pane`: one enum value, never a view-cache flag, so there
+    /// is no second flag that must agree with this one. It means nothing off
+    /// the Config tab; `handle_key` resets it to `Content` anywhere else.
+    ScopeStrip,
 }
 
 impl DetailScreen {
@@ -1458,9 +1466,10 @@ impl DetailScreen {
         frame: &mut Frame,
         area: Rect,
         target: super::DefaultsEditTarget,
+        focused: bool,
     ) -> Rect {
         use super::DefaultsEditTarget;
-        let strip = config_scope_strip(target);
+        let strip = config_scope_strip(target, focused);
         let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
         let row = chunks[0];
         let [project_rect, global_rect] = strip_label_rects(row, &strip);
@@ -7616,7 +7625,12 @@ impl DetailScreen {
 
         // The scope strip first: everything below, popups included, is laid
         // out in what it leaves (quick 260927-t3s, D-02).
-        let area = self.config_scope_row(frame, area, edit_target);
+        let area = self.config_scope_row(
+            frame,
+            area,
+            edit_target,
+            self.focus == DetailFocus::ScopeStrip,
+        );
 
         if entries.is_empty() {
             let msg_text = match edit_target {
@@ -9410,7 +9424,7 @@ fn sub_tab_strip_spans(
 /// carries the ` *` legend, because global scope has no fallback (I-6).
 ///
 /// Static, authored text only — no project value reaches it (T-t3s-05).
-pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget) -> Line<'static> {
+pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget, _focused: bool) -> Line<'static> {
     use super::DefaultsEditTarget;
     let global = target == DefaultsEditTarget::Global;
     let active_style = Style::default()
@@ -19665,20 +19679,21 @@ mod tests {
         }
     }
 
-    /// D-03, I-4..I-6: the strip's text per scope, the active label's colour
-    /// and reverse, and no arrow hint (the arrows keep switching tabs).
+    /// D-03, I-4..I-6: the unfocused strip's text per scope, the active
+    /// label's colour and reverse, and no arrow hint (the arrows keep
+    /// switching tabs on the rows).
     #[test]
     fn config_scope_strip_marks_the_active_scope() {
         use super::super::DefaultsEditTarget;
         let text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
 
-        let project = config_scope_strip(DefaultsEditTarget::Project);
+        let project = config_scope_strip(DefaultsEditTarget::Project, false);
         assert_eq!(text(&project), " [Project] \u{2502} Global   g switch   * = inherited from global");
         let active = project.spans.iter().find(|s| s.content == "[Project]").expect("[Project] span");
         assert_eq!(active.style.fg, Some(Color::Cyan));
         assert!(active.style.add_modifier.contains(Modifier::REVERSED));
 
-        let global = config_scope_strip(DefaultsEditTarget::Global);
+        let global = config_scope_strip(DefaultsEditTarget::Global, false);
         assert_eq!(text(&global), " Project \u{2502} [Global]   g switch");
         let active = global.spans.iter().find(|s| s.content == "[Global]").expect("[Global] span");
         assert_eq!(active.style.fg, Some(Color::Magenta));
@@ -19697,6 +19712,144 @@ mod tests {
         let rows = draw_config_tab(&screen, &ctx, 120, 10);
         assert!(rows[0].starts_with(" [Project]"), "{:?}", rows[0]);
         assert!(rows[1].contains("No config loaded"), "{:?}", rows[1]);
+    }
+
+    // --- quick 260929-g9u: the scope strip is a keyboard focus level ------
+
+    /// The status message currently shown, if any.
+    fn scope_strip_status(ctx: &AppContext) -> Option<String> {
+        ctx.status_message.as_ref().map(|(m, _)| m.clone())
+    }
+
+    /// The Config tab's active scope.
+    fn scope_strip_target(ctx: &AppContext) -> super::super::DefaultsEditTarget {
+        ctx.view_cache[TEST_ALIAS].defaults_edit_target
+    }
+
+    /// A screen on the Config tab's `commit_docs` row with the keyboard on
+    /// the scope strip. No global path is resolved (T-g9u-02).
+    fn on_the_scope_strip() -> (DetailScreen, AppContext) {
+        let (ctx, _) = ctx_on_config_row(sparse_gsd_config(), "commit_docs");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.focus = DetailFocus::ScopeStrip;
+        (screen, ctx)
+    }
+
+    /// The tracer (D-01, D-02): `↓` at the 7:Cfg tab bar lands on the scope
+    /// strip, the full render marks it focused, and `→` there selects Global
+    /// with the same status message `g` sets, keeping the strip focused.
+    #[test]
+    fn down_from_the_config_tab_bar_lands_on_the_scope_strip_and_right_selects_global() {
+        use super::super::DefaultsEditTarget;
+        let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "commit_docs");
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.focus = DetailFocus::TabBar;
+
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::ScopeStrip);
+
+        let strip_row = |screen: &DetailScreen, ctx: &AppContext| {
+            let buffer = render_detail_buffer(screen, ctx, 120, 30);
+            let strip = screen.regions().sub_tab_strip.expect("the scope strip is recorded");
+            let row: String = buffer_row(&buffer, strip.y)
+                .chars()
+                .skip(usize::from(strip.x))
+                .collect();
+            let cue = buffer.cell((strip.x, strip.y)).map(|c| c.fg);
+            (row, cue)
+        };
+        let (row, cue) = strip_row(&screen, &ctx);
+        assert!(row.starts_with("\u{25b8}[Project] \u{2502} Global"), "{row:?}");
+        assert_eq!(cue, Some(Color::Cyan));
+
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(scope_strip_target(&ctx), DefaultsEditTarget::Global);
+        assert_eq!(
+            scope_strip_status(&ctx).as_deref(),
+            Some("Editing global defaults (~/.gsd/defaults.json)")
+        );
+        assert_eq!(screen.focus, DetailFocus::ScopeStrip);
+        let (row, _) = strip_row(&screen, &ctx);
+        assert!(row.starts_with("\u{25b8}Project \u{2502} [Global]"), "{row:?}");
+    }
+
+    /// I-7: the focused strip swaps its gutter for a cyan bold `▸` and names
+    /// the arrows; the cue is width-neutral, so the click rects do not move.
+    #[test]
+    fn focused_config_scope_strip_shows_the_cursor_and_arrow_hint_and_keeps_its_click_rects() {
+        use super::super::DefaultsEditTarget;
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+
+        let project = config_scope_strip(DefaultsEditTarget::Project, true);
+        assert_eq!(
+            text(&project),
+            "\u{25b8}[Project] \u{2502} Global   \u{2190}/\u{2192}/g switch   * = inherited from global"
+        );
+        let global = config_scope_strip(DefaultsEditTarget::Global, true);
+        assert_eq!(text(&global), "\u{25b8}Project \u{2502} [Global]   \u{2190}/\u{2192}/g switch");
+
+        for (target, focused) in [(DefaultsEditTarget::Project, &project), (DefaultsEditTarget::Global, &global)] {
+            let cue = &focused.spans[0];
+            assert_eq!(cue.content, "\u{25b8}", "{target:?}");
+            assert_eq!(cue.style.fg, Some(Color::Cyan), "{target:?}");
+            assert!(cue.style.add_modifier.contains(Modifier::BOLD), "{target:?}");
+            let row = Rect::new(0, 0, 120, 1);
+            assert_eq!(
+                strip_label_rects(row, focused),
+                strip_label_rects(row, &config_scope_strip(target, false)),
+                "{target:?}"
+            );
+        }
+    }
+
+    /// D-02, I-2: `←`/`→` on the strip select a scope directionally and clamp
+    /// (no wrap, no status at the end); they never switch the tab here.
+    #[test]
+    fn left_right_on_the_scope_strip_select_a_scope_and_clamp() {
+        use super::super::DefaultsEditTarget;
+        let (mut screen, mut ctx) = on_the_scope_strip();
+        let steps = [
+            (KeyCode::Left, DefaultsEditTarget::Project, None),
+            (
+                KeyCode::Right,
+                DefaultsEditTarget::Global,
+                Some("Editing global defaults (~/.gsd/defaults.json)"),
+            ),
+            (KeyCode::Right, DefaultsEditTarget::Global, None),
+            (
+                KeyCode::Left,
+                DefaultsEditTarget::Project,
+                Some("Editing project config (.planning/config.json)"),
+            ),
+        ];
+        for (key, target, status) in steps {
+            ctx.status_message = None;
+            press(&mut screen, &mut ctx, key);
+            assert_eq!(scope_strip_target(&ctx), target, "{key:?}");
+            assert_eq!(scope_strip_status(&ctx).as_deref(), status, "{key:?}");
+            assert_eq!(screen.focus, DetailFocus::ScopeStrip, "{key:?}");
+            assert_eq!(stored_view(&ctx), DetailSubView::Defaults, "{key:?}");
+        }
+    }
+
+    /// I-6: a content key on the strip drops focus to the rows and runs there.
+    #[test]
+    fn a_content_key_on_the_scope_strip_runs_in_the_rows() {
+        let (mut screen, mut ctx) = on_the_scope_strip();
+        press(&mut screen, &mut ctx, KeyCode::Char('/'));
+        assert!(ctx.view_cache[TEST_ALIAS].defaults_filter_typing);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    /// Scope-strip focus means nothing off the Config tab: it resets to
+    /// `Content` and the key runs there.
+    #[test]
+    fn scope_strip_focus_off_the_config_tab_falls_back_to_content() {
+        let (mut screen, mut ctx) = two_sessions_fixture();
+        screen.focus = DetailFocus::ScopeStrip;
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].sessions_selected, 1);
+        assert_eq!(screen.focus, DetailFocus::Content);
     }
 
     /// The reported symptom, end to end: Enter on an enum row the project's
