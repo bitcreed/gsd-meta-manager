@@ -19929,6 +19929,89 @@ mod tests {
         assert_eq!(screen.focus, DetailFocus::Content);
     }
 
+    fn scope_strip_cursor(ctx: &AppContext) -> usize {
+        ctx.view_cache[TEST_ALIAS].defaults_selected
+    }
+
+    fn scope_strip_park_cursor(ctx: &mut AppContext, row: usize) {
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = row;
+    }
+
+    /// D-01, I-3: `↑`/`k` on the first visible Config row climb onto the
+    /// strip, and `↓` returns to the rows without moving the cursor.
+    #[test]
+    fn up_from_the_first_config_row_lands_on_the_scope_strip_and_down_returns_without_moving() {
+        for up in [KeyCode::Up, KeyCode::Char('k')] {
+            let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "commit_docs");
+            scope_strip_park_cursor(&mut ctx, 0);
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+            press(&mut screen, &mut ctx, up);
+            assert_eq!(screen.focus, DetailFocus::ScopeStrip, "{up:?}");
+
+            press(&mut screen, &mut ctx, KeyCode::Down);
+            assert_eq!(screen.focus, DetailFocus::Content, "{up:?}");
+            assert_eq!(scope_strip_cursor(&ctx), 0, "{up:?}: descending must not move the cursor");
+
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+            assert_eq!(scope_strip_cursor(&ctx), 1, "{up:?}");
+        }
+    }
+
+    /// Regression guard: below the first row `↑`/`k` still move the cursor.
+    #[test]
+    fn up_below_the_first_config_row_moves_the_cursor_not_to_the_scope_strip() {
+        for up in [KeyCode::Up, KeyCode::Char('k')] {
+            let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "commit_docs");
+            scope_strip_park_cursor(&mut ctx, 2);
+            let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+            press(&mut screen, &mut ctx, up);
+            assert_eq!(scope_strip_cursor(&ctx), 1, "{up:?}");
+            assert_eq!(screen.focus, DetailFocus::Content, "{up:?}");
+        }
+    }
+
+    /// I-4: `↑`/`k`/`Esc` leave the strip for the tab bar and change nothing
+    /// else.
+    #[test]
+    fn up_k_and_esc_leave_the_scope_strip_for_the_tab_bar() {
+        for key in [KeyCode::Up, KeyCode::Char('k'), KeyCode::Esc] {
+            let (mut screen, mut ctx) = on_the_scope_strip();
+            scope_strip_park_cursor(&mut ctx, 2);
+            let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::None), "{key:?}");
+            assert_eq!(screen.focus, DetailFocus::TabBar, "{key:?}");
+            assert_eq!(scope_strip_cursor(&ctx), 2, "{key:?}");
+        }
+    }
+
+    /// I-4: the descend set leaves the strip for the rows with no other
+    /// change — `Enter` on a Bool row opens no chooser from the strip.
+    #[test]
+    fn descend_keys_leave_the_scope_strip_without_opening_an_editor() {
+        for key in [KeyCode::Down, KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char(' ')] {
+            let (mut screen, mut ctx) = on_the_scope_strip();
+            let row = scope_strip_cursor(&ctx);
+            press(&mut screen, &mut ctx, key);
+            assert_eq!(screen.focus, DetailFocus::Content, "{key:?}");
+            assert_eq!(scope_strip_cursor(&ctx), row, "{key:?}");
+            assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(), "{key:?}");
+        }
+    }
+
+    /// I-6: `g`/`d` on the strip switch the scope and keep it focused.
+    #[test]
+    fn g_on_the_scope_strip_switches_scope_and_keeps_the_strip_focused() {
+        use super::super::DefaultsEditTarget;
+        let (mut screen, mut ctx) = on_the_scope_strip();
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert_eq!(scope_strip_target(&ctx), DefaultsEditTarget::Global);
+        assert_eq!(screen.focus, DetailFocus::ScopeStrip);
+        press(&mut screen, &mut ctx, KeyCode::Char('d'));
+        assert_eq!(scope_strip_target(&ctx), DefaultsEditTarget::Project);
+        assert_eq!(screen.focus, DetailFocus::ScopeStrip);
+    }
+
     /// The reported symptom, end to end: Enter on an enum row the project's
     /// `config.json` leaves unset drew nothing, because an unset row carried
     /// no kind for the Enter arm to open a chooser for.
