@@ -5,10 +5,10 @@ current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
 stopped_at: v1.9.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-09-28T02:29:53.543Z"
+last_updated: "2026-09-29T17:02:52.899Z"
 last_activity: 2026-09-27
 last_activity_desc: v1.9.0 released — Running Agents & GSD 1.15.0 Sync
-state_head: 6c93cae068ebbcbc6c000be19eb1e59672f83984
+state_head: ff3a19d093ed7a0b91ed97479aa66e689a0b5289
 progress:
   total_phases: 10
   completed_phases: 7
@@ -146,7 +146,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-27 - Completed quick task 260927-t3s: [g] toggles 7:Cfg between project and global settings with an always-visible scope strip
+Last activity: 2026-09-29 - Completed quick task 260929-g9u: arrow-key focus + ←/→ switching on the 7:Cfg Project │ Global scope strip
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -580,6 +580,7 @@ Recent decisions affecting current work:
 | 260926-kes | Mouse row interaction on remaining detail tabs: click-select through scroll offsets, double-click=Enter (Queue excluded), Roadmap fold markers, Docs tree/sub-tabs, Cfg key+value columns and chooser, pane-under-pointer wheel for Backlog/Git/Driver | 2026-09-26 | c9ac9af | .planning/quick/260926-kes-mouse-row-interaction-on-remaining-detai |
 | 260927-gi9 | Fix Roadmap lane gutter reserving width for folded milestones (lanes laid out over visible rows only) | 2026-09-27 | 2860a12 | [260927-gi9-fix-roadmap-lane-gutter-reserving-width-](./quick/260927-gi9-fix-roadmap-lane-gutter-reserving-width-/) |
 | 260927-t3s | In 7:cfg, let me type [g] to switch to editing global settings instead of project settings. UX: It should always be clear whether I'm editing global or project settings. | 2026-09-28 | 6c93cae | [260927-t3s-in-7-cfg-let-me-type-g-to-switch-to-edit](./quick/260927-t3s-in-7-cfg-let-me-type-g-to-switch-to-edit/) |
+| 260929-g9u | One minor change necessary, when using arrow down from 7:Cfg it should land on Project \| Global. It's mouse selectable but only switchable with g. It also needs arrow-keys support. | 2026-09-29 | ff3a19d | [260929-g9u-one-minor-change-necessary-when-using-ar](./quick/260929-g9u-one-minor-change-necessary-when-using-ar/) |
 
 ## Session Continuity
 
