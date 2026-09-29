@@ -10205,6 +10205,12 @@ fn waves_pane_footer_spans() -> Vec<Span<'static>> {
     ]
 }
 
+/// The Config tab's footer while its scope strip has the keyboard (quick
+/// 260929-g9u, I-8). Stub until the footer lands.
+fn config_scope_footer_spans() -> Vec<Span<'static>> {
+    Vec::new()
+}
+
 /// The Backlog tab's footer while its content pane is open and focused
 /// (quick-260924-drx): the keys now scroll the pane, Enter/Esc/`←` close it
 /// (`←` since quick 260926-1t1, [inferred I-9]), and `e` edits the item where
@@ -20036,6 +20042,24 @@ mod tests {
         assert_eq!(screen.focus, DetailFocus::ScopeStrip);
     }
 
+    /// I-8: the strip level's footer names only the keys that level handles,
+    /// and the full render draws it only while the strip has focus.
+    #[test]
+    fn the_scope_strip_footer_names_only_its_keys() {
+        assert_eq!(
+            spans_text(&config_scope_footer_spans()),
+            "  [\u{2190}/\u{2192}]project/global  [\u{2193}/Enter]settings  \
+             [\u{2191}/Esc]tab bar  [q]uit  [?]help"
+        );
+        let token = "[\u{2190}/\u{2192}]project/global";
+        let (mut screen, ctx) = on_the_scope_strip();
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(text.lines().any(|l| l.contains(token)), "{text}");
+        screen.focus = DetailFocus::Content;
+        let text = render_detail_to_text(&screen, &ctx);
+        assert!(!text.lines().any(|l| l.contains(token)), "{text}");
+    }
+
     /// The reported symptom, end to end: Enter on an enum row the project's
     /// `config.json` leaves unset drew nothing, because an unset row carried
     /// no kind for the Enter arm to open a chooser for.
@@ -24059,6 +24083,22 @@ mod tests {
         let hint = cell_column(&line, "g switch").expect("the hint is drawn");
         mouse_click(&mut screen, &mut ctx, hint, strip.y);
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Project);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    /// Quick 260929-g9u (I-10): with the keyboard on the scope strip, a click
+    /// on a scope label still selects it and focuses the rows, exactly as
+    /// from any other level. No global path is resolved (T-g9u-02).
+    #[test]
+    fn a_click_on_a_scope_label_from_the_scope_strip_still_switches_it() {
+        use super::super::DefaultsEditTarget;
+        let (mut screen, mut ctx) = arrived_on(DetailSubView::Defaults);
+        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_user_path = None;
+        render_detail_to_text(&screen, &ctx);
+        screen.focus = DetailFocus::ScopeStrip;
+        let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Global));
+        mouse_click(&mut screen, &mut ctx, c, r);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
         assert_eq!(screen.focus, DetailFocus::Content);
     }
 

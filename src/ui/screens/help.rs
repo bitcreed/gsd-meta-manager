@@ -1020,6 +1020,28 @@ mod tests {
         }
     }
 
+    /// Quick 260929-g9u (I-9): the Config scope strip's arrows. One WHOLE
+    /// row, exactly once, with the flag on and off.
+    #[test]
+    fn the_config_scope_strip_arrows_are_documented() {
+        let expected = row(
+            "Left / Right",
+            "Config tab scope strip: Project / Global (Down from the tab bar, Up from the first row)",
+        )
+        .spans[0]
+            .content
+            .to_string();
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            assert_eq!(
+                text.lines().filter(|line| *line == expected).count(),
+                1,
+                "experimental={experimental}: the row {expected:?} must appear \
+                 exactly once:\n{text}"
+            );
+        }
+    }
+
     #[test]
     fn the_m_sub_view_switch_is_documented() {
         let expected = row(
