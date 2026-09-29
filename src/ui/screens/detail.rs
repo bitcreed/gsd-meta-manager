@@ -5524,7 +5524,9 @@ impl Screen for DetailScreen {
 
         // Render the footer for the level that has focus (D-07): the tab
         // bar's keys at the tab bar — on every tab, the Driver's included —
-        // then the open Backlog pane's, then the tab's content hints.
+        // then the Waves pane's, then the Config scope strip's (quick
+        // 260929-g9u), then the open Backlog pane's, then the tab's content
+        // hints.
         let backlog_focused = sub_view == DetailSubView::Backlog
             && ctx
                 .view_cache
@@ -5534,6 +5536,8 @@ impl Screen for DetailScreen {
             Paragraph::new(Line::from(tab_bar_footer_spans(ctx.experimental)))
         } else if self.focus == DetailFocus::Pane && sub_view == DetailSubView::Pipeline {
             Paragraph::new(Line::from(waves_pane_footer_spans()))
+        } else if self.focus == DetailFocus::ScopeStrip && sub_view == DetailSubView::Defaults {
+            Paragraph::new(Line::from(config_scope_footer_spans()))
         } else if backlog_focused {
             Paragraph::new(Line::from(backlog_focused_footer_spans()))
         } else {
@@ -10033,7 +10037,8 @@ fn tab_bar_footer_spans(experimental: bool) -> Vec<Span<'static>> {
 /// The detail view has two focus levels (quick 260926-1t1, D-07), and the
 /// footer always shows the current level's keys first: at the tab bar
 /// `render` draws [`tab_bar_footer_spans`] instead of this; in content this
-/// leads with `[↑]tab bar`, then what `←`/`→` do on this tab — the sub-tab
+/// leads with `[↑]tab bar` (`[↑]scope` on Config, whose `↑` from the first
+/// row lands on the scope strip, quick 260929-g9u), then what `←`/`→` do on this tab — the sub-tab
 /// pair's names on Sessions and Docs ([`sub_tab_pair`]), `tabs` elsewhere —
 /// then the digit jump and `[j/k]move`, then the tab's own hints. `m` is not
 /// advertised: it stays a working alias, documented in the help popup only.
@@ -10062,7 +10067,14 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
         Some(_) => "Files|Milestones  ",
         None => "tabs  ",
     };
-    let mut spans = vec![Span::raw("  "), Span::styled("[\u{2191}]", b), Span::raw("tab bar  ")];
+    // On Config `↑` from the first row lands on the scope strip (quick
+    // 260929-g9u), so its lead names that level instead of the tab bar.
+    let up = if matches!(sub_view, DetailSubView::Defaults) {
+        "scope  "
+    } else {
+        "tab bar  "
+    };
+    let mut spans = vec![Span::raw("  "), Span::styled("[\u{2191}]", b), Span::raw(up)];
     if matches!(sub_view, DetailSubView::Pipeline) {
         // `→` and `Enter` descend into the Waves pane on this tab (quick
         // 260926-2l4), so only `←` still switches tab.
@@ -10206,9 +10218,23 @@ fn waves_pane_footer_spans() -> Vec<Span<'static>> {
 }
 
 /// The Config tab's footer while its scope strip has the keyboard (quick
-/// 260929-g9u, I-8). Stub until the footer lands.
+/// 260929-g9u, I-8): only the keys that level handles, as the tab bar's and
+/// the Waves pane's footers do.
 fn config_scope_footer_spans() -> Vec<Span<'static>> {
-    Vec::new()
+    let b = Style::default().add_modifier(Modifier::BOLD);
+    vec![
+        Span::raw("  "),
+        Span::styled("[\u{2190}/\u{2192}]", b),
+        Span::raw("project/global  "),
+        Span::styled("[\u{2193}/Enter]", b),
+        Span::raw("settings  "),
+        Span::styled("[\u{2191}/Esc]", b),
+        Span::raw("tab bar  "),
+        Span::styled("[q]", b),
+        Span::raw("uit  "),
+        Span::styled("[?]", b),
+        Span::raw("help"),
+    ]
 }
 
 /// The Backlog tab's footer while its content pane is open and focused
@@ -14422,7 +14448,7 @@ mod tests {
         );
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
-            "  [↑]tab bar  [←/→]tabs  [1-8/D]jump  [j/k]move  [Enter]edit  [x] clear  \
+            "  [↑]scope  [←/→]tabs  [1-8/D]jump  [j/k]move  [Enter]edit  [x] clear  \
              [g] project/global  [r]eload  [/]filter  [?]help"
         );
     }
@@ -14469,8 +14495,11 @@ mod tests {
                 None if sub_view == DetailSubView::Pipeline => "[←]tabs  [→/Enter]waves",
                 None => "[←/→]tabs",
             };
+            // Config's `↑` from the first row lands on its scope strip
+            // (quick 260929-g9u).
+            let up = if sub_view == DetailSubView::Defaults { "[↑]scope" } else { "[↑]tab bar" };
             assert!(
-                text.starts_with(&format!("  [↑]tab bar  {arrows}  [1-8]jump  ")),
+                text.starts_with(&format!("  {up}  {arrows}  [1-8]jump  ")),
                 "{sub_view:?} must not advertise a Driver tab the user cannot \
                  reach: {text}"
             );
@@ -22749,9 +22778,12 @@ mod tests {
                 DetailSubView::Pipeline => "[←]tabs  [→/Enter]waves",
                 _ => "[←/→]tabs",
             };
+            // Config's `↑` from the first row lands on its scope strip
+            // (quick 260929-g9u).
+            let up = if view == DetailSubView::Defaults { "[↑]scope" } else { "[↑]tab bar" };
             for (experimental, digits) in [(true, "[1-8/D]jump"), (false, "[1-8]jump")] {
                 let text = footer_text_at(&view, 120, experimental);
-                let prefix = format!("  [↑]tab bar  {arrows}  {digits}  [j/k]move  ");
+                let prefix = format!("  {up}  {arrows}  {digits}  [j/k]move  ");
                 assert!(text.starts_with(&prefix), "{view:?}: {text:?}");
                 assert!(text.ends_with("[?]help"), "{view:?}: {text:?}");
             }

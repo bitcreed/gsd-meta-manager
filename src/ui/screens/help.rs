@@ -265,6 +265,12 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             "Detail view: previous / next tab on the tab bar; sub-tab inside Sessions / Docs",
         ),
         row("[ / ]", "Sessions / Docs tab: previous / next sub-tab (detail view)"),
+        // Quick 260929-g9u (I-9): the Config scope strip is a focus level of
+        // its own, where the arrows switch scope.
+        row(
+            "Left / Right",
+            "Config tab scope strip: Project / Global (Down from the tab bar, Up from the first row)",
+        ),
         row("Down / Enter", "Detail view tab bar: enter the tab's content (no action)"),
         row("Up", "Detail view: back to the tab bar from the first row"),
         row("Esc", "Detail view: close a pane or level; then tab bar; then dashboard"),
