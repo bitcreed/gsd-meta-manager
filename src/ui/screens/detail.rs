@@ -2080,6 +2080,24 @@ impl DetailScreen {
                 ctx.needs_redraw = true;
                 Some(ScreenAction::None)
             }
+            // Descend with NO other state change (I-4): `Enter` never opens
+            // an editor from here and `Space` never toggles, as at the tab
+            // bar (quick 260926-1t1, I-3).
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter | KeyCode::Char(' ') => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                Some(ScreenAction::None)
+            }
+            // Up one level (I-4). `Esc` only steps up; it does not clear a
+            // confirmed filter the way `Esc` on the rows does.
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Esc => {
+                self.focus = DetailFocus::TabBar;
+                ctx.needs_redraw = true;
+                Some(ScreenAction::None)
+            }
+            // `g`/`d` toggle the very thing that is focused, so the main
+            // match's scope arm runs with the strip kept focused (I-6).
+            KeyCode::Char('g') | KeyCode::Char('d') => None,
             KeyCode::Char('?') | KeyCode::Tab | KeyCode::Char('q') => None,
             _ => {
                 self.focus = DetailFocus::Content;
@@ -2090,7 +2108,8 @@ impl DetailScreen {
     }
 
     /// Whether `↑`/`k` on `view` has nothing above it to move to — the test
-    /// that sends focus up to the tab bar (quick 260926-1t1, D-01).
+    /// that sends focus up one level: to the tab bar, or on the Config tab to
+    /// its scope strip (quick 260926-1t1, D-01; quick 260929-g9u).
     ///
     /// Exhaustive and wildcard-free on purpose, the T-24-09 convention
     /// [`tab_index`] follows: a new sub-view must decide what its first row
@@ -3659,10 +3678,15 @@ impl Screen for DetailScreen {
                 ScreenAction::None
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                // Nothing above to move to: `↑` goes up a level, to the tab
-                // bar (D-01). Otherwise each tab's arm runs unchanged.
+                // Nothing above to move to: `↑` goes up a level — to the tab
+                // bar (D-01), or on Config to its scope strip (quick
+                // 260929-g9u, D-01). Otherwise each tab's arm runs unchanged.
                 if self.content_at_first_row(&current_view, ctx) {
-                    self.focus = DetailFocus::TabBar;
+                    self.focus = if current_view == DetailSubView::Defaults {
+                        DetailFocus::ScopeStrip
+                    } else {
+                        DetailFocus::TabBar
+                    };
                     ctx.needs_redraw = true;
                     return ScreenAction::None;
                 }
