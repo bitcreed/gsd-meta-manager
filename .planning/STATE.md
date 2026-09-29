@@ -1,13 +1,13 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.9.0
+milestone: v1.10.0
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
-stopped_at: v1.9.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
+stopped_at: v1.10.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
 last_updated: "2026-09-29T17:02:52.899Z"
-last_activity: 2026-09-27
-last_activity_desc: v1.9.0 released — Running Agents & GSD 1.15.0 Sync
+last_activity: 2026-09-29
+last_activity_desc: v1.10.0 released — Config Scope Navigation
 state_head: ff3a19d093ed7a0b91ed97479aa66e689a0b5289
 progress:
   total_phases: 10
@@ -15,7 +15,7 @@ progress:
   total_plans: 7
   completed_plans: 112
   percent: 58
-milestone_name: Running Agents & GSD 1.15.0 Sync
+milestone_name: Config Scope Navigation
 ---
 
 # Project State
@@ -32,7 +32,13 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: v1.9.0 shipped 2026-09-26 (interim release; v2.0 milestone still open)
+Status: v1.10.0 shipped 2026-09-29 (interim release; v2.0 milestone still open)
+  Quick tasks 260927-gi9 (Roadmap lane gutter over visible rows only), 260927-t3s (7:Cfg `g`
+  project/global scope toggle with visible, clickable scope strip) and 260929-g9u (arrow-key focus
+  and ←/→ switching on the scope strip). `./scripts/pre-tag-check.sh --container v1.10.0` exit
+  **0**, all five gates PASS, git banner MATCH, 56 suites / **2825 passed / 0 failed** / 15 ignored.
+  Router's next is Phase 19, whose loop is halted by user decision — ask first.
+Earlier (v1.9.0 release, 2026-09-26):
   Phase 25 (Running Agents & Live Wave View) with WR-02..WR-06 fixed; quick tasks 260925-x0v,
   260926-06g/0u3/16t/1t1/2l4/dyf/kes/fcp/fi9/gd5/j0a/jnf and the gsd-core 1.15.0 sync batch
   260926-gtj (gtk/gtl/gtm/gtn). Config surface synced to gsd-core release/1.15.0
@@ -584,7 +590,15 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-26
+Last session: 2026-09-29
+Stopped at: v1.10.0 released (Config Scope Navigation)
+Release: `Cargo.toml` 1.9.0 -> 1.10.0; `cargo update` relocked only this crate's own entry; still
+held by upstream `=` pins: generic-array 0.14.7 (0.14.9), unicode-width 0.2.0 (0.2.2). Container
+pre-tag check green (see Current Position). Open follow-ups unchanged from v1.9.0.
+Phase 19's gap-closure loop is halted by user decision — do not resume without asking.
+Resume file: None
+
+Previous session (v1.9.0 release, 2026-09-26):
 Stopped at: v1.9.0 released (Running Agents & GSD 1.15.0 Sync)
 Release: `Cargo.toml` 1.8.0 -> 1.9.0; `cargo update` moved cc 1.5.1, find-msvc-tools 0.1.14,
 js-sys 0.3.106, siphasher 1.0.4, smallvec 1.16.2, wasm-bindgen* 0.2.129; still held by upstream `=`
