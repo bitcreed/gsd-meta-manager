@@ -1153,7 +1153,8 @@ pub(crate) struct WavesRowRegion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum DetailFocus {
     /// The tab bar: `←`/`→` walk tabs, `↓`/`j`/`Enter`/`Space` descend with
-    /// no action, `Esc`/`q` leave.
+    /// no action, `Esc`/`q` leave. On the Config tab the descent lands on the
+    /// scope strip ([`DetailFocus::ScopeStrip`]), not the rows.
     TabBar,
     /// The active tab's content (and its sub-tab strip, when it has one).
     #[default]
@@ -2043,6 +2044,48 @@ impl DetailScreen {
                 None
             }
             _ => Some(ScreenAction::None),
+        }
+    }
+
+    /// A key while the Config tab's scope strip has the keyboard (quick
+    /// 260929-g9u, D-01, D-02).
+    ///
+    /// Same contract as [`Self::handle_waves_pane_key`]: `Some(action)`
+    /// consumes the key, `None` lets it fall through to the main match. `←`
+    /// and `→` select Project and Global directionally, clamped like
+    /// [`Self::step_sub_tab`], through [`set_config_scope`] — the one scope setter
+    /// shared with `g`/`d` and the click, so the guard while a chooser is
+    /// open, the global bootstrap and the cursor snap cannot drift apart.
+    /// `?`, `Tab` and `q` act as at every level. Every other key is a content
+    /// key: focus follows it down to the rows and it runs there, the tab
+    /// bar's quick-260926-1t1 I-2 rule.
+    fn handle_config_scope_key(
+        &mut self,
+        code: KeyCode,
+        ctx: &mut AppContext,
+    ) -> Option<ScreenAction> {
+        use super::DefaultsEditTarget;
+        match code {
+            KeyCode::Left | KeyCode::Right => {
+                let target = if code == KeyCode::Right {
+                    DefaultsEditTarget::Global
+                } else {
+                    DefaultsEditTarget::Project
+                };
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if set_config_scope(cache, target) {
+                    ctx.status_message =
+                        Some((config_scope_status(target).to_string(), std::time::Instant::now()));
+                }
+                ctx.needs_redraw = true;
+                Some(ScreenAction::None)
+            }
+            KeyCode::Char('?') | KeyCode::Tab | KeyCode::Char('q') => None,
+            _ => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                None
+            }
         }
     }
 
@@ -3244,8 +3287,14 @@ impl Screen for DetailScreen {
                 }
                 // Descend with NO other state change ([inferred I-3]: Space
                 // too — on Queue it would otherwise mark an item done).
+                // On Config the level below the tab bar is the scope strip
+                // (quick 260929-g9u, D-01).
                 KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter | KeyCode::Char(' ') => {
-                    self.focus = DetailFocus::Content;
+                    self.focus = if current_view == DetailSubView::Defaults {
+                        DetailFocus::ScopeStrip
+                    } else {
+                        DetailFocus::Content
+                    };
                     ctx.needs_redraw = true;
                     return ScreenAction::None;
                 }
@@ -3273,6 +3322,19 @@ impl Screen for DetailScreen {
         // AFTER the tab-bar block, BEFORE the main match: while the pane has
         // the keyboard, no phase-list arm is reachable. Pane focus means
         // nothing off the Phases tab, so any other tab resets it.
+        // The Config scope-strip level (quick 260929-g9u, D-01, D-02). AFTER
+        // both Config intercepts, so an arrow typed into a value or the filter
+        // is still text; BEFORE the main match, so `←`/`→` here switch the
+        // scope instead of the tab. Strip focus means nothing off the Config
+        // tab, so any other tab resets it.
+        if self.focus == DetailFocus::ScopeStrip {
+            if current_view != DetailSubView::Defaults {
+                self.focus = DetailFocus::Content;
+            } else if let Some(action) = self.handle_config_scope_key(code, ctx) {
+                return action;
+            }
+        }
+
         if self.focus == DetailFocus::Pane {
             if current_view != DetailSubView::Pipeline {
                 self.focus = DetailFocus::Content;
@@ -9419,23 +9481,38 @@ fn sub_tab_strip_spans(
 /// ` [Project] │ Global   g switch   * = inherited from global` in project
 /// scope, ` Project │ [Global]   g switch` in global scope. The active label is
 /// bracketed AND reversed — cyan for Project, magenta for Global to match the
-/// magenta ` *` inherited-value marker (I-4). The hint names `g`, not the
-/// arrows, which keep switching tabs here (I-5); only the project strip
-/// carries the ` *` legend, because global scope has no fallback (I-6).
+/// magenta ` *` inherited-value marker (I-4). Only the project strip carries
+/// the ` *` legend, because global scope has no fallback (I-6).
+///
+/// Unfocused, the hint names only `g`: on the rows the arrows keep switching
+/// tabs (t3s I-5). `focused` is true while the keyboard is on the strip
+/// ([`DetailFocus::ScopeStrip`], quick 260929-g9u, I-7) — the one time the
+/// arrows switch scope — so the hint then reads `←/→/g switch`, and the
+/// one-cell gutter becomes a cyan bold `▸`: [`focus_block`]'s cue, text as
+/// well as colour and width-neutral, so [`strip_label_rects`] and the click
+/// targets do not move. The cue stays cyan in both scopes, cyan being the
+/// screen's focus colour.
 ///
 /// Static, authored text only — no project value reaches it (T-t3s-05).
-pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget, _focused: bool) -> Line<'static> {
+pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget, focused: bool) -> Line<'static> {
     use super::DefaultsEditTarget;
     let global = target == DefaultsEditTarget::Global;
     let active_style = Style::default()
         .fg(if global { Color::Magenta } else { Color::Cyan })
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
-    let hint = if global {
-        "   g switch"
-    } else {
-        "   g switch   * = inherited from global"
+    let hint = match (focused, global) {
+        (false, true) => "   g switch",
+        (false, false) => "   g switch   * = inherited from global",
+        (true, true) => "   \u{2190}/\u{2192}/g switch",
+        (true, false) => "   \u{2190}/\u{2192}/g switch   * = inherited from global",
     };
     let mut spans = sub_tab_strip_spans("Project", "Global", global, active_style);
+    if focused {
+        spans[0] = Span::styled(
+            "\u{25b8}",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        );
+    }
     spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
     Line::from(spans)
 }
