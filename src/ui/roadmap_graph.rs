@@ -220,6 +220,9 @@ pub const GLYPH_ACTIVE: &str = "\u{25C9}";
 pub const GLYPH_READY: &str = "\u{25CB}";
 /// Status glyph: blocked on an unfinished dependency.
 pub const GLYPH_BLOCKED: &str = "\u{25CC}";
+/// Status glyph: every remaining plan finished on a worktree, not yet merged
+/// (cyan, not dim; quick 260929-szq). The one glyph the whole UI shares.
+pub const GLYPH_UNMERGED: &str = crate::agents::unmerged::GLYPH_UNMERGED;
 /// Marker of the selected row (the row is also drawn reversed).
 pub const MARK_SELECTED: &str = "\u{25B6}";
 /// Marker of a dependency of the selection (cyan).
@@ -334,16 +337,22 @@ pub enum PhaseStatus {
     Active,
     Ready,
     Blocked,
+    /// Not done in main; every remaining plan finished on a worktree,
+    /// unmerged — never satisfies dependents (quick 260929-szq, I-11). Set
+    /// only by the Roadmap's post-pass over an agent view, never by
+    /// [`layout_list`].
+    Unmerged,
 }
 
 impl PhaseStatus {
-    /// The status glyph (`●` `◉` `○` `◌`).
+    /// The status glyph (`●` `◉` `○` `◌` `◐`).
     pub fn glyph(self) -> &'static str {
         match self {
             PhaseStatus::Done => GLYPH_DONE,
             PhaseStatus::Active => GLYPH_ACTIVE,
             PhaseStatus::Ready => GLYPH_READY,
             PhaseStatus::Blocked => GLYPH_BLOCKED,
+            PhaseStatus::Unmerged => GLYPH_UNMERGED,
         }
     }
 }
@@ -396,6 +405,9 @@ pub struct PhaseFacts {
     pub status: PhaseStatus,
     pub planned: bool,
     pub plans: Option<(u32, u32)>,
+    /// Plans of this phase finished on a worktree, unmerged (either state);
+    /// 0 from [`layout_list`], filled by the Roadmap's agent-view post-pass.
+    pub unmerged: u32,
     pub badge: Option<String>,
     /// Transitively reduced dependencies, declared order.
     pub needs: Vec<usize>,
@@ -850,6 +862,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 status: status[u],
                 planned: node.planned,
                 plans: node.plans,
+                unmerged: 0,
                 badge: node.badge.as_deref().map(esc),
                 needs: reduced[u].clone(),
                 implied: implied[u].clone(),

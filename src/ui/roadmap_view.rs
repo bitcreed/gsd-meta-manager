@@ -22,7 +22,8 @@
 
 use crate::ui::roadmap_graph::{
     BandFacts, BandKey, CursorTarget, ListRow, PhaseFacts, PhaseStatus, RoadmapModel, BAND_FILL,
-    BAND_FOLDED, BAND_OPEN, MARK_DEP, MARK_IMPLIED, MARK_SELECTED, MARK_UNBLOCKS, PARALLEL_SEP,
+    BAND_FOLDED, BAND_OPEN, GLYPH_UNMERGED, MARK_DEP, MARK_IMPLIED, MARK_SELECTED, MARK_UNBLOCKS,
+    PARALLEL_SEP,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -270,6 +271,9 @@ fn glyph_style(status: PhaseStatus) -> Style {
             .add_modifier(Modifier::BOLD),
         PhaseStatus::Ready => Style::default().fg(Color::Green),
         PhaseStatus::Blocked => Style::default(),
+        // Cyan and never dim: finished work still waiting on a merge is a
+        // pending action, not history (quick 260929-szq).
+        PhaseStatus::Unmerged => Style::default().fg(Color::Cyan),
     }
 }
 
@@ -279,6 +283,7 @@ fn status_word(status: PhaseStatus) -> &'static str {
         PhaseStatus::Active => "active",
         PhaseStatus::Ready => "ready",
         PhaseStatus::Blocked => "blocked",
+        PhaseStatus::Unmerged => crate::agents::unmerged::LABEL_UNMERGED,
     }
 }
 
@@ -966,6 +971,14 @@ impl RoadmapView<'_> {
             None if !p.planned => spans.push(Span::raw(format!("{DOT}plans TBD"))),
             None => {}
         }
+        // `◐k`: plans of this phase finished on a worktree, not yet merged
+        // (quick 260929-szq, I-11); detail status line only.
+        if p.unmerged > 0 {
+            spans.push(Span::styled(
+                format!(" {GLYPH_UNMERGED}{}", p.unmerged),
+                Style::default().fg(Color::Cyan),
+            ));
+        }
         if let Some(badge) = &p.badge {
             spans.push(Span::styled(
                 format!("{GAP}{badge}"),
@@ -1112,6 +1125,9 @@ impl RoadmapView<'_> {
                     node: u,
                     tail: match self.phase(u) {
                         Some(q) if q.status == PhaseStatus::Done => "done".to_string(),
+                        Some(q) if q.status == PhaseStatus::Unmerged => {
+                            crate::agents::unmerged::LABEL_UNMERGED.to_string()
+                        }
                         _ => String::new(),
                     },
                     note: None,
@@ -2454,5 +2470,42 @@ mod tests {
             let rows = rows_naming(&list_text, "\u{00DC}berpr\u{00FC}fung");
             assert!(rows[0].contains(ELLIPSIS), "{w}: {}", rows[0]);
         }
+    }
+
+    // ── quick 260929-szq: the unmerged phase status ───────────────────────
+
+    #[test]
+    fn the_unmerged_status_is_cyan_undimmed_and_shares_the_glyph() {
+        assert_eq!(PhaseStatus::Unmerged.glyph(), GLYPH_UNMERGED);
+        assert_eq!(GLYPH_UNMERGED, crate::agents::unmerged::GLYPH_UNMERGED);
+        assert_eq!(status_word(PhaseStatus::Unmerged), "unmerged");
+        let style = glyph_style(PhaseStatus::Unmerged);
+        assert_eq!(style.fg, Some(Color::Cyan));
+        assert_ne!(style, dim());
+    }
+
+    #[test]
+    fn the_status_line_ends_with_the_unmerged_count() {
+        let mut model = build(
+            &[("05", "Export", &[], C, None)],
+            &[],
+            &Extras {
+                plans: &[("05", (2, 5))],
+                ..Extras::default()
+            },
+        );
+        let spans_of = |model: &RoadmapModel| -> String {
+            RoadmapView::status_spans(&model.phases[0])
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect()
+        };
+        assert!(!spans_of(&model).contains(GLYPH_UNMERGED), "k = 0: no tail");
+        model.phases[0].unmerged = 3;
+        let spans = RoadmapView::status_spans(&model.phases[0]);
+        let last = spans.last().expect("spans");
+        assert_eq!(last.content, format!(" {GLYPH_UNMERGED}3"));
+        assert_eq!(last.style.fg, Some(Color::Cyan));
+        assert!(spans_of(&model).contains("2/5 plans"), "{}", spans_of(&model));
     }
 }

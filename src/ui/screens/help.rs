@@ -39,7 +39,10 @@
 //! a text label, so no meaning is carried by colour alone, and there is no
 //! spinner and no animation anywhere on this surface.
 
-use super::detail::{clamp_scroll, ViewportMetrics, PAGE_SCROLL_LINES};
+use super::detail::{
+    clamp_scroll, ViewportMetrics, PAGE_SCROLL_LINES, WAVES_GLYPH_DONE, WAVES_GLYPH_RUNNING,
+    WAVES_GLYPH_STALLED,
+};
 use super::driver::{
     GLYPH_ACTED_ON, GLYPH_DELIVERED, GLYPH_MISSED, GLYPH_QUEUED, LABEL_ACTED_ON, LABEL_DELIVERED,
     LABEL_MISSED, LABEL_QUEUED,
@@ -48,6 +51,8 @@ use super::normal::{
     BADGE_DRIVEN, BADGE_EXTERNAL_JOB, BADGE_NEEDS_HUMAN, BADGE_PAUSED, BADGE_SESSION,
 };
 use super::{AppContext, Screen, ScreenAction};
+use crate::agents::unmerged::{GLYPH_UNMERGED, LABEL_ACTIVE, LABEL_UNMERGED};
+use crate::ui::roadmap_graph::GLYPH_DONE;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -169,6 +174,43 @@ fn centered_rect(area: Rect, pct_width: u16, pct_height: u16) -> Rect {
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, width, height)
+}
+
+/// The `Work State` legend (quick 260929-szq, I-12): what finished, merged,
+/// unmerged, running and stalled work looks like on the Waves pane, the
+/// Roadmap and the dashboard. Every glyph and word is interpolated from the
+/// constants those surfaces render (T-18-63), never retyped.
+fn work_state_legend() -> Vec<(String, String)> {
+    vec![
+        (
+            format!("{WAVES_GLYPH_DONE} {GLYPH_DONE} done"),
+            "merged into the main branch".to_string(),
+        ),
+        (
+            format!("{GLYPH_UNMERGED} {LABEL_UNMERGED}"),
+            "finished on a worktree branch, not yet in main".to_string(),
+        ),
+        (
+            format!("{WAVES_GLYPH_RUNNING} {LABEL_ACTIVE}"),
+            format!("after a {GLYPH_UNMERGED} hint: its worktree is still locked or has a live agent"),
+        ),
+        (
+            format!("{WAVES_GLYPH_RUNNING} running"),
+            "a live agent is working on a worktree".to_string(),
+        ),
+        (
+            format!("{WAVES_GLYPH_STALLED} stalled"),
+            "locked/dirty worktree, no recent activity".to_string(),
+        ),
+        (
+            "@a0973c1".to_string(),
+            "worktree branch (agent id, 7 chars); +N commits ahead, ~N dirty paths".to_string(),
+        ),
+        (
+            format!("Dashboard {GLYPH_UNMERGED}N"),
+            "N plans or quick tasks waiting to be merged".to_string(),
+        ),
+    ]
 }
 
 fn heading(text: &str) -> Line<'static> {
@@ -371,6 +413,14 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             continue;
         }
         lines.push(Line::from(format!("  {glyph} {meaning}")));
+    }
+    lines.push(Line::from(""));
+
+    // ── The work-state legend (quick 260929-szq): merged vs unmerged work.
+    lines.push(heading("Work State"));
+    lines.push(Line::from(""));
+    for (key, meaning) in work_state_legend() {
+        lines.push(row(&key, &meaning));
     }
     lines.push(Line::from(""));
 
@@ -647,6 +697,69 @@ mod tests {
     }
 
     #[test]
+    fn the_work_state_legend_is_built_from_the_rendered_glyphs() {
+        for experimental in [false, true] {
+            let text = body_with(experimental);
+            let lines: Vec<&str> = text.lines().collect();
+            let at = lines
+                .iter()
+                .position(|l| *l == "Work State")
+                .unwrap_or_else(|| panic!("no Work State heading:\n{text}"));
+            let badges = lines
+                .iter()
+                .position(|l| *l == "Dashboard Badges")
+                .expect("the badge legend");
+            assert!(at > badges, "Work State follows Dashboard Badges");
+            // Whole rows, built from the same constants the surfaces paint
+            // (T-18-63): a re-pointed glyph fails here, never silently.
+            for (key, meaning) in [
+                (
+                    format!("{WAVES_GLYPH_DONE} {GLYPH_DONE} done"),
+                    "merged into the main branch".to_string(),
+                ),
+                (
+                    format!("{GLYPH_UNMERGED} {LABEL_UNMERGED}"),
+                    "finished on a worktree branch, not yet in main".to_string(),
+                ),
+                (
+                    format!("{WAVES_GLYPH_RUNNING} {LABEL_ACTIVE}"),
+                    format!(
+                        "after a {GLYPH_UNMERGED} hint: its worktree is still locked or has a live agent"
+                    ),
+                ),
+                (
+                    format!("{WAVES_GLYPH_RUNNING} running"),
+                    "a live agent is working on a worktree".to_string(),
+                ),
+                (
+                    format!("{WAVES_GLYPH_STALLED} stalled"),
+                    "locked/dirty worktree, no recent activity".to_string(),
+                ),
+                (
+                    "@a0973c1".to_string(),
+                    "worktree branch (agent id, 7 chars); +N commits ahead, ~N dirty paths"
+                        .to_string(),
+                ),
+                (
+                    format!("Dashboard {GLYPH_UNMERGED}N"),
+                    "N plans or quick tasks waiting to be merged".to_string(),
+                ),
+            ] {
+                let expected = row(&key, &meaning).spans[0].content.to_string();
+                assert!(
+                    lines[at..].iter().any(|l| *l == expected),
+                    "missing {expected:?}:\n{text}"
+                );
+                assert_eq!(
+                    text.matches(meaning.as_str()).count(),
+                    1,
+                    "{meaning:?} must be unique in the body"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_injection_legend_names_all_four_states_and_carries_the_honest_gloss() {
         let text = body();
         let flow = flowed();
@@ -849,7 +962,15 @@ mod tests {
             (GLYPH_ACTED_ON, LABEL_ACTED_ON),
             (GLYPH_MISSED, LABEL_MISSED),
         ] {
-            assert!(!text.contains(glyph), "the glyph {glyph:?} survived:\n{text}");
+            // The legend's `{glyph} {label}` form, not the bare glyph: `◐` and
+            // `●` are also the Work State legend's unmerged/done glyphs (quick
+            // 260929-szq), which stay with the flag off. The label check below
+            // still catches any surviving injection row.
+            let legend_form = format!("{glyph} {label}");
+            assert!(
+                !text.contains(&legend_form),
+                "the legend row {legend_form:?} survived:\n{text}"
+            );
             assert!(!text.contains(label), "the label {label:?} survived:\n{text}");
         }
         assert!(

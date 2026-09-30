@@ -1585,7 +1585,12 @@ impl DetailScreen {
     ) -> Option<(roadmap_graph::RoadmapModel, roadmap_graph::CursorTarget)> {
         let state = ctx.project_states.get(&self.alias)?;
         let cache = ctx.view_cache.get(&self.alias);
-        let model = roadmap_model_for(state, cache, ctx.config.preferences.gsd_integration);
+        let model = roadmap_model_for(
+            state,
+            cache,
+            ctx.config.preferences.gsd_integration,
+            ctx.agent_views.get(&self.alias),
+        );
         let stored = cache.and_then(|c| c.roadmap_cursor.as_ref());
         let cursor = model.resolve_cursor(stored)?;
         Some((model, cursor))
@@ -2766,6 +2771,16 @@ fn disk_suffix_spans(
 ///   `phase_plan_counts`, the goal from `phase_goals`, and the `[stage]` badge
 ///   from [`disk_suffix_spans`] (D-B08).
 ///
+/// * **Unmerged post-pass** (quick 260929-szq, I-11): with an agent `view`,
+///   every non-shipped phase's `unmerged` is the number of its plans the
+///   view lists as finished on a worktree (either state). A phase that is not
+///   Done, has `k > 0` such plans, and plan counts `(d, t)` with `t > 0` and
+///   `d + k >= t` becomes [`roadmap_graph::PhaseStatus::Unmerged`], winning
+///   over Active/Ready/Blocked, and leaves `start_now`. Dependents were laid
+///   out from the markers before this pass, so they keep their Blocked/Ready
+///   status: unmerged work never satisfies a dependent. `None` for the view
+///   leaves the model exactly as `layout_list` built it.
+///
 /// In-memory state only — no I/O — because the render loop calls it
 /// (CLAUDE.md: never block the render loop). Fold toggles come from `cache`
 /// (none when the project has no cache yet).
@@ -2773,6 +2788,7 @@ pub(crate) fn roadmap_model_for(
     state: &state_reader::ProjectState,
     cache: Option<&super::ProjectViewCache>,
     show_badges: bool,
+    view: Option<&AgentView>,
 ) -> roadmap_graph::RoadmapModel {
     use crate::state_reader::phase_num::phase_key;
     use crate::state_reader::roadmap_md;
@@ -2884,6 +2900,27 @@ pub(crate) fn roadmap_model_for(
     model.start_now.retain(|&u| !is_shipped(u));
     for (u, facts) in model.phases.iter_mut().enumerate() {
         facts.parallel.retain(|&v| is_shipped(v) == is_shipped(u));
+    }
+    if let Some(view) = view {
+        for (u, facts) in model.phases.iter_mut().enumerate() {
+            if is_shipped(u) {
+                continue;
+            }
+            let k = view.unmerged_in_phase(&facts.key);
+            facts.unmerged = k;
+            let all_remaining_unmerged = matches!(
+                facts.plans,
+                Some((d, t)) if t > 0 && d.saturating_add(k) >= t
+            );
+            if k > 0 && facts.status != roadmap_graph::PhaseStatus::Done && all_remaining_unmerged
+            {
+                facts.status = roadmap_graph::PhaseStatus::Unmerged;
+            }
+        }
+        let phases = &model.phases;
+        model
+            .start_now
+            .retain(|&u| phases[u].status != roadmap_graph::PhaseStatus::Unmerged);
     }
     model
 }
@@ -6123,8 +6160,12 @@ impl DetailScreen {
             let box_view = cache.is_some_and(|c| c.roadmap_box_view);
             // The same adapter the keys use (24-05), so the list drawn is the
             // list the cursor moves over. In-memory only: no I/O here.
-            let model =
-                roadmap_model_for(state, cache, ctx.config.preferences.gsd_integration);
+            let model = roadmap_model_for(
+                state,
+                cache,
+                ctx.config.preferences.gsd_integration,
+                ctx.agent_views.get(alias),
+            );
 
             // The former PhaseList header (D-B02, D-B08), borderless: the list
             // and detail blocks carry their own borders, and 80×24 has no row
@@ -8658,7 +8699,7 @@ impl UnmergedHint {
     fn from_item(item: &crate::agents::unmerged::UnmergedItem) -> Self {
         let mut reference = format!(
             "@{} {}",
-            fit_cells(&item.short_ref.shown().to_string(), 14),
+            fit_cells(item.short_ref.shown().as_ref(), 14),
             agent_count("+", item.commits_ahead)
         );
         if let Some(d) = item.dirty.filter(|d| *d > 0) {
@@ -21256,6 +21297,7 @@ mod tests {
             &ctx.project_states[TEST_ALIAS],
             ctx.view_cache.get(TEST_ALIAS),
             false,
+            None,
         )
     }
 
@@ -21282,7 +21324,7 @@ mod tests {
 
     #[test]
     fn roadmap_model_for_daily_vow_has_one_row_for_phase_20() {
-        let model = roadmap_model_for(&fixture_state("daily-vow"), None, false);
+        let model = roadmap_model_for(&fixture_state("daily-vow"), None, false, None);
         let ids = phase_row_ids(&model);
         assert_eq!(ids.iter().filter(|id| *id == "20").count(), 1, "{ids:?}");
 
@@ -21298,7 +21340,7 @@ mod tests {
 
     #[test]
     fn roadmap_model_for_sentriq_uses_a_synthetic_band() {
-        let model = roadmap_model_for(&fixture_state("sentriq"), None, false);
+        let model = roadmap_model_for(&fixture_state("sentriq"), None, false, None);
         let bands: Vec<&str> = model
             .rows
             .iter()
@@ -21321,7 +21363,7 @@ mod tests {
 
     #[test]
     fn roadmap_model_for_ttbook_lists_build_phases_as_phases() {
-        let model = roadmap_model_for(&fixture_state("ttbook"), None, false);
+        let model = roadmap_model_for(&fixture_state("ttbook"), None, false, None);
         let ids = phase_row_ids(&model);
         for n in 8..=18 {
             let id = n.to_string();
@@ -21339,7 +21381,7 @@ mod tests {
         let state = fixture_state("ttbook");
         let shipped_ids = ["1", "2", "3", "4", "5", "6", "7", "7.1"];
 
-        let folded = roadmap_model_for(&state, None, false);
+        let folded = roadmap_model_for(&state, None, false, None);
         let ids = phase_row_ids(&folded);
         for n in 8..=18 {
             assert!(ids.contains(&n.to_string()), "{n}: {ids:?}");
@@ -21350,7 +21392,7 @@ mod tests {
 
         let mut cache = crate::ui::screens::ProjectViewCache::default();
         cache.roadmap_fold_toggles.insert(roadmap_graph::BandKey::Shipped);
-        let model = roadmap_model_for(&state, Some(&cache), false);
+        let model = roadmap_model_for(&state, Some(&cache), false, None);
         let ids = phase_row_ids(&model);
         let v1 = model
             .bands
@@ -21452,7 +21494,7 @@ mod tests {
 
         let mut cache = crate::ui::screens::ProjectViewCache::default();
         cache.roadmap_fold_toggles.insert(roadmap_graph::BandKey::Shipped);
-        let model = roadmap_model_for(&state, Some(&cache), false);
+        let model = roadmap_model_for(&state, Some(&cache), false, None);
         let ones: Vec<&roadmap_graph::PhaseFacts> =
             model.phases.iter().filter(|p| p.key == "1").collect();
         assert_eq!(ones.len(), 1, "{:?}", model.phases);
@@ -22147,7 +22189,7 @@ mod tests {
 
     /// The active band's (done, total) in the Roadmap model.
     fn active_band_counts(state: &state_reader::ProjectState) -> (usize, usize) {
-        let model = roadmap_model_for(state, None, true);
+        let model = roadmap_model_for(state, None, true, None);
         let active = state_reader::roadmap_md::active_milestone_index(
             &state.milestones,
             &state.milestone,
@@ -23903,6 +23945,82 @@ mod tests {
         }
         let line = line_text(&agent_line("", AgentLiveness::Ended, true, "L", String::new(), 40));
         assert_eq!(line.find('L'), Some(AGENT_STATE_CELLS + 2), "{line:?}");
+    }
+
+    /// Mailbot's roadmap shape: phase 05 (5 plans, none summarized in main),
+    /// phase 06 depending on 05, and the active phase 09.
+    fn mailbot_roadmap_state(p05_plans: usize) -> state_reader::ProjectState {
+        let ids: Vec<String> = (1..=p05_plans).map(|n| format!("05-0{n}")).collect();
+        let specs: Vec<(&str, Option<&str>, Option<u32>)> =
+            ids.iter().map(|id| (id.as_str(), None, Some(1))).collect();
+        let ctx = waves_ctx(
+            vec![
+                ("05", "Attachment export", waves_inference(&specs, &[])),
+                (
+                    "06",
+                    "After export",
+                    waves_inference(&[("06-01", None, Some(1))], &[]),
+                ),
+                (
+                    "09",
+                    "Current",
+                    waves_inference(&[("09-01", None, Some(1))], &[]),
+                ),
+            ],
+            "09",
+        );
+        let mut state = ctx.project_states[TEST_ALIAS].clone();
+        state.phases[1].depends_on = vec!["5".to_string()];
+        state
+    }
+
+    fn facts_of<'m>(model: &'m roadmap_graph::RoadmapModel, key: &str) -> &'m roadmap_graph::PhaseFacts {
+        model
+            .phases
+            .iter()
+            .find(|p| p.key == key)
+            .unwrap_or_else(|| panic!("phase {key} in {:?}", model.phases))
+    }
+
+    #[test]
+    fn a_phase_whose_remaining_plans_are_all_unmerged_reads_unmerged_on_the_roadmap() {
+        use crate::agents::unmerged::UnmergedState;
+        let state = mailbot_roadmap_state(5);
+        let before = roadmap_model_for(&state, None, false, None);
+        let status_05 = facts_of(&before, "5").status;
+        let status_06 = facts_of(&before, "6").status;
+        assert_eq!(status_06, roadmap_graph::PhaseStatus::Blocked, "control");
+
+        let view = mailbot_view(UnmergedState::InProgress);
+        let after = roadmap_model_for(&state, None, false, Some(&view));
+        let p05 = facts_of(&after, "5");
+        assert_ne!(status_05, roadmap_graph::PhaseStatus::Unmerged);
+        assert_eq!(p05.status, roadmap_graph::PhaseStatus::Unmerged);
+        assert_eq!(p05.unmerged, 5);
+        assert_eq!(
+            facts_of(&after, "6").status,
+            status_06,
+            "unmerged work never satisfies a dependent"
+        );
+        assert_eq!(facts_of(&after, "9").unmerged, 0);
+        let idx_05 = after.phases.iter().position(|p| p.key == "5").expect("05");
+        assert!(!after.start_now.contains(&idx_05), "{:?}", after.start_now);
+
+        // No view: byte-identical to the layout.
+        assert_eq!(roadmap_model_for(&state, None, false, None), before);
+    }
+
+    #[test]
+    fn a_partly_unmerged_phase_keeps_its_status_and_counts_the_unmerged_plans() {
+        use crate::agents::unmerged::UnmergedState;
+        let state = mailbot_roadmap_state(3);
+        let before = roadmap_model_for(&state, None, false, None);
+        let mut view = mailbot_view(UnmergedState::AwaitingMerge);
+        view.unmerged.truncate(1);
+        let after = roadmap_model_for(&state, None, false, Some(&view));
+        let p05 = facts_of(&after, "5");
+        assert_eq!(p05.status, facts_of(&before, "5").status);
+        assert_eq!(p05.unmerged, 1);
     }
 
     #[test]

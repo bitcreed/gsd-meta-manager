@@ -237,7 +237,11 @@ fn item_state(row: Option<&AgentRow>) -> UnmergedState {
 /// holder by path; its state is `InProgress` when ANY holder is (I-4). Counts
 /// come from the holder's agent row, else from one `worktree_counts` call per
 /// holder that is not an agent row (I-3).
-pub fn detect(core: &worktrees::CoreScan, rows: &[AgentRow], project_root: &Path) -> Vec<UnmergedItem> {
+pub fn detect(
+    core: &worktrees::CoreScan,
+    rows: &[AgentRow],
+    project_root: &Path,
+) -> Vec<UnmergedItem> {
     let mut live: Vec<&worktrees::CoreWorktree> =
         core.worktrees.iter().filter(|wt| !wt.prunable).collect();
     if live.is_empty() {
@@ -315,7 +319,11 @@ mod tests {
             "a486395"
         );
         assert_eq!(
-            raw(short_ref(Some(&u("refs/heads/gsd/foo")), Path::new("/x"), &[])),
+            raw(short_ref(
+                Some(&u("refs/heads/gsd/foo")),
+                Path::new("/x"),
+                &[]
+            )),
             "foo"
         );
         assert_eq!(

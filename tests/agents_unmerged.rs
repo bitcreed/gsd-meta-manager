@@ -224,7 +224,10 @@ fn a_human_feature_worktree_is_flagged_and_awaits_merge_even_when_locked() {
     let scan1 = scan(&root);
     assert!(scan1.rows.is_empty(), "a human worktree has no agent row");
     assert_eq!(scan1.unmerged.len(), 1, "{:?}", scan1.unmerged);
-    assert_eq!(scan1.unmerged[0].short_ref.as_raw_for_logic_only(), "feature/x");
+    assert_eq!(
+        scan1.unmerged[0].short_ref.as_raw_for_logic_only(),
+        "feature/x"
+    );
     assert_eq!(scan1.unmerged[0].state, UnmergedState::AwaitingMerge);
     assert_eq!(scan1.unmerged[0].commits_ahead, Some(1));
 
@@ -271,7 +274,11 @@ fn mailbot_modelled_phase_05_is_in_progress_while_locked_then_awaits_merge() {
     let expected: Vec<UnmergedKey> = (1..=5).map(|n| plan_key(&format!("05-0{n}"))).collect();
     let locked = scan(&root);
     assert_eq!(
-        locked.unmerged.iter().map(|i| i.key.clone()).collect::<Vec<_>>(),
+        locked
+            .unmerged
+            .iter()
+            .map(|i| i.key.clone())
+            .collect::<Vec<_>>(),
         expected
     );
     for item in &locked.unmerged {
