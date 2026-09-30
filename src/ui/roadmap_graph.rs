@@ -1023,6 +1023,38 @@ fn open_band(key: &BandKey, fold_toggles: &mut HashSet<BandKey>) {
 /// fold-hidden phase (`h`/`l`, `[`/`]`); the caller then calls
 /// [`RoadmapModel::unfold_for`].
 impl RoadmapModel {
+    /// Re-status phase `node` after layout, keeping its lane glyph in step:
+    /// the glyph `layout_list` baked into the phase row's `lanes` at cell
+    /// `2 * lane` is replaced by the new status's glyph (quick 260929-szq's
+    /// unmerged post-pass). Lanes, edges and every other phase are untouched,
+    /// so dependents keep the status they were laid out with.
+    pub fn set_phase_status(&mut self, node: usize, status: PhaseStatus) {
+        let Some(facts) = self.phases.get_mut(node) else {
+            return;
+        };
+        let old = facts.status.glyph();
+        facts.status = status;
+        let new = status.glyph();
+        for row in &mut self.rows {
+            if let ListRow::Phase {
+                node: n,
+                lane,
+                lanes,
+            } = row
+            {
+                if *n != node {
+                    continue;
+                }
+                let at = 2 * *lane;
+                let mut chars: Vec<String> = lanes.chars().map(String::from).collect();
+                if chars.get(at).is_some_and(|c| c == old) {
+                    chars[at] = new.to_string();
+                    *lanes = chars.concat();
+                }
+            }
+        }
+    }
+
     /// The cursor target a row stands for; connectors stand for none.
     fn target_of(&self, row: &ListRow) -> Option<CursorTarget> {
         match row {

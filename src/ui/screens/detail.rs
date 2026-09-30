@@ -2902,6 +2902,7 @@ pub(crate) fn roadmap_model_for(
         facts.parallel.retain(|&v| is_shipped(v) == is_shipped(u));
     }
     if let Some(view) = view {
+        let mut unmerged_nodes = Vec::new();
         for (u, facts) in model.phases.iter_mut().enumerate() {
             if is_shipped(u) {
                 continue;
@@ -2914,8 +2915,12 @@ pub(crate) fn roadmap_model_for(
             );
             if k > 0 && facts.status != roadmap_graph::PhaseStatus::Done && all_remaining_unmerged
             {
-                facts.status = roadmap_graph::PhaseStatus::Unmerged;
+                unmerged_nodes.push(u);
             }
+        }
+        // Through the model, so the lane glyph `layout_list` drew follows.
+        for u in unmerged_nodes {
+            model.set_phase_status(u, roadmap_graph::PhaseStatus::Unmerged);
         }
         let phases = &model.phases;
         model
@@ -23997,6 +24002,23 @@ mod tests {
         assert_ne!(status_05, roadmap_graph::PhaseStatus::Unmerged);
         assert_eq!(p05.status, roadmap_graph::PhaseStatus::Unmerged);
         assert_eq!(p05.unmerged, 5);
+        // The list row's lane glyph follows the status, not just the facts.
+        let lane_05 = after
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                roadmap_graph::ListRow::Phase { node, lanes, .. }
+                    if after.phases[*node].key == "5" =>
+                {
+                    Some(lanes.clone())
+                }
+                _ => None,
+            })
+            .expect("phase 05's row");
+        assert!(
+            lane_05.contains(roadmap_graph::GLYPH_UNMERGED),
+            "{lane_05:?}"
+        );
         assert_eq!(
             facts_of(&after, "6").status,
             status_06,
