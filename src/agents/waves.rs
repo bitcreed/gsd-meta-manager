@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn finished_agents_count_as_done_plus_unmerged() {
+    fn finished_agents_are_counted_apart_from_done() {
         let mut rows = thirteen_live_executors();
         rows[0].liveness = AgentLiveness::Finished;
         rows[1].liveness = AgentLiveness::Finished;
@@ -944,9 +944,11 @@ mod tests {
         assert_eq!(view.finished, 2);
         assert_eq!(view.running, 11);
         assert_eq!(view.done, 8, "finished is never folded into done");
+        // Quick 260929-szq (UX-SPEC (d)): `d` counts main only; unmerged work
+        // is its own `◐N` segment, driven by the scan's unmerged list.
         assert_eq!(
             view.summary_forms()[0],
-            format!("P13 {DOT} w2/11 {DOT} 11 run {DOT} 10/35 done")
+            format!("P13 {DOT} w2/11 {DOT} 11 run {DOT} 8/35 done")
         );
         assert_eq!(view.waves[1].finished, 2);
         assert_eq!(view.current_wave, Some(2));
@@ -1215,6 +1217,138 @@ mod tests {
         assert_eq!(forms[4], "w99/99 99run");
         assert!(width(&forms[4]) <= 13);
         assert_eq!(width(DOT), 1, "U+00B7 is one cell");
+    }
+
+    // --- unmerged worktree work (quick 260929-szq) -----------------------
+
+    const HALF: &str = "\u{25D0}";
+
+    fn unmerged_item(
+        key: UnmergedKey,
+        worktree: &str,
+        state: super::super::unmerged::UnmergedState,
+    ) -> UnmergedItem {
+        UnmergedItem {
+            key,
+            worktree: PathBuf::from(worktree),
+            branch: None,
+            short_ref: Untrusted::from_untrusted_source("a012345".into()),
+            commits_ahead: Some(1),
+            dirty: Some(0),
+            state,
+        }
+    }
+
+    fn plan_item(id: &str, state: super::super::unmerged::UnmergedState) -> UnmergedItem {
+        unmerged_item(UnmergedKey::Plan(pr(id)), "/wt/u", state)
+    }
+
+    #[test]
+    fn the_executor_ladder_counts_main_only_and_appends_the_unmerged_count() {
+        use super::super::unmerged::UnmergedState;
+        let view = AgentView {
+            active_phase: PhaseNum::parse("13"),
+            current_wave: Some(2),
+            max_wave: Some(3),
+            plan_total: 9,
+            done: 4,
+            finished: 2,
+            running: 1,
+            agents: vec![row("/wt/a", AgentLiveness::Live, Some("13-05"))],
+            unmerged: vec![plan_item("13-03", UnmergedState::AwaitingMerge)],
+            ..AgentView::default()
+        };
+        let forms = view.summary_forms();
+        assert!(
+            forms[0].ends_with(&format!("4/9 done {DOT} {HALF}1 unmerged")),
+            "{forms:?}"
+        );
+        let (last, middle) = forms[1..].split_last().expect("more than one form");
+        for form in middle {
+            assert!(form.ends_with(&format!(" {DOT} {HALF}1")), "{forms:?}");
+        }
+        assert_eq!(last, "1run", "the last form is the bare narrowest one");
+        for pair in forms.windows(2) {
+            assert!(width(&pair[1]) < width(&pair[0]), "{forms:?}");
+        }
+    }
+
+    #[test]
+    fn an_idle_project_shows_its_unmerged_count_beside_stalled_rows() {
+        use super::super::unmerged::UnmergedState;
+        let view = AgentView {
+            agents: vec![row("/wt/s", AgentLiveness::Stalled, None)],
+            unmerged: vec![
+                plan_item("13-01", UnmergedState::AwaitingMerge),
+                plan_item("13-02", UnmergedState::InProgress),
+            ],
+            ..AgentView::default()
+        };
+        assert_eq!(
+            view.summary_forms(),
+            vec![
+                format!("{HALF}2 unmerged {DOT} 1 stalled"),
+                format!("{HALF}2 {DOT} 1 stalled"),
+                "1 stalled".to_string(),
+            ]
+        );
+
+        let idle = AgentView {
+            unmerged: vec![
+                plan_item("13-01", UnmergedState::InProgress),
+                unmerged_item(
+                    UnmergedKey::Quick("260929-abc".into()),
+                    "/wt/q",
+                    UnmergedState::AwaitingMerge,
+                ),
+            ],
+            ..AgentView::default()
+        };
+        assert_eq!(idle.pending_unmerged(), 2, "both states and quick tasks count");
+        assert_eq!(
+            idle.summary_forms(),
+            vec![format!("{HALF}2 unmerged"), format!("{HALF}2")]
+        );
+    }
+
+    #[test]
+    fn a_listed_plan_is_finished_unless_main_summarized_it() {
+        use super::super::unmerged::UnmergedState;
+        assert_eq!(plan_state(false, true, &[]), PlanState::Finished);
+        assert_eq!(plan_state(true, true, &[]), PlanState::Done);
+        let live = row("/wt/a", AgentLiveness::Live, Some("13-01"));
+        assert_eq!(
+            plan_state(false, true, &[&live]),
+            PlanState::Finished,
+            "a worktree SUMMARY outranks a running agent"
+        );
+        assert_eq!(plan_state(false, false, &[&live]), PlanState::Running);
+
+        for state in [UnmergedState::InProgress, UnmergedState::AwaitingMerge] {
+            let st = state_fn_13();
+            let scan = ProjectAgents {
+                unmerged: vec![plan_item("13-02", state)],
+                ..ProjectAgents::default()
+            };
+            let view = derive(&scan, &st);
+            assert_eq!(view.plan_state("13-02"), Some(PlanState::Finished));
+            assert_eq!(view.plan_state("13-01"), Some(PlanState::Done));
+            assert_eq!(view.unmerged_plan("13-02-slug").map(|i| i.state), Some(state));
+            assert!(view.unmerged_plan("13-01").is_none());
+            assert_eq!(view.unmerged_in_phase("13"), 1);
+            assert_eq!(view.unmerged_in_phase("12"), 0);
+            assert_eq!(
+                view.awaiting_merge_at(std::path::Path::new("/wt/u")),
+                state == UnmergedState::AwaitingMerge
+            );
+        }
+    }
+
+    /// Phase 13 with plans 13-01..13-03 in wave 1, 13-01 done in main.
+    fn state_fn_13() -> ProjectState {
+        let mut st = state("13", vec![wave(Some(1), &ids(1, 3))], &ids(1, 1), 3);
+        st.state_md_phase_number = PhaseNum::parse("13");
+        st
     }
 
     #[test]

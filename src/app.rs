@@ -5515,6 +5515,51 @@ mod tests {
         );
     }
 
+    /// Quick 260929-szq: a project whose scan holds unmerged worktree work but
+    /// no agent row still gets a view, and its Status cell shows `◐N`.
+    #[tokio::test]
+    async fn an_unmerged_only_scan_reaches_the_dashboard_status_cell() {
+        use crate::agents::unmerged::{UnmergedItem, UnmergedKey, UnmergedState};
+        use crate::agents::{waves::PlanRef, ProjectAgents};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .project_states
+            .insert(OBS_ALIAS.to_string(), wave_state());
+
+        let item = UnmergedItem {
+            key: UnmergedKey::Plan(PlanRef::from_id("13-02").expect("valid id")),
+            worktree: PathBuf::from("/nonexistent/wt"),
+            branch: None,
+            short_ref: crate::text::Untrusted::from_untrusted_source("a1b2c3d".into()),
+            commits_ahead: Some(1),
+            dirty: Some(0),
+            state: UnmergedState::AwaitingMerge,
+        };
+        app.update(Action::AgentsScanned {
+            per_project: vec![(
+                OBS_ALIAS.to_string(),
+                ProjectAgents {
+                    unmerged: vec![item],
+                    scanned_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                    ..Default::default()
+                },
+            )],
+        });
+        app.ctx.recompute_filtered_aliases();
+
+        assert!(
+            app.ctx.agent_views.contains_key(OBS_ALIAS),
+            "unmerged work alone must give the alias a view"
+        );
+        let screen = render_top_screen(&app);
+        assert!(
+            screen.contains("\u{25D0}1"),
+            "the Status cell must carry the unmerged count:\n{screen}"
+        );
+    }
+
     /// Wait up to five seconds for an `AgentsScanned`, draining every other
     /// action the 20-tick block produces (sessions, reconciliation) meanwhile.
     async fn next_agents_scan(
