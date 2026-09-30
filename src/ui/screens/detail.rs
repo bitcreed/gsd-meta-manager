@@ -8547,6 +8547,13 @@ fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Ve
     ])
 }
 
+/// The Waves pane's `done` glyph; the help legend interpolates it (T-18-63).
+pub(super) const WAVES_GLYPH_DONE: &str = "\u{2713}";
+/// The Waves pane's `running` glyph, also the `▶ active` marker's (I-13).
+pub(super) const WAVES_GLYPH_RUNNING: &str = "\u{25b6}";
+/// The Waves pane's `stalled` glyph.
+pub(super) const WAVES_GLYPH_STALLED: &str = "!";
+
 /// The Waves pane's per-plan state vocabulary ([inferred I-1]): the five
 /// [`PlanState`](crate::agents::waves::PlanState)s one-to-one, plus `Planned`
 /// for a not-done plan of a phase that is not the active one. Each state has a
@@ -8556,7 +8563,10 @@ fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Ve
 enum PaneState {
     Done,
     Running,
-    Leftover,
+    /// Finished on a worktree, not yet in main (quick 260929-szq; formerly
+    /// `Leftover`): a `PlanState::Finished` plan of the active phase, or any
+    /// plan the view's unmerged list names, on any phase (I-8).
+    Unmerged,
     Stalled,
     Queued,
     Planned,
@@ -8566,7 +8576,7 @@ enum PaneState {
 const PANE_STATES: [PaneState; 6] = [
     PaneState::Done,
     PaneState::Running,
-    PaneState::Leftover,
+    PaneState::Unmerged,
     PaneState::Stalled,
     PaneState::Queued,
     PaneState::Planned,
@@ -8577,7 +8587,7 @@ impl PaneState {
         use crate::agents::waves::PlanState;
         match state {
             PlanState::Done => PaneState::Done,
-            PlanState::Finished => PaneState::Leftover,
+            PlanState::Finished => PaneState::Unmerged,
             PlanState::Running => PaneState::Running,
             PlanState::Stalled => PaneState::Stalled,
             PlanState::Queued => PaneState::Queued,
@@ -8586,10 +8596,10 @@ impl PaneState {
 
     fn glyph(self) -> &'static str {
         match self {
-            PaneState::Done => "\u{2713}",
-            PaneState::Running => "\u{25b6}",
-            PaneState::Leftover => "\u{25d0}",
-            PaneState::Stalled => "!",
+            PaneState::Done => WAVES_GLYPH_DONE,
+            PaneState::Running => WAVES_GLYPH_RUNNING,
+            PaneState::Unmerged => crate::agents::unmerged::GLYPH_UNMERGED,
+            PaneState::Stalled => WAVES_GLYPH_STALLED,
             PaneState::Queued => "\u{b7}",
             PaneState::Planned => "\u{25cb}",
         }
@@ -8599,7 +8609,7 @@ impl PaneState {
         match self {
             PaneState::Done => "done",
             PaneState::Running => "running",
-            PaneState::Leftover => "leftover",
+            PaneState::Unmerged => crate::agents::unmerged::LABEL_UNMERGED,
             PaneState::Stalled => "stalled",
             PaneState::Queued => "queued",
             PaneState::Planned => "planned",
@@ -8610,7 +8620,7 @@ impl PaneState {
         let fg = match self {
             PaneState::Done => Color::Green,
             PaneState::Running => Color::Yellow,
-            PaneState::Leftover => Color::Cyan,
+            PaneState::Unmerged => Color::Cyan,
             PaneState::Stalled => Color::Red,
             PaneState::Queued => Color::White,
             PaneState::Planned => Color::DarkGray,
@@ -8631,6 +8641,53 @@ struct PanePlan {
     estimate: Option<u64>,
     actual: Option<u64>,
     state: PaneState,
+    /// Where an `Unmerged` plan's work sits (I-8, I-13); `None` otherwise.
+    hint: Option<UnmergedHint>,
+}
+
+/// The dim tail of an `Unmerged` plan row: `@<ref> +N ~D`, already escaped
+/// (the ref went through `shown()` and `fit_cells(.., 14)`, T-szq-01), plus
+/// whether its worktree is still in use (`▶ active`, I-13).
+#[derive(Debug, Clone, PartialEq)]
+struct UnmergedHint {
+    reference: String,
+    active: bool,
+}
+
+impl UnmergedHint {
+    fn from_item(item: &crate::agents::unmerged::UnmergedItem) -> Self {
+        let mut reference = format!(
+            "@{} {}",
+            fit_cells(&item.short_ref.shown().to_string(), 14),
+            agent_count("+", item.commits_ahead)
+        );
+        if let Some(d) = item.dirty.filter(|d| *d > 0) {
+            reference.push_str(&format!(" ~{d}"));
+        }
+        UnmergedHint {
+            reference,
+            active: item.state == crate::agents::unmerged::UnmergedState::InProgress,
+        }
+    }
+
+    /// ` @ref +N ~D` (leading space included).
+    fn reference_span(&self) -> Span<'static> {
+        Span::styled(
+            format!(" {}", self.reference),
+            Style::default().fg(Color::DarkGray),
+        )
+    }
+
+    /// ` ▶ active` (leading space included).
+    fn active_span() -> Span<'static> {
+        Span::styled(
+            format!(
+                " {WAVES_GLYPH_RUNNING} {}",
+                crate::agents::unmerged::LABEL_ACTIVE
+            ),
+            Style::default().fg(Color::Yellow),
+        )
+    }
 }
 
 impl PanePlan {
@@ -8721,8 +8778,11 @@ impl WavesModel {
 ///   supplies the grouping ONLY when no plan carries a `wave:`; with neither
 ///   the pane is one flat list.
 /// * **State** (D-02): from `view.plan_state` when the view's active phase is
-///   this phase; otherwise `Done` for a summarized plan, else `Queued` on the
-///   active phase and `Planned` on any other.
+///   this phase; otherwise `Done` for a summarized plan, else `Unmerged` for a
+///   plan the view's unmerged list names (on ANY phase, I-8 — mailbot's
+///   finished phase 05 is not its active phase), else `Queued` on the active
+///   phase and `Planned` on any other. An `Unmerged` plan carries its
+///   [`UnmergedHint`].
 fn waves_model(
     phase_number: &str,
     inf: &DiskInference,
@@ -8732,6 +8792,7 @@ fn waves_model(
     use crate::state_reader::disk_status::plan_index;
     use crate::state_reader::phase_num::{phase_key, same_phase};
 
+    let unfiltered = view;
     let view = view.filter(|v| {
         v.active_phase
             .as_ref()
@@ -8748,6 +8809,8 @@ fn waves_model(
         }
         if inf.summarized_plans.iter().any(|s| s == id) {
             PaneState::Done
+        } else if unfiltered.and_then(|v| v.unmerged_plan(id)).is_some() {
+            PaneState::Unmerged
         } else {
             not_done
         }
@@ -8755,13 +8818,19 @@ fn waves_model(
     let make = |id: &str| -> PanePlan {
         let meta = inf.plans.iter().find(|p| p.id == id);
         let tokens = inf.plan_tokens.iter().find(|t| t.id == id);
+        let state = state_of(id);
+        let hint = (state == PaneState::Unmerged)
+            .then(|| unfiltered.and_then(|v| v.unmerged_plan(id)))
+            .flatten()
+            .map(UnmergedHint::from_item);
         PanePlan {
             id: id.to_string(),
             title: meta.and_then(|m| m.title.clone()),
             objective_line: meta.and_then(|m| m.objective_line),
             estimate: tokens.and_then(|t| t.estimate),
             actual: tokens.and_then(|t| t.actual),
-            state: state_of(id),
+            state,
+            hint,
         }
     };
 
@@ -8809,6 +8878,7 @@ fn waves_model(
                             estimate: None,
                             actual: None,
                             state: not_done,
+                            hint: None,
                         },
                     }
                 })
@@ -8858,7 +8928,7 @@ fn waves_model(
     let moving = all.iter().any(|s| {
         matches!(
             s,
-            PaneState::Running | PaneState::Leftover | PaneState::Stalled
+            PaneState::Running | PaneState::Unmerged | PaneState::Stalled
         )
     });
     let shape = if all.is_empty() {
@@ -9137,7 +9207,7 @@ fn plan_tokens_text(plan: &PanePlan) -> Option<String> {
 }
 
 /// Cells the state word takes in a full-width plan row: the widest word
-/// (`leftover`, `running `) plus one separating space.
+/// (`unmerged`, `running `) plus one separating space.
 const WAVES_WORD_CELLS: usize = 9;
 
 /// The narrowest title a plan row keeps its state WORD for ([inferred I-8]):
@@ -9194,6 +9264,26 @@ fn waves_row_line(
             let show_tokens = tokens.is_some()
                 && cells >= base + word_w + tokens_w + min_title.min(8);
             let tokens_w = if show_tokens { tokens_w } else { 0 };
+            // An Unmerged plan's `@ref +N ~D [▶ active]` tail is reserved like
+            // the tokens: the active marker drops first, then the whole hint,
+            // so the line never exceeds `cells` (I-13).
+            let fits = |w: usize| cells >= base + word_w + tokens_w + w + min_title.min(8);
+            let hint_spans: Vec<Span<'static>> = match &p.hint {
+                Some(hint) => {
+                    let reference = hint.reference_span();
+                    let active = UnmergedHint::active_span();
+                    let (rw, aw) = (reference.width(), active.width());
+                    if hint.active && fits(rw + aw) {
+                        vec![reference, active]
+                    } else if fits(rw) {
+                        vec![reference]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                None => Vec::new(),
+            };
+            let hint_w: usize = hint_spans.iter().map(Span::width).sum();
             let mut spans = vec![
                 cursor,
                 Span::raw(indent),
@@ -9207,8 +9297,9 @@ fn waves_row_line(
                 ));
             }
             spans.push(Span::styled(label, Style::default().fg(Color::Cyan)));
-            let room = cells.saturating_sub(base + word_w + tokens_w);
-            let mut used = base + word_w;
+            spans.extend(hint_spans);
+            let room = cells.saturating_sub(base + word_w + hint_w + tokens_w);
+            let mut used = base + word_w + hint_w;
             if let Some(title) = title {
                 if room > 1 {
                     let cut = fit_cells(&title, room - 1);
@@ -9703,7 +9794,7 @@ fn agents_wave_strip(view: &AgentView, cells: usize) -> Line<'static> {
         if wave.current {
             let counts: Vec<String> = [
                 (wave.running, PaneState::Running),
-                (wave.finished, PaneState::Leftover),
+                (wave.finished, PaneState::Unmerged),
                 (wave.stalled, PaneState::Stalled),
                 (wave.queued, PaneState::Queued),
             ]
@@ -9819,21 +9910,38 @@ fn agent_count(prefix: &str, count: Option<u32>) -> String {
     }
 }
 
-/// One list line: the state word padded to five cells, then `label`
-/// truncated to whatever `line_cells` leaves after `tail`.
+/// Cells an Agents-list state word is padded to: the widest word,
+/// `unmerged` (quick 260929-szq, I-9).
+const AGENT_STATE_CELLS: usize = 8;
+
+/// One list line: the state word padded to [`AGENT_STATE_CELLS`], then
+/// `label` truncated to whatever `line_cells` leaves after `tail`.
+///
+/// `pending` (the row's worktree holds work awaiting merge, I-9) replaces the
+/// liveness word with a cyan `unmerged`; an in-progress holder keeps its
+/// liveness word because its agent is still there.
 fn agent_line(
     indent: &str,
     liveness: AgentLiveness,
+    pending: bool,
     label: &str,
     tail: String,
     line_cells: usize,
 ) -> Line<'static> {
-    let state = format!("{:<5}", agent_state_word(liveness));
+    let (word, style) = if pending {
+        (
+            crate::agents::unmerged::LABEL_UNMERGED,
+            Style::default().fg(Color::Cyan),
+        )
+    } else {
+        (agent_state_word(liveness), agent_state_style(liveness))
+    };
+    let state = format!("{word:<AGENT_STATE_CELLS$}");
     let fixed = Span::raw(indent).width() + Span::raw(&*state).width() + 2 + Span::raw(&*tail).width();
     let label = fit_cells(label, line_cells.saturating_sub(fixed).max(1));
     Line::from(vec![
         Span::raw(indent.to_string()),
-        Span::styled(state, agent_state_style(liveness)),
+        Span::styled(state, style),
         Span::raw("  "),
         Span::raw(label),
         Span::raw(tail),
@@ -9884,7 +9992,8 @@ fn agent_list_lines(view: &AgentView, line_cells: usize) -> Vec<Line<'static>> {
             agent_count("~", row.dirty),
             agent_age(view.scanned_at, row.last_activity)
         ));
-        lines.push(agent_line("", row.liveness, &label, tail, line_cells));
+        let pending = view.awaiting_merge_at(&row.path);
+        lines.push(agent_line("", row.liveness, pending, &label, tail, line_cells));
 
         for child in &row.children {
             lines.push(child_line("    ", child, view.scanned_at, line_cells));
@@ -9944,7 +10053,7 @@ fn child_line(
         .map(|t| format!("  {}", t.shown()))
         .unwrap_or_default();
     tail.push_str(&format!("  {}", agent_age(scanned_at, child.last_activity)));
-    agent_line(indent, child.liveness, &label, tail, line_cells)
+    agent_line(indent, child.liveness, false, &label, tail, line_cells)
 }
 
 /// Width at or above which the Driver footer shows every hint.
@@ -19067,6 +19176,7 @@ mod tests {
             estimate: None,
             actual: None,
             state: PaneState::Planned,
+            hint: None,
         };
         assert_eq!(plan_tokens_text(&bare), None);
     }
@@ -23606,6 +23716,193 @@ mod tests {
         }
         let words: std::collections::HashSet<&str> = PANE_STATES.iter().map(|s| s.word()).collect();
         assert_eq!(words.len(), PANE_STATES.len());
+    }
+
+    // ── quick 260929-szq: unmerged worktree work in Waves and Agents ──────
+
+    const MAILBOT_WT: &str = "/m/.claude/worktrees/agent-a486395e992a58454";
+
+    /// Mailbot as observed: active phase 09, and phase 05's five plans
+    /// finished only in one worktree 34 commits ahead with one dirty path.
+    fn mailbot_view(state: crate::agents::unmerged::UnmergedState) -> AgentView {
+        use crate::agents::unmerged::{UnmergedItem, UnmergedKey};
+        AgentView {
+            active_phase: crate::state_reader::phase_num::PhaseNum::parse("09"),
+            unmerged: (1..=5)
+                .map(|n| UnmergedItem {
+                    key: UnmergedKey::Plan(
+                        crate::agents::waves::PlanRef::from_id(&format!("05-0{n}"))
+                            .expect("valid id"),
+                    ),
+                    worktree: std::path::PathBuf::from(MAILBOT_WT),
+                    branch: None,
+                    short_ref: Untrusted::from_untrusted_source("a486395".to_string()),
+                    commits_ahead: Some(34),
+                    dirty: Some(1),
+                    state,
+                })
+                .collect(),
+            ..AgentView::default()
+        }
+    }
+
+    fn mailbot_phase_05(done: &[&str]) -> DiskInference {
+        waves_inference(
+            &[
+                ("05-01-export-core", Some("Export core"), Some(1)),
+                ("05-02-attachments", Some("Attachments"), Some(1)),
+                ("05-03-formats", Some("Formats"), Some(2)),
+                ("05-04-cli", Some("CLI"), Some(2)),
+                ("05-05-docs", Some("Docs"), Some(3)),
+            ],
+            done,
+        )
+    }
+
+    #[test]
+    fn the_unmerged_pane_state_uses_the_shared_glyph_and_word() {
+        assert_eq!(PaneState::Unmerged.word(), crate::agents::unmerged::LABEL_UNMERGED);
+        assert_eq!(PaneState::Unmerged.glyph(), crate::agents::unmerged::GLYPH_UNMERGED);
+        assert_eq!(PaneState::Done.glyph(), WAVES_GLYPH_DONE);
+        assert_eq!(PaneState::Running.glyph(), WAVES_GLYPH_RUNNING);
+        assert_eq!(PaneState::Stalled.glyph(), WAVES_GLYPH_STALLED);
+        assert_eq!(
+            PaneState::from_plan_state(AgentPlanState::Finished),
+            PaneState::Unmerged
+        );
+    }
+
+    #[test]
+    fn a_non_active_phase_finished_on_a_worktree_reads_unmerged_with_its_ref() {
+        use crate::agents::unmerged::UnmergedState;
+        for (state, active) in [
+            (UnmergedState::InProgress, true),
+            (UnmergedState::AwaitingMerge, false),
+        ] {
+            let view = mailbot_view(state);
+            let model = waves_model("05", &mailbot_phase_05(&[]), Some(&view), false);
+            assert_eq!(model.plans().count(), 5);
+            for plan in model.plans() {
+                assert_eq!(plan.state, PaneState::Unmerged, "{plan:?}");
+                assert_eq!(
+                    plan.hint,
+                    Some(UnmergedHint {
+                        reference: "@a486395 +34 ~1".to_string(),
+                        active,
+                    }),
+                    "{plan:?}"
+                );
+            }
+        }
+
+        // A plan main summarized stays Done even when the list names it.
+        let view = mailbot_view(UnmergedState::InProgress);
+        let model = waves_model(
+            "05",
+            &mailbot_phase_05(&["05-01-export-core"]),
+            Some(&view),
+            false,
+        );
+        let first = model.plans().next().expect("a plan");
+        assert_eq!((first.state, first.hint.is_none()), (PaneState::Done, true));
+
+        // Without the view nothing is unmerged: the phase is plainly planned.
+        let model = waves_model("05", &mailbot_phase_05(&[]), None, false);
+        assert!(model.plans().all(|p| p.state == PaneState::Planned));
+    }
+
+    #[test]
+    fn the_unmerged_plan_row_shows_its_hint_and_never_overflows() {
+        use crate::agents::unmerged::UnmergedState;
+        for (state, active) in [
+            (UnmergedState::InProgress, true),
+            (UnmergedState::AwaitingMerge, false),
+        ] {
+            let view = mailbot_view(state);
+            let model = waves_model("05", &mailbot_phase_05(&[]), Some(&view), false);
+            let row = WavesRow {
+                kind: WavesRowKind::Plan { wave: 0, plan: 0 },
+                target: super::super::WavesCursor::Plan("05-01-export-core".to_string()),
+            };
+            let wide = line_text(&waves_row_line(&model, &row, false, 100));
+            assert!(wide.contains("unmerged"), "{wide}");
+            assert!(wide.contains("@a486395 +34 ~1"), "{wide}");
+            assert!(wide.contains("Export core"), "{wide}");
+            assert_eq!(
+                wide.contains(&format!("{WAVES_GLYPH_RUNNING} active")),
+                active,
+                "{wide}"
+            );
+            for cells in [60, 40, 30, 20, 12] {
+                let line = waves_row_line(&model, &row, true, cells);
+                assert!(
+                    line.width() <= cells,
+                    "{cells}: {:?} is {} wide",
+                    line_text(&line),
+                    line.width()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_wave_strip_counts_unmerged_plans() {
+        let view = AgentView {
+            waves: vec![WaveRow {
+                wave: Some(1),
+                finished: 1,
+                queued: 1,
+                current: true,
+                ..WaveRow::default()
+            }],
+            ..AgentView::default()
+        };
+        let strip = line_text(&agents_wave_strip(&view, 120));
+        assert!(strip.contains("1 unmerged"), "{strip}");
+        assert!(!strip.contains("leftover"), "{strip}");
+    }
+
+    #[test]
+    fn agent_rows_holding_work_awaiting_merge_read_unmerged() {
+        use crate::agents::unmerged::UnmergedState;
+        let other = "/wt/agent-other";
+        let mut view = mailbot_view(UnmergedState::AwaitingMerge);
+        view.agents = vec![
+            agent_row(MAILBOT_WT, AgentLiveness::Finished, None),
+            agent_row(other, AgentLiveness::Finished, None),
+        ];
+        let lines: Vec<String> = agent_list_lines(&view, 100)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(lines[0].starts_with("unmerged  "), "{lines:?}");
+        assert!(lines[1].starts_with("done      "), "{lines:?}");
+
+        view.agents[0].liveness = AgentLiveness::Ended;
+        let lines: Vec<String> = agent_list_lines(&view, 100).iter().map(line_text).collect();
+        assert!(lines[0].starts_with("unmerged  "), "an ended holder: {lines:?}");
+
+        // An in-progress holder keeps its liveness word: the agent is there.
+        let mut view = mailbot_view(UnmergedState::InProgress);
+        view.agents = vec![agent_row(MAILBOT_WT, AgentLiveness::Live, None)];
+        let lines: Vec<String> = agent_list_lines(&view, 100).iter().map(line_text).collect();
+        assert!(lines[0].starts_with("live      "), "{lines:?}");
+
+        // Every state word pads to one width, so the labels line up.
+        for liveness in [
+            AgentLiveness::Live,
+            AgentLiveness::Idle,
+            AgentLiveness::Finished,
+            AgentLiveness::Stalled,
+            AgentLiveness::Unknown,
+            AgentLiveness::Ended,
+        ] {
+            assert!(agent_state_word(liveness).len() <= AGENT_STATE_CELLS);
+            let line = line_text(&agent_line("", liveness, false, "L", String::new(), 40));
+            assert_eq!(line.find('L'), Some(AGENT_STATE_CELLS + 2), "{line:?}");
+        }
+        let line = line_text(&agent_line("", AgentLiveness::Ended, true, "L", String::new(), 40));
+        assert_eq!(line.find('L'), Some(AGENT_STATE_CELLS + 2), "{line:?}");
     }
 
     #[test]
