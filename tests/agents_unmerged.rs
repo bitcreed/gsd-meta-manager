@@ -118,8 +118,15 @@ fn a_squash_merged_summary_is_cleared_although_the_branch_stays_ahead() {
         return;
     };
     put(&wt, SUMMARY_13_01, "summary\n", true);
-    // The squash: main gains the same file under its own commit.
-    put(&root, SUMMARY_13_01, "summary\n", true);
+    // The squash: main gains the same file under its own commit. Its own
+    // message, so the commit cannot come out byte-identical to the worktree's
+    // (same parent, tree, author and second would give the same sha).
+    put(&root, SUMMARY_13_01, "summary\n", false);
+    assert!(git(&root, &["add", SUMMARY_13_01]));
+    assert!(git(
+        &root,
+        &["commit", "-m", "squash: phase 13 (#1)", "--quiet"]
+    ));
 
     let scan = scan(&root);
     assert!(scan.unmerged.is_empty(), "{:?}", scan.unmerged);

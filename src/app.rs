@@ -1783,7 +1783,12 @@ impl App {
                     }
                     // No entry for a project with nothing to show, so its
                     // dashboard row stays byte-identical to today's (D-C14).
-                    if agents.rows.is_empty() && agents.worktreeless.is_empty() {
+                    // Unmerged worktree work alone is something to show: its
+                    // `◐N` is a pending action (quick 260929-szq, I-7).
+                    if agents.rows.is_empty()
+                        && agents.worktreeless.is_empty()
+                        && agents.unmerged.is_empty()
+                    {
                         continue;
                     }
                     let state = self

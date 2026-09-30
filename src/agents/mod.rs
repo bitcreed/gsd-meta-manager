@@ -41,6 +41,7 @@
 pub mod adapters;
 pub mod fixers;
 pub mod processes;
+pub mod unmerged;
 pub mod waves;
 pub mod worktrees;
 
@@ -295,6 +296,10 @@ pub struct ProjectAgents {
     /// The code-review fix-run estimate ([`fixers::estimate`]); `None` unless
     /// a running (`Live` or `Idle`) unattributed `gsd-code-fixer` row exists.
     pub fixer_estimate: Option<fixers::FixerEstimate>,
+    /// Work finished on a linked worktree whose SUMMARY main does not hold
+    /// ([`unmerged::detect`], quick 260929-szq), sorted by key. Covers every
+    /// non-prunable worktree, agent or not.
+    pub unmerged: Vec<unmerged::UnmergedItem>,
 }
 
 /// Run one adapter, turning a panic into an empty report.
@@ -486,6 +491,9 @@ pub fn scan_project_with_probe(
         })
         .collect();
     rows.sort_by(|a, b| a.path.cmp(&b.path));
+    // Names-only reads over each worktree's `.planning/`; git counts only for
+    // a holder that is not already an agent row (quick 260929-szq, I-3).
+    let unmerged = unmerged::detect(&core, &rows, project_root);
 
     let raw = |value: &Option<Untrusted>| {
         value
@@ -515,6 +523,7 @@ pub fn scan_project_with_probe(
         base_sha: core.base_sha.clone(),
         scanned_at: Some(now),
         fixer_estimate,
+        unmerged,
     }
 }
 

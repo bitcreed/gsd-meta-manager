@@ -33,6 +33,7 @@ use regex::Regex;
 
 use super::adapters::ChildAgent;
 use super::fixers::FixerEstimate;
+use super::unmerged::{UnmergedItem, UnmergedKey, UnmergedState, GLYPH_UNMERGED, LABEL_UNMERGED};
 use super::{AgentLiveness, AgentRow, ProjectAgents};
 use crate::state_reader::disk_status::{plan_index, DiskInference};
 use crate::state_reader::phase_num::{same_phase, PhaseNum};
@@ -103,8 +104,9 @@ impl PlanRef {
 pub enum PlanState {
     /// Its SUMMARY is paired in the main worktree.
     Done,
-    /// Not done in main, but its agent's worktree holds its SUMMARY or its
-    /// agent reads `Finished`: complete, not yet merged.
+    /// Not done in main, but its agent's worktree holds its SUMMARY, its
+    /// agent reads `Finished`, or the scan lists it as unmerged worktree work
+    /// in either state (quick 260929-szq, I-8): complete, not yet merged.
     Finished,
     /// A `Live` or `Idle` agent is attributed to it.
     Running,
@@ -188,6 +190,9 @@ pub struct AgentView {
     /// The code-review fix-run estimate, copied from
     /// [`ProjectAgents::fixer_estimate`]; drives the fixer summary forms.
     pub fixers: Option<FixerEstimate>,
+    /// Unmerged worktree work, copied from [`ProjectAgents::unmerged`]
+    /// (quick 260929-szq). Every UI surface reads this one scan-time list.
+    pub unmerged: Vec<UnmergedItem>,
 }
 
 /// Strip the punctuation a sentence wraps around a captured token.
@@ -286,15 +291,17 @@ fn disk_for<'a>(state: &'a ProjectState, phase: &PhaseNum) -> Option<&'a DiskInf
     })
 }
 
-/// The state of one plan, from its main-worktree SUMMARY and the rows
+/// The state of one plan, from its main-worktree SUMMARY, whether the scan
+/// lists it as unmerged worktree work (`listed`, either state), and the rows
 /// attributed to it.
-fn plan_state(done_in_main: bool, rows: &[&AgentRow]) -> PlanState {
+fn plan_state(done_in_main: bool, listed: bool, rows: &[&AgentRow]) -> PlanState {
     if done_in_main {
         return PlanState::Done;
     }
-    if rows
-        .iter()
-        .any(|r| r.summary_in_worktree || r.liveness == AgentLiveness::Finished)
+    if listed
+        || rows
+            .iter()
+            .any(|r| r.summary_in_worktree || r.liveness == AgentLiveness::Finished)
     {
         return PlanState::Finished;
     }
@@ -366,12 +373,18 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
             .filter(|r| r.plan.as_ref() == Some(plan))
             .collect()
     };
+    let is_listed = |plan: &PlanRef| {
+        agents
+            .unmerged
+            .iter()
+            .any(|i| matches!(&i.key, UnmergedKey::Plan(p) if p == plan))
+    };
     let is_done = |stem: &str| di.summarized_plans.iter().any(|s| s == stem);
     let state_of = |stem: &str| {
-        let rows = PlanRef::from_stem(stem)
-            .map(|p| rows_for(&p))
-            .unwrap_or_default();
-        plan_state(is_done(stem), &rows)
+        let plan = PlanRef::from_stem(stem);
+        let rows = plan.as_ref().map(rows_for).unwrap_or_default();
+        let listed = plan.as_ref().is_some_and(is_listed);
+        plan_state(is_done(stem), listed, &rows)
     };
 
     let mut totals = WaveRow::default();
@@ -385,14 +398,24 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
             let key = PlanRef::from_stem(stem).ok_or_else(|| stem.clone());
             universe.insert(key, true);
         }
-        for plan in agents.rows.iter().filter_map(|r| r.plan.as_ref()) {
+        let listed_plans = agents.unmerged.iter().filter_map(|i| match &i.key {
+            UnmergedKey::Plan(p) => Some(p),
+            UnmergedKey::Quick(_) => None,
+        });
+        for plan in agents
+            .rows
+            .iter()
+            .filter_map(|r| r.plan.as_ref())
+            .chain(listed_plans)
+        {
             if plan.phase == active_phase {
                 universe.entry(Ok(plan.clone())).or_insert(false);
             }
         }
         for (key, done) in &universe {
             let rows = key.as_ref().map(rows_for).unwrap_or_default();
-            let s = plan_state(*done, &rows);
+            let listed = key.as_ref().is_ok_and(is_listed);
+            let s = plan_state(*done, listed, &rows);
             tally(&mut totals, s);
             // The summarized stem when one names this plan, else the label.
             let id = match key {
@@ -454,7 +477,26 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
         worktreeless: agents.worktreeless.clone(),
         scanned_at: agents.scanned_at,
         fixers: agents.fixer_estimate.clone(),
+        unmerged: agents.unmerged.clone(),
     }
+}
+
+/// Wrap an active ladder with the unmerged count (I-7): the widest form gains
+/// ` · ◐N unmerged`, then every form gains ` · ◐N`, then the narrowest form
+/// stands bare. `n == 0` returns `forms` unchanged.
+fn with_unmerged(forms: Vec<String>, n: u32) -> Vec<String> {
+    if n == 0 || forms.is_empty() {
+        return forms;
+    }
+    let mut out = Vec::with_capacity(forms.len() + 2);
+    out.push(format!("{} \u{b7} {GLYPH_UNMERGED}{n} {LABEL_UNMERGED}", forms[0]));
+    out.extend(
+        forms
+            .iter()
+            .map(|f| format!("{f} \u{b7} {GLYPH_UNMERGED}{n}")),
+    );
+    out.extend(forms.last().cloned());
+    out
 }
 
 impl AgentView {
@@ -478,6 +520,44 @@ impl AgentView {
         all()
             .find(|p| plan_index(&p.id).as_ref() == Some(&index))
             .map(|p| p.state)
+    }
+
+    /// Every unmerged item the scan listed — plans and quick tasks, in both
+    /// states (I-7): the dashboard's `◐N`.
+    pub fn pending_unmerged(&self) -> u32 {
+        u32::try_from(self.unmerged.len()).unwrap_or(u32::MAX)
+    }
+
+    /// The unmerged item for the plan `stem` names (`13-02-slug` finds
+    /// `Plan(13-02)`), in either state.
+    pub fn unmerged_plan(&self, stem: &str) -> Option<&UnmergedItem> {
+        let (phase, plan) = plan_index(stem)?;
+        let wanted = PlanRef { phase, plan };
+        self.unmerged
+            .iter()
+            .find(|i| matches!(&i.key, UnmergedKey::Plan(p) if *p == wanted))
+    }
+
+    /// How many unmerged plans (either state) belong to the phase `phase_key`
+    /// names, pad-insensitively; 0 for a non-numeric key.
+    pub fn unmerged_in_phase(&self, phase_key: &str) -> u32 {
+        let Some(phase) = PhaseNum::parse(phase_key) else {
+            return 0;
+        };
+        let n = self
+            .unmerged
+            .iter()
+            .filter(|i| matches!(&i.key, UnmergedKey::Plan(p) if p.phase == phase))
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
+    }
+
+    /// Whether the worktree at `path` is the holder of an item that is
+    /// awaiting merge (I-9).
+    pub fn awaiting_merge_at(&self, path: &std::path::Path) -> bool {
+        self.unmerged
+            .iter()
+            .any(|i| i.state == UnmergedState::AwaitingMerge && i.worktree == path)
     }
 
     /// Whether anything is running: a row that is `Live` or `Idle`
@@ -505,29 +585,48 @@ impl AgentView {
     /// already shows the phase, and at the common 13-cell width a right-drop
     /// would keep `P13 · w2/11` and hide the running count, which is the point.
     ///
-    /// Only a running view has a summary ([`Self::is_active`], CR-01).
+    /// A running view ([`Self::is_active`], CR-01) picks a ladder.
     /// Executor mode (the active phase has plans, and some Live or Idle row is
-    /// attributed to one of them) yields the wave ladder, in which a
-    /// `Finished` plan still counts toward done; otherwise fixer mode (an
-    /// estimate with at least one fixer, [`Self::fixer_forms`]) yields the fixer
-    /// ladder; otherwise the view yields `N agents`, counting running rows and
-    /// worktree-less agents only. An inactive view whose rows include stalled
-    /// ones yields `N stalled`; anything else yields no forms and the cell is
-    /// left alone. So a leftover — `Finished`, or `Stalled` inside the age
-    /// bound — beside a live worktree-less agent never picks the ladder.
+    /// attributed to one of them) yields the wave ladder, whose `done` counts
+    /// plans summarized in MAIN only (quick 260929-szq, UX-SPEC (d));
+    /// otherwise fixer mode (an estimate with at least one fixer,
+    /// [`Self::fixer_forms`]) yields the fixer ladder; otherwise the view
+    /// yields `N agents`, counting running rows and worktree-less agents only.
+    /// So a leftover — `Finished`, or `Stalled` inside the age bound — beside
+    /// a live worktree-less agent never picks the ladder.
+    ///
+    /// Unmerged worktree work (N = [`Self::pending_unmerged`], I-7) wraps any
+    /// active ladder: `forms[0] · ◐N unmerged`, then each form `· ◐N`, then
+    /// the narrowest form bare. An inactive view yields `◐N unmerged`, `◐N`;
+    /// with S stalled rows `◐N unmerged · S stalled`, `◐N · S stalled`,
+    /// `S stalled` (the yellow `ends_with("stalled")` rule still holds); with
+    /// only stalled rows `S stalled`; with neither, no forms, and the cell is
+    /// left alone.
     pub fn summary_forms(&self) -> Vec<String> {
+        let n = self.pending_unmerged();
         if !self.is_active() {
             let stalled = self
                 .agents
                 .iter()
                 .filter(|r| r.liveness == AgentLiveness::Stalled)
                 .count();
-            return if stalled > 0 {
-                vec![format!("{stalled} stalled")]
-            } else {
-                Vec::new()
+            let g = GLYPH_UNMERGED;
+            return match (n, stalled) {
+                (0, 0) => Vec::new(),
+                (0, s) => vec![format!("{s} stalled")],
+                (n, 0) => vec![format!("{g}{n} {LABEL_UNMERGED}"), format!("{g}{n}")],
+                (n, s) => vec![
+                    format!("{g}{n} {LABEL_UNMERGED} \u{b7} {s} stalled"),
+                    format!("{g}{n} \u{b7} {s} stalled"),
+                    format!("{s} stalled"),
+                ],
             };
         }
+        with_unmerged(self.active_forms(), n)
+    }
+
+    /// The ladder of a running view, before the unmerged count is appended.
+    fn active_forms(&self) -> Vec<String> {
 
         let executor_mode = match &self.active_phase {
             Some(phase) => {
@@ -562,7 +661,9 @@ impl AgentView {
             .map(PhaseNum::padded)
             .unwrap_or_default();
         let r = self.running;
-        let d = self.done + self.finished;
+        // Main only (UX-SPEC (d)): work finished on a worktree is the separate
+        // `◐N` segment, never folded into `done`.
+        let d = self.done;
         let t = self.plan_total;
         match (self.current_wave, self.max_wave) {
             (Some(c), Some(m)) => vec![
