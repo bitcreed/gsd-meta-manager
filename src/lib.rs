@@ -15,6 +15,8 @@ pub mod executor;
 /// The `GSDMM_EXPERIMENTAL_FEATURES` startup flag (quick task 260917-fko, D1).
 pub mod experimental;
 pub mod journal;
+/// Resolve the CLI's positional `<alias|path>` launch target (quick 260930-vvk).
+pub mod launch_target;
 pub mod main_loop;
 pub mod project_creator;
 pub mod registry;

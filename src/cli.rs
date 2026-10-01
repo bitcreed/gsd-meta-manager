@@ -18,6 +18,31 @@ pub struct Cli {
     /// Path to config file (overrides default location)
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
+
+    // The positional launch target (quick 260930-vvk, D-01). Not an
+    // argv-to-identity declaration: it is a raw membership lookup against the
+    // registry that creates nothing (the same class as `Remove`'s D-17-3), and
+    // it is echoed back only through `text::render_for_terminal` inside
+    // `launch_target::LaunchTargetError`'s `Display`.
+    //
+    // **Why `#[command(args_conflicts_with_subcommands = true)]` is NOT on
+    // `Cli`.** It was the operator's named mechanism, and it breaks the very
+    // "subcommands keep priority" rule it was meant to enforce. clap_builder
+    // 4.6.7 sets `valid_arg_found` for ANY long flag, the global `--config`
+    // included (parser.rs:821), and once that is set `possible_subcommand`
+    // stops matching subcommand names (parser.rs:592). With the attribute,
+    // `--config X list` parses as target "list" and `--config X add p` is an
+    // error — and the TUI respawns itself as `current_exe() --config X drive …`
+    // (`driver::spawn::drive_argv`) with /dev/null stdio, so that respawn would
+    // break invisibly. clap's default already gives subcommands priority; the
+    // one gap (`<target> list`) is closed by `Cli::try_parse_checked_from`'s
+    // post-parse conflict check instead.
+    /// Alias or path of a registered project to open directly
+    ///
+    /// An alias that shares its name with a subcommand (e.g. `list`) must be
+    /// opened by its path instead, such as `gsd-meta-manager ./list` or the
+    /// absolute path.
+    pub target: Option<String>,
 }
 
 #[derive(Subcommand)]

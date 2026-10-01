@@ -519,8 +519,39 @@ async fn main() -> anyhow::Result<()> {
         },
         None => {
             // TUI mode
-            let mut terminal = tui::init();
+            //
+            // `App::new` runs BEFORE `tui::init()` (quick 260930-vvk): the
+            // launch target is resolved against the loaded registry and a
+            // refusal must exit before any terminal setup (D-03). As a side
+            // effect, a config-load error no longer leaves the terminal in raw
+            // mode on the alternate screen.
             let mut app = App::new(config_path)?;
+            let launch_alias = match cli.target.as_deref() {
+                None => None,
+                Some(target) => {
+                    let cwd = match std::env::current_dir() {
+                        Ok(cwd) => cwd,
+                        Err(err) => {
+                            eprintln!("Error: cannot resolve the current directory: {err}");
+                            std::process::exit(1);
+                        }
+                    };
+                    match gsd_meta_manager::launch_target::resolve_launch_target(
+                        &app.ctx.config,
+                        target,
+                        &cwd,
+                    ) {
+                        Ok(alias) => Some(alias),
+                        Err(err) => {
+                            // `Display` escapes the target and path (D-21-3).
+                            eprintln!("Error: {err}");
+                            eprintln!("{}", err.suggestion());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            };
+            let mut terminal = tui::init();
             app.load_project_states();
 
             app.init_change_tracker();
@@ -600,6 +631,25 @@ async fn main() -> anyhow::Result<()> {
             // until the first 20-tick scan lands five seconds later.
             app.ctx.last_outcomes =
                 gsd_meta_manager::driver::reconcile::last_ended_outcomes(&app.ctx.config.projects);
+
+            // The launch target opens through the overview's own Enter path,
+            // after every piece of startup state is in place, so the first
+            // frame is the project view and Esc behaves as if drilled in (D-05).
+            if let Some(alias) = launch_alias {
+                if !app.open_project_view(&alias) {
+                    tracing::warn!(
+                        "launch target {} resolved but its project view could not be opened",
+                        gsd_meta_manager::text::render_for_terminal(&alias)
+                    );
+                    app.ctx.status_message = Some((
+                        format!(
+                            "Could not open project '{}'",
+                            gsd_meta_manager::text::render_for_terminal(&alias)
+                        ),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
 
             event_bus.spawn_crossterm_reader();
             // Keep the 250ms tick. It drives the 20-tick session poll and the

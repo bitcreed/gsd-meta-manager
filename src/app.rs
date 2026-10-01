@@ -2419,6 +2419,32 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Open `alias`'s project view at launch, exactly as if the user had
+    /// selected its overview row and pressed Enter (quick 260930-vvk, D-05).
+    ///
+    /// Returns whether the project view is now on top. Does nothing (and
+    /// returns `false`) unless the root overview is the only screen, or when
+    /// `alias` is not among the overview's rows.
+    ///
+    /// It drives the overview's OWN Enter handler rather than pushing a
+    /// `DetailScreen` itself: a parallel push would drift from Enter the first
+    /// time Enter gains behaviour, and Esc would stop being identical to a
+    /// drilled-in view. Selecting the row first is what makes Esc land on the
+    /// overview with this project selected.
+    pub fn open_project_view(&mut self, alias: &str) -> bool {
+        if self.screen_stack.len() != 1 {
+            return false;
+        }
+        let Some(index) = self.ctx.filtered_aliases.iter().position(|a| a == alias) else {
+            return false;
+        };
+        self.ctx.table_state.select(Some(index));
+        self.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        self.screen_stack
+            .last()
+            .is_some_and(|top| top.name() == crate::ui::screens::detail::DetailScreen::NAME)
+    }
+
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         // A key between two presses means they are not a double-click (I-6).
         self.click_tracker.reset();
@@ -5807,6 +5833,60 @@ mod tests {
         app.mouse_capture = true;
         app.update(left_press(5, row));
         assert_eq!(app.ctx.table_state.selected(), Some(2));
+    }
+
+    // ── Launch target (quick 260930-vvk) ────────────────────────────────
+
+    #[test]
+    fn launch_target_open_project_view_puts_the_detail_view_on_top() {
+        let mut app = mouse_app(&["proja", "projb", "projc"]);
+        assert!(app.open_project_view("projb"), "a registered alias opens");
+        assert_eq!(app.screen_stack.len(), 2, "overview + project view");
+        assert_eq!(
+            app.screen_stack.last().map(|s| s.name().to_string()).as_deref(),
+            Some(crate::ui::screens::detail::DetailScreen::NAME)
+        );
+        assert_eq!(app.ctx.selected_alias().as_deref(), Some("projb"));
+    }
+
+    #[test]
+    fn launch_target_esc_matches_a_drilled_in_detail_view() {
+        fn esc_presses_to_overview(app: &mut App) -> usize {
+            let mut presses = 0;
+            while app.screen_stack.len() > 1 && presses < 5 {
+                press(app, KeyCode::Esc);
+                presses += 1;
+            }
+            presses
+        }
+
+        let mut launched = mouse_app(&["proja", "projb", "projc"]);
+        assert!(launched.open_project_view("projb"));
+
+        let mut drilled = mouse_app(&["proja", "projb", "projc"]);
+        press(&mut drilled, KeyCode::Char('j'));
+        press(&mut drilled, KeyCode::Enter);
+        assert_eq!(drilled.screen_stack.len(), 2, "j + Enter drilled in");
+
+        let launched_presses = esc_presses_to_overview(&mut launched);
+        let drilled_presses = esc_presses_to_overview(&mut drilled);
+        assert_eq!(launched.screen_stack.len(), 1, "Esc reached the overview");
+        assert_eq!(drilled.screen_stack.len(), 1, "Esc reached the overview");
+        assert_eq!(
+            launched_presses, drilled_presses,
+            "a launched project view must take exactly as many Esc presses as a drilled-in one"
+        );
+        for app in [&launched, &drilled] {
+            assert_eq!(app.ctx.table_state.selected(), Some(1));
+            assert_eq!(app.ctx.selected_alias().as_deref(), Some("projb"));
+        }
+    }
+
+    #[test]
+    fn launch_target_open_project_view_refuses_an_absent_alias() {
+        let mut app = mouse_app(&["proja", "projb", "projc"]);
+        assert!(!app.open_project_view("absent"));
+        assert_eq!(app.screen_stack.len(), 1, "nothing was pushed");
     }
 
     #[test]
