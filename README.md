@@ -183,7 +183,7 @@ The binary is at `target/release/gsd-meta-manager`.
 gsd-meta-manager --help
 TUI command center for GSD projects
 
-Usage: gsd-meta-manager [OPTIONS] [COMMAND]
+Usage: gsd-meta-manager [OPTIONS] [TARGET] [COMMAND]
 
 Commands:
   add     Add a GSD project to the registry
@@ -191,10 +191,21 @@ Commands:
   list    List all registered projects
   help    Print this message or the help of the given subcommand(s)
 
+Arguments:
+  [TARGET]
+          Alias or path of a registered project to open directly
+
+          An alias that shares its name with a subcommand (e.g. `list`) must be opened by its path instead, such as `gsd-meta-manager ./list` or the absolute path.
+
 Options:
-      --config <CONFIG>  Path to config file (overrides default location)
-  -h, --help             Print help
-  -V, --version          Print version
+      --config <CONFIG>
+          Path to config file (overrides default location)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 ```
 
 ### Key bindings
@@ -315,6 +326,21 @@ To start with mouse capture off, set `"mouse": false` under `preferences` in
 `config.json` (see [Configuration](docs/CONFIGURATION.md)).
 
 ### Examples
+
+Open a project directly, by alias, from inside it (any subdirectory works too),
+or by path:
+
+```bash
+gsd-meta-manager my-app
+gsd-meta-manager .
+gsd-meta-manager ~/projects/my-app
+```
+
+The TUI starts on that project's detail view; Esc returns to the overview with
+that project selected. A target that is neither a registered alias nor inside a
+registered project exits with a hint to run `gsd-meta-manager add <path>`. An
+alias that collides with a subcommand name (e.g. a project registered as `list`)
+must be opened by its path, such as `gsd-meta-manager ./list`.
 
 Register a project with a custom alias:
 

@@ -62,6 +62,34 @@ fn an_existing_unregistered_path_is_refused_before_the_tui() {
 }
 
 #[test]
+fn a_registered_alias_named_list_still_runs_the_list_subcommand() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let root = canon(tmp.path());
+    let project = root.join("list");
+    std::fs::create_dir_all(project.join(".planning")).expect("project dir");
+    let config = root.join("config.json");
+
+    let added = run_bin(&root, &config, &["add", project.to_str().unwrap()]);
+    assert!(
+        added.status.success(),
+        "registering <tmp>/list failed: {}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    let out = run_bin(&root, &config, &["list"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "`list` must run the subcommand even with a project aliased `list` (D-01); stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("ALIAS"), "no list table header: {stdout}");
+    assert!(stdout.contains("list"), "the `list` project is not listed: {stdout}");
+    assert!(!stdout.contains(ALT_SCREEN_ENTER), "the TUI started: {stdout:?}");
+}
+
+#[test]
 fn an_unknown_alias_is_refused_before_the_tui() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let root = canon(tmp.path());

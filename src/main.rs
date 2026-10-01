@@ -3,7 +3,6 @@ mod tui;
 
 use gsd_meta_manager::app::App;
 use gsd_meta_manager::watcher::FileWatcher;
-use clap::Parser;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
 use gsd_meta_manager::config::{load_config, save_config, Config};
 use gsd_meta_manager::driver::{drive, DriveArgs, RawDriveArgs};
@@ -77,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
 
     color_eyre::install().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_checked();
     let config_path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.command {

@@ -45,6 +45,39 @@ pub struct Cli {
     pub target: Option<String>,
 }
 
+// The post-parse conflict check below is what replaces
+// `args_conflicts_with_subcommands = true` (see the comment on `Cli::target`).
+// clap's default already gives subcommands priority over the positional; the
+// only combination it accepts that the attribute would have refused is
+// `<target> <subcommand>`, and that is refused here as a usage error instead.
+impl Cli {
+    /// Parse `argv`, refusing a launch target combined with a subcommand.
+    pub fn try_parse_checked_from<I, T>(argv: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let cli = <Self as Parser>::try_parse_from(argv)?;
+        if let (Some(target), Some(_)) = (&cli.target, &cli.command) {
+            let msg = format!(
+                "the project target '{}' cannot be combined with a subcommand; \
+                 to open a project whose alias is a subcommand name, pass its path \
+                 instead (e.g. `./list`)",
+                crate::text::render_for_terminal(target)
+            );
+            return Err(<Self as clap::CommandFactory>::command()
+                .error(clap::error::ErrorKind::ArgumentConflict, msg));
+        }
+        Ok(cli)
+    }
+
+    /// Parse the process argv with [`Cli::try_parse_checked_from`], letting
+    /// clap print and exit on error (2 for usage errors, 0 for help/version).
+    pub fn parse_checked() -> Self {
+        Self::try_parse_checked_from(std::env::args_os()).unwrap_or_else(|err| err.exit())
+    }
+}
+
 #[derive(Subcommand)]
 pub enum Commands {
     /// Add a GSD project to the registry
@@ -518,4 +551,116 @@ mod tests {
             ),
         }
     }
+
+    // ── The positional project target (quick 260930-vvk) ───────────────
+
+    fn checked(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_checked_from(std::iter::once("gsd-meta-manager").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn the_project_target_loses_to_a_same_named_subcommand() {
+        let cli = checked(&["list"]).expect("`list` parses");
+        assert!(
+            matches!(cli.command, Some(Commands::List)),
+            "`list` must stay the subcommand, not become a launch target (D-01)"
+        );
+        assert_eq!(cli.target, None);
+    }
+
+    #[test]
+    fn the_project_target_does_not_swallow_a_subcommand_after_config() {
+        let cli = checked(&["--config", "/c.json", "list"]).expect("`--config X list` parses");
+        assert!(
+            matches!(cli.command, Some(Commands::List)),
+            "`--config X list` must parse as the list subcommand. This pins the deviation from \
+             `args_conflicts_with_subcommands`, which turns `list` into a target here because \
+             clap marks any long flag as a valid arg first — the same leading `--config` the \
+             TUI's `drive` respawn emits with /dev/null stdio, so it would break invisibly"
+        );
+        assert!(cli.config.is_some());
+        assert_eq!(cli.target, None);
+    }
+
+    #[test]
+    fn the_project_target_leaves_the_drive_respawn_argv_parsing() {
+        let argv = crate::driver::spawn::drive_argv(
+            std::path::Path::new("/cfg/config.json"),
+            "demo",
+            "/gsd-progress",
+            "run1",
+            None,
+        );
+        let cli = Cli::try_parse_checked_from(
+            std::iter::once(OsStringArg::from("gsd-meta-manager")).chain(argv),
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "the TUI's own `--config X drive …` respawn argv no longer parses: {e}\nThat \
+                 child's stdio is /dev/null, so a parser regression here is invisible"
+            )
+        });
+        assert!(cli.config.is_some(), "the respawn's --config was dropped");
+        assert_eq!(cli.target, None, "the respawn argv grew a launch target");
+        match cli.command {
+            Some(Commands::Drive { alias, .. }) => assert_eq!(alias, "demo"),
+            other => panic!(
+                "the respawn argv resolved to {:?} instead of Commands::Drive; the TUI can no \
+                 longer launch its driver",
+                other.is_some()
+            ),
+        }
+    }
+
+    #[test]
+    fn the_project_target_combines_with_config_in_either_order() {
+        for args in [
+            &["--config", "/c.json", "ttbook"][..],
+            &["ttbook", "--config", "/c.json"][..],
+        ] {
+            let cli = checked(args).unwrap_or_else(|e| panic!("{args:?} did not parse: {e}"));
+            assert_eq!(cli.target.as_deref(), Some("ttbook"), "{args:?}");
+            assert_eq!(
+                cli.config.as_deref(),
+                Some(std::path::Path::new("/c.json")),
+                "{args:?}"
+            );
+            assert!(cli.command.is_none(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn the_project_target_with_a_subcommand_is_a_usage_conflict() {
+        let err = match checked(&["ttbook", "list"]) {
+            Err(err) => err,
+            Ok(_) => panic!("a target riding along with a subcommand must be refused"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let msg = err.to_string();
+        assert!(msg.contains("ttbook"), "the refusal must name the target: {msg}");
+        assert!(msg.contains("path"), "the refusal must point at opening by path: {msg}");
+    }
+
+    #[test]
+    fn the_project_target_accepts_dot() {
+        let cli = checked(&["."]).expect("`.` parses");
+        assert_eq!(cli.target.as_deref(), Some("."));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn the_project_target_is_documented_in_help() {
+        let mut cmd = Cli::command();
+        let long = cmd.render_long_help().to_string();
+        assert!(
+            long.contains("Alias or path of a registered project to open directly"),
+            "{long}"
+        );
+        assert!(
+            long.contains("must be") && long.contains("`list`") && long.contains("path"),
+            "the long help must carry the open-by-path collision note (D-04): {long}"
+        );
+    }
+
+    type OsStringArg = std::ffi::OsString;
 }
