@@ -1,13 +1,13 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.10.0
+milestone: v1.11.0
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
-stopped_at: v1.10.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-10-01T04:13:43.256Z"
-last_activity: 2026-09-29
-last_activity_desc: v1.10.0 released — Config Scope Navigation
+stopped_at: v1.11.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
+last_updated: "2026-10-01T04:30:00.000Z"
+last_activity: 2026-09-30
+last_activity_desc: v1.11.0 released — Direct Project Launch
 state_head: 333d1636ebb385f1ebf7d561d0a470e5ef94975e
 progress:
   total_phases: 10
@@ -15,7 +15,7 @@ progress:
   total_plans: 7
   completed_plans: 112
   percent: 58
-milestone_name: Config Scope Navigation
+milestone_name: Direct Project Launch
 ---
 
 # Project State
@@ -32,7 +32,15 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: v1.10.0 shipped 2026-09-29 (interim release; v2.0 milestone still open)
+Status: v1.11.0 shipped 2026-09-30 (interim release; v2.0 milestone still open)
+  Quick tasks 260929-szq (completed-but-unmerged worktree work surfaced: dashboard ◐N, Waves pane /
+  Agents sub-view unmerged state, Roadmap unmerged status + lane glyph, Work State help legend) and
+  260930-vvk (`gsd-meta-manager <alias|path>` opens straight into that project's view; path targets
+  resolve to the nearest registered root; Esc returns to the overview; subcommands keep priority;
+  unknown target exits 1 before terminal setup). `./scripts/pre-tag-check.sh --container v1.11.0`
+  exit **0**, all five gates PASS, git banner MATCH, 58 suites / **2882 passed / 0 failed** / 15
+  ignored. Router's next is Phase 19, whose loop is halted by user decision — ask first.
+Earlier (v1.10.0 release, 2026-09-29):
   Quick tasks 260927-gi9 (Roadmap lane gutter over visible rows only), 260927-t3s (7:Cfg `g`
   project/global scope toggle with visible, clickable scope strip) and 260929-g9u (arrow-key focus
   and ←/→ switching on the scope strip). `./scripts/pre-tag-check.sh --container v1.10.0` exit
@@ -592,7 +600,16 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-29
+Last session: 2026-09-30
+Stopped at: v1.11.0 released (Direct Project Launch)
+Release: `Cargo.toml` 1.10.0 -> 1.11.0; `cargo update` moved mac_address 1.1.8 -> 1.2.0 (adds nix
+0.30.1) and yoke-derive 0.8.3 -> 0.8.4; still held by upstream `=` pins: generic-array 0.14.7
+(0.14.9), unicode-width 0.2.0 (0.2.2). Container pre-tag check green (see Current Position). Open
+follow-ups unchanged from v1.9.0.
+Phase 19's gap-closure loop is halted by user decision — do not resume without asking.
+Resume file: None
+
+Previous session (v1.10.0 release, 2026-09-29):
 Stopped at: v1.10.0 released (Config Scope Navigation)
 Release: `Cargo.toml` 1.9.0 -> 1.10.0; `cargo update` relocked only this crate's own entry; still
 held by upstream `=` pins: generic-array 0.14.7 (0.14.9), unicode-width 0.2.0 (0.2.2). Container
