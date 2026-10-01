@@ -92,8 +92,46 @@ pub fn resolve_launch_target(
         return Ok(target.to_string());
     }
 
-    let _ = cwd;
-    Err(not_found())
+    // Step 2 (D-02): the target as a path. `join` keeps an absolute target as
+    // it is; a path that does not exist is simply not found.
+    let Ok(canonical_target) = cwd.join(target).canonicalize() else {
+        return Err(not_found());
+    };
+
+    // The nearest registered root that is the target or a component-wise
+    // ancestor of it. `Path::starts_with` compares whole components, never a
+    // string prefix, so /x/foo can never claim /x/foobar. An exact match is
+    // simply the deepest case.
+    let best = config
+        .projects
+        .iter()
+        .filter_map(|(alias, project)| {
+            // A stale root (no longer on disk) falls back to its stored path
+            // rather than aborting the lookup, so one dead entry can never
+            // block launching any other project.
+            let root = project
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| project.path.clone());
+            canonical_target
+                .starts_with(&root)
+                .then(|| (root.components().count(), alias))
+        })
+        // Deepest root first; [INFERRED] ties (two aliases registered at one
+        // root) go to the lexicographically smallest alias, because `projects`
+        // is a HashMap and its iteration order would otherwise pick a
+        // different project from run to run.
+        .min_by(|(depth_a, alias_a), (depth_b, alias_b)| {
+            depth_b.cmp(depth_a).then_with(|| alias_a.cmp(alias_b))
+        });
+
+    match best {
+        Some((_, alias)) => Ok(alias.clone()),
+        None => Err(LaunchTargetError::Unregistered {
+            target: target.to_string(),
+            path: canonical_target,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +197,165 @@ mod tests {
                 "got {err:?}"
             );
         }
+    }
+
+    // ── Path targets (D-02 step 2) ──────────────────────────────────────
+
+    /// T/alpha ("alpha"), T/alpha/nested ("inner"), T/foo ("foo") registered;
+    /// T/foobar, T/alpha/src/deep and T/alpha/nested/x unregistered.
+    fn path_fixture() -> (tempfile::TempDir, PathBuf, Config) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        for dir in ["alpha/nested/x", "alpha/src/deep", "foo", "foobar"] {
+            std::fs::create_dir_all(t.join(dir)).unwrap();
+        }
+        let config = config_with(&[
+            ("alpha", &t.join("alpha")),
+            ("inner", &t.join("alpha/nested")),
+            ("foo", &t.join("foo")),
+        ]);
+        (tmp, t, config)
+    }
+
+    #[test]
+    fn dot_inside_a_registered_root_resolves_to_it() {
+        let (_tmp, t, config) = path_fixture();
+        assert_eq!(
+            resolve_launch_target(&config, ".", &t.join("alpha")),
+            Ok("alpha".to_string())
+        );
+    }
+
+    #[test]
+    fn an_absolute_root_path_resolves_like_pwd() {
+        let (_tmp, t, config) = path_fixture();
+        let abs = t.join("alpha").display().to_string();
+        assert_eq!(
+            resolve_launch_target(&config, &abs, Path::new("/")),
+            Ok("alpha".to_string())
+        );
+    }
+
+    #[test]
+    fn a_relative_path_is_joined_onto_the_cwd() {
+        let (_tmp, t, config) = path_fixture();
+        assert_eq!(
+            resolve_launch_target(&config, "alpha/src", &t),
+            Ok("alpha".to_string())
+        );
+    }
+
+    #[test]
+    fn a_subdirectory_resolves_to_its_registered_ancestor() {
+        let (_tmp, t, config) = path_fixture();
+        assert_eq!(
+            resolve_launch_target(&config, "src/deep", &t.join("alpha")),
+            Ok("alpha".to_string())
+        );
+    }
+
+    #[test]
+    fn the_nearest_registered_ancestor_wins_over_an_outer_one() {
+        let (_tmp, t, config) = path_fixture();
+        assert_eq!(
+            resolve_launch_target(&config, ".", &t.join("alpha/nested/x")),
+            Ok("inner".to_string())
+        );
+    }
+
+    #[test]
+    fn ancestry_is_component_wise_so_foo_does_not_claim_foobar() {
+        let (_tmp, t, config) = path_fixture();
+        let err = resolve_launch_target(&config, "../foobar", &t.join("foo"))
+            .expect_err("T/foo is not an ancestor of T/foobar");
+        assert_eq!(
+            err,
+            LaunchTargetError::Unregistered {
+                target: "../foobar".to_string(),
+                path: t.join("foobar"),
+            }
+        );
+        let hint = err.suggestion();
+        assert!(hint.contains("gsd-meta-manager add"), "{hint}");
+        assert!(
+            hint.contains(&t.join("foobar").display().to_string()),
+            "{hint}"
+        );
+    }
+
+    #[test]
+    fn a_nonexistent_path_is_not_found() {
+        let (_tmp, t, config) = path_fixture();
+        assert!(matches!(
+            resolve_launch_target(&config, "does/not/exist", &t),
+            Err(LaunchTargetError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn an_exact_alias_takes_precedence_over_a_same_named_path() {
+        let (_tmp, t, mut config) = path_fixture();
+        std::fs::create_dir_all(t.join("beta-dir")).unwrap();
+        config
+            .projects
+            .insert("x".to_string(), project(&t.join("beta-dir")));
+        config
+            .projects
+            .insert("beta-dir".to_string(), project(&t.join("foo")));
+        assert_eq!(
+            resolve_launch_target(&config, "beta-dir", &t),
+            Ok("beta-dir".to_string()),
+            "D-02 step 1: the alias wins before the path reading is tried"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_registrations_and_targets_resolve_through_canonicalization() {
+        let (_tmp, t, _config) = path_fixture();
+        std::os::unix::fs::symlink(t.join("alpha"), t.join("link")).unwrap();
+
+        // Registered via the symlink, targeted via the real path.
+        let via_link = config_with(&[("linked", &t.join("link"))]);
+        assert_eq!(
+            resolve_launch_target(&via_link, &t.join("alpha/src").display().to_string(), &t),
+            Ok("linked".to_string())
+        );
+
+        // Registered via the real path, targeted via the symlink.
+        let via_real = config_with(&[("real", &t.join("alpha"))]);
+        assert_eq!(
+            resolve_launch_target(&via_real, "link/src", &t),
+            Ok("real".to_string())
+        );
+    }
+
+    #[test]
+    fn two_aliases_at_one_root_tie_break_to_the_smallest_alias() {
+        let (_tmp, t, _config) = path_fixture();
+        let config = config_with(&[
+            ("zeta", &t.join("foo")),
+            ("mid", &t.join("foo")),
+            ("able", &t.join("foo")),
+        ]);
+        for _ in 0..8 {
+            assert_eq!(
+                resolve_launch_target(&config, ".", &t.join("foo")),
+                Ok("able".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn a_stale_registered_root_does_not_block_resolving_another() {
+        let (_tmp, t, mut config) = path_fixture();
+        config
+            .projects
+            .insert("stale".to_string(), project(&t.join("gone")));
+        assert_eq!(
+            resolve_launch_target(&config, ".", &t.join("foo")),
+            Ok("foo".to_string())
+        );
     }
 
     #[test]
