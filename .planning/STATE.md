@@ -5,10 +5,10 @@ current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
 stopped_at: v1.10.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-09-30T02:38:03.489Z"
+last_updated: "2026-10-01T04:13:43.256Z"
 last_activity: 2026-09-29
 last_activity_desc: v1.10.0 released — Config Scope Navigation
-state_head: 0d6cca6302f7a3f19cd669fca72eb0a9fea8ed55
+state_head: 333d1636ebb385f1ebf7d561d0a470e5ef94975e
 progress:
   total_phases: 10
   completed_phases: 7
@@ -152,7 +152,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-29 - Completed quick task 260929-szq: display completed-but-unmerged worktree work distinctly (◐ unmerged, @branch hint, dashboard ◐N)
+Last activity: 2026-09-30 - Completed quick task 260930-vvk: positional project target on CLI opens the TUI directly in that project view
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -588,6 +588,7 @@ Recent decisions affecting current work:
 | 260927-t3s | In 7:cfg, let me type [g] to switch to editing global settings instead of project settings. UX: It should always be clear whether I'm editing global or project settings. | 2026-09-28 | 6c93cae | [260927-t3s-in-7-cfg-let-me-type-g-to-switch-to-edit](./quick/260927-t3s-in-7-cfg-let-me-type-g-to-switch-to-edit/) |
 | 260929-g9u | One minor change necessary, when using arrow down from 7:Cfg it should land on Project \| Global. It's mouse selectable but only switchable with g. It also needs arrow-keys support. | 2026-09-29 | ff3a19d | [260929-g9u-one-minor-change-necessary-when-using-ar](./quick/260929-g9u-one-minor-change-necessary-when-using-ar/) |
 | 260929-szq | Display completed-but-unmerged worktree work distinctly from merged work (◐ unmerged + @branch hint + dashboard ◐N) | 2026-09-30 | 0d6cca6 | [260929-szq-display-completed-but-unmerged-worktree-](./quick/260929-szq-display-completed-but-unmerged-worktree-/) |
+| 260930-vvk | Positional project target on top-level CLI opens TUI directly in that project's view | 2026-10-01 | 333d163 | [260930-vvk-accept-an-optional-positional-project-ta](./quick/260930-vvk-accept-an-optional-positional-project-ta/) |
 
 ## Session Continuity
 
