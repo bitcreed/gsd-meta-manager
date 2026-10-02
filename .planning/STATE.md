@@ -493,7 +493,7 @@ Recent decisions affecting current work:
 - [2026-09-15] [ui] Make queue input truly multi-line — [todo file](.planning/todos/pending/2026-09-15-make-queue-input-truly-multi-line.md) — Needs TBD — this todo's deliverable is a **UX proposal**, not a fix. Whoever picks.
 - [2026-09-22] [driver] "Codex runtime: remainder after the MVP slice (260922-hdj) [AUDIT]" — [todo file](.planning/todos/pending/2026-09-22-codex-runtime-remainder-after-mvp.md)
 - [2026-09-23] [ui] Add a global settings editor with unambiguous scope — [todo file](.planning/todos/pending/2026-09-23-add-a-global-settings-editor-with-unambiguous-scope.md)
-- [2026-09-24] [ui] "Backlog tab: Enter-to-focus scrollable content pane + edit opens ROADMAP.md section" — [todo file](.planning/todos/pending/2026-09-24-backlog-tab-enter-to-focus-scrollable-content-pane-edit-open.md)
+- [2026-10-02] [ui] Show worktree-only roadmap phases in project view — [todo file](.planning/todos/pending/2026-10-01-show-worktree-only-roadmap-phases-in-project-view.md) — Needs TBD. Starting hints from mapping the current code:.
 
 ### Blockers/Concerns
 
