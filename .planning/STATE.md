@@ -494,6 +494,8 @@ Recent decisions affecting current work:
 - [2026-09-22] [driver] "Codex runtime: remainder after the MVP slice (260922-hdj) [AUDIT]" — [todo file](.planning/todos/pending/2026-09-22-codex-runtime-remainder-after-mvp.md)
 - [2026-09-23] [ui] Add a global settings editor with unambiguous scope — [todo file](.planning/todos/pending/2026-09-23-add-a-global-settings-editor-with-unambiguous-scope.md)
 - [2026-10-02] [ui] Show worktree-only roadmap phases in project view — [todo file](.planning/todos/pending/2026-10-01-show-worktree-only-roadmap-phases-in-project-view.md) — Needs TBD. Starting hints from mapping the current code:.
+- [2026-10-02] [ui] Config view must not show global defaults as effective values — [todo file](.planning/todos/pending/2026-10-02-config-view-wrongly-shows-global-defaults-as-effective.md)
+- [2026-10-02] [ui] Git view should draw merges as gitk-style tracks — [todo file](.planning/todos/pending/2026-10-02-git-view-show-merges-as-gitk-style-tracks.md)
 
 ### Blockers/Concerns
 
