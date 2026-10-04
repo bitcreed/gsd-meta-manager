@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[command(
     name = "gsd-meta-manager",
     version,
-    about = "TUI command center for GSD projects"
+    about = "TUI command center for managing multiple GSD-run projects from a single interface."
 )]
 pub struct Cli {
     #[command(subcommand)]

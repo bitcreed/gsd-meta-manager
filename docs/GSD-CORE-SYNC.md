@@ -26,9 +26,10 @@ top-level keys gtk had left pass-through and made every secret-bearing key
 display masked — see [Top-level key promotion](#top-level-key-promotion-quick-task-260926-jnf)
 and [Secret-bearing keys](#secret-bearing-keys).
 
-> **Keep this file, `config_json.rs`'s three constants and README.md's
-> `**GSD compatibility:**` note in step, in the SAME commit.** A record that
-> outlives its subject tells the next reader a surface is covered when it is not.
+> **Keep this file and `config_json.rs`'s three constants in step, in the SAME
+> commit.** A record that outlives its subject tells the next reader a surface
+> is covered when it is not. README.md deliberately carries no version numbers;
+> its `**GSD compatibility:**` note links here for the baseline.
 
 ---
 

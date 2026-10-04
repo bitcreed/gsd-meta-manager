@@ -2,20 +2,20 @@
 # GSD Meta Manager
 
 A TUI command center for managing multiple GSD-run projects from a single interface.
+GSD stands for **Git. Ship. Done.**
 
 ## What is it?
 
-GSD (Git. Ship. Done.) Meta Manager gives you a unified dashboard across all
-your GSD workflow projects. It reads `.planning/` state directly from disk -- no
+GSD Meta Manager gives you a unified dashboard across all your GSD workflow
+projects. It reads `.planning/` state directly from disk -- no
 need to launch Claude or run `/gsd-progress` in each project directory. Register
 your projects once and see phase status, roadmap progress, queued work, and
 pending actions at a glance.
 
-**GSD compatibility:** synced against gsd-core 1.15.0 (the untagged
-`release-1.15.0` branch, `v1.14.0-111-gec81d0d10`); the conformance oracle is
-pinned to the published 1.14.0. At startup the app reads which gsd-core you have
-installed and warns when it is newer than that -- see
-[docs/GSD-CORE-SYNC.md](docs/GSD-CORE-SYNC.md) and [Compatibility](#compatibility).
+**GSD compatibility:** regularly synced against gsd-core releases. At startup
+the app reads which gsd-core you have installed and warns when it is newer than
+what this build is synced to -- see [Compatibility](#compatibility) and
+[docs/GSD-CORE-SYNC.md](docs/GSD-CORE-SYNC.md) for the exact baseline.
 
 ![Dashboard overview across registered projects](assets/screenshots/gsd-mm-overview.png)
 
@@ -45,8 +45,8 @@ all of them:
 - **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
   session without hunting through terminal tabs.
 - **Milestone archive browsing** -- read shipped-milestone artifacts with inline
-  markdown rendering in a project's Docs › Milestones sub-tab, without leaving
-  the dashboard.
+  markdown rendering in a project's Docs › Milestones sub-tab (`←` `→` inside
+  the Docs tab switch Files / Milestones), without leaving the dashboard.
 
 ### Not the same as GSD's claude-orchestration backend
 
@@ -86,9 +86,8 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   shipped-milestone archive)
 - Queue management: create, edit, delete, and reorder items
 - New project creation from within the TUI
-- Session detection -- shows which projects have a live Claude instance;
-  interactive Codex sessions are detected best-effort, without resume. Linux
-  only -- see [Platform support](#platform-support)
+- Session detection -- shows which projects have a live Claude instance
+  (Codex best-effort, no resume); see [Platform support](#platform-support)
 - Running agents -- for each project, which GSD agents are running right now,
   read from git worktrees and Claude Code's subagent metadata without invoking
   Claude: the dashboard Status cell summarises the live wave (e.g. `w2/11 13run`,
@@ -97,28 +96,17 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   above every agent with its plan, commits, dirty files and last activity;
   `Enter` on an agent jumps to its plan in the Phases tab's Waves pane, and
   `Enter` on a plan there jumps back to its agent
-- Auto-registration of GSD projects from active Claude sessions -- any running
-  `claude` whose working directory contains `.planning/` is added to the
-  registry automatically; a git linked worktree (e.g. an agent worktree under
-  `.claude/worktrees/`) is never registered itself -- a session inside one, or
-  in any subdirectory of it, resolves to its main worktree, and the
-  main worktree is auto-registered instead when it has `.planning/` and is not
-  already registered, so many concurrent agent sessions of one project yield a
-  single entry; `add` still refuses a linked worktree and names the main
-  worktree to add instead, and stale worktree entries are pruned from the
-  config on launch
+- Auto-registration of GSD projects from active Claude sessions, with git
+  linked worktrees resolved to their main worktree so many concurrent agent
+  sessions yield a single entry (see [Quick start](#quick-start))
 - Paused project detection (parses HANDOFF files). A handoff is ignored as
   stale when its phase is behind STATE.md's `current_phase`, or when STATE.md's
   `last_updated` is more than an hour newer than the handoff's `timestamp`
   (the file's mtime when it has none); the detail view then shows a dimmed
-  "Stale HANDOFF ignored" hint instead of "Paused", and the dashboard raises
-  no pause badge or needs-human flag for it
-- Milestone archive browser with inline markdown rendering, in the Docs tab's
-  Milestones sub-tab (`←` `→` inside the Docs tab switch Files / Milestones)
+  "Stale HANDOFF ignored" hint, with no pause badge or needs-human flag
 - Search and filter across projects
-- GSD version awareness -- each project's effective gsd-core install
-  (project-local or global, Claude or Codex) and its version are read from
-  `VERSION` files and compared with the version this build is synced to; see
+- GSD version awareness -- each project's effective gsd-core install and its
+  version are compared with the version this build is synced to; see
   [Compatibility](#compatibility)
 
 ## Installation
@@ -170,18 +158,17 @@ The binary is at `target/release/gsd-meta-manager`.
 4. Active `claude` sessions whose working directory contains `.planning/` are
    auto-registered on launch and during the ~5s session poll. A git linked
    worktree (such as an agent worktree under `.claude/worktrees/`) is never
-   registered itself. A session running inside one, or in any subdirectory of
-   it, resolves to its main worktree, and that main worktree is auto-registered
-   instead when it has `.planning/` and is not already registered, so many
-   concurrent agent sessions of one project yield a single entry. `add` still
-   refuses a linked worktree and names the main worktree to register instead,
-   and stale worktree entries are pruned from the config on launch.
+   registered itself: a session inside one resolves to its main worktree, which
+   is registered instead when it has `.planning/`, so many concurrent agent
+   sessions of one project yield a single entry. `add` refuses a linked
+   worktree and names the main worktree to register instead, and stale
+   worktree entries are pruned from the config on launch.
 
 ## Usage
 
 ```text
-gsd-meta-manager --help
-TUI command center for GSD projects
+$ gsd-meta-manager --help
+TUI command center for managing multiple GSD-run projects from a single interface.
 
 Usage: gsd-meta-manager [OPTIONS] [TARGET] [COMMAND]
 
@@ -283,7 +270,7 @@ Tab-specific keys:
 | Sessions › Agents | `Enter` | Jump to the agent's plan in the Phases Waves pane (navigation only; nothing is sent to the agent) |
 | Config | `Enter` | Edit the selected value; in an open dropdown, apply the choice. On a secret row (an API key, shown as `•••••••• (set)`) the prompt opens empty with hidden input, and an empty `Enter` keeps the current key — see [Secret values](docs/CONFIGURATION.md#secret-values-in-gsd-project-config-config-tab) |
 | Config | `x` | Clear (unset) the selected value |
-| Config | `d` | Switch between the project's config and `~/.gsd/defaults.json` |
+| Config | `g` (or `d`) | Switch between the project's config and `~/.gsd/defaults.json` |
 | Config | `r` | Reload the config from disk |
 | Config | `/` | Filter the rows; `Esc` clears the filter |
 | Docs › Files | `Enter` | Open the selected directory or file |
@@ -368,6 +355,9 @@ User configuration is stored at:
 ~/.config/gsd-meta-manager/config.json
 ```
 
+(The directory is the platform's user config directory, so on macOS it is
+`~/Library/Application Support/gsd-meta-manager/config.json`.)
+
 Override the config location with `--config <PATH>`.
 
 ## How it works
@@ -405,8 +395,9 @@ be resumed from the TUI -- resume is Claude-only.
 
 ### Compatibility
 
-Reads the `.planning/` state formats of the gsd-core release named in the
-[GSD compatibility](#what-is-it) note at the top of this README. Because it
+Reads the `.planning/` state formats of the gsd-core release this build is
+synced to (the baseline is recorded in
+[docs/GSD-CORE-SYNC.md](docs/GSD-CORE-SYNC.md)). Because it
 observes on-disk state rather than driving GSD, it is non-intrusive and works
 alongside any GSD workflow backend, including the experimental
 `claude-orchestration` execution path.
@@ -418,10 +409,10 @@ project-local `.claude/gsd-core` or `.codex/gsd-core` overrides the global
 install, and Claude beats Codex at the same scope. Its `VERSION` is compared
 with the synced baseline:
 
-- newer than the synced release -- a warning, because formats that release
-  added may not be recognised;
-- from the oracle pin up to the synced release -- in sync, no note;
-- older than the oracle pin -- an informational note;
+- newer than the release this build is synced to -- a warning, because formats
+  that release added may not be recognised;
+- within the supported range up to the synced release -- in sync, no note;
+- older than that range -- an informational note;
 - no `VERSION` anywhere, or one that does not parse -- a note (an unparseable
   file's content is never displayed).
 
