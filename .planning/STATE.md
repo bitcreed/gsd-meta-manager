@@ -599,6 +599,7 @@ Recent decisions affecting current work:
 | 260929-g9u | One minor change necessary, when using arrow down from 7:Cfg it should land on Project \| Global. It's mouse selectable but only switchable with g. It also needs arrow-keys support. | 2026-09-29 | ff3a19d | [260929-g9u-one-minor-change-necessary-when-using-ar](./quick/260929-g9u-one-minor-change-necessary-when-using-ar/) |
 | 260929-szq | Display completed-but-unmerged worktree work distinctly from merged work (◐ unmerged + @branch hint + dashboard ◐N) | 2026-09-30 | 0d6cca6 | [260929-szq-display-completed-but-unmerged-worktree-](./quick/260929-szq-display-completed-but-unmerged-worktree-/) |
 | 260930-vvk | Positional project target on top-level CLI opens TUI directly in that project's view | 2026-10-01 | 333d163 | [260930-vvk-accept-an-optional-positional-project-ta](./quick/260930-vvk-accept-an-optional-positional-project-ta/) |
+| 261004-gsd-expansion | Update README GSD expansion to "Git. Ship. Done." | 2026-10-04 | this commit | [261004-gsd-expansion-update-readme-gsd-expansion-to-git-ship-done](./quick/261004-gsd-expansion-update-readme-gsd-expansion-to-git-ship-done/) |
 
 ## Session Continuity
 

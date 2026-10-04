@@ -5,7 +5,7 @@ A TUI command center for managing multiple GSD-run projects from a single interf
 
 ## What is it?
 
-GSD (Get S\[oftware\] Done) Meta Manager gives you a unified dashboard across all
+GSD (Git. Ship. Done.) Meta Manager gives you a unified dashboard across all
 your GSD workflow projects. It reads `.planning/` state directly from disk -- no
 need to launch Claude or run `/gsd-progress` in each project directory. Register
 your projects once and see phase status, roadmap progress, queued work, and
