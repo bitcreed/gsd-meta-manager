@@ -600,7 +600,7 @@ Recent decisions affecting current work:
 | 260929-szq | Display completed-but-unmerged worktree work distinctly from merged work (◐ unmerged + @branch hint + dashboard ◐N) | 2026-09-30 | 0d6cca6 | [260929-szq-display-completed-but-unmerged-worktree-](./quick/260929-szq-display-completed-but-unmerged-worktree-/) |
 | 260930-vvk | Positional project target on top-level CLI opens TUI directly in that project's view | 2026-10-01 | 333d163 | [260930-vvk-accept-an-optional-positional-project-ta](./quick/260930-vvk-accept-an-optional-positional-project-ta/) |
 | 261004-gsd-expansion | Update README GSD expansion to "Git. Ship. Done." | 2026-10-04 | d4ef6ae | [261004-gsd-expansion-update-readme-gsd-expansion-to-git-ship-done](./quick/261004-gsd-expansion-update-readme-gsd-expansion-to-git-ship-done/) |
-| 261004-readme-accuracy | README accuracy pass: define GSD up front, drop per-version pins, dedupe Features/Quick start, sync --help block and clap about with Cargo description, fix Config `g` key | 2026-10-04 | COMMIT | [261004-readme-accuracy](./quick/261004-readme-accuracy/) |
+| 261004-readme-accuracy | README accuracy pass: define GSD up front, drop per-version pins, dedupe Features/Quick start, sync --help block and clap about with Cargo description, fix Config `g` key | 2026-10-04 | 8316e7c | [261004-readme-accuracy](./quick/261004-readme-accuracy/) |
 
 ## Session Continuity
 
