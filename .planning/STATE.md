@@ -609,6 +609,7 @@ Recent decisions affecting current work:
 | 261006-badge | Width-stable badge glyphs (`‖` paused, `◷` external-job replace emoji-wide ⏸/⏳) | 2026-10-06 | a23b6ca | [261006-badge-glyphs-width-stable](./quick/261006-badge-glyphs-width-stable/) |
 | 261006-confirm | Modal Yes/No popup for destructive confirmations (delete, queue delete, driver confirm; No focused by default) | 2026-10-06 | 3140a5b | [261006-confirm-popup](./quick/261006-confirm-popup/) |
 | 261006-editor | Browser file cache reloads after `$EDITOR` exits (`App::refresh_after_editor`) | 2026-10-06 | e90be67 | [261006-editor-cache-reload](./quick/261006-editor-cache-reload/) |
+| 261006-cfr | Config `/` filter keeps the row under edit visible; remove dead `from_defaults` layering | 2026-10-06 | c3c9d95 | [261006-cfr](./quick/261006-cfr-config-filter-edit-and-dead-defaults/) |
 
 ## Session Continuity
 
