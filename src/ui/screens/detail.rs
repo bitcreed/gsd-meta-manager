@@ -4776,6 +4776,7 @@ impl Screen for DetailScreen {
                             } else {
                                 cache.browser_file_content =
                                     Some(crate::browser::read_md_file(&entry.path));
+                                cache.browser_file_path = Some(entry.path.clone());
                                 cache.browser_file_name = Some(entry.name.clone());
                                 cache.browser_depth = crate::browser::BrowserDepth::View;
                                 cache.browser_scroll_offset = 0;

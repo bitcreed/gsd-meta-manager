@@ -767,6 +767,9 @@ async fn run_tui_loop(
                 }
             }
 
+            // The edit may have changed the file the browser is showing.
+            app.refresh_after_editor(&path);
+
             // Re-initialize TUI
             *terminal = tui::init();
             if mouse_was_on {
