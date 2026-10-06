@@ -6554,20 +6554,35 @@ impl DetailScreen {
                 let co_authors = entry.co_authors.as_ref().map(|c| c.shown().to_string());
                 let subject = entry.message.shown().to_string();
 
+                // The lane column is pure ASCII from `assign_lanes` (see
+                // `GitLogEntry::graph`), so it needs no `.shown()`; it spends
+                // its cells (plus one gap) out of the hash's share of the row.
+                let graph_cols = if entry.graph.is_empty() {
+                    0
+                } else {
+                    entry.graph.chars().count() + 1
+                };
                 let budget = git_row_budget(
                     log_area.width as usize,
-                    hash.chars().count(),
+                    graph_cols + hash.chars().count(),
                     date.chars().count(),
                     author.chars().count(),
                     co_authors.as_ref().map(|c| c.chars().count()),
                 );
 
-                let mut spans = vec![
+                let mut spans = Vec::new();
+                if !entry.graph.is_empty() {
+                    spans.push(Span::styled(
+                        format!("{} ", entry.graph),
+                        Style::default().fg(Color::Green),
+                    ));
+                }
+                spans.extend([
                     Span::styled(hash, Style::default().fg(Color::Yellow)),
                     Span::raw(" -- "),
                     Span::raw(date),
                     Span::raw(" -- "),
-                ];
+                ]);
                 let truncated = truncate_subject(&subject, budget.subject_cols);
                 if !truncated.is_empty() {
                     spans.push(Span::raw(truncated));
@@ -16297,6 +16312,7 @@ mod tests {
                 date: field("2026-09-17"),
                 author: field("Human"),
                 co_authors: None,
+                graph: String::new(),
                 message: field("a subject"),
             })
             .collect();
@@ -16408,6 +16424,7 @@ mod tests {
                 date: field("2026-09-17"),
                 author: field("Human"),
                 co_authors: co.map(field),
+                graph: String::new(),
                 message: field(subject),
             })
             .collect();

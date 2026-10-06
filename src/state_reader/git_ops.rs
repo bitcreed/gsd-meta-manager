@@ -771,6 +771,16 @@ pub struct GitLogEntry {
     /// branches on presence to decide whether to emit the column AND its
     /// separator, and an empty string would draw a dangling `"  ()"`.
     pub co_authors: Option<crate::text::Untrusted>,
+    /// gitk-style lane glyphs for this row (`*` commit, `|` a parallel line of
+    /// history, `\` a lane opened by a merge, `/` a lane joining back), padded
+    /// to one width across the whole log so the hash column stays aligned.
+    ///
+    /// **Not [`crate::text::Untrusted`], deliberately:** this string is
+    /// synthesised by `assign_lanes` from a fixed ASCII alphabet. Not one byte
+    /// of it comes from git output, so there is nothing to escape. It is EMPTY
+    /// for every row when the log is linear (no information to draw), and for
+    /// entries not produced by [`load_git_log`].
+    pub graph: String,
 }
 
 /// One commit's full message plus its touched-file stat, loaded together.
@@ -825,11 +835,20 @@ pub async fn load_git_log(
         //
         // Trailer values are joined by RECORD separator `\x1e`, so the UNIT
         // separator keeps its one job of splitting the five fields.
-        "--format=%h\x1f%ad\x1f%an\x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)\x1f%s",
+        // `--topo-order` guarantees every child precedes its parents, which
+        // the lane assignment in `assign_lanes` depends on.
+        "--topo-order",
+        // The graph ids go FIRST as one `\x1f`-terminated field (`%H %P`, hex
+        // and spaces only), so the existing five-field tail (subject last) is
+        // untouched and `parse_git_log_line` still owns it.
+        "--format=%H %P\x1f%h\x1f%ad\x1f%an\x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1e)\x1f%s",
         "--date=short",
     ]);
 
     if planning_only {
+        // Path-limited history rewrites parents; `--parents` makes `%P` report
+        // the REWRITTEN ones, so lanes connect the commits actually listed.
+        cmd.arg("--parents");
         cmd.arg("--").arg(".planning/");
     }
 
@@ -840,13 +859,131 @@ pub async fn load_git_log(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let entries = stdout
-        .lines()
-        .filter(|line| !line.is_empty())
-        .filter_map(parse_git_log_line)
-        .collect();
+    let mut entries = Vec::new();
+    let mut ids: Vec<(String, Vec<String>)> = Vec::new();
+    for line in stdout.lines().filter(|l| !l.is_empty()) {
+        let Some((id_field, rest)) = line.split_once('\x1f') else {
+            continue;
+        };
+        let Some(entry) = parse_git_log_line(rest) else {
+            continue;
+        };
+        let mut it = id_field.split_whitespace().map(str::to_string);
+        let Some(id) = it.next() else { continue };
+        ids.push((id, it.collect()));
+        entries.push(entry);
+    }
+
+    for (entry, graph) in entries.iter_mut().zip(assign_lanes(&ids)) {
+        entry.graph = graph;
+    }
 
     Ok(entries)
+}
+
+/// Widest graph column drawn, in lanes. Beyond this the rightmost lanes are
+/// clipped rather than eating the subject's width.
+const MAX_GRAPH_LANES: usize = 8;
+
+/// Compute gitk-style lane glyphs for a topologically ordered log.
+///
+/// `commits` is `(full id, parent ids)` newest first, children before parents.
+/// Returns one string per commit, all padded to the same width. A lane holds the
+/// id it is waiting for; a commit takes the first lane waiting for it (extra
+/// lanes waiting for it draw `/` and close), hands its lane to its first parent,
+/// and opens a new lane (`\`) for every further parent not already awaited.
+///
+/// Returns all-empty strings when no row needs more than one lane (a linear
+/// history carries no information, and drawing it would only shift the
+/// columns).
+pub(crate) fn assign_lanes(commits: &[(String, Vec<String>)]) -> Vec<String> {
+    let mut lanes: Vec<Option<String>> = Vec::new();
+    let mut rows: Vec<Vec<char>> = Vec::with_capacity(commits.len());
+
+    fn free_slot(lanes: &mut Vec<Option<String>>) -> usize {
+        match lanes.iter().position(Option::is_none) {
+            Some(s) => s,
+            None => {
+                lanes.push(None);
+                lanes.len() - 1
+            }
+        }
+    }
+
+    for (id, parents) in commits {
+        let matching: Vec<usize> = lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.as_deref() == Some(id.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        let col = match matching.first() {
+            Some(&c) => c,
+            None => free_slot(&mut lanes),
+        };
+
+        let mut glyphs: Vec<char> = lanes
+            .iter()
+            .map(|l| if l.is_some() { '|' } else { ' ' })
+            .collect();
+        for &m in matching.iter().skip(1) {
+            glyphs[m] = '/';
+        }
+        glyphs[col] = '*';
+
+        for &m in &matching {
+            lanes[m] = None;
+        }
+        let mut parents_iter = parents.iter();
+        if let Some(first) = parents_iter.next() {
+            lanes[col] = Some(first.clone());
+        }
+        for p in parents_iter {
+            if lanes.iter().any(|l| l.as_deref() == Some(p.as_str())) {
+                continue;
+            }
+            let slot = free_slot(&mut lanes);
+            lanes[slot] = Some(p.clone());
+            if slot >= glyphs.len() {
+                glyphs.resize(slot + 1, ' ');
+            }
+            glyphs[slot] = '\\';
+        }
+        while matches!(lanes.last(), Some(None)) {
+            lanes.pop();
+        }
+        rows.push(glyphs);
+    }
+
+    let width = rows
+        .iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0)
+        .min(MAX_GRAPH_LANES);
+    if rows.iter().map(Vec::len).max().unwrap_or(0) <= 1 {
+        return vec![String::new(); commits.len()];
+    }
+    rows.into_iter()
+        .map(|mut g| {
+            if g.len() > width {
+                // Keep the commit marker visible even when its lane is clipped.
+                if g.iter().position(|&c| c == '*').is_some_and(|i| i >= width) {
+                    g[width - 1] = '*';
+                }
+                g.truncate(width);
+            }
+            g.resize(width, ' ');
+            let mut out = String::with_capacity(width * 2);
+            for (i, c) in g.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                out.push(c);
+            }
+            out
+        })
+        .collect()
 }
 
 /// Parse ONE `git log` line in this module's format into an entry.
@@ -876,6 +1013,7 @@ fn parse_git_log_line(line: &str) -> Option<GitLogEntry> {
             author: Untrusted::from_untrusted_source(parts[2].to_string()),
             co_authors: parse_co_authors(parts[3]),
             message: Untrusted::from_untrusted_source(parts[4].to_string()),
+            graph: String::new(),
         }),
         4 => Some(GitLogEntry {
             hash: Untrusted::from_untrusted_source(parts[0].to_string()),
@@ -883,6 +1021,7 @@ fn parse_git_log_line(line: &str) -> Option<GitLogEntry> {
             author: Untrusted::from_untrusted_source(parts[2].to_string()),
             co_authors: None,
             message: Untrusted::from_untrusted_source(parts[3].to_string()),
+            graph: String::new(),
         }),
         _ => None,
     }
@@ -1761,5 +1900,72 @@ mod tests {
             3,
             "HEAD reaches the initial commit too"
         );
+    }
+
+    fn c(id: &str, parents: &[&str]) -> (String, Vec<String>) {
+        (
+            id.to_string(),
+            parents.iter().map(|p| p.to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn lanes_linear_history_draws_nothing() {
+        let g = assign_lanes(&[c("a", &["b"]), c("b", &["c"]), c("c", &[])]);
+        assert!(g.iter().all(String::is_empty));
+    }
+
+    #[test]
+    fn lanes_merge_opens_and_closes_a_side_track() {
+        let g = assign_lanes(&[
+            c("m", &["b", "s"]),
+            c("s", &["base"]),
+            c("b", &["base"]),
+            c("base", &[]),
+        ]);
+        assert_eq!(g, vec!["* \\", "| *", "* |", "* /"]);
+    }
+
+    #[tokio::test]
+    async fn load_git_log_draws_a_real_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        let run = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+            assert!(
+                o.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        run(&["checkout", "-q", "-b", "side"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "side work"]);
+        run(&["checkout", "-q", "main"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "main work"]);
+        run(&["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
+        let entries = load_git_log(p, false, 50).await.unwrap();
+        assert_eq!(entries.len(), 4);
+        assert!(entries[0].graph.starts_with('*'));
+        assert!(
+            entries[0].graph.contains('\\'),
+            "merge row opens a lane: {:?}",
+            entries[0].graph
+        );
+        let w = entries[0].graph.chars().count();
+        assert!(entries.iter().all(|e| e.graph.chars().count() == w));
     }
 }
