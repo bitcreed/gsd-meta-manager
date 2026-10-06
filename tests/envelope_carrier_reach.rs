@@ -886,8 +886,10 @@ fn the_t_19_116_replacement_takes_layer_2_as_well_and_that_is_measured_separatel
     let envelope = fixture.path().join("env");
     let real = fixture.path().join("real");
     let replaced = fixture.path().join("replaced");
-    std::fs::copy(PRODUCT_BIN, &real).expect("the product binary copies");
-    std::fs::copy("/bin/true", &replaced).expect("/bin/true copies");
+    // Symlinks, not copies: a copy leaves a write fd open that a sibling test
+    // thread's fork can inherit, failing this exec with ETXTBSY.
+    std::os::unix::fs::symlink(PRODUCT_BIN, &real).expect("the product binary links");
+    std::os::unix::fs::symlink("/bin/true", &replaced).expect("/bin/true links");
 
     let request = serde_json::json!({
         "session_id": "fixture",
@@ -907,12 +909,16 @@ fn the_t_19_116_replacement_takes_layer_2_as_well_and_that_is_measured_separatel
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("the binary spawns");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin is piped")
-            .write_all(request.as_bytes())
-            .expect("the request is written");
+        // A child that exits without reading stdin (the `/bin/true` replacement)
+        // races this write: only BrokenPipe is tolerated, the exit code is the
+        // measurement. Stdin is dropped before the wait so EOF reaches the child.
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        match stdin.write_all(request.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => panic!("the request is written: {e}"),
+        }
+        drop(stdin);
         child.wait().expect("the guard exits").code().unwrap_or(-1)
     };
 
@@ -984,12 +990,15 @@ fn git_under_envelope_posture(
 
     let mut child = command.spawn().expect("git is on PATH");
     if let Some(text) = stdin {
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin is piped")
-            .write_all(text.as_bytes())
-            .expect("the request is written");
+        // BrokenPipe (the child exited without reading) is tolerated; the
+        // child's output and exit status are what is measured. Stdin is dropped
+        // so the child sees EOF.
+        let mut pipe = child.stdin.take().expect("stdin is piped");
+        match pipe.write_all(text.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => panic!("the request is written: {e}"),
+        }
     }
     let out = child.wait_with_output().expect("git exits");
     let mut text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -1355,12 +1364,13 @@ fn the_empty_credential_helper_candidate_control_is_measured_and_recorded_and_ne
     let askpass_answer = {
         use std::io::Write as _;
         let mut child = askpass_cmd.spawn().expect("git is on PATH");
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(b"protocol=https\nhost=github.com\n\n")
-            .unwrap();
+        let mut pipe = child.stdin.take().unwrap();
+        match pipe.write_all(b"protocol=https\nhost=github.com\n\n") {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => panic!("the request is written: {e}"),
+        }
+        drop(pipe);
         let out = child.wait_with_output().unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
     };
