@@ -7884,6 +7884,12 @@ impl DetailScreen {
                 let value_col = u16::try_from(spans.iter().map(Span::width).sum::<usize>())
                     .unwrap_or(u16::MAX);
                 spans.push(val_span);
+                if let Some(d) = entry.builtin_default {
+                    spans.push(Span::styled(
+                        format!(" (GSD default: {d})"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
                 if entry.from_defaults {
                     spans.push(Span::styled(
                         " *",
@@ -10713,6 +10719,12 @@ struct ConfigEntry {
     /// True when the value was inherited from ~/.gsd/defaults.json
     /// because the project config had it unset.
     from_defaults: bool,
+    /// GSD's own built-in default for this key, set only on a row whose value
+    /// is unset in the config being viewed. GSD does not fall back to
+    /// `~/.gsd/defaults.json` for a key a project leaves unset; it uses this
+    /// (quick 261006, [INFERRED] from gsd-core `config-loader.cjs` branch A
+    /// and `config-defaults.manifest.json`).
+    builtin_default: Option<&'static str>,
     /// What this option means. Required — see [`ConfigHelp`] for why it is a
     /// field rather than a side table.
     help: ConfigHelp,
@@ -10836,6 +10848,7 @@ fn build_defaults_entries(
             kind,
             show_category: first,
             from_defaults,
+            builtin_default: None,
             help,
         });
     };
@@ -11706,7 +11719,56 @@ fn build_defaults_entries(
 
     append_passthrough_entries(&mut entries, config, defaults);
 
+    for e in &mut entries {
+        // `mode`, `granularity` and `model_profile` are plain `String`s that
+        // read as "" when the file omits them, so empty counts as unset too.
+        if matches!(e.kind, ConfigValueKind::Unset(_)) || e.value.is_empty() {
+            e.builtin_default = builtin_default_for_key(e.key.as_ref());
+        }
+    }
+
     entries
+}
+
+/// GSD's built-in default for a row key, from gsd-core's
+/// `config-defaults.manifest.json` (keyed by the row's displayed key). Only
+/// non-null, non-secret defaults are listed; a key absent here has no
+/// documented built-in value and keeps showing `(unset)` alone.
+fn builtin_default_for_key(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "research" | "plan_check" | "pattern_mapper" | "nyquist_validation" | "ui_phase"
+        | "ui_safety_gate" | "ai_integration_phase" | "workflow.context_coverage_gate"
+        | "workflow.post_planning_gaps" | "planner.stall_detection_enabled"
+        | "plan_review.source_grounding" | "verifier" | "code_review" | "node_repair"
+        | "workflow.security_enforcement" | "workflow.agent_hint_routing" | "commit_docs"
+        | "planning.commit_docs" | "parallelization" | "git.create_tag" | "context_warnings" => {
+            "true"
+        }
+        "workflow.plan_bounce" | "planning.pr_strict" | "skip_discuss" | "text_mode"
+        | "workflow.compact_content" | "graphify.auto_update" | "auto_advance"
+        | "auto_chain_active" | "hooks.workflow_guard" | "research_before_questions"
+        | "search_gitignored" | "planning.search_gitignored" => "false",
+        "subagent_timeout" => "300000",
+        "workflow.inline_plan_threshold" | "workflow.plan_bounce_passes"
+        | "node_repair_budget" => "2",
+        "workflow.max_discuss_passes" => "3",
+        "workflow.smart_zone_tokens" => "100000",
+        "workflow.security_asvs_level" => "1",
+        "context_window" => "200000",
+        "workflow.context_guard_mode" => "warn",
+        "plan_review.source_grounding_authority" => "grep",
+        "code_review_depth" | "granularity" => "standard",
+        "workflow.security_block_on" => "high",
+        "workflow.human_verify_mode" => "end-of-phase",
+        "mode" => "interactive",
+        "model_profile" => "balanced",
+        "branching_strategy" => "none",
+        "phase_branch_template" => "gsd/phase-{phase}-{slug}",
+        "milestone_branch_template" => "gsd/{milestone}-{slug}",
+        "discuss_mode" => "discuss",
+        "phase_naming" => "sequential",
+        _ => return None,
+    })
 }
 
 /// The category every unmodelled key lands under.
@@ -11855,6 +11917,7 @@ fn append_passthrough_entries(
             kind: ConfigValueKind::ReadOnly,
             show_category: first,
             from_defaults,
+            builtin_default: None,
             help: PASSTHROUGH_HELP,
         });
         first = false;
@@ -11862,14 +11925,18 @@ fn append_passthrough_entries(
 }
 
 /// Build defaults entries respecting the cache's edit target.
-/// When target=Project: project config is primary, defaults_user_config
-/// fills in unset Optional fields. When target=Global: defaults_user_config
+/// When target=Project: project config only; unset keys show GSD's built-in
+/// default (never the global file). When target=Global: defaults_user_config
 /// is primary with no fallback.
 fn entries_for_cache(cache: &super::ProjectViewCache) -> Vec<ConfigEntry> {
     use super::DefaultsEditTarget;
     let (primary, fallback) = match cache.defaults_edit_target {
         DefaultsEditTarget::Project => {
-            (cache.defaults_config.as_ref(), cache.defaults_user_config.as_ref())
+            // GSD does NOT read ~/.gsd/defaults.json for a project that has a
+            // config.json (gsd-core config-loader branch A; global defaults
+            // only seed NEW projects), so the global layer is not shown as
+            // effective here. Unset rows show GSD's built-in default instead.
+            (cache.defaults_config.as_ref(), None)
         }
         DefaultsEditTarget::Global => (cache.defaults_user_config.as_ref(), None),
     };
@@ -11879,14 +11946,28 @@ fn entries_for_cache(cache: &super::ProjectViewCache) -> Vec<ConfigEntry> {
 }
 
 /// Does `entry` match the Config tab's `/` filter? `q_lower` is the filter,
-/// already lowercased; empty matches everything. Key + category only
-/// (quick 260922-hdi, [INFERRED A1]): help prose would make short terms hit
-/// dozens of unrelated rows, and matching the value would make a row vanish
-/// from under the cursor the moment it is edited.
+/// already lowercased; empty matches everything. Matches the key, the
+/// category, and the VALUE (quick 261006: so "balanced" finds `model_profile`).
+/// The value is the displayed one, or, for an unset row, GSD's built-in
+/// effective default. Very common values (`(unset)`, `true`, `false`) are
+/// never matched, since they would hit dozens of unrelated rows; numbers are.
+/// [INFERRED] the earlier "row vanishes while editing" concern is accepted:
+/// the cursor is an underlying index and snaps on the next filter change.
+/// Help prose stays excluded.
 fn config_row_matches(entry: &ConfigEntry, q_lower: &str) -> bool {
     q_lower.is_empty()
         || entry.key.to_lowercase().contains(q_lower)
         || entry.category.to_lowercase().contains(q_lower)
+        || config_value_matches(entry, q_lower)
+}
+
+/// The value half of [`config_row_matches`].
+fn config_value_matches(entry: &ConfigEntry, q_lower: &str) -> bool {
+    let searchable = |v: &str| {
+        let v = v.to_lowercase();
+        !matches!(v.as_str(), "" | "(unset)" | "true" | "false") && v.contains(q_lower)
+    };
+    searchable(&entry.value) || entry.builtin_default.is_some_and(searchable)
 }
 
 /// UNDERLYING indices (into `entries`) of the rows the cache's filter shows —
@@ -20575,23 +20656,16 @@ mod tests {
         }
     }
 
-    /// A key inherited from `~/.gsd/defaults.json` (the ` *` rows) is masked,
-    /// and so is the same key in the Global (`d`) view.
+    /// A secret in `~/.gsd/defaults.json` is NOT shown in the Project view
+    /// (GSD never reads the global file for a project with a config.json), and
+    /// is masked in the Global (`d`) view.
     #[test]
-    fn a_secret_inherited_from_global_defaults_is_masked_in_both_views() {
+    fn a_global_secret_is_absent_from_project_view_and_masked_in_global_view() {
         use crate::state_reader::config_json::parse_gsd_config;
         use crate::state_reader::config_secrets::MASKED_SECRET;
 
         let project = parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap();
         let global = parse_gsd_config(r#"{"brave_search":"GLB-SECRET-H3T7"}"#).unwrap();
-
-        let entries = build_defaults_entries(&project, Some(&global));
-        let row = entries
-            .iter()
-            .find(|e| e.key.as_ref() == "brave_search")
-            .expect("the brave_search row");
-        assert_eq!(row.value, MASKED_SECRET);
-        assert!(row.from_defaults, "the key is inherited from the global defaults");
 
         let (p, g) = (project.clone(), global.clone());
         let text = render_defaults_cache_to_text(move |cache| {
@@ -20602,7 +20676,7 @@ mod tests {
             .lines()
             .find(|l| l.contains("brave_search"))
             .unwrap_or_else(|| panic!("ARRIVAL: no brave_search row drawn:\n{text}"));
-        assert!(line.contains(MASKED_SECRET) && line.contains(" *"), "{line}");
+        assert!(line.contains("(unset)") && !line.contains(" *"), "{line}");
         assert!(!text.contains("H3T7"), "the Project view leaked the inherited key:\n{text}");
 
         let text = render_defaults_cache_to_text(move |cache| {
@@ -26276,5 +26350,70 @@ mod tests {
         check(screen, ctx, KeyCode::PageDown, 1, |c| c.view_cache[TEST_ALIAS].queue_selected, "Queue");
         let (screen, ctx) = mouse_driver_ctx(40);
         check(screen, ctx, KeyCode::Char('j'), 30, |c| c.view_cache[TEST_ALIAS].driver_selected_run, "Driver");
+    }
+
+    // ── quick 261006: unset rows show GSD built-in defaults; value filter ──
+
+    /// An unset key is not backfilled from the global file; it carries GSD's
+    /// built-in default instead.
+    #[test]
+    fn project_view_shows_builtin_default_not_global_value() {
+        use crate::state_reader::config_json::parse_gsd_config;
+        let project = parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap();
+        let global = parse_gsd_config(r#"{"model_profile":"quality"}"#).unwrap();
+        let mut cache = super::super::ProjectViewCache::default();
+        cache.defaults_config = Some(project);
+        cache.defaults_user_config = Some(global);
+        let entries = entries_for_cache(&cache);
+        let row = entries.iter().find(|e| e.key.as_ref() == "model_profile").unwrap();
+        assert_ne!(row.value, "quality", "the global value must not be shown");
+        assert!(!row.from_defaults);
+        assert_eq!(row.builtin_default, Some("balanced"));
+    }
+
+    fn filter_entries(config_json: &str, q: &str) -> Vec<String> {
+        let cfg = crate::state_reader::config_json::parse_gsd_config(config_json).unwrap();
+        build_defaults_entries(&cfg, None)
+            .iter()
+            .filter(|e| config_row_matches(e, &q.to_lowercase()))
+            .map(|e| e.key.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn filter_matches_values_as_well_as_keys() {
+        let hits = filter_entries(r#"{"model_profile":"quality"}"#, "QUAL");
+        assert!(hits.iter().any(|k| k == "model_profile"), "{hits:?}");
+        // The effective built-in default of an unset row matches too.
+        let hits = filter_entries(r#"{"mode":"yolo"}"#, "balanced");
+        assert!(hits.iter().any(|k| k == "model_profile"), "{hits:?}");
+    }
+
+    #[test]
+    fn filter_key_match_still_works() {
+        let hits = filter_entries(r#"{"mode":"yolo"}"#, "model_prof");
+        assert!(hits.iter().any(|k| k == "model_profile"), "{hits:?}");
+    }
+
+    #[test]
+    fn filter_ignores_unset_true_and_false_values() {
+        for q in ["(unset)", "true", "false"] {
+            let cfg = crate::state_reader::config_json::parse_gsd_config(
+                r#"{"commit_docs":true,"text_mode":false}"#,
+            )
+            .unwrap();
+            for e in build_defaults_entries(&cfg, None) {
+                assert!(!config_value_matches(&e, q), "{q} matched value of {}", e.key);
+            }
+        }
+    }
+
+    #[test]
+    fn filter_matches_numeric_values() {
+        let hits = filter_entries(r#"{"workflow":{"subagent_timeout":424242}}"#, "42424");
+        assert!(hits.iter().any(|k| k == "subagent_timeout"), "{hits:?}");
+        // built-in numeric default of an unset row
+        let hits = filter_entries(r#"{"mode":"yolo"}"#, "200000");
+        assert!(hits.iter().any(|k| k == "context_window"), "{hits:?}");
     }
 }
