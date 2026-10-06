@@ -604,6 +604,10 @@ Recent decisions affecting current work:
 | 261006-wtp | Show worktree-only roadmap phases (ghost nodes + dashboard hint) | 2026-10-06 | 23a947f | [261006-wtp](./quick/261006-wtp-show-worktree-only-roadmap-phases/) |
 | 261006-git-lanes-gitk-tracks | Git view: draw merges as gitk-style lane tracks (`--topo-order`, `%H %P`, pure `assign_lanes`) | 2026-10-06 | 10acfd9 | [261006-git-lanes-gitk-tracks](./quick/261006-git-lanes-gitk-tracks/) |
 | 261006-cfg-config-view-defaults | Config view: Project view no longer shows global defaults as effective (built-in default dimmed); 7:Cfg `/` search matches values | 2026-10-06 | 4c5c71b | [261006-cfg-config-view-defaults](./quick/261006-cfg-config-view-defaults/) |
+| 261006-prefs | Global settings editor: dashboard `G` Preferences screen (default_runtime, driver_max_concurrent), `g` Config Global scope; scopes labelled 'template for NEW projects' / 'this project only' | 2026-10-06 | 0e55bf2 | [261006-prefs-global-settings-editor](./quick/261006-prefs-global-settings-editor/) |
+| 261006-badge | Width-stable badge glyphs (`‖` paused, `◷` external-job replace emoji-wide ⏸/⏳) | 2026-10-06 | a23b6ca | [261006-badge-glyphs-width-stable](./quick/261006-badge-glyphs-width-stable/) |
+| 261006-confirm | Modal Yes/No popup for destructive confirmations (delete, queue delete, driver confirm; No focused by default) | 2026-10-06 | 3140a5b | [261006-confirm-popup](./quick/261006-confirm-popup/) |
+| 261006-editor | Browser file cache reloads after `$EDITOR` exits (`App::refresh_after_editor`) | 2026-10-06 | e90be67 | [261006-editor-cache-reload](./quick/261006-editor-cache-reload/) |
 
 ## Session Continuity
 
