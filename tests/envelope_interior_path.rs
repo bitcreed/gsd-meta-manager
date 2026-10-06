@@ -1039,8 +1039,12 @@ fn the_t_19_119_replacement_takes_layer_2_as_well_and_that_is_measured_separatel
     let envelope = fixture.path().join("env");
     let real = fixture.path().join("real");
     let replaced = fixture.path().join("replaced");
-    std::fs::copy(PRODUCT_BIN, &real).expect("the product binary copies");
-    std::fs::copy("/bin/true", &replaced).expect("/bin/true copies");
+    // Symlinks, not copies: a copy leaves a write fd open on the new file, and a
+    // `fork` from a sibling test thread in that window inherits it, so this
+    // test's own `exec` fails ETXTBSY ("Text file busy"). A symlink opens nothing
+    // for writing, so there is no window; the exec still runs the same code.
+    std::os::unix::fs::symlink(PRODUCT_BIN, &real).expect("the product binary links");
+    std::os::unix::fs::symlink("/bin/true", &replaced).expect("/bin/true links");
 
     let request = serde_json::json!({
         "session_id": "fixture",
@@ -1060,12 +1064,18 @@ fn the_t_19_119_replacement_takes_layer_2_as_well_and_that_is_measured_separatel
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("the binary spawns");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin is piped")
-            .write_all(request.as_bytes())
-            .expect("the request is written");
+        // A binary that exits without reading stdin (the `/bin/true` replacement
+        // is exactly that) closes the pipe before this write can land; the write
+        // then fails with BrokenPipe, a race between the child's exit and this
+        // write, not a fault. Only that error is tolerated: the exit code is the
+        // measurement. Stdin is dropped before the wait so EOF reaches the child.
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        match stdin.write_all(request.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => panic!("the request is written: {e}"),
+        }
+        drop(stdin);
         child.wait().expect("the guard exits").code().unwrap_or(-1)
     };
 
