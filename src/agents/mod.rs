@@ -42,6 +42,7 @@ pub mod adapters;
 pub mod fixers;
 pub mod processes;
 pub mod unmerged;
+pub mod worktree_phases;
 pub mod waves;
 pub mod worktrees;
 
@@ -300,6 +301,9 @@ pub struct ProjectAgents {
     /// ([`unmerged::detect`], quick 260929-szq), sorted by key. Covers every
     /// non-prunable worktree, agent or not.
     pub unmerged: Vec<unmerged::UnmergedItem>,
+    /// Roadmap phases that exist only in a linked worktree
+    /// ([`worktree_phases::detect`]), sorted by phase number.
+    pub worktree_phases: Vec<worktree_phases::WorktreePhase>,
 }
 
 /// Run one adapter, turning a panic into an empty report.
@@ -494,6 +498,7 @@ pub fn scan_project_with_probe(
     // Names-only reads over each worktree's `.planning/`; git counts only for
     // a holder that is not already an agent row (quick 260929-szq, I-3).
     let unmerged = unmerged::detect(&core, &rows, project_root);
+    let worktree_phases = worktree_phases::detect(&core, &rows, project_root);
 
     let raw = |value: &Option<Untrusted>| {
         value
@@ -524,6 +529,7 @@ pub fn scan_project_with_probe(
         scanned_at: Some(now),
         fixer_estimate,
         unmerged,
+        worktree_phases,
     }
 }
 

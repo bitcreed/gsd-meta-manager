@@ -2867,6 +2867,48 @@ pub(crate) fn roadmap_model_for(
         .collect();
     let shipped_count = shipped_nodes.len();
 
+    // Worktree-only phases (todo 2026-10-01): ghost nodes for phases a linked
+    // worktree holds and main's roadmap does not. Main stays authoritative — a
+    // key main already lists is skipped. Owned strings, borrowed by the nodes.
+    let held_main: std::collections::HashSet<String> = held
+        .iter()
+        .cloned()
+        .chain(state.shipped_phases.iter().map(|p| phase_key(&p.number)))
+        .collect();
+    let ghosts: Vec<(String, String, String, Option<(u32, u32)>)> = view
+        .map(|v| {
+            v.worktree_phases
+                .iter()
+                .filter(|g| !held_main.contains(&phase_key(&g.id)))
+                .map(|g| {
+                    let badge = format!(
+                        "[{} @{}]",
+                        g.stage.label(),
+                        g.short_ref.shown()
+                    );
+                    let plans = (g.plans_total > 0).then_some((g.plans_done, g.plans_total));
+                    (g.id.clone(), g.name.shown().to_string(), badge, plans)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let ghost_count = ghosts.len();
+    let ghost_nodes: Vec<roadmap_graph::ListNode<'_>> = ghosts
+        .iter()
+        .map(|(id, name, badge, plans)| roadmap_graph::ListNode {
+            id,
+            name,
+            deps: &[],
+            band: active.or(synthetic),
+            marker: state_reader::PhaseMarker::Future,
+            done: false,
+            plans: *plans,
+            goal: None,
+            planned: false,
+            badge: Some(badge.clone()),
+        })
+        .collect();
+
     let nodes = shipped_nodes
         .into_iter()
         .chain(entries.into_iter().map(|(p, planned)| {
@@ -2888,6 +2930,7 @@ pub(crate) fn roadmap_model_for(
                 badge: (!badge.is_empty()).then(|| badge.to_string()),
             }
         }))
+        .chain(ghost_nodes)
         .collect();
 
     let no_toggles = std::collections::HashSet::new();
@@ -2916,6 +2959,17 @@ pub(crate) fn roadmap_model_for(
             if k > 0 && facts.status != roadmap_graph::PhaseStatus::Done && all_remaining_unmerged
             {
                 unmerged_nodes.push(u);
+            }
+        }
+        // Ghost nodes are the last `ghost_count` nodes; layout may reorder, so
+        // match by key. They show as unmerged (worktree-held) and, with no
+        // dependents in main, can never satisfy one (I-11).
+        if ghost_count > 0 {
+            for (id, ..) in &ghosts {
+                let key = phase_key(id);
+                if let Some(u) = model.phases.iter().position(|f| f.key == key) {
+                    unmerged_nodes.push(u);
+                }
             }
         }
         // Through the model, so the lane glyph `layout_list` drew follows.
@@ -21364,6 +21418,37 @@ mod tests {
             "{summary:?}"
         );
         assert_eq!(phase_row_ids(&model), ["9", "10", "11", "12"]);
+    }
+
+    #[test]
+    fn roadmap_model_for_draws_worktree_only_phases_as_unmerged_ghosts() {
+        use crate::agents::unmerged::UnmergedState;
+        use crate::agents::worktree_phases::{WorktreePhase, WorktreeStage};
+        let ghost = |id: &str, stage| WorktreePhase {
+            id: id.to_string(),
+            name: Untrusted::from_untrusted_source("new-work".to_string()),
+            stage,
+            plans_done: 0,
+            plans_total: 0,
+            worktree: std::path::PathBuf::from("/x"),
+            short_ref: Untrusted::from_untrusted_source("a8f61b1".to_string()),
+            state: UnmergedState::AwaitingMerge,
+        };
+        let view = AgentView {
+            // 11 is already in main's roadmap: main wins, no ghost.
+            worktree_phases: vec![ghost("11", WorktreeStage::Context), ghost("13", WorktreeStage::Researched)],
+            ..AgentView::default()
+        };
+        let model = roadmap_model_for(&fixture_state("sentriq"), None, false, Some(&view));
+        let ids = phase_row_ids(&model);
+        assert_eq!(ids, ["9", "10", "11", "12", "13"], "{ids:?}");
+        let g = model.phases.iter().find(|f| f.id == "13").expect("ghost");
+        assert_eq!(g.status, roadmap_graph::PhaseStatus::Unmerged);
+        let m11 = model.phases.iter().find(|f| f.id == "11").unwrap();
+        assert_ne!(m11.status, roadmap_graph::PhaseStatus::Unmerged);
+        assert!(!model.start_now.iter().any(|&u| model.phases[u].id == "13"));
+        let none = roadmap_model_for(&fixture_state("sentriq"), None, false, None);
+        assert_eq!(phase_row_ids(&none), ["9", "10", "11", "12"]);
     }
 
     #[test]
