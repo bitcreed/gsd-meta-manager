@@ -5,16 +5,20 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
 use ratatui::Frame;
 
 pub struct DeleteConfirmScreen {
     pub alias: String,
+    popup: ConfirmPopup,
 }
 
 impl DeleteConfirmScreen {
     pub fn new(alias: String) -> Self {
-        Self { alias }
+        Self {
+            alias,
+            popup: ConfirmPopup::default(),
+        }
     }
 }
 
@@ -37,16 +41,19 @@ impl Screen for DeleteConfirmScreen {
         _modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
-        match code {
-            KeyCode::Char('y') => {
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => {
                 do_remove_project(ctx, &self.alias);
                 ScreenAction::Pop
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            ConfirmOutcome::Cancel => {
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
-            _ => ScreenAction::None,
+            ConfirmOutcome::Pending => {
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
         }
     }
 
@@ -57,21 +64,13 @@ impl Screen for DeleteConfirmScreen {
     // cannot enforce it. The refusal is a message the user sees *after* pressing
     // `y`, which is where it belongs: this screen is reached from more than one
     // route, and only the removal function is on all of them.
-    fn render(&self, frame: &mut Frame, area: Rect, _ctx: &AppContext) {
-        let chunks = ratatui::layout::Layout::vertical([
-            ratatui::layout::Constraint::Min(0),
-            ratatui::layout::Constraint::Length(1),
-        ])
-        .split(area);
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        // The dashboard the user was just looking at stays rendered, dimmed,
+        // behind the popup (todo 2026-08-18: never an empty block).
+        super::normal::NormalScreen::new().render(frame, area, ctx);
+        confirm_popup::dim_background(frame, area);
 
-        // Render project list background
-        use ratatui::widgets::{Block, Borders};
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" GSD Manager ");
-        frame.render_widget(block, chunks[0]);
-
-        // Footer with delete confirmation.
+        // Popup body for the delete confirmation.
         //
         // **The split, stated here so a maintainer reading the diff sees the
         // rule rather than the instance:** the value a HUMAN READS goes through
@@ -94,8 +93,17 @@ impl Screen for DeleteConfirmScreen {
             "Remove \"{}\"? This only unregisters it \u{2014} project files are not deleted. [y/n]",
             crate::text::render_for_terminal(&self.alias)
         );
-        let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Red)));
-        frame.render_widget(Paragraph::new(line), chunks[1]);
+        confirm_popup::render_confirm_popup(
+            frame,
+            area,
+            "Remove project",
+            vec![Line::from(Span::styled(
+                confirm_popup::strip_key_hint(&prompt).to_string(),
+                Style::default().fg(Color::Red),
+            ))],
+            Color::Red,
+            self.popup.focus,
+        );
     }
 
     fn name(&self) -> &str {
@@ -445,5 +453,70 @@ mod tests {
             .as_ref()
             .expect("a removal reports what it did");
         assert!(status.contains("Removed"), "got: {status}");
+    }
+
+    fn render_rows(screen: &DeleteConfirmScreen, ctx: &AppContext) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| screen.render(f, f.area(), ctx)).unwrap();
+        let buf = t.backend().buffer();
+        (0..30u16)
+            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn delete_confirmation_is_a_popup_with_buttons_over_the_dashboard() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, _rx) = ctx_with_project(dir.path());
+        let rows = render_rows(&DeleteConfirmScreen::new(ALIAS.to_string()), &ctx);
+        let text = rows.join("\n");
+        assert!(text.contains("Remove project"), "popup title missing");
+        assert!(text.contains("Remove \"proj\"?"), "prompt missing");
+        // The body wraps inside the popup, so assert on a fragment that cannot
+        // straddle a line break at this width.
+        assert!(text.contains("unregisters"), "consequence missing");
+        assert!(text.contains("[ Yes ]") && text.contains("[ No ]"));
+        assert!(!text.contains("[y/n]"), "legacy footer hint must be gone");
+        // The dashboard is still behind the popup: the registered alias appears
+        // outside the popup line too (project row), not an empty block.
+        assert!(
+            rows.iter().filter(|r| r.contains("proj")).count() >= 2,
+            "the project list must remain rendered behind the popup"
+        );
+    }
+
+    #[test]
+    fn enter_defaults_to_no_and_focus_can_move_to_yes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+
+        // Stray Enter is safe: No is focused, nothing is removed.
+        let mut screen = DeleteConfirmScreen::new(ALIAS.to_string());
+        let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(ctx.config.projects.contains_key(ALIAS));
+
+        // Tab moves focus to Yes without acting; Enter then confirms.
+        let mut screen = DeleteConfirmScreen::new(ALIAS.to_string());
+        let act = screen.handle_key(KeyCode::Tab, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(act, ScreenAction::None));
+        assert!(ctx.config.projects.contains_key(ALIAS));
+        let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(!ctx.config.projects.contains_key(ALIAS));
+    }
+
+    #[test]
+    fn n_and_esc_cancel_without_removing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        for key in [KeyCode::Char('n'), KeyCode::Esc] {
+            let mut screen = DeleteConfirmScreen::new(ALIAS.to_string());
+            let act = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(act, ScreenAction::Pop));
+            assert!(ctx.config.projects.contains_key(ALIAS));
+        }
     }
 }

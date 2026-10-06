@@ -1,16 +1,17 @@
 use super::{AppContext, Screen, ScreenAction};
 use crate::state_reader::{self, queue_md};
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
+use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 pub struct QueueDeleteConfirmScreen {
     pub alias: String,
     pub index: usize,
     pub command_text: String,
+    popup: ConfirmPopup,
 }
 
 impl QueueDeleteConfirmScreen {
@@ -19,6 +20,7 @@ impl QueueDeleteConfirmScreen {
             alias,
             index,
             command_text,
+            popup: ConfirmPopup::default(),
         }
     }
 }
@@ -38,8 +40,8 @@ impl Screen for QueueDeleteConfirmScreen {
         _modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
-        match code {
-            KeyCode::Char('y') => {
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => {
                 if let Some(project) = ctx.config.projects.get(&self.alias) {
                     let planning_dir = project.path.join(".planning");
                     let mut actions = queue_md::load_queue(&planning_dir);
@@ -70,28 +72,35 @@ impl Screen for QueueDeleteConfirmScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            ConfirmOutcome::Cancel => {
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
-            _ => ScreenAction::None,
+            ConfirmOutcome::Pending => {
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
         }
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-        let footer_area = chunks[1];
-
-        // Render the detail view content in the background
+        // Render the detail view content in the background, dimmed, with the
+        // confirmation as a modal popup over it.
         let detail = super::detail::DetailScreen::new(self.alias.clone());
-        detail.render_main_only(frame, chunks[0], ctx);
+        detail.render_main_only(frame, area, ctx);
+        confirm_popup::dim_background(frame, area);
 
-        // Red confirmation prompt in footer.
-        let line = Line::from(Span::styled(
-            prompt_text(&self.command_text),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ));
-        frame.render_widget(Paragraph::new(line), footer_area);
+        confirm_popup::render_confirm_popup(
+            frame,
+            area,
+            "Remove from queue",
+            vec![Line::from(Span::styled(
+                confirm_popup::strip_key_hint(&prompt_text(&self.command_text)).to_string(),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ))],
+            Color::Red,
+            self.popup.focus,
+        );
     }
 
     fn name(&self) -> &str {
@@ -137,4 +146,42 @@ pub(crate) fn prompt_text(command_text: &str) -> String {
         escaped
     };
     format!("  Remove \"{}\" from queue? [y/n]", display_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn rows(screen: &QueueDeleteConfirmScreen, ctx: &AppContext) -> String {
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| screen.render(f, f.area(), ctx)).unwrap();
+        let buf = t.backend().buffer();
+        (0..30u16)
+            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn queue_delete_renders_a_popup_with_buttons() {
+        let ctx = crate::ui::screens::tests::ctx_with_aliases(&["demo"]);
+        let screen =
+            QueueDeleteConfirmScreen::new("demo".into(), 0, "/gsd:execute-phase 21".into());
+        let text = rows(&screen, &ctx);
+        assert!(text.contains("Remove from queue"));
+        assert!(text.contains("Remove \"/gsd:execute-phase 21\" from queue?"));
+        assert!(text.contains("[ Yes ]") && text.contains("[ No ]"));
+        assert!(!text.contains("[y/n]"));
+    }
+
+    #[test]
+    fn queue_delete_enter_defaults_to_cancel() {
+        let mut ctx = crate::ui::screens::tests::ctx_with_aliases(&["demo"]);
+        let mut screen = QueueDeleteConfirmScreen::new("demo".into(), 0, "x".into());
+        let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(ctx.status_message.is_none(), "No-by-default Enter must not delete");
+    }
 }
