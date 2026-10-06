@@ -112,12 +112,15 @@ pub(super) const BADGE_DRIVEN: &str = "\u{25C6} ";
 /// outline with the diamond, the two pause bars, the hourglass or the triangle.
 pub(super) const BADGE_NEEDS_HUMAN: &str = "\u{2691} ";
 
-/// Rank 3 — a non-empty HANDOFF. `⏸` DOUBLE VERTICAL BAR. Shipped in v1.4.
-pub(super) const BADGE_PAUSED: &str = "\u{23F8} ";
+/// Rank 3 — a non-empty HANDOFF. `‖` DOUBLE VERTICAL LINE. Shipped in v1.4.
+/// Was `⏸` U+23F8, which several terminals draw emoji-wide (2 cells) while
+/// `unicode-width` reports 1 — see `badge_glyphs_are_width_stable`.
+pub(super) const BADGE_PAUSED: &str = "\u{2016} ";
 
-/// Rank 4 — blocked on an external/async job, not stuck. `⏳` HOURGLASS.
+/// Rank 4 — blocked on an external/async job, not stuck. `◷` clock face (WHITE
+/// CIRCLE WITH UPPER RIGHT QUADRANT). Was `⏳` U+23F3, East-Asian-Width Wide.
 /// Shipped in GSD 1.8.0.
-pub(super) const BADGE_EXTERNAL_JOB: &str = "\u{23F3} ";
+pub(super) const BADGE_EXTERNAL_JOB: &str = "\u{25F7} ";
 
 /// Rank 5 — an active Claude or Codex session in this project's directory. `▶`.
 /// Shipped in v1.0.
@@ -1363,15 +1366,50 @@ mod tests {
         modifier: Modifier::BOLD,
     };
     const PAUSE_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{23F8} ",
+        glyph: "\u{2016} ",
         color: Color::Cyan,
         modifier: Modifier::empty(),
     };
     const ASYNC_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{23F3} ",
+        glyph: "\u{25F7} ",
         color: Color::Yellow,
         modifier: Modifier::empty(),
     };
+    /// Cross-terminal alignment guard (todo 2026-07-29-badge-glyph-display-width-
+    /// alignment). A glyph whose width the terminal and `unicode-width` disagree
+    /// on shifts a badged row one cell against an unbadged one. The disagreement
+    /// is confined to Wide codepoints and default-emoji-presentation codepoints,
+    /// so every badge glyph must come from this pinned allowlist of text-
+    /// presentation, non-Wide codepoints and render as exactly 2 cells.
+    #[test]
+    fn badge_glyphs_are_width_stable() {
+        const ALLOWED: [char; 5] = ['\u{25C6}', '\u{2691}', '\u{2016}', '\u{25F7}', '\u{25B6}'];
+        // Former glyphs, kept as regression witnesses (Wide / emoji-default).
+        const FORBIDDEN: [char; 2] = ['\u{23F8}', '\u{23F3}'];
+        let badges = [
+            BADGE_DRIVEN,
+            BADGE_NEEDS_HUMAN,
+            BADGE_PAUSED,
+            BADGE_EXTERNAL_JOB,
+            BADGE_SESSION,
+        ];
+        for b in badges {
+            let mut chars = b.chars();
+            let glyph = chars.next().expect("glyph");
+            assert_eq!(chars.next(), Some(' '), "{b:?} must be glyph + one space");
+            assert_eq!(chars.next(), None, "{b:?} must be exactly two chars");
+            assert!(ALLOWED.contains(&glyph), "{glyph:?} not width-stable");
+            assert!(!FORBIDDEN.contains(&glyph));
+            assert_eq!(Span::raw(b).width(), 2, "{b:?} must render 2 cells");
+            assert_eq!(Span::raw(glyph.to_string()).width(), 1);
+        }
+        for (i, a) in badges.iter().enumerate() {
+            for b in &badges[i + 1..] {
+                assert_ne!(a, b, "badge glyphs must be distinct");
+            }
+        }
+    }
+
     const SESSION_BADGE: AliasBadge = AliasBadge {
         glyph: "\u{25b6} ",
         color: Color::Green,

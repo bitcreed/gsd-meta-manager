@@ -6943,7 +6943,7 @@ impl DetailScreen {
             head.push(fit_spans(
                 vec![
                     Span::styled(
-                        "  \u{23F3} external job waiting",
+                        "  \u{25F7} external job waiting",
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),

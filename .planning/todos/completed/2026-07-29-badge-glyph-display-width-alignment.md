@@ -24,3 +24,10 @@ closed. Requires a human check across terminal emulators to characterise.
 TBD — options include pinning a fixed-width badge cell regardless of glyph, choosing
 Narrow-width glyphs, or padding based on measured width. Needs the cross-terminal
 observation first.
+
+## Resolution (quick task, inferred decision)
+
+No cross-terminal check was available, so the badge glyphs were swapped for
+text-presentation, non-Wide codepoints: `⏸` U+23F8 -> `‖` U+2016, `⏳` U+23F3 -> `◷` U+25F7
+(also in the detail-view external-job line). `badge_glyphs_are_width_stable` pins an
+allowlist and 2-cell width. Audit: glyph choice is aesthetic, revisit freely.
