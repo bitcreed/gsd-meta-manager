@@ -547,11 +547,12 @@ pub fn editor_args(editor: &str, path: &std::path::Path, line: Option<usize>) ->
 }
 
 impl App {
-    /// Called when `$EDITOR` returns: re-read any cached browser file that
+    /// Called when `$EDITOR` returns: re-read any cached browser or archive file that
     /// was just edited so the viewer does not show pre-edit text.
     pub fn refresh_after_editor(&mut self, edited: &std::path::Path) {
         for cache in self.ctx.view_cache.values_mut() {
             cache.reload_browser_file_if(edited);
+            cache.reload_archive_file_if(edited);
         }
         self.needs_redraw = true;
     }
@@ -2541,6 +2542,25 @@ mod tests {
         assert_eq!(app.ctx.view_cache["p"].browser_file_content.as_deref(), Some("old"));
         app.refresh_after_editor(&f);
         assert_eq!(app.ctx.view_cache["p"].browser_file_content.as_deref(), Some("new"));
+        assert!(app.needs_redraw);
+    }
+
+    /// After `$EDITOR` exits the archive viewer re-reads the edited file; a
+    /// different file's cache is left alone.
+    #[test]
+    fn editor_exit_reloads_archive_file_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.md");
+        std::fs::write(&f, "old").unwrap();
+        let mut app = App::new_for_test();
+        let cache = app.ctx.view_cache.entry("p".into()).or_default();
+        cache.archive_file_content = Some("old".into());
+        cache.archive_file_path = Some(f.clone());
+        std::fs::write(&f, "new").unwrap();
+        app.refresh_after_editor(&dir.path().join("other.md"));
+        assert_eq!(app.ctx.view_cache["p"].archive_file_content.as_deref(), Some("old"));
+        app.refresh_after_editor(&f);
+        assert_eq!(app.ctx.view_cache["p"].archive_file_content.as_deref(), Some("new"));
         assert!(app.needs_redraw);
     }
 
