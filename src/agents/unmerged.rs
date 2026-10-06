@@ -67,7 +67,7 @@ pub struct UnmergedItem {
 }
 
 /// Every entry name of `dir`, as UTF-8; an unreadable dir is empty.
-fn names(dir: &Path) -> Vec<String> {
+pub(super) fn names(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -78,7 +78,7 @@ fn names(dir: &Path) -> Vec<String> {
 }
 
 /// Sub-directory entries of `dir` (following symlinks), with their names.
-fn subdirs(dir: &Path) -> Vec<(String, PathBuf)> {
+pub(super) fn subdirs(dir: &Path) -> Vec<(String, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -221,7 +221,7 @@ pub fn short_ref(branch: Option<&Untrusted>, worktree: &Path, agent_ids: &[&str]
 /// The state one holder worktree's agent row implies (I-4): a running agent,
 /// or a lock whose owner is not `Ended`, is `InProgress`; anything else —
 /// including a worktree with no agent row, locked or not — awaits merge.
-fn item_state(row: Option<&AgentRow>) -> UnmergedState {
+pub(super) fn item_state(row: Option<&AgentRow>) -> UnmergedState {
     match row {
         Some(r) if r.liveness.is_running() => UnmergedState::InProgress,
         Some(r) if r.locked && r.liveness != AgentLiveness::Ended => UnmergedState::InProgress,

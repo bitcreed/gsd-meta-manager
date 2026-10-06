@@ -601,6 +601,7 @@ Recent decisions affecting current work:
 | 260930-vvk | Positional project target on top-level CLI opens TUI directly in that project's view | 2026-10-01 | 333d163 | [260930-vvk-accept-an-optional-positional-project-ta](./quick/260930-vvk-accept-an-optional-positional-project-ta/) |
 | 261004-gsd-expansion | Update README GSD expansion to "Git. Ship. Done." | 2026-10-04 | d4ef6ae | [261004-gsd-expansion-update-readme-gsd-expansion-to-git-ship-done](./quick/261004-gsd-expansion-update-readme-gsd-expansion-to-git-ship-done/) |
 | 261004-readme-accuracy | README accuracy pass: define GSD up front, drop per-version pins, dedupe Features/Quick start, sync --help block and clap about with Cargo description, fix Config `g` key | 2026-10-04 | 8316e7c | [261004-readme-accuracy](./quick/261004-readme-accuracy/) |
+| 261006-wtp | Show worktree-only roadmap phases (ghost nodes + dashboard hint) | 2026-10-06 | pending | [261006-wtp](./quick/261006-wtp-show-worktree-only-roadmap-phases/) |
 
 ## Session Continuity
 

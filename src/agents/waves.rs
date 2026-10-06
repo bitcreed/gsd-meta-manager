@@ -193,6 +193,9 @@ pub struct AgentView {
     /// Unmerged worktree work, copied from [`ProjectAgents::unmerged`]
     /// (quick 260929-szq). Every UI surface reads this one scan-time list.
     pub unmerged: Vec<UnmergedItem>,
+    /// Phases only a linked worktree holds, copied from
+    /// [`ProjectAgents::worktree_phases`].
+    pub worktree_phases: Vec<super::worktree_phases::WorktreePhase>,
 }
 
 /// Strip the punctuation a sentence wraps around a captured token.
@@ -478,6 +481,7 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
         scanned_at: agents.scanned_at,
         fixers: agents.fixer_estimate.clone(),
         unmerged: agents.unmerged.clone(),
+        worktree_phases: agents.worktree_phases.clone(),
     }
 }
 
@@ -526,6 +530,11 @@ impl AgentView {
     /// states (I-7): the dashboard's `◐N`.
     pub fn pending_unmerged(&self) -> u32 {
         u32::try_from(self.unmerged.len()).unwrap_or(u32::MAX)
+    }
+
+    /// How many roadmap phases exist only in a linked worktree.
+    pub fn pending_worktree_phases(&self) -> u32 {
+        u32::try_from(self.worktree_phases.len()).unwrap_or(u32::MAX)
     }
 
     /// The unmerged item for the plan `stem` names (`13-02-slug` finds
@@ -603,6 +612,20 @@ impl AgentView {
     /// only stalled rows `S stalled`; with neither, no forms, and the cell is
     /// left alone.
     pub fn summary_forms(&self) -> Vec<String> {
+        let mut forms = self.base_summary_forms();
+        let w = self.pending_worktree_phases();
+        if w > 0 {
+            let tag = format!("{w} wt phase{}", if w == 1 { "" } else { "s" });
+            match forms.first().cloned() {
+                // A wider form in front; every narrower form is untouched.
+                Some(first) => forms.insert(0, format!("{first} \u{b7} {tag}")),
+                None => forms.push(tag),
+            }
+        }
+        forms
+    }
+
+    fn base_summary_forms(&self) -> Vec<String> {
         let n = self.pending_unmerged();
         if !self.is_active() {
             let stalled = self
