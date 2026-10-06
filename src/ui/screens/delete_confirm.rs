@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
+use crate::ui::mouse::MouseInput;
 use ratatui::Frame;
 
 pub struct DeleteConfirmScreen {
@@ -93,7 +94,7 @@ impl Screen for DeleteConfirmScreen {
             "Remove \"{}\"? This only unregisters it \u{2014} project files are not deleted. [y/n]",
             crate::text::render_for_terminal(&self.alias)
         );
-        confirm_popup::render_confirm_popup(
+        self.popup.record(confirm_popup::render_confirm_popup(
             frame,
             area,
             "Remove project",
@@ -103,7 +104,12 @@ impl Screen for DeleteConfirmScreen {
             ))],
             Color::Red,
             self.popup.focus,
-        );
+        ));
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        confirm_popup::click_as_key(&mut self.popup, input)
+            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
     }
 
     fn name(&self) -> &str {
@@ -518,5 +524,37 @@ mod tests {
             assert!(matches!(act, ScreenAction::Pop));
             assert!(ctx.config.projects.contains_key(ALIAS));
         }
+    }
+
+    fn click_at(
+        screen: &mut DeleteConfirmScreen,
+        ctx: &mut AppContext,
+        label: &str,
+    ) -> ScreenAction {
+        let text = render_rows(screen, ctx).join("\n");
+        let (column, row) = crate::ui::screens::confirm_popup::locate(&text, label).expect("button drawn");
+        screen.handle_mouse(MouseInput::Click { column, row, double: false }, ctx)
+    }
+
+    #[test]
+    fn clicking_yes_removes_and_clicking_no_or_elsewhere_does_not() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+
+        let mut screen = DeleteConfirmScreen::new(ALIAS.to_string());
+        let act = click_at(&mut screen, &mut ctx, "[ No ]");
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(ctx.config.projects.contains_key(ALIAS));
+
+        // A click away from the buttons is inert.
+        let mut screen = DeleteConfirmScreen::new(ALIAS.to_string());
+        render_rows(&screen, &ctx);
+        let act = screen.handle_mouse(MouseInput::Click { column: 0, row: 0, double: false }, &mut ctx);
+        assert!(matches!(act, ScreenAction::None));
+        assert!(ctx.config.projects.contains_key(ALIAS));
+
+        let act = click_at(&mut screen, &mut ctx, "[ Yes ]");
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(!ctx.config.projects.contains_key(ALIAS));
     }
 }

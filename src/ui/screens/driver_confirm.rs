@@ -44,6 +44,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use super::confirm_popup::{ConfirmOutcome, ConfirmPopup};
+use crate::ui::mouse::MouseInput;
 use ratatui::Frame;
 
 /// The GSD command a start is **pre-selected** with.
@@ -463,14 +464,19 @@ impl Screen for DriverConfirmScreen {
             DriverAction::ToggleOptIn if opted_in => ("Withdraw driver opt-in", Color::Red),
             DriverAction::ToggleOptIn => ("Allow driver", Color::Yellow),
         };
-        super::confirm_popup::render_confirm_popup(
+        self.popup.record(super::confirm_popup::render_confirm_popup(
             frame,
             area,
             title,
             body,
             accent,
             self.popup.focus,
-        );
+        ));
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        super::confirm_popup::click_as_key(&mut self.popup, input)
+            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
     }
 
     fn name(&self) -> &str {
@@ -1545,5 +1551,30 @@ pub(crate) mod tests {
         let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::Pop));
         assert!(rx.try_recv().is_err(), "a stray Enter must not start a run");
+    }
+
+    #[test]
+    fn clicking_no_declines_and_a_stray_click_is_inert() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
+        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
+        let mut t = Terminal::new(TestBackend::new(110, 40)).unwrap();
+        t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
+        let buf = t.backend().buffer();
+        let text: String = (0..40u16)
+            .map(|y| (0..110u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let at = |label: &str| {
+            let (column, row) = crate::ui::screens::confirm_popup::locate(&text, label).expect("button drawn");
+            MouseInput::Click { column, row, double: false }
+        };
+        let stray = MouseInput::Click { column: 0, row: 0, double: false };
+        assert!(matches!(screen.handle_mouse(stray, &mut ctx), ScreenAction::None));
+        assert!(matches!(screen.handle_mouse(at("[ No ]"), &mut ctx), ScreenAction::Pop));
+        assert!(rx.try_recv().is_err(), "clicking No must not start a run");
     }
 }
