@@ -4641,6 +4641,7 @@ impl Screen for DetailScreen {
                                         cache.archive_scroll_offset = 0;
                                         cache.archive_file_content =
                                             Some(crate::archive::read_archive_file(&path));
+                                        cache.archive_file_path = Some(path.clone());
                                     } else {
                                         // Selected a phase
                                         let phase_idx = selected - top_count;
@@ -4671,6 +4672,7 @@ impl Screen for DetailScreen {
                                             cache.archive_scroll_offset = 0;
                                             cache.archive_file_content =
                                                 Some(crate::archive::read_archive_file(&path));
+                                            cache.archive_file_path = Some(path.clone());
                                             ctx.needs_redraw = true;
                                         }
                                     }

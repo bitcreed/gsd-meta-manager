@@ -1051,6 +1051,9 @@ pub struct ProjectViewCache {
     /// here would claim a bound this plan does not deliver. Named in the
     /// remainder instead. **Direction: under-protection, silent.**
     pub archive_file_content: Option<String>,
+    /// Path `archive_file_content` was read from; lets the `$EDITOR` return
+    /// path re-read the body after an edit (mirrors `browser_file_path`).
+    pub archive_file_path: Option<PathBuf>,
     /// The NAME of the archive file being viewed, drawn into the tab header.
     ///
     /// **`Untrusted`** (D-21-20), for the same reason as `archive_milestones`.
@@ -1216,6 +1219,20 @@ impl ProjectViewCache {
             && self.browser_file_path.as_deref() == Some(edited)
         {
             self.browser_file_content = Some(crate::browser::read_md_file(edited));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Re-read the viewed archive file if it is `edited`. Returns whether the
+    /// cached body was refreshed. The archive twin of
+    /// [`Self::reload_browser_file_if`].
+    pub fn reload_archive_file_if(&mut self, edited: &std::path::Path) -> bool {
+        if self.archive_file_content.is_some()
+            && self.archive_file_path.as_deref() == Some(edited)
+        {
+            self.archive_file_content = Some(crate::archive::read_archive_file(edited));
             true
         } else {
             false
