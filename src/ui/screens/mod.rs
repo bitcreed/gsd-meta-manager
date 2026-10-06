@@ -3196,6 +3196,7 @@ mod tests {
             date: field("2026-09-17"),
             author: field("Human"),
             co_authors: None,
+            graph: String::new(),
             message: field("a subject"),
         }
     }

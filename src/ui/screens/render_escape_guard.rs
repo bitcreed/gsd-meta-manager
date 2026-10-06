@@ -1460,6 +1460,7 @@ fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntr
         date: field(),
         author: field(),
         co_authors: Some(field()),
+        graph: String::new(),
         message: field(),
     }
 }
