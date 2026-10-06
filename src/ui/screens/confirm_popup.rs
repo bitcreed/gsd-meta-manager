@@ -18,12 +18,14 @@
 //! that are already escaped through `crate::text::render_for_terminal`, so the
 //! render-escape census still holds: nothing is re-derived from raw input here.
 
+use crate::ui::mouse::MouseInput;
 use crossterm::event::KeyCode;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
+use std::cell::Cell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConfirmFocus {
@@ -41,12 +43,45 @@ pub enum ConfirmOutcome {
     Pending,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+/// Where the two buttons were drawn, recorded at render time (D-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfirmButtons {
+    pub yes: Rect,
+    pub no: Rect,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ConfirmPopup {
     pub focus: ConfirmFocus,
+    /// Written by `render` (which takes `&self`), read by `on_mouse`.
+    buttons: Cell<Option<ConfirmButtons>>,
 }
 
 impl ConfirmPopup {
+    /// A left click on a button is that button's outcome; anything else —
+    /// a click elsewhere, a wheel step — is inert. Deliberate reversal of the
+    /// old "a click never confirms a dialog" default (INFERRED, requested): a
+    /// press must land on a labelled button, and the stray-Enter safety is
+    /// untouched.
+    pub fn on_mouse(&self, input: MouseInput) -> ConfirmOutcome {
+        let (MouseInput::Click { column, row, .. }, Some(b)) = (input, self.buttons.get()) else {
+            return ConfirmOutcome::Pending;
+        };
+        let at = Position::new(column, row);
+        if b.yes.contains(at) {
+            ConfirmOutcome::Confirm
+        } else if b.no.contains(at) {
+            ConfirmOutcome::Cancel
+        } else {
+            ConfirmOutcome::Pending
+        }
+    }
+
+    /// Remember where `render_confirm_popup` drew the buttons.
+    pub fn record(&self, buttons: Option<ConfirmButtons>) {
+        self.buttons.set(buttons);
+    }
+
     pub fn on_key(&mut self, code: KeyCode) -> ConfirmOutcome {
         match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => ConfirmOutcome::Confirm,
@@ -69,6 +104,17 @@ impl ConfirmPopup {
             }
             _ => ConfirmOutcome::Pending,
         }
+    }
+}
+
+/// A click on a button, as the accelerator key a screen already handles
+/// (`y` / `n`), so click and key share one code path. `None` for any other
+/// input.
+pub fn click_as_key(popup: &ConfirmPopup, input: MouseInput) -> Option<KeyCode> {
+    match popup.on_mouse(input) {
+        ConfirmOutcome::Confirm => Some(KeyCode::Char('y')),
+        ConfirmOutcome::Cancel => Some(KeyCode::Char('n')),
+        ConfirmOutcome::Pending => None,
     }
 }
 
@@ -125,7 +171,26 @@ fn button(label: &'static str, focused: bool, accent: Color) -> Span<'static> {
     Span::styled(label, style)
 }
 
+const YES_LABEL: &str = "[ Yes ]";
+const NO_LABEL: &str = "[ No ]";
+const BUTTON_GAP: u16 = 3;
+
+/// The button rects `Alignment::Center` gives the buttons line in `row`.
+fn button_rects(row: Rect) -> ConfirmButtons {
+    let (yw, nw) = (YES_LABEL.len() as u16, NO_LABEL.len() as u16);
+    let total = yw + BUTTON_GAP + nw;
+    let x0 = row.x + row.width.saturating_sub(total) / 2;
+    let clip = |x: u16, w: u16| Rect::new(x, row.y, w, 1).intersection(row);
+    ConfirmButtons {
+        yes: clip(x0, yw),
+        no: clip(x0 + yw + BUTTON_GAP, nw),
+    }
+}
+
 /// Draw the popup. `title` is static text; `body` lines are pre-escaped.
+///
+/// Returns where the buttons landed (`None` when the popup is too short to
+/// draw them) so the caller can hand it to [`ConfirmPopup::record`].
 pub fn render_confirm_popup(
     frame: &mut Frame,
     area: Rect,
@@ -133,7 +198,7 @@ pub fn render_confirm_popup(
     body: Vec<Line<'static>>,
     accent: Color,
     focus: ConfirmFocus,
-) {
+) -> Option<ConfirmButtons> {
     let inner_w = popup_width(area).saturating_sub(2);
     let popup = popup_rect(area, wrapped_rows(&body, inner_w));
     frame.render_widget(Clear, popup);
@@ -147,7 +212,7 @@ pub fn render_confirm_popup(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     if inner.height == 0 {
-        return;
+        return None;
     }
 
     // Bottom three inner rows: buttons, spacer-free hint. Body gets the rest.
@@ -157,16 +222,16 @@ pub fn render_confirm_popup(
         Rect::new(inner.x, inner.y, inner.width, body_h),
     );
 
+    let mut rects = None;
     if inner.height >= 2 {
         let buttons = Line::from(vec![
-            button("[ Yes ]", focus == ConfirmFocus::Yes, accent),
-            Span::raw("   "),
-            button("[ No ]", focus == ConfirmFocus::No, accent),
+            button(YES_LABEL, focus == ConfirmFocus::Yes, accent),
+            Span::raw(" ".repeat(BUTTON_GAP as usize)),
+            button(NO_LABEL, focus == ConfirmFocus::No, accent),
         ]);
-        frame.render_widget(
-            Paragraph::new(buttons).alignment(Alignment::Center),
-            Rect::new(inner.x, inner.y + inner.height - 2, inner.width, 1),
-        );
+        let row = Rect::new(inner.x, inner.y + inner.height - 2, inner.width, 1);
+        frame.render_widget(Paragraph::new(buttons).alignment(Alignment::Center), row);
+        rects = Some(button_rects(row));
     }
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -176,6 +241,20 @@ pub fn render_confirm_popup(
         .alignment(Alignment::Center),
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
+    rects
+}
+
+/// Column and row of the first `needle` in newline-joined screen `text`.
+#[cfg(test)]
+pub(crate) fn locate(text: &str, needle: &str) -> Option<(u16, u16)> {
+    text.lines().enumerate().find_map(|(y, line)| {
+        let chars: Vec<char> = line.chars().collect();
+        let n: Vec<char> = needle.chars().collect();
+        chars
+            .windows(n.len())
+            .position(|w| w == n.as_slice())
+            .map(|x| (x as u16, y as u16))
+    })
 }
 
 #[cfg(test)]
@@ -237,7 +316,7 @@ mod tests {
         for focus in [ConfirmFocus::Yes, ConfirmFocus::No] {
             let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
             t.draw(|f| {
-                render_confirm_popup(f, f.area(), "T", vec![Line::from("x")], Color::Red, focus)
+                let _ = render_confirm_popup(f, f.area(), "T", vec![Line::from("x")], Color::Red, focus);
             })
             .unwrap();
             let rows = rows_of(&t, 80, 24);
@@ -288,5 +367,69 @@ mod tests {
     fn strip_key_hint_removes_only_the_suffix() {
         assert_eq!(strip_key_hint("  Remove \"a\"? [y/n]"), "Remove \"a\"?");
         assert_eq!(strip_key_hint("no hint"), "no hint");
+    }
+
+    fn click(column: u16, row: u16) -> MouseInput {
+        MouseInput::Click { column, row, double: false }
+    }
+
+    #[test]
+    fn recorded_button_rects_sit_exactly_on_the_drawn_labels() {
+        for (w, h) in [(80, 24), (40, 12), (110, 40)] {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let mut got = None;
+            t.draw(|f| {
+                got = render_confirm_popup(
+                    f,
+                    f.area(),
+                    "T",
+                    vec![Line::from("x")],
+                    Color::Red,
+                    ConfirmFocus::No,
+                );
+            })
+            .unwrap();
+            let b = got.expect("buttons drawn");
+            let text = rows_of(&t, w, h).join("\n");
+            let (yx, yy) = locate(&text, "[ Yes ]").unwrap();
+            let (nx, ny) = locate(&text, "[ No ]").unwrap();
+            assert_eq!(b.yes, Rect::new(yx, yy, 7, 1), "{w}x{h}");
+            assert_eq!(b.no, Rect::new(nx, ny, 6, 1), "{w}x{h}");
+        }
+    }
+
+    #[test]
+    fn clicks_map_to_buttons_and_everything_else_is_inert() {
+        let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let popup = ConfirmPopup::default();
+        // Nothing recorded yet: inert.
+        assert_eq!(popup.on_mouse(click(40, 12)), ConfirmOutcome::Pending);
+        t.draw(|f| {
+            popup.record(render_confirm_popup(
+                f,
+                f.area(),
+                "T",
+                vec![Line::from("x")],
+                Color::Red,
+                popup.focus,
+            ));
+        })
+        .unwrap();
+        let b = popup.buttons.get().unwrap();
+        let on = |r: Rect| click(r.x + r.width - 1, r.y);
+        assert_eq!(popup.on_mouse(click(b.yes.x, b.yes.y)), ConfirmOutcome::Confirm);
+        assert_eq!(popup.on_mouse(on(b.yes)), ConfirmOutcome::Confirm);
+        assert_eq!(popup.on_mouse(click(b.no.x, b.no.y)), ConfirmOutcome::Cancel);
+        assert_eq!(popup.on_mouse(on(b.no)), ConfirmOutcome::Cancel);
+        // The gap between the buttons, the row above, and a far corner.
+        assert_eq!(popup.on_mouse(click(b.yes.right(), b.yes.y)), ConfirmOutcome::Pending);
+        assert_eq!(popup.on_mouse(click(b.yes.x, b.yes.y - 1)), ConfirmOutcome::Pending);
+        assert_eq!(popup.on_mouse(click(0, 0)), ConfirmOutcome::Pending);
+        // A wheel step never activates.
+        let wheel = MouseInput::Wheel { column: b.yes.x, row: b.yes.y, down: true };
+        assert_eq!(popup.on_mouse(wheel), ConfirmOutcome::Pending);
+        assert_eq!(click_as_key(&popup, click(b.yes.x, b.yes.y)), Some(KeyCode::Char('y')));
+        assert_eq!(click_as_key(&popup, click(b.no.x, b.no.y)), Some(KeyCode::Char('n')));
+        assert_eq!(click_as_key(&popup, click(0, 0)), None);
     }
 }

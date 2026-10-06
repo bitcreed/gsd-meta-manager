@@ -1,6 +1,8 @@
+use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::project_creator;
+use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -17,12 +19,23 @@ enum CreatePhase {
 
 pub struct CreateProjectScreen {
     phase: CreatePhase,
+    /// The Confirm phase's Yes/No popup. Focus starts on Yes: creating a
+    /// folder is non-destructive and Enter used to mean "create" here
+    /// (INFERRED; the destructive popups default to No).
+    popup: ConfirmPopup,
 }
 
 impl CreateProjectScreen {
+    fn new_popup() -> ConfirmPopup {
+        let mut popup = ConfirmPopup::default();
+        popup.focus = confirm_popup::ConfirmFocus::Yes;
+        popup
+    }
+
     pub fn new_name() -> Self {
         Self {
             phase: CreatePhase::Name,
+            popup: Self::new_popup(),
         }
     }
 }
@@ -63,6 +76,7 @@ impl Screen for CreateProjectScreen {
             ratatui::layout::Constraint::Length(1),
         ])
         .split(area);
+        self.popup.record(None);
 
         // Render background
         use ratatui::widgets::{Block, Borders};
@@ -80,18 +94,27 @@ impl Screen for CreateProjectScreen {
                 render_input_footer(frame, chunks[1], ctx, "Path (Tab to complete)");
             }
             CreatePhase::Confirm { name, path } => {
-                // Read, not created: `name` and `path` are still used verbatim
-                // by `handle_confirm_key` to create the directory; only this
-                // last-chance prompt is escaped.
-                let prompt = format!(
-                    "Create \"{}\" at {}? [y/n]",
-                    crate::text::render_for_terminal(name),
-                    crate::text::render_for_terminal(&path.display().to_string())
-                );
-                let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Yellow)));
-                frame.render_widget(Paragraph::new(line), chunks[1]);
+                // The footer stays an empty line; the question is a modal
+                // popup over the dimmed frame.
+                confirm_popup::dim_background(frame, area);
+                self.popup.record(confirm_popup::render_confirm_popup(
+                    frame,
+                    area,
+                    "Create project",
+                    vec![Line::from(Span::styled(
+                        confirm_popup::strip_key_hint(&prompt_text(name, path)).to_string(),
+                        Style::default().fg(Color::Yellow),
+                    ))],
+                    Color::Yellow,
+                    self.popup.focus,
+                ));
             }
         }
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        confirm_popup::click_as_key(&self.popup, input)
+            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
     }
 
     fn name(&self) -> &str {
@@ -184,6 +207,7 @@ impl CreateProjectScreen {
                     name: name.to_string(),
                     path,
                 };
+                self.popup = Self::new_popup();
                 ctx.input_buffer.clear();
                 ctx.error_message = None;
                 ctx.needs_redraw = true;
@@ -206,8 +230,8 @@ impl CreateProjectScreen {
         name: &str,
         path: &Path,
     ) -> ScreenAction {
-        match code {
-            KeyCode::Enter | KeyCode::Char('y') => {
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => {
                 let alias = name.to_lowercase().replace(' ', "-");
                 let hooks = ctx.config.preferences.hooks.clone();
                 let path_clone = path.to_path_buf();
@@ -242,15 +266,31 @@ impl CreateProjectScreen {
                     ScreenAction::None
                 }
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            ConfirmOutcome::Cancel => {
                 ctx.input_buffer.clear();
                 ctx.error_message = None;
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
-            _ => ScreenAction::None,
+            ConfirmOutcome::Pending => {
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
         }
     }
+}
+
+/// The exact question the Confirm popup draws.
+///
+/// Read, not created: `name` and `path` are still used verbatim by
+/// `handle_confirm_key` to create the directory; only this last-chance prompt
+/// is escaped.
+fn prompt_text(name: &str, path: &Path) -> String {
+    format!(
+        "Create \"{}\" at {}? [y/n]",
+        crate::text::render_for_terminal(name),
+        crate::text::render_for_terminal(&path.display().to_string())
+    )
 }
 
 fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &str) {
@@ -280,4 +320,121 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
 
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn type_str(screen: &mut CreateProjectScreen, ctx: &mut AppContext, text: &str) {
+        for c in text.chars() {
+            screen.handle_key(KeyCode::Char(c), KeyModifiers::NONE, ctx);
+        }
+        screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+    }
+
+    /// A screen in its Confirm phase for `name` at `/tmp/where`.
+    fn confirm_screen(name: &str) -> (CreateProjectScreen, AppContext) {
+        let mut ctx = crate::ui::screens::tests::ctx_with_aliases(&["demo"]);
+        let mut screen = CreateProjectScreen::new_name();
+        type_str(&mut screen, &mut ctx, name);
+        type_str(&mut screen, &mut ctx, "/tmp/where");
+        assert!(matches!(screen.phase, CreatePhase::Confirm { .. }));
+        (screen, ctx)
+    }
+
+    fn rows(screen: &CreateProjectScreen, ctx: &AppContext) -> String {
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| screen.render(f, f.area(), ctx)).unwrap();
+        let buf = t.backend().buffer();
+        (0..30u16)
+            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn confirm_phase_renders_a_popup_with_buttons_not_a_footer() {
+        let (screen, ctx) = confirm_screen("Fresh App");
+        let text = rows(&screen, &ctx);
+        assert!(text.contains("Create project"), "popup title missing");
+        assert!(text.contains("Create \"Fresh App\" at /tmp/where?"));
+        assert!(text.contains("[ Yes ]") && text.contains("[ No ]"));
+        assert!(!text.contains("[y/n]"), "legacy footer hint must be gone");
+    }
+
+    #[test]
+    fn prompt_text_escapes_hostile_name_and_path() {
+        let hostile = "ev\u{1b}[31mil\u{9b}\u{200b}";
+        let p = prompt_text(hostile, Path::new("/tmp/a\u{1b}b"));
+        assert!(!p.contains('\u{1b}') && !p.contains('\u{9b}'), "got {p:?}");
+        assert!(p.starts_with("Create \"") && p.ends_with("? [y/n]"));
+        let (screen, ctx) = confirm_screen(hostile);
+        let text = rows(&screen, &ctx);
+        assert!(!text.contains('\u{1b}') && !text.contains('\u{9b}'));
+    }
+
+    #[test]
+    fn enter_defaults_to_yes_and_reaches_creation() {
+        // No event channel in the fixture, so a confirmed create reports that
+        // instead of spawning: proof that Enter took the Yes path.
+        let (mut screen, mut ctx) = confirm_screen("fresh");
+        assert_eq!(screen.popup.focus, confirm_popup::ConfirmFocus::Yes);
+        let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(act, ScreenAction::None));
+        assert_eq!(ctx.error_message.as_deref(), Some("Event channel not available."));
+    }
+
+    #[test]
+    fn y_n_esc_and_focus_moves_keep_working() {
+        let (mut screen, mut ctx) = confirm_screen("fresh");
+        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(ctx.error_message.as_deref(), Some("Event channel not available."));
+
+        for code in [KeyCode::Char('n'), KeyCode::Esc] {
+            let (mut screen, mut ctx) = confirm_screen("fresh");
+            let act = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(act, ScreenAction::Pop), "{code:?}");
+            assert!(ctx.error_message.is_none());
+        }
+
+        // Tab moves focus to No; Enter then cancels.
+        let (mut screen, mut ctx) = confirm_screen("fresh");
+        let act = screen.handle_key(KeyCode::Tab, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(act, ScreenAction::None));
+        let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(ctx.error_message.is_none());
+    }
+
+    #[test]
+    fn clicking_buttons_confirms_or_cancels_and_stray_clicks_are_inert() {
+        let click = |screen: &CreateProjectScreen, ctx: &AppContext, label: &str| {
+            let (column, row) =
+                confirm_popup::locate(&rows(screen, ctx), label).expect("button drawn");
+            MouseInput::Click { column, row, double: false }
+        };
+        let (mut screen, mut ctx) = confirm_screen("fresh");
+        let stray = MouseInput::Click { column: 0, row: 0, double: false };
+        assert!(matches!(screen.handle_mouse(stray, &mut ctx), ScreenAction::None));
+        let c = click(&screen, &ctx, "[ No ]");
+        assert!(matches!(screen.handle_mouse(c, &mut ctx), ScreenAction::Pop));
+        assert!(ctx.error_message.is_none());
+
+        let (mut screen, mut ctx) = confirm_screen("fresh");
+        let c = click(&screen, &ctx, "[ Yes ]");
+        screen.handle_mouse(c, &mut ctx);
+        assert_eq!(ctx.error_message.as_deref(), Some("Event channel not available."));
+    }
+
+    #[test]
+    fn name_phase_ignores_clicks() {
+        let mut ctx = crate::ui::screens::tests::ctx_with_aliases(&["demo"]);
+        let mut screen = CreateProjectScreen::new_name();
+        let c = MouseInput::Click { column: 5, row: 5, double: false };
+        assert!(matches!(screen.handle_mouse(c, &mut ctx), ScreenAction::None));
+        assert!(matches!(screen.phase, CreatePhase::Name));
+    }
 }

@@ -2,6 +2,7 @@ use super::{AppContext, Screen, ScreenAction};
 use crate::state_reader::{self, queue_md};
 use crossterm::event::{KeyCode, KeyModifiers};
 use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
+use crate::ui::mouse::MouseInput;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -90,7 +91,7 @@ impl Screen for QueueDeleteConfirmScreen {
         detail.render_main_only(frame, area, ctx);
         confirm_popup::dim_background(frame, area);
 
-        confirm_popup::render_confirm_popup(
+        self.popup.record(confirm_popup::render_confirm_popup(
             frame,
             area,
             "Remove from queue",
@@ -100,7 +101,12 @@ impl Screen for QueueDeleteConfirmScreen {
             ))],
             Color::Red,
             self.popup.focus,
-        );
+        ));
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        confirm_popup::click_as_key(&mut self.popup, input)
+            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
     }
 
     fn name(&self) -> &str {
@@ -183,5 +189,26 @@ mod tests {
         let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(act, ScreenAction::Pop));
         assert!(ctx.status_message.is_none(), "No-by-default Enter must not delete");
+    }
+
+    #[test]
+    fn clicking_a_button_acts_and_a_stray_click_does_not() {
+        let mut ctx = crate::ui::screens::tests::ctx_with_aliases(&["demo"]);
+        let mut screen = QueueDeleteConfirmScreen::new("demo".into(), 0, "x".into());
+        let text = rows(&screen, &ctx);
+        let click = |text: &str, label: &str| {
+            let (column, row) = confirm_popup::locate(text, label).expect("button drawn");
+            MouseInput::Click { column, row, double: false }
+        };
+        let act = screen.handle_mouse(
+            MouseInput::Click { column: 0, row: 0, double: false },
+            &mut ctx,
+        );
+        assert!(matches!(act, ScreenAction::None));
+        let act = screen.handle_mouse(click(&text, "[ No ]"), &mut ctx);
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(ctx.status_message.is_none(), "No must not delete");
+        let act = screen.handle_mouse(click(&text, "[ Yes ]"), &mut ctx);
+        assert!(matches!(act, ScreenAction::Pop), "Yes confirms (the aliased project has no queue to edit)");
     }
 }
