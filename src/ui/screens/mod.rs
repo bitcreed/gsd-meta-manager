@@ -9,6 +9,7 @@ pub mod driver_start;
 pub mod enqueue;
 pub mod help;
 pub mod normal;
+pub mod preferences;
 pub mod queue_delete_confirm;
 
 /// The render-surface census and its behavioural probe (CR-01).

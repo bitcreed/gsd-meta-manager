@@ -256,6 +256,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("a", "Add project"),
         row("c", "Create new project"),
         row("d", "Delete project"),
+        row("G", "Global settings: manager preferences, GSD template"),
         row("?", "Toggle this help"),
     ];
 

@@ -85,3 +85,12 @@ TBD. Start with the investigation, then implement the chosen design.
   completed config-screen todos (sync-gsd-core-config, enter-on-config-screen,
   filter-config-screen) are different in scope. The codex-remainder item 8
   (runtime picker) is related, not a duplicate.
+
+## Resolution (2026-10-06)
+
+- Scope switch: already shipped (`g` key + Project|Global strip, t3s); the hidden-`d` complaint was stale.
+- Overview entry point: `G` on the dashboard opens `PreferencesScreen` (src/ui/screens/preferences.rs).
+- Manager Preferences editor: `default_runtime` (unset/claude/codex) and `driver_max_concurrent` (1..=16), saved at once. Covers only the `default_runtime` preference of item 8 in the codex-remainder todo; the per-entry `runtime` picker and mismatch hint remain open there.
+- Scope wording: Global is labelled "template for NEW projects" (block title, status message, strip hint); Project says "this project only". The stale "* = inherited from global" legend was removed (4c5c71b stopped layering).
+- [INFERRED] "Confirm before a global write affects other projects" dropped: global edits no longer affect existing projects.
+- [INFERRED] The GSD template editor opens with `g` from the preferences screen, hosted in the selected project Config tab (the editor lives in the detail view).

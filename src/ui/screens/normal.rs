@@ -685,6 +685,10 @@ impl Screen for NormalScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
+            KeyCode::Char('G') => {
+                ctx.needs_redraw = true;
+                ScreenAction::Push(Box::new(super::preferences::PreferencesScreen::new()))
+            }
             KeyCode::Char('?') => {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(HelpScreen::new()))

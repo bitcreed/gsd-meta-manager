@@ -1522,6 +1522,18 @@ impl DetailScreen {
         screen
     }
 
+    /// Open on the Config tab already switched to the Global scope: the
+    /// overview's route to the `~/.gsd/defaults.json` template editor
+    /// (the global-settings todo). Hosted by a registered project only because
+    /// the editor lives in the detail view; the scope strip and block title
+    /// say "template for NEW projects".
+    pub(crate) fn opened_on_global_template(alias: String, ctx: &mut AppContext) -> Self {
+        let screen = Self::opened_on(alias, DetailSubView::Defaults, ctx);
+        let cache = ctx.view_cache.entry(screen.alias.clone()).or_default();
+        set_config_scope(cache, super::DefaultsEditTarget::Global);
+        screen
+    }
+
     /// Move the Driver tab's run selection by `delta`, clamped to the list.
     ///
     /// **Selecting a different run resets the output pane** — the offset goes
@@ -7843,7 +7855,7 @@ impl DetailScreen {
                     "  No config loaded (project may not have .planning/config.json)"
                 }
                 DefaultsEditTarget::Global => {
-                    "  No global defaults loaded (~/.gsd/defaults.json missing — saving will create it)"
+                    "  No global template loaded (~/.gsd/defaults.json missing — saving will create it)"
                 }
             };
             let mut lines = vec![Line::from(Span::styled(
@@ -7988,7 +8000,7 @@ impl DetailScreen {
 
         let mut title = match edit_target {
             DefaultsEditTarget::Project => " Project Config (.planning/config.json) ".to_string(),
-            DefaultsEditTarget::Global => " Global Defaults (~/.gsd/defaults.json) ".to_string(),
+            DefaultsEditTarget::Global => " Global: template for NEW projects (~/.gsd/defaults.json) ".to_string(),
         };
         // Filter echo + count ([INFERRED A5]). The filter is operator-typed
         // and `Block::title` preserves the invisible class, so it is drawn
@@ -9718,8 +9730,10 @@ fn sub_tab_strip_spans(
 }
 
 /// The Config tab's scope strip (quick 260927-t3s, D-02, D-03, I-3):
-/// ` [Project] │ Global   g switch   * = inherited from global` in project
-/// scope, ` Project │ [Global]   g switch` in global scope. The active label is
+/// ` [Project] │ Global   g switch   this project only` in project
+/// scope, ` Project │ [Global]   g switch   new projects only` in global scope
+/// (global edits are a template: gsd-core ignores ~/.gsd/defaults.json once a
+/// project has its own config.json; [INFERRED] 260 todo global-settings). The active label is
 /// bracketed AND reversed — cyan for Project, magenta for Global to match the
 /// magenta ` *` inherited-value marker (I-4). Only the project strip carries
 /// the ` *` legend, because global scope has no fallback (I-6).
@@ -9741,10 +9755,10 @@ pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget, focused: boo
         .fg(if global { Color::Magenta } else { Color::Cyan })
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
     let hint = match (focused, global) {
-        (false, true) => "   g switch",
-        (false, false) => "   g switch   * = inherited from global",
-        (true, true) => "   \u{2190}/\u{2192}/g switch",
-        (true, false) => "   \u{2190}/\u{2192}/g switch   * = inherited from global",
+        (false, true) => "   g switch   new projects only",
+        (false, false) => "   g switch   this project only",
+        (true, true) => "   \u{2190}/\u{2192}/g switch   new projects only",
+        (true, false) => "   \u{2190}/\u{2192}/g switch   this project only",
     };
     let mut spans = sub_tab_strip_spans("Project", "Global", global, active_style);
     if focused {
@@ -12210,8 +12224,8 @@ fn set_config_scope(
 fn config_scope_status(target: super::DefaultsEditTarget) -> &'static str {
     use super::DefaultsEditTarget;
     match target {
-        DefaultsEditTarget::Project => "Editing project config (.planning/config.json)",
-        DefaultsEditTarget::Global => "Editing global defaults (~/.gsd/defaults.json)",
+        DefaultsEditTarget::Project => "Editing this project only (.planning/config.json)",
+        DefaultsEditTarget::Global => "Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it",
     }
 }
 
@@ -19962,7 +19976,7 @@ mod tests {
 
         let rows = draw_config_tab(&screen, &ctx, 120, 30);
         assert!(rows[0].starts_with(" Project \u{2502} [Global]"), "{:?}", rows[0]);
-        assert!(rows[1].contains(" Global Defaults (~/.gsd/defaults.json) "), "{:?}", rows[1]);
+        assert!(rows[1].contains(" Global: template for NEW projects (~/.gsd/defaults.json) "), "{:?}", rows[1]);
 
         // A global-scope edit: the unset row's chooser opens on `true`.
         let idx = commit_docs_idx(&ctx);
@@ -20132,13 +20146,13 @@ mod tests {
         let text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
 
         let project = config_scope_strip(DefaultsEditTarget::Project, false);
-        assert_eq!(text(&project), " [Project] \u{2502} Global   g switch   * = inherited from global");
+        assert_eq!(text(&project), " [Project] \u{2502} Global   g switch   this project only");
         let active = project.spans.iter().find(|s| s.content == "[Project]").expect("[Project] span");
         assert_eq!(active.style.fg, Some(Color::Cyan));
         assert!(active.style.add_modifier.contains(Modifier::REVERSED));
 
         let global = config_scope_strip(DefaultsEditTarget::Global, false);
-        assert_eq!(text(&global), " Project \u{2502} [Global]   g switch");
+        assert_eq!(text(&global), " Project \u{2502} [Global]   g switch   new projects only");
         let active = global.spans.iter().find(|s| s.content == "[Global]").expect("[Global] span");
         assert_eq!(active.style.fg, Some(Color::Magenta));
         assert!(active.style.add_modifier.contains(Modifier::REVERSED));
@@ -20210,7 +20224,7 @@ mod tests {
         assert_eq!(scope_strip_target(&ctx), DefaultsEditTarget::Global);
         assert_eq!(
             scope_strip_status(&ctx).as_deref(),
-            Some("Editing global defaults (~/.gsd/defaults.json)")
+            Some("Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it")
         );
         assert_eq!(screen.focus, DetailFocus::ScopeStrip);
         let (row, _) = strip_row(&screen, &ctx);
@@ -20227,10 +20241,10 @@ mod tests {
         let project = config_scope_strip(DefaultsEditTarget::Project, true);
         assert_eq!(
             text(&project),
-            "\u{25b8}[Project] \u{2502} Global   \u{2190}/\u{2192}/g switch   * = inherited from global"
+            "\u{25b8}[Project] \u{2502} Global   \u{2190}/\u{2192}/g switch   this project only"
         );
         let global = config_scope_strip(DefaultsEditTarget::Global, true);
-        assert_eq!(text(&global), "\u{25b8}Project \u{2502} [Global]   \u{2190}/\u{2192}/g switch");
+        assert_eq!(text(&global), "\u{25b8}Project \u{2502} [Global]   \u{2190}/\u{2192}/g switch   new projects only");
 
         for (target, focused) in [(DefaultsEditTarget::Project, &project), (DefaultsEditTarget::Global, &global)] {
             let cue = &focused.spans[0];
@@ -20257,13 +20271,13 @@ mod tests {
             (
                 KeyCode::Right,
                 DefaultsEditTarget::Global,
-                Some("Editing global defaults (~/.gsd/defaults.json)"),
+                Some("Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it"),
             ),
             (KeyCode::Right, DefaultsEditTarget::Global, None),
             (
                 KeyCode::Left,
                 DefaultsEditTarget::Project,
-                Some("Editing project config (.planning/config.json)"),
+                Some("Editing this project only (.planning/config.json)"),
             ),
         ];
         for (key, target, status) in steps {
@@ -20755,7 +20769,7 @@ mod tests {
             cache.defaults_user_config = Some(global);
             cache.defaults_edit_target = super::super::DefaultsEditTarget::Global;
         });
-        assert!(text.contains("Global Defaults"), "ARRIVAL: the Global view was not drawn:\n{text}");
+        assert!(text.contains("Global: template for NEW projects"), "ARRIVAL: the Global view was not drawn:\n{text}");
         assert!(text.contains(MASKED_SECRET), "ARRIVAL: the mask was not drawn:\n{text}");
         assert!(!text.contains("H3T7"), "the Global view leaked the key:\n{text}");
     }
@@ -24704,7 +24718,7 @@ mod tests {
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("Editing global defaults (~/.gsd/defaults.json)")
+            Some("Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it")
         );
         assert_eq!(screen.focus, DetailFocus::Content);
         assert_eq!(label_text(&screen, &ctx, DefaultsEditTarget::Global), "[Global]");

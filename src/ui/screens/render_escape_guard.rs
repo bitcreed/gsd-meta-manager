@@ -375,6 +375,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
     ("HelpScreen", "src/ui/screens/help.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
+    ("PreferencesScreen", "src/ui/screens/preferences.rs"),
     (
         "QueueDeleteConfirmScreen",
         "src/ui/screens/queue_delete_confirm.rs",
@@ -2104,6 +2105,14 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 "help overlay",
                 probe_ctx(identity),
                 Box::new(super::help::HelpScreen::new()),
+            )]
+        }),
+
+        "PreferencesScreen" => Some(|identity| {
+            vec![one_state(
+                "preferences screen",
+                probe_ctx(identity),
+                Box::new(super::preferences::PreferencesScreen::new()),
             )]
         }),
 
