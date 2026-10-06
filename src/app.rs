@@ -547,6 +547,15 @@ pub fn editor_args(editor: &str, path: &std::path::Path, line: Option<usize>) ->
 }
 
 impl App {
+    /// Called when `$EDITOR` returns: re-read any cached browser file that
+    /// was just edited so the viewer does not show pre-edit text.
+    pub fn refresh_after_editor(&mut self, edited: &std::path::Path) {
+        for cache in self.ctx.view_cache.values_mut() {
+            cache.reload_browser_file_if(edited);
+        }
+        self.needs_redraw = true;
+    }
+
     pub fn new(config_path: PathBuf) -> anyhow::Result<Self> {
         // The pruning loader, not plain `load_config`: TUI launch is where stale
         // git-worktree entries (e.g. a finished agent's `.claude/worktrees/agent-*`)
@@ -2515,6 +2524,25 @@ impl App {
 mod tests {
     use super::*;
     use crate::state_reader::roadmap_md::RoadmapPhase;
+
+    /// Todo 2026-07-29: after `$EDITOR` exits the browser viewer re-reads the
+    /// edited file; a different file's cache is left alone.
+    #[test]
+    fn editor_exit_reloads_browser_file_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.md");
+        std::fs::write(&f, "old").unwrap();
+        let mut app = App::new_for_test();
+        let cache = app.ctx.view_cache.entry("p".into()).or_default();
+        cache.browser_file_content = Some("old".into());
+        cache.browser_file_path = Some(f.clone());
+        std::fs::write(&f, "new").unwrap();
+        app.refresh_after_editor(&dir.path().join("other.md"));
+        assert_eq!(app.ctx.view_cache["p"].browser_file_content.as_deref(), Some("old"));
+        app.refresh_after_editor(&f);
+        assert_eq!(app.ctx.view_cache["p"].browser_file_content.as_deref(), Some("new"));
+        assert!(app.needs_redraw);
+    }
 
     /// quick 260926-j0a: the startup line is exactly `startup_summary`'s text
     /// over the injected global install and the loaded project states.

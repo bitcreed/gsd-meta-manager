@@ -1107,6 +1107,9 @@ pub struct ProjectViewCache {
     /// The BODY of the browsed file. Still a `String`, for the same reason and
     /// with the same disclosed direction as `archive_file_content` above.
     pub browser_file_content: Option<String>,
+    /// Path the current `browser_file_content` was read from; lets the
+    /// `$EDITOR` return path re-read the body after an edit.
+    pub browser_file_path: Option<PathBuf>,
     /// The NAME of the browsed file, drawn into the Browse tab's breadcrumb
     /// header. **`Untrusted`** (D-21-20).
     pub browser_file_name: Option<crate::text::Untrusted>,
@@ -1203,6 +1206,20 @@ pub struct ProjectViewCache {
 }
 
 impl ProjectViewCache {
+    /// Re-read the viewed browser file if it is `edited`. Returns whether the
+    /// cached body was refreshed. Called when `$EDITOR` exits so the viewer
+    /// never shows pre-edit text.
+    pub fn reload_browser_file_if(&mut self, edited: &std::path::Path) -> bool {
+        if self.browser_file_content.is_some()
+            && self.browser_file_path.as_deref() == Some(edited)
+        {
+            self.browser_file_content = Some(crate::browser::read_md_file(edited));
+            true
+        } else {
+            false
+        }
+    }
+
     /// Open the Git tab's commit pane on `detail`.
     ///
     /// The ONE place the pane opens (QD-09): it sets the Option, zeroes the
