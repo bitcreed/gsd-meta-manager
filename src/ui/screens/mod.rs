@@ -1,4 +1,5 @@
 pub mod add_project;
+pub mod confirm_popup;
 pub mod create_project;
 pub mod delete_confirm;
 pub mod detail;

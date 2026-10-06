@@ -43,7 +43,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use super::confirm_popup::{ConfirmOutcome, ConfirmPopup};
 use ratatui::Frame;
 
 /// The GSD command a start is **pre-selected** with.
@@ -226,6 +226,7 @@ pub struct DriverConfirmScreen {
     /// the user had said something. [`super::driver_start`] is what enforces
     /// that mapping.
     goal: Option<String>,
+    popup: ConfirmPopup,
 }
 
 impl DriverConfirmScreen {
@@ -239,6 +240,7 @@ impl DriverConfirmScreen {
             action,
             command: DEFAULT_DRIVE_COMMAND.to_string(),
             goal: None,
+            popup: ConfirmPopup::default(),
         }
     }
 
@@ -253,6 +255,7 @@ impl DriverConfirmScreen {
             action: DriverAction::Start,
             command,
             goal,
+            popup: ConfirmPopup::default(),
         }
     }
 }
@@ -375,8 +378,8 @@ impl Screen for DriverConfirmScreen {
         _modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
-        match code {
-            KeyCode::Char('y') => {
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => {
                 match self.action {
                     DriverAction::Start => {
                         do_start_run(ctx, &self.alias, &self.command, self.goal.as_deref())
@@ -386,11 +389,14 @@ impl Screen for DriverConfirmScreen {
                 }
                 ScreenAction::Pop
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            ConfirmOutcome::Cancel => {
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
-            _ => ScreenAction::None,
+            ConfirmOutcome::Pending => {
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
         }
     }
 
@@ -400,21 +406,12 @@ impl Screen for DriverConfirmScreen {
         // the same single-row footer this screen has always had.
         let is_start = matches!(self.action, DriverAction::Start);
         let goal = goal_row(self.goal.as_deref().filter(|_| is_start));
-        let goal_rows = u16::from(goal.is_some());
 
-        let chunks = ratatui::layout::Layout::vertical([
-            ratatui::layout::Constraint::Min(0),
-            ratatui::layout::Constraint::Length(goal_rows),
-            ratatui::layout::Constraint::Length(1),
-        ])
-        .split(area);
-
-        use ratatui::widgets::{Block, Borders};
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" GSD Manager ");
-        let inner = block.inner(chunks[0]);
-        frame.render_widget(block, chunks[0]);
+        // The dashboard stays rendered, dimmed, behind the popup.
+        super::normal::NormalScreen::new().render(frame, area, ctx);
+        super::confirm_popup::dim_background(frame, area);
+        let mut body: Vec<Line<'static>> = Vec::new();
+        let mut disclosure: Option<String> = None;
 
         // The disclosure is shown only when GRANTING an opt-in. Withdrawing one
         // takes a capability away, and reading a file list is not something a
@@ -430,16 +427,15 @@ impl Screen for DriverConfirmScreen {
                 .get(&self.alias)
                 .map(|entry| registry::current_prompt_inputs(&entry.path))
                 .unwrap_or_default();
-            frame.render_widget(
-                Paragraph::new(render_disclosure(&prompt_inputs))
-                    .style(Style::default().fg(Color::DarkGray)),
-                inner,
-            );
+            // Rendered after the prompt below (disclosure is supporting text).
+            disclosure = Some(render_disclosure(&prompt_inputs));
         }
 
         if let Some(goal) = goal {
-            let line = Line::from(Span::styled(goal, Style::default().fg(Color::DarkGray)));
-            frame.render_widget(Paragraph::new(line), chunks[1]);
+            body.push(Line::from(Span::styled(
+                goal,
+                Style::default().fg(Color::DarkGray),
+            )));
         }
 
         // The opt-in state comes from the registry, which is the same read the
@@ -447,11 +443,34 @@ impl Screen for DriverConfirmScreen {
         // other than the one `y` will take.
         let opted_in = registry::is_opted_in(&ctx.config, &self.alias);
         let prompt = prompt_text(&self.alias, self.action, opted_in, &self.command);
-        let line = Line::from(Span::styled(
-            prompt,
-            Style::default().fg(prompt_color(self.action, opted_in)),
-        ));
-        frame.render_widget(Paragraph::new(line), chunks[2]);
+        let color = prompt_color(self.action, opted_in);
+        body.push(Line::from(Span::styled(
+            super::confirm_popup::strip_key_hint(&prompt).to_string(),
+            Style::default().fg(color),
+        )));
+        if let Some(text) = disclosure {
+            body.push(Line::from(""));
+            body.extend(text.lines().map(|l| {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            }));
+        }
+        let (title, accent) = match self.action {
+            DriverAction::Start => ("Start driver run", Color::Yellow),
+            DriverAction::Stop => ("Stop driver run", Color::Red),
+            DriverAction::ToggleOptIn if opted_in => ("Withdraw driver opt-in", Color::Red),
+            DriverAction::ToggleOptIn => ("Allow driver", Color::Yellow),
+        };
+        super::confirm_popup::render_confirm_popup(
+            frame,
+            area,
+            title,
+            body,
+            accent,
+            self.popup.focus,
+        );
     }
 
     fn name(&self) -> &str {
@@ -1486,5 +1505,45 @@ pub(crate) mod tests {
             "the goal reaches RunRecord.goal exactly as typed; interpretation is \
              Phase 21's and this phase interprets nothing"
         );
+    }
+
+    #[test]
+    fn every_driver_confirmation_renders_as_a_popup_with_buttons() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, _rx) = ctx_with_project(dir.path());
+        for (action, title) in [
+            (DriverAction::Start, "Start driver run"),
+            (DriverAction::Stop, "Stop driver run"),
+            (DriverAction::ToggleOptIn, "Allow driver"),
+        ] {
+            let screen = DriverConfirmScreen::new(ALIAS.to_string(), action);
+            let mut t = Terminal::new(TestBackend::new(110, 40)).unwrap();
+            t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
+            let buf = t.backend().buffer();
+            let text: String = (0..40u16)
+                .map(|y| (0..110u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains(title), "{action:?}: title missing");
+            assert!(text.contains(ALIAS), "{action:?}: alias missing");
+            assert!(
+                text.contains("[ Yes ]") && text.contains("[ No ]"),
+                "{action:?}: buttons missing"
+            );
+            assert!(!text.contains("[y/n]"), "{action:?}: legacy hint remains");
+        }
+    }
+
+    #[test]
+    fn enter_on_the_default_focus_declines_and_dispatches_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
+        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(rx.try_recv().is_err(), "a stray Enter must not start a run");
     }
 }
