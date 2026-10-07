@@ -5,7 +5,20 @@ pub mod roadmap_view;
 pub mod screens;
 
 use crate::app::App;
+use ratatui::style::Color;
 use ratatui::Frame;
+
+/// The lane hue, by column, for every git-log style lane column — the Git
+/// tab's commit graph and the Roadmap's lanes (quick 261006-ujx). No Red:
+/// Red marks Blocked and Stalled elsewhere. The hue for lane index `l` is
+/// `LANE_PALETTE[l % LANE_PALETTE.len()]`.
+pub(crate) const LANE_PALETTE: [Color; 5] = [
+    Color::Magenta,
+    Color::Yellow,
+    Color::Cyan,
+    Color::Green,
+    Color::Blue,
+];
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();

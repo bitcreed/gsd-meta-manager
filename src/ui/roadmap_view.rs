@@ -21,10 +21,11 @@
 //!   sub-rect of it.
 
 use crate::ui::roadmap_graph::{
-    BandFacts, BandKey, CursorTarget, ListRow, PhaseFacts, PhaseStatus, RoadmapModel, BAND_FILL,
-    BAND_FOLDED, BAND_OPEN, GLYPH_UNMERGED, MARK_DEP, MARK_IMPLIED, MARK_SELECTED, MARK_UNBLOCKS,
-    PARALLEL_SEP,
+    BandFacts, BandKey, CursorTarget, LaneLink, ListRow, PhaseFacts, PhaseStatus, RoadmapModel,
+    BAND_FILL, BAND_FOLDED, BAND_OPEN, GLYPH_UNMERGED, MARK_DEP, MARK_IMPLIED, MARK_SELECTED,
+    MARK_UNBLOCKS, PARALLEL_SEP,
 };
+use crate::ui::LANE_PALETTE;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -277,6 +278,40 @@ fn glyph_style(status: PhaseStatus) -> Style {
     }
 }
 
+/// A lane char's style (quick 261006-ujx, git-graph look): lane index `lane`
+/// is the char's column (`char_index / 2`), never derived from its edge.
+///
+/// * The hue is `LANE_PALETTE[lane % len]` when `palette`, else no fg
+///   (`NO_COLOR`).
+/// * `on_chain` (an edge of the selected phase): the hue — kept even when
+///   `owner_done` — plus BOLD.
+/// * Else `owner_done` (the lane's upstream phase is Done): DarkGray, or DIM
+///   without a palette.
+/// * Else the hue.
+/// * Then `dimmed && !on_chain` adds DIM.
+fn lane_style(lane: usize, owner_done: bool, on_chain: bool, dimmed: bool, palette: bool) -> Style {
+    let hue = palette.then(|| LANE_PALETTE[lane % LANE_PALETTE.len()]);
+    let mut style = Style::default();
+    if on_chain {
+        if let Some(hue) = hue {
+            style = style.fg(hue);
+        }
+        style = style.add_modifier(Modifier::BOLD);
+    } else if owner_done {
+        style = if palette {
+            style.fg(Color::DarkGray)
+        } else {
+            style.add_modifier(Modifier::DIM)
+        };
+    } else if let Some(hue) = hue {
+        style = style.fg(hue);
+    }
+    if dimmed && !on_chain {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    style
+}
+
 fn status_word(status: PhaseStatus) -> &'static str {
     match status {
         PhaseStatus::Done => "done",
@@ -291,35 +326,50 @@ fn lanes_of(row: &ListRow) -> &str {
     match row {
         ListRow::ShippedSummary { lanes, .. }
         | ListRow::Band { lanes, .. }
-        | ListRow::Connector { lanes }
+        | ListRow::Connector { lanes, .. }
         | ListRow::Phase { lanes, .. } => lanes,
     }
 }
 
-/// The lane cell as spans in `width` cells, the char at `glyph_at` (the
-/// phase's own node) drawn in `glyph`.
+/// The lane cell as spans in `width` cells, one char at a time (quick
+/// 261006-ujx): the char at `glyph_at` (the phase's own node) is drawn in
+/// `glyph`, a blank plain, and every other char in `lane(i, link)`, where
+/// `link` is `links.get(i)` — a short or empty `links` degrades to `None`,
+/// never a panic (T-ujx-02). Adjacent chars of one style share a span.
 fn lane_spans(
     lanes: &str,
+    links: &[Option<LaneLink>],
     glyph_at: Option<usize>,
     glyph: Style,
-    base: Style,
+    lane: &dyn Fn(usize, Option<LaneLink>) -> Style,
     width: usize,
 ) -> Vec<Span<'static>> {
-    let chars: Vec<char> = lanes.chars().collect();
-    let mut spans = Vec::with_capacity(4);
-    match glyph_at.filter(|&g| g < chars.len()) {
-        Some(g) => {
-            spans.push(Span::styled(chars[..g].iter().collect::<String>(), base));
-            spans.push(Span::styled(chars[g].to_string(), glyph));
-            spans.push(Span::styled(
-                chars[g + 1..].iter().collect::<String>(),
-                base,
-            ));
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
+    let mut run = String::new();
+    let mut run_style = Style::default();
+    let mut count = 0;
+    for (i, c) in lanes.chars().enumerate() {
+        count += 1;
+        let style = if Some(i) == glyph_at {
+            glyph
+        } else if c == ' ' {
+            Style::default()
+        } else {
+            lane(i, links.get(i).copied().flatten())
+        };
+        if style != run_style && !run.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut run), run_style));
         }
-        None => spans.push(Span::styled(lanes.to_string(), base)),
+        run_style = style;
+        run.push(c);
     }
-    let fill = width.saturating_sub(chars.len());
-    spans.push(Span::styled(" ".repeat(fill), base));
+    if !run.is_empty() {
+        spans.push(Span::styled(run, run_style));
+    }
+    let fill = width.saturating_sub(count);
+    if fill > 0 {
+        spans.push(Span::raw(" ".repeat(fill)));
+    }
     spans
 }
 
@@ -542,6 +592,15 @@ impl RoadmapView<'_> {
         self.model.phases.get(node)
     }
 
+    /// The style of lane char `i` drawing edge `link` (the [`lane_spans`]
+    /// callback): its column's hue, DarkGray when the lane's owner is Done.
+    fn lane_cell_style(&self, i: usize, link: Option<LaneLink>) -> Style {
+        let owner_done = link
+            .and_then(|k| self.phase(k.owner))
+            .is_some_and(|p| p.status == PhaseStatus::Done);
+        lane_style(i / 2, owner_done, false, false, true)
+    }
+
     fn columns(&self, w: usize, cap: usize) -> Cols {
         let lane = self
             .model
@@ -709,11 +768,15 @@ impl RoadmapView<'_> {
         w: usize,
     ) -> (Line<'static>, Option<usize>) {
         let plain = Style::default();
+        let lane = |i: usize, link: Option<LaneLink>| self.lane_cell_style(i, link);
         let mut glyph_col = None;
         let spans = match row {
-            ListRow::Phase { node, lane, lanes } => {
-                self.phase_spans(*node, *lane, lanes, selected, selected_phase, cols)
-            }
+            ListRow::Phase {
+                node,
+                lane,
+                lanes,
+                links,
+            } => self.phase_spans(*node, *lane, (lanes, links), selected, selected_phase, cols),
             // `{lanes}{▾|▸} {label}  {done}/{total} ━━━…` (D-A07).
             ListRow::Band {
                 label,
@@ -721,10 +784,11 @@ impl RoadmapView<'_> {
                 total,
                 folded,
                 lanes,
+                links,
                 ..
             } => {
                 let (lanes, _) = cap_lanes(lanes, None, cols.cap);
-                let mut spans = lane_spans(&lanes, None, plain, plain, cols.lane);
+                let mut spans = lane_spans(&lanes, links, None, plain, &lane, cols.lane);
                 let glyph = if *folded { BAND_FOLDED } else { BAND_OPEN };
                 let tail = format!("{GAP}{done}/{total} ");
                 let used = cols.lane + 2 + cells(&tail);
@@ -744,6 +808,7 @@ impl RoadmapView<'_> {
                 phases,
                 folded,
                 lanes,
+                links,
             } => {
                 let (lanes, _) = cap_lanes(lanes, None, cols.cap);
                 let glyph = if *folded { BAND_FOLDED } else { BAND_OPEN };
@@ -752,7 +817,8 @@ impl RoadmapView<'_> {
                     plural(*milestones, "milestone"),
                     plural(usize::try_from(*phases).unwrap_or(usize::MAX), "phase"),
                 );
-                let mut spans = vec![Span::styled(lanes, plain)];
+                // Unpadded, as before: `width` is the lanes' own width.
+                let mut spans = lane_spans(&lanes, links, None, plain, &lane, cells(&lanes));
                 glyph_col = Some(spans_cells(&spans));
                 spans.push(Span::styled(format!("{glyph} "), bold()));
                 spans.push(Span::styled(text.clone(), bold()));
@@ -761,9 +827,9 @@ impl RoadmapView<'_> {
                 spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
                 spans
             }
-            ListRow::Connector { lanes } => {
+            ListRow::Connector { lanes, links } => {
                 let (lanes, _) = cap_lanes(lanes, None, cols.cap);
-                lane_spans(&lanes, None, plain, plain, cols.lane)
+                lane_spans(&lanes, links, None, plain, &lane, cols.lane)
             }
         };
         let spans = if selected {
@@ -809,12 +875,13 @@ impl RoadmapView<'_> {
         }
     }
 
-    /// `{lanes}{marker}{id}  {name}{plans}  {W<wave>}` (D-A01).
+    /// `{lanes}{marker}{id}  {name}{plans}  {W<wave>}` (D-A01). The
+    /// third argument is the row's `(lanes, links)`.
     fn phase_spans(
         &self,
         node: usize,
         lane: usize,
-        lanes: &str,
+        (lanes, links): (&str, &[Option<LaneLink>]),
         selected: bool,
         selected_phase: Option<usize>,
         cols: &Cols,
@@ -827,8 +894,18 @@ impl RoadmapView<'_> {
         } else {
             Style::default()
         };
+        // `base` dims a Done row's text only, never its lane cell: each lane
+        // char takes its own edge's style (quick 261006-ujx, S-08).
         let (lanes, glyph_at) = cap_lanes(lanes, lane.checked_mul(2), cols.cap);
-        let mut spans = lane_spans(&lanes, glyph_at, glyph_style(p.status), base, cols.lane);
+        let style = |i: usize, link: Option<LaneLink>| self.lane_cell_style(i, link);
+        let mut spans = lane_spans(
+            &lanes,
+            links,
+            glyph_at,
+            glyph_style(p.status),
+            &style,
+            cols.lane,
+        );
         let (mark, mark_style) = self.mark_for(node, selected, selected_phase);
         spans.push(Span::styled(format!(" {mark} "), mark_style));
         let plans = p
@@ -2507,5 +2584,144 @@ mod tests {
         assert_eq!(last.content, format!(" {GLYPH_UNMERGED}3"));
         assert_eq!(last.style.fg, Some(Color::Cyan));
         assert!(spans_of(&model).contains("2/5 plans"), "{}", spans_of(&model));
+    }
+
+    // ── quick 261006-ujx: git-graph lane styling ──────────────────────────
+
+    /// Six phases in one band: `1` and `2` done, `3` active and forking to
+    /// `4` and `5`, and the unrelated `2 -> 6` lane crossing the fork.
+    /// Phase indices equal list order (`1` is index 0).
+    const CHAIN: Spec<'static> = &[
+        ("1", "Alpha", &[], D, Some(0)),
+        ("2", "Bravo", &[], D, Some(0)),
+        ("3", "Charlie", &["1"], C, Some(0)),
+        ("4", "Delta", &["3"], F, Some(0)),
+        ("5", "Echo", &["3"], F, Some(0)),
+        ("6", "Foxtrot", &["2"], F, Some(0)),
+    ];
+    const CHAIN_BANDS: Bands<'static> = &[("M1 Chain", false, 6)];
+    /// CHAIN's model rows: the band, then these.
+    const CHAIN_ROW_2: usize = 2;
+    const CHAIN_ROW_3: usize = 3;
+    const CHAIN_FORK: usize = 4;
+    const CHAIN_ROW_4: usize = 5;
+    const CHAIN_ROW_5: usize = 6;
+
+    fn chain() -> RoadmapModel {
+        let model = build(CHAIN, CHAIN_BANDS, &Extras::default());
+        let fork = format!(
+            "{}{}{}{}{}",
+            roadmap_graph::LANE_TEE_RIGHT,
+            roadmap_graph::LANE_HORIZONTAL,
+            roadmap_graph::LANE_CROSS,
+            roadmap_graph::LANE_HORIZONTAL,
+            roadmap_graph::LANE_DOWN_LEFT,
+        );
+        assert_eq!(
+            roadmap_graph::lane_text(&model),
+            vec![
+                "          [M1]",
+                "o         1",
+                "\u{2502} o       2",
+                "o \u{2502}       3",
+                fork.as_str(),
+                "o \u{2502} \u{2502}     4",
+                "  \u{2502} o     5",
+                "  o       6",
+            ]
+        );
+        model
+    }
+
+    /// The buffer cell of lane char `i` on model row `k` (no scroll), for a
+    /// render at `w` x `h`.
+    fn lane_cell(buf: &Buffer, w: u16, h: u16, k: usize, i: usize) -> &ratatui::buffer::Cell {
+        let (list, _) = panes(Rect::new(0, 0, w, h));
+        let inner = pane_block().inner(list);
+        let x = inner.x + u16::try_from(i).unwrap();
+        let y = inner.y + 2 + u16::try_from(k).unwrap();
+        buf.cell((x, y)).expect("in the buffer")
+    }
+
+    /// CHAIN at 120x30 with `cursor`.
+    fn chain_buf(model: &RoadmapModel, cursor: &CursorTarget) -> Buffer {
+        let mut state = RoadmapViewState::default();
+        render(model, Some(cursor), 120, 30, &mut state)
+    }
+
+    fn band_cursor(model: &RoadmapModel) -> CursorTarget {
+        CursorTarget::Band(model.bands[0].key.clone())
+    }
+
+    #[test]
+    fn lane_cells_take_the_palette_hue_of_their_column() {
+        let model = chain();
+        let buf = chain_buf(&model, &band_cursor(&model));
+        let cell = |k, i| lane_cell(&buf, 120, 30, k, i);
+        for (k, i) in [
+            (CHAIN_FORK, 0),
+            (CHAIN_FORK, 1),
+            (CHAIN_FORK, 3),
+            (CHAIN_FORK, 4),
+            (CHAIN_ROW_4, 4),
+        ] {
+            assert_eq!(cell(k, i).fg, LANE_PALETTE[(i / 2) % 5], "row {k} char {i}");
+        }
+        assert_eq!(cell(CHAIN_FORK, 4).fg, LANE_PALETTE[2]);
+        assert_eq!(cell(CHAIN_ROW_4, 4).fg, LANE_PALETTE[2]);
+        // The 6th lane wraps to the first hue.
+        assert_eq!(
+            lane_style(5, false, false, false, true).fg,
+            Some(LANE_PALETTE[0])
+        );
+    }
+
+    #[test]
+    fn a_lane_out_of_a_done_phase_draws_dark_gray() {
+        let model = chain();
+        let buf = chain_buf(&model, &band_cursor(&model));
+        let cell = |k, i| lane_cell(&buf, 120, 30, k, i);
+        // 1 -> 3 passing row 2; 2 -> 6 down column 1, crossed by the fork.
+        for (k, i) in [
+            (CHAIN_ROW_2, 0),
+            (CHAIN_ROW_3, 2),
+            (CHAIN_FORK, 2),
+            (CHAIN_ROW_4, 2),
+            (CHAIN_ROW_5, 2),
+        ] {
+            assert_eq!(cell(k, i).fg, Color::DarkGray, "row {k} char {i}");
+        }
+        // The node glyph keeps its status style, never a lane hue (S-04).
+        let node = cell(CHAIN_ROW_3, 0);
+        assert_eq!(node.symbol(), PhaseStatus::Active.glyph());
+        assert_eq!(node.fg, Color::Yellow);
+        assert!(node.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn a_done_row_no_longer_dims_its_whole_lane_cell() {
+        let model = build(
+            &[
+                ("1", "A", &[], C, Some(0)),
+                ("2", "B", &[], D, Some(0)),
+                ("3", "C", &["1"], F, Some(0)),
+            ],
+            &[("M1", false, 3)],
+            &Extras::default(),
+        );
+        assert_eq!(roadmap_graph::lane_text(&model)[2], "\u{2502} o       2");
+        let cursor = band_cursor(&model);
+        let buf = chain_buf(&model, &cursor);
+        let lane = lane_cell(&buf, 120, 30, 2, 0);
+        assert_eq!(lane.fg, LANE_PALETTE[0], "owned by the active 1");
+        // The row's text is still dimmed.
+        let (list, _) = panes(Rect::new(0, 0, 120, 30));
+        let inner = pane_block().inner(list);
+        let y = inner.y + 2 + 2;
+        let name = (inner.x + 8..inner.right())
+            .filter_map(|x| buf.cell((x, y)))
+            .find(|c| c.symbol() == "B")
+            .expect("the name cell");
+        assert_eq!(name.fg, Color::DarkGray);
     }
 }

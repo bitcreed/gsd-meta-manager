@@ -359,6 +359,11 @@ impl PhaseStatus {
 
 /// One visible row of the list. Every string is already escaped; `lanes` is
 /// the lane column, two cells per lane, trailing blanks trimmed.
+///
+/// `links` carries one entry per char of `lanes`: the [`LaneLink`] edge that
+/// char draws, `None` on blanks and on a phase row's own node char. It decides
+/// only done-dimming and selection weight; a lane's hue is never derived from
+/// it (hue is `char_index / 2`, quick 261006-ujx).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListRow {
     /// Every shipped milestone, collapsed into one row (D-A07).
@@ -369,6 +374,7 @@ pub enum ListRow {
         phases: u32,
         folded: bool,
         lanes: String,
+        links: Vec<Option<LaneLink>>,
     },
     /// A milestone band header.
     Band {
@@ -380,14 +386,19 @@ pub enum ListRow {
         total: usize,
         folded: bool,
         lanes: String,
+        links: Vec<Option<LaneLink>>,
     },
     /// A fork or merge between lanes.
-    Connector { lanes: String },
+    Connector {
+        lanes: String,
+        links: Vec<Option<LaneLink>>,
+    },
     /// A phase; `lanes` carries its status glyph at cell `2 * lane`.
     Phase {
         node: usize,
         lane: usize,
         lanes: String,
+        links: Vec<Option<LaneLink>>,
     },
 }
 
@@ -540,7 +551,22 @@ enum LaneKind {
 struct LaneRow {
     kind: LaneKind,
     lanes: String,
+    /// One entry per char of `lanes` (see [`ListRow`]).
+    links: Vec<Option<LaneLink>>,
 }
+
+/// The reduced dependency edge a lane char draws (quick 261006-ujx). `owner`
+/// is the phase whose row opened the lane (upstream, the dependency), `target`
+/// the phase it runs down to (the dependent); both are indices into
+/// [`RoadmapModel::phases`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaneLink {
+    pub owner: usize,
+    pub target: usize,
+}
+
+/// A lane string and its per-char links, as the lane builders return them.
+type LaneCells = (String, Vec<Option<LaneLink>>);
 
 /// A lane junction from its four connections.
 fn junction(left: bool, right: bool, up: bool, down: bool) -> &'static str {
@@ -561,13 +587,13 @@ fn junction(left: bool, right: bool, up: bool, down: bool) -> &'static str {
 
 /// The lowest free lane, never `avoid` (the previous phase row's lane, so an
 /// unrelated root never stacks under it as if chained — D-A08).
-fn free_lane(active: &[Option<usize>], avoid: Option<usize>) -> usize {
+fn free_lane(active: &[Option<LaneLink>], avoid: Option<usize>) -> usize {
     (0..)
         .find(|&l| active.get(l).is_none_or(Option::is_none) && Some(l) != avoid)
         .unwrap_or(0)
 }
 
-fn claim(active: &mut Vec<Option<usize>>, lane: usize, target: Option<usize>) {
+fn claim(active: &mut Vec<Option<LaneLink>>, lane: usize, target: Option<LaneLink>) {
     if active.len() <= lane {
         active.resize(lane + 1, None);
     }
@@ -576,57 +602,99 @@ fn claim(active: &mut Vec<Option<usize>>, lane: usize, target: Option<usize>) {
 
 /// Join per-lane cells into a lane string: each lane is its glyph plus the
 /// cell to its right (`─` inside a horizontal span, else blank), trimmed.
-fn join_cells(cells: &[&str], span: Option<(usize, usize)>) -> String {
+/// Each cell carries its link; the separator right of lane `l` carries
+/// `sep_link(l)` when drawn `─`, else `None`. The links come back one per
+/// char of the trimmed string.
+fn join_cells(
+    cells: &[(&str, Option<LaneLink>)],
+    span: Option<(usize, usize)>,
+    sep_link: impl Fn(usize) -> Option<LaneLink>,
+) -> LaneCells {
     let mut out = String::new();
-    for (l, cell) in cells.iter().enumerate() {
+    let mut links = Vec::with_capacity(cells.len() * 2);
+    for (l, &(cell, link)) in cells.iter().enumerate() {
         out.push_str(cell);
+        links.extend(std::iter::repeat_n(link, cell.chars().count()));
         let inside = span.is_some_and(|(lo, hi)| l >= lo && l < hi);
-        out.push_str(if inside { LANE_HORIZONTAL } else { " " });
+        if inside {
+            out.push_str(LANE_HORIZONTAL);
+            links.push(sep_link(l));
+        } else {
+            out.push(' ');
+            links.push(None);
+        }
     }
-    out.trim_end().to_string()
+    let trimmed = out.trim_end().to_string();
+    links.truncate(trimmed.chars().count());
+    (trimmed, links)
+}
+
+/// The link at `active[l]`, `None` past the end or on a free lane.
+fn link_at(active: &[Option<LaneLink>], l: usize) -> Option<LaneLink> {
+    active.get(l).copied().flatten()
 }
 
 /// A row that only passes active lanes through (band rows, phase rows' other
-/// lanes).
-fn pass_through(active: &[Option<usize>], node: Option<(usize, &str)>) -> String {
+/// lanes). The node's own cell carries no link.
+fn pass_through(active: &[Option<LaneLink>], node: Option<(usize, &str)>) -> LaneCells {
     let width = active.len().max(node.map_or(0, |(l, _)| l + 1));
-    let cells: Vec<&str> = (0..width)
+    let cells: Vec<(&str, Option<LaneLink>)> = (0..width)
         .map(|l| match node {
-            Some((lane, glyph)) if lane == l => glyph,
-            _ if active.get(l).is_some_and(Option::is_some) => LANE_VERTICAL,
-            _ => " ",
+            Some((lane, glyph)) if lane == l => (glyph, None),
+            _ => match link_at(active, l) {
+                Some(link) => (LANE_VERTICAL, Some(link)),
+                None => (" ", None),
+            },
         })
         .collect();
-    join_cells(&cells, None)
+    join_cells(&cells, None, |_| None)
 }
 
 /// A fork (`fork`, `others` are the new lanes opening below) or merge
 /// (`others` are the lanes closing into `lane`) connector row around `lane`.
-fn connector_row(active: &[Option<usize>], lane: usize, others: &[usize], fork: bool) -> String {
+///
+/// Links: a cell on an active lane (the node's, an `others` lane, a crossed
+/// `┼` lane) carries that lane's link. A horizontal-run char with no lane of
+/// its own — an inactive `─` cell or a `─` separator — carries the link of the
+/// nearest `others` lane beyond it, on the far side from `lane` (I-10).
+fn connector_row(
+    active: &[Option<LaneLink>],
+    lane: usize,
+    others: &[usize],
+    fork: bool,
+) -> LaneCells {
     let lo = others.iter().copied().fold(lane, usize::min);
     let hi = others.iter().copied().fold(lane, usize::max);
     let width = active.len().max(hi + 1);
-    let cells: Vec<&str> = (0..width)
+    // The `others` lane owning run position `l`: right of `lane`, the
+    // smallest `o > l`; left of it, the largest `o <= l` (for a run cell,
+    // whose own column is never an `others` lane, that is the largest `o < l`).
+    let beyond = |l: usize, right: bool| -> Option<LaneLink> {
+        let o = if right {
+            others.iter().copied().filter(|&o| o > l).min()
+        } else {
+            others.iter().copied().filter(|&o| o <= l).max()
+        };
+        o.and_then(|o| link_at(active, o))
+    };
+    let cells: Vec<(&str, Option<LaneLink>)> = (0..width)
         .map(|l| {
             let inside = l > lo && l < hi;
+            let own = link_at(active, l);
             if l == lane {
-                junction(lo < lane, hi > lane, true, true)
+                (junction(lo < lane, hi > lane, true, true), own)
             } else if others.contains(&l) {
-                junction(l > lo, l < hi, !fork, fork)
-            } else if active.get(l).is_some_and(Option::is_some) {
-                if inside {
-                    LANE_CROSS
-                } else {
-                    LANE_VERTICAL
-                }
+                (junction(l > lo, l < hi, !fork, fork), own)
+            } else if own.is_some() {
+                (if inside { LANE_CROSS } else { LANE_VERTICAL }, own)
             } else if inside {
-                LANE_HORIZONTAL
+                (LANE_HORIZONTAL, beyond(l, l > lane))
             } else {
-                " "
+                (" ", None)
             }
         })
         .collect();
-    join_cells(&cells, Some((lo, hi)))
+    join_cells(&cells, Some((lo, hi)), |l| beyond(l, l >= lane))
 }
 
 /// Assign git-log lanes over the row sequence it is given — the visible rows,
@@ -660,7 +728,7 @@ fn assign_lanes(seq: &[Slot], reduced: &ParentLists, glyphs: &[&str]) -> Vec<Lan
         list.sort_by_key(|&c| pos[c]);
     }
 
-    let mut active: Vec<Option<usize>> = Vec::new();
+    let mut active: Vec<Option<LaneLink>> = Vec::new();
     let mut prev: Option<usize> = None;
     let mut out: Vec<LaneRow> = Vec::with_capacity(seq.len());
     for slot in seq {
@@ -670,24 +738,24 @@ fn assign_lanes(seq: &[Slot], reduced: &ParentLists, glyphs: &[&str]) -> Vec<Lan
                     Slot::Band(b) => LaneKind::Band(b),
                     _ => LaneKind::Summary,
                 };
-                out.push(LaneRow {
-                    kind,
-                    lanes: pass_through(&active, None),
-                });
+                let (lanes, links) = pass_through(&active, None);
+                out.push(LaneRow { kind, lanes, links });
                 prev = None;
                 continue;
             }
             Slot::Phase(u) => u,
         };
         let incoming: Vec<usize> = (0..active.len())
-            .filter(|&l| active[l] == Some(u))
+            .filter(|&l| active[l].is_some_and(|k| k.target == u))
             .collect();
         let lane = match incoming.split_first() {
             Some((&first, rest)) => {
                 if !rest.is_empty() {
+                    let (lanes, links) = connector_row(&active, first, rest, false);
                     out.push(LaneRow {
                         kind: LaneKind::Connector(u),
-                        lanes: connector_row(&active, first, rest, false),
+                        lanes,
+                        links,
                     });
                     for &l in rest {
                         active[l] = None;
@@ -698,23 +766,42 @@ fn assign_lanes(seq: &[Slot], reduced: &ParentLists, glyphs: &[&str]) -> Vec<Lan
             None => free_lane(&active, prev),
         };
         claim(&mut active, lane, None);
+        let (lanes, links) =
+            pass_through(&active, Some((lane, glyphs.get(u).copied().unwrap_or(" "))));
         out.push(LaneRow {
             kind: LaneKind::Phase(u, lane),
-            lanes: pass_through(&active, Some((lane, glyphs.get(u).copied().unwrap_or(" ")))),
+            lanes,
+            links,
         });
         match children[u].split_first() {
             Some((&first, rest)) => {
-                claim(&mut active, lane, Some(first));
+                claim(
+                    &mut active,
+                    lane,
+                    Some(LaneLink {
+                        owner: u,
+                        target: first,
+                    }),
+                );
                 let mut forked = Vec::with_capacity(rest.len());
                 for &c in rest {
                     let l = free_lane(&active, None);
-                    claim(&mut active, l, Some(c));
+                    claim(
+                        &mut active,
+                        l,
+                        Some(LaneLink {
+                            owner: u,
+                            target: c,
+                        }),
+                    );
                     forked.push(l);
                 }
                 if !forked.is_empty() {
+                    let (lanes, links) = connector_row(&active, lane, &forked, true);
                     out.push(LaneRow {
                         kind: LaneKind::Connector(u),
-                        lanes: connector_row(&active, lane, &forked, true),
+                        lanes,
+                        links,
                     });
                 }
             }
@@ -906,6 +993,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 phases: summary_phases,
                 folded: summary_folded,
                 lanes: row.lanes,
+                links: row.links,
             },
             LaneKind::Band(b) => ListRow::Band {
                 band: b,
@@ -916,12 +1004,17 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 total: bands[b].total,
                 folded: is_folded(&bands[b].key, fold_toggles),
                 lanes: row.lanes,
+                links: row.links,
             },
-            LaneKind::Connector(_) => ListRow::Connector { lanes: row.lanes },
+            LaneKind::Connector(_) => ListRow::Connector {
+                lanes: row.lanes,
+                links: row.links,
+            },
             LaneKind::Phase(node, lane) => ListRow::Phase {
                 node,
                 lane,
                 lanes: row.lanes,
+                links: row.links,
             },
         })
         .collect();
@@ -1040,6 +1133,7 @@ impl RoadmapModel {
                 node: n,
                 lane,
                 lanes,
+                ..
             } = row
             {
                 if *n != node {
@@ -1274,7 +1368,9 @@ pub fn lane_text(model: &RoadmapModel) -> Vec<String> {
         .iter()
         .map(|row| {
             let (lanes, label) = match row {
-                ListRow::Phase { node, lane, lanes } => (
+                ListRow::Phase {
+                    node, lane, lanes, ..
+                } => (
                     lanes
                         .chars()
                         .enumerate()
@@ -1287,7 +1383,7 @@ pub fn lane_text(model: &RoadmapModel) -> Vec<String> {
                 ),
                 ListRow::Band { lanes, short, .. } => (lanes.clone(), format!("[{short}]")),
                 ListRow::ShippedSummary { lanes, .. } => (lanes.clone(), "[shipped]".to_string()),
-                ListRow::Connector { lanes } => (lanes.clone(), String::new()),
+                ListRow::Connector { lanes, .. } => (lanes.clone(), String::new()),
             };
             format!("{lanes:<LANE_TEXT_COLUMN$}{label}")
                 .trim_end()
@@ -1703,6 +1799,7 @@ mod tests {
                 phases: 17,
                 folded: true,
                 lanes: String::new(),
+                links: Vec::new(),
             }
         );
         let v15: Vec<&ListRow> = band_rows(&model)
@@ -1941,7 +2038,7 @@ mod tests {
                     .filter(|row| match row {
                         ListRow::Band { label: l, .. } => l == label,
                         ListRow::ShippedSummary { text, .. } => text.contains(label.as_str()),
-                        ListRow::Connector { lanes } | ListRow::Phase { lanes, .. } => {
+                        ListRow::Connector { lanes, .. } | ListRow::Phase { lanes, .. } => {
                             lanes.contains(label.as_str())
                         }
                     })
@@ -2137,6 +2234,139 @@ mod tests {
             .filter(|row| matches!(row, ListRow::Connector { .. }))
             .count();
         assert_eq!(connectors, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Lane links (quick 261006-ujx, I-2, I-10)
+    // -----------------------------------------------------------------------
+
+    /// A row's lane string and its per-char links.
+    fn lanes_and_links(row: &ListRow) -> (&str, &[Option<LaneLink>]) {
+        match row {
+            ListRow::ShippedSummary { lanes, links, .. }
+            | ListRow::Band { lanes, links, .. }
+            | ListRow::Connector { lanes, links }
+            | ListRow::Phase { lanes, links, .. } => (lanes, links),
+        }
+    }
+
+    /// The single connector row of `model`.
+    fn only_connector(model: &RoadmapModel) -> &ListRow {
+        let mut it = model
+            .rows
+            .iter()
+            .filter(|row| matches!(row, ListRow::Connector { .. }));
+        let row = it.next().expect("a connector row");
+        assert!(it.next().is_none(), "{:#?}", lane_text(model));
+        row
+    }
+
+    /// The phase row of `id`.
+    fn phase_row<'m>(model: &'m RoadmapModel, id: &str) -> &'m ListRow {
+        let node = idx(model, id);
+        model
+            .rows
+            .iter()
+            .find(|row| matches!(row, ListRow::Phase { node: n, .. } if *n == node))
+            .unwrap_or_else(|| panic!("no row for {id}"))
+    }
+
+    fn link(model: &RoadmapModel, owner: &str, target: &str) -> Option<LaneLink> {
+        Some(LaneLink {
+            owner: idx(model, owner),
+            target: idx(model, target),
+        })
+    }
+
+    #[test]
+    fn lane_links_match_lane_chars_one_to_one() {
+        let models = [
+            plain(DAILY_VOW),
+            plain(SENTRIQ),
+            plain(TTBOOK),
+            build(BOOKLY, BOOKLY_BANDS, &HashSet::new()),
+            build(
+                BOOKLY,
+                BOOKLY_BANDS,
+                &toggles(&[BandKey::Named("m4 support chat".to_string())]),
+            ),
+            build(CROSS_FOLD, CROSS_FOLD_BANDS, &HashSet::new()),
+            build(CROSS_FOLD, CROSS_FOLD_BANDS, &toggles(&[BandKey::Shipped])),
+            build(CROSS_FOLD, CROSS_FOLD_BANDS, &toggles(&[v3_key()])),
+        ];
+        for model in &models {
+            for row in &model.rows {
+                let (lanes, links) = lanes_and_links(row);
+                assert_eq!(links.len(), lanes.chars().count(), "{lanes:?}");
+                // A blank never carries an edge.
+                for (c, l) in lanes.chars().zip(links) {
+                    if c == ' ' {
+                        assert_eq!(*l, None, "{lanes:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lane_links_name_the_edge_each_cell_draws() {
+        // DAILY_VOW: 21 forks to 22 (lane 0) and 23 (lane 1).
+        let model = plain(DAILY_VOW);
+        let (lanes, links) = lanes_and_links(only_connector(&model));
+        assert_eq!(lanes.chars().count(), 3, "{lanes:?}");
+        assert_eq!(links[0], link(&model, "21", "22"));
+        assert_eq!(links[1], link(&model, "21", "23"));
+        assert_eq!(links[2], link(&model, "21", "23"));
+        let (lanes, links) = lanes_and_links(phase_row(&model, "22"));
+        assert_eq!(lanes.chars().nth(2), Some('\u{2502}'));
+        assert_eq!(links[0], None, "the node's own char");
+        assert_eq!(links[2], link(&model, "21", "23"));
+
+        // The `1,2,3 -> 4` merge: every drawn char runs to 4, and each `─`
+        // separator belongs to the lane beyond it.
+        let model = plain(&[
+            ("1", "", &[], F),
+            ("2", "", &[], F),
+            ("3", "", &[], F),
+            ("4", "", &["1", "2", "3"], F),
+        ]);
+        let (lanes, links) = lanes_and_links(only_connector(&model));
+        assert_eq!(lanes.chars().count(), 5, "{lanes:?}");
+        for (c, l) in lanes.chars().zip(links) {
+            if c != ' ' {
+                assert_eq!(l.map(|k| k.target), Some(idx(&model, "4")), "{lanes:?}");
+            }
+        }
+        assert_eq!(links[0], link(&model, "1", "4"));
+        assert_eq!(links[1], link(&model, "2", "4"));
+        assert_eq!(links[1], links[2]);
+        assert_eq!(links[3], link(&model, "3", "4"));
+        assert_eq!(links[3], links[4]);
+    }
+
+    #[test]
+    fn a_leftward_fork_links_its_run_to_the_forked_lane() {
+        let model = plain(&[
+            ("1", "", &[], F),
+            ("2", "", &[], F),
+            ("3", "", &["2"], F),
+            ("4", "", &["2"], F),
+        ]);
+        let text = lane_text(&model);
+        assert_eq!(
+            text,
+            vec![
+                "o         1",
+                "  o       2",
+                format!("{LANE_DOWN_RIGHT}{LANE_HORIZONTAL}{LANE_TEE_LEFT}").as_str(),
+                "│ o       3",
+                "o         4",
+            ]
+        );
+        let (_, links) = lanes_and_links(only_connector(&model));
+        assert_eq!(links[0], link(&model, "2", "4"));
+        assert_eq!(links[1], link(&model, "2", "4"));
+        assert_eq!(links[2], link(&model, "2", "3"));
     }
 
     #[test]
@@ -2461,7 +2691,7 @@ mod tests {
                     lanes,
                     ..
                 } => shown.extend([label.clone(), short.clone(), lanes.clone()]),
-                ListRow::Connector { lanes } | ListRow::Phase { lanes, .. } => {
+                ListRow::Connector { lanes, .. } | ListRow::Phase { lanes, .. } => {
                     shown.push(lanes.clone())
                 }
             }
