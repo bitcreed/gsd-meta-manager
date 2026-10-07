@@ -6627,7 +6627,7 @@ impl DetailScreen {
                 let co_authors = entry.co_authors.as_ref().map(|c| c.shown().to_string());
                 let subject = entry.message.shown().to_string();
 
-                // The lane column is pure ASCII from `assign_lanes` (see
+                // The lane column is box-drawing text from `assign_lanes` (see
                 // `GitLogEntry::graph`), so it needs no `.shown()`; it spends
                 // its cells (plus one gap) out of the hash's share of the row.
                 let graph_cols = if entry.graph.is_empty() {
@@ -6645,10 +6645,7 @@ impl DetailScreen {
 
                 let mut spans = Vec::new();
                 if !entry.graph.is_empty() {
-                    spans.push(Span::styled(
-                        format!("{} ", entry.graph),
-                        Style::default().fg(Color::Green),
-                    ));
+                    spans.extend(graph_spans(&entry.graph));
                 }
                 spans.extend([
                     Span::styled(hash, Style::default().fg(Color::Yellow)),
@@ -12063,6 +12060,52 @@ pub(super) const DEFAULTS_EDIT_BRANCH_TOKEN: &str = "(Enter to save, Esc to canc
 /// is zero and the state reports "did not arrive" while visibly leaking. This
 /// returns `None` for a cache with no config — which is exactly what
 /// `chrome_ctx` is — so the baseline draws chrome only.
+/// Palette for the git-log lane column; a lane keeps its colour on every row.
+const GRAPH_PALETTE: [Color; 6] = [
+    Color::Magenta,
+    Color::Yellow,
+    Color::Cyan,
+    Color::Green,
+    Color::Red,
+    Color::Blue,
+];
+
+/// Split a lane column (`lane glyph, separator, lane glyph, ...`) into one
+/// span per cell, coloured by lane index, plus the trailing gap.
+fn graph_spans(graph: &str) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = graph
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let lane = i / 2;
+            Span::styled(
+                c.to_string(),
+                Style::default().fg(GRAPH_PALETTE[lane % GRAPH_PALETTE.len()]),
+            )
+        })
+        .collect();
+    spans.push(Span::raw(" "));
+    spans
+}
+
+#[cfg(test)]
+mod graph_spans_tests {
+    use super::*;
+
+    #[test]
+    fn lane_colour_is_stable_per_column_and_cycles() {
+        let spans = graph_spans("\u{25CF} \u{2502} \u{2502}");
+        assert_eq!(spans[0].style.fg, Some(Color::Magenta));
+        assert_eq!(spans[2].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[4].style.fg, Some(Color::Cyan));
+        // 7th lane wraps to the first colour.
+        let wide = "\u{2502} ".repeat(7);
+        let spans = graph_spans(&wide);
+        assert_eq!(spans[12].style.fg, Some(Color::Magenta));
+        assert_eq!(spans.last().unwrap().content, " ");
+    }
+}
+
 #[cfg(test)]
 pub(super) fn first_string_entry(cache: &super::ProjectViewCache) -> Option<(usize, String)> {
     entries_for_cache(cache)

@@ -771,12 +771,12 @@ pub struct GitLogEntry {
     /// branches on presence to decide whether to emit the column AND its
     /// separator, and an empty string would draw a dangling `"  ()"`.
     pub co_authors: Option<crate::text::Untrusted>,
-    /// gitk-style lane glyphs for this row (`*` commit, `|` a parallel line of
-    /// history, `\` a lane opened by a merge, `/` a lane joining back), padded
+    /// gitk-style lane glyphs for this row (`●` commit, `○` merge commit, `│` a parallel
+    /// line of history, `╮` `╭` a lane opened by a merge, `╯` a lane joining back), padded
     /// to one width across the whole log so the hash column stays aligned.
     ///
     /// **Not [`crate::text::Untrusted`], deliberately:** this string is
-    /// synthesised by `assign_lanes` from a fixed ASCII alphabet. Not one byte
+    /// synthesised by `assign_lanes` from a fixed box-drawing alphabet. Not one byte
     /// of it comes from git output, so there is nothing to escape. It is EMPTY
     /// for every row when the log is linear (no information to draw), and for
     /// entries not produced by [`load_git_log`].
@@ -881,6 +881,16 @@ pub async fn load_git_log(
     Ok(entries)
 }
 
+/// Lane glyphs, in the rounded style of `git-graph`. One cell per lane.
+pub(crate) const GRAPH_COMMIT: char = '\u{25CF}'; // ●
+pub(crate) const GRAPH_MERGE: char = '\u{25CB}'; // ○ (a commit with several parents)
+pub(crate) const GRAPH_VERTICAL: char = '\u{2502}'; // │
+pub(crate) const GRAPH_HORIZONTAL: char = '\u{2500}'; // ─
+pub(crate) const GRAPH_CROSS: char = '\u{253C}'; // ┼
+pub(crate) const GRAPH_OPEN_RIGHT: char = '\u{256E}'; // ╮ a lane opened right of the commit
+pub(crate) const GRAPH_OPEN_LEFT: char = '\u{256D}'; // ╭ a lane opened left of the commit
+pub(crate) const GRAPH_JOIN: char = '\u{256F}'; // ╯ a lane joining back
+
 /// Widest graph column drawn, in lanes. Beyond this the rightmost lanes are
 /// clipped rather than eating the subject's width.
 const MAX_GRAPH_LANES: usize = 8;
@@ -899,6 +909,7 @@ const MAX_GRAPH_LANES: usize = 8;
 pub(crate) fn assign_lanes(commits: &[(String, Vec<String>)]) -> Vec<String> {
     let mut lanes: Vec<Option<String>> = Vec::new();
     let mut rows: Vec<Vec<char>> = Vec::with_capacity(commits.len());
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(commits.len());
 
     fn free_slot(lanes: &mut Vec<Option<String>>) -> usize {
         match lanes.iter().position(Option::is_none) {
@@ -924,15 +935,23 @@ pub(crate) fn assign_lanes(commits: &[(String, Vec<String>)]) -> Vec<String> {
 
         let mut glyphs: Vec<char> = lanes
             .iter()
-            .map(|l| if l.is_some() { '|' } else { ' ' })
+            .map(|l| if l.is_some() { GRAPH_VERTICAL } else { ' ' })
             .collect();
         for &m in matching.iter().skip(1) {
-            glyphs[m] = '/';
+            glyphs[m] = GRAPH_JOIN;
         }
-        glyphs[col] = '*';
+        glyphs[col] = if parents.len() > 1 {
+            GRAPH_MERGE
+        } else {
+            GRAPH_COMMIT
+        };
+        let mut span = (col, col);
 
         for &m in &matching {
             lanes[m] = None;
+        }
+        for &m in matching.iter().skip(1) {
+            span = (span.0.min(m), span.1.max(m));
         }
         let mut parents_iter = parents.iter();
         if let Some(first) = parents_iter.next() {
@@ -947,11 +966,26 @@ pub(crate) fn assign_lanes(commits: &[(String, Vec<String>)]) -> Vec<String> {
             if slot >= glyphs.len() {
                 glyphs.resize(slot + 1, ' ');
             }
-            glyphs[slot] = '\\';
+            glyphs[slot] = if slot > col {
+                GRAPH_OPEN_RIGHT
+            } else {
+                GRAPH_OPEN_LEFT
+            };
+            span = (span.0.min(slot), span.1.max(slot));
         }
         while matches!(lanes.last(), Some(None)) {
             lanes.pop();
         }
+        // A horizontal run joins the commit to every lane it forks or merges,
+        // crossing any unrelated lane between (`┼`), as git-graph draws it.
+        for cell in glyphs.iter_mut().take(span.1).skip(span.0 + 1) {
+            *cell = match *cell {
+                ' ' => GRAPH_HORIZONTAL,
+                GRAPH_VERTICAL => GRAPH_CROSS,
+                c => c,
+            };
+        }
+        spans.push(span);
         rows.push(glyphs);
     }
 
@@ -965,19 +999,27 @@ pub(crate) fn assign_lanes(commits: &[(String, Vec<String>)]) -> Vec<String> {
         return vec![String::new(); commits.len()];
     }
     rows.into_iter()
-        .map(|mut g| {
+        .zip(spans)
+        .map(|(mut g, (lo, hi))| {
             if g.len() > width {
                 // Keep the commit marker visible even when its lane is clipped.
-                if g.iter().position(|&c| c == '*').is_some_and(|i| i >= width) {
-                    g[width - 1] = '*';
+                if g.iter()
+                    .position(|&c| c == GRAPH_COMMIT || c == GRAPH_MERGE)
+                    .is_some_and(|i| i >= width)
+                {
+                    g[width - 1] = GRAPH_COMMIT;
                 }
                 g.truncate(width);
             }
             g.resize(width, ' ');
-            let mut out = String::with_capacity(width * 2);
+            let mut out = String::with_capacity(width * 4);
             for (i, c) in g.into_iter().enumerate() {
                 if i > 0 {
-                    out.push(' ');
+                    out.push(if i > lo && i <= hi {
+                        GRAPH_HORIZONTAL
+                    } else {
+                        ' '
+                    });
                 }
                 out.push(c);
             }
@@ -1923,7 +1965,15 @@ mod tests {
             c("b", &["base"]),
             c("base", &[]),
         ]);
-        assert_eq!(g, vec!["* \\", "| *", "* |", "* /"]);
+        assert_eq!(
+            g,
+            vec![
+                "\u{25CB}\u{2500}\u{256E}",
+                "\u{2502} \u{25CF}",
+                "\u{25CF} \u{2502}",
+                "\u{25CF}\u{2500}\u{256F}"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1959,9 +2009,9 @@ mod tests {
         run(&["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
         let entries = load_git_log(p, false, 50).await.unwrap();
         assert_eq!(entries.len(), 4);
-        assert!(entries[0].graph.starts_with('*'));
+        assert!(entries[0].graph.starts_with(GRAPH_MERGE));
         assert!(
-            entries[0].graph.contains('\\'),
+            entries[0].graph.contains(GRAPH_OPEN_RIGHT),
             "merge row opens a lane: {:?}",
             entries[0].graph
         );
