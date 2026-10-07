@@ -1,13 +1,13 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.11.0
+milestone: v1.12.0
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
-stopped_at: v1.11.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
+stopped_at: v1.12.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
 last_updated: "2026-10-07T03:27:46.052Z"
-last_activity: 2026-09-30
-last_activity_desc: v1.11.0 released — Direct Project Launch
+last_activity: 2026-10-06
+last_activity_desc: v1.12.0 released — Lanes, Popups and Config Polish
 state_head: 8e29ddf85c07b35e328c9208630c5864189183fc
 progress:
   total_phases: 10
@@ -15,7 +15,7 @@ progress:
   total_plans: 7
   completed_plans: 112
   percent: 58
-milestone_name: Direct Project Launch
+milestone_name: Lanes, Popups and Config Polish
 ---
 
 # Project State
@@ -32,7 +32,14 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: v1.11.0 shipped 2026-09-30 (interim release; v2.0 milestone still open)
+Status: v1.12.0 shipped 2026-10-06 (interim release; v2.0 milestone still open)
+  Quick tasks 261004-gsd-expansion, 261004-readme-accuracy, 261006-cfg, 261006-cfr, 261006-cpp,
+  261006-git-lanes and 261006-ujx, plus worktree-only roadmap phases, modal Yes/No confirm popups,
+  manager-preferences editor and $EDITOR cache reloads. Release gate also cleared four clippy lints
+  and pinned uuid at 1.26.1 (1.27.0 needs rustc 1.89 > MSRV 1.88). `./scripts/pre-tag-check.sh
+  --container v1.12.0` exit **0**, all five gates PASS, git banner MATCH, 58 suites / **2947 passed
+  / 0 failed** / 15 ignored. Router's next is Phase 19, whose loop is halted by user decision — ask first.
+Earlier (v1.11.0 release, 2026-09-30):
   Quick tasks 260929-szq (completed-but-unmerged worktree work surfaced: dashboard ◐N, Waves pane /
   Agents sub-view unmerged state, Roadmap unmerged status + lane glyph, Work State help legend) and
   260930-vvk (`gsd-meta-manager <alias|path>` opens straight into that project's view; path targets
@@ -615,7 +622,15 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-30
+Last session: 2026-10-06
+Stopped at: v1.12.0 released (Lanes, Popups and Config Polish)
+Release: `Cargo.toml` 1.11.0 -> 1.12.0; `cargo update` moved cc, either, lazy_static, libc, mio,
+powerfmt, tokio; uuid held at 1.26.1 (1.27.0 needs rustc 1.89, MSRV is 1.88). Still held by upstream
+`=` pins: generic-array 0.14.7 (0.14.9), unicode-width 0.2.0 (0.2.2). Container pre-tag check green.
+Phase 19's gap-closure loop is halted by user decision — do not resume without asking.
+Resume file: None
+
+Previous session (v1.11.0 release, 2026-09-30):
 Stopped at: v1.11.0 released (Direct Project Launch)
 Release: `Cargo.toml` 1.10.0 -> 1.11.0; `cargo update` moved mac_address 1.1.8 -> 1.2.0 (adds nix
 0.30.1) and yoke-derive 0.8.3 -> 0.8.4; still held by upstream `=` pins: generic-array 0.14.7
