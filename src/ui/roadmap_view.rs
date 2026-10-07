@@ -112,6 +112,24 @@ pub struct RoadmapViewState {
     pub fold_marks: Vec<(usize, Rect)>,
 }
 
+/// Per-render lane styling context (quick 261006-ujx): the phase under the
+/// cursor, whose need/unblock lanes draw BOLD while every other lane draws
+/// DIM (`None` on a band or shipped-summary cursor: no weighting, I-7), and
+/// whether lanes take palette hues at all (see [`lane_palette_enabled`]).
+#[derive(Clone, Copy)]
+struct LaneCtx {
+    selected: Option<usize>,
+    palette: bool,
+}
+
+/// False when `NO_COLOR` is set to a non-empty value (no-color.org). Scoped
+/// deliberately to the Roadmap lane palette only: status glyph colours, the
+/// `↑`/`↓` markers and every BOLD/DIM/REVERSED weight are unaffected, and no
+/// other screen reads it (quick 261006-ujx, I-5).
+fn lane_palette_enabled() -> bool {
+    std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+}
+
 /// The (list, detail) rects for `area`: side by side at
 /// [`ROADMAP_SIDE_BY_SIDE_MIN_COLS`] and above, stacked below that. A
 /// zero-size area yields two zero-size rects.
@@ -263,7 +281,9 @@ fn bold() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
 
-/// The status glyph's style (D-A04).
+/// The status glyph's style (D-A04). Blocked is Red, not bold, since quick
+/// 261006-ujx (I-3) — superseding D-A04's default style — so status reads by
+/// colour as well as shape now that lanes carry palette hues.
 fn glyph_style(status: PhaseStatus) -> Style {
     match status {
         PhaseStatus::Done => dim(),
@@ -271,7 +291,7 @@ fn glyph_style(status: PhaseStatus) -> Style {
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
         PhaseStatus::Ready => Style::default().fg(Color::Green),
-        PhaseStatus::Blocked => Style::default(),
+        PhaseStatus::Blocked => Style::default().fg(Color::Red),
         // Cyan and never dim: finished work still waiting on a merge is a
         // pending action, not history (quick 260929-szq).
         PhaseStatus::Unmerged => Style::default().fg(Color::Cyan),
@@ -333,7 +353,8 @@ fn lanes_of(row: &ListRow) -> &str {
 
 /// The lane cell as spans in `width` cells, one char at a time (quick
 /// 261006-ujx): the char at `glyph_at` (the phase's own node) is drawn in
-/// `glyph`, a blank plain, and every other char in `lane(i, link)`, where
+/// `glyph`, a blank plain, the [`LANE_OVERFLOW`] column DarkGray, and every
+/// other char in `lane(i, link)`, where
 /// `link` is `links.get(i)` — a short or empty `links` degrades to `None`,
 /// never a panic (T-ujx-02). Adjacent chars of one style share a span.
 fn lane_spans(
@@ -354,6 +375,8 @@ fn lane_spans(
             glyph
         } else if c == ' ' {
             Style::default()
+        } else if LANE_OVERFLOW.starts_with(c) {
+            dim()
         } else {
             lane(i, links.get(i).copied().flatten())
         };
@@ -593,12 +616,29 @@ impl RoadmapView<'_> {
     }
 
     /// The style of lane char `i` drawing edge `link` (the [`lane_spans`]
-    /// callback): its column's hue, DarkGray when the lane's owner is Done.
-    fn lane_cell_style(&self, i: usize, link: Option<LaneLink>) -> Style {
+    /// callback): its column's hue, DarkGray when the lane's owner is Done
+    /// (I-6); BOLD on an edge of `ctx.selected`, DIM on every other lane
+    /// while a phase is selected.
+    fn lane_cell_style(&self, ctx: LaneCtx, i: usize, link: Option<LaneLink>) -> Style {
         let owner_done = link
             .and_then(|k| self.phase(k.owner))
             .is_some_and(|p| p.status == PhaseStatus::Done);
-        lane_style(i / 2, owner_done, false, false, true)
+        let on_chain = self.on_chain(ctx.selected, link);
+        let dimmed = ctx.selected.is_some() && !on_chain;
+        lane_style(i / 2, owner_done, on_chain, dimmed, ctx.palette)
+    }
+
+    /// Whether `link` is a reduced edge of the selected phase (I-8): out of
+    /// it to a phase it unblocks, or into it from a phase it needs.
+    fn on_chain(&self, selected: Option<usize>, link: Option<LaneLink>) -> bool {
+        let (Some(s), Some(k)) = (selected, link) else {
+            return false;
+        };
+        let Some(p) = self.phase(s) else {
+            return false;
+        };
+        (k.owner == s && p.unblocks.contains(&k.target))
+            || (k.target == s && p.needs.contains(&k.owner))
     }
 
     fn columns(&self, w: usize, cap: usize) -> Cols {
@@ -661,6 +701,10 @@ impl RoadmapView<'_> {
             _ => None,
         };
         let selected_row = cursor.and_then(|c| self.model.row_of(c));
+        let ctx = LaneCtx {
+            selected: selected_phase,
+            palette: lane_palette_enabled(),
+        };
 
         // The Start-now and header lines never scroll; a Notes line, when
         // there is one, takes the pane's last row.
@@ -702,7 +746,7 @@ impl RoadmapView<'_> {
         let mut lines = vec![self.start_now_line(w), self.header_line(&cols, w)];
         for (i, row) in self.model.rows.iter().enumerate().skip(offset).take(body) {
             let selected = selected_row == Some(i);
-            let (line, glyph_col) = self.row_line(row, selected, selected_phase, &cols, w);
+            let (line, glyph_col) = self.row_line(row, selected, ctx, &cols, w);
             if let Some(col) = glyph_col.and_then(|c| u16::try_from(c).ok()) {
                 let y = body_y.saturating_add(u16::try_from(i - offset).unwrap_or(u16::MAX));
                 let x = inner.x.saturating_add(col);
@@ -763,12 +807,12 @@ impl RoadmapView<'_> {
         &self,
         row: &ListRow,
         selected: bool,
-        selected_phase: Option<usize>,
+        ctx: LaneCtx,
         cols: &Cols,
         w: usize,
     ) -> (Line<'static>, Option<usize>) {
         let plain = Style::default();
-        let lane = |i: usize, link: Option<LaneLink>| self.lane_cell_style(i, link);
+        let lane = |i: usize, link: Option<LaneLink>| self.lane_cell_style(ctx, i, link);
         let mut glyph_col = None;
         let spans = match row {
             ListRow::Phase {
@@ -776,7 +820,7 @@ impl RoadmapView<'_> {
                 lane,
                 lanes,
                 links,
-            } => self.phase_spans(*node, *lane, (lanes, links), selected, selected_phase, cols),
+            } => self.phase_spans(*node, *lane, (lanes, links), selected, ctx, cols),
             // `{lanes}{▾|▸} {label}  {done}/{total} ━━━…` (D-A07).
             ListRow::Band {
                 label,
@@ -883,7 +927,7 @@ impl RoadmapView<'_> {
         lane: usize,
         (lanes, links): (&str, &[Option<LaneLink>]),
         selected: bool,
-        selected_phase: Option<usize>,
+        ctx: LaneCtx,
         cols: &Cols,
     ) -> Vec<Span<'static>> {
         let Some(p) = self.phase(node) else {
@@ -897,7 +941,7 @@ impl RoadmapView<'_> {
         // `base` dims a Done row's text only, never its lane cell: each lane
         // char takes its own edge's style (quick 261006-ujx, S-08).
         let (lanes, glyph_at) = cap_lanes(lanes, lane.checked_mul(2), cols.cap);
-        let style = |i: usize, link: Option<LaneLink>| self.lane_cell_style(i, link);
+        let style = |i: usize, link: Option<LaneLink>| self.lane_cell_style(ctx, i, link);
         let mut spans = lane_spans(
             &lanes,
             links,
@@ -906,7 +950,7 @@ impl RoadmapView<'_> {
             &style,
             cols.lane,
         );
-        let (mark, mark_style) = self.mark_for(node, selected, selected_phase);
+        let (mark, mark_style) = self.mark_for(node, selected, ctx.selected);
         spans.push(Span::styled(format!(" {mark} "), mark_style));
         let plans = p
             .plans
@@ -2723,5 +2767,236 @@ mod tests {
             .find(|c| c.symbol() == "B")
             .expect("the name cell");
         assert_eq!(name.fg, Color::DarkGray);
+    }
+
+    /// Every non-blank, non-node lane char of CHAIN's model rows as
+    /// `(row, char index, link)`.
+    fn chain_lane_chars(model: &RoadmapModel) -> Vec<(usize, usize, Option<LaneLink>)> {
+        let mut out = Vec::new();
+        for (k, row) in model.rows.iter().enumerate() {
+            let (lanes, links, glyph_at) = match row {
+                ListRow::Phase {
+                    lane, lanes, links, ..
+                } => (lanes, links, Some(2 * lane)),
+                ListRow::Band { lanes, links, .. }
+                | ListRow::ShippedSummary { lanes, links, .. }
+                | ListRow::Connector { lanes, links } => (lanes, links, None),
+            };
+            for (i, c) in lanes.chars().enumerate() {
+                if c != ' ' && Some(i) != glyph_at {
+                    out.push((k, i, links.get(i).copied().flatten()));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn lane_style_bolds_the_chain_and_keeps_its_hue_when_done() {
+        let on = lane_style(3, true, true, false, true);
+        assert_eq!(on.fg, Some(LANE_PALETTE[3]));
+        assert!(on.add_modifier.contains(Modifier::BOLD));
+        let off = lane_style(3, true, false, false, true);
+        assert_eq!(off.fg, Some(Color::DarkGray));
+        assert!(!off.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn lane_style_dims_off_chain_lanes_only() {
+        for owner_done in [false, true] {
+            for palette in [false, true] {
+                let off = lane_style(1, owner_done, false, true, palette);
+                assert!(off.add_modifier.contains(Modifier::DIM));
+                let on = lane_style(1, owner_done, true, true, palette);
+                assert!(!on.add_modifier.contains(Modifier::DIM), "{on:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn lane_style_without_palette_keeps_weight_only() {
+        for lane in 0..7 {
+            for owner_done in [false, true] {
+                for on_chain in [false, true] {
+                    for dimmed in [false, true] {
+                        let style = lane_style(lane, owner_done, on_chain, dimmed, false);
+                        assert_eq!(style.fg, None, "{style:?}");
+                        if on_chain {
+                            assert!(style.add_modifier.contains(Modifier::BOLD));
+                        }
+                    }
+                }
+            }
+        }
+        let done = lane_style(0, true, false, false, false);
+        assert!(done.add_modifier.contains(Modifier::DIM));
+        let open = lane_style(0, false, false, false, false);
+        assert_eq!(open, Style::default());
+    }
+
+    #[test]
+    fn selecting_a_phase_bolds_its_edges_and_dims_the_rest() {
+        let model = chain();
+        let buf = chain_buf(&model, &phase("3"));
+        let cell = |k, i| lane_cell(&buf, 120, 30, k, i);
+        let bold = |k: usize, i: usize| {
+            let c = cell(k, i);
+            assert!(
+                c.modifier.contains(Modifier::BOLD),
+                "row {k} char {i}: {c:?}"
+            );
+            assert!(
+                !c.modifier.contains(Modifier::DIM),
+                "row {k} char {i}: {c:?}"
+            );
+            assert_eq!(c.fg, LANE_PALETTE[(i / 2) % 5], "row {k} char {i}");
+        };
+        let dimmed = |k: usize, i: usize| {
+            let c = cell(k, i);
+            assert!(
+                c.modifier.contains(Modifier::DIM),
+                "row {k} char {i}: {c:?}"
+            );
+            assert!(
+                !c.modifier.contains(Modifier::BOLD),
+                "row {k} char {i}: {c:?}"
+            );
+        };
+        // 1 -> 3 keeps its hue although 1 is Done.
+        bold(CHAIN_ROW_2, 0);
+        for i in [0, 1, 3, 4] {
+            bold(CHAIN_FORK, i);
+        }
+        bold(CHAIN_ROW_4, 4);
+        // The unrelated 2 -> 6 lane.
+        dimmed(CHAIN_FORK, 2);
+        dimmed(CHAIN_ROW_4, 2);
+        dimmed(CHAIN_ROW_5, 2);
+        // The markers sit at ` {mark} ` right after the lane column.
+        let cols = RoadmapView {
+            model: &model,
+            cursor: None,
+        }
+        .columns(80, LANE_CAP_WIDE);
+        let mark = |k| lane_cell(&buf, 120, 30, k, cols.lane + 1);
+        assert_eq!(mark(1).symbol(), MARK_DEP);
+        assert_eq!(mark(1).fg, Color::Cyan);
+        for k in [CHAIN_ROW_4, CHAIN_ROW_5] {
+            assert_eq!(mark(k).symbol(), MARK_UNBLOCKS);
+            assert_eq!(mark(k).fg, Color::Magenta);
+        }
+        for i in 0..cols.lane + 6 {
+            assert!(
+                cell(CHAIN_ROW_3, i).modifier.contains(Modifier::REVERSED),
+                "char {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_band_cursor_bolds_and_dims_nothing() {
+        let model = chain();
+        let buf = chain_buf(&model, &band_cursor(&model));
+        let chars = chain_lane_chars(&model);
+        assert!(chars.len() >= 10, "{chars:?}");
+        for (k, i, link) in chars {
+            let c = lane_cell(&buf, 120, 30, k, i);
+            assert!(
+                !c.modifier.intersects(Modifier::BOLD | Modifier::DIM),
+                "row {k} char {i}: {c:?}"
+            );
+            let owner_done =
+                link.is_some_and(|l| model.phases[l.owner].status == PhaseStatus::Done);
+            let want = if owner_done {
+                Color::DarkGray
+            } else {
+                LANE_PALETTE[(i / 2) % 5]
+            };
+            assert_eq!(c.fg, want, "row {k} char {i}");
+        }
+    }
+
+    /// `(char, style)` for each cell of `line`.
+    fn line_cells(line: &Line<'_>) -> Vec<(char, Style)> {
+        line.spans
+            .iter()
+            .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+            .collect()
+    }
+
+    #[test]
+    fn no_color_drops_the_lane_hue_but_keeps_status_and_weight() {
+        let model = chain();
+        let view = RoadmapView {
+            model: &model,
+            cursor: None,
+        };
+        let w = 80;
+        let cols = view.columns(w, LANE_CAP_WIDE);
+        let ctx = LaneCtx {
+            selected: Some(2),
+            palette: false,
+        };
+        assert_eq!(model.phases[2].id, "3");
+        let (fork, _) = view.row_line(&model.rows[CHAIN_FORK], false, ctx, &cols, w);
+        let fork = line_cells(&fork);
+        for (i, &(c, style)) in fork.iter().take(5).enumerate() {
+            assert_ne!(c, ' ', "{fork:?}");
+            assert!(
+                style.fg.is_none_or(|fg| !LANE_PALETTE.contains(&fg)),
+                "char {i}: {style:?}"
+            );
+            if i != 2 {
+                assert!(style.add_modifier.contains(Modifier::BOLD), "char {i}");
+            }
+        }
+        let (row3, _) = view.row_line(&model.rows[CHAIN_ROW_3], false, ctx, &cols, w);
+        let row3 = line_cells(&row3);
+        let (glyph, style) = row3[0];
+        assert_eq!(glyph.to_string(), PhaseStatus::Active.glyph());
+        assert_eq!(style.fg, Some(Color::Yellow));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        for &(c, style) in row3.iter().skip(1).take(cols.lane - 1) {
+            assert!(
+                style.fg.is_none_or(|fg| !LANE_PALETTE.contains(&fg)),
+                "{c}: {style:?}"
+            );
+        }
+        // The 2 -> 6 lane on the 3 row is off the chain and owned by a Done
+        // phase: DIM, no hue.
+        assert_eq!(row3[2].1.fg, None);
+        assert!(row3[2].1.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn the_blocked_glyph_is_red_and_not_bold() {
+        let blocked = glyph_style(PhaseStatus::Blocked);
+        assert_eq!(blocked.fg, Some(Color::Red));
+        assert!(!blocked.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(glyph_style(PhaseStatus::Done).fg, Some(Color::DarkGray));
+        let active = glyph_style(PhaseStatus::Active);
+        assert_eq!(active.fg, Some(Color::Yellow));
+        assert!(active.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(glyph_style(PhaseStatus::Ready).fg, Some(Color::Green));
+        assert_eq!(glyph_style(PhaseStatus::Unmerged).fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn the_overflow_column_draws_dark_gray() {
+        let model = eight_lanes();
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, Some(&phase("1")), 80, 40, &mut state);
+        let (list, _) = panes(Rect::new(0, 0, 80, 40));
+        let mut seen = 0;
+        for y in list.y..list.bottom() {
+            for x in list.x..list.right() {
+                let c = buf.cell((x, y)).expect("cell");
+                if c.symbol() == LANE_OVERFLOW {
+                    seen += 1;
+                    assert_eq!(c.fg, Color::DarkGray, "({x}, {y})");
+                }
+            }
+        }
+        assert!(seen > 0, "{:#?}", rect_text(&buf, list));
     }
 }
