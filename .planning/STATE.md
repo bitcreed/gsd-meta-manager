@@ -5,10 +5,10 @@ current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
 stopped_at: v1.11.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-10-01T04:30:00.000Z"
+last_updated: "2026-10-07T03:27:46.052Z"
 last_activity: 2026-09-30
 last_activity_desc: v1.11.0 released — Direct Project Launch
-state_head: 333d1636ebb385f1ebf7d561d0a470e5ef94975e
+state_head: 8e29ddf85c07b35e328c9208630c5864189183fc
 progress:
   total_phases: 10
   completed_phases: 7
@@ -160,7 +160,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-30 - Completed quick task 260930-vvk: positional project target on CLI opens the TUI directly in that project view
+Last activity: 2026-10-06 - Completed quick task 261006-ujx: Roadmap tab rounded lane curves and ANSI colour; shared LANE_PALETTE
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -611,6 +611,7 @@ Recent decisions affecting current work:
 | 261006-editor | Browser file cache reloads after `$EDITOR` exits (`App::refresh_after_editor`) | 2026-10-06 | e90be67 | [261006-editor-cache-reload](./quick/261006-editor-cache-reload/) |
 | 261006-cfr | Config `/` filter keeps the row under edit visible; remove dead `from_defaults` layering | 2026-10-06 | c3c9d95 | [261006-cfr](./quick/261006-cfr-config-filter-edit-and-dead-defaults/) |
 | 261006-cpp | Create-project confirm uses the shared Yes/No popup (default Yes); click on [ Yes ]/[ No ] works on all four confirm popups | 2026-10-06 | aa34fde | [261006-cpp-create-confirm-popup-mouse](./quick/261006-cpp-create-confirm-popup-mouse/) |
+| 261006-ujx | Roadmap tab: rounded lane curves and ANSI colour per UX spec; shared LANE_PALETTE | 2026-10-06 | 8e29ddf | [261006-ujx-roadmap-tab-rounded-lane-curves-and-ansi](./quick/261006-ujx-roadmap-tab-rounded-lane-curves-and-ansi/) |
 
 ## Session Continuity
 
