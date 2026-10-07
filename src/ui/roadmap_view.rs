@@ -1803,7 +1803,7 @@ mod tests {
     }
 
     /// Lane glyphs and status glyphs: what must never appear past the cap.
-    const LANE_GLYPHS: &str = "│─├┤┬┴┐┌┘└┼●◉○◌";
+    const LANE_GLYPHS: &str = "│─├┤┬┴╮╭╯╰┼●◉○◌";
 
     /// A row's cells inside the list border and padding (both sides).
     fn body(row: &str) -> Vec<char> {
@@ -2653,14 +2653,6 @@ mod tests {
 
     fn chain() -> RoadmapModel {
         let model = build(CHAIN, CHAIN_BANDS, &Extras::default());
-        let fork = format!(
-            "{}{}{}{}{}",
-            roadmap_graph::LANE_TEE_RIGHT,
-            roadmap_graph::LANE_HORIZONTAL,
-            roadmap_graph::LANE_CROSS,
-            roadmap_graph::LANE_HORIZONTAL,
-            roadmap_graph::LANE_DOWN_LEFT,
-        );
         assert_eq!(
             roadmap_graph::lane_text(&model),
             vec![
@@ -2668,7 +2660,7 @@ mod tests {
                 "o         1",
                 "\u{2502} o       2",
                 "o \u{2502}       3",
-                fork.as_str(),
+                "\u{251C}\u{2500}\u{253C}\u{2500}\u{256E}",
                 "o \u{2502} \u{2502}     4",
                 "  \u{2502} o     5",
                 "  o       6",

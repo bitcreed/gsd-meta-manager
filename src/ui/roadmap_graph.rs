@@ -251,15 +251,17 @@ pub const LANE_TEE_LEFT: &str = "\u{2524}";
 pub const LANE_TEE_DOWN: &str = "\u{252C}";
 /// Lane junction `┴`: an intermediate merged lane.
 pub const LANE_TEE_UP: &str = "\u{2534}";
-/// Lane junction `┐`: the far right end of a fork.
-pub const LANE_DOWN_LEFT: &str = "\u{2510}";
-/// Lane junction `┌`: the far left end of a fork.
-pub const LANE_DOWN_RIGHT: &str = "\u{250C}";
-/// Lane junction `┘`: the far right end of a merge.
-pub const LANE_UP_LEFT: &str = "\u{2518}";
-/// Lane junction `└`: a merge ending to the right (not produced by the
+/// Lane junction `╮`: the far right end of a fork. The four lane corners are
+/// rounded, the git-graph style shared with the Git tab's commit graph
+/// (quick 261006-ujx).
+pub const LANE_DOWN_LEFT: &str = "\u{256E}";
+/// Lane junction `╭`: the far left end of a fork.
+pub const LANE_DOWN_RIGHT: &str = "\u{256D}";
+/// Lane junction `╯`: the far right end of a merge.
+pub const LANE_UP_LEFT: &str = "\u{256F}";
+/// Lane junction `╰`: a merge ending to the right (not produced by the
 /// assigner, which always merges into the lowest lane; kept for totality).
-pub const LANE_UP_RIGHT: &str = "\u{2514}";
+pub const LANE_UP_RIGHT: &str = "\u{2570}";
 /// Lane junction `┼`: a horizontal crossing an unrelated active lane.
 pub const LANE_CROSS: &str = "\u{253C}";
 
@@ -1564,7 +1566,7 @@ mod tests {
                 "o         19",
                 "o         20",
                 "o         21",
-                "├─┐",
+                "├─╮",
                 "o │       22",
                 "  o       23",
             ]
@@ -1677,14 +1679,14 @@ mod tests {
         "          [M3]",
         "o         8",
         "o         9",
-        "├─┐",
+        "├─╮",
         "o │       10",
         "│ o       11",
-        "├─┘",
+        "├─╯",
         "o         12",
-        "├─┐",
+        "├─╮",
         "o │       13",
-        "├─┼─┐",
+        "├─┼─╮",
         "o │ │     14",
         "o │ │     15",
         "  │ │     [M4]",
@@ -1861,12 +1863,12 @@ mod tests {
             "          [M3]",
             "o         8",
             "o         9",
-            "├─┐",
+            "├─╮",
             "o │       10",
             "│ o       11",
-            "├─┘",
+            "├─╯",
             "o         12",
-            "├─┐",
+            "├─╮",
             "o │       13",
             "o │       14",
             "o │       15",
@@ -1992,7 +1994,7 @@ mod tests {
             "│ │ │ │ o 12",
             "│ │ │ │ │ o13",
             "│ │ │ │ │ │[v3]",
-            "├─┴─┴─┴─┴─┘",
+            "├─┴─┴─┴─┴─╯",
             "o         14",
             "o         15",
             "  o       16",
@@ -2224,7 +2226,7 @@ mod tests {
                 "o         1",
                 "│ o       2",
                 "│ │ o     3",
-                "├─┴─┘",
+                "├─┴─╯",
                 "o         4",
             ]
         );
@@ -2358,7 +2360,7 @@ mod tests {
             vec![
                 "o         1",
                 "  o       2",
-                format!("{LANE_DOWN_RIGHT}{LANE_HORIZONTAL}{LANE_TEE_LEFT}").as_str(),
+                "\u{256D}\u{2500}\u{2524}",
                 "│ o       3",
                 "o         4",
             ]
@@ -2367,6 +2369,63 @@ mod tests {
         assert_eq!(links[0], link(&model, "2", "4"));
         assert_eq!(links[1], link(&model, "2", "4"));
         assert_eq!(links[2], link(&model, "2", "3"));
+    }
+
+    #[test]
+    fn lane_corners_are_rounded() {
+        assert_eq!(LANE_DOWN_RIGHT, "\u{256D}");
+        assert_eq!(LANE_DOWN_LEFT, "\u{256E}");
+        assert_eq!(LANE_UP_LEFT, "\u{256F}");
+        assert_eq!(LANE_UP_RIGHT, "\u{2570}");
+        assert_eq!(junction(false, true, false, true), LANE_DOWN_RIGHT);
+        assert_eq!(junction(true, false, false, true), LANE_DOWN_LEFT);
+        assert_eq!(junction(true, false, true, false), LANE_UP_LEFT);
+        assert_eq!(junction(false, true, true, false), LANE_UP_RIGHT);
+        // The tees, the cross and the straights keep their code points.
+        assert_eq!(LANE_TEE_RIGHT, "\u{251C}");
+        assert_eq!(LANE_TEE_LEFT, "\u{2524}");
+        assert_eq!(LANE_TEE_DOWN, "\u{252C}");
+        assert_eq!(LANE_TEE_UP, "\u{2534}");
+        assert_eq!(LANE_CROSS, "\u{253C}");
+        assert_eq!(LANE_VERTICAL, "\u{2502}");
+        assert_eq!(LANE_HORIZONTAL, "\u{2500}");
+    }
+
+    #[test]
+    fn no_laid_lane_uses_a_square_corner() {
+        const SQUARE: [char; 4] = ['\u{250C}', '\u{2510}', '\u{2514}', '\u{2518}'];
+        let models = [
+            plain(DAILY_VOW),
+            plain(SENTRIQ),
+            plain(TTBOOK),
+            build(BOOKLY, BOOKLY_BANDS, &HashSet::new()),
+            build(CROSS_FOLD, CROSS_FOLD_BANDS, &HashSet::new()),
+            build(CROSS_FOLD, CROSS_FOLD_BANDS, &toggles(&[BandKey::Shipped])),
+            plain(&[
+                ("1", "", &[], F),
+                ("2", "", &[], F),
+                ("3", "", &[], F),
+                ("4", "", &["1", "2", "3"], F),
+            ]),
+            plain(&[
+                ("1", "", &[], F),
+                ("2", "", &[], F),
+                ("3", "", &["2"], F),
+                ("4", "", &["2"], F),
+            ]),
+        ];
+        let mut corners = 0;
+        for model in &models {
+            for row in &model.rows {
+                let (lanes, _) = lanes_and_links(row);
+                assert!(!lanes.contains(SQUARE), "{lanes:?}");
+                corners += lanes
+                    .chars()
+                    .filter(|c| "\u{256D}\u{256E}\u{256F}\u{2570}".contains(*c))
+                    .count();
+            }
+        }
+        assert!(corners > 0, "the fixtures draw rounded corners");
     }
 
     #[test]

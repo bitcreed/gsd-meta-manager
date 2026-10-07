@@ -12048,31 +12048,12 @@ fn select_first_visible(cache: &mut super::ProjectViewCache) {
 /// `defaults_editing` was set.
 pub(super) const DEFAULTS_EDIT_BRANCH_TOKEN: &str = "(Enter to save, Esc to cancel)";
 
-/// The index and value of the first `ConfigValueKind::String` row of a cache's
-/// Defaults list — **for the render-escape probe, and DERIVED rather than
-/// spelled** (21-30 T1).
-///
-/// The probe's string-edit arrange has to set `defaults_editing` to an index
-/// the render will actually dispatch on, and seed the buffer with the value the
-/// operator would be editing. Both must come from the config the fixture
-/// populated: 21-28 measured that an arrange which spells the untrusted value
-/// itself puts that value in the chrome baseline too, so the arrival difference
-/// is zero and the state reports "did not arrive" while visibly leaking. This
-/// returns `None` for a cache with no config — which is exactly what
-/// `chrome_ctx` is — so the baseline draws chrome only.
-/// Palette for the git-log lane column; a lane keeps its colour on every row.
-const GRAPH_PALETTE: [Color; 6] = [
-    Color::Magenta,
-    Color::Yellow,
-    Color::Cyan,
-    Color::Green,
-    Color::Red,
-    Color::Blue,
-];
-
 /// Split a lane column (`lane glyph, separator, lane glyph, ...`) into one
-/// span per cell, coloured by lane index, plus the trailing gap.
+/// span per cell, coloured by lane index from the palette shared with the
+/// Roadmap lanes ([`crate::ui::LANE_PALETTE`]; a lane keeps its colour on
+/// every row), plus the trailing gap.
 fn graph_spans(graph: &str) -> Vec<Span<'static>> {
+    use crate::ui::LANE_PALETTE;
     let mut spans: Vec<Span<'static>> = graph
         .chars()
         .enumerate()
@@ -12080,7 +12061,7 @@ fn graph_spans(graph: &str) -> Vec<Span<'static>> {
             let lane = i / 2;
             Span::styled(
                 c.to_string(),
-                Style::default().fg(GRAPH_PALETTE[lane % GRAPH_PALETTE.len()]),
+                Style::default().fg(LANE_PALETTE[lane % LANE_PALETTE.len()]),
             )
         })
         .collect();
@@ -12098,14 +12079,43 @@ mod graph_spans_tests {
         assert_eq!(spans[0].style.fg, Some(Color::Magenta));
         assert_eq!(spans[2].style.fg, Some(Color::Yellow));
         assert_eq!(spans[4].style.fg, Some(Color::Cyan));
-        // 7th lane wraps to the first colour.
-        let wide = "\u{2502} ".repeat(7);
+        // The 6th lane wraps to the first colour (a five-colour cycle).
+        let wide = "\u{2502} ".repeat(6);
         let spans = graph_spans(&wide);
-        assert_eq!(spans[12].style.fg, Some(Color::Magenta));
+        assert_eq!(spans[10].style.fg, Some(Color::Magenta));
         assert_eq!(spans.last().unwrap().content, " ");
+    }
+
+    /// Quick 261006-ujx: the Git tab and the Roadmap share one palette, and
+    /// it has no Red (Red marks Blocked and Stalled).
+    #[test]
+    fn graph_spans_use_the_shared_lane_palette() {
+        use crate::ui::LANE_PALETTE;
+        let wide = "\u{2502} ".repeat(12);
+        let spans = graph_spans(&wide);
+        for (i, span) in spans.iter().take(wide.chars().count()).enumerate() {
+            assert_eq!(
+                span.style.fg,
+                Some(LANE_PALETTE[(i / 2) % LANE_PALETTE.len()]),
+                "char {i}"
+            );
+        }
+        assert!(!LANE_PALETTE.contains(&Color::Red));
     }
 }
 
+/// The index and value of the first `ConfigValueKind::String` row of a cache's
+/// Defaults list — **for the render-escape probe, and DERIVED rather than
+/// spelled** (21-30 T1).
+///
+/// The probe's string-edit arrange has to set `defaults_editing` to an index
+/// the render will actually dispatch on, and seed the buffer with the value the
+/// operator would be editing. Both must come from the config the fixture
+/// populated: 21-28 measured that an arrange which spells the untrusted value
+/// itself puts that value in the chrome baseline too, so the arrival difference
+/// is zero and the state reports "did not arrive" while visibly leaking. This
+/// returns `None` for a cache with no config — which is exactly what
+/// `chrome_ctx` is — so the baseline draws chrome only.
 #[cfg(test)]
 pub(super) fn first_string_entry(cache: &super::ProjectViewCache) -> Option<(usize, String)> {
     entries_for_cache(cache)
