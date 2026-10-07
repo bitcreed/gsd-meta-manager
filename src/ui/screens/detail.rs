@@ -2679,6 +2679,9 @@ fn status_color(category: &StatusCategory) -> Color {
     }
 }
 
+/// Owned (key, label, badge, counts) tuple for a worktree-only ghost node.
+type GhostNode = (String, String, String, Option<(u32, u32)>);
+
 /// Compute disk-inferred status suffix spans for a phase line, e.g. " [Executing 2/3]".
 /// When `show_badges` is true, appends a [verified] or [inferred] badge based on artifact presence.
 ///
@@ -2887,7 +2890,7 @@ pub(crate) fn roadmap_model_for(
         .cloned()
         .chain(state.shipped_phases.iter().map(|p| phase_key(&p.number)))
         .collect();
-    let ghosts: Vec<(String, String, String, Option<(u32, u32)>)> = view
+    let ghosts: Vec<GhostNode> = view
         .map(|v| {
             v.worktree_phases
                 .iter()

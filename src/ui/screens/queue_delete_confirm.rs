@@ -105,7 +105,7 @@ impl Screen for QueueDeleteConfirmScreen {
     }
 
     fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
-        confirm_popup::click_as_key(&mut self.popup, input)
+        confirm_popup::click_as_key(&self.popup, input)
             .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
     }
 
