@@ -5,10 +5,10 @@ current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
 stopped_at: v1.12.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-10-07T03:27:46.052Z"
+last_updated: "2026-10-11T17:47:20.804Z"
 last_activity: 2026-10-06
 last_activity_desc: v1.12.0 released — Lanes, Popups and Config Polish
-state_head: 8e29ddf85c07b35e328c9208630c5864189183fc
+state_head: 0c525f6543e79dd8ddada53f41cbf69dca940991
 progress:
   total_phases: 10
   completed_phases: 7
@@ -619,6 +619,7 @@ Recent decisions affecting current work:
 | 261006-cfr | Config `/` filter keeps the row under edit visible; remove dead `from_defaults` layering | 2026-10-06 | c3c9d95 | [261006-cfr](./quick/261006-cfr-config-filter-edit-and-dead-defaults/) |
 | 261006-cpp | Create-project confirm uses the shared Yes/No popup (default Yes); click on [ Yes ]/[ No ] works on all four confirm popups | 2026-10-06 | aa34fde | [261006-cpp-create-confirm-popup-mouse](./quick/261006-cpp-create-confirm-popup-mouse/) |
 | 261006-ujx | Roadmap tab: rounded lane curves and ANSI colour per UX spec; shared LANE_PALETTE | 2026-10-06 | 8e29ddf | [261006-ujx-roadmap-tab-rounded-lane-curves-and-ansi](./quick/261006-ujx-roadmap-tab-rounded-lane-curves-and-ansi/) |
+| 52 | Auto-register unregistered GSD project on 'gsd-meta-manager .' | 2026-10-11 | 0c525f6 | — |
 
 ## Session Continuity
 
