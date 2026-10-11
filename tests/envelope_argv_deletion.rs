@@ -299,7 +299,8 @@ fn refuses(command: &str, reason: &str) {
     let answer = ask(envelope.path(), command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "`{command}` must be REFUSED. It was measured at exit 0 against the BUILT BINARY at \
          this file's base commit, with a fresh envelope root and a walk after, and confirmed \
          under a bash shim to assemble the dangerous command. stdout: {} stderr: {}\n\
@@ -446,7 +447,10 @@ fn in_namespace_repo() -> TempDir {
         &work,
         &["remote", "add", "origin", upstream.to_str().unwrap()],
     );
-    git_ok(&work, &["push", "-q", "-u", "origin", "gsd-auto/alpha/work"]);
+    git_ok(
+        &work,
+        &["push", "-q", "-u", "origin", "gsd-auto/alpha/work"],
+    );
 
     dir
 }
@@ -1034,7 +1038,9 @@ fn the_redirected_in_namespace_push_is_no_longer_falsely_refused_because_19_19_m
         control.stdout, control.stderr
     );
     assert!(
-        control.reason().contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
+        control
+            .reason()
+            .contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
         "and under the namespace identifier. Got: {}",
         control.reason()
     );
@@ -1120,7 +1126,9 @@ fn the_continued_in_namespace_push_is_no_longer_falsely_refused_because_19_19_mo
         control.stdout, control.stderr
     );
     assert!(
-        control.reason().contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
+        control
+            .reason()
+            .contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
         "and under the namespace identifier. Got: {}",
         control.reason()
     );
@@ -1317,7 +1325,10 @@ fn rule_b_still_reports_a_severed_head_as_not_a_command_position() {
              \n  last    : {:?}\n\
              \nThe correct response is to restore the flush flag for `}}` and `)`, never to \
              delete this test.",
-            last.tokens.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            last.tokens
+                .iter()
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -1381,9 +1392,8 @@ fn round_4s_literalness_bit_is_non_vacuous_and_is_right_about_a_redirection_word
          \n  tokens: {unreadable_tokens:?}"
     );
 
-    let redirected =
-        policy::split_segments_with_heads("git >/dev/null push --force origin main")
-            .expect("`git >/dev/null push --force origin main` splits into segments");
+    let redirected = policy::split_segments_with_heads("git >/dev/null push --force origin main")
+        .expect("`git >/dev/null push --force origin main` splits into segments");
     let redirected_tokens: Vec<(String, bool)> = redirected
         .iter()
         .flat_map(|s| s.tokens.iter())
@@ -1437,7 +1447,10 @@ fn a_redirection_operator_is_not_a_separator_and_this_round_must_not_make_it_one
         "`>` must NOT become a separator. Splitting there would hide the command being \
          redirected, which is worse than the defect it would close."
     );
-    assert!(!policy::is_separator("<"), "`<` must NOT become a separator");
+    assert!(
+        !policy::is_separator("<"),
+        "`<` must NOT become a separator"
+    );
     assert!(
         !policy::is_separator(">>"),
         "`>>` must NOT become a separator"

@@ -210,7 +210,10 @@ mod tests {
     #[test]
     fn dir_names_split_on_a_numeric_id() {
         assert_eq!(split_dir("11.1-hotfix"), Some(("11.1", "hotfix")));
-        assert_eq!(split_dir("12-intake-throttle"), Some(("12", "intake-throttle")));
+        assert_eq!(
+            split_dir("12-intake-throttle"),
+            Some(("12", "intake-throttle"))
+        );
         assert_eq!(split_dir("notes-x"), None);
         assert_eq!(split_dir("12"), None);
     }

@@ -428,7 +428,10 @@ fn in_namespace_repo() -> TempDir {
         &work,
         &["remote", "add", "origin", upstream.to_str().unwrap()],
     );
-    git_ok(&work, &["push", "-q", "-u", "origin", "gsd-auto/alpha/work"]);
+    git_ok(
+        &work,
+        &["push", "-q", "-u", "origin", "gsd-auto/alpha/work"],
+    );
 
     dir
 }
@@ -1068,7 +1071,8 @@ fn after_19_17_a_second_gh_placeholder_creation_in_one_run_is_refused_under_the_
 
     let second = ask_in(envelope.path(), None, command);
     assert_eq!(
-        second.code, 2,
+        second.code,
+        2,
         "the SECOND placeholder-form creation in the SAME envelope root must be REFUSED \
          under the SAFE-06 cap. If this is 0 the creation was never counted, which is \
          `T-19-93` exactly: the cap bypassed rather than exceeded, with no second carrier \
@@ -1166,7 +1170,10 @@ fn after_19_17_a_brace_expansion_in_an_operand_of_a_governed_command_is_a_pinned
     //
     // Both measured exit 0 today. Both twins measured exit 0 today and asserted
     // permitted in `the_permitted_twins_of_every_pinned_cost_row_stay_permitted`.
-    refuses("git commit -m {a,b}", policy::REASON_ENVELOPE_ASSERTION_FAILED);
+    refuses(
+        "git commit -m {a,b}",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
     refuses(
         "git add {src,tests}/x.rs",
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
@@ -1282,7 +1289,10 @@ fn the_assignment_value_splice_is_already_refused_for_another_reason_and_is_an_i
     //
     // Its would-be twin `FOO=ab git status` is measured PERMITTED today and is
     // asserted below, so the interaction is bounded from both sides.
-    refuses("FOO={a,b} git status", policy::REASON_ENVELOPE_ASSERTION_FAILED);
+    refuses(
+        "FOO={a,b} git status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
     permits("FOO=ab git status");
 }
 
@@ -1411,7 +1421,10 @@ fn the_assignment_value_splice_stays_an_interaction_after_the_rule_and_not_a_new
         "and clause 2(a) reaches the same segment. Segments: {segments:?}"
     );
 
-    refuses("FOO={a,b} git status", policy::REASON_ENVELOPE_ASSERTION_FAILED);
+    refuses(
+        "FOO={a,b} git status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
     permits("FOO=ab git status");
 }
 
@@ -1451,7 +1464,10 @@ fn a_literal_brace_pair_keeps_its_verdict_on_both_sides_of_the_fix() {
     // guard refuses `reflog delete HEAD@{0}`. **The verdict must be identical
     // either way** — a change that absorbed literal braces while LOSING a
     // refusal would show up here and nowhere else in the suite.
-    refuses("git reflog delete HEAD@{0}", policy::REASON_FORCE_PUSH_BLOCKED);
+    refuses(
+        "git reflog delete HEAD@{0}",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
 
     // The permitted side of the same brace pair: reading the reflog is the first
     // thing a driven run does when something has gone wrong.
@@ -1545,7 +1561,10 @@ fn rule_b_still_reports_a_severed_head_as_not_a_command_position() {
              \n**The correct response is to restore the flush flag for `}}` and `)`, never \
              to delete this test.**",
             segments.len(),
-            last.tokens.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            last.tokens
+                .iter()
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>(),
         );
     }
 }
@@ -1642,7 +1661,10 @@ fn the_t_19_91_operand_rows_reproduce_and_this_plan_leaves_them_open() {
 
     // The two arms that DO fail closed, pinned so the registration's boundary
     // stays honest in both directions.
-    refuses("git symbolic-ref HEAD $R", policy::REASON_FORCE_PUSH_BLOCKED);
+    refuses(
+        "git symbolic-ref HEAD $R",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
 }
 
 // ===========================================================================

@@ -505,7 +505,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stop_whose_record_names_another_groups_pgid_signals_nothing_and_the_decoy_survives() {
+    async fn a_stop_whose_record_names_another_groups_pgid_signals_nothing_and_the_decoy_survives()
+    {
         use std::os::unix::process::CommandExt;
 
         const RUN_ID: &str = "2026-07-29T12-00-00Z-decoy";

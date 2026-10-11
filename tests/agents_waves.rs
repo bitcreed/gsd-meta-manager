@@ -510,7 +510,10 @@ fn per_plan_state_without_wave_metadata_matches_the_totals() {
         .collect();
     assert_eq!(
         ids,
-        vec![("13-01-alpha", PlanState::Done), ("13-02", PlanState::Running)],
+        vec![
+            ("13-01-alpha", PlanState::Done),
+            ("13-02", PlanState::Running)
+        ],
         "the summarized stem when one exists, else the PlanRef label"
     );
     let count = |s: PlanState| view.unwaved_plans.iter().filter(|p| p.state == s).count() as u32;

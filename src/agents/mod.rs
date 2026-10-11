@@ -42,8 +42,8 @@ pub mod adapters;
 pub mod fixers;
 pub mod processes;
 pub mod unmerged;
-pub mod worktree_phases;
 pub mod waves;
+pub mod worktree_phases;
 pub mod worktrees;
 
 use std::collections::HashMap;

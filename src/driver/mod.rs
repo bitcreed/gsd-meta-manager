@@ -99,12 +99,12 @@ pub mod escalate;
 // platform attributes at all and its reads simply yield nothing off Linux —
 // rather than diverging from the module they copy. A `cfg` here would also gate
 // the reconciliation scan out of the TUI, which is cross-platform.
-pub mod liveness;
-pub mod reconcile;
 #[cfg(unix)]
 pub mod kill;
+pub mod liveness;
 #[cfg(unix)]
 pub mod lock;
+pub mod reconcile;
 #[cfg(unix)]
 pub mod run;
 #[cfg(unix)]
@@ -468,9 +468,9 @@ impl DriveArgs {
             // derive the refusal from a string the caller never typed.
             match journal::parse_approval_token(raw.as_raw_for_logic_only()) {
                 Err(err) => DriveError::PlanApprovalMalformed(err),
-                Ok(_) => DriveError::PlanApprovalMalformed(
-                    journal::ApprovalTokenError::SeparatorAbsent,
-                ),
+                Ok(_) => {
+                    DriveError::PlanApprovalMalformed(journal::ApprovalTokenError::SeparatorAbsent)
+                }
             }
         })?;
 
@@ -780,9 +780,9 @@ fn preview_text(project: &DrivableProject, source: &CommandSource) -> String {
         CommandSource::Command(command) => {
             dry_run::render(&dry_run::build_report(project, command.as_str()))
         }
-        CommandSource::Routed(target_phase) => {
-            dry_run::render_scoped(&dry_run::build_routed_report(project, target_phase.as_str()))
-        }
+        CommandSource::Routed(target_phase) => dry_run::render_scoped(
+            &dry_run::build_routed_report(project, target_phase.as_str()),
+        ),
         CommandSource::Goal(goal) => {
             dry_run::render_scoped(&dry_run::build_goal_report(project, goal.as_str()))
         }
@@ -1585,9 +1585,9 @@ mod tests {
         args.run_id = None;
         args.dry_run = true;
 
-        drive(args, &config)
-            .await
-            .expect("a preview creates no run to identify, so the run-id refusal must not reach it");
+        drive(args, &config).await.expect(
+            "a preview creates no run to identify, so the run-id refusal must not reach it",
+        );
 
         // The inertness control, over the one directory this call could have
         // created. D-23's full zero-write property — including the git reflog —
@@ -1738,7 +1738,12 @@ mod tests {
         // legal invocation into an ambiguous one, and it must not WIN over one
         // either: precedence is command, then phase, then goal.
         assert_eq!(
-            command_source(Some(&visible("/gsd-progress")), None, Some(&visible("a goal"))).ok(),
+            command_source(
+                Some(&visible("/gsd-progress")),
+                None,
+                Some(&visible("a goal"))
+            )
+            .ok(),
             Some(CommandSource::Command(visible("/gsd-progress"))),
             "a goal beside --command is recorded text, not a second source"
         );
@@ -2521,9 +2526,7 @@ mod tests {
             CommandSource::Command(
                 payload::NonBlank::new("/gsd:progress").expect("a realistic command"),
             ),
-            CommandSource::Routed(
-                payload::NonBlank::new("20").expect("a realistic target phase"),
-            ),
+            CommandSource::Routed(payload::NonBlank::new("20").expect("a realistic target phase")),
             CommandSource::Goal(
                 payload::NonBlank::new("get phase 22 verified").expect("a realistic goal"),
             ),
@@ -2860,10 +2863,7 @@ mod tests {
                 ),
             ] {
                 assert!(
-                    matches!(
-                        DriveArgs::from_argv(raw),
-                        Err(DriveError::NoCommandSource)
-                    ),
+                    matches!(DriveArgs::from_argv(raw), Err(DriveError::NoCommandSource)),
                     "{label} must be refused, never promoted into a source the \
                      caller's precedence did not choose; blank={blank:?}"
                 );

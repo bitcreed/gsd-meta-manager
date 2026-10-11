@@ -85,11 +85,15 @@ impl RegisteredProject {
     /// the project under the wrong agent.
     pub fn runtime(
         &self,
-    ) -> Result<Option<crate::executor::runtime::AgentRuntime>, crate::executor::runtime::UnrecognizedRuntime>
-    {
+    ) -> Result<
+        Option<crate::executor::runtime::AgentRuntime>,
+        crate::executor::runtime::UnrecognizedRuntime,
+    > {
         self.extra
             .get(RUNTIME_KEY)
-            .map(|value| crate::executor::runtime::AgentRuntime::from_config_value(RUNTIME_KEY, value))
+            .map(|value| {
+                crate::executor::runtime::AgentRuntime::from_config_value(RUNTIME_KEY, value)
+            })
             .transpose()
     }
 }
@@ -363,12 +367,17 @@ impl Preferences {
     /// `Ok(None)` when the key is absent; an unrecognized value is an `Err`.
     pub fn default_runtime(
         &self,
-    ) -> Result<Option<crate::executor::runtime::AgentRuntime>, crate::executor::runtime::UnrecognizedRuntime>
-    {
+    ) -> Result<
+        Option<crate::executor::runtime::AgentRuntime>,
+        crate::executor::runtime::UnrecognizedRuntime,
+    > {
         self.extra
             .get(DEFAULT_RUNTIME_KEY)
             .map(|value| {
-                crate::executor::runtime::AgentRuntime::from_config_value(DEFAULT_RUNTIME_KEY, value)
+                crate::executor::runtime::AgentRuntime::from_config_value(
+                    DEFAULT_RUNTIME_KEY,
+                    value,
+                )
             })
             .transpose()
     }
@@ -908,8 +917,8 @@ mod tests {
     #[test]
     fn mouse_preference_defaults_to_true_from_default_and_from_empty_json() {
         assert!(Preferences::default().mouse);
-        let empty: Config =
-            serde_json::from_str(r#"{"version":1,"projects":{},"preferences":{}}"#).expect("parses");
+        let empty: Config = serde_json::from_str(r#"{"version":1,"projects":{},"preferences":{}}"#)
+            .expect("parses");
         assert!(empty.preferences.mouse, "an absent key defaults to true");
         let off: Config =
             serde_json::from_str(r#"{"version":1,"projects":{},"preferences":{"mouse":false}}"#)
@@ -921,6 +930,11 @@ mod tests {
         save_config(&off, &path).expect("save");
         assert!(!load_config(&path).expect("load").preferences.mouse);
         // A missing file is the default config, mouse on.
-        assert!(load_config(&dir.path().join("absent.json")).expect("load").preferences.mouse);
+        assert!(
+            load_config(&dir.path().join("absent.json"))
+                .expect("load")
+                .preferences
+                .mouse
+        );
     }
 }

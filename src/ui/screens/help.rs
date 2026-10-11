@@ -86,7 +86,10 @@ const BADGE_LEGEND: [(&str, &str); 5] = [
     (BADGE_NEEDS_HUMAN, "waiting on a human"),
     (BADGE_PAUSED, "paused - a current (non-stale) HANDOFF"),
     (BADGE_EXTERNAL_JOB, "blocked on an external job, not stuck"),
-    (BADGE_SESSION, "an active Claude or Codex session in this directory"),
+    (
+        BADGE_SESSION,
+        "an active Claude or Codex session in this directory",
+    ),
 ];
 
 /// The four states an injected message can be in, with the honest gloss.
@@ -192,7 +195,9 @@ fn work_state_legend() -> Vec<(String, String)> {
         ),
         (
             format!("{WAVES_GLYPH_RUNNING} {LABEL_ACTIVE}"),
-            format!("after a {GLYPH_UNMERGED} hint: its worktree is still locked or has a live agent"),
+            format!(
+                "after a {GLYPH_UNMERGED} hint: its worktree is still locked or has a live agent"
+            ),
         ),
         (
             format!("{WAVES_GLYPH_RUNNING} running"),
@@ -972,7 +977,10 @@ mod tests {
                 !text.contains(&legend_form),
                 "the legend row {legend_form:?} survived:\n{text}"
             );
-            assert!(!text.contains(label), "the label {label:?} survived:\n{text}");
+            assert!(
+                !text.contains(label),
+                "the label {label:?} survived:\n{text}"
+            );
         }
         assert!(
             !text.contains(BADGE_DRIVEN.trim()),
@@ -1055,7 +1063,10 @@ mod tests {
             ("j / Down", "Move down"),
             ("b", "Open project detail on the backlog tab"),
             ("e", "Enqueue next action (detail view)"),
-            ("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
+            (
+                "Space",
+                "Roadmap tab: fold / unfold a milestone (detail view)",
+            ),
             ("q / Esc", "Quit / Back"),
         ] {
             let expected = row(key, description).spans[0].content.to_string();
@@ -1103,11 +1114,26 @@ mod tests {
         for experimental in [true, false] {
             let text = body_with(experimental);
             for (key, description) in [
-                ("j/k g/G", "Roadmap tab: move the phase cursor / top / bottom (detail view)"),
-                ("h / l", "Roadmap tab: jump to a dependency / to a phase it unblocks (detail view)"),
-                ("[ / ]", "Roadmap tab: previous / next phase in the same wave (detail view)"),
-                ("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
-                ("Enter", "Roadmap tab: open the phase in Phases (detail view)"),
+                (
+                    "j/k g/G",
+                    "Roadmap tab: move the phase cursor / top / bottom (detail view)",
+                ),
+                (
+                    "h / l",
+                    "Roadmap tab: jump to a dependency / to a phase it unblocks (detail view)",
+                ),
+                (
+                    "[ / ]",
+                    "Roadmap tab: previous / next phase in the same wave (detail view)",
+                ),
+                (
+                    "Space",
+                    "Roadmap tab: fold / unfold a milestone (detail view)",
+                ),
+                (
+                    "Enter",
+                    "Roadmap tab: open the phase in Phases (detail view)",
+                ),
             ] {
                 let expected = row(key, description).spans[0].content.to_string();
                 assert_eq!(
@@ -1199,7 +1225,9 @@ mod tests {
         for experimental in [true, false] {
             let text = body_with(experimental);
             assert_eq!(
-                text.lines().filter(|line| *line == "Detail View Navigation").count(),
+                text.lines()
+                    .filter(|line| *line == "Detail View Navigation")
+                    .count(),
                 1,
                 "experimental={experimental}: the heading must appear once:\n{text}"
             );
@@ -1260,7 +1288,10 @@ mod tests {
                 "experimental={experimental}: the heading must appear once:\n{text}"
             );
             for (key, description) in [
-                ("Right / Enter", "Phases tab: focus the Waves pane (detail view)"),
+                (
+                    "Right / Enter",
+                    "Phases tab: focus the Waves pane (detail view)",
+                ),
                 ("j/k g/G", "Waves pane: move the row cursor / top / bottom"),
                 ("PgUp / PgDn", "Waves pane: page the rows"),
                 (
@@ -1297,15 +1328,30 @@ mod tests {
                 "experimental={experimental}: the heading must appear once:\n{text}"
             );
             for (key, description) in [
-                ("Click", "Mouse: switch tab / sub-tab; select a row on any tab and focus its pane"),
-                ("Click value", "Mouse: Config tab: on the selected row, the same as Enter"),
-                ("Click \u{25B8}/\u{25BE}", "Mouse: Roadmap: fold / unfold that milestone band"),
+                (
+                    "Click",
+                    "Mouse: switch tab / sub-tab; select a row on any tab and focus its pane",
+                ),
+                (
+                    "Click value",
+                    "Mouse: Config tab: on the selected row, the same as Enter",
+                ),
+                (
+                    "Click \u{25B8}/\u{25BE}",
+                    "Mouse: Roadmap: fold / unfold that milestone band",
+                ),
                 (
                     "Double-click",
                     "Mouse: open the row, the same as Enter (Space on a Roadmap band)",
                 ),
-                ("Wheel", "Mouse: move the selection, or scroll the pane, under the pointer"),
-                ("M", "Toggle mouse capture on / off (dashboard and detail view)"),
+                (
+                    "Wheel",
+                    "Mouse: move the selection, or scroll the pane, under the pointer",
+                ),
+                (
+                    "M",
+                    "Toggle mouse capture on / off (dashboard and detail view)",
+                ),
                 (
                     "Shift+drag",
                     "Select and copy text while mouse capture is on (terminal-dependent)",

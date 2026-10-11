@@ -493,7 +493,10 @@ fn with_unmerged(forms: Vec<String>, n: u32) -> Vec<String> {
         return forms;
     }
     let mut out = Vec::with_capacity(forms.len() + 2);
-    out.push(format!("{} \u{b7} {GLYPH_UNMERGED}{n} {LABEL_UNMERGED}", forms[0]));
+    out.push(format!(
+        "{} \u{b7} {GLYPH_UNMERGED}{n} {LABEL_UNMERGED}",
+        forms[0]
+    ));
     out.extend(
         forms
             .iter()
@@ -650,7 +653,6 @@ impl AgentView {
 
     /// The ladder of a running view, before the unmerged count is appended.
     fn active_forms(&self) -> Vec<String> {
-
         let executor_mode = match &self.active_phase {
             Some(phase) => {
                 self.plan_total > 0
@@ -1428,7 +1430,11 @@ mod tests {
             ],
             ..AgentView::default()
         };
-        assert_eq!(idle.pending_unmerged(), 2, "both states and quick tasks count");
+        assert_eq!(
+            idle.pending_unmerged(),
+            2,
+            "both states and quick tasks count"
+        );
         assert_eq!(
             idle.summary_forms(),
             vec![format!("{HALF}2 unmerged"), format!("{HALF}2")]
@@ -1457,7 +1463,10 @@ mod tests {
             let view = derive(&scan, &st);
             assert_eq!(view.plan_state("13-02"), Some(PlanState::Finished));
             assert_eq!(view.plan_state("13-01"), Some(PlanState::Done));
-            assert_eq!(view.unmerged_plan("13-02-slug").map(|i| i.state), Some(state));
+            assert_eq!(
+                view.unmerged_plan("13-02-slug").map(|i| i.state),
+                Some(state)
+            );
             assert!(view.unmerged_plan("13-01").is_none());
             assert_eq!(view.unmerged_in_phase("13"), 1);
             assert_eq!(view.unmerged_in_phase("12"), 0);

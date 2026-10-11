@@ -443,7 +443,11 @@ mod tests {
 
         let mut unique = from_arms.clone();
         unique.dedup();
-        assert_eq!(unique.len(), from_arms.len(), "two arms share an identifier");
+        assert_eq!(
+            unique.len(),
+            from_arms.len(),
+            "two arms share an identifier"
+        );
     }
 
     #[test]
@@ -472,7 +476,10 @@ mod tests {
     #[test]
     fn a_cap_that_cannot_bind_is_refused_against_the_resolved_step_cap() {
         let two = resolved_step_cap(Some(2));
-        assert_eq!(two, 2, "the fixture must be running under a step cap of two");
+        assert_eq!(
+            two, 2,
+            "the fixture must be running under a step cap of two"
+        );
 
         // One below the resolved cap binds, so it is accepted.
         let budget = resolve(Some(1), two).expect("a cap below the step cap can bind");
@@ -484,7 +491,10 @@ mod tests {
                 .expect_err("a cap at or above the resolved step cap can never bind");
             assert_eq!(
                 refusal,
-                EscalationRefusal::CapCannotBind { cap, max_steps: two }
+                EscalationRefusal::CapCannotBind {
+                    cap,
+                    max_steps: two
+                }
             );
 
             let rendered = refusal.to_string();
@@ -603,7 +613,8 @@ mod tests {
         budget.used = u32::MAX;
         budget.record();
         assert_eq!(
-            budget.used, u32::MAX,
+            budget.used,
+            u32::MAX,
             "the count saturates; wrapping to zero would reset a spent budget"
         );
         assert_eq!(budget.remaining(), 0);
@@ -612,8 +623,7 @@ mod tests {
 
     #[test]
     fn a_named_but_refused_action_is_carried_whole_and_rendered_bounded() {
-        let long =
-            "/gsd-".to_string() + &"x".repeat(untrusted::MAX_UNTRUSTED_FIELD_CHARS * 2);
+        let long = "/gsd-".to_string() + &"x".repeat(untrusted::MAX_UNTRUSTED_FIELD_CHARS * 2);
         let action = NamedAction::Named(long.clone());
 
         assert_eq!(

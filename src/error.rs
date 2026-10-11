@@ -147,7 +147,11 @@ impl fmt::Display for SpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ProjectRootUnusable { root } => {
-                write!(f, "project root is not a usable directory: {}", root.display())
+                write!(
+                    f,
+                    "project root is not a usable directory: {}",
+                    root.display()
+                )
             }
             Self::Launch { program, source } => {
                 write!(f, "failed to launch `{program}`: {source}")
@@ -156,7 +160,10 @@ impl fmt::Display for SpawnError {
                 write!(f, "child {pipe} pipe was not available after spawn")
             }
             Self::PidUnavailable => {
-                write!(f, "child pid was not readable after spawn, so no process group could be recorded")
+                write!(
+                    f,
+                    "child pid was not readable after spawn, so no process group could be recorded"
+                )
             }
             Self::Capability(err) => write!(f, "{err}"),
             Self::InitNeverObserved => write!(
@@ -176,7 +183,10 @@ impl fmt::Display for SpawnError {
                 after.as_secs()
             ),
             Self::EncodeCommand { source } => {
-                write!(f, "failed to encode the command as a user message: {source}")
+                write!(
+                    f,
+                    "failed to encode the command as a user message: {source}"
+                )
             }
             Self::UnsupportedByRuntime { runtime, feature } => write!(
                 f,
@@ -322,7 +332,9 @@ impl CapabilityError {
         match self {
             Self::MissingCapabilities { missing, .. } => missing.clone(),
             Self::VersionBelowFloor { observed, floor } => {
-                vec![format!("claude_code_version >= {floor} (observed {observed})")]
+                vec![format!(
+                    "claude_code_version >= {floor} (observed {observed})"
+                )]
             }
             Self::VersionUnreadable { observed } => vec![format!(
                 "a readable claude_code_version (observed {})",
@@ -1053,10 +1065,9 @@ impl fmt::Display for DriveError {
             Self::PlanApprovalMalformed(err) => write!(f, "{err}"),
             Self::PlanApprovalStale(refusal) => write!(f, "{refusal}"),
             Self::OptIn(err) => write!(f, "{err}"),
-            Self::RuntimeUnrecognized(err) => write!(
-                f,
-                "{err}. The run was refused before anything was created"
-            ),
+            Self::RuntimeUnrecognized(err) => {
+                write!(f, "{err}. The run was refused before anything was created")
+            }
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
             Self::Journal { detail } => write!(f, "the run journal failed: {detail}"),
@@ -1343,8 +1354,10 @@ mod tests {
     fn the_debug_route_of_every_alias_carrying_variant_uses_this_projects_own_notation() {
         for (_, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
             for (name, _, debug) in alias_carrying_messages(hostile) {
-                let survivors: Vec<char> =
-                    debug.chars().filter(|c| is_invisible_formatting_char(*c)).collect();
+                let survivors: Vec<char> = debug
+                    .chars()
+                    .filter(|c| is_invisible_formatting_char(*c))
+                    .collect();
                 assert!(
                     survivors.is_empty(),
                     "{name}'s `{{:?}}` carries {survivors:?} from {hostile:?}. \

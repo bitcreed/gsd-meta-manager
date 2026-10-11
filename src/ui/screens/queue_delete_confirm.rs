@@ -1,8 +1,8 @@
+use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
 use super::{AppContext, Screen, ScreenAction};
 use crate::state_reader::{self, queue_md};
-use crossterm::event::{KeyCode, KeyModifiers};
-use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
 use crate::ui::mouse::MouseInput;
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -105,8 +105,9 @@ impl Screen for QueueDeleteConfirmScreen {
     }
 
     fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
-        confirm_popup::click_as_key(&self.popup, input)
-            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
+        confirm_popup::click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
     }
 
     fn name(&self) -> &str {
@@ -165,7 +166,11 @@ mod tests {
         t.draw(|f| screen.render(f, f.area(), ctx)).unwrap();
         let buf = t.backend().buffer();
         (0..30u16)
-            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -188,7 +193,10 @@ mod tests {
         let mut screen = QueueDeleteConfirmScreen::new("demo".into(), 0, "x".into());
         let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(act, ScreenAction::Pop));
-        assert!(ctx.status_message.is_none(), "No-by-default Enter must not delete");
+        assert!(
+            ctx.status_message.is_none(),
+            "No-by-default Enter must not delete"
+        );
     }
 
     #[test]
@@ -198,10 +206,18 @@ mod tests {
         let text = rows(&screen, &ctx);
         let click = |text: &str, label: &str| {
             let (column, row) = confirm_popup::locate(text, label).expect("button drawn");
-            MouseInput::Click { column, row, double: false }
+            MouseInput::Click {
+                column,
+                row,
+                double: false,
+            }
         };
         let act = screen.handle_mouse(
-            MouseInput::Click { column: 0, row: 0, double: false },
+            MouseInput::Click {
+                column: 0,
+                row: 0,
+                double: false,
+            },
             &mut ctx,
         );
         assert!(matches!(act, ScreenAction::None));
@@ -209,6 +225,9 @@ mod tests {
         assert!(matches!(act, ScreenAction::Pop));
         assert!(ctx.status_message.is_none(), "No must not delete");
         let act = screen.handle_mouse(click(&text, "[ Yes ]"), &mut ctx);
-        assert!(matches!(act, ScreenAction::Pop), "Yes confirms (the aliased project has no queue to edit)");
+        assert!(
+            matches!(act, ScreenAction::Pop),
+            "Yes confirms (the aliased project has no queue to edit)"
+        );
     }
 }

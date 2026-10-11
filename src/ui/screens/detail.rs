@@ -16,10 +16,10 @@ use crate::state_reader::git_ops;
 use crate::state_reader::queue_md;
 use crate::state_reader::{self, backlog};
 use crate::text::Untrusted;
+use crate::ui::mouse::MouseInput;
 use crate::ui::roadmap_graph;
 use crate::ui::roadmap_view;
 use crate::ui::roadmap_widget::RoadmapWidget;
-use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -315,7 +315,11 @@ pub(super) fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -
 fn backlog_scroll_by(offset: u16, delta: i32, vp: ViewportMetrics) -> u16 {
     let step = delta.unsigned_abs().min(u16::MAX as u32) as u16;
     if delta >= 0 {
-        clamp_scroll(offset.saturating_add(step), vp.total_lines, vp.visible_height)
+        clamp_scroll(
+            offset.saturating_add(step),
+            vp.total_lines,
+            vp.visible_height,
+        )
     } else {
         clamp_scroll(offset, vp.total_lines, vp.visible_height).saturating_sub(step)
     }
@@ -368,7 +372,8 @@ pub(super) fn git_row_budget(
     const AUTHOR_GAP: usize = 2;
     const CO_AUTHOR_FRAME: usize = 4; // "  (" plus ")"
 
-    let fixed = HIGHLIGHT + hash_cols + SEPARATOR + date_cols + SEPARATOR + AUTHOR_GAP + author_cols;
+    let fixed =
+        HIGHLIGHT + hash_cols + SEPARATOR + date_cols + SEPARATOR + AUTHOR_GAP + author_cols;
     let available = total_cols.saturating_sub(fixed);
 
     match co_author_cols {
@@ -660,7 +665,9 @@ fn tab_bar_widget(titles: Vec<Line<'static>>, select: usize, focus: DetailFocus)
             Line::from(spans)
         })
         .collect();
-    let mut highlight = Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan);
+    let mut highlight = Style::default()
+        .add_modifier(Modifier::BOLD)
+        .fg(Color::Cyan);
     if focus == DetailFocus::TabBar {
         highlight = highlight.add_modifier(Modifier::REVERSED);
     }
@@ -1026,7 +1033,10 @@ pub(crate) enum ClickTarget {
     FoldMarker(usize),
     /// A Config option row: its UNDERLYING entry index, and whether the click
     /// fell on the value part (quick 260926-kes, [inferred I-5]).
-    ConfigRow { index: usize, on_value: bool },
+    ConfigRow {
+        index: usize,
+        on_value: bool,
+    },
     /// An option of the open Config chooser ([inferred I-6]).
     DropdownOption(usize),
     /// Anywhere outside the open Config chooser ([inferred I-6]).
@@ -1274,7 +1284,10 @@ impl DetailScreen {
                 let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                 rect.width > 0 && text != TAB_OVERFLOW_LEFT && text != TAB_OVERFLOW_RIGHT
             })
-            .map(|(i, (_, rect))| TabRegion { rect, tab: active + i - select })
+            .map(|(i, (_, rect))| TabRegion {
+                rect,
+                tab: active + i - select,
+            })
             .collect();
         self.regions.borrow_mut().tabs = tabs;
     }
@@ -1556,7 +1569,9 @@ impl DetailScreen {
             let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
             let last = len - 1;
             let next = if delta < 0 {
-                cache.driver_selected_run.saturating_sub(delta.unsigned_abs())
+                cache
+                    .driver_selected_run
+                    .saturating_sub(delta.unsigned_abs())
             } else {
                 cache
                     .driver_selected_run
@@ -1582,8 +1597,7 @@ impl DetailScreen {
     /// Whether the Roadmap tab is showing its cursor list (the default
     /// view) rather than the box view, where the old scroll keys still scroll.
     fn roadmap_list_active(&self, ctx: &AppContext) -> bool {
-        !ctx
-            .view_cache
+        !ctx.view_cache
             .get(&self.alias)
             .is_some_and(|c| c.roadmap_box_view)
     }
@@ -1625,7 +1639,10 @@ impl DetailScreen {
             RoadmapNav::Page(forward) => {
                 let rows = self.roadmap_list_viewport.get().saturating_sub(1).max(1);
                 let page = isize::try_from(rows).unwrap_or(1);
-                (model.step(&current, if forward { page } else { -page }), None)
+                (
+                    model.step(&current, if forward { page } else { -page }),
+                    None,
+                )
             }
             RoadmapNav::First => (model.first_target().unwrap_or(current), None),
             RoadmapNav::Last => (model.last_target().unwrap_or(current), None),
@@ -1686,13 +1703,15 @@ impl DetailScreen {
                 cache.roadmap_fold_toggles.insert(band.clone());
             }
             // Folding a phase's band parks the cursor on that band row.
-            cache.roadmap_cursor = Some(if matches!(cursor, CursorTarget::Phase(_))
-                && roadmap_graph::is_folded(&band, &cache.roadmap_fold_toggles)
-            {
-                CursorTarget::Band(band)
-            } else {
-                cursor
-            });
+            cache.roadmap_cursor = Some(
+                if matches!(cursor, CursorTarget::Phase(_))
+                    && roadmap_graph::is_folded(&band, &cache.roadmap_fold_toggles)
+                {
+                    CursorTarget::Band(band)
+                } else {
+                    cursor
+                },
+            );
             ctx.needs_redraw = true;
             return ScreenAction::None;
         }
@@ -1717,7 +1736,11 @@ impl DetailScreen {
             return ScreenAction::None;
         };
         let phase_key = crate::state_reader::phase_num::phase_key;
-        if let Some(index) = state.phases.iter().position(|p| phase_key(&p.number) == key) {
+        if let Some(index) = state
+            .phases
+            .iter()
+            .position(|p| phase_key(&p.number) == key)
+        {
             let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
             cache.pipeline_selected = index;
             cache.roadmap_cursor = Some(CursorTarget::Phase(key));
@@ -1730,7 +1753,11 @@ impl DetailScreen {
         }
         // The id is third-party text: escaped before it reaches the status
         // line (T-24-17).
-        if let Some(planned) = state.planned_phases.iter().find(|p| phase_key(&p.number) == key) {
+        if let Some(planned) = state
+            .planned_phases
+            .iter()
+            .find(|p| phase_key(&p.number) == key)
+        {
             return ScreenAction::SetStatusMessage(format!(
                 "Build phase {} is a planned placeholder, not a GSD phase — it has no Phases entry",
                 crate::text::render_for_terminal(&planned.number)
@@ -1739,7 +1766,11 @@ impl DetailScreen {
         // A shipped phase (quick 260926-fi9) lives in a closed-milestone
         // collapse GSD no longer counts, so it has no Phases entry either.
         // Escaped like the planned arm (T-24-17, T-fi9-01).
-        match state.shipped_phases.iter().find(|p| phase_key(&p.number) == key) {
+        match state
+            .shipped_phases
+            .iter()
+            .find(|p| phase_key(&p.number) == key)
+        {
             Some(shipped) => ScreenAction::SetStatusMessage(format!(
                 "Phase {} shipped in an earlier milestone — it has no Phases entry",
                 crate::text::render_for_terminal(&shipped.number)
@@ -1896,9 +1927,9 @@ impl DetailScreen {
         });
         match plan {
             Some(plan) => self.focus_plan_in_phases(&plan, ctx),
-            None => ScreenAction::SetStatusMessage(
-                "This agent is not attributed to a plan".to_string(),
-            ),
+            None => {
+                ScreenAction::SetStatusMessage("This agent is not attributed to a plan".to_string())
+            }
         }
     }
 
@@ -1919,7 +1950,10 @@ impl DetailScreen {
             return ScreenAction::None;
         };
         let wanted = phase_key(&plan.phase.to_string());
-        let Some(index) = state.phases.iter().position(|p| phase_key(&p.number) == wanted)
+        let Some(index) = state
+            .phases
+            .iter()
+            .position(|p| phase_key(&p.number) == wanted)
         else {
             return ScreenAction::SetStatusMessage(format!(
                 "Plan {} is not a phase in this project",
@@ -2091,8 +2125,10 @@ impl DetailScreen {
                 };
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 if set_config_scope(cache, target) {
-                    ctx.status_message =
-                        Some((config_scope_status(target).to_string(), std::time::Instant::now()));
+                    ctx.status_message = Some((
+                        config_scope_status(target).to_string(),
+                        std::time::Instant::now(),
+                    ));
                 }
                 ctx.needs_redraw = true;
                 Some(ScreenAction::None)
@@ -2149,9 +2185,9 @@ impl DetailScreen {
                 if self.roadmap_list_active(ctx) {
                     match self.roadmap_model_and_cursor(ctx) {
                         None => true,
-                        Some((model, cursor)) => model
-                            .first_target()
-                            .is_none_or(|first| first == cursor),
+                        Some((model, cursor)) => {
+                            model.first_target().is_none_or(|first| first == cursor)
+                        }
                     }
                 } else {
                     let vp = self.generic_viewport.get();
@@ -2167,9 +2203,9 @@ impl DetailScreen {
             }
             DetailSubView::Queue => cache.is_none_or(|c| c.queue_selected == 0),
             DetailSubView::Sessions => cache.is_none_or(|c| c.sessions_selected == 0),
-            DetailSubView::Agents => cache.is_none_or(|c| {
-                c.agents_selected.min(agents_list_max(ctx, &self.alias)) == 0
-            }),
+            DetailSubView::Agents => {
+                cache.is_none_or(|c| c.agents_selected.min(agents_list_max(ctx, &self.alias)) == 0)
+            }
             DetailSubView::Archive => cache.is_none_or(|c| {
                 use crate::archive::ArchiveDepth;
                 match &c.archive_depth {
@@ -2580,7 +2616,10 @@ fn claude_resume_args(sid: &Untrusted) -> Vec<String> {
         // VALUE — so an id beginning with `-` is data rather than a new
         // option of its own (CWE-88). The raw id is what must arrive, and it
         // arrives whole: an escaped or truncated one would resume nothing.
-        format!("{RESUME_OPTION_FUSED_PREFIX}{}", sid.as_raw_for_logic_only()),
+        format!(
+            "{RESUME_OPTION_FUSED_PREFIX}{}",
+            sid.as_raw_for_logic_only()
+        ),
     ]
 }
 
@@ -2825,9 +2864,8 @@ pub(crate) fn roadmap_model_for(
     let entries = state.roadmap_entries();
 
     let active = roadmap_md::active_milestone_index(&state.milestones, &state.milestone);
-    let own_band = |p: &roadmap_md::RoadmapPhase| {
-        roadmap_md::milestone_index_of(&state.milestones, &p.number)
-    };
+    let own_band =
+        |p: &roadmap_md::RoadmapPhase| roadmap_md::milestone_index_of(&state.milestones, &p.number);
     let milestone = state.milestone.trim();
     // [INFERRED — audit] No active milestone and no STATE.md milestone either:
     // an orphan phase stays band-less rather than joining an unnamed band.
@@ -2896,11 +2934,7 @@ pub(crate) fn roadmap_model_for(
                 .iter()
                 .filter(|g| !held_main.contains(&phase_key(&g.id)))
                 .map(|g| {
-                    let badge = format!(
-                        "[{} @{}]",
-                        g.stage.label(),
-                        g.short_ref.shown()
-                    );
+                    let badge = format!("[{} @{}]", g.stage.label(), g.short_ref.shown());
                     let plans = (g.plans_total > 0).then_some((g.plans_done, g.plans_total));
                     (g.id.clone(), g.name.shown().to_string(), badge, plans)
                 })
@@ -2927,10 +2961,11 @@ pub(crate) fn roadmap_model_for(
     let nodes = shipped_nodes
         .into_iter()
         .chain(entries.into_iter().map(|(p, planned)| {
-            let badge: String = disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let badge: String =
+                disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect();
             let badge = badge.trim();
             roadmap_graph::ListNode {
                 id: &p.number,
@@ -2938,7 +2973,11 @@ pub(crate) fn roadmap_model_for(
                 deps: &p.depends_on,
                 band: own_band(p).or(active).or(synthetic),
                 marker: state.phase_marker(p),
-                done: state_reader::phase_is_done(&p.number, p.completed, &state.phase_disk_statuses),
+                done: state_reader::phase_is_done(
+                    &p.number,
+                    p.completed,
+                    &state.phase_disk_statuses,
+                ),
                 plans: state_reader::phase_plan_counts(p, &state.phase_disk_statuses),
                 goal: state.phase_goals.get(&phase_key(&p.number)),
                 planned,
@@ -2971,8 +3010,7 @@ pub(crate) fn roadmap_model_for(
                 facts.plans,
                 Some((d, t)) if t > 0 && d.saturating_add(k) >= t
             );
-            if k > 0 && facts.status != roadmap_graph::PhaseStatus::Done && all_remaining_unmerged
-            {
+            if k > 0 && facts.status != roadmap_graph::PhaseStatus::Done && all_remaining_unmerged {
                 unmerged_nodes.push(u);
             }
         }
@@ -3093,8 +3131,7 @@ fn switch_to_tab(
         .view_cache
         .get(alias)
         .and_then(|cache| cache.last_sub_view_per_tab.get(&new_index).cloned());
-    let new_view =
-        remembered.unwrap_or_else(|| sub_view_from_index(new_index, ctx.experimental));
+    let new_view = remembered.unwrap_or_else(|| sub_view_from_index(new_index, ctx.experimental));
     switch_to_sub_view(alias, new_view, scroll_offset, ctx)
 }
 
@@ -3203,11 +3240,7 @@ fn switch_to_sub_view(
     // the entry list. Re-running this on subsequent visits would wipe any
     // navigation state, so we only run it when `browser_current_dir` is None.
     if new_view == DetailSubView::Browse {
-        let project_path = ctx
-            .config
-            .projects
-            .get(alias)
-            .map(|p| p.path.clone());
+        let project_path = ctx.config.projects.get(alias).map(|p| p.path.clone());
         let project_state = ctx.project_states.get(alias).cloned();
         let cache = ctx.view_cache.entry(alias.to_string()).or_default();
         if cache.browser_current_dir.is_none() {
@@ -3499,8 +3532,9 @@ impl Screen for DetailScreen {
                             return ScreenAction::None;
                         }
                         ArchiveDepth::FileList { milestone, .. } => {
-                            cache.archive_depth =
-                                ArchiveDepth::PhaseList { milestone: milestone.clone() };
+                            cache.archive_depth = ArchiveDepth::PhaseList {
+                                milestone: milestone.clone(),
+                            };
                             ctx.needs_redraw = true;
                             return ScreenAction::None;
                         }
@@ -3701,7 +3735,10 @@ impl Screen for DetailScreen {
                                         (cache.archive_selected[1] + 1).min(max);
                                 }
                             }
-                            ArchiveDepth::FileList { milestone, phase_idx } => {
+                            ArchiveDepth::FileList {
+                                milestone,
+                                phase_idx,
+                            } => {
                                 if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                                     if let Some(phase) = data.phases.get(*phase_idx) {
                                         let max = phase.files.len().saturating_sub(1);
@@ -3746,8 +3783,7 @@ impl Screen for DetailScreen {
                             BrowserDepth::List => {
                                 if !cache.browser_entries.is_empty() {
                                     let max = cache.browser_entries.len().saturating_sub(1);
-                                    cache.browser_selected =
-                                        (cache.browser_selected + 1).min(max);
+                                    cache.browser_selected = (cache.browser_selected + 1).min(max);
                                 }
                             }
                             BrowserDepth::View => {
@@ -3893,8 +3929,7 @@ impl Screen for DetailScreen {
                         use crate::browser::BrowserDepth;
                         match cache.browser_depth {
                             BrowserDepth::List => {
-                                cache.browser_selected =
-                                    cache.browser_selected.saturating_sub(1);
+                                cache.browser_selected = cache.browser_selected.saturating_sub(1);
                             }
                             BrowserDepth::View => {
                                 // Clamp FIRST, subtract second — see the Archive sibling.
@@ -3946,7 +3981,8 @@ impl Screen for DetailScreen {
                             let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                             if !cache.git_entries.is_empty() {
                                 let max = cache.git_entries.len().saturating_sub(1);
-                                cache.git_selected = (cache.git_selected + PAGE_SCROLL_LINES as usize).min(max);
+                                cache.git_selected =
+                                    (cache.git_selected + PAGE_SCROLL_LINES as usize).min(max);
                                 cache.close_git_commit_detail();
                             }
                         }
@@ -3962,7 +3998,8 @@ impl Screen for DetailScreen {
                             );
                         } else if !cache.backlog_items.is_empty() {
                             let max = cache.backlog_items.len().saturating_sub(1);
-                            cache.backlog_selected = (cache.backlog_selected + PAGE_SCROLL_LINES as usize).min(max);
+                            cache.backlog_selected =
+                                (cache.backlog_selected + PAGE_SCROLL_LINES as usize).min(max);
                         }
                         ctx.needs_redraw = true;
                     }
@@ -3971,7 +4008,8 @@ impl Screen for DetailScreen {
                         if let Some(state) = ctx.project_states.get(&self.alias) {
                             if !state.phases.is_empty() {
                                 let max = state.phases.len().saturating_sub(1);
-                                cache.pipeline_selected = (cache.pipeline_selected + PAGE_SCROLL_LINES as usize).min(max);
+                                cache.pipeline_selected =
+                                    (cache.pipeline_selected + PAGE_SCROLL_LINES as usize).min(max);
                             }
                         }
                         cache.waves_cursor = None;
@@ -3983,7 +4021,8 @@ impl Screen for DetailScreen {
                         if let Some(state) = ctx.project_states.get(&self.alias) {
                             if !state.queued_actions.is_empty() {
                                 let max = state.queued_actions.len().saturating_sub(1);
-                                cache.queue_selected = (cache.queue_selected + PAGE_SCROLL_LINES as usize).min(max);
+                                cache.queue_selected =
+                                    (cache.queue_selected + PAGE_SCROLL_LINES as usize).min(max);
                             }
                         }
                         ctx.needs_redraw = true;
@@ -4003,14 +4042,16 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if session_count > 0 {
                             let max = session_count.saturating_sub(1);
-                            cache.sessions_selected = (cache.sessions_selected + PAGE_SCROLL_LINES as usize).min(max);
+                            cache.sessions_selected =
+                                (cache.sessions_selected + PAGE_SCROLL_LINES as usize).min(max);
                         }
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Agents => {
                         let max = agents_list_max(ctx, &self.alias);
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.agents_selected = (cache.agents_selected + PAGE_SCROLL_LINES as usize).min(max);
+                        cache.agents_selected =
+                            (cache.agents_selected + PAGE_SCROLL_LINES as usize).min(max);
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Archive => {
@@ -4019,30 +4060,38 @@ impl Screen for DetailScreen {
                         match &cache.archive_depth {
                             ArchiveDepth::MilestoneList => {
                                 let max = cache.archive_milestones.len().saturating_sub(1);
-                                cache.archive_selected[0] =
-                                    (cache.archive_selected[0] + PAGE_SCROLL_LINES as usize).min(max);
+                                cache.archive_selected[0] = (cache.archive_selected[0]
+                                    + PAGE_SCROLL_LINES as usize)
+                                    .min(max);
                             }
                             ArchiveDepth::PhaseList { milestone } => {
                                 if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                                     let total = data.top_level_files.len() + data.phases.len();
                                     let max = total.saturating_sub(1);
-                                    cache.archive_selected[1] =
-                                        (cache.archive_selected[1] + PAGE_SCROLL_LINES as usize).min(max);
+                                    cache.archive_selected[1] = (cache.archive_selected[1]
+                                        + PAGE_SCROLL_LINES as usize)
+                                        .min(max);
                                 }
                             }
-                            ArchiveDepth::FileList { milestone, phase_idx } => {
+                            ArchiveDepth::FileList {
+                                milestone,
+                                phase_idx,
+                            } => {
                                 if let Some(data) = ctx.archive_cache.get(&self.alias, milestone) {
                                     if let Some(phase) = data.phases.get(*phase_idx) {
                                         let max = phase.files.len().saturating_sub(1);
-                                        cache.archive_selected[2] =
-                                            (cache.archive_selected[2] + PAGE_SCROLL_LINES as usize).min(max);
+                                        cache.archive_selected[2] = (cache.archive_selected[2]
+                                            + PAGE_SCROLL_LINES as usize)
+                                            .min(max);
                                     }
                                 }
                             }
                             ArchiveDepth::FileView { .. } => {
                                 let vp = self.archive_viewport.get();
                                 cache.archive_scroll_offset = clamp_scroll(
-                                    cache.archive_scroll_offset.saturating_add(PAGE_SCROLL_LINES),
+                                    cache
+                                        .archive_scroll_offset
+                                        .saturating_add(PAGE_SCROLL_LINES),
                                     vp.total_lines,
                                     vp.visible_height,
                                 );
@@ -4070,7 +4119,9 @@ impl Screen for DetailScreen {
                             BrowserDepth::View => {
                                 let vp = self.browser_viewport.get();
                                 cache.browser_scroll_offset = clamp_scroll(
-                                    cache.browser_scroll_offset.saturating_add(PAGE_SCROLL_LINES),
+                                    cache
+                                        .browser_scroll_offset
+                                        .saturating_add(PAGE_SCROLL_LINES),
                                     vp.total_lines,
                                     vp.visible_height,
                                 );
@@ -4120,7 +4171,9 @@ impl Screen for DetailScreen {
                         } else {
                             let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                             if !cache.git_entries.is_empty() {
-                                cache.git_selected = cache.git_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                                cache.git_selected = cache
+                                    .git_selected
+                                    .saturating_sub(PAGE_SCROLL_LINES as usize);
                                 cache.close_git_commit_detail();
                             }
                         }
@@ -4135,31 +4188,42 @@ impl Screen for DetailScreen {
                                 self.backlog_viewport.get(),
                             );
                         } else {
-                            cache.backlog_selected = cache.backlog_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                            cache.backlog_selected = cache
+                                .backlog_selected
+                                .saturating_sub(PAGE_SCROLL_LINES as usize);
                         }
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Pipeline => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.pipeline_selected = cache.pipeline_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        cache.pipeline_selected = cache
+                            .pipeline_selected
+                            .saturating_sub(PAGE_SCROLL_LINES as usize);
                         cache.waves_cursor = None;
                         share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Queue => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.queue_selected = cache.queue_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        cache.queue_selected = cache
+                            .queue_selected
+                            .saturating_sub(PAGE_SCROLL_LINES as usize);
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Sessions => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.sessions_selected = cache.sessions_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        cache.sessions_selected = cache
+                            .sessions_selected
+                            .saturating_sub(PAGE_SCROLL_LINES as usize);
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Agents => {
                         let max = agents_list_max(ctx, &self.alias);
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.agents_selected = cache.agents_selected.min(max).saturating_sub(PAGE_SCROLL_LINES as usize);
+                        cache.agents_selected = cache
+                            .agents_selected
+                            .min(max)
+                            .saturating_sub(PAGE_SCROLL_LINES as usize);
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Archive => {
@@ -4167,16 +4231,16 @@ impl Screen for DetailScreen {
                         use crate::archive::ArchiveDepth;
                         match &cache.archive_depth {
                             ArchiveDepth::MilestoneList => {
-                                cache.archive_selected[0] =
-                                    cache.archive_selected[0].saturating_sub(PAGE_SCROLL_LINES as usize);
+                                cache.archive_selected[0] = cache.archive_selected[0]
+                                    .saturating_sub(PAGE_SCROLL_LINES as usize);
                             }
                             ArchiveDepth::PhaseList { .. } => {
-                                cache.archive_selected[1] =
-                                    cache.archive_selected[1].saturating_sub(PAGE_SCROLL_LINES as usize);
+                                cache.archive_selected[1] = cache.archive_selected[1]
+                                    .saturating_sub(PAGE_SCROLL_LINES as usize);
                             }
                             ArchiveDepth::FileList { .. } => {
-                                cache.archive_selected[2] =
-                                    cache.archive_selected[2].saturating_sub(PAGE_SCROLL_LINES as usize);
+                                cache.archive_selected[2] = cache.archive_selected[2]
+                                    .saturating_sub(PAGE_SCROLL_LINES as usize);
                             }
                             ArchiveDepth::FileView { .. } => {
                                 // Clamp FIRST, subtract second — see the `k`/Up sibling.
@@ -4305,9 +4369,7 @@ impl Screen for DetailScreen {
                 self.focus = DetailFocus::TabBar;
                 ctx.needs_redraw = true;
                 match stepped_tab_index(current_idx, forward, ctx.experimental) {
-                    Some(index) => {
-                        switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
-                    }
+                    Some(index) => switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx),
                     None => ScreenAction::None,
                 }
             }
@@ -4688,11 +4750,8 @@ impl Screen for DetailScreen {
                         ScreenAction::None
                     }
                     DetailSubView::Defaults => {
-                        let project_path = ctx
-                            .config
-                            .projects
-                            .get(&self.alias)
-                            .map(|p| p.path.clone());
+                        let project_path =
+                            ctx.config.projects.get(&self.alias).map(|p| p.path.clone());
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         let target = cache.defaults_edit_target;
                         let user_path = cache.defaults_user_path.clone();
@@ -4701,11 +4760,19 @@ impl Screen for DetailScreen {
                             let entries = entries_for_cache(cache);
                             if let Some(entry) = entries.get(editing_idx).cloned() {
                                 let options = dropdown_options(&entry.kind);
-                                let dropdown_idx = cache.defaults_dropdown_selected.min(options.len().saturating_sub(1));
+                                let dropdown_idx = cache
+                                    .defaults_dropdown_selected
+                                    .min(options.len().saturating_sub(1));
                                 if let Some(value) = options.get(dropdown_idx).cloned() {
                                     if let Some(active) = active_config_mut(cache) {
                                         if set_config_value(active, entry.key.as_ref(), &value) {
-                                            persist_active_config(target, project_path.as_deref(), user_path.as_deref(), active, &mut ctx.status_message);
+                                            persist_active_config(
+                                                target,
+                                                project_path.as_deref(),
+                                                user_path.as_deref(),
+                                                active,
+                                                &mut ctx.status_message,
+                                            );
                                         }
                                     }
                                 }
@@ -4723,7 +4790,8 @@ impl Screen for DetailScreen {
                             if let Some(entry) = entries.get(selected).cloned() {
                                 let options = dropdown_options(&entry.kind);
                                 if !options.is_empty() {
-                                    let current_idx = options.iter().position(|o| o == &entry.value).unwrap_or(0);
+                                    let current_idx =
+                                        options.iter().position(|o| o == &entry.value).unwrap_or(0);
                                     cache.defaults_editing = Some(selected);
                                     cache.defaults_dropdown_selected = current_idx;
                                 } else if matches!(entry.kind.editable(), ConfigValueKind::String) {
@@ -4734,14 +4802,13 @@ impl Screen for DetailScreen {
                                     // `.planning/config.json`, already escaped
                                     // by the list render one render away. It
                                     // enters the buffer as what it is.
-                                    cache.defaults_text_buffer =
-                                        if entry.value == "(unset)" {
-                                            super::EditBuffer::default()
-                                        } else {
-                                            super::EditBuffer::seed_from_untrusted_source(
-                                                entry.value.clone(),
-                                            )
-                                        };
+                                    cache.defaults_text_buffer = if entry.value == "(unset)" {
+                                        super::EditBuffer::default()
+                                    } else {
+                                        super::EditBuffer::seed_from_untrusted_source(
+                                            entry.value.clone(),
+                                        )
+                                    };
                                 } else if matches!(entry.kind.editable(), ConfigValueKind::Secret) {
                                     // T-jnf-02: a secret prompt opens EMPTY.
                                     // `entry.value` is only the mask anyway,
@@ -4749,10 +4816,21 @@ impl Screen for DetailScreen {
                                     // means typing the new one (INFERRED I-6).
                                     cache.defaults_editing = Some(selected);
                                     cache.defaults_text_buffer = super::EditBuffer::default();
-                                } else if matches!(entry.kind.editable(), ConfigValueKind::Integer) {
+                                } else if matches!(entry.kind.editable(), ConfigValueKind::Integer)
+                                {
                                     if let Some(active) = active_config_mut(cache) {
-                                        if mutate_config_entry(active, entry.key.as_ref(), &entry.kind) {
-                                            persist_active_config(target, project_path.as_deref(), user_path.as_deref(), active, &mut ctx.status_message);
+                                        if mutate_config_entry(
+                                            active,
+                                            entry.key.as_ref(),
+                                            &entry.kind,
+                                        ) {
+                                            persist_active_config(
+                                                target,
+                                                project_path.as_deref(),
+                                                user_path.as_deref(),
+                                                active,
+                                                &mut ctx.status_message,
+                                            );
                                         }
                                     }
                                 }
@@ -4770,10 +4848,7 @@ impl Screen for DetailScreen {
                         if cache.browser_depth != crate::browser::BrowserDepth::List {
                             return ScreenAction::None;
                         }
-                        let entry = cache
-                            .browser_entries
-                            .get(cache.browser_selected)
-                            .cloned();
+                        let entry = cache.browser_entries.get(cache.browser_selected).cloned();
                         if let Some(entry) = entry {
                             if entry.is_dir {
                                 cache.browser_entries = crate::browser::list_dir(&entry.path);
@@ -4866,7 +4941,10 @@ impl Screen for DetailScreen {
             // rule; arriving on Agents loads nothing, because the agents scan
             // already runs on the tick and fills `ctx.agent_views`.
             KeyCode::Char('m')
-                if matches!(current_view, DetailSubView::Sessions | DetailSubView::Agents) =>
+                if matches!(
+                    current_view,
+                    DetailSubView::Sessions | DetailSubView::Agents
+                ) =>
             {
                 let other = if current_view == DetailSubView::Sessions {
                     DetailSubView::Agents
@@ -4889,11 +4967,7 @@ impl Screen for DetailScreen {
             }
             // 'x' key: clear (unset) the value of the selected config row
             KeyCode::Char('x') if current_view == DetailSubView::Defaults => {
-                let project_path = ctx
-                    .config
-                    .projects
-                    .get(&self.alias)
-                    .map(|p| p.path.clone());
+                let project_path = ctx.config.projects.get(&self.alias).map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 let target = cache.defaults_edit_target;
                 let user_path = cache.defaults_user_path.clone();
@@ -4957,7 +5031,8 @@ impl Screen for DetailScreen {
                     .and_then(crate::state_reader::config_json::load_user_defaults_from);
                 // The pass-through row set may have changed under the filter.
                 snap_defaults_selection(cache);
-                ctx.status_message = Some(("Config reloaded".to_string(), std::time::Instant::now()));
+                ctx.status_message =
+                    Some(("Config reloaded".to_string(), std::time::Instant::now()));
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
@@ -4965,11 +5040,7 @@ impl Screen for DetailScreen {
             // From the Sessions tab, jump to the highlighted session.
             // From any other tab, jump to the first session matching the project's path.
             KeyCode::Tab => {
-                let project_path = ctx
-                    .config
-                    .projects
-                    .get(&self.alias)
-                    .map(|p| p.path.clone());
+                let project_path = ctx.config.projects.get(&self.alias).map(|p| p.path.clone());
                 let session = if current_view == DetailSubView::Sessions {
                     let filtered: Vec<_> = project_path
                         .as_ref()
@@ -5016,8 +5087,10 @@ impl Screen for DetailScreen {
                     DefaultsEditTarget::Global => DefaultsEditTarget::Project,
                 };
                 if set_config_scope(cache, other) {
-                    ctx.status_message =
-                        Some((config_scope_status(other).to_string(), std::time::Instant::now()));
+                    ctx.status_message = Some((
+                        config_scope_status(other).to_string(),
+                        std::time::Instant::now(),
+                    ));
                 }
                 ctx.needs_redraw = true;
                 ScreenAction::None
@@ -5368,12 +5441,11 @@ impl Screen for DetailScreen {
                                     // Top-level file (entered from PhaseList)
                                     data.top_level_files.get(*file_idx).map(|f| f.path.clone())
                                 }
-                                Some(idx) => {
-                                    data.phases
-                                        .get(*idx)
-                                        .and_then(|p| p.files.get(*file_idx))
-                                        .map(|f| f.path.clone())
-                                }
+                                Some(idx) => data
+                                    .phases
+                                    .get(*idx)
+                                    .and_then(|p| p.files.get(*file_idx))
+                                    .map(|f| f.path.clone()),
                             }
                         });
 
@@ -5606,7 +5678,14 @@ impl Screen for DetailScreen {
             ctx.experimental,
         );
         let tab_block = self.tab_bar_block(tab_area, ctx);
-        self.record_tab_bar(tab_area, &tab_block, &titles, select, tab_idx, ctx.experimental);
+        self.record_tab_bar(
+            tab_area,
+            &tab_block,
+            &titles,
+            select,
+            tab_idx,
+            ctx.experimental,
+        );
         let tabs_widget = tab_bar_widget(titles, select, self.focus);
         frame.render_widget(tabs_widget.block(tab_block), tab_area);
 
@@ -5691,16 +5770,18 @@ impl Screen for DetailScreen {
             return ScreenAction::None;
         }
         match input {
-            MouseInput::Click { double: true, column, row } => {
-                match std::mem::take(&mut self.mouse_arm) {
-                    MouseArm::Replay(key) => self.handle_key(key, KeyModifiers::NONE, ctx),
-                    MouseArm::Swallow => ScreenAction::None,
-                    MouseArm::None => {
-                        let target = self.regions().click_target(column, row);
-                        self.click(target, &current_view, ctx)
-                    }
+            MouseInput::Click {
+                double: true,
+                column,
+                row,
+            } => match std::mem::take(&mut self.mouse_arm) {
+                MouseArm::Replay(key) => self.handle_key(key, KeyModifiers::NONE, ctx),
+                MouseArm::Swallow => ScreenAction::None,
+                MouseArm::None => {
+                    let target = self.regions().click_target(column, row);
+                    self.click(target, &current_view, ctx)
                 }
-            }
+            },
             MouseInput::Click { column, row, .. } => {
                 let target = self.regions().click_target(column, row);
                 self.click(target, &current_view, ctx)
@@ -5762,7 +5843,10 @@ impl DetailScreen {
                 // The open Backlog pane owns j/k: the wheel over the list
                 // beside it does nothing ([inferred I-8]).
                 if *current_view == DetailSubView::Backlog
-                    && ctx.view_cache.get(&self.alias).is_some_and(|c| c.backlog_expanded)
+                    && ctx
+                        .view_cache
+                        .get(&self.alias)
+                        .is_some_and(|c| c.backlog_expanded)
                 {
                     return ScreenAction::None;
                 }
@@ -5855,14 +5939,19 @@ impl DetailScreen {
                 ctx.needs_redraw = true;
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 if set_config_scope(cache, target) {
-                    ctx.status_message =
-                        Some((config_scope_status(target).to_string(), std::time::Instant::now()));
+                    ctx.status_message = Some((
+                        config_scope_status(target).to_string(),
+                        std::time::Instant::now(),
+                    ));
                 }
                 ScreenAction::None
             }
             ClickTarget::WavesRow(cursor) => {
                 self.focus = DetailFocus::Pane;
-                ctx.view_cache.entry(self.alias.clone()).or_default().waves_cursor = Some(cursor);
+                ctx.view_cache
+                    .entry(self.alias.clone())
+                    .or_default()
+                    .waves_cursor = Some(cursor);
                 self.mouse_arm = MouseArm::Replay(KeyCode::Enter);
                 ctx.needs_redraw = true;
                 ScreenAction::None
@@ -6135,11 +6224,7 @@ impl DetailScreen {
                 ctx.needs_redraw = true;
             }
             KeyCode::Enter => {
-                let project_path = ctx
-                    .config
-                    .projects
-                    .get(&self.alias)
-                    .map(|p| p.path.clone());
+                let project_path = ctx.config.projects.get(&self.alias).map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 let target = cache.defaults_edit_target;
                 let user_path = cache.defaults_user_path.clone();
@@ -6729,17 +6814,14 @@ impl DetailScreen {
                 // there is no room for two bordered panes, and the message is
                 // the half a reader came for, so it takes all of it (QD-05).
                 const MIN_ROWS_FOR_BOTH_PANES: u16 = 8;
-                let (message_area, files_area) =
-                    if detail_area.height < MIN_ROWS_FOR_BOTH_PANES {
-                        (detail_area, None)
-                    } else {
-                        let split = Layout::vertical([
-                            Constraint::Percentage(60),
-                            Constraint::Percentage(40),
-                        ])
-                        .split(detail_area);
-                        (split[0], Some(split[1]))
-                    };
+                let (message_area, files_area) = if detail_area.height < MIN_ROWS_FOR_BOTH_PANES {
+                    (detail_area, None)
+                } else {
+                    let split =
+                        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
+                            .split(detail_area);
+                    (split[0], Some(split[1]))
+                };
 
                 let message_block = Block::default()
                     .borders(Borders::ALL)
@@ -6754,11 +6836,8 @@ impl DetailScreen {
                     total_lines,
                     visible_height: message_inner.height,
                 });
-                let scroll = clamp_scroll(
-                    cache.git_commit_scroll,
-                    total_lines,
-                    message_inner.height,
-                );
+                let scroll =
+                    clamp_scroll(cache.git_commit_scroll, total_lines, message_inner.height);
 
                 let message_lines: Vec<Line> = if detail.body.is_empty() {
                     vec![Line::from(Span::styled(
@@ -6840,7 +6919,10 @@ impl DetailScreen {
         }
 
         let selected_index = cache
-            .map(|c| c.pipeline_selected.min(state.phases.len().saturating_sub(1)))
+            .map(|c| {
+                c.pipeline_selected
+                    .min(state.phases.len().saturating_sub(1))
+            })
             .unwrap_or(0);
         // Below the side-by-side width a FOCUSED Waves pane takes the whole
         // tab under a one-row breadcrumb (quick 260926-2l4, D-06); unfocused,
@@ -6900,8 +6982,7 @@ impl DetailScreen {
 
         // Seeded with the offset the previous frame left, and stored back
         // (quick 260926-dyf, [inferred I-12]).
-        let mut list_state =
-            ListState::default().with_offset(self.phase_list_offset.get());
+        let mut list_state = ListState::default().with_offset(self.phase_list_offset.get());
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, left_area, &mut list_state);
         self.phase_list_offset.set(list_state.offset());
@@ -7030,8 +7111,13 @@ impl DetailScreen {
             .and_then(|c| rows.iter().position(|row| row.answers_to(&c, model)))
             .unwrap_or(0);
         let focus_row = if focused { cursor } else { anchor };
-        let (offset, visible) =
-            waves_window(rows.len(), height, self.waves_offset.get(), focus_row, focused);
+        let (offset, visible) = waves_window(
+            rows.len(),
+            height,
+            self.waves_offset.get(),
+            focus_row,
+            focused,
+        );
         self.waves_offset.set(offset);
         self.waves_viewport_rows.set(visible.max(1) as u16);
 
@@ -7338,15 +7424,13 @@ impl DetailScreen {
         let cache = if let Some(c) = ctx.view_cache.get(&self.alias) {
             c
         } else {
-            let loading = Paragraph::new("Loading...")
-                .style(Style::default().fg(Color::DarkGray));
+            let loading = Paragraph::new("Loading...").style(Style::default().fg(Color::DarkGray));
             frame.render_widget(loading, area);
             return;
         };
 
         // Split: breadcrumb (1 row) + content (remaining)
-        let chunks =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
         let breadcrumb_area = chunks[0];
         let content_area = chunks[1];
 
@@ -7355,8 +7439,7 @@ impl DetailScreen {
         frame.render_widget(Paragraph::new(breadcrumb), breadcrumb_area);
 
         if cache.archive_loading {
-            let loading = Paragraph::new("Loading...")
-                .style(Style::default().fg(Color::DarkGray));
+            let loading = Paragraph::new("Loading...").style(Style::default().fg(Color::DarkGray));
             frame.render_widget(loading, content_area);
             return;
         }
@@ -7422,9 +7505,8 @@ impl DetailScreen {
                         ))));
                     }
                     if items.is_empty() {
-                        let empty =
-                            Paragraph::new("No phase artifacts found for this milestone.")
-                                .style(Style::default().fg(Color::DarkGray));
+                        let empty = Paragraph::new("No phase artifacts found for this milestone.")
+                            .style(Style::default().fg(Color::DarkGray));
                         frame.render_widget(empty, content_area);
                         return;
                     }
@@ -7447,8 +7529,8 @@ impl DetailScreen {
                         &self.archive_list_offsets[1],
                     );
                 } else {
-                    let loading = Paragraph::new("Loading...")
-                        .style(Style::default().fg(Color::DarkGray));
+                    let loading =
+                        Paragraph::new("Loading...").style(Style::default().fg(Color::DarkGray));
                     frame.render_widget(loading, content_area);
                 }
             }
@@ -7495,11 +7577,9 @@ impl DetailScreen {
                     let total_lines = styled_lines.len() as u16;
                     // Split content area into gutter + main content
                     let gutter_width = (total_lines as usize).max(1).to_string().len() as u16 + 1;
-                    let file_chunks = Layout::horizontal([
-                        Constraint::Length(gutter_width),
-                        Constraint::Min(0),
-                    ])
-                    .split(content_area);
+                    let file_chunks =
+                        Layout::horizontal([Constraint::Length(gutter_width), Constraint::Min(0)])
+                            .split(content_area);
                     let gutter_area = file_chunks[0];
                     let text_area = file_chunks[1];
 
@@ -7524,8 +7604,8 @@ impl DetailScreen {
                     let paragraph = Paragraph::new(styled_lines).scroll((scroll, 0));
                     frame.render_widget(paragraph, text_area);
                 } else {
-                    let loading = Paragraph::new("Loading...")
-                        .style(Style::default().fg(Color::DarkGray));
+                    let loading =
+                        Paragraph::new("Loading...").style(Style::default().fg(Color::DarkGray));
                     frame.render_widget(loading, content_area);
                 }
             }
@@ -7542,8 +7622,7 @@ impl DetailScreen {
         let cache = match ctx.view_cache.get(&self.alias) {
             Some(c) => c,
             None => {
-                let p = Paragraph::new("Loading...")
-                    .style(Style::default().fg(Color::DarkGray));
+                let p = Paragraph::new("Loading...").style(Style::default().fg(Color::DarkGray));
                 frame.render_widget(p, area);
                 return;
             }
@@ -7591,11 +7670,7 @@ impl DetailScreen {
             }
         }
 
-        let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(area);
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
         let header_area = chunks[0];
         let content_area = chunks[1];
 
@@ -7657,13 +7732,10 @@ impl DetailScreen {
                 if let Some(content) = &cache.browser_file_content {
                     let styled_lines = crate::archive::render_markdown_lines(content);
                     let total_lines = styled_lines.len() as u16;
-                    let gutter_width =
-                        (total_lines as usize).max(1).to_string().len() as u16 + 1;
-                    let file_chunks = Layout::horizontal([
-                        Constraint::Length(gutter_width),
-                        Constraint::Min(0),
-                    ])
-                    .split(content_area);
+                    let gutter_width = (total_lines as usize).max(1).to_string().len() as u16 + 1;
+                    let file_chunks =
+                        Layout::horizontal([Constraint::Length(gutter_width), Constraint::Min(0)])
+                            .split(content_area);
                     let gutter_area = file_chunks[0];
                     let text_area = file_chunks[1];
 
@@ -7686,8 +7758,8 @@ impl DetailScreen {
                     let paragraph = Paragraph::new(styled_lines).scroll((scroll, 0));
                     frame.render_widget(paragraph, text_area);
                 } else {
-                    let loading = Paragraph::new("Loading...")
-                        .style(Style::default().fg(Color::DarkGray));
+                    let loading =
+                        Paragraph::new("Loading...").style(Style::default().fg(Color::DarkGray));
                     frame.render_widget(loading, content_area);
                 }
             }
@@ -7802,7 +7874,14 @@ impl DetailScreen {
             ctx.experimental,
         );
         let tab_block = self.tab_bar_block(tab_area, ctx);
-        self.record_tab_bar(tab_area, &tab_block, &titles, select, tab_idx, ctx.experimental);
+        self.record_tab_bar(
+            tab_area,
+            &tab_block,
+            &titles,
+            select,
+            tab_idx,
+            ctx.experimental,
+        );
         let tabs_widget = tab_bar_widget(titles, select, self.focus);
         frame.render_widget(tabs_widget.block(tab_block), tab_area);
 
@@ -7830,9 +7909,7 @@ impl DetailScreen {
         use super::DefaultsEditTarget;
         let cache = ctx.view_cache.get(&self.alias);
         let selected = cache.map(|c| c.defaults_selected).unwrap_or(0);
-        let edit_target = cache
-            .map(|c| c.defaults_edit_target)
-            .unwrap_or_default();
+        let edit_target = cache.map(|c| c.defaults_edit_target).unwrap_or_default();
 
         let entries = match cache {
             Some(c) => entries_for_cache(c),
@@ -7870,7 +7947,10 @@ impl DetailScreen {
                 Style::default().fg(Color::DarkGray),
             ))];
             if let Some((label, style)) = &gsd_install {
-                lines.push(Line::from(Span::styled(format!("  {}", shown(label)), *style)));
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", shown(label)),
+                    *style,
+                )));
             }
             frame.render_widget(Paragraph::new(lines), area);
             return;
@@ -7963,14 +8043,9 @@ impl DetailScreen {
                 // "No config loaded" and this `Span` was exercised by no
                 // committed control. The red is quoted in the fixture's doc.
                 let val_span = Span::styled(shown(&entry.value), val_style);
-                let mut spans = vec![
-                    Span::raw("  "),
-                    cat_span,
-                    Span::raw(" "),
-                    key_span,
-                ];
-                let value_col = u16::try_from(spans.iter().map(Span::width).sum::<usize>())
-                    .unwrap_or(u16::MAX);
+                let mut spans = vec![Span::raw("  "), cat_span, Span::raw(" "), key_span];
+                let value_col =
+                    u16::try_from(spans.iter().map(Span::width).sum::<usize>()).unwrap_or(u16::MAX);
                 spans.push(val_span);
                 if let Some(d) = entry.builtin_default {
                     spans.push(Span::styled(
@@ -8001,7 +8076,9 @@ impl DetailScreen {
 
         let mut title = match edit_target {
             DefaultsEditTarget::Project => " Project Config (.planning/config.json) ".to_string(),
-            DefaultsEditTarget::Global => " Global: template for NEW projects (~/.gsd/defaults.json) ".to_string(),
+            DefaultsEditTarget::Global => {
+                " Global: template for NEW projects (~/.gsd/defaults.json) ".to_string()
+            }
         };
         // Filter echo + count ([INFERRED A5]). The filter is operator-typed
         // and `Block::title` preserves the invisible class, so it is drawn
@@ -8030,11 +8107,9 @@ impl DetailScreen {
         // floor the split is skipped entirely and the list keeps the full
         // `area`, so a small window never loses option rows to help text.
         let (list_area, help_area) = if area.height >= HELP_PANE_FLOOR {
-            let chunks = Layout::vertical([
-                Constraint::Min(1),
-                Constraint::Length(HELP_PANE_HEIGHT),
-            ])
-            .split(area);
+            let chunks =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(HELP_PANE_HEIGHT)])
+                    .split(area);
             (chunks[0], Some(chunks[1]))
         } else {
             (area, None)
@@ -8155,16 +8230,13 @@ impl DetailScreen {
                     }
                     let options = dropdown_options(&entry.kind);
                     if !options.is_empty() {
-                        let dropdown_idx =
-                            cache.defaults_dropdown_selected.min(options.len() - 1);
+                        let dropdown_idx = cache.defaults_dropdown_selected.min(options.len() - 1);
                         let title = format!(" {} ", shown(entry.key.as_ref()));
                         let popup_w =
                             dropdown_popup_width(&options, &entry.help, &title, area.width);
                         let popup_h = (options.len() as u16 + 2).min(area.height.saturating_sub(2));
-                        let popup_x =
-                            area.x + (area.width.saturating_sub(popup_w)) / 2;
-                        let popup_y =
-                            area.y + (area.height.saturating_sub(popup_h)) / 2;
+                        let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+                        let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
                         let popup_area = Rect {
                             x: popup_x,
                             y: popup_y,
@@ -8192,10 +8264,7 @@ impl DetailScreen {
                                 // clamped to the area, so when the clamp bites
                                 // it is the explanation that gets cut and the
                                 // selectable value that survives.
-                                let mut spans = vec![
-                                    Span::raw(marker),
-                                    Span::raw(opt.clone()),
-                                ];
+                                let mut spans = vec![Span::raw(marker), Span::raw(opt.clone())];
                                 // `&'static str` from `ConfigHelp`, never a
                                 // value out of the project's config.json
                                 // (T-S0N-01). An option with no recorded
@@ -8404,12 +8473,7 @@ fn phase_list_label(
 ) -> String {
     let mut label = format!("P{}: {}", shown(&phase.number), shown(&phase.name));
     let numbered = inf
-        .map(|inf| {
-            inf.plan_waves
-                .iter()
-                .filter(|w| w.wave.is_some())
-                .count()
-        })
+        .map(|inf| inf.plan_waves.iter().filter(|w| w.wave.is_some()).count())
         .unwrap_or(0);
     if numbered >= 2 {
         // The left pane is 40% of the tab width, so ratatui truncates this
@@ -8974,7 +9038,11 @@ fn waves_model(
         .plans
         .iter()
         .map(|p| p.id.as_str())
-        .chain(inf.plan_waves.iter().flat_map(|w| w.plans.iter().map(String::as_str)))
+        .chain(
+            inf.plan_waves
+                .iter()
+                .flat_map(|w| w.plans.iter().map(String::as_str)),
+        )
         .chain(inf.plan_tokens.iter().map(|t| t.id.as_str()));
     for id in ids {
         if !universe.iter().any(|u| u == id) {
@@ -9000,8 +9068,7 @@ fn waves_model(
                 .iter()
                 .map(|mp| {
                     let matched = universe.iter().find(|u| {
-                        **u == mp.id
-                            || plan_index(u).is_some_and(|k| plan_index(&mp.id) == Some(k))
+                        **u == mp.id || plan_index(u).is_some_and(|k| plan_index(&mp.id) == Some(k))
                     });
                     match matched {
                         Some(id) => make(id),
@@ -9080,8 +9147,7 @@ fn waves_model(
         .iter()
         .filter(|w| w.wave.is_some() && !w.all_done())
         .find_map(|w| w.wave);
-    let no_live_agents =
-        phase_is_active && view.is_none() && done > 0 && done < all.len();
+    let no_live_agents = phase_is_active && view.is_none() && done > 0 && done < all.len();
 
     WavesModel {
         phase_key: phase_key(phase_number),
@@ -9364,7 +9430,9 @@ fn waves_row_line(
     let cursor = if cursor_here {
         Span::styled(
             "> ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )
     } else {
         Span::raw("  ")
@@ -9395,8 +9463,8 @@ fn waves_row_line(
             };
             let show_word = cells >= base + WAVES_WORD_CELLS + tokens_w + min_title;
             let word_w = if show_word { WAVES_WORD_CELLS } else { 0 };
-            let show_tokens = tokens.is_some()
-                && cells >= base + word_w + tokens_w + min_title.min(8);
+            let show_tokens =
+                tokens.is_some() && cells >= base + word_w + tokens_w + min_title.min(8);
             let tokens_w = if show_tokens { tokens_w } else { 0 };
             // An Unmerged plan's `@ref +N ~D [▶ active]` tail is reserved like
             // the tokens: the active marker drops first, then the whole hint,
@@ -9660,8 +9728,12 @@ fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::Path
 /// row, so a click target cannot drift from what is drawn (quick 260926-dyf;
 /// shared with the Config scope strip since quick 260927-t3s).
 fn strip_label_rects(row: Rect, strip: &Line) -> [Rect; 2] {
-    let cells =
-        |i: usize| strip.spans.get(i).map_or(0, |s| u16::try_from(s.width()).unwrap_or(u16::MAX));
+    let cells = |i: usize| {
+        strip
+            .spans
+            .get(i)
+            .map_or(0, |s| u16::try_from(s.width()).unwrap_or(u16::MAX))
+    };
     let label = |start: u16, width: u16| {
         let x = row.x.saturating_add(start).min(row.right());
         Rect::new(x, row.y, width.min(row.right() - x), row.height.min(1))
@@ -9749,7 +9821,10 @@ fn sub_tab_strip_spans(
 /// screen's focus colour.
 ///
 /// Static, authored text only — no project value reaches it (T-t3s-05).
-pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget, focused: bool) -> Line<'static> {
+pub(crate) fn config_scope_strip(
+    target: super::DefaultsEditTarget,
+    focused: bool,
+) -> Line<'static> {
     use super::DefaultsEditTarget;
     let global = target == DefaultsEditTarget::Global;
     let active_style = Style::default()
@@ -9765,7 +9840,9 @@ pub(crate) fn config_scope_strip(target: super::DefaultsEditTarget, focused: boo
     if focused {
         spans[0] = Span::styled(
             "\u{25b8}",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         );
     }
     spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
@@ -9922,7 +9999,11 @@ fn agents_wave_strip(view: &AgentView, cells: usize) -> Line<'static> {
             tokens.push(if last == index {
                 format!("{}\u{2713}", wave.label())
             } else {
-                format!("{}\u{2013}{}\u{2713}", wave.label(), view.waves[last].label())
+                format!(
+                    "{}\u{2013}{}\u{2713}",
+                    wave.label(),
+                    view.waves[last].label()
+                )
             });
             index = last + 1;
             continue;
@@ -9939,7 +10020,11 @@ fn agents_wave_strip(view: &AgentView, cells: usize) -> Line<'static> {
             .map(|(n, s)| format!("{n} {}", s.word()))
             .collect();
             current = Some(tokens.len());
-            tokens.push(format!("\u{25b8}{} {}", wave.label(), counts.join(" \u{b7} ")));
+            tokens.push(format!(
+                "\u{25b8}{} {}",
+                wave.label(),
+                counts.join(" \u{b7} ")
+            ));
         } else {
             tokens.push(format!("{}\u{b7}", wave.label()));
         }
@@ -10073,7 +10158,8 @@ fn agent_line(
         (agent_state_word(liveness), agent_state_style(liveness))
     };
     let state = format!("{word:<AGENT_STATE_CELLS$}");
-    let fixed = Span::raw(indent).width() + Span::raw(&*state).width() + 2 + Span::raw(&*tail).width();
+    let fixed =
+        Span::raw(indent).width() + Span::raw(&*state).width() + 2 + Span::raw(&*tail).width();
     let label = fit_cells(label, line_cells.saturating_sub(fixed).max(1));
     Line::from(vec![
         Span::raw(indent.to_string()),
@@ -10129,7 +10215,14 @@ fn agent_list_lines(view: &AgentView, line_cells: usize) -> Vec<Line<'static>> {
             agent_age(view.scanned_at, row.last_activity)
         ));
         let pending = view.awaiting_merge_at(&row.path);
-        lines.push(agent_line("", row.liveness, pending, &label, tail, line_cells));
+        lines.push(agent_line(
+            "",
+            row.liveness,
+            pending,
+            &label,
+            tail,
+            line_cells,
+        ));
 
         for child in &row.children {
             lines.push(child_line("    ", child, view.scanned_at, line_cells));
@@ -10319,7 +10412,11 @@ fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec
     } else {
         "tab bar  "
     };
-    let mut spans = vec![Span::raw("  "), Span::styled("[\u{2191}]", b), Span::raw(up)];
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled("[\u{2191}]", b),
+        Span::raw(up),
+    ];
     if matches!(sub_view, DetailSubView::Pipeline) {
         // `→` and `Enter` descend into the Waves pane on this tab (quick
         // 260926-2l4), so only `←` still switches tab.
@@ -10552,7 +10649,10 @@ impl ConfigValueKind {
     /// Does Enter on a row of this kind open the free-text prompt (rather
     /// than a dropdown or an in-place step)? `String` and `Secret` do.
     fn opens_text_prompt(&self) -> bool {
-        matches!(self.editable(), ConfigValueKind::String | ConfigValueKind::Secret)
+        matches!(
+            self.editable(),
+            ConfigValueKind::String | ConfigValueKind::Secret
+        )
     }
 }
 
@@ -10616,7 +10716,11 @@ struct ConfigHelp {
 impl ConfigHelp {
     /// Help for an option with no discrete choice set.
     const fn new(summary: &'static str) -> Self {
-        Self { summary, choices: &[], since: "" }
+        Self {
+            summary,
+            choices: &[],
+            since: "",
+        }
     }
 
     /// Help for an option whose values are enumerable, each with its own
@@ -10625,7 +10729,11 @@ impl ConfigHelp {
         summary: &'static str,
         choices: &'static [(&'static str, &'static str)],
     ) -> Self {
-        Self { summary, choices, since: "" }
+        Self {
+            summary,
+            choices,
+            since: "",
+        }
     }
 
     /// Record the gsd-core release this key arrived in.
@@ -10722,9 +10830,7 @@ fn dropdown_popup_width(
         .unwrap_or(0);
     let inner_w = max_opt_width.max(title.chars().count() + 2).max(20);
     let inner_w = u16::try_from(inner_w).unwrap_or(u16::MAX);
-    inner_w
-        .saturating_add(4)
-        .min(area_width.saturating_sub(2))
+    inner_w.saturating_add(4).min(area_width.saturating_sub(2))
 }
 
 /// The pane under the Defaults list: the selected option's summary, and its
@@ -10738,10 +10844,8 @@ fn dropdown_popup_width(
 /// string reaches this function it needs `crate::text::render_for_terminal`,
 /// and the guarantee stops being structural.
 fn build_config_help_pane(help: &ConfigHelp) -> Paragraph<'static> {
-    let mut summary_spans: Vec<Span<'static>> = vec![Span::styled(
-        help.summary,
-        Style::default().fg(Color::Gray),
-    )];
+    let mut summary_spans: Vec<Span<'static>> =
+        vec![Span::styled(help.summary, Style::default().fg(Color::Gray))];
     if !help.since.is_empty() {
         // A dim trailing marker rather than a line of its own: the pane has
         // four rows total and a whole row spent on a version string is a row
@@ -10815,7 +10919,10 @@ fn opt_bool(project: Option<bool>) -> (String, ConfigValueKind) {
     if let Some(v) = project {
         (v.to_string(), ConfigValueKind::Bool)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Bool)))
+        (
+            "(unset)".to_string(),
+            ConfigValueKind::Unset(Box::new(ConfigValueKind::Bool)),
+        )
     }
 }
 
@@ -10840,7 +10947,10 @@ fn opt_secret(
     if let Some(s) = project {
         (secret_setting_display(s), ConfigValueKind::Secret)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Secret)))
+        (
+            "(unset)".to_string(),
+            ConfigValueKind::Unset(Box::new(ConfigValueKind::Secret)),
+        )
     }
 }
 
@@ -10848,7 +10958,10 @@ fn opt_str(project: Option<&str>) -> (String, ConfigValueKind) {
     if let Some(s) = project {
         (s.to_string(), ConfigValueKind::String)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::String)))
+        (
+            "(unset)".to_string(),
+            ConfigValueKind::Unset(Box::new(ConfigValueKind::String)),
+        )
     }
 }
 
@@ -10856,18 +10969,21 @@ fn opt_u32(project: Option<u32>) -> (String, ConfigValueKind) {
     if let Some(n) = project {
         (n.to_string(), ConfigValueKind::Integer)
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Integer)))
+        (
+            "(unset)".to_string(),
+            ConfigValueKind::Unset(Box::new(ConfigValueKind::Integer)),
+        )
     }
 }
 
-fn opt_enum(
-    project: Option<&str>,
-    options: &'static [&'static str],
-) -> (String, ConfigValueKind) {
+fn opt_enum(project: Option<&str>, options: &'static [&'static str]) -> (String, ConfigValueKind) {
     if let Some(s) = project {
         (s.to_string(), ConfigValueKind::Enum(options))
     } else {
-        ("(unset)".to_string(), ConfigValueKind::Unset(Box::new(ConfigValueKind::Enum(options))))
+        (
+            "(unset)".to_string(),
+            ConfigValueKind::Unset(Box::new(ConfigValueKind::Enum(options))),
+        )
     }
 }
 
@@ -10877,10 +10993,7 @@ fn opt_enum(
 /// [`crate::state_reader::config_secrets::display_config_value`] (quick task
 /// 260926-jnf), so a secret-named MEMBER nested inside it — e.g. an `api_key`
 /// in a `review.reviewer_instances` entry — renders masked (T-jnf-01).
-fn opt_json_readonly(
-    path: &str,
-    project: Option<&serde_json::Value>,
-) -> (String, ConfigValueKind) {
+fn opt_json_readonly(path: &str, project: Option<&serde_json::Value>) -> (String, ConfigValueKind) {
     use crate::state_reader::config_secrets::display_config_value;
     if let Some(v) = project {
         (display_config_value(path, v), ConfigValueKind::ReadOnly)
@@ -11111,14 +11224,21 @@ fn build_defaults_entries(
         pwf.and_then(|w| w.code_review_depth.as_deref()),
         &["quick", "standard", "deep"],
     );
-    push(cat, "code_review_depth", v, k, false, ConfigHelp::with_choices(
-        "How deeply that code review reads the diff, trading findings against time and tokens.",
-        &[
-            ("quick", "skims the diff for obvious defects"),
-            ("standard", "reads changed files in full, the default"),
-            ("deep", "traces call paths and edge cases, slowest"),
-        ],
-    ));
+    push(
+        cat,
+        "code_review_depth",
+        v,
+        k,
+        false,
+        ConfigHelp::with_choices(
+            "How deeply that code review reads the diff, trading findings against time and tokens.",
+            &[
+                ("quick", "skims the diff for obvious defects"),
+                ("standard", "reads changed files in full, the default"),
+                ("deep", "traces call paths and edge cases, slowest"),
+            ],
+        ),
+    );
     let (v, k) = opt_bool(pwf.and_then(|w| w.ui_review));
     push(cat, "ui_review", v, k, false, ConfigHelp::new(
         "Runs the six-pillar visual audit of /gsd-ui-review over a phase's frontend code in autonomous mode.",
@@ -11250,9 +11370,7 @@ fn build_defaults_entries(
     ));
     // gsd-core's NAMESPACED spelling of the same switch. Both are modelled
     // because they are different JSON paths and a project may carry either.
-    let (v, k) = opt_bool(
-        config.planning.as_ref().and_then(|p| p.commit_docs),
-    );
+    let (v, k) = opt_bool(config.planning.as_ref().and_then(|p| p.commit_docs));
     push(cat, "planning.commit_docs", v, k, false, ConfigHelp::new(
         "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
     ).since("v1.01.0"));
@@ -11276,42 +11394,42 @@ fn build_defaults_entries(
             ("false", "the full instruction set, byte-identical to before"),
         ],
     ).since("v1.14.0"));
-    let (v, k) = opt_str(
-        config.response_language.as_deref(),
-    );
+    let (v, k) = opt_str(config.response_language.as_deref());
     push(cat, "response_language", v, k, false, ConfigHelp::new(
         "Language GSD writes user-facing prose in, given as a name such as English, Portuguese or Japanese.",
     ));
 
     // ── Features ──────────────────────────────────────────────
     let cat = "Features";
-    let (v, k) = opt_bool(
-        config.intel.as_ref().and_then(|i| i.enabled),
-    );
+    let (v, k) = opt_bool(config.intel.as_ref().and_then(|i| i.enabled));
     push(cat, "intel_enabled", v, k, true, ConfigHelp::new(
         "Builds a queryable code index under .planning/intel/ so agents look symbols up instead of grepping.",
     ));
-    let (v, k) = opt_bool(
-        config.graphify.as_ref().and_then(|g| g.enabled),
-    );
+    let (v, k) = opt_bool(config.graphify.as_ref().and_then(|g| g.enabled));
     push(cat, "graphify_enabled", v, k, false, ConfigHelp::new(
         "Builds the project knowledge graph so decisions and phases can be queried by relation, not by reading.",
     ));
-    let (v, k) = opt_u32(
-        config.graphify.as_ref().and_then(|g| g.build_timeout),
+    let (v, k) = opt_u32(config.graphify.as_ref().and_then(|g| g.build_timeout));
+    push(
+        cat,
+        "graphify_build_timeout",
+        v,
+        k,
+        false,
+        ConfigHelp::new(
+            "Seconds a knowledge-graph build may run before it is abandoned; GSD's default is 300.",
+        ),
     );
-    push(cat, "graphify_build_timeout", v, k, false, ConfigHelp::new(
-        "Seconds a knowledge-graph build may run before it is abandoned; GSD's default is 300.",
-    ));
     let (v, k) = opt_str(
-        config.graphify.as_ref().and_then(|g| g.graph_path.as_deref()),
+        config
+            .graphify
+            .as_ref()
+            .and_then(|g| g.graph_path.as_deref()),
     );
     push(cat, "graphify.graph_path", v, k, false, ConfigHelp::new(
         "Where graph.json lives, letting several projects share one umbrella graph instead of each building its own.",
     ));
-    let (v, k) = opt_bool(
-        config.graphify.as_ref().and_then(|g| g.auto_update),
-    );
+    let (v, k) = opt_bool(config.graphify.as_ref().and_then(|g| g.auto_update));
     push(cat, "graphify.auto_update", v, k, false, ConfigHelp::new(
         "Rebuilds that graph in the background after a commit or merge on the default branch, instead of on request.",
     ).since("v1.01.0"));
@@ -11364,16 +11482,29 @@ fn build_defaults_entries(
             ("fine", "many small plans, easiest to resume mid-phase"),
         ],
     ));
-    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget", "adaptive", "inherit"]), false, ConfigHelp::with_choices(
-        "Which model each GSD agent gets, trading answer quality against token cost.",
-        &[
-            ("quality", "the strongest model for every agent, highest cost"),
-            ("balanced", "strong models for planning, cheaper for mapping"),
-            ("budget", "the cheapest capable model everywhere"),
-            ("adaptive", "picks per agent from the work's routing tier"),
-            ("inherit", "uses whatever model your session already runs"),
-        ],
-    ));
+    push(
+        cat,
+        "model_profile",
+        config.model_profile.clone(),
+        ConfigValueKind::Enum(&["quality", "balanced", "budget", "adaptive", "inherit"]),
+        false,
+        ConfigHelp::with_choices(
+            "Which model each GSD agent gets, trading answer quality against token cost.",
+            &[
+                (
+                    "quality",
+                    "the strongest model for every agent, highest cost",
+                ),
+                (
+                    "balanced",
+                    "strong models for planning, cheaper for mapping",
+                ),
+                ("budget", "the cheapest capable model everywhere"),
+                ("adaptive", "picks per agent from the work's routing tier"),
+                ("inherit", "uses whatever model your session already runs"),
+            ],
+        ),
+    );
     // top-level key promotion (quick task 260926-jnf), INFERRED I-8 / I-9.
     let (v, k) = opt_str(config.runtime.as_deref());
     push(cat, "runtime", v, k, false, ConfigHelp::new(
@@ -11391,21 +11522,32 @@ fn build_defaults_entries(
             ("review", "code review work: verifier and code review on"),
         ],
     ).since("v1.01.0"));
-    let (v, k) = opt_json_readonly(
-        "agent_skills",
-        config.agent_skills.as_ref(),
-    );
+    let (v, k) = opt_json_readonly("agent_skills", config.agent_skills.as_ref());
     push(cat, "agent_skills", v, k, false, ConfigHelp::new(
         "Map of agent types to the skill entries each gets, e.g. gsd-planner to a skills list; edited in the file.",
     ).since("v1.01.0"));
     let (v, k) = opt_bool(config.parallelization);
-    push(cat, "parallelization", v, k, false, ConfigHelp::new(
-        "Runs plans that share no files at the same time instead of one after another.",
-    ));
+    push(
+        cat,
+        "parallelization",
+        v,
+        k,
+        false,
+        ConfigHelp::new(
+            "Runs plans that share no files at the same time instead of one after another.",
+        ),
+    );
     let (v, k) = opt_bool(pwf.and_then(|w| w.auto_advance));
-    push(cat, "auto_advance", v, k, false, ConfigHelp::new(
-        "Advances to the next phase on completion without stopping to ask you first.",
-    ));
+    push(
+        cat,
+        "auto_advance",
+        v,
+        k,
+        false,
+        ConfigHelp::new(
+            "Advances to the next phase on completion without stopping to ask you first.",
+        ),
+    );
     let (v, k) = opt_bool(pwf.and_then(|w| w.auto_chain_active));
     push(cat, "auto_chain_active", v, k, false, ConfigHelp::with_choices(
         "Runtime state GSD sets while an autonomous chain is in flight — read it, do not set it by hand.",
@@ -11427,25 +11569,21 @@ fn build_defaults_entries(
             ("milestone", "one branch for the whole milestone"),
         ],
     ));
-    let (v, k) = opt_str(
-        pgit.and_then(|g| g.base_branch.as_deref()),
-    );
+    let (v, k) = opt_str(pgit.and_then(|g| g.base_branch.as_deref()));
     push(cat, "base_branch", v, k, false, ConfigHelp::new(
         "Branch that PRs target and that phase branches fork from; unset auto-detects it from origin/HEAD.",
     ));
-    let (v, k) = opt_str(
-        pgit.and_then(|g| g.phase_branch_template.as_deref()),
-    );
+    let (v, k) = opt_str(pgit.and_then(|g| g.phase_branch_template.as_deref()));
     push(cat, "phase_branch_template", v, k, false, ConfigHelp::new(
         "Name pattern for a phase branch, with {phase} and {slug} substituted, e.g. gsd/phase-{phase}-{slug}.",
     ));
-    let (v, k) = opt_str(
-        pgit.and_then(|g| g.milestone_branch_template.as_deref()),
-    );
+    let (v, k) = opt_str(pgit.and_then(|g| g.milestone_branch_template.as_deref()));
     push(cat, "milestone_branch_template", v, k, false, ConfigHelp::new(
         "Name pattern for a milestone branch, with {milestone} and {slug} substituted, e.g. gsd/{milestone}-{slug}.",
     ));
-    let qbt_proj = pgit.and_then(|g| g.quick_branch_template.as_ref()).map(|v| v.to_string());
+    let qbt_proj = pgit
+        .and_then(|g| g.quick_branch_template.as_ref())
+        .map(|v| v.to_string());
     let (qbt_val, qbt_kind) = match qbt_proj {
         Some(s) => (s, ConfigValueKind::String),
         None => (
@@ -11461,9 +11599,7 @@ fn build_defaults_entries(
     push(cat, "git.create_tag", v, k, false, ConfigHelp::new(
         "Tags the repository when a milestone closes; turn it off for a project with its own release flow.",
     ).since("v1.01.0"));
-    let (v, k) = opt_bool(
-        pgit.and_then(|g| g.allow_default_branch_commits),
-    );
+    let (v, k) = opt_bool(pgit.and_then(|g| g.allow_default_branch_commits));
     push(cat, "git.allow_default_branch_commits", v, k, false, ConfigHelp::with_choices(
         "Escape hatch letting an executor commit straight onto the repository's own trunk instead of refusing.",
         &[
@@ -11481,23 +11617,17 @@ fn build_defaults_entries(
 
     // ── Misc ──────────────────────────────────────────────────
     let cat = "Misc";
-    let (v, k) = opt_bool(
-        config.hooks.as_ref().and_then(|h| h.context_warnings),
-    );
+    let (v, k) = opt_bool(config.hooks.as_ref().and_then(|h| h.context_warnings));
     push(cat, "context_warnings", v, k, true, ConfigHelp::new(
         "Warns in the statusline as a session's context budget runs out, before a compaction loses what was said.",
     ));
     // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
     let phk = config.hooks.as_ref();
-    let (v, k) = opt_u32(
-        phk.and_then(|h| h.context_warning_threshold),
-    );
+    let (v, k) = opt_u32(phk.and_then(|h| h.context_warning_threshold));
     push(cat, "hooks.context_warning_threshold", v, k, false, ConfigHelp::new(
         "Percent of the window still FREE at which that warning first appears; default 35, and it must sit above the next row.",
     ).since("v1.14.0"));
-    let (v, k) = opt_u32(
-        phk.and_then(|h| h.context_critical_threshold),
-    );
+    let (v, k) = opt_u32(phk.and_then(|h| h.context_critical_threshold));
     push(cat, "hooks.context_critical_threshold", v, k, false, ConfigHelp::new(
         "Percent still FREE at which the warning escalates; default 25, and it must stay strictly below the row above.",
     ).since("v1.14.0"));
@@ -11528,9 +11658,7 @@ fn build_defaults_entries(
     push(cat, "search_gitignored", v, k, false, ConfigHelp::new(
         "Includes gitignored paths in broad ripgrep searches, so build output and vendored code are searched too.",
     ));
-    let (v, k) = opt_bool(
-        config.planning.as_ref().and_then(|p| p.search_gitignored),
-    );
+    let (v, k) = opt_bool(config.planning.as_ref().and_then(|p| p.search_gitignored));
     push(cat, "planning.search_gitignored", v, k, false, ConfigHelp::new(
         "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
     ).since("v1.01.0"));
@@ -11594,9 +11722,16 @@ fn build_defaults_entries(
         "How much GSD state the statusline prints: full spells phase, plan and status; compact abbreviates them.",
     ));
     let (v, k) = opt_bool(psl.and_then(|s| s.show_git));
-    push(cat, "statusline.show_git", v, k, false, ConfigHelp::new(
-        "Shows the current git branch and its dirty-tree marker in the statusline.",
-    ));
+    push(
+        cat,
+        "statusline.show_git",
+        v,
+        k,
+        false,
+        ConfigHelp::new(
+            "Shows the current git branch and its dirty-tree marker in the statusline.",
+        ),
+    );
     // gsd-core 1.14.0 re-sync (quick task 260916-vqw).
     let (v, k) = opt_enum(
         psl.and_then(|s| s.context_position.as_deref()),
@@ -11651,9 +11786,16 @@ fn build_defaults_entries(
         "Milliseconds the scheduler poll subprocess (squeue, then sacct) may run before it is killed; default 15000.",
     ));
     let (v, k) = opt_str(pej.and_then(|e| e.artifact_dir.as_deref()));
-    push(cat, "external_job.artifact_dir", v, k, false, ConfigHelp::new(
-        "Root directory each external job's artifacts land under, one subdirectory per job id.",
-    ));
+    push(
+        cat,
+        "external_job.artifact_dir",
+        v,
+        k,
+        false,
+        ConfigHelp::new(
+            "Root directory each external job's artifacts land under, one subdirectory per job id.",
+        ),
+    );
 
     // ── Capabilities ──────────────────────────────────────────
     let cat = "Capabilities";
@@ -11671,7 +11813,10 @@ fn build_defaults_entries(
     let cat = "Review";
     let (v, k) = opt_json_readonly(
         "review.reviewer_instances",
-        config.review.as_ref().and_then(|r| r.reviewer_instances.as_ref()),
+        config
+            .review
+            .as_ref()
+            .and_then(|r| r.reviewer_instances.as_ref()),
     );
     push(cat, "review.reviewer_instances", v, k, true, ConfigHelp::new(
         "Named cross-AI reviewer instances that /gsd-review dispatches to; shown here, edited in the config file.",
@@ -11684,13 +11829,29 @@ fn build_defaults_entries(
     let cat = "Gates";
     let pga = config.gates.as_ref();
     let (v, k) = opt_bool(pga.and_then(|g| g.confirm_project));
-    push(cat, "gates.confirm_project", v, k, true, ConfigHelp::new(
-        "Shows you the gathered project details and waits for a yes before writing PROJECT.md.",
-    ).since("v1.01.0"));
+    push(
+        cat,
+        "gates.confirm_project",
+        v,
+        k,
+        true,
+        ConfigHelp::new(
+            "Shows you the gathered project details and waits for a yes before writing PROJECT.md.",
+        )
+        .since("v1.01.0"),
+    );
     let (v, k) = opt_bool(pga.and_then(|g| g.confirm_roadmap));
-    push(cat, "gates.confirm_roadmap", v, k, false, ConfigHelp::new(
-        "Shows you the drafted milestone plan and waits for a yes before any phase is written.",
-    ).since("v1.01.0"));
+    push(
+        cat,
+        "gates.confirm_roadmap",
+        v,
+        k,
+        false,
+        ConfigHelp::new(
+            "Shows you the drafted milestone plan and waits for a yes before any phase is written.",
+        )
+        .since("v1.01.0"),
+    );
     let (v, k) = opt_bool(pga.and_then(|g| g.confirm_phases));
     push(cat, "gates.confirm_phases", v, k, false, ConfigHelp::new(
         "Shows you how the milestone was cut into phases and waits for a yes before planning any of them.",
@@ -11700,17 +11861,37 @@ fn build_defaults_entries(
         "Shows you how a phase was cut into tasks and waits for a yes before the plan is finalised.",
     ).since("v1.01.0"));
     let (v, k) = opt_bool(pga.and_then(|g| g.confirm_plan));
-    push(cat, "gates.confirm_plan", v, k, false, ConfigHelp::new(
-        "Waits for a yes on each finished PLAN.md before its tasks are executed.",
-    ).since("v1.01.0"));
+    push(
+        cat,
+        "gates.confirm_plan",
+        v,
+        k,
+        false,
+        ConfigHelp::new("Waits for a yes on each finished PLAN.md before its tasks are executed.")
+            .since("v1.01.0"),
+    );
     let (v, k) = opt_bool(pga.and_then(|g| g.execute_next_plan));
-    push(cat, "gates.execute_next_plan", v, k, false, ConfigHelp::new(
-        "Stops between two plans of the same phase and asks before starting the following one.",
-    ).since("v1.01.0"));
+    push(
+        cat,
+        "gates.execute_next_plan",
+        v,
+        k,
+        false,
+        ConfigHelp::new(
+            "Stops between two plans of the same phase and asks before starting the following one.",
+        )
+        .since("v1.01.0"),
+    );
     let (v, k) = opt_bool(pga.and_then(|g| g.confirm_transition));
-    push(cat, "gates.confirm_transition", v, k, false, ConfigHelp::new(
-        "Stops at a phase boundary and asks before moving on to the one after it.",
-    ).since("v1.01.0"));
+    push(
+        cat,
+        "gates.confirm_transition",
+        v,
+        k,
+        false,
+        ConfigHelp::new("Stops at a phase boundary and asks before moving on to the one after it.")
+            .since("v1.01.0"),
+    );
     let (v, k) = opt_bool(pga.and_then(|g| g.issues_review));
     push(cat, "gates.issues_review", v, k, false, ConfigHelp::new(
         "Shows you the open issues and waits for a yes before any fix plan is written from them.",
@@ -11735,21 +11916,43 @@ fn build_defaults_entries(
 /// documented built-in value and keeps showing `(unset)` alone.
 fn builtin_default_for_key(key: &str) -> Option<&'static str> {
     Some(match key {
-        "research" | "plan_check" | "pattern_mapper" | "nyquist_validation" | "ui_phase"
-        | "ui_safety_gate" | "ai_integration_phase" | "workflow.context_coverage_gate"
-        | "workflow.post_planning_gaps" | "planner.stall_detection_enabled"
-        | "plan_review.source_grounding" | "verifier" | "code_review" | "node_repair"
-        | "workflow.security_enforcement" | "workflow.agent_hint_routing" | "commit_docs"
-        | "planning.commit_docs" | "parallelization" | "git.create_tag" | "context_warnings" => {
-            "true"
-        }
-        "workflow.plan_bounce" | "planning.pr_strict" | "skip_discuss" | "text_mode"
-        | "workflow.compact_content" | "graphify.auto_update" | "auto_advance"
-        | "auto_chain_active" | "hooks.workflow_guard" | "research_before_questions"
-        | "search_gitignored" | "planning.search_gitignored" => "false",
+        "research"
+        | "plan_check"
+        | "pattern_mapper"
+        | "nyquist_validation"
+        | "ui_phase"
+        | "ui_safety_gate"
+        | "ai_integration_phase"
+        | "workflow.context_coverage_gate"
+        | "workflow.post_planning_gaps"
+        | "planner.stall_detection_enabled"
+        | "plan_review.source_grounding"
+        | "verifier"
+        | "code_review"
+        | "node_repair"
+        | "workflow.security_enforcement"
+        | "workflow.agent_hint_routing"
+        | "commit_docs"
+        | "planning.commit_docs"
+        | "parallelization"
+        | "git.create_tag"
+        | "context_warnings" => "true",
+        "workflow.plan_bounce"
+        | "planning.pr_strict"
+        | "skip_discuss"
+        | "text_mode"
+        | "workflow.compact_content"
+        | "graphify.auto_update"
+        | "auto_advance"
+        | "auto_chain_active"
+        | "hooks.workflow_guard"
+        | "research_before_questions"
+        | "search_gitignored"
+        | "planning.search_gitignored" => "false",
         "subagent_timeout" => "300000",
-        "workflow.inline_plan_threshold" | "workflow.plan_bounce_passes"
-        | "node_repair_budget" => "2",
+        "workflow.inline_plan_threshold" | "workflow.plan_bounce_passes" | "node_repair_budget" => {
+            "2"
+        }
         "workflow.max_discuss_passes" => "3",
         "workflow.smart_zone_tokens" => "100000",
         "workflow.security_asvs_level" => "1",
@@ -11923,9 +12126,7 @@ fn entries_for_cache(cache: &super::ProjectViewCache) -> Vec<ConfigEntry> {
         DefaultsEditTarget::Project => cache.defaults_config.as_ref(),
         DefaultsEditTarget::Global => cache.defaults_user_config.as_ref(),
     };
-    primary
-        .map(build_defaults_entries)
-        .unwrap_or_default()
+    primary.map(build_defaults_entries).unwrap_or_default()
 }
 
 /// Does `entry` match the Config tab's `/` filter? `q_lower` is the filter,
@@ -12272,128 +12473,599 @@ fn set_config_value(
 
     if let Some(b) = parse_bool(value) {
         match key {
-            "commit_docs" => { config.commit_docs = Some(b); return true; }
-            "parallelization" => { config.parallelization = Some(b); return true; }
-            "search_gitignored" => { config.search_gitignored = Some(b); return true; }
-            "research" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research = Some(b); return true; }
-            "plan_check" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_check = Some(b); return true; }
-            "verifier" => { config.workflow.get_or_insert_with(WorkflowConfig::default).verifier = Some(b); return true; }
-            "nyquist_validation" => { config.workflow.get_or_insert_with(WorkflowConfig::default).nyquist_validation = Some(b); return true; }
-            "auto_advance" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_advance = Some(b); return true; }
-            "node_repair" => { config.workflow.get_or_insert_with(WorkflowConfig::default).node_repair = Some(b); return true; }
-            "ui_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_phase = Some(b); return true; }
-            "ui_safety_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_safety_gate = Some(b); return true; }
-            "text_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).text_mode = Some(b); return true; }
-            "research_before_questions" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research_before_questions = Some(b); return true; }
-            "skip_discuss" => { config.workflow.get_or_insert_with(WorkflowConfig::default).skip_discuss = Some(b); return true; }
-            "auto_chain_active" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_chain_active = Some(b); return true; }
-            "use_worktrees" => { config.workflow.get_or_insert_with(WorkflowConfig::default).use_worktrees = Some(b); return true; }
-            "context_warnings" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warnings = Some(b); return true; }
-            "intel_enabled" => { config.intel.get_or_insert_with(IntelConfig::default).enabled = Some(b); return true; }
-            "graphify_enabled" => { config.graphify.get_or_insert_with(GraphifyConfig::default).enabled = Some(b); return true; }
-            "pattern_mapper" => { config.workflow.get_or_insert_with(WorkflowConfig::default).pattern_mapper = Some(b); return true; }
-            "ai_integration_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ai_integration_phase = Some(b); return true; }
-            "tdd_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).tdd_mode = Some(b); return true; }
-            "code_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review = Some(b); return true; }
-            "ui_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_review = Some(b); return true; }
+            "commit_docs" => {
+                config.commit_docs = Some(b);
+                return true;
+            }
+            "parallelization" => {
+                config.parallelization = Some(b);
+                return true;
+            }
+            "search_gitignored" => {
+                config.search_gitignored = Some(b);
+                return true;
+            }
+            "research" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .research = Some(b);
+                return true;
+            }
+            "plan_check" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .plan_check = Some(b);
+                return true;
+            }
+            "verifier" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .verifier = Some(b);
+                return true;
+            }
+            "nyquist_validation" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .nyquist_validation = Some(b);
+                return true;
+            }
+            "auto_advance" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .auto_advance = Some(b);
+                return true;
+            }
+            "node_repair" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .node_repair = Some(b);
+                return true;
+            }
+            "ui_phase" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .ui_phase = Some(b);
+                return true;
+            }
+            "ui_safety_gate" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .ui_safety_gate = Some(b);
+                return true;
+            }
+            "text_mode" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .text_mode = Some(b);
+                return true;
+            }
+            "research_before_questions" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .research_before_questions = Some(b);
+                return true;
+            }
+            "skip_discuss" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .skip_discuss = Some(b);
+                return true;
+            }
+            "auto_chain_active" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .auto_chain_active = Some(b);
+                return true;
+            }
+            "use_worktrees" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .use_worktrees = Some(b);
+                return true;
+            }
+            "context_warnings" => {
+                config
+                    .hooks
+                    .get_or_insert_with(HooksConfig::default)
+                    .context_warnings = Some(b);
+                return true;
+            }
+            "intel_enabled" => {
+                config
+                    .intel
+                    .get_or_insert_with(IntelConfig::default)
+                    .enabled = Some(b);
+                return true;
+            }
+            "graphify_enabled" => {
+                config
+                    .graphify
+                    .get_or_insert_with(GraphifyConfig::default)
+                    .enabled = Some(b);
+                return true;
+            }
+            "pattern_mapper" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .pattern_mapper = Some(b);
+                return true;
+            }
+            "ai_integration_phase" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .ai_integration_phase = Some(b);
+                return true;
+            }
+            "tdd_mode" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .tdd_mode = Some(b);
+                return true;
+            }
+            "code_review" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .code_review = Some(b);
+                return true;
+            }
+            "ui_review" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .ui_review = Some(b);
+                return true;
+            }
             // GSD 1.4–1.8 workflow gates
-            "workflow.specless_probe_fallback" => { config.workflow.get_or_insert_with(WorkflowConfig::default).specless_probe_fallback = Some(b); return true; }
-            "workflow.assumption_delta" => { config.workflow.get_or_insert_with(WorkflowConfig::default).assumption_delta = Some(b); return true; }
-            "workflow.plan_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_drift_precheck = Some(b); return true; }
-            "workflow.plan_chunked" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_chunked = Some(b); return true; }
-            "workflow.api_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).api_coverage_gate = Some(b); return true; }
-            "workflow.windows_enforce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).windows_enforce = Some(b); return true; }
-            "workflow.mvp_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).mvp_mode = Some(b); return true; }
+            "workflow.specless_probe_fallback" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .specless_probe_fallback = Some(b);
+                return true;
+            }
+            "workflow.assumption_delta" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .assumption_delta = Some(b);
+                return true;
+            }
+            "workflow.plan_drift_precheck" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .plan_drift_precheck = Some(b);
+                return true;
+            }
+            "workflow.plan_chunked" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .plan_chunked = Some(b);
+                return true;
+            }
+            "workflow.api_coverage_gate" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .api_coverage_gate = Some(b);
+                return true;
+            }
+            "workflow.windows_enforce" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .windows_enforce = Some(b);
+                return true;
+            }
+            "workflow.mvp_mode" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .mvp_mode = Some(b);
+                return true;
+            }
             // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
-            "workflow.compact_content" => { config.workflow.get_or_insert_with(WorkflowConfig::default).compact_content = Some(b); return true; }
-            "workflow.agent_hint_routing" => { config.workflow.get_or_insert_with(WorkflowConfig::default).agent_hint_routing = Some(b); return true; }
-            "workflow.auto_prune_state" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_prune_state = Some(b); return true; }
-            "workflow.context_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_coverage_gate = Some(b); return true; }
-            "workflow.context_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_precheck = Some(b); return true; }
-            "workflow.cross_ai_execution" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_execution = Some(b); return true; }
-            "workflow.live_dom_uat" => { config.workflow.get_or_insert_with(WorkflowConfig::default).live_dom_uat = Some(b); return true; }
-            "workflow.ui_interaction_capture" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_interaction_capture = Some(b); return true; }
-            "workflow.plan_bounce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce = Some(b); return true; }
-            "workflow.plan_review_convergence" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_review_convergence = Some(b); return true; }
-            "workflow.post_planning_gaps" => { config.workflow.get_or_insert_with(WorkflowConfig::default).post_planning_gaps = Some(b); return true; }
-            "workflow.security_enforcement" => { config.workflow.get_or_insert_with(WorkflowConfig::default).security_enforcement = Some(b); return true; }
-            "workflow.worktree_skip_hooks" => { config.workflow.get_or_insert_with(WorkflowConfig::default).worktree_skip_hooks = Some(b); return true; }
-            "features.global_learnings" => { config.features.get_or_insert_with(FeaturesConfig::default).global_learnings = Some(b); return true; }
-            "features.thinking_partner" => { config.features.get_or_insert_with(FeaturesConfig::default).thinking_partner = Some(b); return true; }
-            "gates.confirm_breakdown" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_breakdown = Some(b); return true; }
-            "gates.confirm_phases" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_phases = Some(b); return true; }
-            "gates.confirm_plan" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_plan = Some(b); return true; }
-            "gates.confirm_project" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_project = Some(b); return true; }
-            "gates.confirm_roadmap" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_roadmap = Some(b); return true; }
-            "gates.confirm_transition" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_transition = Some(b); return true; }
-            "gates.execute_next_plan" => { config.gates.get_or_insert_with(GatesConfig::default).execute_next_plan = Some(b); return true; }
-            "gates.issues_review" => { config.gates.get_or_insert_with(GatesConfig::default).issues_review = Some(b); return true; }
-            "planning.chunked_parallel" => { config.planning.get_or_insert_with(PlanningConfig::default).chunked_parallel = Some(b); return true; }
-            "planning.commit_docs" => { config.planning.get_or_insert_with(PlanningConfig::default).commit_docs = Some(b); return true; }
-            "planning.pr_strict" => { config.planning.get_or_insert_with(PlanningConfig::default).pr_strict = Some(b); return true; }
-            "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = Some(b); return true; }
-            "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = Some(b); return true; }
-            "planner.stall_detection_enabled" => { config.planner.get_or_insert_with(PlannerConfig::default).stall_detection_enabled = Some(b); return true; }
-            "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = Some(b); return true; }
-            "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = Some(b); return true; }
-            "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = Some(b); return true; }
-            "graphify.auto_update" => { config.graphify.get_or_insert_with(GraphifyConfig::default).auto_update = Some(b); return true; }
-            "statusline.show_last_command" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_last_command = Some(b); return true; }
-            "statusline.show_state_freshness" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_state_freshness = Some(b); return true; }
-            "dynamic_routing.enabled" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).enabled = Some(b); return true; }
-            "dynamic_routing.escalate_on_failure" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).escalate_on_failure = Some(b); return true; }
+            "workflow.compact_content" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .compact_content = Some(b);
+                return true;
+            }
+            "workflow.agent_hint_routing" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .agent_hint_routing = Some(b);
+                return true;
+            }
+            "workflow.auto_prune_state" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .auto_prune_state = Some(b);
+                return true;
+            }
+            "workflow.context_coverage_gate" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .context_coverage_gate = Some(b);
+                return true;
+            }
+            "workflow.context_drift_precheck" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .context_drift_precheck = Some(b);
+                return true;
+            }
+            "workflow.cross_ai_execution" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .cross_ai_execution = Some(b);
+                return true;
+            }
+            "workflow.live_dom_uat" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .live_dom_uat = Some(b);
+                return true;
+            }
+            "workflow.ui_interaction_capture" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .ui_interaction_capture = Some(b);
+                return true;
+            }
+            "workflow.plan_bounce" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .plan_bounce = Some(b);
+                return true;
+            }
+            "workflow.plan_review_convergence" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .plan_review_convergence = Some(b);
+                return true;
+            }
+            "workflow.post_planning_gaps" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .post_planning_gaps = Some(b);
+                return true;
+            }
+            "workflow.security_enforcement" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .security_enforcement = Some(b);
+                return true;
+            }
+            "workflow.worktree_skip_hooks" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .worktree_skip_hooks = Some(b);
+                return true;
+            }
+            "features.global_learnings" => {
+                config
+                    .features
+                    .get_or_insert_with(FeaturesConfig::default)
+                    .global_learnings = Some(b);
+                return true;
+            }
+            "features.thinking_partner" => {
+                config
+                    .features
+                    .get_or_insert_with(FeaturesConfig::default)
+                    .thinking_partner = Some(b);
+                return true;
+            }
+            "gates.confirm_breakdown" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .confirm_breakdown = Some(b);
+                return true;
+            }
+            "gates.confirm_phases" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .confirm_phases = Some(b);
+                return true;
+            }
+            "gates.confirm_plan" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .confirm_plan = Some(b);
+                return true;
+            }
+            "gates.confirm_project" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .confirm_project = Some(b);
+                return true;
+            }
+            "gates.confirm_roadmap" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .confirm_roadmap = Some(b);
+                return true;
+            }
+            "gates.confirm_transition" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .confirm_transition = Some(b);
+                return true;
+            }
+            "gates.execute_next_plan" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .execute_next_plan = Some(b);
+                return true;
+            }
+            "gates.issues_review" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .issues_review = Some(b);
+                return true;
+            }
+            "planning.chunked_parallel" => {
+                config
+                    .planning
+                    .get_or_insert_with(PlanningConfig::default)
+                    .chunked_parallel = Some(b);
+                return true;
+            }
+            "planning.commit_docs" => {
+                config
+                    .planning
+                    .get_or_insert_with(PlanningConfig::default)
+                    .commit_docs = Some(b);
+                return true;
+            }
+            "planning.pr_strict" => {
+                config
+                    .planning
+                    .get_or_insert_with(PlanningConfig::default)
+                    .pr_strict = Some(b);
+                return true;
+            }
+            "planning.search_gitignored" => {
+                config
+                    .planning
+                    .get_or_insert_with(PlanningConfig::default)
+                    .search_gitignored = Some(b);
+                return true;
+            }
+            "plan_review.source_grounding" => {
+                config
+                    .plan_review
+                    .get_or_insert_with(PlanReviewConfig::default)
+                    .source_grounding = Some(b);
+                return true;
+            }
+            "planner.stall_detection_enabled" => {
+                config
+                    .planner
+                    .get_or_insert_with(PlannerConfig::default)
+                    .stall_detection_enabled = Some(b);
+                return true;
+            }
+            "git.create_tag" => {
+                config.git.get_or_insert_with(GitConfig::default).create_tag = Some(b);
+                return true;
+            }
+            "git.allow_default_branch_commits" => {
+                config
+                    .git
+                    .get_or_insert_with(GitConfig::default)
+                    .allow_default_branch_commits = Some(b);
+                return true;
+            }
+            "hooks.workflow_guard" => {
+                config
+                    .hooks
+                    .get_or_insert_with(HooksConfig::default)
+                    .workflow_guard = Some(b);
+                return true;
+            }
+            "graphify.auto_update" => {
+                config
+                    .graphify
+                    .get_or_insert_with(GraphifyConfig::default)
+                    .auto_update = Some(b);
+                return true;
+            }
+            "statusline.show_last_command" => {
+                config
+                    .statusline
+                    .get_or_insert_with(StatuslineConfig::default)
+                    .show_last_command = Some(b);
+                return true;
+            }
+            "statusline.show_state_freshness" => {
+                config
+                    .statusline
+                    .get_or_insert_with(StatuslineConfig::default)
+                    .show_state_freshness = Some(b);
+                return true;
+            }
+            "dynamic_routing.enabled" => {
+                config
+                    .dynamic_routing
+                    .get_or_insert_with(DynamicRoutingConfig::default)
+                    .enabled = Some(b);
+                return true;
+            }
+            "dynamic_routing.escalate_on_failure" => {
+                config
+                    .dynamic_routing
+                    .get_or_insert_with(DynamicRoutingConfig::default)
+                    .escalate_on_failure = Some(b);
+                return true;
+            }
             // GSD 1.8 top-level blocks
-            "claude_orchestration.enabled" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).enabled = Some(b); return true; }
-            "statusline.show_context_tokens" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_context_tokens = Some(b); return true; }
-            "statusline.show_git" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_git = Some(b); return true; }
-            "dynamic_routing.provider_escalation" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).provider_escalation = Some(b); return true; }
-            "capabilities.strict_known_registries" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).strict_known_registries = Some(b); return true; }
-            "capabilities.auto_update" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).auto_update = Some(b); return true; }
+            "claude_orchestration.enabled" => {
+                config
+                    .claude_orchestration
+                    .get_or_insert_with(ClaudeOrchestrationConfig::default)
+                    .enabled = Some(b);
+                return true;
+            }
+            "statusline.show_context_tokens" => {
+                config
+                    .statusline
+                    .get_or_insert_with(StatuslineConfig::default)
+                    .show_context_tokens = Some(b);
+                return true;
+            }
+            "statusline.show_git" => {
+                config
+                    .statusline
+                    .get_or_insert_with(StatuslineConfig::default)
+                    .show_git = Some(b);
+                return true;
+            }
+            "dynamic_routing.provider_escalation" => {
+                config
+                    .dynamic_routing
+                    .get_or_insert_with(DynamicRoutingConfig::default)
+                    .provider_escalation = Some(b);
+                return true;
+            }
+            "capabilities.strict_known_registries" => {
+                config
+                    .capabilities
+                    .get_or_insert_with(CapabilitiesConfig::default)
+                    .strict_known_registries = Some(b);
+                return true;
+            }
+            "capabilities.auto_update" => {
+                config
+                    .capabilities
+                    .get_or_insert_with(CapabilitiesConfig::default)
+                    .auto_update = Some(b);
+                return true;
+            }
             _ => {}
         }
     }
 
     // Enum string values
     match key {
-        "mode" => { config.mode = value.to_string(); true }
-        "granularity" => { config.granularity = value.to_string(); true }
-        "model_profile" => { config.model_profile = value.to_string(); true }
-        "context_profile" => { config.context_profile = Some(value.to_string()); true }
+        "mode" => {
+            config.mode = value.to_string();
+            true
+        }
+        "granularity" => {
+            config.granularity = value.to_string();
+            true
+        }
+        "model_profile" => {
+            config.model_profile = value.to_string();
+            true
+        }
+        "context_profile" => {
+            config.context_profile = Some(value.to_string());
+            true
+        }
         "branching_strategy" => {
-            config.git.get_or_insert_with(GitConfig::default).branching_strategy = Some(value.to_string());
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .branching_strategy = Some(value.to_string());
             true
         }
         "discuss_mode" => {
-            config.workflow.get_or_insert_with(WorkflowConfig::default).discuss_mode = Some(value.to_string());
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .discuss_mode = Some(value.to_string());
             true
         }
         "code_review_depth" => {
-            config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_depth = Some(value.to_string());
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .code_review_depth = Some(value.to_string());
             true
         }
         // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
         "workflow.code_review_point" => {
-            config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_point = Some(value.to_string());
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .code_review_point = Some(value.to_string());
             true
         }
         "workflow.context_drift_action" => {
-            config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_action = Some(value.to_string());
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .context_drift_action = Some(value.to_string());
             true
         }
         "workflow.drift_action" => {
-            config.workflow.get_or_insert_with(WorkflowConfig::default).drift_action = Some(value.to_string());
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .drift_action = Some(value.to_string());
             true
         }
         "workflow.human_verify_mode" => {
-            config.workflow.get_or_insert_with(WorkflowConfig::default).human_verify_mode = Some(value.to_string());
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .human_verify_mode = Some(value.to_string());
             true
         }
         "plan_review.source_grounding_authority" => {
-            config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding_authority = Some(value.to_string());
+            config
+                .plan_review
+                .get_or_insert_with(PlanReviewConfig::default)
+                .source_grounding_authority = Some(value.to_string());
             true
         }
         "statusline.context_position" => {
-            config.statusline.get_or_insert_with(StatuslineConfig::default).context_position = Some(value.to_string());
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .context_position = Some(value.to_string());
             true
         }
         _ => false,
@@ -12411,42 +13083,137 @@ fn set_string_value(
     use crate::state_reader::config_json::*;
 
     match key {
-        "project_code" => { config.project_code = Some(value.to_string()); true }
-        "runtime" => { config.runtime = Some(value.to_string()); true }
-        "phase_naming" => { config.phase_naming = Some(value.to_string()); true }
-        "response_language" => { config.response_language = Some(value.to_string()); true }
+        "project_code" => {
+            config.project_code = Some(value.to_string());
+            true
+        }
+        "runtime" => {
+            config.runtime = Some(value.to_string());
+            true
+        }
+        "phase_naming" => {
+            config.phase_naming = Some(value.to_string());
+            true
+        }
+        "response_language" => {
+            config.response_language = Some(value.to_string());
+            true
+        }
         "base_branch" => {
-            config.git.get_or_insert_with(GitConfig::default).base_branch = Some(value.to_string());
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .base_branch = Some(value.to_string());
             true
         }
         "phase_branch_template" => {
-            config.git.get_or_insert_with(GitConfig::default).phase_branch_template = Some(value.to_string());
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .phase_branch_template = Some(value.to_string());
             true
         }
         "milestone_branch_template" => {
-            config.git.get_or_insert_with(GitConfig::default).milestone_branch_template = Some(value.to_string());
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .milestone_branch_template = Some(value.to_string());
             true
         }
         "quick_branch_template" => {
-            config.git.get_or_insert_with(GitConfig::default).quick_branch_template =
-                Some(serde_json::Value::String(value.to_string()));
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .quick_branch_template = Some(serde_json::Value::String(value.to_string()));
             true
         }
         // GSD 1.4–1.8 string keys
-        "workflow.context_guard_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_guard_mode = Some(value.to_string()); true }
-        "workflow.code_review_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_command = Some(value.to_string()); true }
-        "graphify.graph_path" => { config.graphify.get_or_insert_with(GraphifyConfig::default).graph_path = Some(value.to_string()); true }
-        "phase_id_convention" => { config.phase_id_convention = Some(value.to_string()); true }
-        "claude_md_path" => { config.claude_md_path = Some(value.to_string()); true }
-        "claude_orchestration.execution_backend" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).execution_backend = Some(value.to_string()); true }
-        "claude_orchestration.min_agent_sdk_version" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).min_agent_sdk_version = Some(value.to_string()); true }
-        "statusline.state_format" => { config.statusline.get_or_insert_with(StatuslineConfig::default).state_format = Some(value.to_string()); true }
-        "external_job.artifact_dir" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).artifact_dir = Some(value.to_string()); true }
+        "workflow.context_guard_mode" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .context_guard_mode = Some(value.to_string());
+            true
+        }
+        "workflow.code_review_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .code_review_command = Some(value.to_string());
+            true
+        }
+        "graphify.graph_path" => {
+            config
+                .graphify
+                .get_or_insert_with(GraphifyConfig::default)
+                .graph_path = Some(value.to_string());
+            true
+        }
+        "phase_id_convention" => {
+            config.phase_id_convention = Some(value.to_string());
+            true
+        }
+        "claude_md_path" => {
+            config.claude_md_path = Some(value.to_string());
+            true
+        }
+        "claude_orchestration.execution_backend" => {
+            config
+                .claude_orchestration
+                .get_or_insert_with(ClaudeOrchestrationConfig::default)
+                .execution_backend = Some(value.to_string());
+            true
+        }
+        "claude_orchestration.min_agent_sdk_version" => {
+            config
+                .claude_orchestration
+                .get_or_insert_with(ClaudeOrchestrationConfig::default)
+                .min_agent_sdk_version = Some(value.to_string());
+            true
+        }
+        "statusline.state_format" => {
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .state_format = Some(value.to_string());
+            true
+        }
+        "external_job.artifact_dir" => {
+            config
+                .external_job
+                .get_or_insert_with(ExternalJobConfig::default)
+                .artifact_dir = Some(value.to_string());
+            true
+        }
         // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
-        "workflow.build_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).build_command = Some(value.to_string()); true }
-        "workflow.test_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).test_command = Some(value.to_string()); true }
-        "workflow.cross_ai_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_command = Some(value.to_string()); true }
-        "workflow.plan_bounce_script" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_script = Some(value.to_string()); true }
+        "workflow.build_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .build_command = Some(value.to_string());
+            true
+        }
+        "workflow.test_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .test_command = Some(value.to_string());
+            true
+        }
+        "workflow.cross_ai_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .cross_ai_command = Some(value.to_string());
+            true
+        }
+        "workflow.plan_bounce_script" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_bounce_script = Some(value.to_string());
+            true
+        }
         _ => false,
     }
 }
@@ -12492,10 +13259,7 @@ fn set_secret_value(
 /// Clear (set to None / unset) the config field identified by `key`.
 /// Required scalar fields (`mode`, `granularity`, `model_profile`) are NOT
 /// clearable — those rows ignore the clear shortcut.
-fn clear_config_value(
-    config: &mut crate::state_reader::config_json::GsdConfig,
-    key: &str,
-) -> bool {
+fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, key: &str) -> bool {
     use crate::state_reader::config_json::*;
 
     match key {
@@ -12503,150 +13267,861 @@ fn clear_config_value(
         "mode" | "granularity" | "model_profile" => false,
 
         // Top-level Options
-        "commit_docs" => { config.commit_docs = None; true }
-        "parallelization" => { config.parallelization = None; true }
-        "search_gitignored" => { config.search_gitignored = None; true }
-        "brave_search" => { config.brave_search = None; true }
-        "firecrawl" => { config.firecrawl = None; true }
-        "exa_search" => { config.exa_search = None; true }
-        "tavily_search" => { config.tavily_search = None; true }
-        "ref_search" => { config.ref_search = None; true }
-        "perplexity" => { config.perplexity = None; true }
-        "jina" => { config.jina = None; true }
-        "runtime" => { config.runtime = None; true }
-        "context_profile" => { config.context_profile = None; true }
-        "project_code" => { config.project_code = None; true }
-        "phase_naming" => { config.phase_naming = None; true }
-        "response_language" => { config.response_language = None; true }
+        "commit_docs" => {
+            config.commit_docs = None;
+            true
+        }
+        "parallelization" => {
+            config.parallelization = None;
+            true
+        }
+        "search_gitignored" => {
+            config.search_gitignored = None;
+            true
+        }
+        "brave_search" => {
+            config.brave_search = None;
+            true
+        }
+        "firecrawl" => {
+            config.firecrawl = None;
+            true
+        }
+        "exa_search" => {
+            config.exa_search = None;
+            true
+        }
+        "tavily_search" => {
+            config.tavily_search = None;
+            true
+        }
+        "ref_search" => {
+            config.ref_search = None;
+            true
+        }
+        "perplexity" => {
+            config.perplexity = None;
+            true
+        }
+        "jina" => {
+            config.jina = None;
+            true
+        }
+        "runtime" => {
+            config.runtime = None;
+            true
+        }
+        "context_profile" => {
+            config.context_profile = None;
+            true
+        }
+        "project_code" => {
+            config.project_code = None;
+            true
+        }
+        "phase_naming" => {
+            config.phase_naming = None;
+            true
+        }
+        "response_language" => {
+            config.response_language = None;
+            true
+        }
 
         // Git
-        "branching_strategy" => { config.git.get_or_insert_with(GitConfig::default).branching_strategy = None; true }
-        "base_branch" => { config.git.get_or_insert_with(GitConfig::default).base_branch = None; true }
-        "phase_branch_template" => { config.git.get_or_insert_with(GitConfig::default).phase_branch_template = None; true }
-        "milestone_branch_template" => { config.git.get_or_insert_with(GitConfig::default).milestone_branch_template = None; true }
-        "quick_branch_template" => { config.git.get_or_insert_with(GitConfig::default).quick_branch_template = None; true }
+        "branching_strategy" => {
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .branching_strategy = None;
+            true
+        }
+        "base_branch" => {
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .base_branch = None;
+            true
+        }
+        "phase_branch_template" => {
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .phase_branch_template = None;
+            true
+        }
+        "milestone_branch_template" => {
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .milestone_branch_template = None;
+            true
+        }
+        "quick_branch_template" => {
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .quick_branch_template = None;
+            true
+        }
 
         // Workflow
-        "research" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research = None; true }
-        "plan_check" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_check = None; true }
-        "verifier" => { config.workflow.get_or_insert_with(WorkflowConfig::default).verifier = None; true }
-        "nyquist_validation" => { config.workflow.get_or_insert_with(WorkflowConfig::default).nyquist_validation = None; true }
-        "auto_advance" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_advance = None; true }
-        "node_repair" => { config.workflow.get_or_insert_with(WorkflowConfig::default).node_repair = None; true }
-        "node_repair_budget" => { config.workflow.get_or_insert_with(WorkflowConfig::default).node_repair_budget = None; true }
-        "ui_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_phase = None; true }
-        "ui_safety_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_safety_gate = None; true }
-        "text_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).text_mode = None; true }
-        "research_before_questions" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research_before_questions = None; true }
-        "discuss_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).discuss_mode = None; true }
-        "skip_discuss" => { config.workflow.get_or_insert_with(WorkflowConfig::default).skip_discuss = None; true }
-        "auto_chain_active" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_chain_active = None; true }
-        "use_worktrees" => { config.workflow.get_or_insert_with(WorkflowConfig::default).use_worktrees = None; true }
-        "subagent_timeout" => { config.workflow.get_or_insert_with(WorkflowConfig::default).subagent_timeout = None; true }
+        "research" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .research = None;
+            true
+        }
+        "plan_check" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_check = None;
+            true
+        }
+        "verifier" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .verifier = None;
+            true
+        }
+        "nyquist_validation" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .nyquist_validation = None;
+            true
+        }
+        "auto_advance" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .auto_advance = None;
+            true
+        }
+        "node_repair" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .node_repair = None;
+            true
+        }
+        "node_repair_budget" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .node_repair_budget = None;
+            true
+        }
+        "ui_phase" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .ui_phase = None;
+            true
+        }
+        "ui_safety_gate" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .ui_safety_gate = None;
+            true
+        }
+        "text_mode" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .text_mode = None;
+            true
+        }
+        "research_before_questions" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .research_before_questions = None;
+            true
+        }
+        "discuss_mode" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .discuss_mode = None;
+            true
+        }
+        "skip_discuss" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .skip_discuss = None;
+            true
+        }
+        "auto_chain_active" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .auto_chain_active = None;
+            true
+        }
+        "use_worktrees" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .use_worktrees = None;
+            true
+        }
+        "subagent_timeout" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .subagent_timeout = None;
+            true
+        }
 
         // Hooks
-        "context_warnings" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warnings = None; true }
+        "context_warnings" => {
+            config
+                .hooks
+                .get_or_insert_with(HooksConfig::default)
+                .context_warnings = None;
+            true
+        }
 
         // Intel / Graphify
-        "intel_enabled" => { config.intel.get_or_insert_with(IntelConfig::default).enabled = None; true }
-        "graphify_enabled" => { config.graphify.get_or_insert_with(GraphifyConfig::default).enabled = None; true }
-        "graphify_build_timeout" => { config.graphify.get_or_insert_with(GraphifyConfig::default).build_timeout = None; true }
+        "intel_enabled" => {
+            config
+                .intel
+                .get_or_insert_with(IntelConfig::default)
+                .enabled = None;
+            true
+        }
+        "graphify_enabled" => {
+            config
+                .graphify
+                .get_or_insert_with(GraphifyConfig::default)
+                .enabled = None;
+            true
+        }
+        "graphify_build_timeout" => {
+            config
+                .graphify
+                .get_or_insert_with(GraphifyConfig::default)
+                .build_timeout = None;
+            true
+        }
 
         // Workflow toggles added with the /gsd-settings six-section layout
-        "pattern_mapper" => { config.workflow.get_or_insert_with(WorkflowConfig::default).pattern_mapper = None; true }
-        "ai_integration_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ai_integration_phase = None; true }
-        "tdd_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).tdd_mode = None; true }
-        "code_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review = None; true }
-        "code_review_depth" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_depth = None; true }
-        "ui_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_review = None; true }
+        "pattern_mapper" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .pattern_mapper = None;
+            true
+        }
+        "ai_integration_phase" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .ai_integration_phase = None;
+            true
+        }
+        "tdd_mode" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .tdd_mode = None;
+            true
+        }
+        "code_review" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .code_review = None;
+            true
+        }
+        "code_review_depth" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .code_review_depth = None;
+            true
+        }
+        "ui_review" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .ui_review = None;
+            true
+        }
 
         // GSD 1.4–1.8 workflow gates
-        "workflow.specless_probe_fallback" => { config.workflow.get_or_insert_with(WorkflowConfig::default).specless_probe_fallback = None; true }
-        "workflow.assumption_delta" => { config.workflow.get_or_insert_with(WorkflowConfig::default).assumption_delta = None; true }
-        "workflow.plan_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_drift_precheck = None; true }
-        "workflow.plan_chunked" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_chunked = None; true }
-        "workflow.context_guard_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_guard_mode = None; true }
-        "workflow.api_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).api_coverage_gate = None; true }
-        "workflow.windows_enforce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).windows_enforce = None; true }
-        "workflow.mvp_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).mvp_mode = None; true }
-        "workflow.test_gate_timeout" => { config.workflow.get_or_insert_with(WorkflowConfig::default).test_gate_timeout = None; true }
-        "workflow.code_review_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_command = None; true }
-        "graphify.graph_path" => { config.graphify.get_or_insert_with(GraphifyConfig::default).graph_path = None; true }
+        "workflow.specless_probe_fallback" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .specless_probe_fallback = None;
+            true
+        }
+        "workflow.assumption_delta" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .assumption_delta = None;
+            true
+        }
+        "workflow.plan_drift_precheck" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_drift_precheck = None;
+            true
+        }
+        "workflow.plan_chunked" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_chunked = None;
+            true
+        }
+        "workflow.context_guard_mode" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .context_guard_mode = None;
+            true
+        }
+        "workflow.api_coverage_gate" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .api_coverage_gate = None;
+            true
+        }
+        "workflow.windows_enforce" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .windows_enforce = None;
+            true
+        }
+        "workflow.mvp_mode" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .mvp_mode = None;
+            true
+        }
+        "workflow.test_gate_timeout" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .test_gate_timeout = None;
+            true
+        }
+        "workflow.code_review_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .code_review_command = None;
+            true
+        }
+        "graphify.graph_path" => {
+            config
+                .graphify
+                .get_or_insert_with(GraphifyConfig::default)
+                .graph_path = None;
+            true
+        }
 
         // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
-        "workflow.compact_content" => { config.workflow.get_or_insert_with(WorkflowConfig::default).compact_content = None; true }
-        "workflow.agent_hint_routing" => { config.workflow.get_or_insert_with(WorkflowConfig::default).agent_hint_routing = None; true }
-        "workflow.auto_prune_state" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_prune_state = None; true }
-        "workflow.build_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).build_command = None; true }
-        "workflow.code_review_point" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_point = None; true }
-        "workflow.context_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_coverage_gate = None; true }
-        "workflow.context_drift_action" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_action = None; true }
-        "workflow.context_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_drift_precheck = None; true }
-        "workflow.cross_ai_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_command = None; true }
-        "workflow.cross_ai_execution" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_execution = None; true }
-        "workflow.cross_ai_timeout" => { config.workflow.get_or_insert_with(WorkflowConfig::default).cross_ai_timeout = None; true }
-        "workflow.drift_action" => { config.workflow.get_or_insert_with(WorkflowConfig::default).drift_action = None; true }
-        "workflow.drift_threshold" => { config.workflow.get_or_insert_with(WorkflowConfig::default).drift_threshold = None; true }
-        "workflow.human_verify_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).human_verify_mode = None; true }
-        "workflow.inline_plan_threshold" => { config.workflow.get_or_insert_with(WorkflowConfig::default).inline_plan_threshold = None; true }
-        "workflow.live_dom_uat" => { config.workflow.get_or_insert_with(WorkflowConfig::default).live_dom_uat = None; true }
-        "workflow.ui_interaction_capture" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_interaction_capture = None; true }
-        "workflow.max_discuss_passes" => { config.workflow.get_or_insert_with(WorkflowConfig::default).max_discuss_passes = None; true }
-        "workflow.plan_bounce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce = None; true }
-        "workflow.plan_bounce_passes" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_passes = None; true }
-        "workflow.plan_bounce_script" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_bounce_script = None; true }
-        "workflow.plan_review_convergence" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_review_convergence = None; true }
-        "workflow.post_planning_gaps" => { config.workflow.get_or_insert_with(WorkflowConfig::default).post_planning_gaps = None; true }
-        "workflow.security_enforcement" => { config.workflow.get_or_insert_with(WorkflowConfig::default).security_enforcement = None; true }
-        "workflow.smart_zone_tokens" => { config.workflow.get_or_insert_with(WorkflowConfig::default).smart_zone_tokens = None; true }
-        "workflow.test_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).test_command = None; true }
-        "workflow.worktree_skip_hooks" => { config.workflow.get_or_insert_with(WorkflowConfig::default).worktree_skip_hooks = None; true }
-        "features.global_learnings" => { config.features.get_or_insert_with(FeaturesConfig::default).global_learnings = None; true }
-        "features.thinking_partner" => { config.features.get_or_insert_with(FeaturesConfig::default).thinking_partner = None; true }
-        "gates.confirm_breakdown" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_breakdown = None; true }
-        "gates.confirm_phases" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_phases = None; true }
-        "gates.confirm_plan" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_plan = None; true }
-        "gates.confirm_project" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_project = None; true }
-        "gates.confirm_roadmap" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_roadmap = None; true }
-        "gates.confirm_transition" => { config.gates.get_or_insert_with(GatesConfig::default).confirm_transition = None; true }
-        "gates.execute_next_plan" => { config.gates.get_or_insert_with(GatesConfig::default).execute_next_plan = None; true }
-        "gates.issues_review" => { config.gates.get_or_insert_with(GatesConfig::default).issues_review = None; true }
-        "planning.chunked_parallel" => { config.planning.get_or_insert_with(PlanningConfig::default).chunked_parallel = None; true }
-        "planning.commit_docs" => { config.planning.get_or_insert_with(PlanningConfig::default).commit_docs = None; true }
-        "planning.pr_strict" => { config.planning.get_or_insert_with(PlanningConfig::default).pr_strict = None; true }
-        "planning.search_gitignored" => { config.planning.get_or_insert_with(PlanningConfig::default).search_gitignored = None; true }
-        "plan_review.source_grounding" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding = None; true }
-        "plan_review.source_grounding_authority" => { config.plan_review.get_or_insert_with(PlanReviewConfig::default).source_grounding_authority = None; true }
-        "planner.stall_detection_enabled" => { config.planner.get_or_insert_with(PlannerConfig::default).stall_detection_enabled = None; true }
-        "git.create_tag" => { config.git.get_or_insert_with(GitConfig::default).create_tag = None; true }
-        "git.allow_default_branch_commits" => { config.git.get_or_insert_with(GitConfig::default).allow_default_branch_commits = None; true }
-        "hooks.workflow_guard" => { config.hooks.get_or_insert_with(HooksConfig::default).workflow_guard = None; true }
-        "hooks.context_warning_threshold" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warning_threshold = None; true }
-        "hooks.context_critical_threshold" => { config.hooks.get_or_insert_with(HooksConfig::default).context_critical_threshold = None; true }
-        "graphify.auto_update" => { config.graphify.get_or_insert_with(GraphifyConfig::default).auto_update = None; true }
-        "context_window" => { config.context_window = None; true }
-        "statusline.context_position" => { config.statusline.get_or_insert_with(StatuslineConfig::default).context_position = None; true }
-        "statusline.show_last_command" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_last_command = None; true }
-        "statusline.show_state_freshness" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_state_freshness = None; true }
-        "dynamic_routing.enabled" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).enabled = None; true }
-        "dynamic_routing.escalate_on_failure" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).escalate_on_failure = None; true }
+        "workflow.compact_content" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .compact_content = None;
+            true
+        }
+        "workflow.agent_hint_routing" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .agent_hint_routing = None;
+            true
+        }
+        "workflow.auto_prune_state" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .auto_prune_state = None;
+            true
+        }
+        "workflow.build_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .build_command = None;
+            true
+        }
+        "workflow.code_review_point" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .code_review_point = None;
+            true
+        }
+        "workflow.context_coverage_gate" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .context_coverage_gate = None;
+            true
+        }
+        "workflow.context_drift_action" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .context_drift_action = None;
+            true
+        }
+        "workflow.context_drift_precheck" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .context_drift_precheck = None;
+            true
+        }
+        "workflow.cross_ai_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .cross_ai_command = None;
+            true
+        }
+        "workflow.cross_ai_execution" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .cross_ai_execution = None;
+            true
+        }
+        "workflow.cross_ai_timeout" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .cross_ai_timeout = None;
+            true
+        }
+        "workflow.drift_action" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .drift_action = None;
+            true
+        }
+        "workflow.drift_threshold" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .drift_threshold = None;
+            true
+        }
+        "workflow.human_verify_mode" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .human_verify_mode = None;
+            true
+        }
+        "workflow.inline_plan_threshold" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .inline_plan_threshold = None;
+            true
+        }
+        "workflow.live_dom_uat" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .live_dom_uat = None;
+            true
+        }
+        "workflow.ui_interaction_capture" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .ui_interaction_capture = None;
+            true
+        }
+        "workflow.max_discuss_passes" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .max_discuss_passes = None;
+            true
+        }
+        "workflow.plan_bounce" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_bounce = None;
+            true
+        }
+        "workflow.plan_bounce_passes" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_bounce_passes = None;
+            true
+        }
+        "workflow.plan_bounce_script" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_bounce_script = None;
+            true
+        }
+        "workflow.plan_review_convergence" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .plan_review_convergence = None;
+            true
+        }
+        "workflow.post_planning_gaps" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .post_planning_gaps = None;
+            true
+        }
+        "workflow.security_enforcement" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .security_enforcement = None;
+            true
+        }
+        "workflow.smart_zone_tokens" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .smart_zone_tokens = None;
+            true
+        }
+        "workflow.test_command" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .test_command = None;
+            true
+        }
+        "workflow.worktree_skip_hooks" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .worktree_skip_hooks = None;
+            true
+        }
+        "features.global_learnings" => {
+            config
+                .features
+                .get_or_insert_with(FeaturesConfig::default)
+                .global_learnings = None;
+            true
+        }
+        "features.thinking_partner" => {
+            config
+                .features
+                .get_or_insert_with(FeaturesConfig::default)
+                .thinking_partner = None;
+            true
+        }
+        "gates.confirm_breakdown" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .confirm_breakdown = None;
+            true
+        }
+        "gates.confirm_phases" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .confirm_phases = None;
+            true
+        }
+        "gates.confirm_plan" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .confirm_plan = None;
+            true
+        }
+        "gates.confirm_project" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .confirm_project = None;
+            true
+        }
+        "gates.confirm_roadmap" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .confirm_roadmap = None;
+            true
+        }
+        "gates.confirm_transition" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .confirm_transition = None;
+            true
+        }
+        "gates.execute_next_plan" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .execute_next_plan = None;
+            true
+        }
+        "gates.issues_review" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .issues_review = None;
+            true
+        }
+        "planning.chunked_parallel" => {
+            config
+                .planning
+                .get_or_insert_with(PlanningConfig::default)
+                .chunked_parallel = None;
+            true
+        }
+        "planning.commit_docs" => {
+            config
+                .planning
+                .get_or_insert_with(PlanningConfig::default)
+                .commit_docs = None;
+            true
+        }
+        "planning.pr_strict" => {
+            config
+                .planning
+                .get_or_insert_with(PlanningConfig::default)
+                .pr_strict = None;
+            true
+        }
+        "planning.search_gitignored" => {
+            config
+                .planning
+                .get_or_insert_with(PlanningConfig::default)
+                .search_gitignored = None;
+            true
+        }
+        "plan_review.source_grounding" => {
+            config
+                .plan_review
+                .get_or_insert_with(PlanReviewConfig::default)
+                .source_grounding = None;
+            true
+        }
+        "plan_review.source_grounding_authority" => {
+            config
+                .plan_review
+                .get_or_insert_with(PlanReviewConfig::default)
+                .source_grounding_authority = None;
+            true
+        }
+        "planner.stall_detection_enabled" => {
+            config
+                .planner
+                .get_or_insert_with(PlannerConfig::default)
+                .stall_detection_enabled = None;
+            true
+        }
+        "git.create_tag" => {
+            config.git.get_or_insert_with(GitConfig::default).create_tag = None;
+            true
+        }
+        "git.allow_default_branch_commits" => {
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .allow_default_branch_commits = None;
+            true
+        }
+        "hooks.workflow_guard" => {
+            config
+                .hooks
+                .get_or_insert_with(HooksConfig::default)
+                .workflow_guard = None;
+            true
+        }
+        "hooks.context_warning_threshold" => {
+            config
+                .hooks
+                .get_or_insert_with(HooksConfig::default)
+                .context_warning_threshold = None;
+            true
+        }
+        "hooks.context_critical_threshold" => {
+            config
+                .hooks
+                .get_or_insert_with(HooksConfig::default)
+                .context_critical_threshold = None;
+            true
+        }
+        "graphify.auto_update" => {
+            config
+                .graphify
+                .get_or_insert_with(GraphifyConfig::default)
+                .auto_update = None;
+            true
+        }
+        "context_window" => {
+            config.context_window = None;
+            true
+        }
+        "statusline.context_position" => {
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .context_position = None;
+            true
+        }
+        "statusline.show_last_command" => {
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .show_last_command = None;
+            true
+        }
+        "statusline.show_state_freshness" => {
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .show_state_freshness = None;
+            true
+        }
+        "dynamic_routing.enabled" => {
+            config
+                .dynamic_routing
+                .get_or_insert_with(DynamicRoutingConfig::default)
+                .enabled = None;
+            true
+        }
+        "dynamic_routing.escalate_on_failure" => {
+            config
+                .dynamic_routing
+                .get_or_insert_with(DynamicRoutingConfig::default)
+                .escalate_on_failure = None;
+            true
+        }
 
         // GSD 1.8 top-level blocks
-        "phase_id_convention" => { config.phase_id_convention = None; true }
-        "claude_md_path" => { config.claude_md_path = None; true }
-        "claude_orchestration.enabled" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).enabled = None; true }
-        "claude_orchestration.execution_backend" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).execution_backend = None; true }
-        "claude_orchestration.min_agent_sdk_version" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).min_agent_sdk_version = None; true }
-        "statusline.show_context_tokens" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_context_tokens = None; true }
-        "statusline.state_format" => { config.statusline.get_or_insert_with(StatuslineConfig::default).state_format = None; true }
-        "statusline.show_git" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_git = None; true }
-        "dynamic_routing.provider_escalation" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).provider_escalation = None; true }
-        "dynamic_routing.max_escalations" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).max_escalations = None; true }
-        "external_job.submit_timeout_ms" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).submit_timeout_ms = None; true }
-        "external_job.poll_timeout_ms" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).poll_timeout_ms = None; true }
-        "external_job.artifact_dir" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).artifact_dir = None; true }
-        "capabilities.strict_known_registries" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).strict_known_registries = None; true }
-        "capabilities.auto_update" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).auto_update = None; true }
+        "phase_id_convention" => {
+            config.phase_id_convention = None;
+            true
+        }
+        "claude_md_path" => {
+            config.claude_md_path = None;
+            true
+        }
+        "claude_orchestration.enabled" => {
+            config
+                .claude_orchestration
+                .get_or_insert_with(ClaudeOrchestrationConfig::default)
+                .enabled = None;
+            true
+        }
+        "claude_orchestration.execution_backend" => {
+            config
+                .claude_orchestration
+                .get_or_insert_with(ClaudeOrchestrationConfig::default)
+                .execution_backend = None;
+            true
+        }
+        "claude_orchestration.min_agent_sdk_version" => {
+            config
+                .claude_orchestration
+                .get_or_insert_with(ClaudeOrchestrationConfig::default)
+                .min_agent_sdk_version = None;
+            true
+        }
+        "statusline.show_context_tokens" => {
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .show_context_tokens = None;
+            true
+        }
+        "statusline.state_format" => {
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .state_format = None;
+            true
+        }
+        "statusline.show_git" => {
+            config
+                .statusline
+                .get_or_insert_with(StatuslineConfig::default)
+                .show_git = None;
+            true
+        }
+        "dynamic_routing.provider_escalation" => {
+            config
+                .dynamic_routing
+                .get_or_insert_with(DynamicRoutingConfig::default)
+                .provider_escalation = None;
+            true
+        }
+        "dynamic_routing.max_escalations" => {
+            config
+                .dynamic_routing
+                .get_or_insert_with(DynamicRoutingConfig::default)
+                .max_escalations = None;
+            true
+        }
+        "external_job.submit_timeout_ms" => {
+            config
+                .external_job
+                .get_or_insert_with(ExternalJobConfig::default)
+                .submit_timeout_ms = None;
+            true
+        }
+        "external_job.poll_timeout_ms" => {
+            config
+                .external_job
+                .get_or_insert_with(ExternalJobConfig::default)
+                .poll_timeout_ms = None;
+            true
+        }
+        "external_job.artifact_dir" => {
+            config
+                .external_job
+                .get_or_insert_with(ExternalJobConfig::default)
+                .artifact_dir = None;
+            true
+        }
+        "capabilities.strict_known_registries" => {
+            config
+                .capabilities
+                .get_or_insert_with(CapabilitiesConfig::default)
+                .strict_known_registries = None;
+            true
+        }
+        "capabilities.auto_update" => {
+            config
+                .capabilities
+                .get_or_insert_with(CapabilitiesConfig::default)
+                .auto_update = None;
+            true
+        }
 
         _ => false,
     }
@@ -12669,85 +14144,402 @@ fn mutate_config_entry(
         ConfigValueKind::Bool => {
             // Toggle the boolean field
             match key {
-                "commit_docs" => { config.commit_docs = Some(!config.commit_docs.unwrap_or(false)); true }
-                "parallelization" => { config.parallelization = Some(!config.parallelization.unwrap_or(false)); true }
-                "search_gitignored" => { config.search_gitignored = Some(!config.search_gitignored.unwrap_or(false)); true }
-                "research" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.research = Some(!wf.research.unwrap_or(false)); true }
-                "plan_check" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_check = Some(!wf.plan_check.unwrap_or(false)); true }
-                "verifier" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.verifier = Some(!wf.verifier.unwrap_or(false)); true }
-                "nyquist_validation" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.nyquist_validation = Some(!wf.nyquist_validation.unwrap_or(false)); true }
-                "auto_advance" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.auto_advance = Some(!wf.auto_advance.unwrap_or(false)); true }
-                "node_repair" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.node_repair = Some(!wf.node_repair.unwrap_or(false)); true }
-                "ui_phase" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_phase = Some(!wf.ui_phase.unwrap_or(false)); true }
-                "ui_safety_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_safety_gate = Some(!wf.ui_safety_gate.unwrap_or(false)); true }
-                "text_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.text_mode = Some(!wf.text_mode.unwrap_or(false)); true }
-                "research_before_questions" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.research_before_questions = Some(!wf.research_before_questions.unwrap_or(false)); true }
-                "skip_discuss" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.skip_discuss = Some(!wf.skip_discuss.unwrap_or(false)); true }
-                "auto_chain_active" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.auto_chain_active = Some(!wf.auto_chain_active.unwrap_or(false)); true }
-                "use_worktrees" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.use_worktrees = Some(!wf.use_worktrees.unwrap_or(false)); true }
-                "context_warnings" => { let hooks = config.hooks.get_or_insert_with(HooksConfig::default); hooks.context_warnings = Some(!hooks.context_warnings.unwrap_or(false)); true }
-                "intel_enabled" => { let i = config.intel.get_or_insert_with(IntelConfig::default); i.enabled = Some(!i.enabled.unwrap_or(false)); true }
-                "graphify_enabled" => { let g = config.graphify.get_or_insert_with(GraphifyConfig::default); g.enabled = Some(!g.enabled.unwrap_or(false)); true }
-                "pattern_mapper" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.pattern_mapper = Some(!wf.pattern_mapper.unwrap_or(false)); true }
-                "ai_integration_phase" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ai_integration_phase = Some(!wf.ai_integration_phase.unwrap_or(false)); true }
-                "tdd_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.tdd_mode = Some(!wf.tdd_mode.unwrap_or(false)); true }
-                "code_review" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.code_review = Some(!wf.code_review.unwrap_or(false)); true }
-                "ui_review" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_review = Some(!wf.ui_review.unwrap_or(false)); true }
+                "commit_docs" => {
+                    config.commit_docs = Some(!config.commit_docs.unwrap_or(false));
+                    true
+                }
+                "parallelization" => {
+                    config.parallelization = Some(!config.parallelization.unwrap_or(false));
+                    true
+                }
+                "search_gitignored" => {
+                    config.search_gitignored = Some(!config.search_gitignored.unwrap_or(false));
+                    true
+                }
+                "research" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.research = Some(!wf.research.unwrap_or(false));
+                    true
+                }
+                "plan_check" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.plan_check = Some(!wf.plan_check.unwrap_or(false));
+                    true
+                }
+                "verifier" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.verifier = Some(!wf.verifier.unwrap_or(false));
+                    true
+                }
+                "nyquist_validation" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.nyquist_validation = Some(!wf.nyquist_validation.unwrap_or(false));
+                    true
+                }
+                "auto_advance" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.auto_advance = Some(!wf.auto_advance.unwrap_or(false));
+                    true
+                }
+                "node_repair" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.node_repair = Some(!wf.node_repair.unwrap_or(false));
+                    true
+                }
+                "ui_phase" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.ui_phase = Some(!wf.ui_phase.unwrap_or(false));
+                    true
+                }
+                "ui_safety_gate" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.ui_safety_gate = Some(!wf.ui_safety_gate.unwrap_or(false));
+                    true
+                }
+                "text_mode" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.text_mode = Some(!wf.text_mode.unwrap_or(false));
+                    true
+                }
+                "research_before_questions" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.research_before_questions =
+                        Some(!wf.research_before_questions.unwrap_or(false));
+                    true
+                }
+                "skip_discuss" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.skip_discuss = Some(!wf.skip_discuss.unwrap_or(false));
+                    true
+                }
+                "auto_chain_active" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.auto_chain_active = Some(!wf.auto_chain_active.unwrap_or(false));
+                    true
+                }
+                "use_worktrees" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.use_worktrees = Some(!wf.use_worktrees.unwrap_or(false));
+                    true
+                }
+                "context_warnings" => {
+                    let hooks = config.hooks.get_or_insert_with(HooksConfig::default);
+                    hooks.context_warnings = Some(!hooks.context_warnings.unwrap_or(false));
+                    true
+                }
+                "intel_enabled" => {
+                    let i = config.intel.get_or_insert_with(IntelConfig::default);
+                    i.enabled = Some(!i.enabled.unwrap_or(false));
+                    true
+                }
+                "graphify_enabled" => {
+                    let g = config.graphify.get_or_insert_with(GraphifyConfig::default);
+                    g.enabled = Some(!g.enabled.unwrap_or(false));
+                    true
+                }
+                "pattern_mapper" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.pattern_mapper = Some(!wf.pattern_mapper.unwrap_or(false));
+                    true
+                }
+                "ai_integration_phase" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.ai_integration_phase = Some(!wf.ai_integration_phase.unwrap_or(false));
+                    true
+                }
+                "tdd_mode" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.tdd_mode = Some(!wf.tdd_mode.unwrap_or(false));
+                    true
+                }
+                "code_review" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.code_review = Some(!wf.code_review.unwrap_or(false));
+                    true
+                }
+                "ui_review" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.ui_review = Some(!wf.ui_review.unwrap_or(false));
+                    true
+                }
                 // GSD 1.4–1.8 workflow gates
-                "workflow.specless_probe_fallback" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.specless_probe_fallback = Some(!wf.specless_probe_fallback.unwrap_or(false)); true }
-                "workflow.assumption_delta" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.assumption_delta = Some(!wf.assumption_delta.unwrap_or(false)); true }
-                "workflow.plan_drift_precheck" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_drift_precheck = Some(!wf.plan_drift_precheck.unwrap_or(false)); true }
-                "workflow.plan_chunked" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_chunked = Some(!wf.plan_chunked.unwrap_or(false)); true }
-                "workflow.api_coverage_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.api_coverage_gate = Some(!wf.api_coverage_gate.unwrap_or(false)); true }
-                "workflow.windows_enforce" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.windows_enforce = Some(!wf.windows_enforce.unwrap_or(false)); true }
-                "workflow.mvp_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.mvp_mode = Some(!wf.mvp_mode.unwrap_or(false)); true }
+                "workflow.specless_probe_fallback" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.specless_probe_fallback = Some(!wf.specless_probe_fallback.unwrap_or(false));
+                    true
+                }
+                "workflow.assumption_delta" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.assumption_delta = Some(!wf.assumption_delta.unwrap_or(false));
+                    true
+                }
+                "workflow.plan_drift_precheck" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.plan_drift_precheck = Some(!wf.plan_drift_precheck.unwrap_or(false));
+                    true
+                }
+                "workflow.plan_chunked" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.plan_chunked = Some(!wf.plan_chunked.unwrap_or(false));
+                    true
+                }
+                "workflow.api_coverage_gate" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.api_coverage_gate = Some(!wf.api_coverage_gate.unwrap_or(false));
+                    true
+                }
+                "workflow.windows_enforce" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.windows_enforce = Some(!wf.windows_enforce.unwrap_or(false));
+                    true
+                }
+                "workflow.mvp_mode" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.mvp_mode = Some(!wf.mvp_mode.unwrap_or(false));
+                    true
+                }
                 // gsd-core 1.14.0 re-sync (quick task 260916-vqw)
-                "workflow.compact_content" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.compact_content = Some(!wf.compact_content.unwrap_or(false)); true }
-                "workflow.agent_hint_routing" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.agent_hint_routing = Some(!wf.agent_hint_routing.unwrap_or(false)); true }
-                "workflow.auto_prune_state" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.auto_prune_state = Some(!wf.auto_prune_state.unwrap_or(false)); true }
-                "workflow.context_coverage_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.context_coverage_gate = Some(!wf.context_coverage_gate.unwrap_or(false)); true }
-                "workflow.context_drift_precheck" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.context_drift_precheck = Some(!wf.context_drift_precheck.unwrap_or(false)); true }
-                "workflow.cross_ai_execution" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.cross_ai_execution = Some(!wf.cross_ai_execution.unwrap_or(false)); true }
-                "workflow.live_dom_uat" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.live_dom_uat = Some(!wf.live_dom_uat.unwrap_or(false)); true }
-                "workflow.ui_interaction_capture" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_interaction_capture = Some(!wf.ui_interaction_capture.unwrap_or(false)); true }
-                "workflow.plan_bounce" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_bounce = Some(!wf.plan_bounce.unwrap_or(false)); true }
-                "workflow.plan_review_convergence" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_review_convergence = Some(!wf.plan_review_convergence.unwrap_or(false)); true }
-                "workflow.post_planning_gaps" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.post_planning_gaps = Some(!wf.post_planning_gaps.unwrap_or(false)); true }
-                "workflow.security_enforcement" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.security_enforcement = Some(!wf.security_enforcement.unwrap_or(false)); true }
-                "workflow.worktree_skip_hooks" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.worktree_skip_hooks = Some(!wf.worktree_skip_hooks.unwrap_or(false)); true }
-                "features.global_learnings" => { let f = config.features.get_or_insert_with(FeaturesConfig::default); f.global_learnings = Some(!f.global_learnings.unwrap_or(false)); true }
-                "features.thinking_partner" => { let f = config.features.get_or_insert_with(FeaturesConfig::default); f.thinking_partner = Some(!f.thinking_partner.unwrap_or(false)); true }
-                "gates.confirm_breakdown" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_breakdown = Some(!g.confirm_breakdown.unwrap_or(false)); true }
-                "gates.confirm_phases" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_phases = Some(!g.confirm_phases.unwrap_or(false)); true }
-                "gates.confirm_plan" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_plan = Some(!g.confirm_plan.unwrap_or(false)); true }
-                "gates.confirm_project" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_project = Some(!g.confirm_project.unwrap_or(false)); true }
-                "gates.confirm_roadmap" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_roadmap = Some(!g.confirm_roadmap.unwrap_or(false)); true }
-                "gates.confirm_transition" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.confirm_transition = Some(!g.confirm_transition.unwrap_or(false)); true }
-                "gates.execute_next_plan" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.execute_next_plan = Some(!g.execute_next_plan.unwrap_or(false)); true }
-                "gates.issues_review" => { let g = config.gates.get_or_insert_with(GatesConfig::default); g.issues_review = Some(!g.issues_review.unwrap_or(false)); true }
-                "planning.chunked_parallel" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.chunked_parallel = Some(!p.chunked_parallel.unwrap_or(false)); true }
-                "planning.commit_docs" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.commit_docs = Some(!p.commit_docs.unwrap_or(false)); true }
-                "planning.pr_strict" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.pr_strict = Some(!p.pr_strict.unwrap_or(false)); true }
-                "planning.search_gitignored" => { let p = config.planning.get_or_insert_with(PlanningConfig::default); p.search_gitignored = Some(!p.search_gitignored.unwrap_or(false)); true }
-                "plan_review.source_grounding" => { let r = config.plan_review.get_or_insert_with(PlanReviewConfig::default); r.source_grounding = Some(!r.source_grounding.unwrap_or(false)); true }
+                "workflow.compact_content" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.compact_content = Some(!wf.compact_content.unwrap_or(false));
+                    true
+                }
+                "workflow.agent_hint_routing" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.agent_hint_routing = Some(!wf.agent_hint_routing.unwrap_or(false));
+                    true
+                }
+                "workflow.auto_prune_state" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.auto_prune_state = Some(!wf.auto_prune_state.unwrap_or(false));
+                    true
+                }
+                "workflow.context_coverage_gate" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.context_coverage_gate = Some(!wf.context_coverage_gate.unwrap_or(false));
+                    true
+                }
+                "workflow.context_drift_precheck" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.context_drift_precheck = Some(!wf.context_drift_precheck.unwrap_or(false));
+                    true
+                }
+                "workflow.cross_ai_execution" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.cross_ai_execution = Some(!wf.cross_ai_execution.unwrap_or(false));
+                    true
+                }
+                "workflow.live_dom_uat" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.live_dom_uat = Some(!wf.live_dom_uat.unwrap_or(false));
+                    true
+                }
+                "workflow.ui_interaction_capture" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.ui_interaction_capture = Some(!wf.ui_interaction_capture.unwrap_or(false));
+                    true
+                }
+                "workflow.plan_bounce" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.plan_bounce = Some(!wf.plan_bounce.unwrap_or(false));
+                    true
+                }
+                "workflow.plan_review_convergence" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.plan_review_convergence = Some(!wf.plan_review_convergence.unwrap_or(false));
+                    true
+                }
+                "workflow.post_planning_gaps" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.post_planning_gaps = Some(!wf.post_planning_gaps.unwrap_or(false));
+                    true
+                }
+                "workflow.security_enforcement" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.security_enforcement = Some(!wf.security_enforcement.unwrap_or(false));
+                    true
+                }
+                "workflow.worktree_skip_hooks" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.worktree_skip_hooks = Some(!wf.worktree_skip_hooks.unwrap_or(false));
+                    true
+                }
+                "features.global_learnings" => {
+                    let f = config.features.get_or_insert_with(FeaturesConfig::default);
+                    f.global_learnings = Some(!f.global_learnings.unwrap_or(false));
+                    true
+                }
+                "features.thinking_partner" => {
+                    let f = config.features.get_or_insert_with(FeaturesConfig::default);
+                    f.thinking_partner = Some(!f.thinking_partner.unwrap_or(false));
+                    true
+                }
+                "gates.confirm_breakdown" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.confirm_breakdown = Some(!g.confirm_breakdown.unwrap_or(false));
+                    true
+                }
+                "gates.confirm_phases" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.confirm_phases = Some(!g.confirm_phases.unwrap_or(false));
+                    true
+                }
+                "gates.confirm_plan" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.confirm_plan = Some(!g.confirm_plan.unwrap_or(false));
+                    true
+                }
+                "gates.confirm_project" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.confirm_project = Some(!g.confirm_project.unwrap_or(false));
+                    true
+                }
+                "gates.confirm_roadmap" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.confirm_roadmap = Some(!g.confirm_roadmap.unwrap_or(false));
+                    true
+                }
+                "gates.confirm_transition" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.confirm_transition = Some(!g.confirm_transition.unwrap_or(false));
+                    true
+                }
+                "gates.execute_next_plan" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.execute_next_plan = Some(!g.execute_next_plan.unwrap_or(false));
+                    true
+                }
+                "gates.issues_review" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.issues_review = Some(!g.issues_review.unwrap_or(false));
+                    true
+                }
+                "planning.chunked_parallel" => {
+                    let p = config.planning.get_or_insert_with(PlanningConfig::default);
+                    p.chunked_parallel = Some(!p.chunked_parallel.unwrap_or(false));
+                    true
+                }
+                "planning.commit_docs" => {
+                    let p = config.planning.get_or_insert_with(PlanningConfig::default);
+                    p.commit_docs = Some(!p.commit_docs.unwrap_or(false));
+                    true
+                }
+                "planning.pr_strict" => {
+                    let p = config.planning.get_or_insert_with(PlanningConfig::default);
+                    p.pr_strict = Some(!p.pr_strict.unwrap_or(false));
+                    true
+                }
+                "planning.search_gitignored" => {
+                    let p = config.planning.get_or_insert_with(PlanningConfig::default);
+                    p.search_gitignored = Some(!p.search_gitignored.unwrap_or(false));
+                    true
+                }
+                "plan_review.source_grounding" => {
+                    let r = config
+                        .plan_review
+                        .get_or_insert_with(PlanReviewConfig::default);
+                    r.source_grounding = Some(!r.source_grounding.unwrap_or(false));
+                    true
+                }
                 // From unset the first toggle writes `true` — gsd-core's own
                 // default — like every `gates.*` row (INFERRED I-4).
-                "planner.stall_detection_enabled" => { let p = config.planner.get_or_insert_with(PlannerConfig::default); p.stall_detection_enabled = Some(!p.stall_detection_enabled.unwrap_or(false)); true }
-                "git.create_tag" => { let g = config.git.get_or_insert_with(GitConfig::default); g.create_tag = Some(!g.create_tag.unwrap_or(false)); true }
-                "git.allow_default_branch_commits" => { let g = config.git.get_or_insert_with(GitConfig::default); g.allow_default_branch_commits = Some(!g.allow_default_branch_commits.unwrap_or(false)); true }
-                "hooks.workflow_guard" => { let h = config.hooks.get_or_insert_with(HooksConfig::default); h.workflow_guard = Some(!h.workflow_guard.unwrap_or(false)); true }
-                "graphify.auto_update" => { let g = config.graphify.get_or_insert_with(GraphifyConfig::default); g.auto_update = Some(!g.auto_update.unwrap_or(false)); true }
-                "statusline.show_last_command" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_last_command = Some(!s.show_last_command.unwrap_or(false)); true }
-                "statusline.show_state_freshness" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_state_freshness = Some(!s.show_state_freshness.unwrap_or(false)); true }
-                "dynamic_routing.enabled" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.enabled = Some(!r.enabled.unwrap_or(false)); true }
-                "dynamic_routing.escalate_on_failure" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.escalate_on_failure = Some(!r.escalate_on_failure.unwrap_or(false)); true }
+                "planner.stall_detection_enabled" => {
+                    let p = config.planner.get_or_insert_with(PlannerConfig::default);
+                    p.stall_detection_enabled = Some(!p.stall_detection_enabled.unwrap_or(false));
+                    true
+                }
+                "git.create_tag" => {
+                    let g = config.git.get_or_insert_with(GitConfig::default);
+                    g.create_tag = Some(!g.create_tag.unwrap_or(false));
+                    true
+                }
+                "git.allow_default_branch_commits" => {
+                    let g = config.git.get_or_insert_with(GitConfig::default);
+                    g.allow_default_branch_commits =
+                        Some(!g.allow_default_branch_commits.unwrap_or(false));
+                    true
+                }
+                "hooks.workflow_guard" => {
+                    let h = config.hooks.get_or_insert_with(HooksConfig::default);
+                    h.workflow_guard = Some(!h.workflow_guard.unwrap_or(false));
+                    true
+                }
+                "graphify.auto_update" => {
+                    let g = config.graphify.get_or_insert_with(GraphifyConfig::default);
+                    g.auto_update = Some(!g.auto_update.unwrap_or(false));
+                    true
+                }
+                "statusline.show_last_command" => {
+                    let s = config
+                        .statusline
+                        .get_or_insert_with(StatuslineConfig::default);
+                    s.show_last_command = Some(!s.show_last_command.unwrap_or(false));
+                    true
+                }
+                "statusline.show_state_freshness" => {
+                    let s = config
+                        .statusline
+                        .get_or_insert_with(StatuslineConfig::default);
+                    s.show_state_freshness = Some(!s.show_state_freshness.unwrap_or(false));
+                    true
+                }
+                "dynamic_routing.enabled" => {
+                    let r = config
+                        .dynamic_routing
+                        .get_or_insert_with(DynamicRoutingConfig::default);
+                    r.enabled = Some(!r.enabled.unwrap_or(false));
+                    true
+                }
+                "dynamic_routing.escalate_on_failure" => {
+                    let r = config
+                        .dynamic_routing
+                        .get_or_insert_with(DynamicRoutingConfig::default);
+                    r.escalate_on_failure = Some(!r.escalate_on_failure.unwrap_or(false));
+                    true
+                }
                 // GSD 1.8 top-level blocks
-                "claude_orchestration.enabled" => { let c = config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default); c.enabled = Some(!c.enabled.unwrap_or(false)); true }
-                "statusline.show_context_tokens" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_context_tokens = Some(!s.show_context_tokens.unwrap_or(false)); true }
-                "statusline.show_git" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_git = Some(!s.show_git.unwrap_or(false)); true }
-                "dynamic_routing.provider_escalation" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.provider_escalation = Some(!r.provider_escalation.unwrap_or(false)); true }
-                "capabilities.strict_known_registries" => { let c = config.capabilities.get_or_insert_with(CapabilitiesConfig::default); c.strict_known_registries = Some(!c.strict_known_registries.unwrap_or(false)); true }
-                "capabilities.auto_update" => { let c = config.capabilities.get_or_insert_with(CapabilitiesConfig::default); c.auto_update = Some(!c.auto_update.unwrap_or(false)); true }
+                "claude_orchestration.enabled" => {
+                    let c = config
+                        .claude_orchestration
+                        .get_or_insert_with(ClaudeOrchestrationConfig::default);
+                    c.enabled = Some(!c.enabled.unwrap_or(false));
+                    true
+                }
+                "statusline.show_context_tokens" => {
+                    let s = config
+                        .statusline
+                        .get_or_insert_with(StatuslineConfig::default);
+                    s.show_context_tokens = Some(!s.show_context_tokens.unwrap_or(false));
+                    true
+                }
+                "statusline.show_git" => {
+                    let s = config
+                        .statusline
+                        .get_or_insert_with(StatuslineConfig::default);
+                    s.show_git = Some(!s.show_git.unwrap_or(false));
+                    true
+                }
+                "dynamic_routing.provider_escalation" => {
+                    let r = config
+                        .dynamic_routing
+                        .get_or_insert_with(DynamicRoutingConfig::default);
+                    r.provider_escalation = Some(!r.provider_escalation.unwrap_or(false));
+                    true
+                }
+                "capabilities.strict_known_registries" => {
+                    let c = config
+                        .capabilities
+                        .get_or_insert_with(CapabilitiesConfig::default);
+                    c.strict_known_registries = Some(!c.strict_known_registries.unwrap_or(false));
+                    true
+                }
+                "capabilities.auto_update" => {
+                    let c = config
+                        .capabilities
+                        .get_or_insert_with(CapabilitiesConfig::default);
+                    c.auto_update = Some(!c.auto_update.unwrap_or(false));
+                    true
+                }
                 _ => false,
             }
         }
@@ -12758,9 +14550,18 @@ fn mutate_config_entry(
                 options[next].to_string()
             };
             match key {
-                "mode" => { config.mode = cycle(&config.mode); true }
-                "granularity" => { config.granularity = cycle(&config.granularity); true }
-                "model_profile" => { config.model_profile = cycle(&config.model_profile); true }
+                "mode" => {
+                    config.mode = cycle(&config.mode);
+                    true
+                }
+                "granularity" => {
+                    config.granularity = cycle(&config.granularity);
+                    true
+                }
+                "model_profile" => {
+                    config.model_profile = cycle(&config.model_profile);
+                    true
+                }
                 // Upstream has no default (INFERRED I-10): from unset the
                 // first press lands on the FIRST option, `dev`, rather than
                 // through `cycle`, whose `unwrap_or(0)` would skip to `research`.
@@ -12812,13 +14613,17 @@ fn mutate_config_entry(
                     true
                 }
                 "plan_review.source_grounding_authority" => {
-                    let r = config.plan_review.get_or_insert_with(PlanReviewConfig::default);
+                    let r = config
+                        .plan_review
+                        .get_or_insert_with(PlanReviewConfig::default);
                     let current = r.source_grounding_authority.as_deref().unwrap_or("grep");
                     r.source_grounding_authority = Some(cycle(current));
                     true
                 }
                 "statusline.context_position" => {
-                    let s = config.statusline.get_or_insert_with(StatuslineConfig::default);
+                    let s = config
+                        .statusline
+                        .get_or_insert_with(StatuslineConfig::default);
                     let current = s.context_position.as_deref().unwrap_or("end");
                     s.context_position = Some(cycle(current));
                     true
@@ -12847,7 +14652,9 @@ fn mutate_config_entry(
                     true
                 }
                 "dynamic_routing.max_escalations" => {
-                    let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default);
+                    let r = config
+                        .dynamic_routing
+                        .get_or_insert_with(DynamicRoutingConfig::default);
                     let current = r.max_escalations.unwrap_or(0);
                     r.max_escalations = Some(if current >= 10 { 0 } else { current + 1 });
                     true
@@ -12859,15 +14666,27 @@ fn mutate_config_entry(
                     true
                 }
                 "external_job.submit_timeout_ms" => {
-                    let e = config.external_job.get_or_insert_with(ExternalJobConfig::default);
+                    let e = config
+                        .external_job
+                        .get_or_insert_with(ExternalJobConfig::default);
                     let current = e.submit_timeout_ms.unwrap_or(0);
-                    e.submit_timeout_ms = Some(if current >= 120000 { 5000 } else { current + 5000 });
+                    e.submit_timeout_ms = Some(if current >= 120000 {
+                        5000
+                    } else {
+                        current + 5000
+                    });
                     true
                 }
                 "external_job.poll_timeout_ms" => {
-                    let e = config.external_job.get_or_insert_with(ExternalJobConfig::default);
+                    let e = config
+                        .external_job
+                        .get_or_insert_with(ExternalJobConfig::default);
                     let current = e.poll_timeout_ms.unwrap_or(0);
-                    e.poll_timeout_ms = Some(if current >= 60000 { 1000 } else { current + 1000 });
+                    e.poll_timeout_ms = Some(if current >= 60000 {
+                        1000
+                    } else {
+                        current + 1000
+                    });
                     true
                 }
                 // gsd-core 1.14.0 re-sync (quick task 260916-vqw). Each step and
@@ -12907,8 +14726,11 @@ fn mutate_config_entry(
                 "workflow.smart_zone_tokens" => {
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     let current = wf.smart_zone_tokens.unwrap_or(0);
-                    wf.smart_zone_tokens =
-                        Some(if current >= 400_000 { 25_000 } else { current + 25_000 });
+                    wf.smart_zone_tokens = Some(if current >= 400_000 {
+                        25_000
+                    } else {
+                        current + 25_000
+                    });
                     true
                 }
                 // The two thresholds are a PAIR with an ordering constraint
@@ -12918,8 +14740,11 @@ fn mutate_config_entry(
                 "hooks.context_warning_threshold" => {
                     let h = config.hooks.get_or_insert_with(HooksConfig::default);
                     let current = h.context_warning_threshold.unwrap_or(0);
-                    h.context_warning_threshold =
-                        Some(if current >= 90 { 30 } else { current.max(25) + 5 });
+                    h.context_warning_threshold = Some(if current >= 90 {
+                        30
+                    } else {
+                        current.max(25) + 5
+                    });
                     true
                 }
                 "hooks.context_critical_threshold" => {
@@ -12931,8 +14756,11 @@ fn mutate_config_entry(
                 }
                 "context_window" => {
                     let current = config.context_window.unwrap_or(0);
-                    config.context_window =
-                        Some(if current >= 1_000_000 { 200_000 } else { current + 200_000 });
+                    config.context_window = Some(if current >= 1_000_000 {
+                        200_000
+                    } else {
+                        current + 200_000
+                    });
                     true
                 }
                 _ => false,
@@ -13395,7 +15223,11 @@ mod tests {
             .expect("draw the Defaults tab");
         let buffer = terminal.backend().buffer().clone();
         (0..height)
-            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect())
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect()
+            })
             .collect()
     }
 
@@ -13437,7 +15269,10 @@ mod tests {
             top.contains(&format!("newer than synced {GSD_CORE_SYNCED_TREE_VERSION}")),
             "{top:?}"
         );
-        assert!(!rows.join("\n").contains("/not/drawn"), "the path is never drawn");
+        assert!(
+            !rows.join("\n").contains("/not/drawn"),
+            "the path is never drawn"
+        );
     }
 
     #[test]
@@ -13451,7 +15286,9 @@ mod tests {
             30,
         );
         assert!(
-            rows[1].contains(&format!("GSD not found · app synced to {GSD_CORE_SYNCED_TREE_VERSION}")),
+            rows[1].contains(&format!(
+                "GSD not found · app synced to {GSD_CORE_SYNCED_TREE_VERSION}"
+            )),
             "{:?}",
             rows[1]
         );
@@ -13463,14 +15300,24 @@ mod tests {
         use crate::state_reader::gsd_install::{InstallRuntime, InstallScope};
         let rows = render_defaults_with_gsd_install_to_text(
             None,
-            gsd_install_found(InstallRuntime::Claude, InstallScope::ProjectLocal, GSD_CORE_SYNCED_VERSION),
+            gsd_install_found(
+                InstallRuntime::Claude,
+                InstallScope::ProjectLocal,
+                GSD_CORE_SYNCED_VERSION,
+            ),
             120,
             10,
         );
-        assert!(rows[0].starts_with(" [Project]"), "the scope strip leads: {:?}", rows[0]);
+        assert!(
+            rows[0].starts_with(" [Project]"),
+            "the scope strip leads: {:?}",
+            rows[0]
+        );
         assert!(rows[1].contains("No config loaded"), "{:?}", rows[1]);
         assert!(
-            rows[2].contains(&format!("GSD {GSD_CORE_SYNCED_VERSION} · project-local Claude")),
+            rows[2].contains(&format!(
+                "GSD {GSD_CORE_SYNCED_VERSION} · project-local Claude"
+            )),
             "{:?}",
             rows[2]
         );
@@ -13481,7 +15328,10 @@ mod tests {
         let text = render_defaults_to_text(120, 30, 0);
         // Row 0 is the scope strip since quick 260927-t3s; the title is row 1.
         let top = text.lines().nth(1).unwrap_or_default();
-        assert!(top.contains(" Project Config (.planning/config.json) "), "{top:?}");
+        assert!(
+            top.contains(" Project Config (.planning/config.json) "),
+            "{top:?}"
+        );
         assert!(!top.contains("GSD "), "no state, no label: {top:?}");
     }
 
@@ -13627,7 +15477,11 @@ mod tests {
 
         assert_eq!(
             keys,
-            vec!["brand_new_block", "review.models", "workflow.unknown_gsd_key"],
+            vec![
+                "brand_new_block",
+                "review.models",
+                "workflow.unknown_gsd_key"
+            ],
             "the pass-through walk must reach the top level, the nested blocks \
              AND the templated families, in sorted order"
         );
@@ -13702,8 +15556,8 @@ mod tests {
 
     /// A config carrying one unmodelled key at the top level and one inside
     /// every nested block, so the walk is probed at each of its sources.
-    fn config_with_an_unmodelled_key_in_every_block(
-    ) -> crate::state_reader::config_json::GsdConfig {
+    fn config_with_an_unmodelled_key_in_every_block() -> crate::state_reader::config_json::GsdConfig
+    {
         let mut json = serde_json::Map::new();
         json.insert("zz_top_level_probe".to_string(), serde_json::json!(1));
         for block in NESTED_CONFIG_BLOCKS {
@@ -13809,7 +15663,11 @@ mod tests {
 
         // Editable: the dropdown applies, the toggle flips, the clear unsets.
         let mut config = populated_gsd_config();
-        assert!(set_config_value(&mut config, "workflow.compact_content", "false"));
+        assert!(set_config_value(
+            &mut config,
+            "workflow.compact_content",
+            "false"
+        ));
         assert_eq!(
             config.workflow.as_ref().unwrap().compact_content,
             Some(false)
@@ -13862,8 +15720,14 @@ mod tests {
                 "`{key}` is a boolean; kind is {:?}",
                 entry.kind
             );
-            assert_ne!(entry.category, PASSTHROUGH_CATEGORY, "`{key}` rendered as pass-through");
-            assert_eq!(entry.help.since, "v1.15.0", "`{key}` must name gsd-core v1.15.0");
+            assert_ne!(
+                entry.category, PASSTHROUGH_CATEGORY,
+                "`{key}` rendered as pass-through"
+            );
+            assert_eq!(
+                entry.help.since, "v1.15.0",
+                "`{key}` must name gsd-core v1.15.0"
+            );
 
             let pointer = format!("/{}", key.replace('.', "/"));
             let at = |config: &crate::state_reader::config_json::GsdConfig| {
@@ -13874,9 +15738,20 @@ mod tests {
             };
             let mut config = crate::state_reader::config_json::parse_gsd_config("{}").unwrap();
             assert!(set_config_value(&mut config, key, "false"), "{key} set");
-            assert_eq!(at(&config), Some(serde_json::json!(false)), "{key} set wrote the wrong path");
-            assert!(mutate_config_entry(&mut config, key, &ConfigValueKind::Bool), "{key} toggle");
-            assert_eq!(at(&config), Some(serde_json::json!(true)), "{key} toggle wrote the wrong path");
+            assert_eq!(
+                at(&config),
+                Some(serde_json::json!(false)),
+                "{key} set wrote the wrong path"
+            );
+            assert!(
+                mutate_config_entry(&mut config, key, &ConfigValueKind::Bool),
+                "{key} toggle"
+            );
+            assert_eq!(
+                at(&config),
+                Some(serde_json::json!(true)),
+                "{key} toggle wrote the wrong path"
+            );
             assert!(clear_config_value(&mut config, key), "{key} clear");
             assert_eq!(at(&config), None, "{key} clear left the key in the file");
 
@@ -13903,7 +15778,10 @@ mod tests {
         let entries = build_defaults_entries(&config);
 
         let rows = passthrough_rows(&entries);
-        for tuning in ["planner.stall_detect_interval_minutes", "planner.stall_threshold_minutes"] {
+        for tuning in [
+            "planner.stall_detect_interval_minutes",
+            "planner.stall_threshold_minutes",
+        ] {
             let row = rows
                 .iter()
                 .find(|entry| entry.key.as_ref() == tuning)
@@ -13931,9 +15809,18 @@ mod tests {
         ));
         let saved = serialize_gsd_config(&config).expect("serialises");
         let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
-        assert_eq!(value.pointer("/planner/stall_detection_enabled"), Some(&serde_json::json!(true)));
-        assert_eq!(value.pointer("/planner/stall_detect_interval_minutes"), Some(&serde_json::json!(5)));
-        assert_eq!(value.pointer("/planner/stall_threshold_minutes"), Some(&serde_json::json!(10)));
+        assert_eq!(
+            value.pointer("/planner/stall_detection_enabled"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            value.pointer("/planner/stall_detect_interval_minutes"),
+            Some(&serde_json::json!(5))
+        );
+        assert_eq!(
+            value.pointer("/planner/stall_threshold_minutes"),
+            Some(&serde_json::json!(10))
+        );
     }
 
     /// Every key the gsd-core 1.14.0 re-sync added, with the kind its row must
@@ -14059,14 +15946,14 @@ mod tests {
             GSD_CORE_SYNCED_COMMIT, GSD_CORE_SYNCED_TREE_VERSION, GSD_CORE_SYNCED_VERSION,
         };
 
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("docs/GSD-CORE-SYNC.md");
-        let doc = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("the sync record is missing at {}: {e}", path.display())
-        });
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/GSD-CORE-SYNC.md");
+        let doc = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the sync record is missing at {}: {e}", path.display()));
 
         assert!(
-            doc.contains("GSD_CORE_SYNCED_TREE_VERSION") && doc.contains(GSD_CORE_SYNCED_TREE_VERSION),
+            doc.contains("GSD_CORE_SYNCED_TREE_VERSION")
+                && doc.contains(GSD_CORE_SYNCED_TREE_VERSION),
             "the record does not name GSD_CORE_SYNCED_TREE_VERSION \
              ({GSD_CORE_SYNCED_TREE_VERSION:?}), the ceiling of the in-sync range"
         );
@@ -14165,7 +16052,10 @@ mod tests {
             .iter()
             .filter(|(key, _)| key.starts_with("workflow."))
             .count();
-        assert_eq!(workflow, 27, "the workflow.* half of the re-sync changed size");
+        assert_eq!(
+            workflow, 27,
+            "the workflow.* half of the re-sync changed size"
+        );
         assert_eq!(
             RESYNCED_KEYS_1_15_0.len(),
             2,
@@ -14200,8 +16090,15 @@ mod tests {
                 .iter()
                 .find(|e| e.key.as_ref() == *key)
                 .unwrap_or_else(|| panic!("`{key}` has no row"));
-            let since = if *kind == "secret" { "v1.4.0" } else { "v1.01.0" };
-            assert_eq!(entry.help.since, since, "`{key}`'s measured since (INFERRED I-7)");
+            let since = if *kind == "secret" {
+                "v1.4.0"
+            } else {
+                "v1.01.0"
+            };
+            assert_eq!(
+                entry.help.since, since,
+                "`{key}`'s measured since (INFERRED I-7)"
+            );
 
             let mut config = parse_gsd_config("{}").unwrap();
             match *kind {
@@ -14233,7 +16130,11 @@ mod tests {
                 other => panic!("unknown kind {other:?}"),
             }
             assert!(clear_config_value(&mut config, key), "`{key}` clear");
-            assert_eq!(at(&config, key), None, "`{key}` clear left the key in the file");
+            assert_eq!(
+                at(&config, key),
+                None,
+                "`{key}` clear left the key in the file"
+            );
         }
 
         // agent_skills: a typed read-only row, no top-level pass-through row,
@@ -14245,14 +16146,25 @@ mod tests {
             .iter()
             .find(|e| e.key.as_ref() == "agent_skills")
             .expect("the agent_skills row");
-        assert!(matches!(row.kind, ConfigValueKind::ReadOnly), "{:?}", row.kind);
+        assert!(
+            matches!(row.kind, ConfigValueKind::ReadOnly),
+            "{:?}",
+            row.kind
+        );
         assert_ne!(row.category, PASSTHROUGH_CATEGORY);
         assert_eq!(
-            entries.iter().filter(|e| e.key.as_ref() == "agent_skills").count(),
+            entries
+                .iter()
+                .filter(|e| e.key.as_ref() == "agent_skills")
+                .count(),
             1,
             "agent_skills also rendered as a pass-through row"
         );
-        assert!(mutate_config_entry(&mut config, "research", &ConfigValueKind::Bool));
+        assert!(mutate_config_entry(
+            &mut config,
+            "research",
+            &ConfigValueKind::Bool
+        ));
         let saved: serde_json::Value =
             serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
         assert_eq!(
@@ -14266,7 +16178,8 @@ mod tests {
     #[test]
     fn the_sync_record_names_every_secret_key_and_exemption() {
         use crate::state_reader::config_secrets::{NON_SECRET_CONFIG_KEYS, SECRET_CONFIG_KEYS};
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/GSD-CORE-SYNC.md");
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/GSD-CORE-SYNC.md");
         let doc = std::fs::read_to_string(&path).expect("the sync record exists");
         let section = doc
             .split_once("\n## Secret-bearing keys")
@@ -14402,8 +16315,15 @@ mod tests {
                             .pointer(&format!("/{key}"))
                             .cloned()
                     };
-                    assert!(set_secret_value(&mut config, key, "K-SECRET-Z1Z1"), "{key} set key");
-                    assert_eq!(at(&config), Some(serde_json::json!("K-SECRET-Z1Z1")), "{key}");
+                    assert!(
+                        set_secret_value(&mut config, key, "K-SECRET-Z1Z1"),
+                        "{key} set key"
+                    );
+                    assert_eq!(
+                        at(&config),
+                        Some(serde_json::json!("K-SECRET-Z1Z1")),
+                        "{key}"
+                    );
                     assert!(set_secret_value(&mut config, key, "true"), "{key} set flag");
                     assert_eq!(at(&config), Some(serde_json::json!(true)), "{key}");
                     assert!(
@@ -14451,7 +16371,11 @@ mod tests {
     #[test]
     fn a_pass_through_key_is_refused_by_every_mutation_arm() {
         let mut config = config_with_unmodelled_keys();
-        for key in ["brand_new_block", "workflow.unknown_gsd_key", "review.models"] {
+        for key in [
+            "brand_new_block",
+            "workflow.unknown_gsd_key",
+            "review.models",
+        ] {
             assert!(
                 !set_config_value(&mut config, key, "true"),
                 "`{key}` was accepted by the dropdown arm"
@@ -14530,9 +16454,7 @@ mod tests {
             .expect("draw the Defaults tab");
         let buffer = terminal.backend().buffer().clone();
         let drawn: String = (0..height)
-            .flat_map(|y| {
-                (0..width).map(move |x| (x, y))
-            })
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
             .filter_map(|(x, y)| buffer.cell((x, y)).map(|cell| cell.symbol().to_string()))
             .collect();
 
@@ -14597,7 +16519,9 @@ mod tests {
     fn test_browse_edit_target_view_depth_returns_file_path() {
         let mut cache = browse_cache();
         cache.browser_depth = BrowserDepth::View;
-        cache.browser_file_name = Some(Untrusted::from_untrusted_source("14-02-PLAN.md".to_string()));
+        cache.browser_file_name = Some(Untrusted::from_untrusted_source(
+            "14-02-PLAN.md".to_string(),
+        ));
         cache.browser_file_content = Some("# Plan\n".to_string());
 
         assert_eq!(
@@ -14658,9 +16582,10 @@ mod tests {
     fn test_browse_edit_target_milestones_path_is_read_only() {
         let mut cache = browse_cache();
         cache.browser_depth = BrowserDepth::View;
-        cache.browser_current_dir =
-            Some(PathBuf::from("/proj/.planning/milestones/v1.2-phases"));
-        cache.browser_file_name = Some(Untrusted::from_untrusted_source("11-SUMMARY.md".to_string()));
+        cache.browser_current_dir = Some(PathBuf::from("/proj/.planning/milestones/v1.2-phases"));
+        cache.browser_file_name = Some(Untrusted::from_untrusted_source(
+            "11-SUMMARY.md".to_string(),
+        ));
         cache.browser_file_content = Some("archived".to_string());
 
         assert_eq!(browse_edit_target(&cache), Err(READ_ONLY_MSG));
@@ -14684,7 +16609,9 @@ mod tests {
     fn test_browse_edit_target_loading_content_is_inert() {
         let mut cache = browse_cache();
         cache.browser_depth = BrowserDepth::View;
-        cache.browser_file_name = Some(Untrusted::from_untrusted_source("14-02-PLAN.md".to_string()));
+        cache.browser_file_name = Some(Untrusted::from_untrusted_source(
+            "14-02-PLAN.md".to_string(),
+        ));
         // Still in the Phase 12 `Loading...` window.
         cache.browser_file_content = None;
 
@@ -14761,8 +16688,7 @@ mod tests {
     /// enough to pass, vacuous.
     #[test]
     fn the_tabs_hint_drops_shift_d_on_every_tab_when_experimental_is_off() {
-        for sub_view in
-            (0..visible_tab_count(false)).map(|index| sub_view_from_index(index, false))
+        for sub_view in (0..visible_tab_count(false)).map(|index| sub_view_from_index(index, false))
         {
             let text = footer_text_at(&sub_view, 120, false);
             // Phases: `→`/`Enter` descend into the Waves pane (quick 260926-2l4).
@@ -14774,7 +16700,11 @@ mod tests {
             };
             // Config's `↑` from the first row lands on its scope strip
             // (quick 260929-g9u).
-            let up = if sub_view == DetailSubView::Defaults { "[↑]scope" } else { "[↑]tab bar" };
+            let up = if sub_view == DetailSubView::Defaults {
+                "[↑]scope"
+            } else {
+                "[↑]tab bar"
+            };
             assert!(
                 text.starts_with(&format!("  {up}  {arrows}  [1-8]jump  ")),
                 "{sub_view:?} must not advertise a Driver tab the user cannot \
@@ -14839,26 +16769,38 @@ mod tests {
                 tab_index(&view)
             );
         }
-        assert_eq!(sub_view_from_index(DRIVER_TAB_INDEX, true), DetailSubView::Driver);
+        assert_eq!(
+            sub_view_from_index(DRIVER_TAB_INDEX, true),
+            DetailSubView::Driver
+        );
         assert_eq!(tab_index(&DetailSubView::Driver), DRIVER_TAB_INDEX);
         // Docs › Milestones is a sub-view of the Docs tab, not a tab of its
         // own: it shares Docs' index, and that index resolves to Docs › Files
         // (D-B04).
-        assert_eq!(tab_index(&DetailSubView::Archive), tab_index(&DetailSubView::Browse));
+        assert_eq!(
+            tab_index(&DetailSubView::Archive),
+            tab_index(&DetailSubView::Browse)
+        );
         assert_eq!(
             sub_view_from_index(tab_index(&DetailSubView::Archive), true),
             DetailSubView::Browse
         );
         // Sessions › Agents is the same shape on the Sessions tab (D-C15): it
         // shares Sessions' index, and that index resolves to Sessions.
-        assert_eq!(tab_index(&DetailSubView::Agents), tab_index(&DetailSubView::Sessions));
+        assert_eq!(
+            tab_index(&DetailSubView::Agents),
+            tab_index(&DetailSubView::Sessions)
+        );
         assert_eq!(
             sub_view_from_index(tab_index(&DetailSubView::Agents), true),
             DetailSubView::Sessions
         );
         // The out-of-range fallback lands on the default (Roadmap) tab, not the
         // newest.
-        assert_eq!(sub_view_from_index(TAB_COUNT, true), DetailSubView::RoadmapViz);
+        assert_eq!(
+            sub_view_from_index(TAB_COUNT, true),
+            DetailSubView::RoadmapViz
+        );
     }
 
     /// Phase 24 end to end (D-B01, D-B03, D-B07, D-B10): a detail screen with no
@@ -15005,13 +16947,10 @@ mod tests {
     fn the_whole_bar_tiers_still_offer_the_driver_label_when_experimental_is_on() {
         assert!(bar_text(TAB_BAR_FULL_CELLS, 0, true).contains(TAB_LABELS_FULL[DRIVER_TAB_INDEX]));
         assert!(
-            bar_text(TAB_BAR_COMPACT_CELLS, 0, true)
-                .contains(TAB_LABELS_COMPACT[DRIVER_TAB_INDEX])
+            bar_text(TAB_BAR_COMPACT_CELLS, 0, true).contains(TAB_LABELS_COMPACT[DRIVER_TAB_INDEX])
         );
         // The windowed tier reaches it by making it active.
-        assert!(
-            bar_text(40, DRIVER_TAB_INDEX, true).contains(TAB_LABELS_COMPACT[DRIVER_TAB_INDEX])
-        );
+        assert!(bar_text(40, DRIVER_TAB_INDEX, true).contains(TAB_LABELS_COMPACT[DRIVER_TAB_INDEX]));
     }
 
     /// The flag-off labels fit the compact bar in
@@ -15027,16 +16966,25 @@ mod tests {
         let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS_NO_DRIVER, last, false, false);
         assert_eq!(titles.len(), visible);
         assert_eq!(select, last);
-        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_FULL_CELLS_NO_DRIVER));
+        assert_eq!(
+            bar_cells(&titles),
+            usize::from(TAB_BAR_FULL_CELLS_NO_DRIVER)
+        );
 
         let (titles, select) = tab_titles(TAB_BAR_COMPACT_CELLS_NO_DRIVER, 4, false, false);
         assert_eq!(titles.len(), visible);
         assert_eq!(select, 4);
-        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER));
+        assert_eq!(
+            bar_cells(&titles),
+            usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER)
+        );
 
         // One cell below the flag-off full width is already the compact tier.
         let (titles, _) = tab_titles(TAB_BAR_FULL_CELLS_NO_DRIVER - 1, 4, false, false);
-        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER));
+        assert_eq!(
+            bar_cells(&titles),
+            usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER)
+        );
     }
 
     /// **The anti-drift test.** All four cell constants re-derived from the
@@ -15262,7 +17210,10 @@ mod tests {
     #[test]
     fn the_windowed_tier_fits_and_marks_the_side_it_truncated() {
         let (titles, _) = tab_titles(40, DRIVER_TAB_INDEX, false, true);
-        assert!(bar_cells(&titles) <= 40, "windowed bar overflows 40 columns");
+        assert!(
+            bar_cells(&titles) <= 40,
+            "windowed bar overflows 40 columns"
+        );
         let first: String = titles[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(
             first, TAB_OVERFLOW_LEFT,
@@ -15336,8 +17287,8 @@ mod tests {
                 ctx.detail_sub_view_per_project
                     .insert("meta-mgr".to_string(), sub_view_from_index(active, true));
 
-                let mut terminal = Terminal::new(TestBackend::new(width, 24))
-                    .expect("TestBackend terminal");
+                let mut terminal =
+                    Terminal::new(TestBackend::new(width, 24)).expect("TestBackend terminal");
                 terminal
                     .draw(|frame| screen.render(frame, frame.area(), &ctx))
                     .expect("draw the detail screen");
@@ -15444,7 +17395,8 @@ mod tests {
     #[test]
     fn opened_on_archive_lands_on_docs_milestones() {
         let mut ctx = test_ctx();
-        let screen = DetailScreen::opened_on(TEST_ALIAS.to_string(), DetailSubView::Archive, &mut ctx);
+        let screen =
+            DetailScreen::opened_on(TEST_ALIAS.to_string(), DetailSubView::Archive, &mut ctx);
 
         assert_eq!(
             ctx.detail_sub_view_per_project.get(TEST_ALIAS),
@@ -15455,7 +17407,10 @@ mod tests {
 
         let text = render_detail_to_text(&screen, &ctx);
         assert!(text.contains("Files \u{2502} [Milestones]"), "{text}");
-        assert!(text.contains("Archive"), "the breadcrumb keeps its title: {text}");
+        assert!(
+            text.contains("Archive"),
+            "the breadcrumb keeps its title: {text}"
+        );
         assert_eq!(active_tab_text(&screen, &ctx), "8:Docs");
     }
 
@@ -15468,7 +17423,10 @@ mod tests {
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::Browse);
         let files = render_detail_to_text(&screen, &ctx);
-        assert!(files.contains("[Files] \u{2502} Milestones   ←/→ switch"), "{files}");
+        assert!(
+            files.contains("[Files] \u{2502} Milestones   ←/→ switch"),
+            "{files}"
+        );
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
         assert_eq!(
@@ -15480,7 +17438,10 @@ mod tests {
             "arriving on Milestones by `m` schedules milestone discovery"
         );
         let milestones = render_detail_to_text(&screen, &ctx);
-        assert!(milestones.contains("Files \u{2502} [Milestones]   ←/→ switch"), "{milestones}");
+        assert!(
+            milestones.contains("Files \u{2502} [Milestones]   ←/→ switch"),
+            "{milestones}"
+        );
         assert_eq!(active_tab_text(&screen, &ctx), "8:Docs");
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
@@ -15579,14 +17540,20 @@ mod tests {
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::Sessions);
         let sessions = render_detail_to_text(&screen, &ctx);
-        assert!(sessions.contains("[Sessions] \u{2502} Agents   ←/→ switch"), "{sessions}");
+        assert!(
+            sessions.contains("[Sessions] \u{2502} Agents   ←/→ switch"),
+            "{sessions}"
+        );
         let sessions_tab = active_tab_text(&screen, &ctx);
         assert!(sessions_tab.starts_with("6:"), "{sessions_tab}");
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
         assert_eq!(stored_view(&ctx), DetailSubView::Agents);
         let agents = render_detail_to_text(&screen, &ctx);
-        assert!(agents.contains("Sessions \u{2502} [Agents]   ←/→ switch"), "{agents}");
+        assert!(
+            agents.contains("Sessions \u{2502} [Agents]   ←/→ switch"),
+            "{agents}"
+        );
         assert_eq!(active_tab_text(&screen, &ctx), sessions_tab);
 
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
@@ -15606,7 +17573,10 @@ mod tests {
         );
         // Quick 260926-2l4: ONE strip line, not a row per wave.
         assert!(text.contains("w1\u{2713}  \u{25b8}w2 1 running"), "{text}");
-        assert!(!text.contains("running 0 \u{b7} done 1 \u{b7} queued 0"), "{text}");
+        assert!(
+            !text.contains("running 0 \u{b7} done 1 \u{b7} queued 0"),
+            "{text}"
+        );
         let row = text
             .lines()
             .find(|line| line.contains("13-02"))
@@ -15742,7 +17712,10 @@ mod tests {
         assert!(agents.contains("[j/k]"), "{agents}");
         assert!(agents.contains("[←/→]Sessions|Agents  "), "{agents}");
         assert!(!agents.contains("[m]"), "{agents}");
-        assert!(!agents.contains("[n]"), "Agents offers no new-session key: {agents}");
+        assert!(
+            !agents.contains("[n]"),
+            "Agents offers no new-session key: {agents}"
+        );
         // Quick 260926-2l4: `Enter` jumps to the row's plan in Phases.
         assert!(agents.contains("[Enter]\u{2192}Phases"), "{agents}");
     }
@@ -15811,7 +17784,9 @@ mod tests {
                 last_activity: last,
                 ..agent_row("/wt/a", AgentLiveness::Live, Some("13-02"))
             }]);
-            agent_line_with(&text, "13-02").trim_end_matches([' ', '\u{2502}']).to_string()
+            agent_line_with(&text, "13-02")
+                .trim_end_matches([' ', '\u{2502}'])
+                .to_string()
         };
         let ago = |secs: u64| Some(scan_instant() - std::time::Duration::from_secs(secs));
         for (secs, age) in [(45, "45s"), (199, "3m"), (7300, "2h"), (90_000, "1d")] {
@@ -15867,7 +17842,8 @@ mod tests {
             scanned_at: Some(scan_instant()),
             ..Default::default()
         };
-        let view = crate::agents::waves::derive(&scan, &crate::state_reader::ProjectState::default());
+        let view =
+            crate::agents::waves::derive(&scan, &crate::state_reader::ProjectState::default());
         let (screen, ctx) = on_agents(Some(view));
         let first = render_detail_to_text_at(&screen, &ctx, 160, 30);
         let alpha = first.find("alpha-type").expect("alpha row");
@@ -15894,7 +17870,11 @@ mod tests {
         let text = render_detail_to_text(&screen, &ctx);
         assert_eq!(body_lines(&text), vec!["No running agents"], "{text}");
 
-        let text = render_agent_rows(vec![agent_row("/wt/a", AgentLiveness::Ended, Some("13-02"))]);
+        let text = render_agent_rows(vec![agent_row(
+            "/wt/a",
+            AgentLiveness::Ended,
+            Some("13-02"),
+        )]);
         assert!(text.contains("no active agents"), "{text}");
         assert!(agent_line_with(&text, "13-02").contains("ended"), "{text}");
         assert!(!text.contains("No running agents"), "{text}");
@@ -15908,12 +17888,24 @@ mod tests {
             (first..=last).map(|n| format!("13-{n:02}")).collect()
         };
         let mut plan_waves = vec![
-            PlanWave { wave: Some(1), plans: ids(1, 8) },
-            PlanWave { wave: Some(2), plans: ids(9, 22) },
-            PlanWave { wave: Some(3), plans: ids(23, 27) },
+            PlanWave {
+                wave: Some(1),
+                plans: ids(1, 8),
+            },
+            PlanWave {
+                wave: Some(2),
+                plans: ids(9, 22),
+            },
+            PlanWave {
+                wave: Some(3),
+                plans: ids(23, 27),
+            },
         ];
         for (wave, plan) in (4..=11).zip(28..=35) {
-            plan_waves.push(PlanWave { wave: Some(wave), plans: ids(plan, plan) });
+            plan_waves.push(PlanWave {
+                wave: Some(wave),
+                plans: ids(plan, plan),
+            });
         }
         crate::state_reader::ProjectState {
             phase_disk_statuses: std::collections::HashMap::from([(
@@ -15960,11 +17952,19 @@ mod tests {
         let (screen, ctx) = on_agents(Some(two_wave_view()));
         let one = render_detail_to_text_at(&screen, &ctx, 80, 24);
         assert!(one.contains("w1\u{2713}  \u{25b8}w2 1 running"), "{one}");
-        assert_eq!(one.lines().filter(|l| l.contains("> live") || l.contains("  live  ")).count(), 1, "{one}");
+        assert_eq!(
+            one.lines()
+                .filter(|l| l.contains("> live") || l.contains("  live  "))
+                .count(),
+            1,
+            "{one}"
+        );
 
         // 2. Three code-fixers with descriptions and no plans.
         let fixer = |path: &str, desc: &str| crate::agents::AgentRow {
-            agent_type: Some(Untrusted::from_untrusted_source("gsd-code-fixer".to_string())),
+            agent_type: Some(Untrusted::from_untrusted_source(
+                "gsd-code-fixer".to_string(),
+            )),
             description: Some(Untrusted::from_untrusted_source(desc.to_string())),
             ..agent_row(path, AgentLiveness::Live, None)
         };
@@ -15979,8 +17979,15 @@ mod tests {
         }));
         let two = render_detail_to_text_at(&screen, &ctx, 80, 24);
         assert!(two.contains("3 agents"), "{two}");
-        for desc in ["Fix CR-01 in parser", "Fix WR-02 in render", "Fix IN-03 in docs"] {
-            assert!(agent_line_with(&two, desc).contains("gsd-code-fixer"), "{two}");
+        for desc in [
+            "Fix CR-01 in parser",
+            "Fix WR-02 in render",
+            "Fix IN-03 in docs",
+        ] {
+            assert!(
+                agent_line_with(&two, desc).contains("gsd-code-fixer"),
+                "{two}"
+            );
         }
 
         // 3. Thirteen executors in wave 2 of 11.
@@ -15990,7 +17997,10 @@ mod tests {
             three.contains("P13 \u{b7} w2/11 \u{b7} 13 run \u{b7} 8/35 done"),
             "{three}"
         );
-        assert!(three.contains("\u{25b8}w2 13 running \u{b7} 1 queued"), "{three}");
+        assert!(
+            three.contains("\u{25b8}w2 13 running \u{b7} 1 queued"),
+            "{three}"
+        );
         let first_row = agent_line_with(&three, "13-09");
         assert!(first_row.contains("live"), "{three}");
         assert!(first_row.contains("+2  ~0  0s"), "{three}");
@@ -16148,7 +18158,10 @@ mod tests {
     fn test_clamp_scroll_repeated_page_down_is_idempotent() {
         // Already at the end: further PageDown presses do not grow the offset.
         assert_eq!(clamp_scroll(70 + PAGE_SCROLL_LINES, 100, 30), 70);
-        assert_eq!(clamp_scroll(clamp_scroll(90, 100, 30) + PAGE_SCROLL_LINES, 100, 30), 70);
+        assert_eq!(
+            clamp_scroll(clamp_scroll(90, 100, 30) + PAGE_SCROLL_LINES, 100, 30),
+            70
+        );
     }
 
     #[test]
@@ -16427,7 +18440,9 @@ mod tests {
         if let Some(total_lines) = body_lines {
             cache.git_commit_detail = Some(GitCommitDetail {
                 hash: field("hash000"),
-                body: (0..total_lines).map(|i| field(&format!("line {i}"))).collect(),
+                body: (0..total_lines)
+                    .map(|i| field(&format!("line {i}")))
+                    .collect(),
                 stat: Default::default(),
             });
             cache.git_commit_scroll = stored_offset;
@@ -16467,8 +18482,7 @@ mod tests {
         let (mut screen, mut ctx) = git_fixture(100, 0, None, 0);
         press(&mut screen, &mut ctx, KeyCode::PageDown);
         assert_eq!(
-            ctx.view_cache[TEST_ALIAS].git_selected,
-            PAGE_SCROLL_LINES as usize,
+            ctx.view_cache[TEST_ALIAS].git_selected, PAGE_SCROLL_LINES as usize,
             "with no pane open PageDown keeps paging the log"
         );
     }
@@ -16551,7 +18565,9 @@ mod tests {
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
         cache.git_commit_detail = Some(GitCommitDetail {
             hash: field("hash000"),
-            body: (0..body_lines).map(|i| field(&format!("line {i:02}"))).collect(),
+            body: (0..body_lines)
+                .map(|i| field(&format!("line {i:02}")))
+                .collect(),
             stat: GitDiffStat {
                 files_changed: 1,
                 insertions: 2,
@@ -16566,10 +18582,8 @@ mod tests {
 
     #[test]
     fn a_git_row_without_co_authors_has_no_trailing_parentheses() {
-        let (screen, ctx) = git_rows_fixture(&[
-            ("with a helper", Some("Claude Opus 5")),
-            ("alone", None),
-        ]);
+        let (screen, ctx) =
+            git_rows_fixture(&[("with a helper", Some("Claude Opus 5")), ("alone", None)]);
         let drawn = render_detail_sized(&screen, &ctx, 120, 30);
 
         let with_row = drawn
@@ -16734,7 +18748,11 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::PageDown);
         assert_eq!(driver_offset(&ctx), 70);
         press(&mut screen, &mut ctx, KeyCode::PageDown);
-        assert_eq!(driver_offset(&ctx), 70, "repeated PageDown must be idempotent");
+        assert_eq!(
+            driver_offset(&ctx),
+            70,
+            "repeated PageDown must be idempotent"
+        );
     }
 
     #[test]
@@ -16819,7 +18837,10 @@ mod tests {
         let (mut screen, mut ctx) = driver_fixture(100, 30, 45, false);
         {
             let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.driver_runs = vec![test_run("2026-07-29T21-40-00Z-3f2a"), test_run("2026-07-28T09-00-00Z-aa11")];
+            cache.driver_runs = vec![
+                test_run("2026-07-29T21-40-00Z-3f2a"),
+                test_run("2026-07-28T09-00-00Z-aa11"),
+            ];
         }
 
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
@@ -16994,7 +19015,10 @@ mod tests {
         );
 
         let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_inject"));
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_inject")
+        );
         assert!(
             ctx.status_message.is_none(),
             "a run that IS live gets no refusal"
@@ -17047,7 +19071,10 @@ mod tests {
         cache.driver_selected_run = 1;
         ctx.status_message = None;
         let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_inject"));
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_inject")
+        );
         assert!(ctx.status_message.is_none());
     }
 
@@ -17065,7 +19092,10 @@ mod tests {
     fn pressing_x_on_the_driver_tab_pushes_the_stop_confirmation() {
         let (mut screen, mut ctx, _rx) = driver_action_fixture();
         let action = screen.handle_key(KeyCode::Char('x'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_confirm"));
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_confirm")
+        );
     }
 
     /// The Driver tab with a **registered** project carrying no opt-in record.
@@ -17121,7 +19151,10 @@ mod tests {
         );
 
         let action = screen.handle_key(KeyCode::Char('o'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_confirm"));
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_confirm")
+        );
 
         assert!(
             !crate::registry::is_opted_in(&ctx.config, TEST_ALIAS),
@@ -17606,17 +19639,17 @@ mod tests {
             .collect();
         ids.extend(
             [
-                "a'b",                  // single quote — terminates the quoting
-                "a\"b",                 // double quote
-                "a;b",                  // command separator
-                "a&&b",                 // conditional chain
-                "a|b",                  // pipe
-                "a`b`c",                // backtick substitution
-                "a$(b)c",               // dollar-parenthesis substitution
-                "a\nb",                 // newline — a statement separator
-                "a\u{7}b",              // a NUL-free control character
-                "a b",                  // a bare space: must stay ONE element
-                "'; rm -rf / #",        // the whole escape, assembled
+                "a'b",           // single quote — terminates the quoting
+                "a\"b",          // double quote
+                "a;b",           // command separator
+                "a&&b",          // conditional chain
+                "a|b",           // pipe
+                "a`b`c",         // backtick substitution
+                "a$(b)c",        // dollar-parenthesis substitution
+                "a\nb",          // newline — a statement separator
+                "a\u{7}b",       // a NUL-free control character
+                "a b",           // a bare space: must stay ONE element
+                "'; rm -rf / #", // the whole escape, assembled
             ]
             .iter()
             .map(|raw| (*raw).to_string()),
@@ -17627,14 +19660,14 @@ mod tests {
                 // Each is a value that a receiving option parser reads as an
                 // OPTION when it arrives as its own argv element.
                 "-h",                             // the shortest possible option lookalike
-                "--version",                      // probe A's payload: measured to FIRE at claude 2.1.248
+                "--version", // probe A's payload: measured to FIRE at claude 2.1.248
                 "--dangerously-skip-permissions", // the payload probe A stands in for
-                "--print",                        // an option that changes the program's whole mode
-                "-",                              // a bare hyphen: the degenerate case
-                "-r",                             // the SHORT spelling of the option being injected into
-                "--resume",                       // the option's own name, so the id can impersonate it
-                "--settings=/tmp/x.json",         // an option that already carries a fused value
-                "a=b",                            // NOT an option: the fusion character inside an id,
+                "--print",   // an option that changes the program's whole mode
+                "-",         // a bare hyphen: the degenerate case
+                "-r",        // the SHORT spelling of the option being injected into
+                "--resume",  // the option's own name, so the id can impersonate it
+                "--settings=/tmp/x.json", // an option that already carries a fused value
+                "a=b",       // NOT an option: the fusion character inside an id,
                 // which must still arrive WHOLE (capability direction)
                 "--add-dir", // an option taking a path the attacker chooses
             ]
@@ -18165,14 +20198,8 @@ mod tests {
     /// The byte prefixes the `prefixed` shape draws from. Five of the six begin
     /// with a hyphen — the class round 10's corpus missed entirely — and the
     /// sixth is the fusion character itself, which must arrive as data.
-    const GENERATED_OPTION_PREFIXES: [&[u8]; 6] = [
-        b"-",
-        b"--",
-        b"-r",
-        b"=",
-        b"--resume",
-        b"--session-id",
-    ];
+    const GENERATED_OPTION_PREFIXES: [&[u8]; 6] =
+        [b"-", b"--", b"-r", b"=", b"--resume", b"--session-id"];
 
     /// One xorshift64* step. Deterministic, seedable, and small enough to read
     /// in full — which is the point of not taking a dependency for it.
@@ -18328,11 +20355,7 @@ mod tests {
 
     /// The BARE SHORT form: `-r`, then the value as the next element.
     fn encode_short_split(s: &[u8]) -> Vec<u8> {
-        nul_join_cmdline(&[
-            b"claude".as_slice(),
-            RESUME_OPTION_SHORT_NAME.as_bytes(),
-            s,
-        ])
+        nul_join_cmdline(&[b"claude".as_slice(), RESUME_OPTION_SHORT_NAME.as_bytes(), s])
     }
 
     /// The ATTACHED SHORT form: `-r<value>`, one element, no fusion character.
@@ -18587,8 +20610,7 @@ mod tests {
         let whitespace_only = corpus
             .iter()
             .filter(|s| {
-                !s.is_empty()
-                    && std::str::from_utf8(s).is_ok_and(|text| text.trim().is_empty())
+                !s.is_empty() && std::str::from_utf8(s).is_ok_and(|text| text.trim().is_empty())
             })
             .count();
 
@@ -19371,7 +21393,10 @@ mod tests {
         let title = waves_pane_title(&model, 200);
         // 95 000 + 40 000 + 15 000 = 150 000; 12 846 + 30 000 = 42 846.
         assert!(title.contains("est 150k act 42.8k"), "{title}");
-        assert!(title.contains("plans 1/3 done") || title.contains("1/3 done"), "{title}");
+        assert!(
+            title.contains("plans 1/3 done") || title.contains("1/3 done"),
+            "{title}"
+        );
         // Narrow: the totals drop first, the done count stays.
         let narrow = waves_pane_title(&model, 34);
         assert!(!narrow.contains("est"), "{narrow}");
@@ -19392,8 +21417,14 @@ mod tests {
         assert!(!rows.is_empty());
         for row in &rows {
             let text = line_text(&waves_row_line(&model, row, true, 80));
-            assert!(!text.contains('\u{202E}'), "a bidi override reached a cell: {text:?}");
-            assert!(!text.contains('\u{1b}'), "a raw ESC reached a cell: {text:?}");
+            assert!(
+                !text.contains('\u{202E}'),
+                "a bidi override reached a cell: {text:?}"
+            );
+            assert!(
+                !text.contains('\u{1b}'),
+                "a raw ESC reached a cell: {text:?}"
+            );
         }
     }
 
@@ -19462,20 +21493,14 @@ mod tests {
         // One real wave plus some plans whose wave was never recorded is a
         // SERIAL phase. Counting the `w?` bucket would report it as parallel.
         let phase = phase_fixture("19", "gitsafe");
-        let inf = inference_with_waves(vec![
-            wave(Some(1), &["19-01"]),
-            wave(None, &["19-02"]),
-        ]);
+        let inf = inference_with_waves(vec![wave(Some(1), &["19-01"]), wave(None, &["19-02"])]);
         assert_eq!(phase_list_label(&phase, Some(&inf)), "P19: gitsafe");
     }
 
     #[test]
     fn a_hostile_phase_name_reaches_no_cell_unescaped_beside_a_waves_marker() {
         let phase = phase_fixture("19", "git\u{202E}safe\u{1b}[31m");
-        let inf = inference_with_waves(vec![
-            wave(Some(1), &["19-01"]),
-            wave(Some(2), &["19-02"]),
-        ]);
+        let inf = inference_with_waves(vec![wave(Some(1), &["19-01"]), wave(Some(2), &["19-02"])]);
         let label = phase_list_label(&phase, Some(&inf));
         assert!(!label.contains('\u{202E}'), "bidi override: {label:?}");
         assert!(!label.contains('\u{1b}'), "raw ESC: {label:?}");
@@ -19661,7 +21686,11 @@ mod tests {
         )
         .unwrap();
         press(&mut screen, &mut ctx, KeyCode::Char('3'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_items.len(), 2, "precondition");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].backlog_items.len(),
+            2,
+            "precondition"
+        );
         press(&mut screen, &mut ctx, KeyCode::Enter);
         // The first frame records the pane's viewport, as in the real loop.
         render_detail_to_text_at(&screen, &ctx, 120, 30);
@@ -19688,9 +21717,15 @@ mod tests {
             press(&mut screen, &mut ctx, KeyCode::PageDown);
         }
         let vp = screen.backlog_viewport.get();
-        assert!(vp.total_lines >= 60 && vp.visible_height > 0, "viewport recorded");
+        assert!(
+            vp.total_lines >= 60 && vp.visible_height > 0,
+            "viewport recorded"
+        );
         let max = vp.total_lines - vp.visible_height;
-        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_scroll, max, "clamped to the end");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].backlog_scroll, max,
+            "clamped to the end"
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 0);
 
         let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
@@ -19713,25 +21748,40 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
 
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None), "Esc closes the pane, not the screen");
+        assert!(
+            matches!(action, ScreenAction::None),
+            "Esc closes the pane, not the screen"
+        );
         let cache = &ctx.view_cache[TEST_ALIAS];
         assert!(!cache.backlog_expanded);
         assert_eq!(cache.backlog_scroll, 0);
 
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 1, "j moves the list again");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].backlog_selected, 1,
+            "j moves the list again"
+        );
 
         press(&mut screen, &mut ctx, KeyCode::Enter);
         assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded);
         press(&mut screen, &mut ctx, KeyCode::Enter);
-        assert!(!ctx.view_cache[TEST_ALIAS].backlog_expanded, "Enter again closes it");
+        assert!(
+            !ctx.view_cache[TEST_ALIAS].backlog_expanded,
+            "Enter again closes it"
+        );
         // With the pane closed Esc steps up to the tab bar, and a second Esc
         // leaves (quick 260926-1t1, D-01).
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None), "with the pane closed Esc goes up");
+        assert!(
+            matches!(action, ScreenAction::None),
+            "with the pane closed Esc goes up"
+        );
         assert_eq!(screen.focus, DetailFocus::TabBar);
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::Pop), "Esc at the tab bar leaves");
+        assert!(
+            matches!(action, ScreenAction::Pop),
+            "Esc at the tab bar leaves"
+        );
     }
 
     /// Wide: the pane sits to the RIGHT of the list (same rows). Narrow: it
@@ -19742,7 +21792,8 @@ mod tests {
 
         let wide = render_detail_to_text_at(&screen, &ctx, 140, 30);
         assert!(
-            wide.lines().any(|l| l.contains("999.1 - ") && l.contains("Content: 999.1")),
+            wide.lines()
+                .any(|l| l.contains("999.1 - ") && l.contains("Content: 999.1")),
             "wide: a list row and a content row share a screen row:\n{wide}"
         );
 
@@ -19752,7 +21803,10 @@ mod tests {
             .lines()
             .position(|l| l.contains("Content: 999.1"))
             .expect("pane title");
-        assert!(content_row > list_row, "narrow: the pane is under the list:\n{narrow}");
+        assert!(
+            content_row > list_row,
+            "narrow: the pane is under the list:\n{narrow}"
+        );
     }
 
     /// The edit key opens ROADMAP.md at the item's heading line — the file the
@@ -19777,7 +21831,10 @@ mod tests {
         let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
         let footer = text.lines().last().unwrap_or_default();
         for hint in ["scroll content", "[Enter/Esc/←]close", "[e]dit"] {
-            assert!(footer.contains(hint), "missing {hint:?} in footer {footer:?}");
+            assert!(
+                footer.contains(hint),
+                "missing {hint:?} in footer {footer:?}"
+            );
         }
     }
 
@@ -19902,8 +21959,16 @@ mod tests {
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
 
         let rows = draw_config_tab(&screen, &ctx, 120, 30);
-        assert!(rows[0].starts_with(" [Project] \u{2502} Global"), "{:?}", rows[0]);
-        assert!(rows[1].contains(" Project Config (.planning/config.json) "), "{:?}", rows[1]);
+        assert!(
+            rows[0].starts_with(" [Project] \u{2502} Global"),
+            "{:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].contains(" Project Config (.planning/config.json) "),
+            "{:?}",
+            rows[1]
+        );
 
         let commit_docs_idx = |ctx: &AppContext| {
             entries_for_cache(&ctx.view_cache[TEST_ALIAS])
@@ -19914,14 +21979,24 @@ mod tests {
 
         // A project-scope edit: commit_docs -> false.
         let idx = commit_docs_idx(&ctx);
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = idx;
         press(&mut screen, &mut ctx, KeyCode::Enter);
         press(&mut screen, &mut ctx, KeyCode::Down);
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let on_disk = parse_gsd_config(&std::fs::read_to_string(&project_file).unwrap())
             .expect("the project file parses");
-        assert_eq!(on_disk.commit_docs, Some(false), "the project edit lands in the project file");
-        assert!(!global_file.exists(), "a project edit must not create the global file");
+        assert_eq!(
+            on_disk.commit_docs,
+            Some(false),
+            "the project edit lands in the project file"
+        );
+        assert!(
+            !global_file.exists(),
+            "a project edit must not create the global file"
+        );
         let project_bytes = std::fs::read(&project_file).unwrap();
 
         // `g` flips to Global. Asserted FIRST, before any global mutation.
@@ -19933,19 +22008,34 @@ mod tests {
         );
 
         let rows = draw_config_tab(&screen, &ctx, 120, 30);
-        assert!(rows[0].starts_with(" Project \u{2502} [Global]"), "{:?}", rows[0]);
-        assert!(rows[1].contains(" Global: template for NEW projects (~/.gsd/defaults.json) "), "{:?}", rows[1]);
+        assert!(
+            rows[0].starts_with(" Project \u{2502} [Global]"),
+            "{:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].contains(" Global: template for NEW projects (~/.gsd/defaults.json) "),
+            "{:?}",
+            rows[1]
+        );
 
         // A global-scope edit: the unset row's chooser opens on `true`.
         let idx = commit_docs_idx(&ctx);
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = idx;
         press(&mut screen, &mut ctx, KeyCode::Enter);
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let global = parse_gsd_config(
             &std::fs::read_to_string(&global_file).expect("the global edit created the file"),
         )
         .expect("the global file parses");
-        assert_eq!(global.commit_docs, Some(true), "the global edit lands in the global file");
+        assert_eq!(
+            global.commit_docs,
+            Some(true),
+            "the global edit lands in the global file"
+        );
         assert_eq!(
             std::fs::read(&project_file).unwrap(),
             project_bytes,
@@ -19954,11 +22044,17 @@ mod tests {
 
         // `g` flips back; `d` is the alias. Nothing mutating follows.
         press(&mut screen, &mut ctx, KeyCode::Char('g'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Project);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Project
+        );
         let rows = draw_config_tab(&screen, &ctx, 120, 30);
         assert!(rows[0].starts_with(" [Project]"), "{:?}", rows[0]);
         press(&mut screen, &mut ctx, KeyCode::Char('d'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Global
+        );
     }
 
     /// The write destination is decided in one pure function (T-t3s-01): a
@@ -19978,10 +22074,22 @@ mod tests {
             config_write_path(DefaultsEditTarget::Project, Some(p), Some(q)),
             Some(PathBuf::from("/proj/.planning/config.json"))
         );
-        assert_eq!(config_write_path(DefaultsEditTarget::Global, None, Some(q)), Some(q.to_path_buf()));
-        assert_eq!(config_write_path(DefaultsEditTarget::Global, Some(p), Some(q)), Some(q.to_path_buf()));
-        assert_eq!(config_write_path(DefaultsEditTarget::Global, Some(p), None), None);
-        assert_eq!(config_write_path(DefaultsEditTarget::Project, None, Some(q)), None);
+        assert_eq!(
+            config_write_path(DefaultsEditTarget::Global, None, Some(q)),
+            Some(q.to_path_buf())
+        );
+        assert_eq!(
+            config_write_path(DefaultsEditTarget::Global, Some(p), Some(q)),
+            Some(q.to_path_buf())
+        );
+        assert_eq!(
+            config_write_path(DefaultsEditTarget::Global, Some(p), None),
+            None
+        );
+        assert_eq!(
+            config_write_path(DefaultsEditTarget::Project, None, Some(q)),
+            None
+        );
     }
 
     /// Arrival resolves the global-defaults path into the cache (I-7), so the
@@ -20002,7 +22110,10 @@ mod tests {
             .iter()
             .position(|e| e.key.as_ref() == key)
             .unwrap_or_else(|| panic!("no `{key}` row in the active scope"));
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = idx;
     }
 
     /// I-9: `g` pressed while a chooser is open does nothing — no scope flip,
@@ -20013,14 +22124,26 @@ mod tests {
         let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), "commit_docs");
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         press(&mut screen, &mut ctx, KeyCode::Enter);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the chooser is open");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "the chooser is open"
+        );
         ctx.status_message = None;
 
         press(&mut screen, &mut ctx, KeyCode::Char('g'));
         let cache = &ctx.view_cache[TEST_ALIAS];
         assert_eq!(cache.defaults_edit_target, DefaultsEditTarget::Project);
-        assert_eq!(cache.defaults_editing, Some(idx), "the chooser is unchanged");
-        assert!(ctx.status_message.is_none(), "`g` set a status: {:?}", ctx.status_message);
+        assert_eq!(
+            cache.defaults_editing,
+            Some(idx),
+            "the chooser is unchanged"
+        );
+        assert!(
+            ctx.status_message.is_none(),
+            "`g` set a status: {:?}",
+            ctx.status_message
+        );
     }
 
     /// I-9: `g` typed into a value prompt is text, not a scope switch.
@@ -20030,14 +22153,25 @@ mod tests {
         let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), "project_code");
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         press(&mut screen, &mut ctx, KeyCode::Enter);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the prompt is open");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "the prompt is open"
+        );
 
         press(&mut screen, &mut ctx, KeyCode::Char('g'));
         let cache = &ctx.view_cache[TEST_ALIAS];
         assert_eq!(cache.defaults_edit_target, DefaultsEditTarget::Project);
-        assert_eq!(cache.defaults_editing, Some(idx), "the prompt is still open");
+        assert_eq!(
+            cache.defaults_editing,
+            Some(idx),
+            "the prompt is still open"
+        );
         let buffer = cache.defaults_text_buffer.shown().to_string();
-        assert!(buffer.ends_with('g'), "the typed `g` reached the buffer: {buffer:?}");
+        assert!(
+            buffer.ends_with('g'),
+            "the typed `g` reached the buffer: {buffer:?}"
+        );
     }
 
     /// D-02, T-t3s-03: the scope strip is on screen in every editing state —
@@ -20054,22 +22188,35 @@ mod tests {
         // The chooser, in global scope.
         park_config_cursor(&mut ctx, "commit_docs");
         press(&mut screen, &mut ctx, KeyCode::Enter);
-        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_some(), "the chooser is open");
+        assert!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing.is_some(),
+            "the chooser is open"
+        );
         for (w, h) in [(120u16, 30u16), (80, 24)] {
             let rows = draw_config_tab(&screen, &ctx, w, h);
-            assert!(rows[0].starts_with(global), "chooser {w}x{h}: {:?}", rows[0]);
+            assert!(
+                rows[0].starts_with(global),
+                "chooser {w}x{h}: {:?}",
+                rows[0]
+            );
             assert!(
                 rows.iter().any(|r| r.contains("┌ commit_docs ")),
                 "chooser {w}x{h}: the popup was not drawn"
             );
         }
         press(&mut screen, &mut ctx, KeyCode::Esc);
-        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(), "Esc closed the chooser");
+        assert!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(),
+            "Esc closed the chooser"
+        );
 
         // The text prompt, in global scope.
         park_config_cursor(&mut ctx, "project_code");
         press(&mut screen, &mut ctx, KeyCode::Enter);
-        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_some(), "the prompt is open");
+        assert!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing.is_some(),
+            "the prompt is open"
+        );
         for (w, h) in [(120u16, 30u16), (80, 24)] {
             let rows = draw_config_tab(&screen, &ctx, w, h);
             assert!(rows[0].starts_with(global), "prompt {w}x{h}: {:?}", rows[0]);
@@ -20079,7 +22226,10 @@ mod tests {
             );
         }
         press(&mut screen, &mut ctx, KeyCode::Esc);
-        assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(), "Esc closed the prompt");
+        assert!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(),
+            "Esc closed the prompt"
+        );
 
         // Once more in project scope.
         press(&mut screen, &mut ctx, KeyCode::Char('g'));
@@ -20087,7 +22237,11 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Enter);
         for (w, h) in [(120u16, 30u16), (80, 24)] {
             let rows = draw_config_tab(&screen, &ctx, w, h);
-            assert!(rows[0].starts_with(project), "project prompt {w}x{h}: {:?}", rows[0]);
+            assert!(
+                rows[0].starts_with(project),
+                "project prompt {w}x{h}: {:?}",
+                rows[0]
+            );
             assert!(
                 rows.iter().any(|r| r.contains(DEFAULTS_EDIT_BRANCH_TOKEN)),
                 "project prompt {w}x{h}: the popup was not drawn"
@@ -20101,17 +22255,36 @@ mod tests {
     #[test]
     fn config_scope_strip_marks_the_active_scope() {
         use super::super::DefaultsEditTarget;
-        let text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
 
         let project = config_scope_strip(DefaultsEditTarget::Project, false);
-        assert_eq!(text(&project), " [Project] \u{2502} Global   g switch   this project only");
-        let active = project.spans.iter().find(|s| s.content == "[Project]").expect("[Project] span");
+        assert_eq!(
+            text(&project),
+            " [Project] \u{2502} Global   g switch   this project only"
+        );
+        let active = project
+            .spans
+            .iter()
+            .find(|s| s.content == "[Project]")
+            .expect("[Project] span");
         assert_eq!(active.style.fg, Some(Color::Cyan));
         assert!(active.style.add_modifier.contains(Modifier::REVERSED));
 
         let global = config_scope_strip(DefaultsEditTarget::Global, false);
-        assert_eq!(text(&global), " Project \u{2502} [Global]   g switch   new projects only");
-        let active = global.spans.iter().find(|s| s.content == "[Global]").expect("[Global] span");
+        assert_eq!(
+            text(&global),
+            " Project \u{2502} [Global]   g switch   new projects only"
+        );
+        let active = global
+            .spans
+            .iter()
+            .find(|s| s.content == "[Global]")
+            .expect("[Global] span");
         assert_eq!(active.style.fg, Some(Color::Magenta));
         assert!(active.style.add_modifier.contains(Modifier::REVERSED));
 
@@ -20123,7 +22296,10 @@ mod tests {
     #[test]
     fn config_empty_branch_keeps_the_scope_strip() {
         let mut ctx = test_ctx();
-        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().defaults_config = None;
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .defaults_config = None;
         let screen = DetailScreen::new(TEST_ALIAS.to_string());
         let rows = draw_config_tab(&screen, &ctx, 120, 10);
         assert!(rows[0].starts_with(" [Project]"), "{:?}", rows[0]);
@@ -20166,7 +22342,10 @@ mod tests {
 
         let strip_row = |screen: &DetailScreen, ctx: &AppContext| {
             let buffer = render_detail_buffer(screen, ctx, 120, 30);
-            let strip = screen.regions().sub_tab_strip.expect("the scope strip is recorded");
+            let strip = screen
+                .regions()
+                .sub_tab_strip
+                .expect("the scope strip is recorded");
             let row: String = buffer_row(&buffer, strip.y)
                 .chars()
                 .skip(usize::from(strip.x))
@@ -20175,7 +22354,10 @@ mod tests {
             (row, cue)
         };
         let (row, cue) = strip_row(&screen, &ctx);
-        assert!(row.starts_with("\u{25b8}[Project] \u{2502} Global"), "{row:?}");
+        assert!(
+            row.starts_with("\u{25b8}[Project] \u{2502} Global"),
+            "{row:?}"
+        );
         assert_eq!(cue, Some(Color::Cyan));
 
         press(&mut screen, &mut ctx, KeyCode::Right);
@@ -20186,7 +22368,10 @@ mod tests {
         );
         assert_eq!(screen.focus, DetailFocus::ScopeStrip);
         let (row, _) = strip_row(&screen, &ctx);
-        assert!(row.starts_with("\u{25b8}Project \u{2502} [Global]"), "{row:?}");
+        assert!(
+            row.starts_with("\u{25b8}Project \u{2502} [Global]"),
+            "{row:?}"
+        );
     }
 
     /// I-7: the focused strip swaps its gutter for a cyan bold `▸` and names
@@ -20194,7 +22379,12 @@ mod tests {
     #[test]
     fn focused_config_scope_strip_shows_the_cursor_and_arrow_hint_and_keeps_its_click_rects() {
         use super::super::DefaultsEditTarget;
-        let text = |l: &Line| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
 
         let project = config_scope_strip(DefaultsEditTarget::Project, true);
         assert_eq!(
@@ -20202,13 +22392,22 @@ mod tests {
             "\u{25b8}[Project] \u{2502} Global   \u{2190}/\u{2192}/g switch   this project only"
         );
         let global = config_scope_strip(DefaultsEditTarget::Global, true);
-        assert_eq!(text(&global), "\u{25b8}Project \u{2502} [Global]   \u{2190}/\u{2192}/g switch   new projects only");
+        assert_eq!(
+            text(&global),
+            "\u{25b8}Project \u{2502} [Global]   \u{2190}/\u{2192}/g switch   new projects only"
+        );
 
-        for (target, focused) in [(DefaultsEditTarget::Project, &project), (DefaultsEditTarget::Global, &global)] {
+        for (target, focused) in [
+            (DefaultsEditTarget::Project, &project),
+            (DefaultsEditTarget::Global, &global),
+        ] {
             let cue = &focused.spans[0];
             assert_eq!(cue.content, "\u{25b8}", "{target:?}");
             assert_eq!(cue.style.fg, Some(Color::Cyan), "{target:?}");
-            assert!(cue.style.add_modifier.contains(Modifier::BOLD), "{target:?}");
+            assert!(
+                cue.style.add_modifier.contains(Modifier::BOLD),
+                "{target:?}"
+            );
             let row = Rect::new(0, 0, 120, 1);
             assert_eq!(
                 strip_label_rects(row, focused),
@@ -20273,7 +22472,10 @@ mod tests {
     }
 
     fn scope_strip_park_cursor(ctx: &mut AppContext, row: usize) {
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = row;
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = row;
     }
 
     /// D-01, I-3: `↑`/`k` on the first visible Config row climb onto the
@@ -20290,7 +22492,11 @@ mod tests {
 
             press(&mut screen, &mut ctx, KeyCode::Down);
             assert_eq!(screen.focus, DetailFocus::Content, "{up:?}");
-            assert_eq!(scope_strip_cursor(&ctx), 0, "{up:?}: descending must not move the cursor");
+            assert_eq!(
+                scope_strip_cursor(&ctx),
+                0,
+                "{up:?}: descending must not move the cursor"
+            );
 
             press(&mut screen, &mut ctx, KeyCode::Char('j'));
             assert_eq!(scope_strip_cursor(&ctx), 1, "{up:?}");
@@ -20328,13 +22534,21 @@ mod tests {
     /// change — `Enter` on a Bool row opens no chooser from the strip.
     #[test]
     fn descend_keys_leave_the_scope_strip_without_opening_an_editor() {
-        for key in [KeyCode::Down, KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char(' ')] {
+        for key in [
+            KeyCode::Down,
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+        ] {
             let (mut screen, mut ctx) = on_the_scope_strip();
             let row = scope_strip_cursor(&ctx);
             press(&mut screen, &mut ctx, key);
             assert_eq!(screen.focus, DetailFocus::Content, "{key:?}");
             assert_eq!(scope_strip_cursor(&ctx), row, "{key:?}");
-            assert!(ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(), "{key:?}");
+            assert!(
+                ctx.view_cache[TEST_ALIAS].defaults_editing.is_none(),
+                "{key:?}"
+            );
         }
     }
 
@@ -20553,7 +22767,10 @@ mod tests {
         config.jina = Some(ApiKeySetting::Key("JNA-SECRET-G7H8".to_string()));
         let entries = build_defaults_entries(&config);
         for key in ["tavily_search", "ref_search", "perplexity", "jina"] {
-            let row = entries.iter().find(|e| e.key.as_ref() == key).expect("a promoted row");
+            let row = entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .expect("a promoted row");
             assert_eq!(row.value, MASKED_SECRET, "`{key}`");
         }
         assert!(
@@ -20561,10 +22778,20 @@ mod tests {
             "the probe is too short to draw every row"
         );
 
-        let text = render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
-        assert!(text.contains("brave_search"), "ARRIVAL: the row was not drawn:\n{text}");
-        assert!(text.contains(MASKED_SECRET), "ARRIVAL: the mask was not drawn:\n{text}");
-        assert!(text.contains("perplexity"), "ARRIVAL: a promoted row was not drawn:\n{text}");
+        let text =
+            render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
+        assert!(
+            text.contains("brave_search"),
+            "ARRIVAL: the row was not drawn:\n{text}"
+        );
+        assert!(
+            text.contains(MASKED_SECRET),
+            "ARRIVAL: the mask was not drawn:\n{text}"
+        );
+        assert!(
+            text.contains("perplexity"),
+            "ARRIVAL: a promoted row was not drawn:\n{text}"
+        );
         for leak in ["SECRET-", "Q7Z9", "A1B2", "C3D4", "E5F6", "G7H8"] {
             assert!(!text.contains(leak), "the render leaked {leak:?}:\n{text}");
         }
@@ -20591,7 +22818,11 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Enter);
         {
             let cache = &ctx.view_cache[TEST_ALIAS];
-            assert_eq!(cache.defaults_editing, Some(idx), "Enter opens the secret prompt");
+            assert_eq!(
+                cache.defaults_editing,
+                Some(idx),
+                "Enter opens the secret prompt"
+            );
             assert_eq!(
                 cache.defaults_text_buffer.char_count(),
                 0,
@@ -20609,7 +22840,10 @@ mod tests {
             "ARRIVAL: the prompt must echo one bullet per typed character:\n{joined}"
         );
         for leak in ["NEW-SECRET", "X4K8", "Q7Z9"] {
-            assert!(!joined.contains(leak), "the prompt leaked {leak:?}:\n{joined}");
+            assert!(
+                !joined.contains(leak),
+                "the prompt leaked {leak:?}:\n{joined}"
+            );
         }
 
         press(&mut screen, &mut ctx, KeyCode::Enter);
@@ -20619,7 +22853,10 @@ mod tests {
         );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
         if let Some((msg, _)) = &ctx.status_message {
-            assert!(!msg.contains("X4K8"), "a status message carried the key: {msg}");
+            assert!(
+                !msg.contains("X4K8"),
+                "a status message carried the key: {msg}"
+            );
         }
 
         // An empty Enter is a no-op, never a clear (T-jnf-06).
@@ -20630,7 +22867,11 @@ mod tests {
             Some(ApiKeySetting::Key("NEW-SECRET-X4K8".to_string())),
             "an empty Enter on the secret prompt changed the stored key"
         );
-        let status = ctx.status_message.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        let status = ctx
+            .status_message
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_default();
         assert!(
             status.contains("brave_search unchanged"),
             "an empty Enter must say the key is unchanged, got {status:?}"
@@ -20648,7 +22889,9 @@ mod tests {
 
     /// Draw the Defaults tab for a cache the caller arranges (project config,
     /// global defaults, edit target) — the inherited / Global-view probes.
-    fn render_defaults_cache_to_text(arrange: impl FnOnce(&mut super::super::ProjectViewCache)) -> String {
+    fn render_defaults_cache_to_text(
+        arrange: impl FnOnce(&mut super::super::ProjectViewCache),
+    ) -> String {
         let mut ctx = test_ctx();
         arrange(ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default());
         let screen = DetailScreen::new(TEST_ALIAS.to_string());
@@ -20685,15 +22928,30 @@ mod tests {
         assert_eq!(value_of("My_Service_Token"), MASKED_SECRET);
         let integrations = value_of("integrations");
         assert!(integrations.contains(MASKED_SECRET), "{integrations}");
-        assert!(integrations.contains("https://example.invalid"), "{integrations}");
+        assert!(
+            integrations.contains("https://example.invalid"),
+            "{integrations}"
+        );
         assert!(!integrations.contains("B9R1"), "{integrations}");
-        assert_eq!(value_of("review.max_prompt_tokens"), "5000", "the exemption must hold");
+        assert_eq!(
+            value_of("review.max_prompt_tokens"),
+            "5000",
+            "the exemption must hold"
+        );
         for row in passthrough_rows(&entries) {
-            assert!(matches!(row.kind, ConfigValueKind::ReadOnly), "masking made `{}` editable", row.key);
+            assert!(
+                matches!(row.kind, ConfigValueKind::ReadOnly),
+                "masking made `{}` editable",
+                row.key
+            );
         }
 
-        let text = render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
-        assert!(text.contains("foo_api_key"), "ARRIVAL: the pass-through row was not drawn:\n{text}");
+        let text =
+            render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
+        assert!(
+            text.contains("foo_api_key"),
+            "ARRIVAL: the pass-through row was not drawn:\n{text}"
+        );
         for leak in ["SECRET-", "J2W6", "V5M3", "B9R1"] {
             assert!(!text.contains(leak), "the render leaked {leak:?}:\n{text}");
         }
@@ -20720,16 +22978,28 @@ mod tests {
             .find(|l| l.contains("brave_search"))
             .unwrap_or_else(|| panic!("ARRIVAL: no brave_search row drawn:\n{text}"));
         assert!(line.contains("(unset)") && !line.contains(" *"), "{line}");
-        assert!(!text.contains("H3T7"), "the Project view leaked the inherited key:\n{text}");
+        assert!(
+            !text.contains("H3T7"),
+            "the Project view leaked the inherited key:\n{text}"
+        );
 
         let text = render_defaults_cache_to_text(move |cache| {
             cache.defaults_config = Some(project);
             cache.defaults_user_config = Some(global);
             cache.defaults_edit_target = super::super::DefaultsEditTarget::Global;
         });
-        assert!(text.contains("Global: template for NEW projects"), "ARRIVAL: the Global view was not drawn:\n{text}");
-        assert!(text.contains(MASKED_SECRET), "ARRIVAL: the mask was not drawn:\n{text}");
-        assert!(!text.contains("H3T7"), "the Global view leaked the key:\n{text}");
+        assert!(
+            text.contains("Global: template for NEW projects"),
+            "ARRIVAL: the Global view was not drawn:\n{text}"
+        );
+        assert!(
+            text.contains(MASKED_SECRET),
+            "ARRIVAL: the mask was not drawn:\n{text}"
+        );
+        assert!(
+            !text.contains("H3T7"),
+            "the Global view leaked the key:\n{text}"
+        );
     }
 
     /// A read-only JSON row redacts a secret MEMBER nested inside its value.
@@ -20747,11 +23017,22 @@ mod tests {
             .find(|e| e.key.as_ref() == "review.reviewer_instances")
             .expect("the reviewer_instances row");
         assert!(!row.value.contains("N8P2"), "{}", row.value);
-        assert!(row.value.contains(MASKED_SECRET) && row.value.contains("\"cli\""), "{}", row.value);
+        assert!(
+            row.value.contains(MASKED_SECRET) && row.value.contains("\"cli\""),
+            "{}",
+            row.value
+        );
 
-        let text = render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
-        assert!(text.contains("review.reviewer_instances"), "ARRIVAL:\n{text}");
-        assert!(!text.contains("N8P2"), "the render leaked the nested key:\n{text}");
+        let text =
+            render_defaults_config_to_text(config, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT, 0);
+        assert!(
+            text.contains("review.reviewer_instances"),
+            "ARRIVAL:\n{text}"
+        );
+        assert!(
+            !text.contains("N8P2"),
+            "the render leaked the nested key:\n{text}"
+        );
     }
 
     /// Census: no row this build AUTHORS may carry a secret-looking key
@@ -20773,7 +23054,10 @@ mod tests {
                 );
             }
         }
-        assert!(secret_rows >= 3, "the census saw no secret rows, so it certifies nothing");
+        assert!(
+            secret_rows >= 3,
+            "the census saw no secret rows, so it certifies nothing"
+        );
     }
 
     /// Underlying indices of the rows whose key contains "drift", computed
@@ -21070,7 +23354,10 @@ mod tests {
 
         // No filter: Esc steps up to the tab bar, and Esc there pops.
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None), "Esc with no filter goes up");
+        assert!(
+            matches!(action, ScreenAction::None),
+            "Esc with no filter goes up"
+        );
         assert_eq!(screen.focus, DetailFocus::TabBar);
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(
@@ -21308,7 +23595,10 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('v'));
         assert!(!roadmap_box_flag(&ctx));
         let back = render_detail_to_text(&screen, &ctx);
-        assert!(back.contains("┌ Roadmap ") && back.contains("Start now:"), "{back}");
+        assert!(
+            back.contains("┌ Roadmap ") && back.contains("Start now:"),
+            "{back}"
+        );
     }
 
     #[test]
@@ -21453,8 +23743,16 @@ mod tests {
         let text = roadmap_graph::lane_text(&model);
         let mut seen = std::collections::HashSet::new();
         for line in &text {
-            if let Some(id) = line.split_whitespace().last().filter(|t| !t.starts_with('[')) {
-                assert!(seen.insert(id.to_string()), "id {id} drawn twice:\n{}", text.join("\n"));
+            if let Some(id) = line
+                .split_whitespace()
+                .last()
+                .filter(|t| !t.starts_with('['))
+            {
+                assert!(
+                    seen.insert(id.to_string()),
+                    "id {id} drawn twice:\n{}",
+                    text.join("\n")
+                );
             }
         }
         assert!(seen.contains("20"), "{}", text.join("\n"));
@@ -21499,7 +23797,10 @@ mod tests {
         };
         let view = AgentView {
             // 11 is already in main's roadmap: main wins, no ghost.
-            worktree_phases: vec![ghost("11", WorktreeStage::Context), ghost("13", WorktreeStage::Researched)],
+            worktree_phases: vec![
+                ghost("11", WorktreeStage::Context),
+                ghost("13", WorktreeStage::Researched),
+            ],
             ..AgentView::default()
         };
         let model = roadmap_model_for(&fixture_state("sentriq"), None, false, Some(&view));
@@ -21540,11 +23841,16 @@ mod tests {
             assert!(ids.contains(&n.to_string()), "{n}: {ids:?}");
         }
         for id in shipped_ids {
-            assert!(!ids.iter().any(|i| i == id), "{id} hidden while folded: {ids:?}");
+            assert!(
+                !ids.iter().any(|i| i == id),
+                "{id} hidden while folded: {ids:?}"
+            );
         }
 
         let mut cache = crate::ui::screens::ProjectViewCache::default();
-        cache.roadmap_fold_toggles.insert(roadmap_graph::BandKey::Shipped);
+        cache
+            .roadmap_fold_toggles
+            .insert(roadmap_graph::BandKey::Shipped);
         let model = roadmap_model_for(&state, Some(&cache), false, None);
         let ids = phase_row_ids(&model);
         let v1 = model
@@ -21558,10 +23864,17 @@ mod tests {
             assert_eq!(facts.band, Some(v1), "phase {id}");
             assert_eq!(facts.status, roadmap_graph::PhaseStatus::Done, "phase {id}");
         }
-        assert_eq!(model.bands[v1].done, shipped_ids.len(), "every shipped v1 phase is done");
+        assert_eq!(
+            model.bands[v1].done,
+            shipped_ids.len(),
+            "every shipped v1 phase is done"
+        );
         assert_eq!(model.bands[v1].total, shipped_ids.len());
         assert!(
-            model.start_now.iter().all(|&u| !shipped_ids.contains(&model.phases[u].id.as_str())),
+            model
+                .start_now
+                .iter()
+                .all(|&u| !shipped_ids.contains(&model.phases[u].id.as_str())),
             "a shipped phase is never start-now"
         );
     }
@@ -21604,13 +23917,19 @@ mod tests {
         }
         let rows = phase_row_ids(&model);
         for id in ["1", "2.1", "07", "11"] {
-            assert_eq!(rows.iter().filter(|r| *r == id).count(), 1, "{id}: {rows:?}");
+            assert_eq!(
+                rows.iter().filter(|r| *r == id).count(),
+                1,
+                "{id}: {rows:?}"
+            );
         }
         for id in ["4", "10"] {
             let facts = &model.phases[model.phase_index(id).expect("listed")];
             assert_ne!(facts.status, roadmap_graph::PhaseStatus::Done, "phase {id}");
             assert!(
-                !model.start_now.contains(&model.phase_index(id).expect("listed")),
+                !model
+                    .start_now
+                    .contains(&model.phase_index(id).expect("listed")),
                 "shipped {id} is never start-now"
             );
         }
@@ -21646,7 +23965,9 @@ mod tests {
         assert_eq!(state.shipped_phases[0].name, "Old One");
 
         let mut cache = crate::ui::screens::ProjectViewCache::default();
-        cache.roadmap_fold_toggles.insert(roadmap_graph::BandKey::Shipped);
+        cache
+            .roadmap_fold_toggles
+            .insert(roadmap_graph::BandKey::Shipped);
         let model = roadmap_model_for(&state, Some(&cache), false, None);
         let ones: Vec<&roadmap_graph::PhaseFacts> =
             model.phases.iter().filter(|p| p.key == "1").collect();
@@ -21678,14 +23999,23 @@ mod tests {
     #[test]
     fn a_hostile_shipped_phase_name_renders_escaped() {
         let (screen, mut ctx) = roadmap_fixture("v1-era-shapes");
-        let state = ctx.project_states.get_mut(TEST_ALIAS).expect("fixture state");
+        let state = ctx
+            .project_states
+            .get_mut(TEST_ALIAS)
+            .expect("fixture state");
         assert_eq!(state.shipped_phases[0].number, "1");
         state.shipped_phases[0].name = "\u{1b}[31mHostileName".to_string();
         unfold_shipped(&mut ctx);
         set_roadmap_cursor(&mut ctx, phase_target("1"));
         let text = render_detail_to_text_at(&screen, &ctx, 160, 60);
-        assert!(text.contains("HostileName"), "the shipped row is drawn:\n{text}");
-        assert!(!text.contains('\u{1b}'), "raw ESC reached the pane:\n{text}");
+        assert!(
+            text.contains("HostileName"),
+            "the shipped row is drawn:\n{text}"
+        );
+        assert!(
+            !text.contains('\u{1b}'),
+            "raw ESC reached the pane:\n{text}"
+        );
     }
 
     #[test]
@@ -21766,17 +24096,27 @@ mod tests {
     #[test]
     fn roadmap_j_k_g_capital_g_move_the_cursor() {
         let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
-        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")), "default = active");
+        assert_eq!(
+            resolved_cursor(&ctx),
+            Some(phase_target("23")),
+            "default = active"
+        );
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
         assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")));
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
         assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")));
         press(&mut screen, &mut ctx, KeyCode::Down);
-        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")), "clamped at the end");
+        assert_eq!(
+            resolved_cursor(&ctx),
+            Some(phase_target("23")),
+            "clamped at the end"
+        );
         press(&mut screen, &mut ctx, KeyCode::Char('g'));
         assert_eq!(
             resolved_cursor(&ctx),
-            Some(roadmap_graph::CursorTarget::Band(roadmap_graph::BandKey::Shipped))
+            Some(roadmap_graph::CursorTarget::Band(
+                roadmap_graph::BandKey::Shipped
+            ))
         );
         press(&mut screen, &mut ctx, KeyCode::Char('G'));
         assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")));
@@ -21805,7 +24145,11 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('h'));
         assert_eq!(resolved_cursor(&ctx), Some(phase_target("21")));
         press(&mut screen, &mut ctx, KeyCode::Char('h'));
-        assert_eq!(resolved_cursor(&ctx), Some(phase_target("20")), "implied via 21");
+        assert_eq!(
+            resolved_cursor(&ctx),
+            Some(phase_target("20")),
+            "implied via 21"
+        );
         press(&mut screen, &mut ctx, KeyCode::Char('h'));
         assert_eq!(resolved_cursor(&ctx), Some(phase_target("21")), "wraps");
     }
@@ -21825,7 +24169,11 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char(']'));
         assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")), "wraps");
         press(&mut screen, &mut ctx, KeyCode::Char('['));
-        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")), "wraps backwards");
+        assert_eq!(
+            resolved_cursor(&ctx),
+            Some(phase_target("23")),
+            "wraps backwards"
+        );
     }
 
     #[test]
@@ -21855,7 +24203,10 @@ mod tests {
             "the cursor rests on the v1.5 band row"
         );
         press(&mut screen, &mut ctx, KeyCode::Char(' '));
-        assert!(!roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)), "Space unfolds it again");
+        assert!(
+            !roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)),
+            "Space unfolds it again"
+        );
     }
 
     #[test]
@@ -21878,7 +24229,10 @@ mod tests {
         };
         let band = model.phases[model.phase_index(key).expect("listed")].band;
         assert_eq!(band.map(|b| model.bands[b].key.clone()), Some(v2.clone()));
-        assert!(!roadmap_graph::is_folded(&v2, &fold_toggles(&ctx)), "v2 was unfolded");
+        assert!(
+            !roadmap_graph::is_folded(&v2, &fold_toggles(&ctx)),
+            "v2 was unfolded"
+        );
         assert!(model.row_of(&target).is_some(), "the target is visible");
     }
 
@@ -22057,7 +24411,10 @@ mod tests {
 
     /// The list row numbered `id` (exactly one must exist).
     fn row_numbered<'a>(pane: &'a [String], id: &str) -> &'a str {
-        let rows: Vec<&String> = pane.iter().filter(|r| number_column(r) == Some(id)).collect();
+        let rows: Vec<&String> = pane
+            .iter()
+            .filter(|r| number_column(r) == Some(id))
+            .collect();
         assert_eq!(rows.len(), 1, "rows numbered {id}: {pane:#?}");
         rows[0]
     }
@@ -22077,7 +24434,9 @@ mod tests {
 
         assert_eq!(rows_numbered(&pane, "20"), 1, "{text}");
         assert_eq!(
-            pane.iter().filter(|r| r.contains("v1.5 Closing the Loop")).count(),
+            pane.iter()
+                .filter(|r| r.contains("v1.5 Closing the Loop"))
+                .count(),
             1,
             "{text}"
         );
@@ -22090,7 +24449,10 @@ mod tests {
         );
         assert!(!text.contains("─►"), "{text}");
         let summary = summary_line(&text);
-        assert!(summary.contains("v1.5 Closing the Loop · phase 23"), "{summary}");
+        assert!(
+            summary.contains("v1.5 Closing the Loop · phase 23"),
+            "{summary}"
+        );
         assert!(summary.contains("5 of 6 phases done"), "{summary}");
 
         set_roadmap_cursor(&mut ctx, phase_target("23"));
@@ -22099,7 +24461,6 @@ mod tests {
         assert!(row_numbered(&pane, "20").contains('·'), "{text}");
         assert!(text.contains("(implied via 21)"), "{text}");
     }
-
 
     /// The index of the screen line holding `title` (a block's top border).
     fn line_with(text: &str, title: &str) -> usize {
@@ -22128,11 +24489,17 @@ mod tests {
             "the Phase block sits below the list block:\n{text}"
         );
         assert!(
-            text.lines().nth(detail_top).is_some_and(|l| l.starts_with("┌ Phase ")),
+            text.lines()
+                .nth(detail_top)
+                .is_some_and(|l| l.starts_with("┌ Phase ")),
             "stacked: the Phase block starts at column 0:\n{text}"
         );
         assert_eq!(rows_numbered(&pane, "9"), 1, "{text}");
-        assert_eq!(rows_containing(&pane, "v0.12 Actuation Routines"), 1, "{text}");
+        assert_eq!(
+            rows_containing(&pane, "v0.12 Actuation Routines"),
+            1,
+            "{text}"
+        );
         assert!(!text.contains("─►"), "{text}");
     }
 
@@ -22154,7 +24521,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{w}x{h}: a Needs row:\n{text}"));
             assert!(needs.contains("11"), "{w}x{h}: {needs}");
             assert!(!needs.contains("nothing declared"), "{w}x{h}: {needs}");
-            assert!(!text.contains("Nothing in this milestone"), "{w}x{h}:\n{text}");
+            assert!(
+                !text.contains("Nothing in this milestone"),
+                "{w}x{h}:\n{text}"
+            );
         }
     }
 
@@ -22214,16 +24584,19 @@ mod tests {
         for short in ["M3", "M4", "M5"] {
             let named: Vec<&(&str, &str)> = bands.iter().filter(|(s, _)| *s == short).collect();
             assert_eq!(named.len(), 1, "band {short}: {bands:?}");
-            assert_eq!(rows_containing(&pane, named[0].1), 1, "band {short} drawn once:\n{text}");
+            assert_eq!(
+                rows_containing(&pane, named[0].1),
+                1,
+                "band {short} drawn once:\n{text}"
+            );
         }
         assert!(
-            bands.iter().all(|(_, label)| !label.contains("Build phase")),
+            bands
+                .iter()
+                .all(|(_, label)| !label.contains("Build phase")),
             "no band is named after a build phase: {bands:?}"
         );
-        assert!(
-            pane.iter().all(|r| !r.contains("Build phase 14")),
-            "{text}"
-        );
+        assert!(pane.iter().all(|r| !r.contains("Build phase 14")), "{text}");
 
         press(&mut screen, &mut ctx, KeyCode::Char('G'));
         let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
@@ -22279,7 +24652,10 @@ mod tests {
             ..Default::default()
         };
         let (screen, ctx) = two_phase_roadmap(&[("1", complete)]);
-        assert!(!ctx.project_states[TEST_ALIAS].phases[0].completed, "the box is unticked");
+        assert!(
+            !ctx.project_states[TEST_ALIAS].phases[0].completed,
+            "the box is unticked"
+        );
         let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
         let pane = roadmap_list_pane(&text);
         let row = row_numbered(&pane, "1");
@@ -22306,7 +24682,9 @@ mod tests {
             let detail: String = text.lines().skip(detail_top).collect::<Vec<_>>().join("\n");
             assert!(detail.contains("[Executing 2/3]"), "{w}x{h}:\n{text}");
             assert!(
-                roadmap_list_pane(&text).iter().all(|r| !r.contains("[Executing")),
+                roadmap_list_pane(&text)
+                    .iter()
+                    .all(|r| !r.contains("[Executing")),
                 "the badge is in the detail pane, not the list:\n{text}"
             );
         }
@@ -22315,15 +24693,28 @@ mod tests {
     #[test]
     fn roadmap_empty_states_explain_themselves() {
         let (screen, mut ctx) = two_phase_roadmap(&[]);
-        ctx.project_states.get_mut(TEST_ALIAS).unwrap().phases.clear();
+        ctx.project_states
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .phases
+            .clear();
         let text = render_detail_to_text(&screen, &ctx);
         assert!(text.contains("No roadmap data available"), "{text}");
-        assert!(text.contains("0 of 0 phases done"), "the header still draws:\n{text}");
+        assert!(
+            text.contains("0 of 0 phases done"),
+            "the header still draws:\n{text}"
+        );
 
         ctx.project_states.clear();
         let text = render_detail_to_text(&screen, &ctx);
-        assert!(text.contains("No state data available for this project."), "{text}");
-        assert!(!text.contains("No state data available for roadmap"), "{text}");
+        assert!(
+            text.contains("No state data available for this project."),
+            "{text}"
+        );
+        assert!(
+            !text.contains("No state data available for roadmap"),
+            "{text}"
+        );
     }
 
     // --- quick-260926-16t: a stale HANDOFF is not a pause ----------------
@@ -22343,11 +24734,9 @@ mod tests {
     /// The active band's (done, total) in the Roadmap model.
     fn active_band_counts(state: &state_reader::ProjectState) -> (usize, usize) {
         let model = roadmap_model_for(state, None, true, None);
-        let active = state_reader::roadmap_md::active_milestone_index(
-            &state.milestones,
-            &state.milestone,
-        )
-        .expect("an active milestone");
+        let active =
+            state_reader::roadmap_md::active_milestone_index(&state.milestones, &state.milestone)
+                .expect("an active milestone");
         (model.bands[active].done, model.bands[active].total)
     }
 
@@ -22355,10 +24744,7 @@ mod tests {
     fn ttbook_phase13_roadmap_header_counts_the_current_milestone() {
         let state = fixture_state("ttbook-phase13");
         let progress = state.phase_progress();
-        assert_eq!(
-            progress,
-            state_reader::PhaseProgress { done: 5, total: 6 }
-        );
+        assert_eq!(progress, state_reader::PhaseProgress { done: 5, total: 6 });
 
         let (screen, ctx) = roadmap_fixture("ttbook-phase13");
         let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
@@ -22429,7 +24815,10 @@ mod tests {
         let (screen, mut ctx) = two_phase_roadmap(&[]);
         let quiet = render_detail_to_text_at(&screen, &ctx, 80, 24);
         for absent in ["Paused", "STATE.md", "[ Status:"] {
-            assert!(!quiet.contains(absent), "{absent} drawn when not present:\n{quiet}");
+            assert!(
+                !quiet.contains(absent),
+                "{absent} drawn when not present:\n{quiet}"
+            );
         }
 
         {
@@ -22451,15 +24840,26 @@ mod tests {
         ctx.change_tracker.detect_changes(TEST_ALIAS, &old, &new);
         for (w, h) in [(80, 24), (120, 30)] {
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
-            assert!(text.contains("Paused: waiting on review"), "{w}x{h}:\n{text}");
-            assert!(text.contains("[ Status:  -> executing --"), "{w}x{h}:\n{text}");
+            assert!(
+                text.contains("Paused: waiting on review"),
+                "{w}x{h}:\n{text}"
+            );
+            assert!(
+                text.contains("[ Status:  -> executing --"),
+                "{w}x{h}:\n{text}"
+            );
             assert!(text.contains("STATE.md unreadable"), "{w}x{h}:\n{text}");
-            assert!(text.contains("STATE.md repaired in memory"), "{w}x{h}:\n{text}");
-            assert!(summary_line(&text).contains("phase 2 executing"), "{w}x{h}:\n{text}");
+            assert!(
+                text.contains("STATE.md repaired in memory"),
+                "{w}x{h}:\n{text}"
+            );
+            assert!(
+                summary_line(&text).contains("phase 2 executing"),
+                "{w}x{h}:\n{text}"
+            );
             assert!(text.contains("┌ Roadmap "), "the list still draws:\n{text}");
         }
     }
-
 
     #[test]
     fn a_short_stacked_detail_pane_shortens_the_goal_not_the_edges() {
@@ -22551,11 +24951,8 @@ mod tests {
             "opening must not touch the remembered sub-view"
         );
 
-        let opened = DetailScreen::opened_on(
-            TEST_ALIAS.to_string(),
-            DetailSubView::Backlog,
-            &mut ctx,
-        );
+        let opened =
+            DetailScreen::opened_on(TEST_ALIAS.to_string(), DetailSubView::Backlog, &mut ctx);
         assert_eq!(opened.focus, DetailFocus::Content);
         assert_eq!(
             ctx.detail_sub_view_per_project.get(TEST_ALIAS),
@@ -22574,8 +24971,14 @@ mod tests {
         screen.focus = DetailFocus::TabBar;
 
         let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None), "Enter at the tab bar acted");
-        assert!(ctx.status_message.is_none(), "Enter at the tab bar reached the resume arm");
+        assert!(
+            matches!(action, ScreenAction::None),
+            "Enter at the tab bar acted"
+        );
+        assert!(
+            ctx.status_message.is_none(),
+            "Enter at the tab bar reached the resume arm"
+        );
         assert_eq!(screen.focus, DetailFocus::Content);
     }
 
@@ -22632,15 +25035,25 @@ mod tests {
 
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
-        assert!(!ctx.view_cache[TEST_ALIAS].backlog_expanded, "Esc closes the pane first");
+        assert!(
+            !ctx.view_cache[TEST_ALIAS].backlog_expanded,
+            "Esc closes the pane first"
+        );
         assert_eq!(screen.focus, DetailFocus::Content);
 
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
-        assert_eq!(screen.focus, DetailFocus::TabBar, "then Esc goes to the tab bar");
+        assert_eq!(
+            screen.focus,
+            DetailFocus::TabBar,
+            "then Esc goes to the tab bar"
+        );
 
         let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::Pop), "Esc at the tab bar leaves");
+        assert!(
+            matches!(action, ScreenAction::Pop),
+            "Esc at the tab bar leaves"
+        );
     }
 
     #[test]
@@ -22677,9 +25090,18 @@ mod tests {
         );
 
         let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None), "q popped out of a text edit");
-        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
-        assert!(buffer.ends_with('q'), "q did not reach the buffer: {buffer:?}");
+        assert!(
+            matches!(action, ScreenAction::None),
+            "q popped out of a text edit"
+        );
+        let buffer = ctx.view_cache[TEST_ALIAS]
+            .defaults_text_buffer
+            .shown()
+            .to_string();
+        assert!(
+            buffer.ends_with('q'),
+            "q did not reach the buffer: {buffer:?}"
+        );
     }
 
     #[test]
@@ -22788,9 +25210,7 @@ mod tests {
         let fg_at_row = |screen: &DetailScreen| {
             let buffer = render_detail_buffer(screen, &ctx, 120, 30);
             let (x, y) = (0..buffer.area.height)
-                .find_map(|y| {
-                    cell_column(&buffer_row(&buffer, y), "PID 4242").map(|x| (x, y))
-                })
+                .find_map(|y| cell_column(&buffer_row(&buffer, y), "PID 4242").map(|x| (x, y)))
                 .expect("the session row renders");
             buffer.cell((x, y)).expect("a row cell").fg
         };
@@ -22911,7 +25331,11 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('m'));
         press(&mut screen, &mut ctx, KeyCode::Char('1'));
         press(&mut screen, &mut ctx, KeyCode::Char('8'));
-        assert_eq!(stored_view(&ctx), DetailSubView::Browse, "the memory follows `m` back");
+        assert_eq!(
+            stored_view(&ctx),
+            DetailSubView::Browse,
+            "the memory follows `m` back"
+        );
     }
 
     /// [inferred I-9]: the Backlog pane follows the P column of UX-RESEARCH
@@ -22927,8 +25351,15 @@ mod tests {
 
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
         press(&mut screen, &mut ctx, KeyCode::Right);
-        assert_eq!(stored_view(&ctx), DetailSubView::Backlog, "Right switched tab");
-        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded, "Right closed the pane");
+        assert_eq!(
+            stored_view(&ctx),
+            DetailSubView::Backlog,
+            "Right switched tab"
+        );
+        assert!(
+            ctx.view_cache[TEST_ALIAS].backlog_expanded,
+            "Right closed the pane"
+        );
         assert_eq!(screen.focus, DetailFocus::Content);
 
         press(&mut screen, &mut ctx, KeyCode::Left);
@@ -22950,7 +25381,9 @@ mod tests {
         assert_eq!(corner.symbol(), "┌");
         assert_eq!(corner.fg, Color::Cyan, "the focused pane's border");
         let content = screen.regions().content;
-        let outer = buffer.cell((content.x, content.y)).expect("the tab's corner");
+        let outer = buffer
+            .cell((content.x, content.y))
+            .expect("the tab's corner");
         assert_eq!(outer.symbol(), "┌");
         assert_eq!(outer.fg, Color::DarkGray, "the tab's outer frame recedes");
 
@@ -22959,7 +25392,10 @@ mod tests {
             .expect("the fixture's cache")
             .backlog_expanded = false;
         let closed = render_detail_to_text(&screen, &ctx);
-        assert!(!closed.contains('▸'), "a closed pane leaves no pointer:\n{closed}");
+        assert!(
+            !closed.contains('▸'),
+            "a closed pane leaves no pointer:\n{closed}"
+        );
         assert!(screen.regions().pane.is_none());
     }
 
@@ -22979,7 +25415,10 @@ mod tests {
             assert_eq!(corners, 1, "{sessions} session(s):\n{text}");
             assert!(!rows.iter().any(|row| row.contains("│┌")), "{text}");
             if sessions == 0 {
-                assert!(text.contains("No active Claude or Codex sessions"), "{text}");
+                assert!(
+                    text.contains("No active Claude or Codex sessions"),
+                    "{text}"
+                );
                 assert!(text.contains(" Sessions (0) "), "{text}");
             } else {
                 assert!(text.contains(" Sessions (1) "), "{text}");
@@ -22997,7 +25436,10 @@ mod tests {
         ] {
             let (screen, ctx) = arrived_on(view.clone());
             let text = render_detail_to_text(&screen, &ctx);
-            let strip = screen.regions().sub_tab_strip.expect("the strip is recorded");
+            let strip = screen
+                .regions()
+                .sub_tab_strip
+                .expect("the strip is recorded");
             let row = text.lines().nth(strip.y as usize).expect("the strip row");
             assert!(row.starts_with(&format!(" {first}")), "{view:?}: {row:?}");
             assert!(row.contains("←/→ switch"), "{view:?}: {row:?}");
@@ -23011,7 +25453,11 @@ mod tests {
         render_detail_to_text(&screen, &ctx);
         let regions = screen.regions();
         assert_eq!(regions.tab_bar, Rect::new(0, 0, 120, 3));
-        assert_eq!(regions.content, Rect::new(0, 3, 120, 26), "above the footer");
+        assert_eq!(
+            regions.content,
+            Rect::new(0, 3, 120, 26),
+            "above the footer"
+        );
         assert_eq!(regions.sub_tab_strip, Some(Rect::new(0, 3, 120, 1)));
         assert_eq!(regions.pane, None);
 
@@ -23022,12 +25468,19 @@ mod tests {
         let (screen, ctx) = arrived_on(DetailSubView::Queue);
         render_detail_to_text(&screen, &ctx);
         assert_eq!(screen.regions().sub_tab_strip, None, "Queue has none");
-        assert_eq!(screen.regions().config_scope_tabs.len(), 0, "Queue has no scope labels");
+        assert_eq!(
+            screen.regions().config_scope_tabs.len(),
+            0,
+            "Queue has no scope labels"
+        );
 
         // Quick 260927-t3s: the Config tab's scope strip and its two labels.
         let (screen, ctx) = arrived_on(DetailSubView::Defaults);
         render_detail_to_text(&screen, &ctx);
-        assert_eq!(screen.regions().sub_tab_strip, Some(Rect::new(0, 3, 120, 1)));
+        assert_eq!(
+            screen.regions().sub_tab_strip,
+            Some(Rect::new(0, 3, 120, 1))
+        );
         assert_eq!(screen.regions().config_scope_tabs.len(), 2);
 
         let (screen, ctx, _td) = focused_long_backlog_fixture();
@@ -23066,7 +25519,10 @@ mod tests {
             "  [←/→]tabs  [↓/Enter]open  [1-8/D]jump  [Esc]back  [?]help"
         );
         let off = spans_text(&tab_bar_footer_spans(false));
-        assert_eq!(off, "  [←/→]tabs  [↓/Enter]open  [1-8]jump  [Esc]back  [?]help");
+        assert_eq!(
+            off,
+            "  [←/→]tabs  [↓/Enter]open  [1-8]jump  [Esc]back  [?]help"
+        );
         assert!(!off.contains("[1-8/D]"), "{off}");
     }
 
@@ -23085,7 +25541,11 @@ mod tests {
             };
             // Config's `↑` from the first row lands on its scope strip
             // (quick 260929-g9u).
-            let up = if view == DetailSubView::Defaults { "[↑]scope" } else { "[↑]tab bar" };
+            let up = if view == DetailSubView::Defaults {
+                "[↑]scope"
+            } else {
+                "[↑]tab bar"
+            };
             for (experimental, digits) in [(true, "[1-8/D]jump"), (false, "[1-8]jump")] {
                 let text = footer_text_at(&view, 120, experimental);
                 let prefix = format!("  {up}  {arrows}  {digits}  [j/k]move  ");
@@ -23129,12 +25589,18 @@ mod tests {
         screen.focus = DetailFocus::TabBar;
         let text = render_detail_to_text(&screen, &ctx);
         let footer = text.lines().last().unwrap_or_default();
-        assert!(footer.starts_with("  [←/→]tabs  [↓/Enter]open  "), "{footer:?}");
+        assert!(
+            footer.starts_with("  [←/→]tabs  [↓/Enter]open  "),
+            "{footer:?}"
+        );
 
         screen.focus = DetailFocus::Content;
         let text = render_detail_to_text(&screen, &ctx);
         let footer = text.lines().last().unwrap_or_default();
-        assert!(footer.starts_with("  [↑]tab bar  [←/→]Sessions|Agents  "), "{footer:?}");
+        assert!(
+            footer.starts_with("  [↑]tab bar  [←/→]Sessions|Agents  "),
+            "{footer:?}"
+        );
 
         // The tab-bar footer wins on the Driver tab too.
         let mut ctx = test_ctx();
@@ -23143,7 +25609,10 @@ mod tests {
         screen.focus = DetailFocus::TabBar;
         let text = render_detail_to_text(&screen, &ctx);
         let footer = text.lines().last().unwrap_or_default();
-        assert!(footer.starts_with("  [←/→]tabs  [↓/Enter]open  "), "{footer:?}");
+        assert!(
+            footer.starts_with("  [←/→]tabs  [↓/Enter]open  "),
+            "{footer:?}"
+        );
     }
 
     // ── quick 260926-2l4: the Phases-tab Waves pane ──────────────────────
@@ -23163,13 +25632,19 @@ mod tests {
 
     /// An inference whose plans are `(id, title, wave)`, grouped by wave the
     /// way the scan groups them, with `done` summarized.
-    fn waves_inference(plans: &[(&str, Option<&str>, Option<u32>)], done: &[&str]) -> DiskInference {
+    fn waves_inference(
+        plans: &[(&str, Option<&str>, Option<u32>)],
+        done: &[&str],
+    ) -> DiskInference {
         let metas: Vec<PlanMeta> = plans
             .iter()
             .map(|(id, title, wave)| plan_meta(id, *title, *wave))
             .collect();
         let plan_waves = crate::state_reader::plan_waves::group_into_waves(
-            plans.iter().map(|(id, _, wave)| (id.to_string(), *wave)).collect(),
+            plans
+                .iter()
+                .map(|(id, _, wave)| (id.to_string(), *wave))
+                .collect(),
         );
         let plan_count = plans.len() as u32;
         let summary_count = done.len() as u32;
@@ -23290,10 +25765,22 @@ mod tests {
             .unwrap_or_else(|| panic!("no Waves pane: {text}"));
         // Name, ladder and a two-line stage block, then the pane's border.
         assert_eq!(pane_top, name_row + 4, "{text}");
-        assert!(lines[name_row + 1].contains("[E 1/2]"), "the ladder: {text}");
-        assert!(lines[name_row + 2].contains("Execute 1/2"), "stage line A: {text}");
-        assert!(lines[name_row + 3].contains("Checks"), "stage line B: {text}");
-        assert!(text.contains("\u{25b8} w2"), "the current wave is marked in text: {text}");
+        assert!(
+            lines[name_row + 1].contains("[E 1/2]"),
+            "the ladder: {text}"
+        );
+        assert!(
+            lines[name_row + 2].contains("Execute 1/2"),
+            "stage line A: {text}"
+        );
+        assert!(
+            lines[name_row + 3].contains("Checks"),
+            "stage line B: {text}"
+        );
+        assert!(
+            text.contains("\u{25b8} w2"),
+            "the current wave is marked in text: {text}"
+        );
         let row = lines
             .iter()
             .find(|l| l.contains("13-02"))
@@ -23329,28 +25816,36 @@ mod tests {
             "no report at all draws nothing"
         );
         let stale = verify_hint_text(VerificationStatus::Stale, true).unwrap();
-        assert!(stale.contains("stale") && stale.contains("/gsd:execute-phase 7"), "{stale}");
+        assert!(
+            stale.contains("stale") && stale.contains("/gsd:execute-phase 7"),
+            "{stale}"
+        );
         assert!(
             !stale.contains("verify-work"),
             "1.15.0 (#4682): verify-work cannot refresh a stale report: {stale}"
         );
         let broken = verify_hint_text(VerificationStatus::Unparseable, true).unwrap();
-        assert!(broken.contains("unparseable") && broken.contains("YAML"), "{broken}");
-        assert!(!broken.contains("/gsd:"), "unparseable has no command upstream: {broken}");
         assert!(
-            verify_hint_text(VerificationStatus::HumanNeeded, true)
-                .unwrap()
-                .contains("/gsd:verify-work 7")
+            broken.contains("unparseable") && broken.contains("YAML"),
+            "{broken}"
         );
         assert!(
-            verify_hint_text(VerificationStatus::GapsFound, true)
-                .unwrap()
-                .contains("/gsd:plan-phase 7 --gaps")
+            !broken.contains("/gsd:"),
+            "unparseable has no command upstream: {broken}"
         );
+        assert!(verify_hint_text(VerificationStatus::HumanNeeded, true)
+            .unwrap()
+            .contains("/gsd:verify-work 7"));
+        assert!(verify_hint_text(VerificationStatus::GapsFound, true)
+            .unwrap()
+            .contains("/gsd:plan-phase 7 --gaps"));
         let unknown =
             verify_hint_text(VerificationStatus::Unknown("odd\x1b[31m".to_string()), true).unwrap();
         assert!(unknown.contains("/gsd:execute-phase 7"), "{unknown}");
-        assert!(!unknown.contains('\x1b'), "the unknown value is escaped: {unknown:?}");
+        assert!(
+            !unknown.contains('\x1b'),
+            "the unknown value is escaped: {unknown:?}"
+        );
         let no_status = verify_hint_text(VerificationStatus::Missing, true).unwrap();
         assert!(
             no_status.contains("no status") && no_status.contains("/gsd:execute-phase 7"),
@@ -23384,7 +25879,11 @@ mod tests {
             lines[name_row + 4].contains("Verify: unparseable"),
             "the Verify line follows the stage block: {text}"
         );
-        assert_eq!(pane_top, name_row + 5, "and the pane starts one row lower: {text}");
+        assert_eq!(
+            pane_top,
+            name_row + 5,
+            "and the pane starts one row lower: {text}"
+        );
     }
 
     #[test]
@@ -23479,7 +25978,10 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Right);
         assert_eq!(screen.focus, DetailFocus::Pane);
         let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
-        assert!(text.contains("\u{25b8}Waves 2"), "the title gains ▸: {text}");
+        assert!(
+            text.contains("\u{25b8}Waves 2"),
+            "the title gains ▸: {text}"
+        );
         assert!(footer(&screen, &ctx).starts_with("  [←/Esc]phases  [j/k]move  "));
         assert_eq!(
             ctx.view_cache[TEST_ALIAS].waves_cursor,
@@ -23505,7 +26007,10 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Right);
         assert_eq!(screen.focus, DetailFocus::Pane);
         let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::Pop), "q leaves the detail view");
+        assert!(
+            matches!(action, ScreenAction::Pop),
+            "q leaves the detail view"
+        );
     }
 
     #[test]
@@ -23515,7 +26020,12 @@ mod tests {
         let mut ctx = waves_ctx(vec![("1", "One", a), ("2", "Two", b)], "1");
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         press(&mut screen, &mut ctx, KeyCode::Enter);
-        for code in [KeyCode::Char('j'), KeyCode::Down, KeyCode::PageDown, KeyCode::Char('x')] {
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::PageDown,
+            KeyCode::Char('x'),
+        ] {
             press(&mut screen, &mut ctx, code);
         }
         assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 0);
@@ -23580,7 +26090,10 @@ mod tests {
             r#"{"waves":[{"id":"wCACHED","plans":[{"id":"13-01"}]}]}"#,
         );
         let mut ctx = waves_ctx(vec![("13", "Demo", inf)], "13");
-        register(&mut ctx, std::path::PathBuf::from("/nonexistent/waves-pane-probe"));
+        register(
+            &mut ctx,
+            std::path::PathBuf::from("/nonexistent/waves-pane-probe"),
+        );
         let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
         assert!(text.contains("wCACHED"), "{text}");
     }
@@ -23595,7 +26108,10 @@ mod tests {
                 plans.push((format!("{phase}-{n:02}"), w as u32 + 1));
             }
         }
-        let titles: Vec<String> = plans.iter().map(|(id, _)| format!("Title of {id}")).collect();
+        let titles: Vec<String> = plans
+            .iter()
+            .map(|(id, _)| format!("Title of {id}"))
+            .collect();
         let spec: Vec<(&str, Option<&str>, Option<u32>)> = plans
             .iter()
             .zip(&titles)
@@ -23644,10 +26160,16 @@ mod tests {
         // Enter again on w1's header re-collapses it and folds it back.
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let (_, rows) = screen.selected_waves(&ctx).expect("a model");
-        assert!(matches!(rows[0].kind, WavesRowKind::Merged { first: 0, last: 0 }));
+        assert!(matches!(
+            rows[0].kind,
+            WavesRowKind::Merged { first: 0, last: 0 }
+        ));
         assert_eq!(rows.len(), 1 + 12 + 30);
         let line = line_text(&waves_row_line(&model, &rows[0], false, 60));
-        assert!(line.contains("w1  3 parallel \u{b7} done \u{2713}"), "{line}");
+        assert!(
+            line.contains("w1  3 parallel \u{b7} done \u{2713}"),
+            "{line}"
+        );
     }
 
     /// Phase 13 of 13 waves / 35 plans: waves 1-10 done (28 plans), wave 11
@@ -23684,10 +26206,16 @@ mod tests {
         let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
         assert!(text.contains("w1\u{2013}w10 \u{2713} 28/28 done"), "{text}");
         assert!(text.contains("\u{25b8} w11  3 parallel"), "{text}");
-        assert!(text.contains("13-29"), "the current wave is expanded: {text}");
+        assert!(
+            text.contains("13-29"),
+            "the current wave is expanded: {text}"
+        );
         assert!(text.contains("13-32"), "the next wave is expanded: {text}");
         assert!(text.contains("  w13  2 parallel \u{b7} queued"), "{text}");
-        assert!(!text.contains("13-34"), "later waves are headers only: {text}");
+        assert!(
+            !text.contains("13-34"),
+            "later waves are headers only: {text}"
+        );
 
         // The current wave's header is BOLD as well as marked.
         let (model, rows) = screen.selected_waves(&ctx).expect("a model");
@@ -23725,7 +26253,8 @@ mod tests {
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
             assert!(text.contains("\u{25b8} w11"), "focused at {w}x{h}: {text}");
             assert!(
-                text.lines().any(|l| l.contains("> ") && l.contains("13-29")),
+                text.lines()
+                    .any(|l| l.contains("> ") && l.contains("13-29")),
                 "the cursor is drawn on the running plan at {w}x{h}: {text}"
             );
         }
@@ -23742,7 +26271,10 @@ mod tests {
             &[],
         );
         let flat = waves_inference(
-            &[("6-01", Some("Flat one"), None), ("6-02", Some("Flat two"), None)],
+            &[
+                ("6-01", Some("Flat one"), None),
+                ("6-02", Some("Flat two"), None),
+            ],
             &["6-01"],
         );
         let none = waves_inference(&[], &[]);
@@ -23750,18 +26282,33 @@ mod tests {
             let ctx = waves_ctx(vec![("5", "Later", not_started.clone())], "3");
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
             assert!(text.contains("not started"), "at {w}: {text}");
-            let planned = text.lines().filter(|l| l.contains("\u{25cb} planned")).count();
-            assert_eq!(planned, 2, "both waves expanded, both rows planned at {w}: {text}");
+            let planned = text
+                .lines()
+                .filter(|l| l.contains("\u{25cb} planned"))
+                .count();
+            assert_eq!(
+                planned, 2,
+                "both waves expanded, both rows planned at {w}: {text}"
+            );
 
             let ctx = waves_ctx(vec![("6", "Flat", flat.clone())], "6");
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
             assert!(text.contains("Plans (no wave metadata)"), "at {w}: {text}");
-            assert!(!text.contains(" w1 ") && !text.contains("w?"), "no headers at {w}: {text}");
-            assert!(text.contains("06-01") && text.contains("06-02"), "at {w}: {text}");
+            assert!(
+                !text.contains(" w1 ") && !text.contains("w?"),
+                "no headers at {w}: {text}"
+            );
+            assert!(
+                text.contains("06-01") && text.contains("06-02"),
+                "at {w}: {text}"
+            );
 
             let ctx = waves_ctx(vec![("7", "Empty", none.clone())], "7");
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
-            assert!(text.contains("No plans yet \u{2014} /gsd:plan-phase 7"), "at {w}: {text}");
+            assert!(
+                text.contains("No plans yet \u{2014} /gsd:plan-phase 7"),
+                "at {w}: {text}"
+            );
         }
     }
 
@@ -23775,7 +26322,11 @@ mod tests {
         let index = |screen: &DetailScreen, ctx: &AppContext| {
             let (model, rows) = screen.selected_waves(ctx).expect("a model");
             (
-                waves_cursor_index(&model, &rows, ctx.view_cache[TEST_ALIAS].waves_cursor.as_ref()),
+                waves_cursor_index(
+                    &model,
+                    &rows,
+                    ctx.view_cache[TEST_ALIAS].waves_cursor.as_ref(),
+                ),
                 rows.len(),
             )
         };
@@ -23799,7 +26350,11 @@ mod tests {
         assert_eq!(index(&screen, &ctx).0, 0);
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
         assert_eq!(index(&screen, &ctx).0, 0);
-        assert_eq!(screen.focus, DetailFocus::Pane, "k on the first row stays in the pane");
+        assert_eq!(
+            screen.focus,
+            DetailFocus::Pane,
+            "k on the first row stays in the pane"
+        );
     }
 
     #[test]
@@ -23861,7 +26416,11 @@ mod tests {
         let mut inf = waves_inference(
             &[
                 ("5-01-a", Some("A reasonably long plan title here"), Some(1)),
-                ("5-02-b", Some("Another reasonably long plan title"), Some(1)),
+                (
+                    "5-02-b",
+                    Some("Another reasonably long plan title"),
+                    Some(1),
+                ),
             ],
             &[],
         );
@@ -23876,22 +26435,46 @@ mod tests {
         // Unfocused: the 40/60 split; the plan rows keep glyph and id, and
         // the state word drops first.
         let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
-        assert!(text.contains("P5: Narrow"), "the phase list is drawn: {text}");
-        let row = text.lines().find(|l| l.contains("05-01")).expect("a plan row");
-        assert!(row.contains("\u{25cb} 05-01"), "glyph then id, no word: {row}");
+        assert!(
+            text.contains("P5: Narrow"),
+            "the phase list is drawn: {text}"
+        );
+        let row = text
+            .lines()
+            .find(|l| l.contains("05-01"))
+            .expect("a plan row");
+        assert!(
+            row.contains("\u{25cb} 05-01"),
+            "glyph then id, no word: {row}"
+        );
         assert!(!row.contains("planned"), "{row}");
 
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
-        assert!(!text.contains("P5: Narrow"), "the phase list is not drawn: {text}");
-        assert!(text.contains("\u{2039} P5 Narrow"), "the breadcrumb: {text}");
+        assert!(
+            !text.contains("P5: Narrow"),
+            "the phase list is not drawn: {text}"
+        );
+        assert!(
+            text.contains("\u{2039} P5 Narrow"),
+            "the breadcrumb: {text}"
+        );
         let top = text
             .lines()
             .find(|l| l.contains("\u{25b8}Waves"))
             .unwrap_or_else(|| panic!("no focused pane: {text}"));
-        assert!(top.starts_with('\u{250c}') && top.ends_with('\u{2510}'), "full width: {top:?}");
-        let row = text.lines().find(|l| l.contains("05-01")).expect("a plan row");
-        assert!(row.contains("planned"), "the full-width pane has room for the word: {row}");
+        assert!(
+            top.starts_with('\u{250c}') && top.ends_with('\u{2510}'),
+            "full width: {top:?}"
+        );
+        let row = text
+            .lines()
+            .find(|l| l.contains("05-01"))
+            .expect("a plan row");
+        assert!(
+            row.contains("planned"),
+            "the full-width pane has room for the word: {row}"
+        );
         for line in text.lines() {
             assert!(Span::raw(line).width() <= 80, "{line:?}");
         }
@@ -23906,7 +26489,10 @@ mod tests {
         for state in PANE_STATES {
             assert_eq!(Span::raw(state.glyph()).width(), 1, "{state:?}");
             assert!(seen.insert(state.glyph()), "{state:?} shares a glyph");
-            assert!(!state.word().is_empty() && state.word().is_ascii(), "{state:?}");
+            assert!(
+                !state.word().is_empty() && state.word().is_ascii(),
+                "{state:?}"
+            );
             assert!(state.word().len() < WAVES_WORD_CELLS, "{state:?}");
         }
         let words: std::collections::HashSet<&str> = PANE_STATES.iter().map(|s| s.word()).collect();
@@ -23956,8 +26542,14 @@ mod tests {
 
     #[test]
     fn the_unmerged_pane_state_uses_the_shared_glyph_and_word() {
-        assert_eq!(PaneState::Unmerged.word(), crate::agents::unmerged::LABEL_UNMERGED);
-        assert_eq!(PaneState::Unmerged.glyph(), crate::agents::unmerged::GLYPH_UNMERGED);
+        assert_eq!(
+            PaneState::Unmerged.word(),
+            crate::agents::unmerged::LABEL_UNMERGED
+        );
+        assert_eq!(
+            PaneState::Unmerged.glyph(),
+            crate::agents::unmerged::GLYPH_UNMERGED
+        );
         assert_eq!(PaneState::Done.glyph(), WAVES_GLYPH_DONE);
         assert_eq!(PaneState::Running.glyph(), WAVES_GLYPH_RUNNING);
         assert_eq!(PaneState::Stalled.glyph(), WAVES_GLYPH_STALLED);
@@ -24066,16 +26658,16 @@ mod tests {
             agent_row(MAILBOT_WT, AgentLiveness::Finished, None),
             agent_row(other, AgentLiveness::Finished, None),
         ];
-        let lines: Vec<String> = agent_list_lines(&view, 100)
-            .iter()
-            .map(line_text)
-            .collect();
+        let lines: Vec<String> = agent_list_lines(&view, 100).iter().map(line_text).collect();
         assert!(lines[0].starts_with("unmerged  "), "{lines:?}");
         assert!(lines[1].starts_with("done      "), "{lines:?}");
 
         view.agents[0].liveness = AgentLiveness::Ended;
         let lines: Vec<String> = agent_list_lines(&view, 100).iter().map(line_text).collect();
-        assert!(lines[0].starts_with("unmerged  "), "an ended holder: {lines:?}");
+        assert!(
+            lines[0].starts_with("unmerged  "),
+            "an ended holder: {lines:?}"
+        );
 
         // An in-progress holder keeps its liveness word: the agent is there.
         let mut view = mailbot_view(UnmergedState::InProgress);
@@ -24096,7 +26688,14 @@ mod tests {
             let line = line_text(&agent_line("", liveness, false, "L", String::new(), 40));
             assert_eq!(line.find('L'), Some(AGENT_STATE_CELLS + 2), "{line:?}");
         }
-        let line = line_text(&agent_line("", AgentLiveness::Ended, true, "L", String::new(), 40));
+        let line = line_text(&agent_line(
+            "",
+            AgentLiveness::Ended,
+            true,
+            "L",
+            String::new(),
+            40,
+        ));
         assert_eq!(line.find('L'), Some(AGENT_STATE_CELLS + 2), "{line:?}");
     }
 
@@ -24127,7 +26726,10 @@ mod tests {
         state
     }
 
-    fn facts_of<'m>(model: &'m roadmap_graph::RoadmapModel, key: &str) -> &'m roadmap_graph::PhaseFacts {
+    fn facts_of<'m>(
+        model: &'m roadmap_graph::RoadmapModel,
+        key: &str,
+    ) -> &'m roadmap_graph::PhaseFacts {
         model
             .phases
             .iter()
@@ -24218,7 +26820,11 @@ mod tests {
 
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let _ = render_detail_to_text_at(&screen, &ctx, 100, 32);
-        assert_eq!(screen.regions().pane, screen.regions().waves_pane, "focused");
+        assert_eq!(
+            screen.regions().pane,
+            screen.regions().waves_pane,
+            "focused"
+        );
 
         // The overlay path resets and refills too.
         use ratatui::backend::TestBackend;
@@ -24263,9 +26869,18 @@ mod tests {
             .iter()
             .position(|l| l.contains("P13 \u{b7} w2/2"))
             .unwrap_or_else(|| panic!("no summary: {text}"));
-        assert!(lines[summary + 1].contains("w1\u{2713}  \u{25b8}w2 1 running"), "{text}");
-        assert!(lines[summary + 2].contains("13-02"), "the list starts next: {text}");
-        assert!(!text.contains("running 0 \u{b7} done 1 \u{b7} queued 0"), "{text}");
+        assert!(
+            lines[summary + 1].contains("w1\u{2713}  \u{25b8}w2 1 running"),
+            "{text}"
+        );
+        assert!(
+            lines[summary + 2].contains("13-02"),
+            "the list starts next: {text}"
+        );
+        assert!(
+            !text.contains("running 0 \u{b7} done 1 \u{b7} queued 0"),
+            "{text}"
+        );
 
         // Thirteen waves: finished ones merge, and the strip fits and keeps ▸w11.
         let mut waves: Vec<WaveRow> = (1..=10)
@@ -24301,10 +26916,17 @@ mod tests {
         for cells in [60, 40, 24] {
             let strip = agents_wave_strip(&view, cells);
             assert!(strip.width() <= cells, "{cells}: {:?}", line_text(&strip));
-            assert!(line_text(&strip).contains("\u{25b8}w11"), "{cells}: {:?}", line_text(&strip));
+            assert!(
+                line_text(&strip).contains("\u{25b8}w11"),
+                "{cells}: {:?}",
+                line_text(&strip)
+            );
         }
         let narrow = line_text(&agents_wave_strip(&view, 40));
-        assert!(narrow.contains('\u{2026}') && !narrow.contains("2:Phases"), "{narrow}");
+        assert!(
+            narrow.contains('\u{2026}') && !narrow.contains("2:Phases"),
+            "{narrow}"
+        );
     }
 
     /// Phases 12 and 13; phase 13 as in [`tracer_ctx`]; on Sessions › Agents
@@ -24326,7 +26948,8 @@ mod tests {
             liveness: AgentLiveness::Live,
             ..ChildAgent::default()
         }];
-        view.agents.push(agent_row("/wt/agent-b", AgentLiveness::Live, None));
+        view.agents
+            .push(agent_row("/wt/agent-b", AgentLiveness::Live, None));
         view.worktreeless = vec![ChildAgent {
             description: Some(Untrusted::from_untrusted_source("loose".to_string())),
             liveness: AgentLiveness::Live,
@@ -24346,12 +26969,21 @@ mod tests {
             let mut ctx = cross_jump_ctx();
             let before = ctx.agent_views[TEST_ALIAS].clone();
             let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
-            ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().agents_selected = line;
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .agents_selected = line;
             let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
-            assert!(matches!(action, ScreenAction::None), "navigation only (line {line})");
+            assert!(
+                matches!(action, ScreenAction::None),
+                "navigation only (line {line})"
+            );
             assert_eq!(ctx.agent_views[TEST_ALIAS], before, "no agent is touched");
             assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
-            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 1, "phase 13's index");
+            assert_eq!(
+                ctx.view_cache[TEST_ALIAS].pipeline_selected, 1,
+                "phase 13's index"
+            );
             assert_eq!(screen.focus, DetailFocus::Pane);
             assert_eq!(
                 ctx.view_cache[TEST_ALIAS].waves_cursor,
@@ -24359,20 +26991,28 @@ mod tests {
             );
             let text = render_detail_to_text_at(&screen, &ctx, 100, 32);
             assert!(
-                text.lines().any(|l| l.contains("> ") && l.contains("13-02")),
+                text.lines()
+                    .any(|l| l.contains("> ") && l.contains("13-02")),
                 "the cursor is drawn on 13-02: {text}"
             );
         }
         for line in [2, 3, 4] {
             let mut ctx = cross_jump_ctx();
             let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
-            ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().agents_selected = line;
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .agents_selected = line;
             let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
             assert!(
                 matches!(&action, ScreenAction::SetStatusMessage(m) if m == "This agent is not attributed to a plan"),
                 "line {line}"
             );
-            assert_eq!(stored_view(&ctx), DetailSubView::Agents, "no tab switch (line {line})");
+            assert_eq!(
+                stored_view(&ctx),
+                DetailSubView::Agents,
+                "no tab switch (line {line})"
+            );
         }
 
         // A plan whose phase this project does not have.
@@ -24409,7 +27049,10 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let (_, rows) = screen.selected_waves(&ctx).expect("a model");
         let target = super::super::WavesCursor::Plan("13-01".to_string());
-        assert!(rows.iter().any(|r| r.target == target), "the wave was opened: {rows:?}");
+        assert!(
+            rows.iter().any(|r| r.target == target),
+            "the wave was opened: {rows:?}"
+        );
     }
 
     #[test]
@@ -24460,7 +27103,13 @@ mod tests {
         assert!(footer.contains("[Enter]\u{2192}Phases"), "{footer}");
         let help: String = super::super::help::help_lines(false)
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>() + "\n")
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    + "\n"
+            })
             .collect();
         for needle in [
             "Phases tab: focus the Waves pane",
@@ -24477,16 +27126,45 @@ mod tests {
 
     // ── quick 260926-dyf: mouse — clicks, double-clicks, regions ─────────
 
-    fn mouse_click(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16) -> ScreenAction {
-        screen.handle_mouse(MouseInput::Click { column, row, double: false }, ctx)
+    fn mouse_click(
+        screen: &mut DetailScreen,
+        ctx: &mut AppContext,
+        column: u16,
+        row: u16,
+    ) -> ScreenAction {
+        screen.handle_mouse(
+            MouseInput::Click {
+                column,
+                row,
+                double: false,
+            },
+            ctx,
+        )
     }
 
-    fn mouse_double(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16) -> ScreenAction {
-        screen.handle_mouse(MouseInput::Click { column, row, double: true }, ctx)
+    fn mouse_double(
+        screen: &mut DetailScreen,
+        ctx: &mut AppContext,
+        column: u16,
+        row: u16,
+    ) -> ScreenAction {
+        screen.handle_mouse(
+            MouseInput::Click {
+                column,
+                row,
+                double: true,
+            },
+            ctx,
+        )
     }
 
     /// Click then double-click at the same cell, as `App` delivers a double.
-    fn mouse_click_twice(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16) -> ScreenAction {
+    fn mouse_click_twice(
+        screen: &mut DetailScreen,
+        ctx: &mut AppContext,
+        column: u16,
+        row: u16,
+    ) -> ScreenAction {
         mouse_click(screen, ctx, column, row);
         mouse_double(screen, ctx, column, row)
     }
@@ -24521,12 +27199,17 @@ mod tests {
 
     /// `n` phases, 1..=n, each with one wave-1 plan, on the Phases tab.
     fn mouse_phases_ctx(n: usize) -> AppContext {
-        let names: Vec<(String, String)> =
-            (1..=n).map(|i| (i.to_string(), format!("{i}-01"))).collect();
+        let names: Vec<(String, String)> = (1..=n)
+            .map(|i| (i.to_string(), format!("{i}-01")))
+            .collect();
         let phases = names
             .iter()
             .map(|(num, plan)| {
-                (num.as_str(), "Phase", waves_inference(&[(plan.as_str(), None, Some(1))], &[]))
+                (
+                    num.as_str(),
+                    "Phase",
+                    waves_inference(&[(plan.as_str(), None, Some(1))], &[]),
+                )
             })
             .collect();
         waves_ctx(phases, "1")
@@ -24653,7 +27336,10 @@ mod tests {
     fn mouse_click_on_a_config_scope_label_switches_it() {
         use super::super::DefaultsEditTarget;
         let (mut screen, mut ctx) = arrived_on(DetailSubView::Defaults);
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_user_path = None;
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_user_path = None;
         let label_text = |screen: &DetailScreen, ctx: &AppContext, target| {
             let text = render_detail_to_text(screen, ctx);
             let rect = mouse_config_scope_rect(screen, target);
@@ -24667,39 +27353,67 @@ mod tests {
         };
         render_detail_to_text(&screen, &ctx);
         assert_eq!(screen.regions().config_scope_tabs.len(), 2);
-        assert_eq!(label_text(&screen, &ctx, DefaultsEditTarget::Global), "Global");
-        assert_eq!(label_text(&screen, &ctx, DefaultsEditTarget::Project), "[Project]");
+        assert_eq!(
+            label_text(&screen, &ctx, DefaultsEditTarget::Global),
+            "Global"
+        );
+        assert_eq!(
+            label_text(&screen, &ctx, DefaultsEditTarget::Project),
+            "[Project]"
+        );
 
         screen.focus = DetailFocus::TabBar;
         let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Global));
         mouse_click(&mut screen, &mut ctx, c, r);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Global
+        );
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
             Some("Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it")
         );
         assert_eq!(screen.focus, DetailFocus::Content);
-        assert_eq!(label_text(&screen, &ctx, DefaultsEditTarget::Global), "[Global]");
+        assert_eq!(
+            label_text(&screen, &ctx, DefaultsEditTarget::Global),
+            "[Global]"
+        );
 
         // A click on the now-active label is a no-op.
         let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Global));
         mouse_click(&mut screen, &mut ctx, c, r);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Global
+        );
 
         // A double-click on Project ends on Project, not back on Global.
         render_detail_to_text(&screen, &ctx);
-        let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Project));
+        let (c, r) = mouse_mid(mouse_config_scope_rect(
+            &screen,
+            DefaultsEditTarget::Project,
+        ));
         mouse_click_twice(&mut screen, &mut ctx, c, r);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Project);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Project
+        );
 
         // The `g switch` hint changes nothing but focus.
         screen.focus = DetailFocus::TabBar;
         let text = render_detail_to_text(&screen, &ctx);
         let strip = screen.regions().sub_tab_strip.expect("a strip");
-        let line = text.lines().nth(usize::from(strip.y)).unwrap_or_default().to_string();
+        let line = text
+            .lines()
+            .nth(usize::from(strip.y))
+            .unwrap_or_default()
+            .to_string();
         let hint = cell_column(&line, "g switch").expect("the hint is drawn");
         mouse_click(&mut screen, &mut ctx, hint, strip.y);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Project);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Project
+        );
         assert_eq!(screen.focus, DetailFocus::Content);
     }
 
@@ -24710,12 +27424,18 @@ mod tests {
     fn a_click_on_a_scope_label_from_the_scope_strip_still_switches_it() {
         use super::super::DefaultsEditTarget;
         let (mut screen, mut ctx) = arrived_on(DetailSubView::Defaults);
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_user_path = None;
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_user_path = None;
         render_detail_to_text(&screen, &ctx);
         screen.focus = DetailFocus::ScopeStrip;
         let (c, r) = mouse_mid(mouse_config_scope_rect(&screen, DefaultsEditTarget::Global));
         mouse_click(&mut screen, &mut ctx, c, r);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_edit_target, DefaultsEditTarget::Global);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_edit_target,
+            DefaultsEditTarget::Global
+        );
         assert_eq!(screen.focus, DetailFocus::Content);
     }
 
@@ -24729,12 +27449,22 @@ mod tests {
         assert_eq!(stored_view(&ctx), DetailSubView::Agents);
         let text = render_detail_to_text(&screen, &ctx);
         let rect = mouse_sub_tab_rect(&screen, DetailSubView::Agents);
-        let row: String = text.lines().nth(usize::from(rect.y)).unwrap_or_default().chars()
-            .skip(usize::from(rect.x)).take(usize::from(rect.width)).collect();
+        let row: String = text
+            .lines()
+            .nth(usize::from(rect.y))
+            .unwrap_or_default()
+            .chars()
+            .skip(usize::from(rect.x))
+            .take(usize::from(rect.width))
+            .collect();
         assert_eq!(row, "[Agents]", "the rect is exactly the label");
         let (c, r) = mouse_mid(rect);
         mouse_click(&mut screen, &mut ctx, c, r);
-        assert_eq!(stored_view(&ctx), DetailSubView::Agents, "a click on the active one is a no-op");
+        assert_eq!(
+            stored_view(&ctx),
+            DetailSubView::Agents,
+            "a click on the active one is a no-op"
+        );
 
         let (mut screen, mut ctx) = arrived_on(DetailSubView::Browse);
         render_detail_to_text(&screen, &ctx);
@@ -24747,7 +27477,11 @@ mod tests {
         screen.focus = DetailFocus::TabBar;
         let text = render_detail_to_text(&screen, &ctx);
         let strip = screen.regions().sub_tab_strip.expect("a strip");
-        let line = text.lines().nth(usize::from(strip.y)).unwrap_or_default().to_string();
+        let line = text
+            .lines()
+            .nth(usize::from(strip.y))
+            .unwrap_or_default()
+            .to_string();
         let hint = cell_column(&line, "switch").expect("the hint is drawn");
         mouse_click(&mut screen, &mut ctx, hint, strip.y);
         assert_eq!(stored_view(&ctx), DetailSubView::Sessions);
@@ -24815,22 +27549,36 @@ mod tests {
 
         mouse_click(&mut screen, &mut ctx, plan.rect.x + 2, plan.rect.y);
         assert_eq!(screen.focus, DetailFocus::Pane);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_cursor, Some(plan.target.clone()));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].waves_cursor,
+            Some(plan.target.clone())
+        );
 
         let mut ctx = tracer_ctx();
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text_at(&screen, &ctx, 100, 32);
         mouse_click(&mut screen, &mut ctx, header.rect.x + 2, header.rect.y);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_cursor, Some(header.target.clone()));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].waves_cursor,
+            Some(header.target.clone())
+        );
 
         // The pane's border: focus only.
         let mut ctx = tracer_ctx();
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text_at(&screen, &ctx, 100, 32);
-        let before = ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.waves_cursor.clone());
+        let before = ctx
+            .view_cache
+            .get(TEST_ALIAS)
+            .and_then(|c| c.waves_cursor.clone());
         mouse_click(&mut screen, &mut ctx, pane.x, pane.y + 1);
         assert_eq!(screen.focus, DetailFocus::Pane);
-        assert_eq!(ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.waves_cursor.clone()), before);
+        assert_eq!(
+            ctx.view_cache
+                .get(TEST_ALIAS)
+                .and_then(|c| c.waves_cursor.clone()),
+            before
+        );
     }
 
     #[test]
@@ -24853,8 +27601,14 @@ mod tests {
         press(&mut keyed, &mut kctx, KeyCode::Right);
         kctx.view_cache.get_mut(TEST_ALIAS).unwrap().waves_cursor = Some(header.target.clone());
         press(&mut keyed, &mut kctx, KeyCode::Enter);
-        assert!(!ctx.view_cache[TEST_ALIAS].waves_toggles.is_empty(), "the fold flipped");
-        assert_eq!(ctx.view_cache[TEST_ALIAS].waves_toggles, kctx.view_cache[TEST_ALIAS].waves_toggles);
+        assert!(
+            !ctx.view_cache[TEST_ALIAS].waves_toggles.is_empty(),
+            "the fold flipped"
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].waves_toggles,
+            kctx.view_cache[TEST_ALIAS].waves_toggles
+        );
 
         // A plan row with an attributed agent: the 2l4 cross-jump.
         let mut ctx = tracer_ctx();
@@ -24899,7 +27653,10 @@ mod tests {
         let list = mouse_list(&screen);
         let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
         let (mut keyed, mut kctx) = mouse_codex_sessions();
-        kctx.view_cache.get_mut(TEST_ALIAS).unwrap().sessions_selected = 1;
+        kctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .sessions_selected = 1;
         let expected = keyed.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut kctx);
         match (action, expected) {
             (ScreenAction::SetStatusMessage(a), ScreenAction::SetStatusMessage(b)) => {
@@ -24914,10 +27671,16 @@ mod tests {
         let (mut screen, mut ctx) = mouse_codex_sessions();
         render_detail_to_text(&screen, &ctx);
         let (c, r) = mouse_mid(mouse_tab_rect(&screen, 5));
-        assert!(matches!(mouse_click_twice(&mut screen, &mut ctx, c, r), ScreenAction::None));
+        assert!(matches!(
+            mouse_click_twice(&mut screen, &mut ctx, c, r),
+            ScreenAction::None
+        ));
         let list = mouse_list(&screen);
         let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x - 1, list.rect.y);
-        assert!(matches!(action, ScreenAction::None), "the list's border is not a row");
+        assert!(
+            matches!(action, ScreenAction::None),
+            "the list's border is not a row"
+        );
         assert_eq!(stored_view(&ctx), DetailSubView::Sessions);
     }
 
@@ -24935,8 +27698,14 @@ mod tests {
                 target: WavesCursor::Plan("1-01".to_string()),
             }],
             tabs: vec![
-                TabRegion { rect: Rect::new(0, 1, 10, 1), tab: 0 },
-                TabRegion { rect: Rect::new(11, 1, 10, 1), tab: 1 },
+                TabRegion {
+                    rect: Rect::new(0, 1, 10, 1),
+                    tab: 0,
+                },
+                TabRegion {
+                    rect: Rect::new(11, 1, 10, 1),
+                    tab: 1,
+                },
             ],
             sub_tabs: vec![SubTabRegion {
                 rect: Rect::new(1, 3, 8, 1),
@@ -24948,48 +27717,131 @@ mod tests {
                 len: 7,
             }),
             // Quick 260926-kes: a fold marker on list row 5.
-            fold_marks: vec![FoldMarkRegion { rect: Rect::new(3, 6, 2, 1), row: 5 }],
+            fold_marks: vec![FoldMarkRegion {
+                rect: Rect::new(3, 6, 2, 1),
+                row: 5,
+            }],
             config_rows: None,
             dropdown: None,
             scroll_panes: Vec::new(),
             config_scope_tabs: Vec::new(),
         };
-        assert_eq!(regions.click_target(3, 6), ClickTarget::FoldMarker(5), "the marker beats its row");
-        assert_eq!(regions.click_target(4, 6), ClickTarget::FoldMarker(5), "its trailing space");
-        assert_eq!(regions.click_target(5, 6), ClickTarget::ListRow(5), "the label is the row");
+        assert_eq!(
+            regions.click_target(3, 6),
+            ClickTarget::FoldMarker(5),
+            "the marker beats its row"
+        );
+        assert_eq!(
+            regions.click_target(4, 6),
+            ClickTarget::FoldMarker(5),
+            "its trailing space"
+        );
+        assert_eq!(
+            regions.click_target(5, 6),
+            ClickTarget::ListRow(5),
+            "the label is the row"
+        );
 
         // Config rows beat the list: visible position -> underlying index,
         // `on_value` from the row's own value column.
         let mut config = regions.clone();
         config.config_rows = Some(ConfigRowsRegion {
-            list: crate::ui::mouse::ListRegion { rect: Rect::new(1, 5, 30, 10), offset: 1, len: 3 },
+            list: crate::ui::mouse::ListRegion {
+                rect: Rect::new(1, 5, 30, 10),
+                offset: 1,
+                len: 3,
+            },
             rows: vec![
-                ConfigRowHit { underlying: 10, value_x: 20 },
-                ConfigRowHit { underlying: 12, value_x: 20 },
-                ConfigRowHit { underlying: 17, value_x: 25 },
+                ConfigRowHit {
+                    underlying: 10,
+                    value_x: 20,
+                },
+                ConfigRowHit {
+                    underlying: 12,
+                    value_x: 20,
+                },
+                ConfigRowHit {
+                    underlying: 17,
+                    value_x: 25,
+                },
             ],
         });
         config.fold_marks.clear();
-        assert_eq!(config.click_target(2, 5), ClickTarget::ConfigRow { index: 12, on_value: false });
-        assert_eq!(config.click_target(20, 5), ClickTarget::ConfigRow { index: 12, on_value: true });
-        assert_eq!(config.click_target(22, 6), ClickTarget::ConfigRow { index: 17, on_value: false });
-        assert_eq!(config.click_target(25, 6), ClickTarget::ConfigRow { index: 17, on_value: true });
-        assert_eq!(config.click_target(2, 7), ClickTarget::ListRow(6), "past the Config rows");
+        assert_eq!(
+            config.click_target(2, 5),
+            ClickTarget::ConfigRow {
+                index: 12,
+                on_value: false
+            }
+        );
+        assert_eq!(
+            config.click_target(20, 5),
+            ClickTarget::ConfigRow {
+                index: 12,
+                on_value: true
+            }
+        );
+        assert_eq!(
+            config.click_target(22, 6),
+            ClickTarget::ConfigRow {
+                index: 17,
+                on_value: false
+            }
+        );
+        assert_eq!(
+            config.click_target(25, 6),
+            ClickTarget::ConfigRow {
+                index: 17,
+                on_value: true
+            }
+        );
+        assert_eq!(
+            config.click_target(2, 7),
+            ClickTarget::ListRow(6),
+            "past the Config rows"
+        );
 
         // An open chooser is modal: its options, its border, everything else.
         let mut chooser = config.clone();
         chooser.dropdown = Some(DropdownRegion {
             popup: Rect::new(30, 8, 20, 5),
-            options: crate::ui::mouse::ListRegion { rect: Rect::new(31, 9, 18, 3), offset: 0, len: 2 },
+            options: crate::ui::mouse::ListRegion {
+                rect: Rect::new(31, 9, 18, 3),
+                offset: 0,
+                len: 2,
+            },
         });
         assert_eq!(chooser.click_target(35, 10), ClickTarget::DropdownOption(1));
-        assert_eq!(chooser.click_target(35, 11), ClickTarget::Nothing, "a row past the options");
-        assert_eq!(chooser.click_target(30, 9), ClickTarget::Nothing, "the popup border");
-        assert_eq!(chooser.click_target(12, 1), ClickTarget::DropdownOutside, "beats a tab");
-        assert_eq!(chooser.click_target(2, 5), ClickTarget::DropdownOutside, "beats a row");
-        assert_eq!(chooser.click_target(5, 23), ClickTarget::DropdownOutside, "the footer too");
+        assert_eq!(
+            chooser.click_target(35, 11),
+            ClickTarget::Nothing,
+            "a row past the options"
+        );
+        assert_eq!(
+            chooser.click_target(30, 9),
+            ClickTarget::Nothing,
+            "the popup border"
+        );
+        assert_eq!(
+            chooser.click_target(12, 1),
+            ClickTarget::DropdownOutside,
+            "beats a tab"
+        );
+        assert_eq!(
+            chooser.click_target(2, 5),
+            ClickTarget::DropdownOutside,
+            "beats a row"
+        );
+        assert_eq!(
+            chooser.click_target(5, 23),
+            ClickTarget::DropdownOutside,
+            "the footer too"
+        );
         assert_eq!(regions.click_target(12, 1), ClickTarget::Tab(1));
-        assert_eq!(regions.click_target(3, 3), ClickTarget::SubTab(DetailSubView::Agents));
+        assert_eq!(
+            regions.click_target(3, 3),
+            ClickTarget::SubTab(DetailSubView::Agents)
+        );
 
         // Quick 260927-t3s (I-8): a Config scope label, below a modal chooser.
         let mut scope = regions.clone();
@@ -25002,18 +27854,38 @@ mod tests {
             ClickTarget::ConfigScope(super::super::DefaultsEditTarget::Global)
         );
         scope.dropdown = chooser.dropdown;
-        assert_eq!(scope.click_target(14, 3), ClickTarget::DropdownOutside, "the chooser is modal");
+        assert_eq!(
+            scope.click_target(14, 3),
+            ClickTarget::DropdownOutside,
+            "the chooser is modal"
+        );
         assert_eq!(
             regions.click_target(50, 7),
             ClickTarget::WavesRow(WavesCursor::Plan("1-01".to_string())),
             "a row wins over its pane"
         );
-        assert_eq!(regions.click_target(40, 8), ClickTarget::WavesPane, "the border");
+        assert_eq!(
+            regions.click_target(40, 8),
+            ClickTarget::WavesPane,
+            "the border"
+        );
         assert_eq!(regions.click_target(2, 6), ClickTarget::ListRow(5));
-        assert_eq!(regions.click_target(2, 8), ClickTarget::Content, "beyond len");
+        assert_eq!(
+            regions.click_target(2, 8),
+            ClickTarget::Content,
+            "beyond len"
+        );
         assert_eq!(regions.click_target(35, 20), ClickTarget::Content);
-        assert_eq!(regions.click_target(10, 1), ClickTarget::Nothing, "the divider gap");
-        assert_eq!(regions.click_target(5, 23), ClickTarget::Nothing, "the footer row");
+        assert_eq!(
+            regions.click_target(10, 1),
+            ClickTarget::Nothing,
+            "the divider gap"
+        );
+        assert_eq!(
+            regions.click_target(5, 23),
+            ClickTarget::Nothing,
+            "the footer row"
+        );
     }
 
     #[test]
@@ -25023,7 +27895,8 @@ mod tests {
         let regions = screen.regions();
         assert_eq!(regions.sub_tabs.len(), 2);
         assert!(regions.list.is_some());
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         render_detail_to_text(&screen, &ctx);
         let regions = screen.regions();
         assert!(regions.sub_tabs.is_empty());
@@ -25037,24 +27910,34 @@ mod tests {
         terminal
             .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
             .expect("draw");
-        assert_eq!(screen.regions().tabs, tabs, "render_main_only records the same tabs");
+        assert_eq!(
+            screen.regions().tabs,
+            tabs,
+            "render_main_only records the same tabs"
+        );
 
         // Quick 260926-kes: the Roadmap's fold markers are reset too, on both
         // render paths.
         let (screen, mut ctx) = roadmap_fixture("daily-vow");
         render_detail_to_text(&screen, &ctx);
         assert!(!screen.regions().fold_marks.is_empty());
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         render_detail_to_text(&screen, &ctx);
         assert!(screen.regions().fold_marks.is_empty());
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
         render_detail_to_text(&screen, &ctx);
         assert!(!screen.regions().fold_marks.is_empty());
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         terminal
             .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
             .expect("draw");
-        assert!(screen.regions().fold_marks.is_empty(), "render_main_only resets them");
+        assert!(
+            screen.regions().fold_marks.is_empty(),
+            "render_main_only resets them"
+        );
         assert_eq!(screen.regions().list, None);
 
         // The Config rows, the chooser and the scroll panes (Task 2).
@@ -25065,7 +27948,8 @@ mod tests {
         assert!(screen.regions().config_rows.is_some());
         assert!(screen.regions().dropdown.is_some());
         let backlog = |ctx: &mut AppContext| {
-            ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
+            ctx.detail_sub_view_per_project
+                .insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
             let cache = ctx.view_cache.get_mut(TEST_ALIAS).unwrap();
             cache.backlog_items = vec![crate::state_reader::backlog::BacklogItem {
                 dir_name: Untrusted::from_untrusted_source("999.1-x".to_string()),
@@ -25082,16 +27966,21 @@ mod tests {
         assert_eq!(regions.config_rows, None);
         assert_eq!(regions.dropdown, None);
         assert_eq!(regions.scroll_panes.len(), 1);
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         render_detail_to_text(&screen, &ctx);
         assert!(screen.regions().scroll_panes.is_empty());
         backlog(&mut ctx);
         render_detail_to_text(&screen, &ctx);
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         terminal
             .draw(|frame| screen.render_main_only(frame, frame.area(), &ctx))
             .expect("draw");
-        assert!(screen.regions().scroll_panes.is_empty(), "render_main_only resets them");
+        assert!(
+            screen.regions().scroll_panes.is_empty(),
+            "render_main_only resets them"
+        );
     }
 
     #[test]
@@ -25106,16 +27995,32 @@ mod tests {
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx));
         press(&mut screen, &mut ctx, KeyCode::Char('Z'));
         render_detail_to_text(&screen, &ctx);
-        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
+        let buffer = ctx.view_cache[TEST_ALIAS]
+            .defaults_text_buffer
+            .shown()
+            .to_string();
         let content = screen.regions().content;
         let (c, r) = mouse_mid(mouse_tab_rect(&screen, 3));
         mouse_click(&mut screen, &mut ctx, c, r);
         mouse_click(&mut screen, &mut ctx, content.x + 4, content.y + 3);
-        screen.handle_mouse(MouseInput::Wheel { column: content.x + 4, row: content.y + 3, down: true }, &mut ctx);
+        screen.handle_mouse(
+            MouseInput::Wheel {
+                column: content.x + 4,
+                row: content.y + 3,
+                down: true,
+            },
+            &mut ctx,
+        );
         assert_eq!(stored_view(&ctx), DetailSubView::Defaults);
         assert_eq!(screen.focus, DetailFocus::Content);
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string(), buffer);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS]
+                .defaults_text_buffer
+                .shown()
+                .to_string(),
+            buffer
+        );
 
         // Filter typing.
         let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
@@ -25137,7 +28042,10 @@ mod tests {
     #[test]
     fn mouse_lists_keep_their_scroll_offset() {
         let mut ctx = mouse_phases_ctx(30);
-        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().pipeline_selected = 25;
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .pipeline_selected = 25;
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text_at(&screen, &ctx, 100, 20);
         let list = mouse_list(&screen);
@@ -25145,13 +28053,23 @@ mod tests {
         mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y);
         assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, list.offset);
         render_detail_to_text_at(&screen, &ctx, 100, 20);
-        assert_eq!(mouse_list(&screen).offset, list.offset, "the click did not scroll");
+        assert_eq!(
+            mouse_list(&screen).offset,
+            list.offset,
+            "the click did not scroll"
+        );
 
         let agents: Vec<crate::agents::AgentRow> = (0..30)
             .map(|i| agent_row(&format!("/wt/agent-{i:02}"), AgentLiveness::Live, None))
             .collect();
-        let (mut screen, mut ctx) = on_agents(Some(AgentView { agents, ..AgentView::default() }));
-        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().agents_selected = 25;
+        let (mut screen, mut ctx) = on_agents(Some(AgentView {
+            agents,
+            ..AgentView::default()
+        }));
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .agents_selected = 25;
         render_detail_to_text_at(&screen, &ctx, 100, 20);
         let list = mouse_list(&screen);
         assert!(list.offset > 0, "agent line 25 needs a scrolled list");
@@ -25163,7 +28081,13 @@ mod tests {
 
     // ── quick 260926-dyf: mouse — wheel, `M`, the status title ───────────
 
-    fn mouse_wheel(screen: &mut DetailScreen, ctx: &mut AppContext, column: u16, row: u16, down: bool) -> ScreenAction {
+    fn mouse_wheel(
+        screen: &mut DetailScreen,
+        ctx: &mut AppContext,
+        column: u16,
+        row: u16,
+        down: bool,
+    ) -> ScreenAction {
         screen.handle_mouse(MouseInput::Wheel { column, row, down }, ctx)
     }
 
@@ -25182,21 +28106,56 @@ mod tests {
             ..DetailRegions::default()
         };
         assert_eq!(regions.wheel_target(50, 10), WheelTarget::WavesPane);
-        assert_eq!(regions.wheel_target(50, 7), WheelTarget::WavesPane, "on a pane row");
+        assert_eq!(
+            regions.wheel_target(50, 7),
+            WheelTarget::WavesPane,
+            "on a pane row"
+        );
         assert_eq!(regions.wheel_target(5, 10), WheelTarget::Content);
-        assert_eq!(regions.wheel_target(5, 1), WheelTarget::Nothing, "the tab bar");
-        assert_eq!(regions.wheel_target(5, 3), WheelTarget::Nothing, "the sub-tab strip");
-        assert_eq!(regions.wheel_target(5, 23), WheelTarget::Nothing, "the footer");
+        assert_eq!(
+            regions.wheel_target(5, 1),
+            WheelTarget::Nothing,
+            "the tab bar"
+        );
+        assert_eq!(
+            regions.wheel_target(5, 3),
+            WheelTarget::Nothing,
+            "the sub-tab strip"
+        );
+        assert_eq!(
+            regions.wheel_target(5, 23),
+            WheelTarget::Nothing,
+            "the footer"
+        );
 
         // Quick 260926-kes: text panes win over content inside their rect;
         // the Waves pane still wins first.
-        for pane in [ScrollPane::Backlog, ScrollPane::GitCommit, ScrollPane::DriverOutput] {
+        for pane in [
+            ScrollPane::Backlog,
+            ScrollPane::GitCommit,
+            ScrollPane::DriverOutput,
+        ] {
             let mut with_pane = regions.clone();
-            with_pane.scroll_panes = vec![ScrollPaneRegion { rect: Rect::new(20, 4, 40, 12), pane }];
+            with_pane.scroll_panes = vec![ScrollPaneRegion {
+                rect: Rect::new(20, 4, 40, 12),
+                pane,
+            }];
             assert_eq!(with_pane.wheel_target(25, 5), WheelTarget::Pane(pane));
-            assert_eq!(with_pane.wheel_target(50, 10), WheelTarget::WavesPane, "Waves first");
-            assert_eq!(with_pane.wheel_target(5, 10), WheelTarget::Content, "outside it");
-            assert_eq!(with_pane.wheel_target(25, 20), WheelTarget::Content, "below it");
+            assert_eq!(
+                with_pane.wheel_target(50, 10),
+                WheelTarget::WavesPane,
+                "Waves first"
+            );
+            assert_eq!(
+                with_pane.wheel_target(5, 10),
+                WheelTarget::Content,
+                "outside it"
+            );
+            assert_eq!(
+                with_pane.wheel_target(25, 20),
+                WheelTarget::Content,
+                "below it"
+            );
         }
     }
 
@@ -25213,7 +28172,11 @@ mod tests {
         let mut keyed = DetailScreen::new(TEST_ALIAS.to_string());
         keyed.focus = DetailFocus::Pane;
         press(&mut keyed, &mut kctx, KeyCode::Down);
-        let cursor = |c: &AppContext| c.view_cache.get(TEST_ALIAS).and_then(|v| v.waves_cursor.clone());
+        let cursor = |c: &AppContext| {
+            c.view_cache
+                .get(TEST_ALIAS)
+                .and_then(|v| v.waves_cursor.clone())
+        };
         assert!(cursor(&ctx).is_some());
         assert_eq!(cursor(&ctx), cursor(&kctx));
 
@@ -25257,7 +28220,10 @@ mod tests {
             mouse_wheel(&mut screen, &mut ctx, content.x + 5, content.y + 5, true);
             press(&mut keyed, &mut kctx, KeyCode::Down);
             let (m, k) = (&ctx.view_cache[TEST_ALIAS], &kctx.view_cache[TEST_ALIAS]);
-            assert_eq!(format!("{:?}", m.roadmap_cursor), format!("{:?}", k.roadmap_cursor));
+            assert_eq!(
+                format!("{:?}", m.roadmap_cursor),
+                format!("{:?}", k.roadmap_cursor)
+            );
             assert_eq!(m.git_selected, k.git_selected);
             assert!(
                 m.git_selected == 1 || m.roadmap_cursor.is_some(),
@@ -25308,7 +28274,10 @@ mod tests {
             let (mut screen, mut ctx) = two_sessions_fixture();
             screen.focus = focus;
             let action = screen.handle_key(KeyCode::Char('M'), KeyModifiers::SHIFT, &mut ctx);
-            assert!(matches!(action, ScreenAction::ToggleMouseCapture), "{focus:?}");
+            assert!(
+                matches!(action, ScreenAction::ToggleMouseCapture),
+                "{focus:?}"
+            );
             assert_eq!(screen.focus, focus);
         }
         let mut ctx = tracer_ctx();
@@ -25329,7 +28298,10 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let action = screen.handle_key(KeyCode::Char('M'), KeyModifiers::SHIFT, &mut ctx);
         assert!(!matches!(action, ScreenAction::ToggleMouseCapture));
-        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
+        let buffer = ctx.view_cache[TEST_ALIAS]
+            .defaults_text_buffer
+            .shown()
+            .to_string();
         assert!(buffer.ends_with('M'), "{buffer:?}");
         // ... and the filter.
         let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
@@ -25368,10 +28340,16 @@ mod tests {
         let width = project_cells + 3 + 7;
         let narrow = render_detail_to_text_at(&screen, &ctx, width, 30);
         let row0 = narrow.lines().next().unwrap_or_default();
-        assert!(row0.contains(&format!(" Project: {TEST_ALIAS} ")), "{row0:?}");
+        assert!(
+            row0.contains(&format!(" Project: {TEST_ALIAS} ")),
+            "{row0:?}"
+        );
         assert!(!row0.contains("Mouse"), "{row0:?}");
         let wider = render_detail_to_text_at(&screen, &ctx, width + 1, 30);
-        assert!(wider.lines().next().unwrap_or_default().contains("Mous"), "8 cells fit");
+        assert!(
+            wider.lines().next().unwrap_or_default().contains("Mous"),
+            "8 cells fit"
+        );
 
         // No message: row 0 is unchanged.
         ctx.status_message = None;
@@ -25384,7 +28362,11 @@ mod tests {
 
     /// The screen row that draws list item `index`.
     fn mouse_row_y(list: &crate::ui::mouse::ListRegion, index: usize) -> u16 {
-        assert!(index >= list.offset, "item {index} is above the window at {}", list.offset);
+        assert!(
+            index >= list.offset,
+            "item {index} is above the window at {}",
+            list.offset
+        );
         list.rect.y + u16::try_from(index - list.offset).expect("a visible row")
     }
 
@@ -25396,7 +28378,12 @@ mod tests {
             .iter()
             .find(|m| m.row == row)
             .map(|m| m.rect)
-            .unwrap_or_else(|| panic!("row {row} has no fold marker: {:?}", screen.regions().fold_marks))
+            .unwrap_or_else(|| {
+                panic!(
+                    "row {row} has no fold marker: {:?}",
+                    screen.regions().fold_marks
+                )
+            })
     }
 
     fn mouse_band(key: roadmap_graph::BandKey) -> roadmap_graph::CursorTarget {
@@ -25414,18 +28401,31 @@ mod tests {
 
         // A phase row's name.
         let row22 = model.row_of(&phase_target("22")).expect("22 is listed");
-        mouse_click(&mut screen, &mut ctx, list.rect.x + 20, mouse_row_y(&list, row22));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, Some(phase_target("22")));
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            list.rect.x + 20,
+            mouse_row_y(&list, row22),
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(phase_target("22"))
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_edge_walk, None);
         assert_eq!(screen.focus, DetailFocus::Content);
 
         // A band label: selects, never folds.
         render_detail_to_text(&screen, &ctx);
         let v15 = band_key(&model, "v1.5");
-        let band_row = model.row_of(&mouse_band(v15.clone())).expect("the v1.5 band row");
+        let band_row = model
+            .row_of(&mouse_band(v15.clone()))
+            .expect("the v1.5 band row");
         let mark = mouse_fold_mark(&screen, band_row);
         mouse_click(&mut screen, &mut ctx, mark.right() + 3, mark.y);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, Some(mouse_band(v15.clone())));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(mouse_band(v15.clone()))
+        );
         assert!(!roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
 
         // The Start-now line and the header line: focus only.
@@ -25444,7 +28444,8 @@ mod tests {
             render_detail_to_text(&screen, &ctx);
             let list = mouse_list(&screen);
             let model = fixture_model(&ctx);
-            let visible = list.offset..(list.offset + usize::from(list.rect.height)).min(model.rows.len());
+            let visible =
+                list.offset..(list.offset + usize::from(list.rect.height)).min(model.rows.len());
             let Some(connector) = visible
                 .clone()
                 .find(|&i| matches!(model.rows[i], roadmap_graph::ListRow::Connector { .. }))
@@ -25452,12 +28453,21 @@ mod tests {
                 continue;
             };
             found = true;
-            let before = ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.roadmap_cursor.clone());
-            let action =
-                mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 1, mouse_row_y(&list, connector));
+            let before = ctx
+                .view_cache
+                .get(TEST_ALIAS)
+                .and_then(|c| c.roadmap_cursor.clone());
+            let action = mouse_click_twice(
+                &mut screen,
+                &mut ctx,
+                list.rect.x + 1,
+                mouse_row_y(&list, connector),
+            );
             assert!(matches!(action, ScreenAction::None), "{name}");
             assert_eq!(
-                ctx.view_cache.get(TEST_ALIAS).and_then(|c| c.roadmap_cursor.clone()),
+                ctx.view_cache
+                    .get(TEST_ALIAS)
+                    .and_then(|c| c.roadmap_cursor.clone()),
                 before,
                 "{name}: a connector selects nothing"
             );
@@ -25478,16 +28488,35 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('G'));
         render_detail_to_text_at(&screen, &ctx, 120, 16);
         let list = mouse_list(&screen);
-        assert!(list.offset > 0, "the cursor at the end scrolls the list: {list:?}");
-        assert_eq!(list.offset, screen.roadmap_list_offset.get(), "the offset the widget drew");
+        assert!(
+            list.offset > 0,
+            "the cursor at the end scrolls the list: {list:?}"
+        );
+        assert_eq!(
+            list.offset,
+            screen.roadmap_list_offset.get(),
+            "the offset the widget drew"
+        );
         let model = fixture_model(&ctx);
         let first = (list.offset..model.rows.len())
             .find(|&i| model.target_at(i).is_some())
             .expect("a selectable visible row");
-        mouse_click(&mut screen, &mut ctx, list.rect.x + 10, mouse_row_y(&list, first));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, model.target_at(first));
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            list.rect.x + 10,
+            mouse_row_y(&list, first),
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            model.target_at(first)
+        );
         render_detail_to_text_at(&screen, &ctx, 120, 16);
-        assert_eq!(mouse_list(&screen).offset, list.offset, "the row stays under the pointer");
+        assert_eq!(
+            mouse_list(&screen).offset,
+            list.offset,
+            "the row stays under the pointer"
+        );
     }
 
     #[test]
@@ -25497,35 +28526,53 @@ mod tests {
         render_detail_to_text(&screen, &ctx);
         let model = fixture_model(&ctx);
         let v15 = band_key(&model, "v1.5");
-        let row = model.row_of(&mouse_band(v15.clone())).expect("the v1.5 band row");
+        let row = model
+            .row_of(&mouse_band(v15.clone()))
+            .expect("the v1.5 band row");
 
         // One click on the marker folds the band and parks the cursor on it.
         let mark = mouse_fold_mark(&screen, row);
         mouse_click(&mut screen, &mut ctx, mark.x, mark.y);
         assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].roadmap_cursor, Some(mouse_band(v15.clone())));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(mouse_band(v15.clone()))
+        );
 
         // A second, later click on the re-rendered marker unfolds it.
         render_detail_to_text(&screen, &ctx);
-        let row = fixture_model(&ctx).row_of(&mouse_band(v15.clone())).expect("still listed");
+        let row = fixture_model(&ctx)
+            .row_of(&mouse_band(v15.clone()))
+            .expect("still listed");
         let mark = mouse_fold_mark(&screen, row);
         mouse_click(&mut screen, &mut ctx, mark.x + 1, mark.y);
-        assert!(!roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)), "its trailing space counts");
+        assert!(
+            !roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)),
+            "its trailing space counts"
+        );
 
         // A double-click on the marker toggles exactly once (Swallow).
         render_detail_to_text(&screen, &ctx);
         let mark = mouse_fold_mark(&screen, row);
         mouse_click_twice(&mut screen, &mut ctx, mark.x, mark.y);
-        assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)), "toggled once, not twice");
+        assert!(
+            roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)),
+            "toggled once, not twice"
+        );
 
         // The shipped row's marker toggles the shipped group.
         let shipped = roadmap_graph::BandKey::Shipped;
         let was = roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx));
         render_detail_to_text(&screen, &ctx);
-        let row = fixture_model(&ctx).row_of(&mouse_band(shipped.clone())).expect("the shipped row");
+        let row = fixture_model(&ctx)
+            .row_of(&mouse_band(shipped.clone()))
+            .expect("the shipped row");
         let mark = mouse_fold_mark(&screen, row);
         mouse_click(&mut screen, &mut ctx, mark.x, mark.y);
-        assert_eq!(roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx)), !was);
+        assert_eq!(
+            roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx)),
+            !was
+        );
         assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
     }
 
@@ -25537,7 +28584,9 @@ mod tests {
         let list = mouse_list(&screen);
         let model = fixture_model(&ctx);
         let v15 = band_key(&model, "v1.5");
-        let row = model.row_of(&mouse_band(v15.clone())).expect("the v1.5 band row");
+        let row = model
+            .row_of(&mouse_band(v15.clone()))
+            .expect("the v1.5 band row");
         let mark = mouse_fold_mark(&screen, row);
         mouse_click_twice(&mut screen, &mut ctx, mark.right() + 3, mark.y);
         assert!(roadmap_graph::is_folded(&v15, &fold_toggles(&ctx)));
@@ -25548,17 +28597,29 @@ mod tests {
         render_detail_to_text(&screen, &ctx);
         let shipped = roadmap_graph::BandKey::Shipped;
         let was = roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx));
-        let row = fixture_model(&ctx).row_of(&mouse_band(shipped.clone())).expect("the shipped row");
+        let row = fixture_model(&ctx)
+            .row_of(&mouse_band(shipped.clone()))
+            .expect("the shipped row");
         let mark = mouse_fold_mark(&screen, row);
         mouse_click_twice(&mut screen, &mut ctx, mark.right() + 3, mark.y);
-        assert_eq!(roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx)), !was);
+        assert_eq!(
+            roadmap_graph::is_folded(&shipped, &fold_toggles(&ctx)),
+            !was
+        );
         assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz, "not Archive");
 
         // A phase row: Enter, the phase in Phases.
         let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
         render_detail_to_text(&screen, &ctx);
-        let row22 = fixture_model(&ctx).row_of(&phase_target("22")).expect("22 is listed");
-        mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 20, mouse_row_y(&list, row22));
+        let row22 = fixture_model(&ctx)
+            .row_of(&phase_target("22"))
+            .expect("22 is listed");
+        mouse_click_twice(
+            &mut screen,
+            &mut ctx,
+            list.rect.x + 20,
+            mouse_row_y(&list, row22),
+        );
         assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
         let expected = ctx.project_states[TEST_ALIAS]
             .phases
@@ -25586,8 +28647,16 @@ mod tests {
             assert!(!list.rect.contains(ratatui::layout::Position::new(c, r)) || !over_detail);
             mouse_wheel(&mut screen, &mut ctx, c, r, true);
             press(&mut keyed, &mut kctx, KeyCode::Char('j'));
-            assert_eq!(resolved_cursor(&ctx), resolved_cursor(&kctx), "over detail: {over_detail}");
-            assert_ne!(resolved_cursor(&ctx), Some(phase_target("20")), "the cursor moved");
+            assert_eq!(
+                resolved_cursor(&ctx),
+                resolved_cursor(&kctx),
+                "over detail: {over_detail}"
+            );
+            assert_ne!(
+                resolved_cursor(&ctx),
+                Some(phase_target("20")),
+                "the cursor moved"
+            );
         }
 
         // Wheel-up on the first target stays there, in content.
@@ -25613,7 +28682,8 @@ mod tests {
             std::fs::write(planning.join(format!("x{i:02}.md")), "# X\n").expect("extra");
         }
         let mut ctx = test_ctx();
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Browse);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Browse);
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
         cache.browser_entries = crate::browser::list_dir(&planning);
         cache.browser_root = Some(planning.clone());
@@ -25634,7 +28704,10 @@ mod tests {
 
         // The folder: entered.
         mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
-        let dir = ctx.view_cache[TEST_ALIAS].browser_current_dir.clone().expect("a dir");
+        let dir = ctx.view_cache[TEST_ALIAS]
+            .browser_current_dir
+            .clone()
+            .expect("a dir");
         assert!(dir.ends_with("sub"), "{dir:?}");
 
         // The file inside: opened.
@@ -25655,7 +28728,8 @@ mod tests {
             path: PathBuf::from("/nonexistent/.planning/milestones").join(name),
         };
         let mut ctx = test_ctx();
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Archive);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Archive);
         ctx.archive_cache.insert(
             TEST_ALIAS.to_string(),
             "v1.1".to_string(),
@@ -25691,7 +28765,9 @@ mod tests {
         mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
         assert_eq!(
             ctx.view_cache[TEST_ALIAS].archive_depth,
-            ArchiveDepth::PhaseList { milestone: "v1.1".to_string() }
+            ArchiveDepth::PhaseList {
+                milestone: "v1.1".to_string()
+            }
         );
 
         render_detail_to_text(&screen, &ctx);
@@ -25702,7 +28778,10 @@ mod tests {
         mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
         assert_eq!(
             ctx.view_cache[TEST_ALIAS].archive_depth,
-            ArchiveDepth::FileList { milestone: "v1.1".to_string(), phase_idx: 0 }
+            ArchiveDepth::FileList {
+                milestone: "v1.1".to_string(),
+                phase_idx: 0
+            }
         );
 
         render_detail_to_text(&screen, &ctx);
@@ -25710,7 +28789,10 @@ mod tests {
         assert_eq!(list.len, 2, "the phase's two files");
         mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y + 1);
         assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[2], 1);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[0], 1, "each depth its own");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].archive_selected[0], 1,
+            "each depth its own"
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].archive_selected[1], 1);
     }
 
@@ -25727,7 +28809,11 @@ mod tests {
         mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
         assert_eq!(ctx.view_cache[TEST_ALIAS].browser_selected, list.offset);
         render_detail_to_text_at(&screen, &ctx, 100, 20);
-        assert_eq!(mouse_list(&screen).offset, list.offset, "the click did not scroll");
+        assert_eq!(
+            mouse_list(&screen).offset,
+            list.offset,
+            "the click did not scroll"
+        );
 
         // Milestones.
         let (mut screen, mut ctx) = mouse_archive_ctx(40);
@@ -25760,11 +28846,20 @@ mod tests {
                 cache.browser_depth = BrowserDepth::View;
                 cache.browser_file_content = Some(text.clone());
             }
-            let view = if archive { DetailSubView::Archive } else { DetailSubView::Browse };
-            ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), view);
+            let view = if archive {
+                DetailSubView::Archive
+            } else {
+                DetailSubView::Browse
+            };
+            ctx.detail_sub_view_per_project
+                .insert(TEST_ALIAS.to_string(), view);
             let offset = |ctx: &AppContext| {
                 let c = &ctx.view_cache[TEST_ALIAS];
-                if archive { c.archive_scroll_offset } else { c.browser_scroll_offset }
+                if archive {
+                    c.archive_scroll_offset
+                } else {
+                    c.browser_scroll_offset
+                }
             };
             let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
             render_detail_to_text(&screen, &ctx);
@@ -25775,12 +28870,19 @@ mod tests {
             mouse_wheel(&mut screen, &mut ctx, content.x + 10, content.y + 6, true);
             assert_eq!(offset(&ctx), 1, "archive: {archive}");
             mouse_wheel(&mut screen, &mut ctx, strip.x + 3, strip.y, true);
-            assert_eq!(offset(&ctx), 1, "archive: {archive}: the strip scrolls nothing");
+            assert_eq!(
+                offset(&ctx),
+                1,
+                "archive: {archive}: the strip scrolls nothing"
+            );
             for _ in 0..200 {
                 mouse_wheel(&mut screen, &mut ctx, content.x + 10, content.y + 6, true);
             }
             let bottom = offset(&ctx);
-            assert!(bottom > 1 && bottom < 100, "clamped at the bottom: {bottom}");
+            assert!(
+                bottom > 1 && bottom < 100,
+                "clamped at the bottom: {bottom}"
+            );
             mouse_wheel(&mut screen, &mut ctx, content.x + 10, content.y + 6, false);
             assert_eq!(offset(&ctx), bottom - 1);
         }
@@ -25789,7 +28891,10 @@ mod tests {
     // ── quick 260926-kes: Cfg, Backlog, Git, Queue, Driver (Task 2) ───────
 
     fn mouse_config_rows(screen: &DetailScreen) -> ConfigRowsRegion {
-        screen.regions().config_rows.expect("the Config rows were drawn")
+        screen
+            .regions()
+            .config_rows
+            .expect("the Config rows were drawn")
     }
 
     /// The screen row of VISIBLE Config position `pos`.
@@ -25831,17 +28936,39 @@ mod tests {
             .expect("drawn");
         let drawn = region.list.offset..region.list.offset + usize::from(region.list.rect.height);
         let mut others = drawn.filter(|&p| p != selected_pos && p < region.rows.len());
-        let (p3, p5) = (others.next().expect("a row"), others.nth(1).expect("another row"));
+        let (p3, p5) = (
+            others.next().expect("a row"),
+            others.nth(1).expect("another row"),
+        );
         let (three, five) = (region.rows[p3], region.rows[p5]);
-        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, p3));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, three.underlying);
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            mouse_config_y(&region, p3),
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_selected,
+            three.underlying
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
         assert_eq!(screen.focus, DetailFocus::Content);
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
-        mouse_click(&mut screen, &mut ctx, five.value_x + 1, mouse_config_y(&region, p5));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, five.underlying);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None, "an unselected value only selects");
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            five.value_x + 1,
+            mouse_config_y(&region, p5),
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_selected,
+            five.underlying
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing, None,
+            "an unselected value only selects"
+        );
 
         // Filtered: visible position k selects `visible[k]`, not k.
         let (mut ctx, _) = ctx_on_config_row(populated_gsd_config(), "mode");
@@ -25850,10 +28977,18 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Enter);
         render_detail_to_text(&screen, &ctx);
         let visible = mouse_visible_config(&ctx);
-        assert!(visible.len() > 2 && visible[1] != 1, "a filter that moves the indices");
+        assert!(
+            visible.len() > 2 && visible[1] != 1,
+            "a filter that moves the indices"
+        );
         let region = mouse_config_rows(&screen);
         assert_eq!(region.list.len, visible.len());
-        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, 1));
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            mouse_config_y(&region, 1),
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[1]);
 
         // Scrolled: the first drawn row is the recorded offset's entry.
@@ -25864,15 +28999,28 @@ mod tests {
         }
         render_detail_to_text_at(&screen, &ctx, 120, 20);
         let region = mouse_config_rows(&screen);
-        assert!(region.list.offset > 0, "a scrolled Config list: {:?}", region.list);
+        assert!(
+            region.list.offset > 0,
+            "a scrolled Config list: {:?}",
+            region.list
+        );
         assert_eq!(region.list.offset, screen.config_list_offset.get());
-        mouse_click(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y);
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            region.list.rect.y,
+        );
         assert_eq!(
             ctx.view_cache[TEST_ALIAS].defaults_selected,
             region.rows[region.list.offset].underlying
         );
         render_detail_to_text_at(&screen, &ctx, 120, 20);
-        assert_eq!(mouse_config_rows(&screen).list.offset, region.list.offset, "no scroll");
+        assert_eq!(
+            mouse_config_rows(&screen).list.offset,
+            region.list.offset,
+            "no scroll"
+        );
     }
 
     #[test]
@@ -25883,12 +29031,16 @@ mod tests {
         ))
         .expect("the fixture parses");
         let (mut ctx, idx) = ctx_on_config_row(config, long_key);
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = idx;
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = idx;
         let screen = DetailScreen::new(TEST_ALIAS.to_string());
         let buffer = render_detail_buffer(&screen, &ctx, 200, 50);
         let region = mouse_config_rows(&screen);
         let entries = entries_for_cache(&ctx.view_cache[TEST_ALIAS]);
-        let drawn = usize::from(region.list.rect.height).min(region.rows.len() - region.list.offset);
+        let drawn =
+            usize::from(region.list.rect.height).min(region.rows.len() - region.list.offset);
         assert!(drawn > 3);
         let mut short_x = None;
         let mut long_x = None;
@@ -25900,15 +29052,24 @@ mod tests {
                 .collect();
             let value = shown(&entries[hit.underlying].value).to_string();
             let head: String = value.chars().take(6).collect();
-            assert!(text.starts_with(&head), "row {pos}: {text:?} does not start with {value:?}");
+            assert!(
+                text.starts_with(&head),
+                "row {pos}: {text:?} does not start with {value:?}"
+            );
             if entries[hit.underlying].key.as_ref() == long_key {
                 long_x = Some(hit.value_x);
             } else {
                 short_x = Some(hit.value_x);
             }
         }
-        let (short_x, long_x) = (short_x.expect("a short key"), long_x.expect("the long key row"));
-        assert!(long_x > short_x, "the long key pushes its value right: {long_x} vs {short_x}");
+        let (short_x, long_x) = (
+            short_x.expect("a short key"),
+            long_x.expect("the long key row"),
+        );
+        assert!(
+            long_x > short_x,
+            "the long key pushes its value right: {long_x} vs {short_x}"
+        );
     }
 
     #[test]
@@ -25919,12 +29080,30 @@ mod tests {
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
-        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
+        let pos = region
+            .rows
+            .iter()
+            .position(|r| r.underlying == idx)
+            .expect("drawn");
         let hit = region.rows[pos];
-        mouse_click(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the chooser opened");
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            hit.value_x + 1,
+            mouse_config_y(&region, pos),
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "the chooser opened"
+        );
         // Its completing double press is swallowed: the chooser stays open.
-        mouse_double(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
+        mouse_double(
+            &mut screen,
+            &mut ctx,
+            hit.value_x + 1,
+            mouse_config_y(&region, pos),
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx));
 
         // An UNselected row's value: select only.
@@ -25932,9 +29111,18 @@ mod tests {
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
-        let pos = region.rows.iter().position(|r| r.underlying != idx).expect("another row");
+        let pos = region
+            .rows
+            .iter()
+            .position(|r| r.underlying != idx)
+            .expect("another row");
         let hit = region.rows[pos];
-        mouse_click(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            hit.value_x + 1,
+            mouse_config_y(&region, pos),
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, hit.underlying);
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
 
@@ -25951,10 +29139,23 @@ mod tests {
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
-        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
+        let pos = region
+            .rows
+            .iter()
+            .position(|r| r.underlying == idx)
+            .expect("drawn");
         let hit = region.rows[pos];
-        mouse_click_twice(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, pos));
-        assert_eq!(budget(&ctx), Some(before.unwrap_or(0) + 1), "stepped exactly once");
+        mouse_click_twice(
+            &mut screen,
+            &mut ctx,
+            hit.value_x + 1,
+            mouse_config_y(&region, pos),
+        );
+        assert_eq!(
+            budget(&ctx),
+            Some(before.unwrap_or(0) + 1),
+            "stepped exactly once"
+        );
 
         // A filter hiding the selected row: the first value click only selects.
         let (mut ctx, _) = ctx_on_config_row(sparse_gsd_config(), "mode");
@@ -25963,10 +29164,18 @@ mod tests {
         cache.defaults_filter_typing = false;
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text(&screen, &ctx);
-        assert!(!defaults_selection_visible(&ctx.view_cache[TEST_ALIAS]), "precondition");
+        assert!(
+            !defaults_selection_visible(&ctx.view_cache[TEST_ALIAS]),
+            "precondition"
+        );
         let region = mouse_config_rows(&screen);
         let hit = region.rows[0];
-        mouse_click(&mut screen, &mut ctx, hit.value_x + 1, mouse_config_y(&region, 0));
+        mouse_click(
+            &mut screen,
+            &mut ctx,
+            hit.value_x + 1,
+            mouse_config_y(&region, 0),
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, hit.underlying);
     }
@@ -25980,11 +29189,28 @@ mod tests {
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text_at(&screen, &ctx, 160, 40);
         let region = mouse_config_rows(&screen);
-        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
-        mouse_click_twice(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, pos));
+        let pos = region
+            .rows
+            .iter()
+            .position(|r| r.underlying == idx)
+            .expect("drawn");
+        mouse_click_twice(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            mouse_config_y(&region, pos),
+        );
         let cache = &ctx.view_cache[TEST_ALIAS];
-        assert_eq!(cache.defaults_editing, Some(idx), "the double-click opened the prompt");
-        assert_eq!(cache.defaults_text_buffer.char_count(), 0, "a secret prompt opens EMPTY");
+        assert_eq!(
+            cache.defaults_editing,
+            Some(idx),
+            "the double-click opened the prompt"
+        );
+        assert_eq!(
+            cache.defaults_text_buffer.char_count(),
+            0,
+            "a secret prompt opens EMPTY"
+        );
         let text = render_detail_to_text_at(&screen, &ctx, 160, 40);
         for leak in ["OLD-SECRET", "Q7Z9"] {
             assert!(!text.contains(leak), "the tab leaked {leak:?}:\n{text}");
@@ -26004,11 +29230,18 @@ mod tests {
         let x = dropdown.options.rect.x + 3;
         mouse_click(&mut screen, &mut ctx, x, option_y(1));
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_dropdown_selected, 1);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "not applied yet");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "not applied yet"
+        );
         assert_eq!(mouse_drift_action(&ctx), None);
         render_detail_to_text(&screen, &ctx);
         mouse_click(&mut screen, &mut ctx, x, option_y(1));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None, "applied and closed");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing, None,
+            "applied and closed"
+        );
         assert_eq!(mouse_drift_action(&ctx).as_deref(), Some("block"));
 
         // A double-click on an option applies it too.
@@ -26041,7 +29274,11 @@ mod tests {
         let (c, r) = mouse_mid(mouse_tab_rect(&screen, 3));
         mouse_click(&mut screen, &mut ctx, c, r);
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, None);
-        assert_eq!(stored_view(&ctx), DetailSubView::Defaults, "the chooser is modal");
+        assert_eq!(
+            stored_view(&ctx),
+            DetailSubView::Defaults,
+            "the chooser is modal"
+        );
         assert_eq!(mouse_drift_action(&ctx), None);
     }
 
@@ -26052,9 +29289,21 @@ mod tests {
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
         let visible = mouse_visible_config(&ctx);
-        let pos = visible.iter().position(|&i| i == idx).expect("mode is visible");
-        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, true);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[pos + 1]);
+        let pos = visible
+            .iter()
+            .position(|&i| i == idx)
+            .expect("mode is visible");
+        mouse_wheel(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            region.list.rect.y,
+            true,
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_selected,
+            visible[pos + 1]
+        );
 
         // Filtered: the next VISIBLE row.
         let (mut ctx, _) = ctx_on_config_row(populated_gsd_config(), "mode");
@@ -26062,19 +29311,38 @@ mod tests {
         type_config_filter(&mut screen, &mut ctx, "workflow");
         press(&mut screen, &mut ctx, KeyCode::Enter);
         let visible = mouse_visible_config(&ctx);
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = visible[0];
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = visible[0];
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
-        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, true);
+        mouse_wheel(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            region.list.rect.y,
+            true,
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[1]);
         // Wheel-up at the first visible row never climbs.
-        ctx.view_cache.get_mut(TEST_ALIAS).unwrap().defaults_selected = visible[0];
-        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, false);
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = visible[0];
+        mouse_wheel(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            region.list.rect.y,
+            false,
+        );
         assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_selected, visible[0]);
         assert_eq!(screen.focus, DetailFocus::Content);
 
         // The chooser open: the wheel steps it and applies nothing.
-        let (mut ctx, idx) = ctx_on_config_row(sparse_gsd_config(), "workflow.context_drift_action");
+        let (mut ctx, idx) =
+            ctx_on_config_row(sparse_gsd_config(), "workflow.context_drift_action");
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         press(&mut screen, &mut ctx, KeyCode::Enter);
         render_detail_to_text(&screen, &ctx);
@@ -26096,15 +29364,42 @@ mod tests {
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         render_detail_to_text(&screen, &ctx);
         let region = mouse_config_rows(&screen);
-        let pos = region.rows.iter().position(|r| r.underlying == idx).expect("drawn");
-        mouse_click_twice(&mut screen, &mut ctx, mouse_config_key_x(&region), mouse_config_y(&region, pos));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "the String prompt opened");
-        let buffer = ctx.view_cache[TEST_ALIAS].defaults_text_buffer.shown().to_string();
+        let pos = region
+            .rows
+            .iter()
+            .position(|r| r.underlying == idx)
+            .expect("drawn");
+        mouse_click_twice(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            mouse_config_y(&region, pos),
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "the String prompt opened"
+        );
+        let buffer = ctx.view_cache[TEST_ALIAS]
+            .defaults_text_buffer
+            .shown()
+            .to_string();
         render_detail_to_text(&screen, &ctx);
         let other = region.rows[(pos + 1) % region.rows.len()];
         mouse_click(&mut screen, &mut ctx, other.value_x + 1, region.list.rect.y);
-        mouse_click_twice(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y + 1);
-        mouse_wheel(&mut screen, &mut ctx, mouse_config_key_x(&region), region.list.rect.y, true);
+        mouse_click_twice(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            region.list.rect.y + 1,
+        );
+        mouse_wheel(
+            &mut screen,
+            &mut ctx,
+            mouse_config_key_x(&region),
+            region.list.rect.y,
+            true,
+        );
         let cache = &ctx.view_cache[TEST_ALIAS];
         assert_eq!(cache.defaults_editing, Some(idx));
         assert_eq!(cache.defaults_selected, idx);
@@ -26116,9 +29411,13 @@ mod tests {
     fn mouse_backlog_ctx(n: usize, lines: usize) -> (DetailScreen, AppContext) {
         let field = |s: String| Untrusted::from_untrusted_source(s);
         let mut ctx = test_ctx();
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
         let body: String = (0..lines).map(|i| format!("content line {i}\n")).collect();
-        ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default().backlog_items = (0..n)
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .backlog_items = (0..n)
             .map(|i| crate::state_reader::backlog::BacklogItem {
                 dir_name: field(format!("999.{i}-item")),
                 number: field(format!("999.{i}")),
@@ -26142,7 +29441,10 @@ mod tests {
 
         mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 2);
         assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 2);
-        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded, "the double opened the pane");
+        assert!(
+            ctx.view_cache[TEST_ALIAS].backlog_expanded,
+            "the double opened the pane"
+        );
 
         // The wheel over the open pane scrolls it ...
         render_detail_to_text(&screen, &ctx);
@@ -26158,7 +29460,13 @@ mod tests {
         // ... and over the list beside it does nothing.
         let list = mouse_list(&screen);
         for down in [true, false] {
-            mouse_wheel(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1, down);
+            mouse_wheel(
+                &mut screen,
+                &mut ctx,
+                list.rect.x + 4,
+                list.rect.y + 1,
+                down,
+            );
         }
         assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_selected, 2);
         assert_eq!(ctx.view_cache[TEST_ALIAS].backlog_scroll, 1);
@@ -26210,10 +29518,16 @@ mod tests {
         render_detail_to_text(&screen, &ctx);
         let list = mouse_list(&screen);
         mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
-        assert!(ctx.view_cache[TEST_ALIAS].git_commit_detail.is_some(), "the same row keeps it");
+        assert!(
+            ctx.view_cache[TEST_ALIAS].git_commit_detail.is_some(),
+            "the same row keeps it"
+        );
         mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
         assert_eq!(ctx.view_cache[TEST_ALIAS].git_selected, 1);
-        assert!(ctx.view_cache[TEST_ALIAS].git_commit_detail.is_none(), "a new row closes it");
+        assert!(
+            ctx.view_cache[TEST_ALIAS].git_commit_detail.is_none(),
+            "a new row closes it"
+        );
 
         // A double-click loads the clicked commit.
         let (mut screen, mut ctx) = mouse_git_ctx(5, None);
@@ -26266,8 +29580,11 @@ mod tests {
         let td = tempfile::TempDir::new().expect("temp dir");
         let planning = td.path().join(".planning");
         std::fs::create_dir_all(&planning).expect(".planning");
-        let actions: Vec<QueuedAction> =
-            (0..n).map(|i| QueuedAction { command: format!("/gsd:task-{i:02}") }).collect();
+        let actions: Vec<QueuedAction> = (0..n)
+            .map(|i| QueuedAction {
+                command: format!("/gsd:task-{i:02}"),
+            })
+            .collect();
         crate::state_reader::queue_md::save_queue(&planning, &actions).expect("save the queue");
         let mut ctx = test_ctx();
         ctx.config.projects.insert(
@@ -26286,7 +29603,8 @@ mod tests {
                 ..crate::state_reader::ProjectState::default()
             },
         );
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         (DetailScreen::new(TEST_ALIAS.to_string()), ctx, td)
     }
 
@@ -26331,9 +29649,17 @@ mod tests {
         let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(ctx.view_cache[TEST_ALIAS].queue_selected, 0);
-        assert_eq!(queued(&ctx), original, "a double-click never marks an action done");
+        assert_eq!(
+            queued(&ctx),
+            original,
+            "a double-click never marks an action done"
+        );
         assert!(ctx.status_message.is_none(), "{:?}", ctx.status_message);
-        assert_eq!(mouse_tree_snapshot(td.path()), before, "no queue file was written");
+        assert_eq!(
+            mouse_tree_snapshot(td.path()),
+            before,
+            "no queue file was written"
+        );
 
         // The guard matters: the key does mark it done.
         press(&mut screen, &mut ctx, KeyCode::Enter);
@@ -26345,14 +29671,18 @@ mod tests {
     fn mouse_driver_ctx(n: usize) -> (DetailScreen, AppContext) {
         let mut ctx = test_ctx();
         assert!(ctx.experimental);
-        ctx.detail_sub_view_per_project.insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
         cache.driver_runs = (0..n).map(|i| test_run(&format!("run-{i:02}"))).collect();
         cache.driver_selected_run = 0;
         cache.driver_follow = true;
         let mut ring = super::super::DriverOutput::for_run("run-00");
         for i in 0..100 {
-            ring.push_record(super::super::DriverLineKind::Output, &format!("output line {i}"));
+            ring.push_record(
+                super::super::DriverLineKind::Output,
+                &format!("output line {i}"),
+            );
         }
         ctx.driver_output.insert(TEST_ALIAS.to_string(), ring);
         (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
@@ -26372,7 +29702,12 @@ mod tests {
             .expect("the run detail is a scroll pane");
         let vp = screen.driver_viewport.get();
         let tail = tail_offset(vp);
-        assert!(tail > 2, "the ring overflows the pane: {} in {}", vp.total_lines, vp.visible_height);
+        assert!(
+            tail > 2,
+            "the ring overflows the pane: {} in {}",
+            vp.total_lines,
+            vp.visible_height
+        );
         mouse_wheel(&mut screen, &mut ctx, output.x + 5, output.y + 5, false);
         assert!(!driver_following(&ctx), "an upward step clears follow");
         assert_eq!(driver_offset(&ctx), tail - 1);
@@ -26403,8 +29738,12 @@ mod tests {
 
     #[test]
     fn mouse_scrolled_lists_map_clicks_through_their_persisted_offset() {
-        let check = |mut screen: DetailScreen, mut ctx: AppContext, key: KeyCode, presses: usize,
-                     selected: fn(&AppContext) -> usize, what: &str| {
+        let check = |mut screen: DetailScreen,
+                     mut ctx: AppContext,
+                     key: KeyCode,
+                     presses: usize,
+                     selected: fn(&AppContext) -> usize,
+                     what: &str| {
             for _ in 0..presses {
                 press(&mut screen, &mut ctx, key);
             }
@@ -26414,16 +29753,48 @@ mod tests {
             mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y);
             assert_eq!(selected(&ctx), list.offset, "{what}");
             render_detail_to_text_at(&screen, &ctx, 140, 20);
-            assert_eq!(mouse_list(&screen).offset, list.offset, "{what}: the click did not scroll");
+            assert_eq!(
+                mouse_list(&screen).offset,
+                list.offset,
+                "{what}: the click did not scroll"
+            );
         };
         let (screen, ctx) = mouse_backlog_ctx(40, 1);
-        check(screen, ctx, KeyCode::PageDown, 1, |c| c.view_cache[TEST_ALIAS].backlog_selected, "Backlog");
+        check(
+            screen,
+            ctx,
+            KeyCode::PageDown,
+            1,
+            |c| c.view_cache[TEST_ALIAS].backlog_selected,
+            "Backlog",
+        );
         let (screen, ctx) = mouse_git_ctx(40, None);
-        check(screen, ctx, KeyCode::PageDown, 1, |c| c.view_cache[TEST_ALIAS].git_selected, "Git");
+        check(
+            screen,
+            ctx,
+            KeyCode::PageDown,
+            1,
+            |c| c.view_cache[TEST_ALIAS].git_selected,
+            "Git",
+        );
         let (screen, ctx, _td) = mouse_queue_ctx(40);
-        check(screen, ctx, KeyCode::PageDown, 1, |c| c.view_cache[TEST_ALIAS].queue_selected, "Queue");
+        check(
+            screen,
+            ctx,
+            KeyCode::PageDown,
+            1,
+            |c| c.view_cache[TEST_ALIAS].queue_selected,
+            "Queue",
+        );
         let (screen, ctx) = mouse_driver_ctx(40);
-        check(screen, ctx, KeyCode::Char('j'), 30, |c| c.view_cache[TEST_ALIAS].driver_selected_run, "Driver");
+        check(
+            screen,
+            ctx,
+            KeyCode::Char('j'),
+            30,
+            |c| c.view_cache[TEST_ALIAS].driver_selected_run,
+            "Driver",
+        );
     }
 
     // ── quick 261006: unset rows show GSD built-in defaults; value filter ──
@@ -26439,7 +29810,10 @@ mod tests {
         cache.defaults_config = Some(project);
         cache.defaults_user_config = Some(global);
         let entries = entries_for_cache(&cache);
-        let row = entries.iter().find(|e| e.key.as_ref() == "model_profile").unwrap();
+        let row = entries
+            .iter()
+            .find(|e| e.key.as_ref() == "model_profile")
+            .unwrap();
         assert_ne!(row.value, "quality", "the global value must not be shown");
         assert_eq!(row.builtin_default, Some("balanced"));
     }
@@ -26476,7 +29850,11 @@ mod tests {
             )
             .unwrap();
             for e in build_defaults_entries(&cfg) {
-                assert!(!config_value_matches(&e, q), "{q} matched value of {}", e.key);
+                assert!(
+                    !config_value_matches(&e, q),
+                    "{q} matched value of {}",
+                    e.key
+                );
             }
         }
     }
@@ -26498,12 +29876,18 @@ mod tests {
         let cache = ctx.view_cache.get_mut(TEST_ALIAS).unwrap();
         cache.defaults_filter = "zz-matches-nothing".to_string();
         let entries = entries_for_cache(cache);
-        assert!(visible_defaults_indices(cache, &entries).is_empty(), "precondition");
+        assert!(
+            visible_defaults_indices(cache, &entries).is_empty(),
+            "precondition"
+        );
         cache.defaults_editing = Some(idx);
         assert_eq!(visible_defaults_indices(cache, &entries), vec![idx]);
         assert!(defaults_selection_visible(cache));
         let text = render_detail_to_text(&DetailScreen::new(TEST_ALIAS.to_string()), &ctx);
-        assert!(text.contains("model_profile"), "the edited row was drawn:\n{text}");
+        assert!(
+            text.contains("model_profile"),
+            "the edited row was drawn:\n{text}"
+        );
     }
 
     #[test]
@@ -26518,7 +29902,11 @@ mod tests {
         cache.defaults_filter_typing = false;
         let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
         press(&mut screen, &mut ctx, KeyCode::Enter);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].defaults_editing, Some(idx), "dropdown open");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].defaults_editing,
+            Some(idx),
+            "dropdown open"
+        );
         // Pick a different option: the saved value stops matching "adaptive".
         press(&mut screen, &mut ctx, KeyCode::Up);
         press(&mut screen, &mut ctx, KeyCode::Enter);
@@ -26527,7 +29915,10 @@ mod tests {
         let entries = entries_for_cache(cache);
         assert_ne!(entries[idx].value, "adaptive", "the edit applied");
         let visible = visible_defaults_indices(cache, &entries);
-        assert!(!visible.contains(&idx), "the row is now legitimately filtered out");
+        assert!(
+            !visible.contains(&idx),
+            "the row is now legitimately filtered out"
+        );
         assert!(
             visible.is_empty() || visible.contains(&cache.defaults_selected),
             "cursor {} is on a hidden row (visible: {visible:?})",

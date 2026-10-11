@@ -833,7 +833,10 @@ fn the_t_19_91_residual_is_measured_and_pinned_rather_than_closed() {
     // `classify_push` qualifies each refspec and tests it against the namespace
     // prefix. An unreadable refspec does not carry the prefix, so the namespace
     // test refuses it — the push classifier fails CLOSED on this operand.
-    refuses("git push origin $REF", policy::REASON_PUSH_OUTSIDE_NAMESPACE);
+    refuses(
+        "git push origin $REF",
+        policy::REASON_PUSH_OUTSIDE_NAMESPACE,
+    );
 
     // **`git push $REF` — measured, and deliberately NOT pinned as a live row
     // here.** Measured against the unfixed tree at `c595141` it is refused

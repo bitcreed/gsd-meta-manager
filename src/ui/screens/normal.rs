@@ -8,13 +8,13 @@ use super::{AppContext, Screen, ScreenAction, SortMode};
 use crate::app::{classify_status, format_phase_display, DetailSubView, StatusCategory};
 use crate::state_reader::disk_status::DiskStatus;
 use crate::state_reader::ProjectPresence;
+use crate::ui::mouse::{ListRegion, MouseInput};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 use ratatui::Frame;
-use crate::ui::mouse::{ListRegion, MouseInput};
 use std::cell::Cell;
 
 pub struct NormalScreen {
@@ -407,7 +407,8 @@ fn dashboard_columns(terminal_width: u16) -> (Vec<&'static str>, Vec<Constraint>
 /// Saturates at 0 for a terminal too narrow to hold the column at all.
 fn status_column_cells(terminal_width: u16) -> u16 {
     let (_, widths) = dashboard_columns(terminal_width);
-    let highlight = u16::try_from(Line::from(DASHBOARD_HIGHLIGHT_SYMBOL).width()).unwrap_or(u16::MAX);
+    let highlight =
+        u16::try_from(Line::from(DASHBOARD_HIGHLIGHT_SYMBOL).width()).unwrap_or(u16::MAX);
     let inner = terminal_width.saturating_sub(2).saturating_sub(highlight);
     Layout::horizontal(widths)
         .flex(Flex::Start)
@@ -437,10 +438,7 @@ const DASHBOARD_HIGHLIGHT_SYMBOL: &str = "> ";
 /// carried by the text (`13run`, `2 stalled`), never by the colour alone.
 ///
 /// [`AgentView::summary_forms`]: crate::agents::waves::AgentView::summary_forms
-fn agent_summary_line(
-    view: &crate::agents::waves::AgentView,
-    cells: u16,
-) -> Option<Line<'static>> {
+fn agent_summary_line(view: &crate::agents::waves::AgentView, cells: u16) -> Option<Line<'static>> {
     let form = view
         .summary_forms()
         .into_iter()
@@ -1044,7 +1042,9 @@ impl NormalScreen {
                         Some(badge) => Line::from(vec![
                             Span::styled(
                                 badge.glyph,
-                                Style::default().fg(badge.color).add_modifier(badge.modifier),
+                                Style::default()
+                                    .fg(badge.color)
+                                    .add_modifier(badge.modifier),
                             ),
                             Span::raw(alias_read),
                         ]),
@@ -1323,7 +1323,11 @@ fn step_selection_clamped(ctx: &mut AppContext, down: bool) {
         return;
     }
     let current = ctx.table_state.selected().unwrap_or(0);
-    let next = if down { (current + 1).min(count - 1) } else { current.saturating_sub(1) };
+    let next = if down {
+        (current + 1).min(count - 1)
+    } else {
+        current.saturating_sub(1)
+    };
     ctx.table_state.select(Some(next));
 }
 
@@ -1839,7 +1843,10 @@ mod tests {
         glyphs.dedup();
         assert_eq!(glyphs.len(), distinct, "two badges share a glyph");
 
-        let mut colors: Vec<String> = ALL_BADGES.iter().map(|b| format!("{:?}", b.color)).collect();
+        let mut colors: Vec<String> = ALL_BADGES
+            .iter()
+            .map(|b| format!("{:?}", b.color))
+            .collect();
         colors.sort_unstable();
         let distinct_colors = colors.len();
         colors.dedup();
@@ -2016,7 +2023,11 @@ mod tests {
 
             match action {
                 ScreenAction::Push(pushed) => {
-                    assert_eq!(pushed.name(), "driver_confirm", "`{key}` pushed the wrong screen")
+                    assert_eq!(
+                        pushed.name(),
+                        "driver_confirm",
+                        "`{key}` pushed the wrong screen"
+                    )
                 }
                 _ => panic!("`{key}` must push the driver confirmation with the flag on"),
             }
@@ -2599,11 +2610,7 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('s'));
         assert_eq!(
             ctx.filtered_aliases,
-            vec![
-                "zebra".to_string(),
-                "alpha".to_string(),
-                "mid".to_string()
-            ],
+            vec!["zebra".to_string(), "alpha".to_string(), "mid".to_string()],
             "the driven project sorts first, the rest stay alphabetical"
         );
 
@@ -2618,11 +2625,7 @@ mod tests {
 
         assert_eq!(
             ctx.filtered_aliases,
-            vec![
-                "alpha".to_string(),
-                "mid".to_string(),
-                "zebra".to_string()
-            ],
+            vec!["alpha".to_string(), "mid".to_string(), "zebra".to_string()],
             "the re-rank really did move the row"
         );
         assert_eq!(
@@ -3025,11 +3028,7 @@ mod tests {
 
             let rendered = render_dashboard_interior_selecting(width, vec![row], Some(0));
             let data = &rendered[1];
-            let run = data
-                .split(|c| c != 'X')
-                .map(str::len)
-                .max()
-                .unwrap_or(0);
+            let run = data.split(|c| c != 'X').map(str::len).max().unwrap_or(0);
             assert_eq!(
                 data.matches('X').count(),
                 run,
@@ -3351,7 +3350,11 @@ mod tests {
     #[test]
     fn the_middle_dot_is_one_cell() {
         assert_eq!(Line::from("\u{b7}").width(), 1);
-        assert_eq!("\u{b7}".len(), 2, "two bytes, one cell: never measure with len");
+        assert_eq!(
+            "\u{b7}".len(),
+            2,
+            "two bytes, one cell: never measure with len"
+        );
     }
 
     // ── Mouse (quick 260926-dyf) ────────────────────────────────────────
@@ -3391,7 +3394,10 @@ mod tests {
     fn dashboard_border_warns_when_a_gsd_install_is_newer() {
         use crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION;
         use crate::state_reader::gsd_install::{GsdVersion, InstallRuntime, InstallScope};
-        let major = GsdVersion::parse(GSD_CORE_SYNCED_TREE_VERSION).unwrap().major + 1;
+        let major = GsdVersion::parse(GSD_CORE_SYNCED_TREE_VERSION)
+            .unwrap()
+            .major
+            + 1;
         let (low, high) = (format!("{major}.0.0"), format!("{major}.2.0"));
         let mut ctx = mouse_ctx(3);
         let states = &mut ctx.project_states;
@@ -3404,7 +3410,9 @@ mod tests {
         let top = &rows[0];
         assert!(top.contains(" GSD Manager "), "{top:?}");
         assert!(
-            top.contains(&format!("GSD {high} newer than synced {GSD_CORE_SYNCED_TREE_VERSION}")),
+            top.contains(&format!(
+                "GSD {high} newer than synced {GSD_CORE_SYNCED_TREE_VERSION}"
+            )),
             "the HIGHEST newer version is named: {top:?}"
         );
         assert!(!rows.join("\n").contains("/not/drawn"));
@@ -3418,13 +3426,19 @@ mod tests {
 
         let mut ctx = mouse_ctx(3);
         let states = &mut ctx.project_states;
-        states.get_mut("proj00").unwrap().gsd_install =
-            with_gsd_install(InstallRuntime::Claude, InstallScope::Global, GSD_CORE_SYNCED_TREE_VERSION);
+        states.get_mut("proj00").unwrap().gsd_install = with_gsd_install(
+            InstallRuntime::Claude,
+            InstallScope::Global,
+            GSD_CORE_SYNCED_TREE_VERSION,
+        );
         states.get_mut("proj01").unwrap().gsd_install =
             with_gsd_install(InstallRuntime::Codex, InstallScope::ProjectLocal, "0.1.0");
         let rows = mouse_render(&NormalScreen::new(), &ctx, 120, 20);
         assert!(rows[0].contains(" GSD Manager "), "{:?}", rows[0]);
-        assert_eq!(rows, plain, "no Newer install: the dashboard is byte-identical");
+        assert_eq!(
+            rows, plain,
+            "no Newer install: the dashboard is byte-identical"
+        );
     }
 
     fn mouse_aliases(n: usize) -> Vec<String> {
@@ -3440,7 +3454,11 @@ mod tests {
     }
 
     fn click(column: u16, row: u16) -> MouseInput {
-        MouseInput::Click { column, row, double: false }
+        MouseInput::Click {
+            column,
+            row,
+            double: false,
+        }
     }
 
     #[test]
@@ -3477,8 +3495,14 @@ mod tests {
         let (col, row) = (region.rect.x + 4, region.rect.y + 2);
 
         screen.handle_mouse(click(col, row), &mut ctx);
-        let action =
-            screen.handle_mouse(MouseInput::Click { column: col, row, double: true }, &mut ctx);
+        let action = screen.handle_mouse(
+            MouseInput::Click {
+                column: col,
+                row,
+                double: true,
+            },
+            &mut ctx,
+        );
         match action {
             ScreenAction::Push(pushed) => assert_eq!(pushed.name(), DetailScreen::NAME),
             _ => panic!("a double-click on a row must open its detail view"),
@@ -3490,9 +3514,18 @@ mod tests {
         mouse_render(&screen, &ctx, 100, 30);
         let header = region.rect.y - 1;
         screen.handle_mouse(click(col, header), &mut ctx);
-        let action = screen
-            .handle_mouse(MouseInput::Click { column: col, row: header, double: true }, &mut ctx);
-        assert!(matches!(action, ScreenAction::None), "no Enter without an armed row");
+        let action = screen.handle_mouse(
+            MouseInput::Click {
+                column: col,
+                row: header,
+                double: true,
+            },
+            &mut ctx,
+        );
+        assert!(
+            matches!(action, ScreenAction::None),
+            "no Enter without an armed row"
+        );
     }
 
     #[test]
@@ -3501,20 +3534,39 @@ mod tests {
         let mut screen = NormalScreen::new();
         mouse_render(&screen, &ctx, 100, 30);
         let region = screen.table_region.get().expect("the table was drawn");
-        let wheel = |down| MouseInput::Wheel { column: region.rect.x + 3, row: region.rect.y, down };
+        let wheel = |down| MouseInput::Wheel {
+            column: region.rect.x + 3,
+            row: region.rect.y,
+            down,
+        };
 
         screen.handle_mouse(wheel(true), &mut ctx);
         assert_eq!(ctx.table_state.selected(), Some(1));
         screen.handle_mouse(wheel(true), &mut ctx);
         screen.handle_mouse(wheel(true), &mut ctx);
-        assert_eq!(ctx.table_state.selected(), Some(2), "the wheel stops at the last row");
+        assert_eq!(
+            ctx.table_state.selected(),
+            Some(2),
+            "the wheel stops at the last row"
+        );
         for _ in 0..4 {
             screen.handle_mouse(wheel(false), &mut ctx);
         }
-        assert_eq!(ctx.table_state.selected(), Some(0), "the wheel stops at the first row");
+        assert_eq!(
+            ctx.table_state.selected(),
+            Some(0),
+            "the wheel stops at the first row"
+        );
 
         // Over the footer: nothing.
-        screen.handle_mouse(MouseInput::Wheel { column: 5, row: 29, down: true }, &mut ctx);
+        screen.handle_mouse(
+            MouseInput::Wheel {
+                column: 5,
+                row: 29,
+                down: true,
+            },
+            &mut ctx,
+        );
         assert_eq!(ctx.table_state.selected(), Some(0));
     }
 
@@ -3531,7 +3583,10 @@ mod tests {
         assert_eq!(ctx.table_state.selected(), Some(region.offset));
         let rows = mouse_render(&screen, &ctx, 100, 20);
         let after = screen.table_region.get().expect("the table was drawn");
-        assert_eq!(after.offset, region.offset, "the click must not scroll the table");
+        assert_eq!(
+            after.offset, region.offset,
+            "the click must not scroll the table"
+        );
         assert!(
             rows[usize::from(region.rect.y)].contains(&format!("> proj{:02}", region.offset)),
             "the clicked project is still under the pointer: {:?}",
@@ -3550,7 +3605,11 @@ mod tests {
         let before = ctx.table_state.selected();
         screen.handle_mouse(click(region.rect.x + 4, region.rect.y + 2), &mut ctx);
         screen.handle_mouse(
-            MouseInput::Wheel { column: region.rect.x + 4, row: region.rect.y, down: true },
+            MouseInput::Wheel {
+                column: region.rect.x + 4,
+                row: region.rect.y,
+                down: true,
+            },
             &mut ctx,
         );
         assert_eq!(ctx.table_state.selected(), before);

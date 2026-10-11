@@ -1,7 +1,7 @@
 pub mod action;
 pub mod agents;
-pub mod archive;
 pub mod app;
+pub mod archive;
 /// A read-only external command's stdout within a wall-clock budget (Phase 25 WR-02).
 pub mod bounded_output;
 pub mod browser;

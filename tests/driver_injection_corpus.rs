@@ -351,8 +351,7 @@ fn parse_corpus_file(rel: &str, text: &str) -> CorpusFile {
                 "{rel}: a second {BEGIN} opened before the previous block closed"
             );
             open = Some(Block {
-                id: attr(line, "id")
-                    .unwrap_or_else(|| panic!("{rel}: a {BEGIN} line with no id=")),
+                id: attr(line, "id").unwrap_or_else(|| panic!("{rel}: a {BEGIN} line with no id=")),
                 marker: attr(line, "marker")
                     .unwrap_or_else(|| panic!("{rel}: a {BEGIN} line with no marker=")),
                 clean: attr(line, "clean"),
@@ -991,7 +990,9 @@ fn wire_terminal_verb(payload: &Value) -> String {
         .and_then(|value| value.as_str())
         .expect("every step names a command");
     goal::parse_action(named)
-        .unwrap_or_else(|unknown| panic!("the wire named an action outside the alphabet: {unknown}"))
+        .unwrap_or_else(|unknown| {
+            panic!("the wire named an action outside the alphabet: {unknown}")
+        })
         .verb()
         .to_string()
 }
@@ -1284,7 +1285,8 @@ fn every_named_class_has_exactly_one_ignored_arm_and_every_arm_names_a_class() {
         let count = sites.iter().filter(|(id, _)| id == entry.id).count();
         let expected = usize::from(entry.asserted_here);
         assert_eq!(
-            count, expected, "class {} has {count} arm(s) where {expected} is \
+            count, expected,
+            "class {} has {count} arm(s) where {expected} is \
              required. A deleted or renamed arm is a class that silently stopped \
              being tested, which is exactly what this guard exists to name",
             entry.id
@@ -1741,8 +1743,7 @@ fn the_clean_materialisation_removes_every_marker_and_keeps_the_project_shape() 
 fn the_typed_state_carries_no_marker_so_the_boundary_is_the_only_channel() {
     let corpus = load_corpus();
     let tree = materialise(corpus, Variant::Hostile);
-    let state =
-        gsd_meta_manager::state_reader::parse_project_state(&tree.path().join(".planning"));
+    let state = gsd_meta_manager::state_reader::parse_project_state(&tree.path().join(".planning"));
     let typed = typed_state_lines(&state);
 
     assert!(
@@ -1771,8 +1772,7 @@ fn the_corpus_is_planted_where_the_shipped_reader_actually_reads() {
     // parse.
     let corpus = load_corpus();
     let tree = materialise(corpus, Variant::Hostile);
-    let state =
-        gsd_meta_manager::state_reader::parse_project_state(&tree.path().join(".planning"));
+    let state = gsd_meta_manager::state_reader::parse_project_state(&tree.path().join(".planning"));
 
     let prose: String = state
         .phases
@@ -1846,12 +1846,7 @@ fn an_unavailable_binary_fails_loudly_instead_of_skipping() {
 fn the_corpus_prompt_carries_every_class_payload_and_asks_for_the_evidence_field() {
     let corpus = load_corpus();
     let tree = materialise(corpus, Variant::Hostile);
-    let prompt = seam_prompt(
-        tree.path(),
-        corpus,
-        Variant::Hostile,
-        Delivery::Everything,
-    );
+    let prompt = seam_prompt(tree.path(), corpus, Variant::Hostile, Delivery::Everything);
 
     for entry in CLASSES {
         assert!(

@@ -1008,7 +1008,11 @@ pub fn is_opted_in(config: &Config, alias: &str) -> bool {
 pub fn remove_project(config: &mut Config, key: &LegacyRegistryKey) -> Result<()> {
     // RAW: this is the lookup and the removal. `config.projects` is keyed by
     // exactly these bytes.
-    if config.projects.remove(key.as_raw_for_lookup_only()).is_none() {
+    if config
+        .projects
+        .remove(key.as_raw_for_lookup_only())
+        .is_none()
+    {
         // ESCAPED, at the one producer, which takes the carrier.
         return Err(project_not_found(key.as_untrusted()));
     }
@@ -1308,9 +1312,8 @@ pub fn prune_worktree_entries(config: &mut Config) -> Vec<PrunedEntry> {
     let mut pruned: Vec<PrunedEntry> = Vec::new();
     for (alias, path, _) in &originals {
         let reason = if path.exists() {
-            linked_worktree_main(path).map(|main_worktree| PruneReason::LinkedWorktree {
-                main_worktree,
-            })
+            linked_worktree_main(path)
+                .map(|main_worktree| PruneReason::LinkedWorktree { main_worktree })
         } else {
             let under_other = originals.iter().any(|(other, raw, canonical)| {
                 other != alias
@@ -1564,7 +1567,11 @@ mod linked_worktree_tests {
 
         let added = auto_register_from_sessions(
             &mut cfg,
-            &[session(feature), session(stray_agent), session(no_dot.clone())],
+            &[
+                session(feature),
+                session(stray_agent),
+                session(no_dot.clone()),
+            ],
         );
         assert_eq!(added, vec![("agent-z".to_string(), no_dot)]);
         assert_eq!(cfg.projects.len(), 2);
@@ -1606,8 +1613,10 @@ mod linked_worktree_tests {
         }
 
         let pruned = prune_worktree_entries(&mut cfg);
-        let summary: Vec<(&str, &PruneReason)> =
-            pruned.iter().map(|p| (p.alias.as_str(), &p.reason)).collect();
+        let summary: Vec<(&str, &PruneReason)> = pruned
+            .iter()
+            .map(|p| (p.alias.as_str(), &p.reason))
+            .collect();
         assert_eq!(
             summary,
             vec![
@@ -1765,8 +1774,7 @@ mod worktree_session_discovery_tests {
     fn thirteen_worktree_sessions_in_one_poll_register_the_main_exactly_once() {
         let tmp = tempdir().unwrap();
         let (main, worktrees) = thirteen_worktrees(tmp.path());
-        let mut sessions: Vec<ClaudeSession> =
-            worktrees.iter().cloned().map(session).collect();
+        let mut sessions: Vec<ClaudeSession> = worktrees.iter().cloned().map(session).collect();
         for wt in &worktrees[..3] {
             let sub = wt.join("src");
             std::fs::create_dir_all(&sub).unwrap();
@@ -2164,8 +2172,14 @@ mod tests {
         let mut out: Vec<(String, String)> = Vec::new();
 
         for (name, err) in [
-            ("OptInError::UnknownAlias", OptInError::UnknownAlias { alias: carrier() }),
-            ("OptInError::NotOptedIn", OptInError::NotOptedIn { alias: carrier() }),
+            (
+                "OptInError::UnknownAlias",
+                OptInError::UnknownAlias { alias: carrier() },
+            ),
+            (
+                "OptInError::NotOptedIn",
+                OptInError::NotOptedIn { alias: carrier() },
+            ),
             (
                 "OptInError::RootUnusable",
                 OptInError::RootUnusable {
@@ -2192,8 +2206,14 @@ mod tests {
         }
 
         for (name, err) in [
-            ("DriveError::AliasNotVisible", DriveError::AliasNotVisible { alias: carrier() }),
-            ("DriveError::RunIdInvalid", DriveError::RunIdInvalid { run_id: carrier() }),
+            (
+                "DriveError::AliasNotVisible",
+                DriveError::AliasNotVisible { alias: carrier() },
+            ),
+            (
+                "DriveError::RunIdInvalid",
+                DriveError::RunIdInvalid { run_id: carrier() },
+            ),
             (
                 "DriveError::TargetPhaseInvalid",
                 DriveError::TargetPhaseInvalid {
@@ -2633,7 +2653,9 @@ mod tests {
                      the envelope seam would reject",
                 );
                 assert!(
-                    refused.to_string().contains("Register it under an ASCII alias"),
+                    refused
+                        .to_string()
+                        .contains("Register it under an ASCII alias"),
                     "and the refusal must name the explicit-alias route: \
                      {refused}"
                 );
@@ -2733,7 +2755,12 @@ mod tests {
 
         let mut config = empty_config();
         // Pre-register the first one under its natural alias.
-        add_project(&mut config, &visible("myproj"), &path_a.canonicalize().unwrap()).unwrap();
+        add_project(
+            &mut config,
+            &visible("myproj"),
+            &path_a.canonicalize().unwrap(),
+        )
+        .unwrap();
 
         let sessions = vec![make_session(path_b)];
         let added = auto_register_from_sessions(&mut config, &sessions);

@@ -64,7 +64,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 /// The multi-turn stand-in. `fake-claude-echo.sh` emits its only `result` after
 /// stdin EOF, which cannot close a D-11 loop: the driver waits for a turn
 /// boundary before closing stdin, and that stand-in waits for the close before
@@ -333,7 +332,10 @@ fn journal_records(journal: &Path) -> Vec<JournalRecord> {
 }
 
 fn of_kind<'a>(records: &'a [JournalRecord], kind: &str) -> Vec<&'a JournalRecord> {
-    records.iter().filter(|record| record.kind == kind).collect()
+    records
+        .iter()
+        .filter(|record| record.kind == kind)
+        .collect()
 }
 
 /// The load-bearing test of the whole phase.

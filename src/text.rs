@@ -714,7 +714,15 @@ mod tests {
             );
         }
 
-        for visible in ["x", " x ", "\u{200b}x", "x\u{feff}", "20", "2.1", "/gsd:progress"] {
+        for visible in [
+            "x",
+            " x ",
+            "\u{200b}x",
+            "x\u{feff}",
+            "20",
+            "2.1",
+            "/gsd:progress",
+        ] {
             assert!(
                 carries_visible_content(visible),
                 "{visible:?} carries a visible instruction and must be judged \
@@ -929,7 +937,15 @@ mod tests {
             );
         }
 
-        for accepted in ["x", " x ", "\u{200b}x", "x\u{feff}", "20", "2.1", "/gsd:progress"] {
+        for accepted in [
+            "x",
+            " x ",
+            "\u{200b}x",
+            "x\u{feff}",
+            "20",
+            "2.1",
+            "/gsd:progress",
+        ] {
             assert!(
                 carries_visible_content(accepted),
                 "{accepted:?} was accepted before D-19-1 widened the class and \
@@ -1037,14 +1053,14 @@ mod tests {
         // The emptiness half (pass-7 gap 1) — each of these is a value whose
         // every character renders as nothing, so it carries no instruction.
         for solely_invisible in [
-            "\u{202e}", // RIGHT-TO-LEFT OVERRIDE (Cf) — Trojan Source, CVE-2021-42574
-            "\u{00ad}", // SOFT HYPHEN (Cf)
-            "\u{034f}", // COMBINING GRAPHEME JOINER (Default_Ignorable, not Cf)
+            "\u{202e}",  // RIGHT-TO-LEFT OVERRIDE (Cf) — Trojan Source, CVE-2021-42574
+            "\u{00ad}",  // SOFT HYPHEN (Cf)
+            "\u{034f}",  // COMBINING GRAPHEME JOINER (Default_Ignorable, not Cf)
             "\u{e0041}", // TAG LATIN CAPITAL LETTER A (Cf) — the LLM smuggling carrier
-            "\u{fe0f}", // VARIATION SELECTOR-16 (Default_Ignorable, not Cf)
+            "\u{fe0f}",  // VARIATION SELECTOR-16 (Default_Ignorable, not Cf)
             "\u{13430}", // EGYPTIAN HIEROGLYPH VERTICAL JOINER (Cf)
-            "\u{180e}", // MONGOLIAN VOWEL SEPARATOR (Cf)
-            "\u{fff9}", // INTERLINEAR ANNOTATION ANCHOR (Cf)
+            "\u{180e}",  // MONGOLIAN VOWEL SEPARATOR (Cf)
+            "\u{fff9}",  // INTERLINEAR ANNOTATION ANCHOR (Cf)
         ] {
             assert!(
                 !carries_visible_content(solely_invisible),
@@ -1057,7 +1073,12 @@ mod tests {
 
         // The identity half (pass-7 gap 2) — visible content beside bytes that
         // render as nothing, so the emptiness judgment cannot see them.
-        for embedded in ["demo\u{202e}", "demo\u{e0041}", "demo\u{ad}", "demo\u{fe0f}"] {
+        for embedded in [
+            "demo\u{202e}",
+            "demo\u{e0041}",
+            "demo\u{ad}",
+            "demo\u{fe0f}",
+        ] {
             assert!(
                 carries_invisible_formatting(embedded),
                 "{embedded:?} renders exactly as \"demo\" and must not be able \
@@ -1120,10 +1141,19 @@ mod tests {
     #[test]
     fn the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity() {
         for (value, what) in [
-            ("\u{2800}", "BRAILLE PATTERN BLANK (So, a symbol - not a format char)"),
+            (
+                "\u{2800}",
+                "BRAILLE PATTERN BLANK (So, a symbol - not a format char)",
+            ),
             ("\u{e000}", "the first private-use code point (Co)"),
-            ("\u{0378}", "an unassigned code point (Cn) at the pinned version"),
-            ("\u{0301}", "COMBINING ACUTE ACCENT (Mn), with no base character"),
+            (
+                "\u{0378}",
+                "an unassigned code point (Cn) at the pinned version",
+            ),
+            (
+                "\u{0301}",
+                "COMBINING ACUTE ACCENT (Mn), with no base character",
+            ),
         ] {
             let accepted_in_free_text = carries_visible_content(value);
             let can_name_an_identity = crate::journal::is_plain_path_component(value);
@@ -1517,9 +1547,8 @@ mod tests {
 
     #[test]
     fn the_alphabet_needle_survives_a_reorder_and_a_respacing() {
-        let identity_atoms = bare_char_literal_atoms(&format!(
-            "{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}"
-        ));
+        let identity_atoms =
+            bare_char_literal_atoms(&format!("{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}"));
         let expected = {
             let mut atoms: Vec<char> = [ATOM_DOT, ATOM_UNDERSCORE, ATOM_DASH]
                 .iter()
@@ -1537,7 +1566,9 @@ mod tests {
         let (dot, underscore, dash) = (ATOM_DOT, ATOM_UNDERSCORE, ATOM_DASH);
         for equivalent in [
             // The one surviving production spelling, ranges and all.
-            format!("matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | {dot} | {underscore} | {dash})"),
+            format!(
+                "matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | {dot} | {underscore} | {dash})"
+            ),
             // The WR-03 respelling `advisory::is_plain_component` used to carry.
             format!("c.is_ascii_alphanumeric() || matches!(c, {dot} | {underscore} | {dash})"),
             // REORDERED — invisible to the old needle, which is WR-05 itself.
@@ -1583,9 +1614,8 @@ mod tests {
     /// the live census consumes, in both directions.
     #[test]
     fn the_normalized_needle_still_excludes_the_branch_name_set() {
-        let identity_atoms = bare_char_literal_atoms(&format!(
-            "{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}"
-        ));
+        let identity_atoms =
+            bare_char_literal_atoms(&format!("{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}"));
 
         // Spelled exactly as `advisory::default_branch_of` carries it, and
         // assembled from the same one-atom fragments so this line is not itself
@@ -2216,8 +2246,7 @@ mod tests {
         // The same line with a value interpolated in IS reported. Without this
         // arm, a predicate that answered `false` for everything would leave the
         // assertion above green while certifying nothing.
-        let hostile =
-            format!("let c = {spawn}{quoted}).args([\"-c\", &format!(\"echo {{v}}\")]);");
+        let hostile = format!("let c = {spawn}{quoted}).args([\"-c\", &format!(\"echo {{v}}\")]);");
         assert!(
             names_an_interpreter(&hostile) && interpolates_into_a_string(&hostile),
             "the hostile twin {hostile:?} must satisfy BOTH halves, or the \

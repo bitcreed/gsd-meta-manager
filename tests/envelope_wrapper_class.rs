@@ -426,7 +426,10 @@ fn wrap(rng: &mut Lcg, base: &str) -> Wrapped {
     Wrapped {
         command: layer.apply(&inner),
         chain: chain_names.join(" | "),
-        recipe: format!("prefix={prefix:?} layer={layer:?} chain=[{}]", chain_names.join(", ")),
+        recipe: format!(
+            "prefix={prefix:?} layer={layer:?} chain=[{}]",
+            chain_names.join(", ")
+        ),
     }
 }
 
@@ -744,8 +747,7 @@ const NAMES_THE_FIX_MUST_NOT_KNOW: &[&str] = &[
 ///
 /// The stricter half of the control, asserted against the unprocessed source so
 /// it cannot be weakened by a bug in [`production_code`].
-const NAMES_ABSENT_FROM_THE_RAW_SOURCE: &[&str] =
-    &["unshare", "firejail", "torsocks", "catchsegv"];
+const NAMES_ABSENT_FROM_THE_RAW_SOURCE: &[&str] = &["unshare", "firejail", "torsocks", "catchsegv"];
 
 /// Everything in `source` that is neither a comment nor part of the trailing
 /// `#[cfg(test)]` module.
@@ -1079,8 +1081,7 @@ fn the_permitted_corpus_survives_every_generated_wrapping_and_still_answers_noth
 
             let (got, stdout) = ask(root, &wrapped.command);
             assert_eq!(
-                got.code,
-                0,
+                got.code, 0,
                 "\n\nA PERMITTED COMMAND WAS REFUSED AFTER WRAPPING.\n\
                  \n  wrapped : {}\
                  \n  base    : {base}\
@@ -1091,9 +1092,7 @@ fn the_permitted_corpus_survives_every_generated_wrapping_and_still_answers_noth
                  satisfied by a guard that denies everything. A red here is the fix having \
                  become a blanket denial in some wrapping — which would make a driven run \
                  unusable, and an unusable control is a control that gets switched off.\n",
-                wrapped.command,
-                wrapped.recipe,
-                got.reason_id,
+                wrapped.command, wrapped.recipe, got.reason_id,
             );
             assert!(
                 stdout.is_empty(),
@@ -1149,7 +1148,8 @@ fn a_search_for_an_allowed_git_command_runs_and_a_search_for_a_refused_one_does_
          disclosed so that closing it later is a deliberate edit."
     );
     assert_eq!(
-        refused.reason_id, policy::REASON_FORCE_PUSH_BLOCKED,
+        refused.reason_id,
+        policy::REASON_FORCE_PUSH_BLOCKED,
         "and it is refused for the reason the payload itself carries, not for an unrelated \
          cause such as words that could not be recovered"
     );
@@ -1588,9 +1588,7 @@ fn wrap_with_decoy(rng: &mut Lcg, base: &str, decoy: &str) -> Decoyed {
     Decoyed {
         command: layer.apply(&inner),
         chain: format!("[{}] decoy@{at}", chain.join(", ")),
-        recipe: format!(
-            "prefix={prefix:?} layer={layer:?} depth={depth} decoy={decoy:?} at={at}"
-        ),
+        recipe: format!("prefix={prefix:?} layer={layer:?} depth={depth} decoy={decoy:?} at={at}"),
         wrapped_on_both_sides: at > 0 && at < depth,
     }
 }
@@ -1649,8 +1647,7 @@ fn a_governed_program_in_a_wrappers_operand_slot_is_refused_in_every_generated_p
 
                 let got = verdict(root, &case.command);
                 assert_eq!(
-                    got.code,
-                    2,
+                    got.code, 2,
                     "\n\nA GOVERNED PROGRAM IN A WRAPPER'S OPERAND SLOT WAS PERMITTED.\n\
                      \n  command : {}\
                      \n  base    : {base}\
@@ -1669,10 +1666,7 @@ fn a_governed_program_in_a_wrappers_operand_slot_is_refused_in_every_generated_p
                      clothes — and it is NOT a narrowing of this alphabet. This corpus \
                      exists because the last one could not fail on its own class; making \
                      it green by shrinking it would be the third time.\n",
-                    case.command,
-                    case.recipe,
-                    got.code,
-                    got.reason_id,
+                    case.command, case.recipe, got.code, got.reason_id,
                 );
                 assert!(
                     REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
@@ -1964,7 +1958,9 @@ const EXPANSION_METACHARACTERS: &[char] = &['$', '`', '{', '('];
 
 /// Whether an alphabet entry carries one of them.
 fn carries_a_metacharacter(entry: &str) -> bool {
-    entry.chars().any(|ch| EXPANSION_METACHARACTERS.contains(&ch))
+    entry
+        .chars()
+        .any(|ch| EXPANSION_METACHARACTERS.contains(&ch))
 }
 
 /// Whether a generated command line carries a `$` or a `` ` `` **outside single
@@ -2154,8 +2150,7 @@ fn a_wrapper_prefix_carrying_an_expansion_is_refused_in_every_generated_position
 
                 let got = verdict(root, &case.command);
                 assert_eq!(
-                    got.code,
-                    2,
+                    got.code, 2,
                     "\n\nA WRAPPER PREFIX CARRYING AN EXPANSION WAS PERMITTED.\n\
                      \n  command : {}\
                      \n  base    : {base}\
@@ -2173,10 +2168,7 @@ fn a_wrapper_prefix_carrying_an_expansion_is_refused_in_every_generated_position
                      narrowing of this alphabet. Audit 3 found that no alphabet in this file \
                      could draw a `$` at all; making this green by removing the entry would \
                      be restoring exactly that defect.\n",
-                    case.command,
-                    case.recipe,
-                    got.code,
-                    got.reason_id,
+                    case.command, case.recipe, got.code, got.reason_id,
                 );
                 assert!(
                     REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
@@ -2481,8 +2473,7 @@ fn a_forge_subcommand_slot_carrying_an_expansion_is_refused_in_every_generated_s
                     let got = verdict(envelope.path(), &command);
 
                     assert_eq!(
-                        got.code,
-                        2,
+                        got.code, 2,
                         "\n\nA FORGE DECISION WORD CARRYING AN EXPANSION WAS PERMITTED.\n\
                          \n  command : {command}\
                          \n  slot    : {slot:?}\
@@ -2501,8 +2492,7 @@ fn a_forge_subcommand_slot_carrying_an_expansion_is_refused_in_every_generated_s
                          cells this property exists for — the SECOND subcommand word, the \
                          `-`-initial flag and the DISPLACED endpoint — were each missed once \
                          already by a region derived from the wrong scan.\n",
-                        got.code,
-                        got.reason_id,
+                        got.code, got.reason_id,
                     );
                     assert!(
                         REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
@@ -2730,8 +2720,7 @@ fn a_governed_program_behind_a_severed_prefix_is_refused_wherever_the_split_fall
         let envelope = TempDir::new().expect("a temporary envelope root");
         let answer = verdict(envelope.path(), base);
         assert_eq!(
-            answer.code,
-            0,
+            answer.code, 0,
             "the UNWRAPPED base `{base}` must be PERMITTED, or every case built on it is \
              refused for the BASE's reason and this property cannot fail on the severed \
              prefix at all. Got reason id: {}",
@@ -2765,8 +2754,7 @@ fn a_governed_program_behind_a_severed_prefix_is_refused_wherever_the_split_fall
                 let got = verdict(envelope.path(), &case.command);
 
                 assert_eq!(
-                    got.code,
-                    2,
+                    got.code, 2,
                     "\n\nA GOVERNED PROGRAM BEHIND A SEVERED PREFIX WAS PERMITTED.\n\
                      \n  command : {}\
                      \n  base    : {base}\
@@ -2789,10 +2777,7 @@ fn a_governed_program_behind_a_severed_prefix_is_refused_wherever_the_split_fall
                      uppercase assignment whose name sits inside an envelope key). And it \
                      is NOT a narrowing of this alphabet: a case that stops being drawn is \
                      a case that stops being able to fail.\n",
-                    case.command,
-                    case.recipe,
-                    got.code,
-                    got.reason_id,
+                    case.command, case.recipe, got.code, got.reason_id,
                 );
                 assert!(
                     REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
@@ -3398,8 +3383,7 @@ fn a_forge_decision_slot_carrying_a_splice_or_a_glob_is_refused_in_every_generat
                     let got = verdict(envelope.path(), &command);
 
                     assert_eq!(
-                        got.code,
-                        2,
+                        got.code, 2,
                         "\n\nA FORGE DECISION WORD THE SHELL ASSEMBLES WITHOUT MARKING IT WAS \
                          PERMITTED.\n\
                          \n  command : {command}\
@@ -3419,8 +3403,7 @@ fn a_forge_decision_slot_carrying_a_splice_or_a_glob_is_refused_in_every_generat
                          `src/envelope/policy.rs`.** It is NOT a name or a character added \
                          to a list in `src/`, and it is NOT a narrowing of this slot \
                          alphabet or of `UNREADABLE_SPELLINGS`.",
-                        got.code,
-                        got.reason_id
+                        got.code, got.reason_id
                     );
 
                     let written = ledger_lines_under(envelope.path());
@@ -3528,8 +3511,7 @@ fn a_gh_placeholder_endpoint_is_permitted_and_counted_in_every_generated_placeme
             let envelope = TempDir::new().expect("a temporary envelope root");
             let got = verdict(envelope.path(), &command);
             assert_eq!(
-                got.code,
-                0,
+                got.code, 0,
                 "\n\nA LEGITIMATE `gh api` PLACEHOLDER ENDPOINT WAS REFUSED.\n\
                  \n  command : {command}\
                  \n  got     : exit {} reason {}\
@@ -3634,8 +3616,7 @@ fn a_governed_program_behind_a_brace_severed_prefix_is_refused_wherever_the_spli
                 let envelope = TempDir::new().expect("a temporary envelope root");
                 let got = verdict(envelope.path(), &command);
                 assert_eq!(
-                    got.code,
-                    2,
+                    got.code, 2,
                     "\n\nA GOVERNED PROGRAM BEHIND A BRACE-SEVERED PREFIX WAS PERMITTED.\n\
                      \n  command : {command}\
                      \n  entry   : {entry}\
@@ -3929,9 +3910,7 @@ fn draws_a_continuation_inside_a_word(entry: &str) -> bool {
     let (found, chars) = line_continuations(entry);
     found.iter().any(|&index| {
         let left = index > 0 && !chars[index - 1].is_whitespace();
-        let right = chars
-            .get(index + 2)
-            .is_some_and(|c| !c.is_whitespace());
+        let right = chars.get(index + 2).is_some_and(|c| !c.is_whitespace());
         left && right
     })
 }
@@ -3948,9 +3927,7 @@ fn draws_a_continuation_at_a_word_boundary(entry: &str) -> bool {
     let (found, chars) = line_continuations(entry);
     found.iter().any(|&index| {
         let left_boundary = index == 0 || chars[index - 1].is_whitespace();
-        let right_boundary = chars
-            .get(index + 2)
-            .is_none_or(|c| c.is_whitespace());
+        let right_boundary = chars.get(index + 2).is_none_or(|c| c.is_whitespace());
         left_boundary || right_boundary
     })
 }
@@ -3965,13 +3942,19 @@ type DeletionClass = (&'static str, fn(&str) -> bool);
 /// it.** The seven above are ways bash ASSEMBLES a word the guard cannot read;
 /// the five below are ways bash DELETES something the guard counted.
 const DELETION_CLASSES: &[DeletionClass] = &[
-    ("separate-word redirection", draws_a_separate_word_redirection),
+    (
+        "separate-word redirection",
+        draws_a_separate_word_redirection,
+    ),
     ("attached redirection", draws_an_attached_redirection),
     (
         "multi-character or fd operator",
         draws_a_multi_character_or_fd_operator,
     ),
-    ("continuation inside a word", draws_a_continuation_inside_a_word),
+    (
+        "continuation inside a word",
+        draws_a_continuation_inside_a_word,
+    ),
     (
         "continuation at a word boundary",
         draws_a_continuation_at_a_word_boundary,
@@ -4448,7 +4431,10 @@ fn the_generated_corpus_really_produces_each_deletion_class_in_quantity() {
     let all: Vec<&(&str, usize, String, String)> = refused.iter().chain(permitted.iter()).collect();
     assert_eq!(all.len(), DELETION_CASES);
 
-    let slots: BTreeSet<(&str, usize)> = all.iter().map(|(base, slot, _, _)| (*base, *slot)).collect();
+    let slots: BTreeSet<(&str, usize)> = all
+        .iter()
+        .map(|(base, slot, _, _)| (*base, *slot))
+        .collect();
     assert_eq!(
         slots.len(),
         DELETION_SLOTS,
@@ -4568,8 +4554,7 @@ fn a_word_the_shell_deletes_between_the_program_and_its_decision_words_is_not_a_
         let got = verdict(envelope.path(), &command);
         let expected = base_verdicts.get(base).expect("the base was measured");
         assert_eq!(
-            got,
-            *expected,
+            got, *expected,
             "\n\nA DELETION ENTRY CHANGED A PERMITTED VERDICT.\n\
              \n  command : {command:?}\
              \n  base    : {base}\
@@ -4585,8 +4570,7 @@ fn a_word_the_shell_deletes_between_the_program_and_its_decision_words_is_not_a_
              `tests/envelope_argv_deletion.rs` and turn a correct COUNT into a false \
              positive — the trade `T-19-93`'s bar forbids. It is NOT a reason to narrow \
              this alphabet.",
-            got.code,
-            got.reason_id,
+            got.code, got.reason_id,
         );
         permitted_cases += 1;
     }
@@ -4611,8 +4595,7 @@ fn a_word_the_shell_deletes_between_the_program_and_its_decision_words_is_not_a_
         let got = verdict(envelope.path(), &command);
 
         assert_eq!(
-            got.code,
-            2,
+            got.code, 2,
             "\n\nA WORD THE SHELL DELETES DISPLACED THE DECISION WORD AND THE COMMAND WAS \
              PERMITTED.\n\
              \n  command : {command:?}\
@@ -4639,8 +4622,7 @@ fn a_word_the_shell_deletes_between_the_program_and_its_decision_words_is_not_a_
              `tests/envelope_argv_deletion.rs` measure that option's cost. And it is NOT a \
              narrowing of `DISPLACING_REDIRECTIONS`, `CONTINUATION_SPLICES` or the five \
              `DELETION_CLASSES`.",
-            got.code,
-            got.reason_id,
+            got.code, got.reason_id,
         );
 
         let written = ledger_lines_under(envelope.path());
@@ -5117,24 +5099,84 @@ struct GitGlobalOption {
 /// mechanically below.
 const GIT_GLOBAL_OPTIONS: &[GitGlobalOption] = &[
     // class 1 — consumes a separate word
-    GitGlobalOption { spelling: "--attr-source HEAD", class: "a leading option that consumes a separate word", words: 2 },
-    GitGlobalOption { spelling: "--shallow-file /tmp/s", class: "a leading option that consumes a separate word", words: 2 },
-    GitGlobalOption { spelling: "-C /tmp", class: "a leading option that consumes a separate word", words: 2 },
-    GitGlobalOption { spelling: "--git-dir /tmp/g", class: "a leading option that consumes a separate word", words: 2 },
-    GitGlobalOption { spelling: "--work-tree /tmp/w", class: "a leading option that consumes a separate word", words: 2 },
-    GitGlobalOption { spelling: "--namespace n", class: "a leading option that consumes a separate word", words: 2 },
+    GitGlobalOption {
+        spelling: "--attr-source HEAD",
+        class: "a leading option that consumes a separate word",
+        words: 2,
+    },
+    GitGlobalOption {
+        spelling: "--shallow-file /tmp/s",
+        class: "a leading option that consumes a separate word",
+        words: 2,
+    },
+    GitGlobalOption {
+        spelling: "-C /tmp",
+        class: "a leading option that consumes a separate word",
+        words: 2,
+    },
+    GitGlobalOption {
+        spelling: "--git-dir /tmp/g",
+        class: "a leading option that consumes a separate word",
+        words: 2,
+    },
+    GitGlobalOption {
+        spelling: "--work-tree /tmp/w",
+        class: "a leading option that consumes a separate word",
+        words: 2,
+    },
+    GitGlobalOption {
+        spelling: "--namespace n",
+        class: "a leading option that consumes a separate word",
+        words: 2,
+    },
     // class 2 — consumes no word
-    GitGlobalOption { spelling: "--no-pager", class: "a leading option that consumes no word", words: 1 },
-    GitGlobalOption { spelling: "--bare", class: "a leading option that consumes no word", words: 1 },
-    GitGlobalOption { spelling: "--literal-pathspecs", class: "a leading option that consumes no word", words: 1 },
-    GitGlobalOption { spelling: "--no-optional-locks", class: "a leading option that consumes no word", words: 1 },
-    GitGlobalOption { spelling: "-p", class: "a leading option that consumes no word", words: 1 },
+    GitGlobalOption {
+        spelling: "--no-pager",
+        class: "a leading option that consumes no word",
+        words: 1,
+    },
+    GitGlobalOption {
+        spelling: "--bare",
+        class: "a leading option that consumes no word",
+        words: 1,
+    },
+    GitGlobalOption {
+        spelling: "--literal-pathspecs",
+        class: "a leading option that consumes no word",
+        words: 1,
+    },
+    GitGlobalOption {
+        spelling: "--no-optional-locks",
+        class: "a leading option that consumes no word",
+        words: 1,
+    },
+    GitGlobalOption {
+        spelling: "-p",
+        class: "a leading option that consumes no word",
+        words: 1,
+    },
     // class 3 — attached value, which needs no knowledge of git
-    GitGlobalOption { spelling: "--git-dir=/tmp/g", class: "a leading option carrying an attached value", words: 1 },
-    GitGlobalOption { spelling: "--attr-source=HEAD", class: "a leading option carrying an attached value", words: 1 },
-    GitGlobalOption { spelling: "--namespace=n", class: "a leading option carrying an attached value", words: 1 },
+    GitGlobalOption {
+        spelling: "--git-dir=/tmp/g",
+        class: "a leading option carrying an attached value",
+        words: 1,
+    },
+    GitGlobalOption {
+        spelling: "--attr-source=HEAD",
+        class: "a leading option carrying an attached value",
+        words: 1,
+    },
+    GitGlobalOption {
+        spelling: "--namespace=n",
+        class: "a leading option carrying an attached value",
+        words: 1,
+    },
     // class 5 — EXACTLY `--`, and a bare `-` is deliberately absent
-    GitGlobalOption { spelling: "--", class: "the end-of-options marker or a bare dash", words: 1 },
+    GitGlobalOption {
+        spelling: "--",
+        class: "the end-of-options marker or a bare dash",
+        words: 1,
+    },
 ];
 
 /// The SEPARATE alphabet of leading options the installed git does NOT accept.
@@ -5425,7 +5467,11 @@ fn every_alphabet_this_round_widens_can_draw_a_word_whose_grammar_is_gits_and_no
              its base. Mixing the two would turn the invariance arm permanently red in a file \
              `19-21` may not edit."
         );
-        let spliced = callee_case("git status", unknown, CalleeSplice::ImmediatelyAfterTheProgram);
+        let spliced = callee_case(
+            "git status",
+            unknown,
+            CalleeSplice::ImmediatelyAfterTheProgram,
+        );
         assert!(
             draws_a_leading_option_the_installed_git_rejects(&spliced),
             "`{unknown}` must draw the UNKNOWN class when spliced (`{spliced}`), or the \
@@ -5465,8 +5511,10 @@ fn the_generated_corpus_really_produces_each_callee_grammar_class_in_quantity() 
         refused.iter().chain(permitted.iter()).collect();
     assert_eq!(all.len(), CALLEE_GRAMMAR_CASES);
 
-    let slots: BTreeSet<(&str, CalleeSplice)> =
-        all.iter().map(|(base, splice, _, _)| (*base, *splice)).collect();
+    let slots: BTreeSet<(&str, CalleeSplice)> = all
+        .iter()
+        .map(|(base, splice, _, _)| (*base, *splice))
+        .collect();
     assert_eq!(
         slots.len(),
         CALLEE_GRAMMAR_SLOTS,
@@ -5602,8 +5650,7 @@ fn a_leading_option_whose_grammar_the_guard_does_not_know_is_not_a_verb() {
         let got = verdict(envelope.path(), &command);
         let expected = base_verdicts.get(base).expect("the base was measured");
         assert_eq!(
-            got,
-            *expected,
+            got, *expected,
             "\n\nA KNOWN LEADING GIT OPTION CHANGED A PERMITTED VERDICT.\n\
              \n  command : {command:?}\
              \n  base    : {base}\
@@ -5619,8 +5666,7 @@ fn a_leading_option_whose_grammar_the_guard_does_not_know_is_not_a_verb() {
              switched off (AR-19-11). It is NOT a reason to narrow this alphabet, and it is \
              NOT a reason to move an entry into `GIT_GLOBAL_UNKNOWN_OPTIONS` — that alphabet \
              is for options the installed git REJECTS, and its membership is a measurement.",
-            got.code,
-            got.reason_id,
+            got.code, got.reason_id,
         );
         permitted_cases += 1;
     }
@@ -5645,8 +5691,7 @@ fn a_leading_option_whose_grammar_the_guard_does_not_know_is_not_a_verb() {
         let got = verdict(envelope.path(), &command);
 
         assert_eq!(
-            got.code,
-            2,
+            got.code, 2,
             "\n\nA LEADING GIT OPTION CONSUMED THE VERB AND THE COMMAND WAS PERMITTED.\n\
              \n  command : {command:?}\
              \n  base    : {base}\
@@ -5671,8 +5716,7 @@ fn a_leading_option_whose_grammar_the_guard_does_not_know_is_not_a_verb() {
              widening of the rule into non-`-`-prefixed words — `git - push --force origin \
              main` is pinned PERMITTED. And it is NOT a narrowing of `GIT_GLOBAL_OPTIONS`, \
              `GIT_GLOBAL_UNKNOWN_OPTIONS` or the five `CALLEE_GRAMMAR_CLASSES`.",
-            got.code,
-            got.reason_id,
+            got.code, got.reason_id,
         );
 
         let written = ledger_lines_under(envelope.path());
@@ -5745,8 +5789,7 @@ fn an_option_the_installed_git_rejects_fails_closed_on_every_base() {
             let envelope = TempDir::new().expect("a temporary envelope root");
             let got = verdict(envelope.path(), &command);
             assert_eq!(
-                got.code,
-                2,
+                got.code, 2,
                 "\n\nAN OPTION THE INSTALLED GIT DOES NOT ACCEPT WAS PERMITTED.\n\
                  \n  command : {command:?}\
                  \n  base    : {base}\
@@ -5766,8 +5809,7 @@ fn an_option_the_installed_git_rejects_fails_closed_on_every_base() {
                  `GIT_GLOBAL_OPTIONS`.** That alphabet's membership is a MEASUREMENT — a \
                  two-sided probe of the real git binary — and an entry there is asserted \
                  verdict-preserving.",
-                got.code,
-                got.reason_id,
+                got.code, got.reason_id,
             );
 
             let written = ledger_lines_under(envelope.path());
@@ -5887,9 +5929,7 @@ fn config_prefix_split(command: &str) -> (Vec<String>, usize, Vec<&str>) {
             break;
         };
         let plausible = !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && name
                 .chars()
                 .next()
@@ -5958,7 +5998,9 @@ fn config_assignments(command: &str) -> Vec<ConfigAssignment> {
 /// `git -c a=b version` RUNS at rc 0. That measurement is asserted in
 /// `tests/envelope_config_resolution.rs`.
 fn config_section(key: &str) -> &str {
-    key.split_once('.').map(|(section, _)| section).unwrap_or("")
+    key.split_once('.')
+        .map(|(section, _)| section)
+        .unwrap_or("")
 }
 
 /// The VARIABLE half — the text after the LAST `.`.
@@ -6393,10 +6435,16 @@ fn the_corpus_can_draw_every_one_of_the_five_config_resolution_classes() {
         // would be a second name for one of them and its floor would be satisfiable
         // without a single re-parsed value being drawn.
         for (class, predicate) in [
-            ("class 1 (indirection)", draws_a_config_indirection_carrier as fn(&str) -> bool),
+            (
+                "class 1 (indirection)",
+                draws_a_config_indirection_carrier as fn(&str) -> bool,
+            ),
             ("class 3 (environment)", draws_an_environment_config_carrier),
             ("class 4 (case-varied)", draws_a_case_varied_indirection),
-            ("class 5 (option-carrier)", draws_an_option_carrier_indirection),
+            (
+                "class 5 (option-carrier)",
+                draws_an_option_carrier_indirection,
+            ),
         ] {
             assert!(
                 !predicate(delivery),
@@ -6842,7 +6890,10 @@ const CONFIG_RESOLUTION_CLASS_COUNTS: &[(&str, usize)] = &[
     ("an environment carrier of configuration", 21),
     ("a case-varied spelling of an indirection", 28),
     ("an option-carrier delivery of an indirection", 28),
-    ("a carrier delivered inside a config value the guard confines", 75),
+    (
+        "a carrier delivered inside a config value the guard confines",
+        75,
+    ),
 ];
 
 #[test]
@@ -6973,8 +7024,9 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
         }
     }
     for entry in CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS {
-        let (_, value) = persisted_config_write(entry)
-            .unwrap_or_else(|| panic!("`{entry}` must parse as a `git config <key> <value>` write"));
+        let (_, value) = persisted_config_write(entry).unwrap_or_else(|| {
+            panic!("`{entry}` must parse as a `git config <key> <value>` write")
+        });
         assert!(
             !config_value_is_a_shell_alias_body(&value),
             "a `!`-bodied alias is in `CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS`: `{entry}`. \
@@ -7136,8 +7188,7 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
     }
     for entry in CONFIG_REPARSED_VALUE_CARRIERS {
         assert!(
-            !CONFIG_INDIRECTION_CARRIERS.contains(entry)
-                && !CONFIG_ENV_CARRIERS.contains(entry),
+            !CONFIG_INDIRECTION_CARRIERS.contains(entry) && !CONFIG_ENV_CARRIERS.contains(entry),
             "`{entry}` appears in `CONFIG_REPARSED_VALUE_CARRIERS` AND in another fail-closed \
              alphabet. The counting floors would double-count it, and the three alphabets model \
              three different REGIONS."
@@ -7385,16 +7436,14 @@ fn a_carrier_inside_a_confined_config_value_fails_closed_in_both_deliveries() {
             let envelope = TempDir::new().expect("a temporary envelope root");
             let got = verdict(envelope.path(), &command);
             assert_eq!(
-                got.code,
-                2,
+                got.code, 2,
                 "{failure}\
                  \n\n  command : {command:?}\
                  \n  base    : {base}\
                  \n  splice  : {splice:?} / {label}\
                  \n  got     : exit {} reason {}\
                  \n  seed    : {SEED:#x}",
-                got.code,
-                got.reason_id,
+                got.code, got.reason_id,
             );
             let written = ledger_lines_under(envelope.path());
             assert!(
@@ -7424,8 +7473,7 @@ fn a_carrier_inside_a_confined_config_value_fails_closed_in_both_deliveries() {
         let envelope = TempDir::new().expect("a temporary envelope root");
         let got = verdict(envelope.path(), command);
         assert_eq!(
-            got.code,
-            2,
+            got.code, 2,
             "{failure}\
              \n\n  command : {command:?}\
              \n  region  : the PERSISTED `git config <key> <value>` write site\
@@ -7437,8 +7485,7 @@ fn a_carrier_inside_a_confined_config_value_fails_closed_in_both_deliveries() {
              family at this write site would be INERT and must NOT be added. **An alias is \
              different in kind: it does not have to WIN a precedence contest, it only has to \
              EXIST**, and both persistence levels were measured live at `/INCLUDE_WINS`.",
-            got.code,
-            got.reason_id,
+            got.code, got.reason_id,
         );
         let written = ledger_lines_under(envelope.path());
         assert!(
@@ -7540,8 +7587,7 @@ fn a_confined_config_assignment_never_changes_a_verdict() {
             let got = verdict(envelope.path(), &command);
             let expected = base_verdicts.get(base).expect("the base was measured");
             assert_eq!(
-                got,
-                *expected,
+                got, *expected,
                 "\n\nA CONFINED CONFIG ASSIGNMENT CHANGED A VERDICT.\n\
                  \n  command : {command:?}\
                  \n  base    : {base}\
@@ -7564,8 +7610,7 @@ fn a_confined_config_assignment_never_changes_a_verdict() {
                  \n**If the red entry is `-c notinclude.path=…` or `-c includepath=…`, the \
                  rule became a substring match on `include`** rather than a comparison of the \
                  SECTION. Those two are this round's `--signed no`.",
-                got.code,
-                got.reason_id,
+                got.code, got.reason_id,
             );
             cases += 1;
         }
@@ -7626,8 +7671,7 @@ fn a_config_indirection_the_guard_cannot_bound_fails_closed_on_every_base() {
             let got = verdict(envelope.path(), &command);
 
             assert_eq!(
-                got.code,
-                2,
+                got.code, 2,
                 "\n\nA CONFIG INDIRECTION DISARMED THE HOOK AND THE COMMAND WAS PERMITTED.\n\
                  \n  command : {command:?}\
                  \n  base    : {base}\
@@ -7661,8 +7705,7 @@ fn a_config_indirection_the_guard_cannot_bound_fails_closed_on_every_base() {
                  refusal of a key that cannot be decomposed into a section — `-c a=b` is \
                  `CALLEE_KNOWN_LEADING_PREFIX` and round 7's entire property is spliced \
                  behind it.",
-                got.code,
-                got.reason_id,
+                got.code, got.reason_id,
             );
 
             let written = ledger_lines_under(envelope.path());
@@ -7720,8 +7763,7 @@ fn an_environment_carrier_of_configuration_fails_closed_on_every_base() {
             let envelope = TempDir::new().expect("a temporary envelope root");
             let got = verdict(envelope.path(), &command);
             assert_eq!(
-                got.code,
-                2,
+                got.code, 2,
                 "\n\nAN ENVIRONMENT CARRIER OF CONFIGURATION WAS PERMITTED.\n\
                  \n  command : {command:?}\
                  \n  base    : {base}\
@@ -7743,8 +7785,7 @@ fn an_environment_carrier_of_configuration_fails_closed_on_every_base() {
                  `GIT_CONFIG_PARAMETERS` to `ENVELOPE_ENV_KEYS` — one entry, whose disclosed \
                  bare-word cost (`echo GIT_CONFIG_PARAMETERS`) is pinned in \
                  `tests/envelope_config_resolution.rs` beside its measured twin.",
-                got.code,
-                got.reason_id,
+                got.code, got.reason_id,
             );
 
             let written = ledger_lines_under(envelope.path());
@@ -8377,10 +8418,10 @@ fn draws_the_guards_own_binary(command: &str) -> bool {
     // it, so the three lines below stay BYTE-IDENTICAL** — `19-32` may add lines
     // under `tests/` and may delete none, and re-indenting an existing line is a
     // deletion.
-    !draws_a_non_pathname_target_carrier(command) &&
-    carrier_words(command)
-        .iter()
-        .any(|word| word.text == REPRESENTATIVE_BINARY_PATH)
+    !draws_a_non_pathname_target_carrier(command)
+        && carrier_words(command)
+            .iter()
+            .any(|word| word.text == REPRESENTATIVE_BINARY_PATH)
 }
 
 /// Whether a word carries a carrier path as a `/`-ANCHORED SUBSTRING at a
@@ -8606,16 +8647,16 @@ const CONTROL_CARRIER_CLASSES: &[ControlCarrierClass] = &[
         "an expansion-borne carrier operand",
         draws_an_expansion_borne_carrier,
     ),
-    (
-        "a symlinked carrier operand",
-        draws_a_symlinked_carrier,
-    ),
+    ("a symlinked carrier operand", draws_a_symlinked_carrier),
     ("a relative carrier operand", draws_a_relative_carrier),
     ("a repo-side control carrier", draws_a_repo_side_carrier),
     ("an ordinary path operand", draws_an_ordinary_operand),
     ("a tilde-borne carrier word", draws_a_tilde_borne_carrier),
     ("a glob-borne carrier word", draws_a_glob_borne_carrier),
-    ("a brace-list-borne carrier word", draws_a_brace_borne_carrier),
+    (
+        "a brace-list-borne carrier word",
+        draws_a_brace_borne_carrier,
+    ),
     ("the guard's own binary", draws_the_guards_own_binary),
     (
         "a carrier path INSIDE a literal word, at a non-zero index",
@@ -9076,8 +9117,7 @@ const CONTROL_CARRIER_SYMLINKED: &[&str] = &[
 /// is `cd <ENV>/alpha`, which lives in [`ENVELOPE_ROOT_OPERAND_CARRIERS`]; the
 /// two-segment composite `cd <ENV>/alpha && rm -f pr-ledger.ndjson` is refused by
 /// SEGMENT 1, and segment 2 stays unresolvable.
-const CONTROL_CARRIER_RELATIVE: &[&str] =
-    &["rm -f pr-ledger.ndjson", "cp /bin/true pre-push"];
+const CONTROL_CARRIER_RELATIVE: &[&str] = &["rm -f pr-ledger.ndjson", "cp /bin/true pre-push"];
 
 /// **THE REPO-SIDE ALPHABET — control (e), NO RULE AT ALL.**
 ///
@@ -9206,15 +9246,30 @@ const CONTROL_CARRIER_GOVERNED_TWIN: &str = "git config --get core.hooksPath";
 /// **TWELVE after round 11, THIRTEEN after round 12**, and the SLOT count below
 /// counts these.
 const CONTROL_CARRIER_ALPHABETS: &[(&str, &[&str])] = &[
-    ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
-    ("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS),
-    ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
+    (
+        "CONTROL_CARRIER_INTERIOR_PATH",
+        CONTROL_CARRIER_INTERIOR_PATH,
+    ),
+    (
+        "ENVELOPE_ROOT_OPERAND_CARRIERS",
+        ENVELOPE_ROOT_OPERAND_CARRIERS,
+    ),
+    (
+        "CONTROL_CARRIER_REDIRECTION_TARGETS",
+        CONTROL_CARRIER_REDIRECTION_TARGETS,
+    ),
     ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
-    ("CONTROL_CARRIER_EXPANSION_BORNE", CONTROL_CARRIER_EXPANSION_BORNE),
+    (
+        "CONTROL_CARRIER_EXPANSION_BORNE",
+        CONTROL_CARRIER_EXPANSION_BORNE,
+    ),
     ("CONTROL_CARRIER_SYMLINKED", CONTROL_CARRIER_SYMLINKED),
     ("CONTROL_CARRIER_RELATIVE", CONTROL_CARRIER_RELATIVE),
     ("CONTROL_CARRIER_REPO_SIDE", CONTROL_CARRIER_REPO_SIDE),
-    ("CONTROL_CARRIER_ORDINARY_OPERANDS", CONTROL_CARRIER_ORDINARY_OPERANDS),
+    (
+        "CONTROL_CARRIER_ORDINARY_OPERANDS",
+        CONTROL_CARRIER_ORDINARY_OPERANDS,
+    ),
     (
         "CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING",
         CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
@@ -9238,10 +9293,19 @@ const CONTROL_CARRIER_ALPHABETS: &[(&str, &[&str])] = &[
 /// `CONTROL_CARRIER_BINARY` is new; `ENVELOPE_ROOT_OPERAND_CARRIERS` was already
 /// fail-closed and is unchanged.
 const CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS: &[(&str, &[&str])] = &[
-    ("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS),
-    ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
+    (
+        "ENVELOPE_ROOT_OPERAND_CARRIERS",
+        ENVELOPE_ROOT_OPERAND_CARRIERS,
+    ),
+    (
+        "CONTROL_CARRIER_REDIRECTION_TARGETS",
+        CONTROL_CARRIER_REDIRECTION_TARGETS,
+    ),
     ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
-    ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
+    (
+        "CONTROL_CARRIER_INTERIOR_PATH",
+        CONTROL_CARRIER_INTERIOR_PATH,
+    ),
     // **ROUND 13's TWO. Both are RED today and green only after `19-33`.**
     (
         "CONTROL_CARRIER_NON_PATHNAME_TARGET",
@@ -9266,10 +9330,16 @@ const CONTROL_CARRIER_INVARIANCE_ALPHABETS: &[(&str, &[&str])] = &[
     ("CONTROL_CARRIER_TILDE_BORNE", CONTROL_CARRIER_TILDE_BORNE),
     ("CONTROL_CARRIER_GLOB_BORNE", CONTROL_CARRIER_GLOB_BORNE),
     ("CONTROL_CARRIER_BRACE_BORNE", CONTROL_CARRIER_BRACE_BORNE),
-    ("CONTROL_CARRIER_EXPANSION_BORNE", CONTROL_CARRIER_EXPANSION_BORNE),
+    (
+        "CONTROL_CARRIER_EXPANSION_BORNE",
+        CONTROL_CARRIER_EXPANSION_BORNE,
+    ),
     ("CONTROL_CARRIER_SYMLINKED", CONTROL_CARRIER_SYMLINKED),
     ("CONTROL_CARRIER_RELATIVE", CONTROL_CARRIER_RELATIVE),
-    ("CONTROL_CARRIER_ORDINARY_OPERANDS", CONTROL_CARRIER_ORDINARY_OPERANDS),
+    (
+        "CONTROL_CARRIER_ORDINARY_OPERANDS",
+        CONTROL_CARRIER_ORDINARY_OPERANDS,
+    ),
 ];
 
 /// Substitute the representative roots into an alphabet entry, for the CLASS
@@ -9571,8 +9641,14 @@ const CONTROL_CARRIER_CLASS_COUNTS: &[(&str, usize)] = &[
         "a carrier path INSIDE a literal word, at a non-zero index",
         13,
     ),
-    ("a carrier path after a NON-PATHNAME redirection operator", 7),
-    ("an ANCESTOR of the envelope directory, at or under the root", 7),
+    (
+        "a carrier path after a NON-PATHNAME redirection operator",
+        7,
+    ),
+    (
+        "an ANCESTOR of the envelope directory, at or under the root",
+        7,
+    ),
 ];
 
 #[test]
@@ -9685,8 +9761,7 @@ fn the_control_carrier_axis_is_new_because_no_existing_axis_reaches_a_command_wi
             assert!(
                 matches!(
                     resolution,
-                    policy::ProgramResolution::NoProgram
-                        | policy::ProgramResolution::Ungoverned
+                    policy::ProgramResolution::NoProgram | policy::ProgramResolution::Ungoverned
                 ),
                 "\n\n**A CONTROL-CARRIER ENTRY'S CARRIER-BEARING SEGMENT REACHES A GOVERNED \
                  PROGRAM.**\n\
@@ -9727,8 +9802,7 @@ fn the_control_carrier_axis_is_new_because_no_existing_axis_reaches_a_command_wi
                 policy::ProgramResolution::Governed { .. }
             )) || segments.iter().any(|segment| !matches!(
                 policy::resolve_program_with_head(segment),
-                policy::ProgramResolution::NoProgram
-                    | policy::ProgramResolution::Ungoverned
+                policy::ProgramResolution::NoProgram | policy::ProgramResolution::Ungoverned
             )),
             "`{command}` is a representative of one of the four EXISTING axes and must reach a \
              governed program (or be refused before resolution). If it reaches none, the \
@@ -9851,7 +9925,11 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_the_file_a_control_liv
             CONTROL_CARRIER_ORDINARY_OPERANDS,
             MIN_CONTROL_CARRIER_ORDINARY_OPERANDS,
         ),
-        ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY, MIN_CONTROL_CARRIER_BINARY),
+        (
+            "CONTROL_CARRIER_BINARY",
+            CONTROL_CARRIER_BINARY,
+            MIN_CONTROL_CARRIER_BINARY,
+        ),
         (
             "CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING",
             CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
@@ -10020,13 +10098,14 @@ fn the_control_carrier_alphabets_are_pairwise_disjoint_and_the_fail_closed_one_i
     //    consecutive instance of `T-19-76`'s failure mode, produced by the corpus
     //    rather than found by the next audit.
     for (_, entries) in CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS {
-      for entry in *entries {
-        let twin = control_carrier_command(&control_carrier_ordinary_twin(entry), Path::new("/tmp"));
-        let envelope = TempDir::new().expect("a temporary envelope root");
-        let got = verdict(envelope.path(), &twin);
-        assert_eq!(
-            got.code, 0,
-            "\n\n**THE ORDINARY TWIN OF A FAIL-CLOSED ENTRY MUST BE PERMITTED.**\n\
+        for entry in *entries {
+            let twin =
+                control_carrier_command(&control_carrier_ordinary_twin(entry), Path::new("/tmp"));
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let got = verdict(envelope.path(), &twin);
+            assert_eq!(
+                got.code, 0,
+                "\n\n**THE ORDINARY TWIN OF A FAIL-CLOSED ENTRY MUST BE PERMITTED.**\n\
              \n  entry : {entry}\
              \n  twin  : {twin}\
              \n  got   : exit {} reason {}\n\n\
@@ -10034,9 +10113,9 @@ fn the_control_carrier_alphabets_are_pairwise_disjoint_and_the_fail_closed_one_i
              that a command layer 2 LETS THROUGH removes a control. If the twin were already \
              refused, this axis's fail-closed property would be green before the fix and would \
              certify nothing.",
-            got.code, got.reason_id,
-        );
-      }
+                got.code, got.reason_id,
+            );
+        }
     }
 }
 
@@ -10106,7 +10185,10 @@ fn the_carrier_rule_may_not_be_a_denylist_of_program_names() {
         // `dd`, `tar`, `cp`, `chmod`, `rsync` and `mytool` are all absent from
         // both production halves, and the fence counts that rather than
         // trusting this comment.
-        ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
+        (
+            "CONTROL_CARRIER_INTERIOR_PATH",
+            CONTROL_CARRIER_INTERIOR_PATH,
+        ),
         // **EXTENDED BY ROUND 13 TO BOTH NEW CLASSES.** `19-33` widens the WORD
         // SET and the PATH SET, and neither widening may teach the guard a
         // program name. `xargs` is absent from both production halves (measured
@@ -10212,7 +10294,10 @@ fn the_carrier_rule_must_resolve_a_path_prefix_and_not_a_basename() {
     //    VECTORS is what makes that structural rather than lucky.
     for (word, why) in [
         ("s/x/y/", "a `sed` substitution: `[x, y]`, `[y]`, `[]`"),
-        ("src/", "a trailing slash: the single candidate `/` is the EMPTY list"),
+        (
+            "src/",
+            "a trailing slash: the single candidate `/` is the EMPTY list",
+        ),
         (
             "https://github.com/o/r",
             "a URL: `[github.com, o, r]`, `[o, r]`, `[r]` — wrong FIRST component",
@@ -10222,7 +10307,10 @@ fn the_carrier_rule_must_resolve_a_path_prefix_and_not_a_basename() {
             "a `:`-attached ref carrying the word `alpha`, which fails on its FIRST component \
              rather than on its length",
         ),
-        ("--git-dir=/tmp/g", "an `=`-attached absolute path OUTSIDE the set"),
+        (
+            "--git-dir=/tmp/g",
+            "an `=`-attached absolute path OUTSIDE the set",
+        ),
         ("--format=%H", "a `%`-formatted value with no `/` at all"),
     ] {
         assert!(
@@ -10337,7 +10425,11 @@ fn no_control_carrier_floor_or_class_count_fell_when_round_13_re_derived_them() 
     for (name, round_12, now) in [
         ("CONTROL_CARRIER_CASES", 84usize, CONTROL_CARRIER_CASES),
         ("CONTROL_CARRIER_SLOTS", 13, CONTROL_CARRIER_SLOTS),
-        ("MIN_CONTROL_CARRIER_CLASSES", 12, MIN_CONTROL_CARRIER_CLASSES),
+        (
+            "MIN_CONTROL_CARRIER_CLASSES",
+            12,
+            MIN_CONTROL_CARRIER_CLASSES,
+        ),
         (
             "MIN_CONTROL_CARRIER_INTERIOR_PATH",
             12,
@@ -10359,9 +10451,21 @@ fn no_control_carrier_floor_or_class_count_fell_when_round_13_re_derived_them() 
             2,
             MIN_CONTROL_CARRIER_EXPANSION_BORNE,
         ),
-        ("MIN_CONTROL_CARRIER_SYMLINKED", 2, MIN_CONTROL_CARRIER_SYMLINKED),
-        ("MIN_CONTROL_CARRIER_RELATIVE", 2, MIN_CONTROL_CARRIER_RELATIVE),
-        ("MIN_CONTROL_CARRIER_REPO_SIDE", 6, MIN_CONTROL_CARRIER_REPO_SIDE),
+        (
+            "MIN_CONTROL_CARRIER_SYMLINKED",
+            2,
+            MIN_CONTROL_CARRIER_SYMLINKED,
+        ),
+        (
+            "MIN_CONTROL_CARRIER_RELATIVE",
+            2,
+            MIN_CONTROL_CARRIER_RELATIVE,
+        ),
+        (
+            "MIN_CONTROL_CARRIER_REPO_SIDE",
+            6,
+            MIN_CONTROL_CARRIER_REPO_SIDE,
+        ),
         (
             "MIN_CONTROL_CARRIER_ORDINARY_OPERANDS",
             24,
@@ -10372,10 +10476,26 @@ fn no_control_carrier_floor_or_class_count_fell_when_round_13_re_derived_them() 
             4,
             MIN_CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
         ),
-        ("MIN_CONTROL_CARRIER_TILDE_BORNE", 4, MIN_CONTROL_CARRIER_TILDE_BORNE),
-        ("MIN_CONTROL_CARRIER_GLOB_BORNE", 4, MIN_CONTROL_CARRIER_GLOB_BORNE),
-        ("MIN_CONTROL_CARRIER_BRACE_BORNE", 4, MIN_CONTROL_CARRIER_BRACE_BORNE),
-        ("MIN_CONFIG_RESOLUTION_CLASSES", 6, MIN_CONFIG_RESOLUTION_CLASSES),
+        (
+            "MIN_CONTROL_CARRIER_TILDE_BORNE",
+            4,
+            MIN_CONTROL_CARRIER_TILDE_BORNE,
+        ),
+        (
+            "MIN_CONTROL_CARRIER_GLOB_BORNE",
+            4,
+            MIN_CONTROL_CARRIER_GLOB_BORNE,
+        ),
+        (
+            "MIN_CONTROL_CARRIER_BRACE_BORNE",
+            4,
+            MIN_CONTROL_CARRIER_BRACE_BORNE,
+        ),
+        (
+            "MIN_CONFIG_RESOLUTION_CLASSES",
+            6,
+            MIN_CONFIG_RESOLUTION_CLASSES,
+        ),
     ] {
         assert!(
             now >= round_12,
@@ -10676,7 +10796,9 @@ fn the_control_carrier_axis_draws_the_ancestor_and_pins_the_stop_from_the_other_
          the envelope directory. **That is what makes the pair discriminating.**"
     );
     assert!(
-        !draws_an_ancestor_of_the_envelope_directory(&control_carrier_representative("ls <ENVPAR>")),
+        !draws_an_ancestor_of_the_envelope_directory(&control_carrier_representative(
+            "ls <ENVPAR>"
+        )),
         "and `ls <ENVPAR>` must not draw it either: the root's own PARENT is ABOVE the stop."
     );
     println!(
@@ -10728,7 +10850,11 @@ fn the_control_carrier_axis_can_draw_a_tilde_a_glob_and_a_brace_list_inside_a_ca
             }
         }
     }
-    for (what, count) in [("a TILDE", tilde), ("a GLOB", glob), ("a BRACE LIST", brace)] {
+    for (what, count) in [
+        ("a TILDE", tilde),
+        ("a GLOB", glob),
+        ("a BRACE LIST", brace),
+    ] {
         assert!(
             count > 0,
             "\n\n**THE AXIS MUST BE ABLE TO DRAW {what} INSIDE A CARRIER PATH, AND IT DRAWS \
@@ -10785,15 +10911,13 @@ fn the_control_carrier_axis_can_draw_a_carrier_path_inside_a_word_and_not_only_a
                 // anything other than `=`, this entry is one an `=`-keyed rule
                 // would miss.
                 let attached_by_something_else =
-                    word.text
-                        .char_indices()
-                        .any(|(index, character)| {
-                            index > 0
-                                && character == '/'
-                                && (word.text[index..].starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
-                                    || &word.text[index..] == REPRESENTATIVE_BINARY_PATH)
-                                && !word.text[..index].ends_with('=')
-                        });
+                    word.text.char_indices().any(|(index, character)| {
+                        index > 0
+                            && character == '/'
+                            && (word.text[index..].starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+                                || &word.text[index..] == REPRESENTATIVE_BINARY_PATH)
+                            && !word.text[..index].ends_with('=')
+                    });
                 if attached_by_something_else {
                     non_equals_attached.push(word.text.clone());
                 }
@@ -10855,15 +10979,17 @@ fn a_command_whose_operand_resolves_under_the_envelope_root_is_refused_after_19_
     // `classify_segments` (`hooks.rs:954-961`) already carries `root` and
     // `alias`, so no new input is introduced.
     let mut cases = 0usize;
-    for (alphabet, entries) in [("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS)] {
-      for entry in entries {
-        let envelope = TempDir::new().expect("a temporary envelope root");
-        let command = control_carrier_command(entry, envelope.path());
-        let got = verdict(envelope.path(), &command);
-        assert_eq!(
-            got.code,
-            2,
-            "\n\nA COMMAND THAT NAMES ONE OF THIS ENVELOPE'S OWN CONTROL CARRIERS WAS \
+    for (alphabet, entries) in [(
+        "ENVELOPE_ROOT_OPERAND_CARRIERS",
+        ENVELOPE_ROOT_OPERAND_CARRIERS,
+    )] {
+        for entry in entries {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let command = control_carrier_command(entry, envelope.path());
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code, 2,
+                "\n\nA COMMAND THAT NAMES ONE OF THIS ENVELOPE'S OWN CONTROL CARRIERS WAS \
              PERMITTED.\n\
              \n  alphabet: {alphabet}\
              \n  entry   : {entry}\
@@ -10890,28 +11016,27 @@ fn a_command_whose_operand_resolves_under_the_envelope_root_is_refused_after_19_
              the binary every hook stub and the guard registration exec, which takes LAYER 2 \
              AND LAYER 3 in one permitted call and which `19-29`'s widened PATH SET reaches as \
              an EXACT PATH.",
-            got.code,
-            got.reason_id,
-        );
-        assert_eq!(
-            got.reason_id,
-            policy::REASON_ENVELOPE_ASSERTION_FAILED,
-            "`{command}` must be refused UNDER `{}`, the GENERAL unresolvable identifier, and \
+                got.code, got.reason_id,
+            );
+            assert_eq!(
+                got.reason_id,
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                "`{command}` must be refused UNDER `{}`, the GENERAL unresolvable identifier, and \
              not under one a classifier would have earned — the clause fires before any \
              classifier has looked at the command. Got: {}",
-            policy::REASON_ENVELOPE_ASSERTION_FAILED,
-            got.reason_id,
-        );
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                got.reason_id,
+            );
 
-        let written = ledger_lines_under(envelope.path());
-        assert!(
-            written.is_empty(),
-            "`{command}` was refused, but a pull-request ledger line was written somewhere \
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command}` was refused, but a pull-request ledger line was written somewhere \
              under the envelope root. Found: {written:?} Files: {:?}",
-            files_under(envelope.path())
-        );
-        cases += 1;
-      }
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
     }
     assert_eq!(
         cases,
@@ -10929,7 +11054,10 @@ fn a_command_whose_operand_resolves_under_the_envelope_root_is_refused_after_19_
 /// indistinguishable from round 11's unlanded one, and a later reader could not
 /// tell which half a red belonged to.
 const CONTROL_CARRIER_FAIL_CLOSED_AFTER_19_29: &[(&str, &[&str])] = &[
-    ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
+    (
+        "CONTROL_CARRIER_REDIRECTION_TARGETS",
+        CONTROL_CARRIER_REDIRECTION_TARGETS,
+    ),
     ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
 ];
 
@@ -11040,7 +11168,10 @@ fn a_command_carrying_a_carrier_path_inside_a_word_is_refused_after_19_31() {
     // permitted-base fence above), so this arm is not merely drawing commands
     // that were already refused.
     let mut cases = 0usize;
-    for (alphabet, entries) in [("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH)] {
+    for (alphabet, entries) in [(
+        "CONTROL_CARRIER_INTERIOR_PATH",
+        CONTROL_CARRIER_INTERIOR_PATH,
+    )] {
         for entry in entries {
             let envelope = TempDir::new().expect("a temporary envelope root");
             let command = control_carrier_command(entry, envelope.path());
@@ -11282,8 +11413,7 @@ fn the_verdict_preserving_control_carrier_alphabets_stay_permitted_before_and_af
             let command = control_carrier_command(entry, envelope.path());
             let got = verdict(envelope.path(), &command);
             assert_eq!(
-                got.code,
-                0,
+                got.code, 0,
                 "\n\nA VERDICT-PRESERVING CONTROL-CARRIER ENTRY WAS REFUSED.\n\
                  \n  alphabet : {name}\
                  \n  entry    : {entry}\
@@ -11299,8 +11429,7 @@ fn the_verdict_preserving_control_carrier_alphabets_stay_permitted_before_and_af
                  in files `19-27` may not edit: `git x2>/tmp/o push --force origin main` is \
                  pinned PERMITTED by round 6's over-deletion control, and \
                  `policy::is_separator(\">\")` is pinned `false`.",
-                got.code,
-                got.reason_id,
+                got.code, got.reason_id,
             );
             cases += 1;
         }

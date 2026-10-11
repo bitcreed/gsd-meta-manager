@@ -618,7 +618,9 @@ mod tests {
                 ..report()
             },
             scope: PreviewScope::WouldPark {
-                reason: super::super::router::RouterReason::NoRule.as_str().to_string(),
+                reason: super::super::router::RouterReason::NoRule
+                    .as_str()
+                    .to_string(),
                 detail: "Complete".to_string(),
             },
         };

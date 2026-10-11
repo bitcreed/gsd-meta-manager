@@ -148,10 +148,7 @@ impl DiskDelta {
 /// last envelope understates every steered run (D-29). An envelope that omits
 /// the field contributes nothing rather than a guessed `1`.
 pub fn run_turn_count(turns: &[TurnOutcome]) -> u64 {
-    turns
-        .iter()
-        .map(|turn| turn.num_turns.unwrap_or(0))
-        .sum()
+    turns.iter().map(|turn| turn.num_turns.unwrap_or(0)).sum()
 }
 
 /// The run-level cumulative cost: the **last** envelope's value.
@@ -758,10 +755,8 @@ mod tests {
 
     #[test]
     fn changing_one_artifact_file_between_captures_fires_the_artifact_signal() {
-        let tmp = std::env::temp_dir().join(format!(
-            "gsd_outcome_test_artifacts_{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_outcome_test_artifacts_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let planning = tmp.join(".planning");
         std::fs::create_dir_all(&planning).expect("create .planning");
@@ -794,8 +789,10 @@ mod tests {
 
     #[test]
     fn capture_fills_the_git_half_in_a_real_repository() {
-        let tmp = std::env::temp_dir()
-            .join(format!("gsd_outcome_test_gitcapture_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "gsd_outcome_test_gitcapture_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create the scratch project");
 
@@ -908,7 +905,9 @@ mod tests {
     #[test]
     fn fixture_02_absent_result_field_never_aborts_the_derivation() {
         let envelope = envelopes(T02);
-        let envelope = envelope.first().expect("the budget transcript has a result");
+        let envelope = envelope
+            .first()
+            .expect("the budget transcript has a result");
         assert!(
             envelope.result.is_none(),
             "precondition: the budget envelope omits the prose field entirely (D-32)"
@@ -956,10 +955,8 @@ mod tests {
 
     #[test]
     fn a_max_turns_envelope_is_a_failure_classified_as_the_turn_ceiling() {
-        let raw = result_line(T01).replace(
-            r#""subtype":"success""#,
-            r#""subtype":"error_max_turns""#,
-        );
+        let raw =
+            result_line(T01).replace(r#""subtype":"success""#, r#""subtype":"error_max_turns""#);
         let (before, after) = no_delta();
         let outcome = derive_run_outcome_from_envelopes(
             &[envelope_from(&raw)],
@@ -1171,12 +1168,10 @@ mod tests {
     #[test]
     fn the_agents_prose_summary_changes_nothing_about_the_outcome() {
         let honest = envelope_from(result_line(T01));
-        let lying = envelope_from(
-            &result_line(T01).replace(
-                r#""result":"PONG""#,
-                r#""result":"I rewrote every file in the repository""#,
-            ),
-        );
+        let lying = envelope_from(&result_line(T01).replace(
+            r#""result":"PONG""#,
+            r#""result":"I rewrote every file in the repository""#,
+        ));
         assert_ne!(
             honest.result, lying.result,
             "precondition: the two envelopes differ only in their prose"

@@ -73,7 +73,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 /// This file's own text, for the completeness guard and the two negative greps.
 const OWN_SOURCE: &str = include_str!("driver_escalation_cap.rs");
 
@@ -151,10 +150,7 @@ fn no_rule_project() -> TempDir {
     // The target, archived. `infer_phase_status` returns for it early, without
     // reading a verification artifact, so the inference is `complete` with a
     // verification status of "nothing was read" — honest, and not goal-met.
-    let archived = planning
-        .join("milestones")
-        .join("v1.0")
-        .join("31-target");
+    let archived = planning.join("milestones").join("v1.0").join("31-target");
     std::fs::create_dir_all(&archived).expect("the archived phase dir");
     std::fs::write(archived.join("31-01-SUMMARY.md"), "# Summary\n").expect("write summary");
 
@@ -309,8 +305,14 @@ fn parked_events(root: &Path, run_id: &str) -> Vec<(String, String)> {
         .filter(|record| record.kind == "parked")
         .map(|record| {
             (
-                record.rest["reason"].as_str().unwrap_or_default().to_string(),
-                record.rest["needs"].as_str().unwrap_or_default().to_string(),
+                record.rest["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                record.rest["needs"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
             )
         })
         .collect()
@@ -515,10 +517,7 @@ async fn a_run_that_spends_its_budget_parks_and_says_so_rather_than_continuing()
          out not to end anything"
     );
 
-    let steps_taken = all
-        .iter()
-        .filter(|record| record.kind == "decided")
-        .count() as u32;
+    let steps_taken = all.iter().filter(|record| record.kind == "decided").count() as u32;
     assert_eq!(
         steps_taken, DRIVEN_BUDGET,
         "the run must take exactly one step per granted consultation"
@@ -582,9 +581,7 @@ fn parked_label_prefix(root: &Path, run_id: &str) -> String {
         .to_string();
     label
         .strip_suffix(&reason)
-        .unwrap_or_else(|| {
-            panic!("the label {label:?} does not end in its own reason {reason:?}")
-        })
+        .unwrap_or_else(|| panic!("the label {label:?} does not end in its own reason {reason:?}"))
         .to_string()
 }
 
@@ -634,7 +631,12 @@ async fn a_budget_one_below_the_resolved_step_cap_runs_and_parks_on_the_cap() {
     }
 
     drive(
-        routed_args_with_steps(RUN_ID, workdir.path(), Some(budget), UPPER_BOUNDARY_MAX_STEPS),
+        routed_args_with_steps(
+            RUN_ID,
+            workdir.path(),
+            Some(budget),
+            UPPER_BOUNDARY_MAX_STEPS,
+        ),
         &config_for(root.path()),
     )
     .await

@@ -47,7 +47,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
 /// The committed clean-success capture, used as the scaffolding every built
@@ -56,8 +55,7 @@ const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/f
 /// Every line except the rate-limit one is a real capture, so the capability
 /// gate, the framing and the outcome derivation are all exercised against the
 /// wire rather than against something written to satisfy them.
-const CLEAN_BASELINE: &str =
-    include_str!("fixtures/transcripts/01-success-textonly.ndjson");
+const CLEAN_BASELINE: &str = include_str!("fixtures/transcripts/01-success-textonly.ndjson");
 
 /// The committed **synthesised** rejection transcript.
 ///
@@ -107,7 +105,10 @@ fn is_rate_limit_line(line: &str) -> bool {
 /// which is what keeps the built transcript the same shape as a capture.
 fn baseline_with_quota_event(event: Option<&str>) -> String {
     let mut out = String::new();
-    for line in CLEAN_BASELINE.lines().filter(|line| !line.trim().is_empty()) {
+    for line in CLEAN_BASELINE
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
         if is_rate_limit_line(line) {
             match event {
                 Some(replacement) => {
@@ -172,10 +173,7 @@ fn baseline_failing_with(terminal_reason: &str) -> String {
                 .as_object_mut()
                 .expect("a result envelope is an object");
             object.insert("is_error".to_string(), Value::from(true));
-            object.insert(
-                "subtype".to_string(),
-                Value::from("error_during_execution"),
-            );
+            object.insert("subtype".to_string(), Value::from("error_during_execution"));
             object.insert(
                 "terminal_reason".to_string(),
                 Value::from(terminal_reason.to_string()),
@@ -358,8 +356,7 @@ fn signature_of(source: &str) -> Option<String> {
 
 #[test]
 fn the_one_outcome_entry_point_still_takes_exactly_the_full_result_envelopes() {
-    let source =
-        std::fs::read_to_string(OUTCOME_SOURCE).expect("the outcome module is readable");
+    let source = std::fs::read_to_string(OUTCOME_SOURCE).expect("the outcome module is readable");
     let observed = signature_of(&source).unwrap_or_else(|| {
         panic!("`{DECLARATION}` must exist in {OUTCOME_SOURCE}; the scan found nothing to check")
     });
@@ -444,7 +441,8 @@ async fn a_rejected_quota_event_parks_the_run_and_names_the_window() {
     let (parked, detail) = park_and_detail(&records);
 
     assert_eq!(
-        parked["reason"], rate_limit::REASON_QUOTA_REJECTED,
+        parked["reason"],
+        rate_limit::REASON_QUOTA_REJECTED,
         "the park must carry the quota taxonomy's own reason, not a bounds or \
          router one: `which detector fired` and `which quota window blocked me` \
          are different questions and a shared identifier makes both unanswerable"
@@ -613,7 +611,8 @@ async fn a_rejection_followed_by_an_allowed_event_still_parks_the_run() {
     let (parked, detail) = park_and_detail(&records);
 
     assert_eq!(
-        parked["reason"], rate_limit::REASON_QUOTA_REJECTED,
+        parked["reason"],
+        rate_limit::REASON_QUOTA_REJECTED,
         "a rejection is a fact about the whole iteration and a later event about \
          a DIFFERENT window does not undo it. Got: {records:#?}"
     );
@@ -720,7 +719,8 @@ async fn no_sleep_until_reset_is_inserted_between_the_park_and_the_terminal_reco
     // just as promptly and the timing assertion below passes while proving
     // nothing about the quota path.
     assert_eq!(
-        parked[0]["reason"], rate_limit::REASON_QUOTA_REJECTED,
+        parked[0]["reason"],
+        rate_limit::REASON_QUOTA_REJECTED,
         "the run must have ended on the QUOTA park for the interval below to be \
          the interval this test is about"
     );
@@ -805,7 +805,10 @@ fn the_synthesised_fixtures_quota_event_classifies_as_a_rejection() {
     let now = chrono::DateTime::from_timestamp(resets_at - 3_600, 0).expect("representable");
 
     match rate_limit::classify(Some(&payload), now) {
-        rate_limit::QuotaVerdict::Rejected { window, resets_at: at } => {
+        rate_limit::QuotaVerdict::Rejected {
+            window,
+            resets_at: at,
+        } => {
             assert_eq!(
                 window,
                 rate_limit::QuotaWindow::SevenDay,
@@ -944,9 +947,7 @@ async fn an_allowed_quota_event_parks_nothing_and_the_run_completes_normally() {
     args.command = Some(nonblank("/gsd-progress"));
     args.target_phase = None;
 
-    drive(args, &config)
-        .await
-        .expect("a healthy run completes");
+    drive(args, &config).await.expect("a healthy run completes");
 
     let records = journal_records(root.path(), RUN_ID);
     assert!(

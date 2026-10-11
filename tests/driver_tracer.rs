@@ -36,7 +36,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 /// The clean-success capture named in `tests/fixtures/transcripts/README.md`.
 const CLEAN_BASELINE: &str = concat!(

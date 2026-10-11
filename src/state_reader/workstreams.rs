@@ -115,7 +115,10 @@ mod tests {
     #[test]
     fn test_active_workstream_flag_set_from_pointer() {
         let td = make_planning(&[
-            ("workstreams/alpha/STATE.md", "---\nstatus: executing\n---\n"),
+            (
+                "workstreams/alpha/STATE.md",
+                "---\nstatus: executing\n---\n",
+            ),
             ("workstreams/beta/STATE.md", "---\nstatus: planning\n---\n"),
             ("active-workstream", "alpha\n"),
         ]);
@@ -128,7 +131,10 @@ mod tests {
     #[test]
     fn test_no_active_pointer_means_none_active() {
         let td = make_planning(&[
-            ("workstreams/alpha/STATE.md", "---\nstatus: executing\n---\n"),
+            (
+                "workstreams/alpha/STATE.md",
+                "---\nstatus: executing\n---\n",
+            ),
             ("workstreams/beta/STATE.md", "---\nstatus: planning\n---\n"),
         ]);
         let wss = load_workstreams(&td.path().join(".planning"));

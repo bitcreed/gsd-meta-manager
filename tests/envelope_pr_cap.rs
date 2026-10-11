@@ -140,13 +140,15 @@ fn seed(envelope_root: &Path, entries: &[(i64, &str)]) {
     for (secs_ago, run_id) in entries {
         let at = (chrono::Utc::now() - chrono::Duration::seconds(*secs_ago))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        body.push_str(&serde_json::to_string(&ledger::LedgerEntry {
-            at,
-            run_id: run_id.to_string(),
-            command: "gh pr create".to_string(),
-            platform: "github".to_string(),
-        })
-        .unwrap());
+        body.push_str(
+            &serde_json::to_string(&ledger::LedgerEntry {
+                at,
+                run_id: run_id.to_string(),
+                command: "gh pr create".to_string(),
+                platform: "github".to_string(),
+            })
+            .unwrap(),
+        );
         body.push('\n');
     }
     std::fs::write(&path, body).unwrap();
@@ -377,7 +379,8 @@ fn the_generated_settings_file_registers_the_guard_with_the_named_timeout_consta
     let command = &entry["hooks"][0];
     assert_eq!(command["type"], "command", "{value}");
     assert_eq!(
-        command["timeout"], hooks::GUARD_TIMEOUT_SECS,
+        command["timeout"],
+        hooks::GUARD_TIMEOUT_SECS,
         "the timeout must be the named constant, not a literal that drifted from it. \
          A PreToolUse hook with NO timeout is the exact configuration that produced \
          the reproduced 180-240 second hang at src/executor/mod.rs:225-239. {value}"

@@ -166,12 +166,28 @@ pub fn install_candidates(
     let mut out = Vec::with_capacity(5);
     if let Some(root) = project_root {
         use InstallRuntime::*;
-        out.push(candidate(root.to_path_buf(), ProjectRoot, InstallScope::ProjectLocal));
-        out.push(candidate(root.join(".claude"), Claude, InstallScope::ProjectLocal));
-        out.push(candidate(root.join(".codex"), Codex, InstallScope::ProjectLocal));
+        out.push(candidate(
+            root.to_path_buf(),
+            ProjectRoot,
+            InstallScope::ProjectLocal,
+        ));
+        out.push(candidate(
+            root.join(".claude"),
+            Claude,
+            InstallScope::ProjectLocal,
+        ));
+        out.push(candidate(
+            root.join(".codex"),
+            Codex,
+            InstallScope::ProjectLocal,
+        ));
     }
     if let Some(home) = roots.claude_home() {
-        out.push(candidate(home, InstallRuntime::Claude, InstallScope::Global));
+        out.push(candidate(
+            home,
+            InstallRuntime::Claude,
+            InstallScope::Global,
+        ));
     }
     if let Some(home) = roots.codex_home_dir() {
         out.push(candidate(home, InstallRuntime::Codex, InstallScope::Global));
@@ -255,9 +271,8 @@ impl GsdVersion {
 
 /// Non-empty dot-separated identifiers of `[0-9A-Za-z-]` only.
 fn valid_identifiers(s: &str) -> bool {
-    s.split('.').all(|id| {
-        !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    })
+    s.split('.')
+        .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 fn compare_prerelease(a: &str, b: &str) -> Ordering {
@@ -452,7 +467,10 @@ pub fn install_label(status: &GsdInstallStatus) -> (String, Severity) {
     };
     let source = install.source_label();
     let InstalledVersion::Parsed(v) = &install.version else {
-        return (format!("GSD (unrecognised VERSION) · {source}"), Severity::Info);
+        return (
+            format!("GSD (unrecognised VERSION) · {source}"),
+            Severity::Info,
+        );
     };
     match relation_to_synced(v) {
         SyncRelation::InRange => (format!("GSD {v} · {source}"), Severity::Ok),
@@ -632,8 +650,16 @@ mod tests {
         assert_eq!(
             layout(&got),
             vec![
-                (PathBuf::from("/h/.claude/gsd-core"), InstallRuntime::Claude, InstallScope::Global),
-                (PathBuf::from("/h/.codex/gsd-core"), InstallRuntime::Codex, InstallScope::Global),
+                (
+                    PathBuf::from("/h/.claude/gsd-core"),
+                    InstallRuntime::Claude,
+                    InstallScope::Global
+                ),
+                (
+                    PathBuf::from("/h/.codex/gsd-core"),
+                    InstallRuntime::Codex,
+                    InstallScope::Global
+                ),
             ]
         );
     }
@@ -654,15 +680,14 @@ mod tests {
         };
         let got = install_candidates(None, &r);
         assert_eq!(
-            got.iter().map(|c| c.gsd_core_dir.clone()).collect::<Vec<_>>(),
+            got.iter()
+                .map(|c| c.gsd_core_dir.clone())
+                .collect::<Vec<_>>(),
             vec![PathBuf::from("/cc/gsd-core"), PathBuf::from("/cx/gsd-core")],
             "an override REPLACES the home default, it does not add a candidate"
         );
         // Without a home, an override still yields its global candidate.
-        let no_home = InstallRoots {
-            home: None,
-            ..r
-        };
+        let no_home = InstallRoots { home: None, ..r };
         assert_eq!(install_candidates(None, &no_home).len(), 2);
     }
 
@@ -725,20 +750,38 @@ mod tests {
     fn a_codex_only_home_is_a_global_codex_install() {
         let root = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
-        write_version(home.path(), ".codex/gsd-core", GSD_CORE_SYNCED_VERSION.as_bytes());
+        write_version(
+            home.path(),
+            ".codex/gsd-core",
+            GSD_CORE_SYNCED_VERSION.as_bytes(),
+        );
         let status = detect_gsd_install(Some(root.path()), &roots(home.path()));
         let d = found(&status);
-        assert_eq!((d.runtime, d.scope), (InstallRuntime::Codex, InstallScope::Global));
+        assert_eq!(
+            (d.runtime, d.scope),
+            (InstallRuntime::Codex, InstallScope::Global)
+        );
     }
 
     #[test]
     fn claude_beats_codex_at_global_scope() {
         let home = TempDir::new().unwrap();
-        write_version(home.path(), ".claude/gsd-core", GSD_CORE_SYNCED_VERSION.as_bytes());
-        write_version(home.path(), ".codex/gsd-core", GSD_CORE_SYNCED_TREE_VERSION.as_bytes());
+        write_version(
+            home.path(),
+            ".claude/gsd-core",
+            GSD_CORE_SYNCED_VERSION.as_bytes(),
+        );
+        write_version(
+            home.path(),
+            ".codex/gsd-core",
+            GSD_CORE_SYNCED_TREE_VERSION.as_bytes(),
+        );
         let status = detect_gsd_install(None, &roots(home.path()));
         let d = found(&status);
-        assert_eq!((d.runtime, d.scope), (InstallRuntime::Claude, InstallScope::Global));
+        assert_eq!(
+            (d.runtime, d.scope),
+            (InstallRuntime::Claude, InstallScope::Global)
+        );
         assert_eq!(d.version, InstalledVersion::Parsed(floor()));
     }
 
@@ -746,11 +789,22 @@ mod tests {
     fn a_project_local_codex_beats_a_global_claude() {
         let root = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
-        write_version(root.path(), ".codex/gsd-core", GSD_CORE_SYNCED_TREE_VERSION.as_bytes());
-        write_version(home.path(), ".claude/gsd-core", GSD_CORE_SYNCED_VERSION.as_bytes());
+        write_version(
+            root.path(),
+            ".codex/gsd-core",
+            GSD_CORE_SYNCED_TREE_VERSION.as_bytes(),
+        );
+        write_version(
+            home.path(),
+            ".claude/gsd-core",
+            GSD_CORE_SYNCED_VERSION.as_bytes(),
+        );
         let status = detect_gsd_install(Some(root.path()), &roots(home.path()));
         let d = found(&status);
-        assert_eq!((d.runtime, d.scope), (InstallRuntime::Codex, InstallScope::ProjectLocal));
+        assert_eq!(
+            (d.runtime, d.scope),
+            (InstallRuntime::Codex, InstallScope::ProjectLocal)
+        );
     }
 
     #[test]
@@ -770,10 +824,17 @@ mod tests {
         let root = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
         fs::create_dir_all(root.path().join(".claude/gsd-core/VERSION")).unwrap();
-        write_version(home.path(), ".codex/gsd-core", GSD_CORE_SYNCED_VERSION.as_bytes());
+        write_version(
+            home.path(),
+            ".codex/gsd-core",
+            GSD_CORE_SYNCED_VERSION.as_bytes(),
+        );
         let status = detect_gsd_install(Some(root.path()), &roots(home.path()));
         let d = found(&status);
-        assert_eq!((d.runtime, d.scope), (InstallRuntime::Codex, InstallScope::Global));
+        assert_eq!(
+            (d.runtime, d.scope),
+            (InstallRuntime::Codex, InstallScope::Global)
+        );
     }
 
     #[test]
@@ -781,7 +842,11 @@ mod tests {
         let root = TempDir::new().unwrap();
         let home = TempDir::new().unwrap();
         write_version(root.path(), ".claude/gsd-core", b"banana");
-        write_version(home.path(), ".claude/gsd-core", GSD_CORE_SYNCED_VERSION.as_bytes());
+        write_version(
+            home.path(),
+            ".claude/gsd-core",
+            GSD_CORE_SYNCED_VERSION.as_bytes(),
+        );
         let status = detect_gsd_install(Some(root.path()), &roots(home.path()));
         let d = found(&status);
         assert_eq!(d.scope, InstallScope::ProjectLocal);
@@ -812,11 +877,23 @@ mod tests {
 
     #[test]
     fn version_parse_accepts_semver_forms() {
-        assert_eq!(v("1.14.0"), GsdVersion { major: 1, minor: 14, patch: 0, pre: None });
+        assert_eq!(
+            v("1.14.0"),
+            GsdVersion {
+                major: 1,
+                minor: 14,
+                patch: 0,
+                pre: None
+            }
+        );
         assert_eq!(v("1.14.0\n"), v("1.14.0"));
         assert_eq!(v(" v1.15.0 "), v("1.15.0"));
         assert_eq!(v("1.16.0-rc.1").pre.as_deref(), Some("rc.1"));
-        assert_eq!(v("1.15.0+build.5"), v("1.15.0"), "build metadata is dropped");
+        assert_eq!(
+            v("1.15.0+build.5"),
+            v("1.15.0"),
+            "build metadata is dropped"
+        );
         assert_eq!(v("1.16.0-rc.1").to_string(), "1.16.0-rc.1");
     }
 
@@ -846,7 +923,11 @@ mod tests {
             assert_eq!(relation_between(&v(s), &f, &c), SyncRelation::Newer, "{s}");
         }
         for s in ["1.15.0", "1.14.0", "1.14.5", "1.15.0-rc.1"] {
-            assert_eq!(relation_between(&v(s), &f, &c), SyncRelation::InRange, "{s}");
+            assert_eq!(
+                relation_between(&v(s), &f, &c),
+                SyncRelation::InRange,
+                "{s}"
+            );
         }
         for s in ["1.13.9", "1.14.0-rc.1"] {
             assert_eq!(relation_between(&v(s), &f, &c), SyncRelation::Older, "{s}");
@@ -857,13 +938,33 @@ mod tests {
     fn prerelease_identifiers_follow_semver_precedence() {
         use Ordering::*;
         let cmp = |a: &str, b: &str| v(a).precedence_cmp(&v(b));
-        assert_eq!(cmp("1.0.0-rc.2", "1.0.0-rc.10"), Less, "numeric ids compare by value");
-        assert_eq!(cmp("1.0.0-1", "1.0.0-alpha"), Less, "numeric < alphanumeric");
+        assert_eq!(
+            cmp("1.0.0-rc.2", "1.0.0-rc.10"),
+            Less,
+            "numeric ids compare by value"
+        );
+        assert_eq!(
+            cmp("1.0.0-1", "1.0.0-alpha"),
+            Less,
+            "numeric < alphanumeric"
+        );
         assert_eq!(cmp("1.0.0-alpha", "1.0.0-beta"), Less);
-        assert_eq!(cmp("1.0.0-alpha", "1.0.0-alpha.1"), Less, "a shorter prefix sorts lower");
-        assert_eq!(cmp("1.0.0-rc.1", "1.0.0"), Less, "a release beats its prereleases");
+        assert_eq!(
+            cmp("1.0.0-alpha", "1.0.0-alpha.1"),
+            Less,
+            "a shorter prefix sorts lower"
+        );
+        assert_eq!(
+            cmp("1.0.0-rc.1", "1.0.0"),
+            Less,
+            "a release beats its prereleases"
+        );
         assert_eq!(cmp("1.0.0", "1.0.0"), Equal);
-        assert_eq!(cmp("1.0.0+a", "1.0.0+b"), Equal, "build metadata is ignored");
+        assert_eq!(
+            cmp("1.0.0+a", "1.0.0+b"),
+            Equal,
+            "build metadata is ignored"
+        );
         assert_eq!(cmp("2.0.0", "1.99.99"), Greater);
     }
 
@@ -877,7 +978,11 @@ mod tests {
 
     // ── labels ─────────────────────────────────────────────────────────
 
-    fn install(runtime: InstallRuntime, scope: InstallScope, version: InstalledVersion) -> GsdInstallStatus {
+    fn install(
+        runtime: InstallRuntime,
+        scope: InstallScope,
+        version: InstalledVersion,
+    ) -> GsdInstallStatus {
         GsdInstallStatus::Found(DetectedInstall {
             runtime,
             scope,
@@ -899,12 +1004,16 @@ mod tests {
             ),
             (
                 install(Codex, Global, InstalledVersion::Parsed(v(&newer))),
-                format!("GSD {newer} · global Codex · newer than synced {GSD_CORE_SYNCED_TREE_VERSION}"),
+                format!(
+                    "GSD {newer} · global Codex · newer than synced {GSD_CORE_SYNCED_TREE_VERSION}"
+                ),
                 Severity::Warning,
             ),
             (
                 install(Claude, ProjectLocal, InstalledVersion::Parsed(v(OLDER))),
-                format!("GSD {OLDER} · project-local Claude · older than {GSD_CORE_SYNCED_VERSION}"),
+                format!(
+                    "GSD {OLDER} · project-local Claude · older than {GSD_CORE_SYNCED_VERSION}"
+                ),
                 Severity::Info,
             ),
             (
@@ -927,7 +1036,10 @@ mod tests {
             let (got, sev) = install_label(&status);
             assert_eq!(got, text);
             assert_eq!(sev, severity, "{text}");
-            assert!(!got.contains("/secret"), "a label never carries the path: {got}");
+            assert!(
+                !got.contains("/secret"),
+                "a label never carries the path: {got}"
+            );
         }
     }
 
@@ -981,12 +1093,19 @@ mod tests {
         let global = GsdInstallStatus::NotFound;
         let base = format!("No global GSD install found · app synced to gsd-core {tree}");
         let local_ok = install(Claude, ProjectLocal, InstalledVersion::Parsed(ceiling()));
-        let local_newer = install(Codex, ProjectLocal, InstalledVersion::Parsed(v(&newer_str())));
+        let local_newer = install(
+            Codex,
+            ProjectLocal,
+            InstalledVersion::Parsed(v(&newer_str())),
+        );
         // A project resolving to the global install is not counted.
         let global_use = install(Claude, Global, InstalledVersion::Parsed(v(&newer_str())));
 
         assert_eq!(
-            startup_summary(&global, [&local_ok, &global_use, &GsdInstallStatus::NotFound]),
+            startup_summary(
+                &global,
+                [&local_ok, &global_use, &GsdInstallStatus::NotFound]
+            ),
             format!("{base} · 1 project uses a project-local GSD")
         );
         assert_eq!(
@@ -1023,7 +1142,10 @@ mod tests {
         assert_eq!(found(&status).version, InstalledVersion::Unrecognised);
         let (label, _) = install_label(&status);
         assert!(!label.contains('\u{1b}'), "{label:?}");
-        assert!(!label.contains("1.2.3"), "garbage content is never displayed: {label:?}");
+        assert!(
+            !label.contains("1.2.3"),
+            "garbage content is never displayed: {label:?}"
+        );
         assert!(label.contains("unrecognised VERSION"), "{label:?}");
     }
 }

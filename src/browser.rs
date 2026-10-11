@@ -109,11 +109,15 @@ pub fn resolve_active_phase_dir(planning_dir: &Path, state: &ProjectState) -> Pa
     let phase_number = state
         .phases
         .iter()
-        .find(|p| crate::state_reader::phase_num::PhaseNum::parse(&p.number).as_ref() == Some(&active_num))
+        .find(|p| {
+            crate::state_reader::phase_num::PhaseNum::parse(&p.number).as_ref() == Some(&active_num)
+        })
         .map(|p| p.number.clone());
 
     match phase_number {
-        Some(num) => find_phase_dir(planning_dir, &num).unwrap_or_else(|| planning_dir.to_path_buf()),
+        Some(num) => {
+            find_phase_dir(planning_dir, &num).unwrap_or_else(|| planning_dir.to_path_buf())
+        }
         None => planning_dir.to_path_buf(),
     }
 }
@@ -121,13 +125,8 @@ pub fn resolve_active_phase_dir(planning_dir: &Path, state: &ProjectState) -> Pa
 /// Read a markdown file as a string. On any I/O error, return a human-readable
 /// fallback so the viewer renders the error instead of leaving an empty pane.
 pub fn read_md_file(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|e| {
-        format!(
-            "Could not read file: {}\n\nError: {}",
-            path.display(),
-            e
-        )
-    })
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| format!("Could not read file: {}\n\nError: {}", path.display(), e))
 }
 
 #[cfg(test)]

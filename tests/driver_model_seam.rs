@@ -144,8 +144,8 @@ fn the_seam_profile_argv_carries_the_empty_tool_value_and_the_schema_together() 
          {words:?}"
     );
 
-    let carried = value_after(&words, "--json-schema")
-        .expect("the seam profile must carry the schema flag");
+    let carried =
+        value_after(&words, "--json-schema").expect("the seam profile must carry the schema flag");
     assert_eq!(
         carried,
         serde_json::to_string(&schema).expect("the schema serialises"),
@@ -261,7 +261,8 @@ fn the_schema_the_seam_carries_is_the_one_built_from_the_router_alphabet() {
     let parsed: serde_json::Value =
         serde_json::from_str(&carried).expect("the argv value is valid JSON");
 
-    let members: Vec<&str> = parsed["properties"]["steps"]["items"]["properties"]["command"]["enum"]
+    let members: Vec<&str> = parsed["properties"]["steps"]["items"]["properties"]["command"]
+        ["enum"]
         .as_array()
         .expect("the carried schema declares a command enum")
         .iter()
@@ -495,9 +496,7 @@ fn assert_plan_is_legal_and_return_target(payload: &serde_json::Value, arm: &str
 }
 
 /// The phases the typed-state fixture declares, as the roadmap set.
-const ROADMAP_PHASES: &[&str] = &[
-    "14", "15", "16", "17", "18", "19", "20", "21", "22", "23",
-];
+const ROADMAP_PHASES: &[&str] = &["14", "15", "16", "17", "18", "19", "20", "21", "22", "23"];
 
 /// The step cap a default run resolves to, obtained by calling `bounds::resolve`
 /// rather than by naming the default constant.
@@ -542,11 +541,9 @@ fn oq1_arm_a_typed_state_only() {
 #[test]
 #[ignore = "spawns the real `claude` binary; run with `--ignored`"]
 fn oq1_arm_b_typed_state_plus_roadmap_prose_in_the_untrusted_boundary() {
-    let roadmap = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/.planning/ROADMAP.md"
-    ))
-    .expect("this project's own ROADMAP.md is the third-party prose fixture");
+    let roadmap =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/.planning/ROADMAP.md"))
+            .expect("this project's own ROADMAP.md is the third-party prose fixture");
     assert!(
         roadmap.contains("Container Execution Target"),
         "the fixture must carry the prose the goal refers to, or arm B is arm A \
@@ -557,7 +554,11 @@ fn oq1_arm_b_typed_state_plus_roadmap_prose_in_the_untrusted_boundary() {
         "ROADMAP.md",
         &serde_json::json!({ "roadmap_body": untrusted::bounded(&roadmap) }),
     );
-    let prompt = seam_prompt(OQ1_GOAL, TYPED_STATE, &format!("\nTHIRD-PARTY CONTENT:\n{block}\n"));
+    let prompt = seam_prompt(
+        OQ1_GOAL,
+        TYPED_STATE,
+        &format!("\nTHIRD-PARTY CONTENT:\n{block}\n"),
+    );
     let schema = goal::escalation_schema();
     let run = run_seam(&prompt, &schema);
 

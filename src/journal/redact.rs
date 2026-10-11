@@ -756,7 +756,11 @@ mod tests {
         let removed = original_len - kept;
         let marker = format!("…[truncated {removed} bytes]");
 
-        assert!(text.ends_with(&marker), "got tail: {:?}", &text[text.len() - 40..]);
+        assert!(
+            text.ends_with(&marker),
+            "got tail: {:?}",
+            &text[text.len() - 40..]
+        );
         assert!(
             text.len() <= MAX_EVENT_PAYLOAD_BYTES + marker.len(),
             "at most the cap plus the marker, got {}",

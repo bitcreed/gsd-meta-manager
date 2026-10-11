@@ -333,7 +333,10 @@ mod tests {
     #[test]
     fn nothing_configured_resolves_to_claude_and_the_entry_outranks_the_preference() {
         assert_eq!(resolve(None, None), AgentRuntime::Claude);
-        assert_eq!(resolve(None, Some(AgentRuntime::Codex)), AgentRuntime::Codex);
+        assert_eq!(
+            resolve(None, Some(AgentRuntime::Codex)),
+            AgentRuntime::Codex
+        );
         assert_eq!(
             resolve(Some(AgentRuntime::Claude), Some(AgentRuntime::Codex)),
             AgentRuntime::Claude

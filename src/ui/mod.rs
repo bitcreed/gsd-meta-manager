@@ -1,7 +1,7 @@
 pub mod mouse;
-pub mod roadmap_widget;
 pub mod roadmap_graph;
 pub mod roadmap_view;
+pub mod roadmap_widget;
 pub mod screens;
 
 use crate::app::App;
@@ -694,7 +694,8 @@ mod tests {
         let files = ui_sources();
         let raw = census(&files);
         assert!(
-            !raw.iter().any(|(site, _)| site.starts_with("src/ui/mod.rs:")),
+            !raw.iter()
+                .any(|(site, _)| site.starts_with("src/ui/mod.rs:")),
             "the census reported its own module. Its needle halves have been \
              respelled into something that matches this file, so every future \
              green is the census certifying itself. Reported: {:?}",
@@ -745,12 +746,7 @@ mod tests {
 
     /// A control-class fixture: `ESC`, `TAB`, `DEL` and a C1 byte, none of which
     /// the invisible-formatting half answers for.
-    const CONTROL_FIXTURES: [&str; 4] = [
-        "demo\u{1b}[31mred",
-        "a\tb",
-        "x\u{7f}y",
-        "gsd\u{9b}run",
-    ];
+    const CONTROL_FIXTURES: [&str; 4] = ["demo\u{1b}[31mred", "a\tb", "x\u{7f}y", "gsd\u{9b}run"];
 
     /// **Both directions, because one of them alone proves nothing.**
     ///

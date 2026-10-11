@@ -46,7 +46,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
 /// The clean-success capture named in `tests/fixtures/transcripts/README.md`.
@@ -263,7 +262,8 @@ async fn a_routed_run_issues_two_commands_and_halts_naming_the_detector_that_fir
              schema change nobody declared"
         );
         assert_eq!(
-            record["rationale"], router::RATIONALE_READY_TO_PLAN,
+            record["rationale"],
+            router::RATIONALE_READY_TO_PLAN,
             "the rationale is a &'static str from the router's closed set, never \
              anything the agent wrote (SAFE-04, T-20-05)"
         );
@@ -304,7 +304,8 @@ async fn a_routed_run_issues_two_commands_and_halts_naming_the_detector_that_fir
          asks to be answerable"
     );
     assert_eq!(
-        parked[0]["reason"], bounds::REASON_COMMAND_REPEAT,
+        parked[0]["reason"],
+        bounds::REASON_COMMAND_REPEAT,
         "with the wall-clock and step caps at their defaults and only one \
          unchanged pair observed, command-repeat is the first — and the only — \
          detector in the documented order whose condition holds. The order is \
@@ -420,7 +421,8 @@ async fn the_step_cap_halts_a_routed_run_and_reports_itself_rather_than_the_agen
     let parked = of_kind(&records, "parked");
     assert_eq!(parked.len(), 1, "one halt, one reason");
     assert_eq!(
-        parked[0]["reason"], bounds::REASON_STEP_CAP,
+        parked[0]["reason"],
+        bounds::REASON_STEP_CAP,
         "with max_steps of 1 the first iteration runs and the second is refused, \
          and the reason must be the RUN's step cap rather than the executor's \
          `timed_out`. CTRL-06 asks a run that exceeds its own bound to say so \

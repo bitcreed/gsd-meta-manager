@@ -50,7 +50,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 /// The seam-aware stand-in. It answers a seam spawn from a caller-supplied
 /// payload, replays a transcript for everything else, and leaves evidence of
 /// every seam spawn on disk.
@@ -90,8 +89,11 @@ fn project_root() -> TempDir {
     for (number, slug) in [(20, "deterministic-router"), (21, "goal-layer")] {
         let phase_dir = planning.join("phases").join(format!("{number}-{slug}"));
         std::fs::create_dir_all(&phase_dir).expect("scratch phase dir");
-        std::fs::write(phase_dir.join(format!("{number}-CONTEXT.md")), "# Context\n")
-            .expect("write phase context");
+        std::fs::write(
+            phase_dir.join(format!("{number}-CONTEXT.md")),
+            "# Context\n",
+        )
+        .expect("write phase context");
     }
 
     root
@@ -193,10 +195,7 @@ fn raw_goal_args(run_id: &str, workdir: &Path, stated_goal: &str) -> RawDriveArg
         dry_run: false,
         goal: Some(stated_goal.to_string()),
         claude_program: Some(SEAM_CLAUDE.into()),
-        claude_args: vec![
-            OsString::from(workdir),
-            OsString::from(CLEAN_BASELINE),
-        ],
+        claude_args: vec![OsString::from(workdir), OsString::from(CLEAN_BASELINE)],
     }
 }
 
@@ -450,10 +449,7 @@ async fn a_stated_goal_becomes_a_recorded_plan_and_the_run_drives_its_terminal_p
     let records = journal_records(root.path(), RUN_ID);
     let plan_record = records
         .iter()
-        .find(|record| {
-            record["kind"] == "diagnostic"
-                && record["code"] == "goal_plan_decomposed"
-        })
+        .find(|record| record["kind"] == "diagnostic" && record["code"] == "goal_plan_decomposed")
         .expect("the decomposed plan reaches the journal before the first spawn");
 
     let detail = plan_record["detail"].as_str().expect("a rendered detail");
@@ -616,8 +612,8 @@ fn token_from_refusal(rendered: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_re_decomposition_that_changed_the_plan_is_refused_as_a_changed_plan_not_as_changed_files()
-{
+async fn a_re_decomposition_that_changed_the_plan_is_refused_as_a_changed_plan_not_as_changed_files(
+) {
     const REVIEW_RUN_ID: &str = "2026-08-19T12-00-00Z-planchanged-review";
     const RUN_ID: &str = "2026-08-19T12-00-00Z-planchanged";
 
@@ -709,8 +705,8 @@ async fn a_re_decomposition_that_changed_the_plan_is_refused_as_a_changed_plan_n
 }
 
 #[tokio::test]
-async fn a_disclosed_file_rewritten_under_an_approval_is_refused_as_changed_files_not_a_changed_plan()
-{
+async fn a_disclosed_file_rewritten_under_an_approval_is_refused_as_changed_files_not_a_changed_plan(
+) {
     const RUN_ID: &str = "2026-08-19T12-00-00Z-fileschanged";
 
     let root = project_root();
@@ -719,8 +715,11 @@ async fn a_disclosed_file_rewritten_under_an_approval_is_refused_as_changed_file
     plant_payload(workdir.path(), &wire);
 
     // The bytes the user reviewed, and the token that covered them.
-    std::fs::write(root.path().join("CLAUDE.md"), b"the bytes the user reviewed")
-        .expect("write CLAUDE.md");
+    std::fs::write(
+        root.path().join("CLAUDE.md"),
+        b"the bytes the user reviewed",
+    )
+    .expect("write CLAUDE.md");
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
     args.approved_plan = Some(nonblank(&approval_for(root.path(), &wire, args.max_steps)));
@@ -1036,7 +1035,11 @@ async fn an_approval_bound_to_a_different_plan_refuses_the_run() {
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    args.approved_plan = Some(nonblank(&approval_for(root.path(), &approved, args.max_steps)));
+    args.approved_plan = Some(nonblank(&approval_for(
+        root.path(),
+        &approved,
+        args.max_steps,
+    )));
 
     let err = drive(args, &config_for(root.path()))
         .await
@@ -1062,8 +1065,11 @@ async fn an_approval_whose_disclosed_bytes_moved_refuses_the_run_though_the_plan
     plant_payload(workdir.path(), &wire);
 
     // The bytes the user approved.
-    std::fs::write(root.path().join("CLAUDE.md"), b"the bytes the user reviewed")
-        .expect("write CLAUDE.md");
+    std::fs::write(
+        root.path().join("CLAUDE.md"),
+        b"the bytes the user reviewed",
+    )
+    .expect("write CLAUDE.md");
     let config = config_for(root.path());
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
@@ -1126,9 +1132,10 @@ async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
 
     let paths = gsd_meta_manager::journal::run_paths(&root.path().join(".planning"), RUN_ID)
         .expect("a plain run id");
-    let record: Value =
-        serde_json::from_str(&std::fs::read_to_string(&paths.run_json).expect("run.json is readable"))
-            .expect("run.json parses");
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(&paths.run_json).expect("run.json is readable"),
+    )
+    .expect("run.json parses");
 
     // The record keeps the two halves as separate fields — that is what lets a
     // failed re-check name WHICH half moved — so the round trip back through the
@@ -1173,7 +1180,8 @@ async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
          on write two"
     );
     assert_eq!(
-        escalate::DEFAULT_MAX_ESCALATIONS, 3,
+        escalate::DEFAULT_MAX_ESCALATIONS,
+        3,
         "the fixture's premise: the resolved cap really does differ from the \
          default, or the assertion above cannot tell the two apart"
     );
@@ -1250,9 +1258,14 @@ fn the_plan_half_of_an_approval_is_collision_resistant_rather_than_a_non_cryptog
              {digest}"
         )
     });
-    assert_eq!(hex.len(), 64, "SHA-256 renders as 64 hex digits; got: {digest}");
+    assert_eq!(
+        hex.len(),
+        64,
+        "SHA-256 renders as 64 hex digits; got: {digest}"
+    );
     assert!(
-        hex.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        hex.chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
         "lowercase hex only, so two records of the same plan compare as strings \
          without normalising; got: {digest}"
     );
@@ -1371,15 +1384,18 @@ fn the_recheck_approval_predicate_refuses_a_legacy_fnv1a64_plan_digest() {
         &fresh,
         &[],
     )
-        .expect_err(
-            "a legacy `fnv1a64:` record must never cover a freshly computed \
+    .expect_err(
+        "a legacy `fnv1a64:` record must never cover a freshly computed \
              `sha256:` plan. Failing closed is the whole reason the digests \
              carry prefixes rather than bare hex",
-        );
+    );
 
     match refusal {
         gsd_meta_manager::journal::ApprovalRefusal::PlanChanged { approved, observed } => {
-            assert_eq!(approved, legacy, "the refusal names the digest the approval covered");
+            assert_eq!(
+                approved, legacy,
+                "the refusal names the digest the approval covered"
+            );
             assert_eq!(observed, fresh, "and the one observed now");
         }
         other => panic!(

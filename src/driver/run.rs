@@ -207,7 +207,6 @@ fn establish_envelope(
     })
 }
 
-
 /// The diagnostic code that marks a run driven by a stand-in rather than by the
 /// agent (D-30, WR-16).
 ///
@@ -394,7 +393,10 @@ impl PendingAcks {
 /// rendered string is exactly the screen-scraping D-01 forbids, wearing a
 /// different hat. Only the driver has parsed envelopes, so only the driver can
 /// answer this honestly (D-08).
-fn match_replay_echo(pending: &mut VecDeque<(String, String)>, echoed_text: &str) -> Option<String> {
+fn match_replay_echo(
+    pending: &mut VecDeque<(String, String)>,
+    echoed_text: &str,
+) -> Option<String> {
     let index = pending.iter().position(|(_, text)| text == echoed_text)?;
     pending.remove(index).map(|(id, _)| id)
 }
@@ -417,7 +419,11 @@ fn match_replay_echo(pending: &mut VecDeque<(String, String)>, echoed_text: &str
 fn replay_echo_text(raw: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
 
-    if value.get(REPLAY_MARKER).and_then(serde_json::Value::as_bool) != Some(true) {
+    if value
+        .get(REPLAY_MARKER)
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
         return None;
     }
 
@@ -858,9 +864,11 @@ fn own_terminal_label(terminal: &Terminal) -> Option<String> {
         // `succeeded_with_changes` when this run is what achieved it.
         Terminal::GoalMet => Some(GOAL_MET_LABEL.to_string()),
         Terminal::Completed => None,
-        Terminal::Parked { .. } | Terminal::Halted { .. } | Terminal::QuotaParked { .. } => terminal
-            .park_reason()
-            .map(|reason| format!("{PARKED_LABEL_PREFIX}{reason}")),
+        Terminal::Parked { .. } | Terminal::Halted { .. } | Terminal::QuotaParked { .. } => {
+            terminal
+                .park_reason()
+                .map(|reason| format!("{PARKED_LABEL_PREFIX}{reason}"))
+        }
     }
 }
 
@@ -1263,11 +1271,7 @@ fn establish_own_group() -> u32 {
 ///
 /// It returns whatever `finish` returns, so every existing error handling at the
 /// four call sites stays exactly as it was.
-fn finish_run(
-    journal: &mut JournalRun,
-    label: &str,
-    escalations_used: u32,
-) -> anyhow::Result<()> {
+fn finish_run(journal: &mut JournalRun, label: &str, escalations_used: u32) -> anyhow::Result<()> {
     journal.set_escalations_used(escalations_used);
     journal.finish(label)
 }
@@ -1307,10 +1311,8 @@ async fn shutdown_on_terminate(
     let journal_path = journal.paths().journal.clone();
     let task_outcome = outcome.clone();
     let task_path = journal_path.clone();
-    let label = match tokio::task::spawn_blocking(move || {
-        terminal_label(&task_outcome, &task_path)
-    })
-    .await
+    let label = match tokio::task::spawn_blocking(move || terminal_label(&task_outcome, &task_path))
+        .await
     {
         Ok(label) => label,
         Err(err) => {
@@ -2360,22 +2362,16 @@ impl GoalDecomposition {
         );
 
         // 2. One question, one answer, through the one audited spawn seam.
-        let payload = match consult_model_seam(
-            project,
-            args,
-            prompt,
-            &goal::escalation_schema(),
-        )
-        .await
-        {
-            SeamAnswer::Payload(payload) => payload,
-            SeamAnswer::Unusable(detail) => {
-                return Err(DriveError::GoalSeamUnusable {
-                    reason: escalate::EscalationReason::OutputUnusable,
-                    detail,
-                })
-            }
-        };
+        let payload =
+            match consult_model_seam(project, args, prompt, &goal::escalation_schema()).await {
+                SeamAnswer::Payload(payload) => payload,
+                SeamAnswer::Unusable(detail) => {
+                    return Err(DriveError::GoalSeamUnusable {
+                        reason: escalate::EscalationReason::OutputUnusable,
+                        detail,
+                    })
+                }
+            };
 
         // 3. Validate, never repair.
         goal::legality(&payload, &phase_refs, max_steps).map_err(DriveError::from)
@@ -2842,13 +2838,14 @@ pub async fn execute_run(
     // a *losing* re-acquire a mid-run failure rather than a start-time refusal.
     let lock_planning = planning_dir.clone();
     let lock_run_id = record.run_id.clone();
-    let lock = tokio::task::spawn_blocking(move || lock::acquire(&lock_planning, &lock_run_id, pgid))
-        .await
-        .map_err(|_| {
-            DriveError::Lock(LockError::Unavailable {
-                detail: "the lock acquisition task did not run to completion".to_string(),
-            })
-        })??;
+    let lock =
+        tokio::task::spawn_blocking(move || lock::acquire(&lock_planning, &lock_run_id, pgid))
+            .await
+            .map_err(|_| {
+                DriveError::Lock(LockError::Unavailable {
+                    detail: "the lock acquisition task did not run to completion".to_string(),
+                })
+            })??;
 
     // **No blocking syscall inside an `async fn`** (D-28, WR-10), for the same
     // reason and with the same provenance. `JournalRun::start` prunes the runs
@@ -3625,9 +3622,8 @@ pub async fn execute_run(
                     } => terminal_reason.as_deref(),
                     _ => None,
                 };
-                rate_limit::terminal_reason_names_a_rate_limit(terminal_reason).then(|| {
-                    rate_limit::park_detail(&rate_limit::QuotaWindow::Unknown(None), None)
-                })
+                rate_limit::terminal_reason_names_a_rate_limit(terminal_reason)
+                    .then(|| rate_limit::park_detail(&rate_limit::QuotaWindow::Unknown(None), None))
             }
         };
 
@@ -4175,7 +4171,9 @@ mod tests {
                 ]
             }),
             &["21", "22"],
-            bounds::resolve(None, None).expect("bounds resolve").max_steps,
+            bounds::resolve(None, None)
+                .expect("bounds resolve")
+                .max_steps,
         )
         .expect("the fixture plan is legal");
 
@@ -4286,8 +4284,8 @@ mod tests {
             SeamAnswer::Payload(serde_json::json!({ goal::FIELD_STEPS: [] })),
         ];
         for answer in cases {
-            let (reason, detail) =
-                escalated_action(answer).expect_err("an unusable answer parks rather than retrying");
+            let (reason, detail) = escalated_action(answer)
+                .expect_err("an unusable answer parks rather than retrying");
             assert_eq!(reason, escalate::EscalationReason::OutputUnusable);
             assert!(!detail.is_empty(), "the park must say what was observed");
         }
@@ -4487,7 +4485,13 @@ mod tests {
                 detail: "planned".to_string(),
             })
             .as_deref(),
-            Some(format!("{PARKED_LABEL_PREFIX}{}", router::RouterReason::NoRule.as_str()).as_str())
+            Some(
+                format!(
+                    "{PARKED_LABEL_PREFIX}{}",
+                    router::RouterReason::NoRule.as_str()
+                )
+                .as_str()
+            )
         );
         assert_eq!(
             own_terminal_label(&Terminal::Parked {
@@ -5082,8 +5086,7 @@ mod tests {
 
     #[test]
     fn a_spawn_failure_puts_its_reason_on_disk_before_the_ending() {
-        let (dir, mut journal) =
-            started_run_with_cap("2026-08-20T00-00-00Z-spawndiag", 4);
+        let (dir, mut journal) = started_run_with_cap("2026-08-20T00-00-00Z-spawndiag", 4);
         let journal_path = journal.paths().journal.clone();
 
         // The two calls the spawn-failure arm makes, in the arm's own order.
@@ -5156,10 +5159,12 @@ mod tests {
              and are never collapsed (D-13)"
         );
         assert_eq!(
-            spawn_failure_label(&SpawnError::Capability(CapabilityError::VersionBelowFloor {
-                observed: "2.1.100".to_string(),
-                floor: "2.1.214".to_string(),
-            })),
+            spawn_failure_label(&SpawnError::Capability(
+                CapabilityError::VersionBelowFloor {
+                    observed: "2.1.100".to_string(),
+                    floor: "2.1.214".to_string(),
+                }
+            )),
             "capability_refused",
             "a refusal is a refusal on both arms of the startup handshake; it is never \
              a spawn failure"
@@ -5168,14 +5173,8 @@ mod tests {
         // The fallback, asserted rather than assumed. Every variant that really
         // does mean "the agent never launched" keeps the original word.
         for (name, err) in [
-            (
-                "InitNeverObserved",
-                SpawnError::InitNeverObserved,
-            ),
-            (
-                "PidUnavailable",
-                SpawnError::PidUnavailable,
-            ),
+            ("InitNeverObserved", SpawnError::InitNeverObserved),
+            ("PidUnavailable", SpawnError::PidUnavailable),
             (
                 "PipeUnavailable",
                 SpawnError::PipeUnavailable { pipe: "stdin" },
@@ -5404,8 +5403,7 @@ mod tests {
         assert_eq!(replay_echo_text("{not json"), None);
         assert_eq!(replay_echo_text(r#"{"isReplay":true}"#), None);
         assert_eq!(
-            replay_echo_text(r#"{"isReplay":true,"message":{"content":"bare string"}}"#)
-                .as_deref(),
+            replay_echo_text(r#"{"isReplay":true,"message":{"content":"bare string"}}"#).as_deref(),
             Some("bare string"),
             "`content` has shipped as a bare string as well as an array"
         );

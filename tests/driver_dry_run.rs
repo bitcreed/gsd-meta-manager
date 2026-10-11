@@ -39,7 +39,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 const TRIPWIRE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fake-claude-tripwire.sh"
@@ -119,9 +118,17 @@ fn repo() -> Option<TempDir> {
 
     git(
         root,
-        &["remote", "add", "origin", "https://example.invalid/demo.git"],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/demo.git",
+        ],
     );
-    git(root, &["config", &format!("branch.{branch}.remote"), "origin"]);
+    git(
+        root,
+        &["config", &format!("branch.{branch}.remote"), "origin"],
+    );
     git(
         root,
         &[
@@ -357,7 +364,10 @@ async fn a_routed_dry_run_also_leaves_the_git_directory_byte_identical() {
         "a routed preview reads project state and calls the router — neither may \
          move a ref (D-23, PITFALLS:520)"
     );
-    assert_eq!(refs_before, refs_after, "nor update one without a reflog entry");
+    assert_eq!(
+        refs_before, refs_after,
+        "nor update one without a reflog entry"
+    );
     assert_eq!(
         listing_before, listing_after,
         "nor write an object or the index"

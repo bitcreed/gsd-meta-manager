@@ -832,10 +832,7 @@ mod tests {
         assert_eq!(dr.max_escalations, Some(2));
 
         let rv = config.review.as_ref().unwrap();
-        assert_eq!(
-            rv.reviewer_instances,
-            Some(serde_json::Value::from(3))
-        );
+        assert_eq!(rv.reviewer_instances, Some(serde_json::Value::from(3)));
 
         let ej = config.external_job.as_ref().unwrap();
         assert_eq!(ej.submit_timeout_ms, Some(60000));
@@ -896,16 +893,10 @@ mod tests {
         assert_eq!(wf.test_gate_timeout, Some(120));
         assert_eq!(wf.context_guard_mode, Some("strict".to_string()));
         assert_eq!(wf.plan_drift_precheck, Some(true));
-        assert_eq!(
-            wf.security_asvs_level,
-            Some(serde_json::Value::from("L2"))
-        );
+        assert_eq!(wf.security_asvs_level, Some(serde_json::Value::from("L2")));
         assert!(wf.security_block_on.as_ref().unwrap().is_array());
         assert_eq!(wf.mvp_mode, Some(true));
-        assert_eq!(
-            wf.code_review_command,
-            Some("/gsd:code-review".to_string())
-        );
+        assert_eq!(wf.code_review_command, Some("/gsd:code-review".to_string()));
         assert_eq!(wf.plan_chunked, Some(false));
 
         let gf = config.graphify.as_ref().unwrap();
@@ -979,7 +970,11 @@ mod tests {
             Some(&serde_json::json!({ "planner": "high" }))
         );
         let wf = config.workflow.as_ref().expect("the workflow block parsed");
-        assert_eq!(wf.research, Some(true), "a MODELLED sibling key still parses");
+        assert_eq!(
+            wf.research,
+            Some(true),
+            "a MODELLED sibling key still parses"
+        );
         assert_eq!(
             wf.extra.get("unknown_gsd_key"),
             Some(&serde_json::json!(7)),
@@ -1021,7 +1016,10 @@ mod tests {
             "compact_content reached the pass-through map, so it is NOT modelled"
         );
         let reparsed = parse_gsd_config(&serialize_gsd_config(&config).unwrap()).unwrap();
-        assert_eq!(reparsed.workflow.as_ref().unwrap().compact_content, Some(true));
+        assert_eq!(
+            reparsed.workflow.as_ref().unwrap().compact_content,
+            Some(true)
+        );
     }
 
     /// The tracer key of the gsd-core release-1.15.0 re-sync (quick task
@@ -1064,8 +1062,7 @@ mod tests {
     /// capabilities/ui/capability.json rather than the schema manifest).
     #[test]
     fn ui_interaction_capture_is_a_modelled_workflow_key() {
-        let config =
-            parse_gsd_config(r#"{"workflow": {"ui_interaction_capture": true}}"#).unwrap();
+        let config = parse_gsd_config(r#"{"workflow": {"ui_interaction_capture": true}}"#).unwrap();
         let wf = config.workflow.as_ref().unwrap();
         assert_eq!(wf.ui_interaction_capture, Some(true));
         assert!(
@@ -1157,12 +1154,18 @@ mod tests {
         assert_eq!(wf.max_discuss_passes, Some(2));
         assert_eq!(wf.plan_bounce, Some(true));
         assert_eq!(wf.plan_bounce_passes, Some(3));
-        assert_eq!(wf.plan_bounce_script.as_deref(), Some("./scripts/bounce.sh"));
+        assert_eq!(
+            wf.plan_bounce_script.as_deref(),
+            Some("./scripts/bounce.sh")
+        );
         assert_eq!(wf.plan_review_convergence, Some(true));
         assert_eq!(wf.post_planning_gaps, Some(false));
         assert_eq!(wf.security_enforcement, Some(false));
         assert_eq!(wf.smart_zone_tokens, Some(125000));
-        assert_eq!(wf.test_command.as_deref(), Some("cargo test --no-fail-fast"));
+        assert_eq!(
+            wf.test_command.as_deref(),
+            Some("cargo test --no-fail-fast")
+        );
         assert_eq!(wf.worktree_skip_hooks, Some(true));
 
         let serialized = serialize_gsd_config(&config).expect("serialises");
@@ -1171,7 +1174,10 @@ mod tests {
         assert_eq!(rwf.agent_hint_routing, Some(false));
         assert_eq!(rwf.smart_zone_tokens, Some(125000));
         assert_eq!(rwf.human_verify_mode.as_deref(), Some("mid-flight"));
-        assert_eq!(rwf.test_command.as_deref(), Some("cargo test --no-fail-fast"));
+        assert_eq!(
+            rwf.test_command.as_deref(),
+            Some("cargo test --no-fail-fast")
+        );
         assert!(rwf.code_review_depth_overrides.as_ref().unwrap().is_array());
         assert_eq!(
             serialized,
@@ -1253,7 +1259,11 @@ mod tests {
         let gates = config.gates.as_ref().unwrap();
         assert_eq!(gates.confirm_breakdown, Some(false));
         assert_eq!(gates.issues_review, Some(false));
-        assert!(gates.extra.is_empty(), "a gates.* key fell through: {:?}", gates.extra);
+        assert!(
+            gates.extra.is_empty(),
+            "a gates.* key fell through: {:?}",
+            gates.extra
+        );
         let planning = config.planning.as_ref().unwrap();
         assert_eq!(planning.chunked_parallel, Some(true));
         assert_eq!(planning.commit_docs, Some(false));
@@ -1290,12 +1300,14 @@ mod tests {
         let serialized = serialize_gsd_config(&config).expect("serialises");
         let reparsed = parse_gsd_config(&serialized).expect("re-parses");
         assert_eq!(reparsed.context_window, Some(1_000_000));
+        assert_eq!(reparsed.gates.as_ref().unwrap().confirm_plan, Some(false));
         assert_eq!(
-            reparsed.gates.as_ref().unwrap().confirm_plan,
-            Some(false)
-        );
-        assert_eq!(
-            reparsed.plan_review.as_ref().unwrap().source_grounding_authority.as_deref(),
+            reparsed
+                .plan_review
+                .as_ref()
+                .unwrap()
+                .source_grounding_authority
+                .as_deref(),
             Some("intel")
         );
         assert_eq!(
@@ -1311,7 +1323,14 @@ mod tests {
     #[test]
     fn the_resynced_blocks_are_absent_from_a_default_config() {
         let serialized = serialize_gsd_config(&GsdConfig::default()).unwrap();
-        for block in ["features", "gates", "planning", "plan_review", "planner", "context_window"] {
+        for block in [
+            "features",
+            "gates",
+            "planning",
+            "plan_review",
+            "planner",
+            "context_window",
+        ] {
             assert!(
                 !serialized.contains(block),
                 "a default config emitted {block:?}"
@@ -1422,10 +1441,18 @@ mod tests {
 
         let empty = serialize_gsd_config(&parse_gsd_config("{}").unwrap()).unwrap();
         for key in [
-            "tavily_search", "ref_search", "perplexity", "jina", "runtime", "context_profile",
+            "tavily_search",
+            "ref_search",
+            "perplexity",
+            "jina",
+            "runtime",
+            "context_profile",
             "agent_skills",
         ] {
-            assert!(!empty.contains(key), "an unset `{key}` was invented on save");
+            assert!(
+                !empty.contains(key),
+                "an unset `{key}` was invented on save"
+            );
         }
     }
 
@@ -1441,7 +1468,10 @@ mod tests {
             "precondition: the raw serde Display DOES quote the value: {e}"
         );
         let summary = parse_error_summary(&e);
-        assert!(!summary.contains("F6Y4") && !summary.contains("SECRET"), "{summary}");
+        assert!(
+            !summary.contains("F6Y4") && !summary.contains("SECRET"),
+            "{summary}"
+        );
         assert!(summary.contains(&format!("line {}", e.line())), "{summary}");
     }
 

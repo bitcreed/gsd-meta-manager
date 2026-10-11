@@ -61,11 +61,8 @@ fn mtime_last_activity(project_root: &Path) -> Option<chrono::DateTime<chrono::U
                     if let Ok(sub_entries) = std::fs::read_dir(&path) {
                         for sub in sub_entries.flatten() {
                             if sub.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                                if let Ok(modified) =
-                                    sub.metadata().and_then(|m| m.modified())
-                                {
-                                    newest =
-                                        Some(newest.map_or(modified, |cur| cur.max(modified)));
+                                if let Ok(modified) = sub.metadata().and_then(|m| m.modified()) {
+                                    newest = Some(newest.map_or(modified, |cur| cur.max(modified)));
                                 }
                             }
                         }
@@ -331,7 +328,10 @@ fn config_get_all(project_root: &Path, key: &str) -> Vec<String> {
 /// that cannot happen. `None` equally covers an empty repository and a directory
 /// that is not a repository at all. Never panics.
 pub fn current_branch(project_root: &Path) -> Option<String> {
-    git_read(project_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+    git_read(
+        project_root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    )
 }
 
 /// What a commit from this working tree would capture, in git's own words.
@@ -659,7 +659,9 @@ pub(crate) fn worktree_list_porcelain(project_root: &Path) -> Option<PorcelainLi
 /// Whether `s` is a full git object id: 40 (SHA-1) or 64 (SHA-256) lowercase
 /// hex characters, and nothing else.
 pub(crate) fn is_full_hex_sha(s: &str) -> bool {
-    (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    (s.len() == 40 || s.len() == 64)
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// How many commits `worktree`'s HEAD carries beyond `base_sha`.
@@ -1252,7 +1254,14 @@ mod tests {
         let added = Command::new("git")
             .arg("-C")
             .arg(&main)
-            .args(["worktree", "add", "--quiet", "-b", "wt", ".claude/worktrees/agent-x"])
+            .args([
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "wt",
+                ".claude/worktrees/agent-x",
+            ])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
@@ -1272,7 +1281,8 @@ mod tests {
 
     #[test]
     fn git_last_commit_time_returns_some_in_real_repo() {
-        let tmp = std::env::temp_dir().join(format!("gsd_git_ops_test_repo_{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_git_ops_test_repo_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -1315,7 +1325,10 @@ mod tests {
         std::fs::write(tmp.join(".planning").join("STATE.md"), "state").unwrap();
 
         let result = mtime_last_activity(&tmp);
-        assert!(result.is_some(), "expected Some from freshly-written .planning file");
+        assert!(
+            result.is_some(),
+            "expected Some from freshly-written .planning file"
+        );
 
         let now = chrono::Utc::now();
         let dt = result.unwrap();
@@ -1404,8 +1417,8 @@ mod tests {
 
     #[test]
     fn both_new_helpers_return_none_for_a_non_git_dir_without_erroring() {
-        let tmp = std::env::temp_dir()
-            .join(format!("gsd_git_ops_test_headnogit_{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_git_ops_test_headnogit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -1460,7 +1473,12 @@ mod tests {
 
         assert!(git_ok(
             root,
-            &["remote", "add", "origin", "https://example.invalid/demo.git"]
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/demo.git"
+            ]
         ));
         assert!(git_ok(
             root,
@@ -1507,7 +1525,12 @@ mod tests {
         let root = repo.path();
         assert!(git_ok(
             root,
-            &["remote", "add", "origin", "https://example.invalid/demo.git"]
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/demo.git"
+            ]
         ));
         assert!(git_ok(root, &["checkout", "--detach"]));
 
@@ -1563,7 +1586,12 @@ mod tests {
 
         assert!(git_ok(
             root,
-            &["remote", "add", "origin", "https://example.invalid/demo.git"]
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/demo.git"
+            ]
         ));
         assert!(git_ok(
             root,
@@ -1644,16 +1672,13 @@ mod tests {
             WorkingTreeStat::default(),
             "a directory that is not a repository has an empty preview, never an error"
         );
-        assert!(
-            current_branch(tmp.path()).is_none(),
-            "and no branch either"
-        );
+        assert!(current_branch(tmp.path()).is_none(), "and no branch either");
     }
 
     #[test]
     fn project_last_activity_falls_back_to_mtime_for_non_git_dir() {
-        let tmp = std::env::temp_dir()
-            .join(format!("gsd_git_ops_test_activity_{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_git_ops_test_activity_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join(".planning")).unwrap();
         std::fs::write(tmp.join(".planning").join("STATE.md"), "state").unwrap();
@@ -1860,9 +1885,17 @@ mod tests {
 
         // One assertion per refused value: each is something git itself would
         // happily accept, which is exactly why it must not reach argv.
-        assert_eq!(commits_ahead(repo.path(), "HEAD~1"), None, "a ref expression");
+        assert_eq!(
+            commits_ahead(repo.path(), "HEAD~1"),
+            None,
+            "a ref expression"
+        );
         assert_eq!(commits_ahead(repo.path(), "--output=x"), None, "an option");
-        assert_eq!(commits_ahead(repo.path(), &first[..39]), None, "39 hex chars");
+        assert_eq!(
+            commits_ahead(repo.path(), &first[..39]),
+            None,
+            "39 hex chars"
+        );
         assert_eq!(
             commits_ahead(repo.path(), &first.to_uppercase()),
             None,
@@ -1903,7 +1936,13 @@ mod tests {
         };
         // Each is a range git itself would accept, which is exactly why it must
         // not reach argv: a ref name, an option, a relative ref, a short sha.
-        for range in ["main", "--all", "HEAD~3..HEAD", "abc..HEAD", "--output=x..HEAD"] {
+        for range in [
+            "main",
+            "--all",
+            "HEAD~3..HEAD",
+            "abc..HEAD",
+            "--output=x..HEAD",
+        ] {
             assert_eq!(
                 log_subjects(repo.path(), range, 50),
                 Vec::<String>::new(),
@@ -1918,7 +1957,10 @@ mod tests {
             return;
         };
         let first = head_sha(repo.path()).expect("a repo with one commit has a HEAD");
-        for (file, subject) in [("a.txt", "feat(13-17): add a"), ("b.txt", "docs(13-17): summary")] {
+        for (file, subject) in [
+            ("a.txt", "feat(13-17): add a"),
+            ("b.txt", "docs(13-17): summary"),
+        ] {
             std::fs::write(repo.path().join(file), subject).unwrap();
             assert!(git_ok(repo.path(), &["add", file]));
             assert!(git_ok(repo.path(), &["commit", "-m", subject, "--quiet"]));

@@ -1910,7 +1910,12 @@ mod tests {
 
     const CROSS_FOLD_BANDS: BSpec<'static> = &[
         ("v1 Foundations", true, 8, &[]),
-        ("v2 Core booking", true, 6, &["8", "9", "10", "11", "12", "13"]),
+        (
+            "v2 Core booking",
+            true,
+            6,
+            &["8", "9", "10", "11", "12", "13"],
+        ),
         (
             "v3 Live booking, support chat and Telegram",
             false,
@@ -1954,9 +1959,10 @@ mod tests {
         // 14 is the first visible phase row, on lane 0.
         assert_eq!(phase_lanes(&model).first(), Some(&0));
         let fourteen = idx(&model, "14");
-        assert!(model.rows.iter().any(
-            |row| matches!(row, ListRow::Phase { node, lane: 0, .. } if *node == fourteen)
-        ));
+        assert!(model
+            .rows
+            .iter()
+            .any(|row| matches!(row, ListRow::Phase { node, lane: 0, .. } if *node == fourteen)));
 
         let both = build(CROSS_FOLD, CROSS_FOLD_BANDS, &toggles(&[v3_key()]));
         let g1b: &[&str] = &[
@@ -2150,7 +2156,10 @@ mod tests {
         assert_each_phase_once(&model);
         assert_eq!(model.notes.len(), 1, "{:?}", model.notes);
         let note = &model.notes[0];
-        assert!(note.starts_with("dependency cycles: 5 (edges ignored): "), "{note}");
+        assert!(
+            note.starts_with("dependency cycles: 5 (edges ignored): "),
+            "{note}"
+        );
         assert!(note.ends_with("; +2 more"), "{note}");
         assert_eq!(facts(&model, "9").external, vec!["99".to_string()]);
 
@@ -2555,8 +2564,10 @@ mod tests {
             assert_eq!(model.target_at(model.rows.len()), None, "past the end");
             assert_eq!(model.target_at(usize::MAX), None);
         }
-        assert!(bands > 0 && shipped > 0 && phases > 0 && connectors > 0,
-            "the fixtures cover every row kind: {bands} {shipped} {phases} {connectors}");
+        assert!(
+            bands > 0 && shipped > 0 && phases > 0 && connectors > 0,
+            "the fixtures cover every row kind: {bands} {shipped} {phases} {connectors}"
+        );
     }
 
     #[test]

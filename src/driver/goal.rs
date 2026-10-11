@@ -643,7 +643,10 @@ pub fn legality(
     if raw_steps.len() > max_steps as usize {
         return Err(GoalRefusal::new(
             GoalReason::PlanExceedsStepCap,
-            format!("{} steps against a resolved cap of {max_steps}", raw_steps.len()),
+            format!(
+                "{} steps against a resolved cap of {max_steps}",
+                raw_steps.len()
+            ),
         ));
     }
 
@@ -653,8 +656,9 @@ pub fn legality(
             .get(FIELD_COMMAND)
             .and_then(|value| value.as_str())
             .ok_or_else(|| GoalRefusal::new(GoalReason::MalformedPayload, FIELD_COMMAND))?;
-        let command = parse_action(named_command)
-            .map_err(|unknown| GoalRefusal::new(GoalReason::CommandNotInAlphabet, unknown.named()))?;
+        let command = parse_action(named_command).map_err(|unknown| {
+            GoalRefusal::new(GoalReason::CommandNotInAlphabet, unknown.named())
+        })?;
 
         let named_phase = raw
             .get(FIELD_PHASE)
@@ -908,7 +912,8 @@ mod tests {
 
         let rendered = refusal.to_string();
         assert!(
-            !rendered.contains(&format!(" {hostile} ")) && !rendered.contains(&format!("{hostile} ")),
+            !rendered.contains(&format!(" {hostile} "))
+                && !rendered.contains(&format!("{hostile} ")),
             "the rendering must not reproduce the named value as a bare, \
              space-separated command line a reader could paste (WR-09); got: {rendered}"
         );
@@ -1103,10 +1108,7 @@ mod tests {
         )
         .expect_err("a path-traversal phase is refused");
 
-        assert_eq!(
-            refusal.reason().as_str(),
-            REASON_PHASE_NOT_PLAIN_COMPONENT
-        );
+        assert_eq!(refusal.reason().as_str(), REASON_PHASE_NOT_PLAIN_COMPONENT);
         assert_eq!(refusal.offending(), hostile);
     }
 
@@ -1195,11 +1197,7 @@ mod tests {
         // at `expect_err`.
         let unreducible = "when the maintainer is happy with it";
         let refusal = legality(
-            &payload(vec![step(
-                router::COMMAND_EXECUTE_PHASE,
-                "22",
-                unreducible,
-            )]),
+            &payload(vec![step(router::COMMAND_EXECUTE_PHASE, "22", unreducible)]),
             PHASES,
             resolved_cap(None),
         )
@@ -1258,8 +1256,12 @@ mod tests {
 
     #[test]
     fn a_payload_that_is_not_a_plan_is_refused() {
-        let refusal = legality(&serde_json::json!({ "note": "hi" }), PHASES, resolved_cap(None))
-            .expect_err("a payload with no steps array is refused");
+        let refusal = legality(
+            &serde_json::json!({ "note": "hi" }),
+            PHASES,
+            resolved_cap(None),
+        )
+        .expect_err("a payload with no steps array is refused");
         assert_eq!(refusal.reason().as_str(), REASON_MALFORMED_PAYLOAD);
     }
 
@@ -1283,9 +1285,21 @@ mod tests {
         );
 
         let three = payload(vec![
-            step(router::COMMAND_DISCUSS_PHASE, "22", TERMINAL_VERIFICATION_PASSED),
-            step(router::COMMAND_PLAN_PHASE, "22", TERMINAL_VERIFICATION_PASSED),
-            step(router::COMMAND_EXECUTE_PHASE, "22", TERMINAL_VERIFICATION_PASSED),
+            step(
+                router::COMMAND_DISCUSS_PHASE,
+                "22",
+                TERMINAL_VERIFICATION_PASSED,
+            ),
+            step(
+                router::COMMAND_PLAN_PHASE,
+                "22",
+                TERMINAL_VERIFICATION_PASSED,
+            ),
+            step(
+                router::COMMAND_EXECUTE_PHASE,
+                "22",
+                TERMINAL_VERIFICATION_PASSED,
+            ),
         ]);
 
         let refusal = legality(&three, PHASES, cap)
@@ -1345,7 +1359,11 @@ mod tests {
         // would not catch.
         let mut unique = from_arms.clone();
         unique.dedup();
-        assert_eq!(unique.len(), from_arms.len(), "two arms share an identifier");
+        assert_eq!(
+            unique.len(),
+            from_arms.len(),
+            "two arms share an identifier"
+        );
     }
 
     #[test]
@@ -1385,10 +1403,18 @@ mod tests {
         };
 
         let cap = resolved_cap(None);
-        let a = legality(&two(router::COMMAND_PLAN_PHASE, router::COMMAND_EXECUTE_PHASE), PHASES, cap)
-            .expect("legal");
-        let b = legality(&two(router::COMMAND_PLAN_PHASE, router::COMMAND_EXECUTE_PHASE), PHASES, cap)
-            .expect("legal");
+        let a = legality(
+            &two(router::COMMAND_PLAN_PHASE, router::COMMAND_EXECUTE_PHASE),
+            PHASES,
+            cap,
+        )
+        .expect("legal");
+        let b = legality(
+            &two(router::COMMAND_PLAN_PHASE, router::COMMAND_EXECUTE_PHASE),
+            PHASES,
+            cap,
+        )
+        .expect("legal");
         assert_eq!(
             plan_digest(&a),
             plan_digest(&b),

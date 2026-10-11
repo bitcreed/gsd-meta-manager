@@ -157,7 +157,8 @@ fn permits(command: &str) {
          resolution that denied what it did not recognise would deny this and make a \
          driven run unusable — which is how a safety control gets switched off. \
          stdout: {} stderr: {}",
-        answer.stdout, answer.stderr
+        answer.stdout,
+        answer.stderr
     );
     assert!(
         answer.stdout.is_empty(),
@@ -220,7 +221,10 @@ fn an_envelope_config_assignment_prefix_is_refused_on_its_own_account() {
     // And the refusal names the key, so the row cannot pass by being refused
     // under `hook_bypass_blocked` for some unrelated hook-bypass cause.
     let envelope = TempDir::new().unwrap();
-    let answer = ask(envelope.path(), "GIT_CONFIG_COUNT=0 git push --force origin main");
+    let answer = ask(
+        envelope.path(),
+        "GIT_CONFIG_COUNT=0 git push --force origin main",
+    );
     assert!(
         answer.reason().contains("GIT_CONFIG_COUNT"),
         "the refusal must name the key it refused, or a later reader cannot tell which \

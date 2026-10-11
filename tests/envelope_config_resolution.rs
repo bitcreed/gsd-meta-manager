@@ -436,7 +436,8 @@ fn refuses_in(project_root: Option<&Path>, command: &str, reason: &str, why: &st
     let answer = ask_in(envelope.path(), project_root, command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "\n\n`{command}` must be REFUSED.\n\n{why}\n\n\
          It was measured against the BUILT BINARY at this file's base commit with a fresh \
          envelope root and a walk after, and every precedence claim behind it was confirmed \
@@ -942,9 +943,7 @@ fn after_19_23_the_environment_carrier_of_configuration_is_refused() {
     //    verdict is derivable from the same discriminator.
     refuses_in(
         Some(&work),
-        &format!(
-            "GIT_CONFIG_PARAMETERS=\"'include.path=/tmp/evil.cfg'\" git {IN_NAMESPACE_PUSH}"
-        ),
+        &format!("GIT_CONFIG_PARAMETERS=\"'include.path=/tmp/evil.cfg'\" git {IN_NAMESPACE_PUSH}"),
         policy::REASON_HOOK_BYPASS_BLOCKED,
         T_19_104_DERIVATION,
     );
@@ -1473,7 +1472,8 @@ fn after_19_23_the_environment_carrier_the_envelope_did_not_set_is_refused_by_th
 }
 
 #[test]
-fn after_19_23_the_indirection_carrier_on_a_force_base_keeps_its_verdict_and_moves_its_identifier() {
+fn after_19_23_the_indirection_carrier_on_a_force_base_keeps_its_verdict_and_moves_its_identifier()
+{
     // ROW 2, MEASURED against the built binary after `19-23`'s rules:
     // **exit 2 `envelope_assertion_failed`**, walk EMPTY. It was exit 2
     // `force_push_blocked` before — **the VERDICT did not move and the IDENTIFIER
@@ -1582,7 +1582,10 @@ fn rule_b_still_reports_a_severed_head_as_not_a_command_position() {
              \n  last    : {:?}\n\
              \nThe correct response is to restore the flush flag for `}}` and `)`, never to \
              delete this test.",
-            last.tokens.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            last.tokens
+                .iter()
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -1703,7 +1706,10 @@ fn a_redirection_operator_is_not_a_separator_and_this_round_must_not_make_it_one
         "`>` must NOT become a separator. Splitting there would hide the command being \
          redirected, which is worse than the defect it would close."
     );
-    assert!(!policy::is_separator("<"), "`<` must NOT become a separator");
+    assert!(
+        !policy::is_separator("<"),
+        "`<` must NOT become a separator"
+    );
     assert!(
         !policy::is_separator(">>"),
         "`>>` must NOT become a separator"
@@ -1817,8 +1823,14 @@ fn real_git_resolves_an_include_directive_above_the_envelopes_own_injection() {
 
     // -- THE COMMAND-LINE CARRIERS, both sections and both spellings.
     for (label, args) in [
-        ("-c include.path=<file>", vec![format!("include.path={evil}")]),
-        ("-c INCLUDE.PATH=<file>", vec![format!("INCLUDE.PATH={evil}")]),
+        (
+            "-c include.path=<file>",
+            vec![format!("include.path={evil}")],
+        ),
+        (
+            "-c INCLUDE.PATH=<file>",
+            vec![format!("INCLUDE.PATH={evil}")],
+        ),
         (
             "-c includeIf.gitdir:<p>.path=<file>",
             vec![format!(
@@ -2019,7 +2031,11 @@ fn a_config_indirection_carries_a_refused_push_past_the_hook_and_moves_a_bare_re
 
     for name in ["pre-push", "pre-commit"] {
         let path = hooks.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\necho '{name}: REFUSED' >&2\nexit 1\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho '{name}: REFUSED' >&2\nexit 1\n"),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2105,11 +2121,17 @@ fn a_config_indirection_carries_a_refused_push_past_the_hook_and_moves_a_bare_re
     git_ok(&work, &["commit", "-qam", "c3", "--no-verify"]);
     let before = remote_sha(&upstream);
     let ok = run(
-        &[("GIT_CONFIG_PARAMETERS", "'core.hooksPath=/nonexistent-hooks-dir'")],
+        &[(
+            "GIT_CONFIG_PARAMETERS",
+            "'core.hooksPath=/nonexistent-hooks-dir'",
+        )],
         &["push", "origin", "refs/heads/gsd-auto/alpha/w"],
     );
     let after = remote_sha(&upstream);
-    assert!(ok, "LEG 3: the `GIT_CONFIG_PARAMETERS` carrier must carry the push to completion");
+    assert!(
+        ok,
+        "LEG 3: the `GIT_CONFIG_PARAMETERS` carrier must carry the push to completion"
+    );
     assert_ne!(
         before, after,
         "LEG 3: and the bare remote's ref must MOVE. before={before} after={after}\n\n\
@@ -2124,7 +2146,9 @@ fn a_config_indirection_carries_a_refused_push_past_the_hook_and_moves_a_bare_re
         .args(["rev-parse", "HEAD"])
         .output()
         .expect("git is on PATH");
-    let head_before = String::from_utf8_lossy(&head_before.stdout).trim().to_string();
+    let head_before = String::from_utf8_lossy(&head_before.stdout)
+        .trim()
+        .to_string();
     assert!(
         !run(&[], &["commit", "-qam", "c4"]),
         "LEG 4: the control commit must be REFUSED by the `pre-commit` hook"
@@ -2147,7 +2171,9 @@ fn a_config_indirection_carries_a_refused_push_past_the_hook_and_moves_a_bare_re
         .args(["rev-parse", "HEAD"])
         .output()
         .expect("git is on PATH");
-    let head_after = String::from_utf8_lossy(&head_after.stdout).trim().to_string();
+    let head_after = String::from_utf8_lossy(&head_after.stdout)
+        .trim()
+        .to_string();
     assert_ne!(
         head_before, head_after,
         "LEG 4: HEAD must have MOVED. before={head_before} after={head_after}"
@@ -2181,9 +2207,7 @@ fn git_config_nosystem_defeats_a_key_the_envelope_sets_and_the_harm_is_inert() {
 
     let helper = |extra: &[(&str, &str)]| {
         let mut command = std::process::Command::new("git");
-        command
-            .current_dir(&repo)
-            .env("GIT_CONFIG_SYSTEM", &system);
+        command.current_dir(&repo).env("GIT_CONFIG_SYSTEM", &system);
         for (key, value) in extra {
             command.env(key, value);
         }

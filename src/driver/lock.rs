@@ -208,7 +208,10 @@ pub fn acquire(planning_dir: &Path, run_id: &str, pgid: u32) -> Result<RunLock, 
     // this process holds would go on protecting a file nobody can see while the
     // path it names is unlocked — silently handing the lock away.
     write_holder(&mut file, &holder).map_err(|err| LockError::Unavailable {
-        detail: format!("could not record the lock holder in {}: {err}", path.display()),
+        detail: format!(
+            "could not record the lock holder in {}: {err}",
+            path.display()
+        ),
     })?;
 
     Ok(RunLock { file, holder })
@@ -315,7 +318,8 @@ mod tests {
         assert_eq!(lock.holder().run_id, "2026-07-29T12-00-00Z-a3f9");
         assert_eq!(lock.holder().pgid, 4242);
 
-        let read_back = read_holder(&planning_dir).expect("the record the winner wrote is readable");
+        let read_back =
+            read_holder(&planning_dir).expect("the record the winner wrote is readable");
         assert_eq!(
             &read_back,
             lock.holder(),

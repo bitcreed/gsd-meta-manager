@@ -166,7 +166,8 @@ impl<'a> Widget for RoadmapWidget<'a> {
                 );
                 let suffix = format!("  {}", plan_display);
                 let inner_width = box_width.saturating_sub(2); // content between vertical bars
-                let name_max = inner_width.saturating_sub(prefix.chars().count() + suffix.chars().count());
+                let name_max =
+                    inner_width.saturating_sub(prefix.chars().count() + suffix.chars().count());
 
                 let name_shown: String = crate::text::render_for_terminal(&phase.name).into();
                 let name_truncated = if name_shown.chars().count() > name_max {

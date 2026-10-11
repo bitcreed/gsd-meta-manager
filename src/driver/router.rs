@@ -64,8 +64,8 @@
 //! command is `"{verb} {phase}"`, so no flag is constructible.
 
 use crate::state_reader::disk_status::{DiskInference, DiskStatus};
-use crate::state_reader::state_md;
 use crate::state_reader::phase_num::same_phase;
+use crate::state_reader::state_md;
 use crate::state_reader::ProjectState;
 
 /// The rules do not cover the observed state.
@@ -188,9 +188,7 @@ impl RouterReason {
             RouterReason::GateStaleCheckIndeterminate => REASON_GATE_STALE_CHECK_INDETERMINATE,
             RouterReason::GateUatOutstanding => REASON_GATE_UAT_OUTSTANDING,
             RouterReason::GateContinueHereProject => REASON_GATE_CONTINUE_HERE_PROJECT,
-            RouterReason::GateContinueHerePhaseBlocking => {
-                REASON_GATE_CONTINUE_HERE_PHASE_BLOCKING
-            }
+            RouterReason::GateContinueHerePhaseBlocking => REASON_GATE_CONTINUE_HERE_PHASE_BLOCKING,
             RouterReason::GateStateError => REASON_GATE_STATE_ERROR,
             RouterReason::GateDeferredVerification => REASON_GATE_DEFERRED_VERIFICATION,
             RouterReason::GatePhasePartial => REASON_GATE_PHASE_PARTIAL,
@@ -805,7 +803,11 @@ fn reaches(state: &ProjectState, from: &str, to: &str, visited: &mut Vec<String>
     let Some(phase) = state.roadmap_phase(from) else {
         return false;
     };
-    if phase.depends_on.iter().any(|dependency| same_phase(dependency, to)) {
+    if phase
+        .depends_on
+        .iter()
+        .any(|dependency| same_phase(dependency, to))
+    {
         return true;
     }
     phase
@@ -1081,7 +1083,10 @@ mod tests {
                         row.action.command_for("20"),
                         "a row must route to its own action's command"
                     );
-                    assert_eq!(rationale, row.rationale, "a row must carry its own rationale");
+                    assert_eq!(
+                        rationale, row.rationale,
+                        "a row must carry its own rationale"
+                    );
                     produced.push(row.action);
                 }
                 other => panic!(
@@ -1340,7 +1345,9 @@ mod tests {
 
         // A padded `Depends on` that is NOT complete still parks, naming the
         // dependency as written — normalising must not satisfy it for free.
-        state.phase_disk_statuses.insert("7".to_string(), DiskInference::default());
+        state
+            .phase_disk_statuses
+            .insert("7".to_string(), DiskInference::default());
         assert_eq!(
             decide(&state, "07.1"),
             Decision::Park {

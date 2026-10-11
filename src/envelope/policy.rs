@@ -477,7 +477,10 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
             // Both callers inherit the refusal, which is the point of there
             // being one scan.
             let key = config_key_of(assignment);
-            if key.chars().any(|ch| REWRITING_CHARACTERS.contains(&ch) || ch == '{') {
+            if key
+                .chars()
+                .any(|ch| REWRITING_CHARACTERS.contains(&ch) || ch == '{')
+            {
                 return (
                     index,
                     Some(refuse(
@@ -1823,7 +1826,8 @@ fn classify_push(rest: &[&str], ctx: &GitContext) -> GitVerdict {
             );
         }
         for dest in &ctx.resolved_push_dests {
-            if let PushVerdict::Refuse { reason, ref_name } = classify_push_ref(dest, &ctx.namespace)
+            if let PushVerdict::Refuse { reason, ref_name } =
+                classify_push_ref(dest, &ctx.namespace)
             {
                 return refuse(
                     ParkReason::PushOutsideNamespace,
@@ -2364,7 +2368,11 @@ pub fn resolve_push_context(project_root: &Path, namespace: &str) -> GitContext 
     let resolved_push_dests = preview
         .refspecs
         .iter()
-        .filter_map(|refspec| refspec.split_once(':').map(|(_, dst)| dst.trim().to_string()))
+        .filter_map(|refspec| {
+            refspec
+                .split_once(':')
+                .map(|(_, dst)| dst.trim().to_string())
+        })
         .filter(|dst| !dst.is_empty())
         .collect();
 
@@ -3387,7 +3395,10 @@ fn brace_alternatives(contents: &str) -> BracePair {
             };
             return BracePair::Expansion(range);
         }
-        let (from, to) = (from.chars().collect::<Vec<_>>(), to.chars().collect::<Vec<_>>());
+        let (from, to) = (
+            from.chars().collect::<Vec<_>>(),
+            to.chars().collect::<Vec<_>>(),
+        );
         if from.len() != 1 || to.len() != 1 {
             return BracePair::Unenumerable;
         }
@@ -3396,7 +3407,10 @@ fn brace_alternatives(contents: &str) -> BracePair {
             return BracePair::Unenumerable;
         }
         let range: Vec<String> = if from <= to {
-            (from..=to).filter_map(char::from_u32).map(String::from).collect()
+            (from..=to)
+                .filter_map(char::from_u32)
+                .map(String::from)
+                .collect()
         } else {
             (to..=from)
                 .rev()
@@ -4893,7 +4907,7 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
             detail: "this command's program is assembled by shell expansion, so what it \
                      will run is not knowable before it runs; refused rather than guessed \
                      at"
-                .to_string(),
+            .to_string(),
         };
     }
 
@@ -5466,9 +5480,10 @@ pub fn first_unreadable_decision_word(segment: &[Token], governed: usize) -> Opt
                 }
                 for (offset, word) in rest.iter().enumerate() {
                     if api_flag_ness_is_unreadable(word) {
-                        if let Some(found) =
-                            at(rest_start + offset, "a `gh api` word whose flag-ness decides")
-                        {
+                        if let Some(found) = at(
+                            rest_start + offset,
+                            "a `gh api` word whose flag-ness decides",
+                        ) {
                             return Some(found);
                         }
                     }
@@ -5792,7 +5807,10 @@ fn gh_api_posts_a_pull_request(rest: &[&str]) -> bool {
         None => scan.implies_post,
     };
 
-    posts && scan.endpoint.is_some_and(|index| endpoint_is_pulls(rest[index]))
+    posts
+        && scan
+            .endpoint
+            .is_some_and(|index| endpoint_is_pulls(rest[index]))
 }
 
 /// Whether an endpoint names the pull-request collection.
@@ -7196,8 +7214,7 @@ mod tests {
                 reason: got,
                 detail,
             } => assert_eq!(
-                got,
-                reason,
+                got, reason,
                 "{argv:?} is refused for the wrong reason; a park reason that does not \
                  match the refusal sends a later reader to the wrong recovery. detail: {detail}"
             ),
@@ -7707,7 +7724,10 @@ mod tests {
 
     #[test]
     fn an_empty_quoted_word_is_a_word_and_an_empty_line_is_no_words() {
-        assert_eq!(split_command(r#"echo "" x"#).unwrap(), vec!["echo", "", "x"]);
+        assert_eq!(
+            split_command(r#"echo "" x"#).unwrap(),
+            vec!["echo", "", "x"]
+        );
         assert!(split_command("   ").unwrap().is_empty());
     }
 
@@ -7736,9 +7756,7 @@ mod tests {
         {
             None => BraceCase::Absorbed,
             Some(open) if open.brace_splice => BraceCase::Spliced {
-                produces_governed: tokens
-                    .iter()
-                    .any(|token| token.splice_can_produce_governed),
+                produces_governed: tokens.iter().any(|token| token.splice_can_produce_governed),
             },
             Some(open) => BraceCase::PassedThrough {
                 flush: open.word_splitting_flush,
@@ -7806,14 +7824,20 @@ mod tests {
         //
         // Measured: `printf "[%s]" repos/{owner}/{repo}/pulls` prints
         // `[repos/{owner}/{repo}/pulls]` — bash passes the pair through.
-        assert_eq!(brace_case("repos/{owner}/{repo}/pulls"), BraceCase::Absorbed);
+        assert_eq!(
+            brace_case("repos/{owner}/{repo}/pulls"),
+            BraceCase::Absorbed
+        );
         assert_eq!(
             words("gh api repos/{owner}/{repo}/pulls -f title=x"),
             vec!["gh", "api", "repos/{owner}/{repo}/pulls", "-f", "title=x"],
             "the endpoint must reach `scan_gh_api` as ONE word, or `endpoint_is_pulls` \
              cannot read it and the creation is never COUNTED (`T-19-93`)"
         );
-        assert_eq!(brace_case("git reflog delete HEAD@{0}"), BraceCase::Absorbed);
+        assert_eq!(
+            brace_case("git reflog delete HEAD@{0}"),
+            BraceCase::Absorbed
+        );
         assert_eq!(
             words("git reflog delete HEAD@{0}"),
             vec!["git", "reflog", "delete", "HEAD@{0}"]
@@ -7870,7 +7894,10 @@ mod tests {
         assert_eq!(products_of("{a..d}"), some(&["a", "b", "c", "d"]));
         assert_eq!(products_of("{1..3}"), some(&["1", "2", "3"]));
         assert_eq!(products_of("x{,.bak}"), some(&["x", "x.bak"]));
-        assert_eq!(products_of("{git,svn}-repo"), some(&["git-repo", "svn-repo"]));
+        assert_eq!(
+            products_of("{git,svn}-repo"),
+            some(&["git-repo", "svn-repo"])
+        );
         assert_eq!(products_of("{git,x}"), some(&["git", "x"]));
 
         // The six that PRODUCE `git`, none of which any alternative spells.
@@ -7913,8 +7940,16 @@ mod tests {
         assert_eq!(products_of("{a,b}*"), None, "a glob in a literal run");
         assert_eq!(products_of("{a,b}~"), None, "a tilde in a literal run");
         assert_eq!(products_of("{$X,b}"), None, "a `$` inside an alternative");
-        assert_eq!(products_of("{a..zzz}"), None, "endpoints that are not single characters");
-        assert_eq!(products_of("{1..9999}"), None, "a range over the product cap");
+        assert_eq!(
+            products_of("{a..zzz}"),
+            None,
+            "endpoints that are not single characters"
+        );
+        assert_eq!(
+            products_of("{1..9999}"),
+            None,
+            "a range over the product cap"
+        );
 
         // The extent stops at unquoted whitespace and at a REAL command
         // operator, and NEVER at a `{` or a `}`.
@@ -8161,11 +8196,7 @@ mod tests {
                 vec!["git", "commit", "-m", ">"],
                 false,
             ),
-            (
-                "git log --grep='>'",
-                vec!["git", "log", "--grep=>"],
-                false,
-            ),
+            ("git log --grep='>'", vec!["git", "log", "--grep=>"], false),
             ("rg \">\" src/", vec!["rg", ">", "src/"], false),
             // A BACKSLASH-escaped operator is a literal character too:
             // `ARGV[git]: [>x] [push]`, measured.
@@ -8319,7 +8350,11 @@ mod tests {
     #[test]
     fn a_raw_api_post_to_a_pulls_path_is_recognised_in_both_its_spellings() {
         assert!(classify_pr_command(&[
-            "gh", "api", "-X", "POST", "repos/o/r/pulls"
+            "gh",
+            "api",
+            "-X",
+            "POST",
+            "repos/o/r/pulls"
         ]));
         assert!(classify_pr_command(&[
             "gh",
@@ -8710,7 +8745,15 @@ mod tests {
         ));
         assert!(matches!(
             classify_git(
-                &["submodule", "foreach", "git", "push", "--force", "origin", "main"],
+                &[
+                    "submodule",
+                    "foreach",
+                    "git",
+                    "push",
+                    "--force",
+                    "origin",
+                    "main"
+                ],
                 &ctx()
             ),
             GitVerdict::Allow
@@ -9051,11 +9094,8 @@ mod tests {
         // asserts an ABSENCE, so a false positive here fails CLOSED — it would
         // demand a spawn be moved or deleted, never permit one — and the
         // stricter matcher is therefore not needed to keep the control sound.
-        const SPAWN_MARKERS: &[&str] = &[
-            "Command::new(",
-            "process_group(",
-            "CommandWrap::with_new(",
-        ];
+        const SPAWN_MARKERS: &[&str] =
+            &["Command::new(", "process_group(", "CommandWrap::with_new("];
 
         // Everything above the FIRST `#[cfg(test)]` line is the production half.
         // This is the same sentinel `tests/envelope_wrapper_class.rs`'s
@@ -9607,7 +9647,8 @@ mod tests {
         //
         // The mechanism behind those two rows is asserted here directly, which is
         // stronger than the ledger walk because it names WHY they differ.
-        let with_entry = subcommand_words(&["--hostname", "gitlab.com", "mr", "create", "--title", "x"]);
+        let with_entry =
+            subcommand_words(&["--hostname", "gitlab.com", "mr", "create", "--title", "x"]);
         assert_eq!(
             with_entry,
             vec!["mr", "create", "x"],
@@ -9615,12 +9656,21 @@ mod tests {
              form is COUNTED. Measured: this spelling leaves exactly ONE pr-ledger line."
         );
         assert!(
-            classify_pr_command(&["glab", "--hostname", "gitlab.com", "mr", "create", "--title", "x"]),
+            classify_pr_command(&[
+                "glab",
+                "--hostname",
+                "gitlab.com",
+                "mr",
+                "create",
+                "--title",
+                "x"
+            ]),
             "**REMOVING `--hostname` WOULD BE A REGRESSION IN THE UNDER-COUNTING DIRECTION.** \
              With the entry present this creation form is counted; without it the option's \
              VALUE becomes the first subcommand word and it is not."
         );
-        let without_entry = subcommand_words(&["--host", "gitlab.com", "mr", "create", "--title", "x"]);
+        let without_entry =
+            subcommand_words(&["--host", "gitlab.com", "mr", "create", "--title", "x"]);
         assert_eq!(
             without_entry,
             vec!["gitlab.com", "mr", "create", "x"],
@@ -9631,7 +9681,15 @@ mod tests {
              installed and a pin that skips is fail-open."
         );
         assert!(
-            !classify_pr_command(&["glab", "--host", "gitlab.com", "mr", "create", "--title", "x"]),
+            !classify_pr_command(&[
+                "glab",
+                "--host",
+                "gitlab.com",
+                "mr",
+                "create",
+                "--title",
+                "x"
+            ]),
             "the uncounted control must stay uncounted, or the two rows do not discriminate."
         );
 
@@ -9845,8 +9903,7 @@ mod tests {
 
         let mut command = std::process::Command::new("git");
         command.args(&args).current_dir(scratch);
-        for (key, value) in
-            crate::envelope::cred::hooks_path_env(std::path::Path::new("/ENV_WINS"))
+        for (key, value) in crate::envelope::cred::hooks_path_env(std::path::Path::new("/ENV_WINS"))
         {
             command.env(key, value);
         }
@@ -9944,10 +10001,7 @@ mod tests {
         let defeated_by_parameters = resolves_hooks_path_under_injection(
             scratch.path(),
             &[],
-            &[(
-                "GIT_CONFIG_PARAMETERS",
-                "'core.hooksPath=/PARAM_WINS'",
-            )],
+            &[("GIT_CONFIG_PARAMETERS", "'core.hooksPath=/PARAM_WINS'")],
         );
         assert_eq!(
             defeated_by_parameters, "/PARAM_WINS",
@@ -10057,8 +10111,7 @@ mod tests {
             .output()
             .expect("the defeating-keys pin requires a real `git` on PATH");
         assert!(
-            !out.status.success()
-                && String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+            !out.status.success() && String::from_utf8_lossy(&out.stdout).trim().is_empty(),
             "with the system read suppressed, the envelope's own generated config must still \
              resolve NO credential helper — because the global pointer names the same \
              helper-free file. Got: {}",
@@ -10290,7 +10343,10 @@ mod tests {
 
         // The section split itself is git's own rule — the FIRST `.` — and a key
         // with none names no section at all.
-        assert_eq!(config_key_section("includeIf.gitdir:/x/.path"), Some("includeIf"));
+        assert_eq!(
+            config_key_section("includeIf.gitdir:/x/.path"),
+            Some("includeIf")
+        );
         assert_eq!(config_key_section("include.path"), Some("include"));
         assert_eq!(
             config_key_section("a"),
@@ -10319,8 +10375,7 @@ mod tests {
     ) -> String {
         let mut command = std::process::Command::new("git");
         command.args(args).current_dir(scratch);
-        for (key, value) in
-            crate::envelope::cred::hooks_path_env(std::path::Path::new("/ENV_WINS"))
+        for (key, value) in crate::envelope::cred::hooks_path_env(std::path::Path::new("/ENV_WINS"))
         {
             command.env(key, value);
         }
@@ -10368,11 +10423,8 @@ mod tests {
         // --- the NON-VACUITY CONTROL. Without it every "the body's own carrier
         //     wins" assertion below could be passing on a probe that never
         //     observed the envelope's injection at all.
-        let control = git_says_under_injection(
-            scratch.path(),
-            &["config", "--get", "core.hooksPath"],
-            &[],
-        );
+        let control =
+            git_says_under_injection(scratch.path(), &["config", "--get", "core.hooksPath"], &[]);
         assert_eq!(
             control, "/ENV_WINS",
             "the envelope's own `hooks_path_env` triplet must resolve `core.hooksPath` to its \
@@ -10970,10 +11022,10 @@ mod tests {
         const POLICY_ALL: &str = include_str!("policy.rs");
         const LEDGER: &str = include_str!("ledger.rs");
         const CRED: &str = include_str!("cred.rs");
-        let sentinel = POLICY_ALL
-            .find(concat!("#[cfg", "(test)]"))
-            .expect("`policy.rs` must carry a test sentinel; without one there is no \
-                     production half to slice");
+        let sentinel = POLICY_ALL.find(concat!("#[cfg", "(test)]")).expect(
+            "`policy.rs` must carry a test sentinel; without one there is no \
+                     production half to slice",
+        );
         let policy: &str = &POLICY_ALL[..sentinel];
         for (source, anchor, label) in [
             (policy, "pub fn protected_carrier_named", "policy.rs"),
@@ -11206,10 +11258,7 @@ mod tests {
                 "/tmp//envroot",
                 "a doubled separator, which collapses to the same vector",
             ),
-            (
-                "/tmp/envroot/./",
-                "a `/./` and a trailing slash together",
-            ),
+            ("/tmp/envroot/./", "a `/./` and a trailing slash together"),
         ] {
             assert!(
                 word_is_within(ancestor, &dir),
@@ -11448,9 +11497,7 @@ mod tests {
         assert!(
             literal
                 .iter()
-                .any(|segment| {
-                    protected_carrier_named(segment, Some(&dir), None).is_some()
-                }),
+                .any(|segment| { protected_carrier_named(segment, Some(&dir), None).is_some() }),
             "an ABSOLUTE LITERAL operand under the envelope directory IS a carrier operand."
         );
 
@@ -11463,9 +11510,7 @@ mod tests {
         assert!(
             !expanded
                 .iter()
-                .any(|segment| {
-                    protected_carrier_named(segment, Some(&dir), None).is_some()
-                }),
+                .any(|segment| { protected_carrier_named(segment, Some(&dir), None).is_some() }),
             "an EXPANSION-BORNE operand is fail-open direction (ii) and must answer `false`. \
              The guard cannot evaluate the word, and refusing every non-literal operand of an \
              ungoverned command would deny `rm $TMPDIR/x` — which is how a safety control gets \
@@ -11479,9 +11524,7 @@ mod tests {
         assert!(
             !ordinary
                 .iter()
-                .any(|segment| {
-                    protected_carrier_named(segment, Some(&dir), None).is_some()
-                }),
+                .any(|segment| { protected_carrier_named(segment, Some(&dir), None).is_some() }),
             "an ordinary operand is not a carrier operand."
         );
     }
@@ -11687,7 +11730,12 @@ mod tests {
                  directory at all."
             );
         }
-        for twin in ["-C/tmp/g", "-t/tmp/g", "host:/tmp/g", "PATH=/usr/bin:/tmp/g"] {
+        for twin in [
+            "-C/tmp/g",
+            "-t/tmp/g",
+            "host:/tmp/g",
+            "PATH=/usr/bin:/tmp/g",
+        ] {
             assert!(
                 !word_is_within(twin, &dir),
                 "`{twin}` is the same attachment over an unprotected path and must answer \
@@ -11697,8 +11745,8 @@ mod tests {
     }
 
     #[test]
-    fn a_carrier_path_behind_two_equals_signs_is_reached_because_nothing_asks_what_precedes_a_slash()
-    {
+    fn a_carrier_path_behind_two_equals_signs_is_reached_because_nothing_asks_what_precedes_a_slash(
+    ) {
         let dir = pin_envelope_dir();
         assert!(
             word_is_within("--opt=a=/tmp/envroot/alpha/x", &dir),
@@ -12316,8 +12364,8 @@ mod tests {
         // the whole simple command and stands anywhere in it, so a target that
         // arrives after a segment was already pushed must still mark that segment
         // — and must NOT mark the command after the next real operator.
-        let segments = split_segments_with_heads("ls >/tmp/first && cat /tmp/second")
-            .expect("tokenizes");
+        let segments =
+            split_segments_with_heads("ls >/tmp/first && cat /tmp/second").expect("tokenizes");
         assert_eq!(segments.len(), 2, "two simple commands");
         assert_eq!(
             segments[0].redirection_targets,
@@ -12454,7 +12502,10 @@ mod tests {
                 "cp /bin/true $(command -v gsd-meta-manager)",
                 "direction (ii) over the BINARY.",
             ),
-            ("rm -f /tmp/x", "a command that names no protected path at all."),
+            (
+                "rm -f /tmp/x",
+                "a command that names no protected path at all.",
+            ),
         ] {
             assert_eq!(
                 matched(cmd),

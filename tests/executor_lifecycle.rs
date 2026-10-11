@@ -511,7 +511,10 @@ async fn a_child_that_keeps_emitting_is_never_killed_by_the_idle_cap() {
          Observed: {elapsed:?}"
     );
     assert!(
-        !matches!(outcome, RunOutcome::Stalled { .. } | RunOutcome::TimedOut { .. }),
+        !matches!(
+            outcome,
+            RunOutcome::Stalled { .. } | RunOutcome::TimedOut { .. }
+        ),
         "a run that emits continuously is not stuck, however long it takes — this is the \
          property that makes an idle cap the correct stuck detector and time-since-spawn \
          the wrong one (D-13). Got: {outcome:?}"
@@ -614,7 +617,11 @@ async fn a_cancel_is_still_honoured_while_the_event_consumer_is_blocked() {
 
     // Both caps far out of reach: ONLY the cancel can end this run.
     let mut handle = executor
-        .start(&project, "/gsd-progress".to_string(), capped(60_000, 30_000))
+        .start(
+            &project,
+            "/gsd-progress".to_string(),
+            capped(60_000, 30_000),
+        )
         .await
         .expect("start");
 
@@ -657,7 +664,11 @@ async fn a_descendant_holding_stdout_after_the_leader_exits_cannot_hang_the_run(
     // BOTH caps far out of reach: neither deadline can be what ends this run,
     // so only the post-exit drain bound can be.
     let mut handle = executor
-        .start(&project, "/gsd-progress".to_string(), capped(60_000, 30_000))
+        .start(
+            &project,
+            "/gsd-progress".to_string(),
+            capped(60_000, 30_000),
+        )
         .await
         .expect("the orphan stand-in advertises every required capability");
 
@@ -864,7 +875,10 @@ async fn a_cli_that_announces_only_after_the_first_user_message_still_receives_i
     // Exactly once, whichever arm released it. The grace fires first here, and
     // the init it provokes must not release a second copy.
     assert_eq!(
-        written.lines().filter(|line| line.contains("/gsd-progress")).count(),
+        written
+            .lines()
+            .filter(|line| line.contains("/gsd-progress"))
+            .count(),
         1,
         "the prompt is written exactly once whichever arm released it; two copies means \
          the grace arm and the gate arm both fired. Log: {written:?}"

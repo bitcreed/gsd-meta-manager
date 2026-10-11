@@ -95,7 +95,9 @@ pub fn no_live_run_message(alias: &str) -> String {
 /// It names the fix without naming a key, so it stays true if the selection
 /// bindings change.
 pub fn not_the_selected_run_message(alias: &str) -> String {
-    format!("The selected run on \"{alias}\" is not the live one — select the live run to steer it.")
+    format!(
+        "The selected run on \"{alias}\" is not the live one — select the live run to steer it."
+    )
 }
 
 /// A one-line free-prose input aimed at one live run.

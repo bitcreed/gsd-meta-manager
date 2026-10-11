@@ -604,7 +604,10 @@ fn collect(dir: &Path, base: &Path, out: &mut Vec<SourceFile>) {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        out.push((relative, text.lines().map(|line| line.to_string()).collect()));
+        out.push((
+            relative,
+            text.lines().map(|line| line.to_string()).collect(),
+        ));
     }
 }
 
@@ -649,7 +652,11 @@ fn audit() -> (Vec<Hit>, usize, Vec<String>) {
 fn every_blocking_call_inside_an_async_fn_is_handed_off_or_allowlisted() {
     let (hits, examined, with_async) = audit();
 
-    let offenders: Vec<Hit> = hits.iter().filter(|hit| !is_allowlisted(hit)).cloned().collect();
+    let offenders: Vec<Hit> = hits
+        .iter()
+        .filter(|hit| !is_allowlisted(hit))
+        .cloned()
+        .collect();
     assert!(
         offenders.is_empty(),
         "a known-blocking call appears lexically inside an `async fn` body with no \
@@ -965,24 +972,39 @@ fn a_marker_that_merely_shares_letters_with_an_identifier_does_not_trip_the_guar
             "an identifier that merely contains a marker's letters is not a call: {line}"
         );
     }
-    assert!(!calls_marker("    let x = self.fs_read_dir(root);", "read_dir("));
+    assert!(!calls_marker(
+        "    let x = self.fs_read_dir(root);",
+        "read_dir("
+    ));
     assert!(!calls_marker("    unflock(&file);", "flock("));
 
     // The control arm, and it is not optional: a boundary check that rejected
     // everything would pass the loop above while disabling the audit outright.
-    assert!(calls_marker("    std::fs::read_dir(&root)?;", "fs::read_dir("));
-    assert!(calls_marker("    flock(&file, FlockOperation::NonBlockingLockExclusive)", "flock("));
+    assert!(calls_marker(
+        "    std::fs::read_dir(&root)?;",
+        "fs::read_dir("
+    ));
+    assert!(calls_marker(
+        "    flock(&file, FlockOperation::NonBlockingLockExclusive)",
+        "flock("
+    ));
 
     // The generalisation this file needs over the sibling's rule: a marker that
     // begins with `.` carries its own left boundary, and applying the
     // identifier check to it would reject every real hit, since the character
     // before the `.` is always the end of a receiver name.
-    assert!(calls_marker("    let mut child = wrap.spawn().map_err(|source| {", ".spawn()"));
+    assert!(calls_marker(
+        "    let mut child = wrap.spawn().map_err(|source| {",
+        ".spawn()"
+    ));
     assert!(calls_marker(
         "    let status = std::process::Command::new(&editor).arg(&path).status();",
         ".status()"
     ));
-    assert!(!calls_marker("    tokio::spawn(read_stdout(stdout, tx));", ".spawn()"));
+    assert!(!calls_marker(
+        "    tokio::spawn(read_stdout(stdout, tx));",
+        ".spawn()"
+    ));
 }
 
 #[test]
@@ -991,15 +1013,28 @@ fn a_literal_carrying_a_brace_does_not_derail_the_brace_tracker() {
     // guard can have: an unbalanced brace inside a string literal makes the
     // tracker leave the `async fn` body early, and every blocking call below it
     // goes unreported while the suite stays green.
-    assert_eq!(strip_literals("    let open = '{';").matches('{').count(), 0);
-    assert_eq!(strip_literals(r#"    let s = "a { b";"#).matches('{').count(), 0);
+    assert_eq!(
+        strip_literals("    let open = '{';").matches('{').count(),
+        0
+    );
+    assert_eq!(
+        strip_literals(r#"    let s = "a { b";"#)
+            .matches('{')
+            .count(),
+        0
+    );
     assert_eq!(
         strip_literals(r##"    let s = r#"{"type":"user"}"#;"##)
             .matches('{')
             .count(),
         0
     );
-    assert_eq!(strip_literals(r#"    let s = "he said \" { ";"#).matches('{').count(), 0);
+    assert_eq!(
+        strip_literals(r#"    let s = "he said \" { ";"#)
+            .matches('{')
+            .count(),
+        0
+    );
 
     // A lifetime is not a character literal, and eating one would swallow the
     // rest of the line — including its braces.

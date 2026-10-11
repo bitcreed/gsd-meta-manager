@@ -117,7 +117,12 @@ fn the_agent_is_removed_and_every_config_scope_is_redirected_into_the_envelope()
              variable an agent can notice and work around (D-16)"
         );
     }
-    for key in ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GH_CONFIG_DIR", "GIT_ASKPASS"] {
+    for key in [
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GH_CONFIG_DIR",
+        "GIT_ASKPASS",
+    ] {
         let value = env
             .value(key)
             .unwrap_or_else(|| panic!("{key} must be set"));
@@ -128,7 +133,8 @@ fn the_agent_is_removed_and_every_config_scope_is_redirected_into_the_envelope()
         );
     }
     assert_eq!(
-        env.value("GIT_TERMINAL_PROMPT").map(|v| v.to_string_lossy().into_owned()),
+        env.value("GIT_TERMINAL_PROMPT")
+            .map(|v| v.to_string_lossy().into_owned()),
         Some("0".to_string()),
         "a prompt into a detached run's null stdio is a hang, not a prompt (D-16)"
     );
@@ -156,7 +162,12 @@ fn a_credential_helper_the_user_really_has_stops_being_resolvable_under_the_enve
     )
     .expect("the fake home is writable");
 
-    let control = git_under(None, home.path(), &fx.work, &["config", "--get", "credential.helper"]);
+    let control = git_under(
+        None,
+        home.path(),
+        &fx.work,
+        &["config", "--get", "credential.helper"],
+    );
     if !control.status.success() {
         // git could not see the fake home at all (an unusual sandbox); assert
         // nothing rather than assert something meaningless.
@@ -309,7 +320,12 @@ fn an_unconfigured_credential_fails_closed_promptly_instead_of_hanging() {
     assert!(
         git(
             &fx.work,
-            &["remote", "set-url", "origin", &format!("http://127.0.0.1:{port}/repo.git")]
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                &format!("http://127.0.0.1:{port}/repo.git")
+            ]
         ),
         "the fixture's remote is re-pointable"
     );

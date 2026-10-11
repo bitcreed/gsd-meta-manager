@@ -1011,8 +1011,7 @@ pub struct ProjectViewCache {
     /// The Roadmap bands whose fold state differs from the default (the
     /// shipped summary folded, every other band open). Toggled per project by
     /// `Space` / `Enter` on that tab; in memory only (D-B09).
-    pub roadmap_fold_toggles:
-        std::collections::HashSet<crate::ui::roadmap_graph::BandKey>,
+    pub roadmap_fold_toggles: std::collections::HashSet<crate::ui::roadmap_graph::BandKey>,
     /// The `h` / `l` edge walk in progress: repeating the key cycles the
     /// ORIGIN phase's edges. Cleared by every other Roadmap key.
     pub roadmap_edge_walk: Option<crate::ui::roadmap_graph::EdgeWalk>,
@@ -1215,8 +1214,7 @@ impl ProjectViewCache {
     /// cached body was refreshed. Called when `$EDITOR` exits so the viewer
     /// never shows pre-edit text.
     pub fn reload_browser_file_if(&mut self, edited: &std::path::Path) -> bool {
-        if self.browser_file_content.is_some()
-            && self.browser_file_path.as_deref() == Some(edited)
+        if self.browser_file_content.is_some() && self.browser_file_path.as_deref() == Some(edited)
         {
             self.browser_file_content = Some(crate::browser::read_md_file(edited));
             true
@@ -1229,8 +1227,7 @@ impl ProjectViewCache {
     /// cached body was refreshed. The archive twin of
     /// [`Self::reload_browser_file_if`].
     pub fn reload_archive_file_if(&mut self, edited: &std::path::Path) -> bool {
-        if self.archive_file_content.is_some()
-            && self.archive_file_path.as_deref() == Some(edited)
+        if self.archive_file_content.is_some() && self.archive_file_path.as_deref() == Some(edited)
         {
             self.archive_file_content = Some(crate::archive::read_archive_file(edited));
             true
@@ -1886,7 +1883,10 @@ impl AppContext {
                             kind = ?e.kind(),
                             "run journal read failed",
                         );
-                        (Vec::new(), crate::journal::reader::ReadDiagnostics::default())
+                        (
+                            Vec::new(),
+                            crate::journal::reader::ReadDiagnostics::default(),
+                        )
                     });
 
                 let mut output = DriverOutput::for_run(&run_id);
@@ -2408,7 +2408,10 @@ mod tests {
         let chars = rendered.chars().count();
 
         assert_eq!(chars, 12, "the fixture should be twelve characters");
-        assert_eq!(bytes, 36, "…and thirty-six bytes, or the two agree and this proves nothing");
+        assert_eq!(
+            bytes, 36,
+            "…and thirty-six bytes, or the two agree and this proves nothing"
+        );
         assert!(
             bytes > chars,
             "the fixture must be one where a byte count and a character count \
@@ -2634,7 +2637,8 @@ mod tests {
     fn a_line_of_multibyte_characters_longer_than_the_cap_truncates_without_panicking() {
         // U+1F680 ROCKET is four bytes per char, so a byte-based truncation at
         // the cap would land inside a scalar and panic.
-        let raw: String = std::iter::repeat_n('\u{1F680}', DRIVER_OUTPUT_LINE_CELLS + 100).collect();
+        let raw: String =
+            std::iter::repeat_n('\u{1F680}', DRIVER_OUTPUT_LINE_CELLS + 100).collect();
 
         let out = sanitize_render_line(&raw);
         assert_eq!(
@@ -2751,7 +2755,10 @@ mod tests {
 
         // The control arm: printable non-ASCII above the C1 block is untouched,
         // so the widened range did not become a mojibake filter.
-        assert_eq!(sanitize_render_line("caf\u{e9} \u{4e2d}\u{6587} \u{1f680}"), "caf\u{e9} \u{4e2d}\u{6587} \u{1f680}");
+        assert_eq!(
+            sanitize_render_line("caf\u{e9} \u{4e2d}\u{6587} \u{1f680}"),
+            "caf\u{e9} \u{4e2d}\u{6587} \u{1f680}"
+        );
     }
 
     #[test]

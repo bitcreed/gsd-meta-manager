@@ -435,7 +435,10 @@ mod tests {
         let commands = parse_smart_entry_json(json).expect("valid JSON should parse");
         assert_eq!(
             commands,
-            vec!["/gsd:execute-phase 4".to_string(), "/gsd:verify-work 4".to_string()]
+            vec![
+                "/gsd:execute-phase 4".to_string(),
+                "/gsd:verify-work 4".to_string()
+            ]
         );
     }
 
@@ -594,7 +597,11 @@ mod tests {
             codex_home: None,
         };
         let got = gsd_tools_candidates(root, &roots);
-        assert_eq!(got.len(), 5, "CLAUDE_CONFIG_DIR replaces ~/.claude, it does not add");
+        assert_eq!(
+            got.len(),
+            5,
+            "CLAUDE_CONFIG_DIR replaces ~/.claude, it does not add"
+        );
         assert_eq!(got[3], PathBuf::from("/cc/gsd-core/bin/gsd-tools.cjs"));
         assert!(!got.contains(&home.join(".claude/gsd-core/bin/gsd-tools.cjs")));
 
@@ -646,7 +653,11 @@ mod tests {
         let root = Path::new("/p");
         let home = Path::new("/h");
         let got = gsd_tools_candidates(root, &with_codex(Some(home), "/x/codex"));
-        assert_eq!(got.len(), 5, "CODEX_HOME replaces ~/.codex, it does not add");
+        assert_eq!(
+            got.len(),
+            5,
+            "CODEX_HOME replaces ~/.codex, it does not add"
+        );
         assert_eq!(
             got.last().unwrap(),
             &PathBuf::from("/x/codex/gsd-core/bin/gsd-tools.cjs")

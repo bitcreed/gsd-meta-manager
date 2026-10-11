@@ -257,11 +257,18 @@ async fn tracer_runs_one_command_end_to_end() {
 
 #[tokio::test]
 async fn starting_against_a_missing_project_root_never_spawns() {
-    let project = DrivableProject::for_testing_bypassing_opt_in("gone", "/nonexistent/gsd-meta-manager/tracer");
+    let project = DrivableProject::for_testing_bypassing_opt_in(
+        "gone",
+        "/nonexistent/gsd-meta-manager/tracer",
+    );
     let executor = replaying(CLEAN_BASELINE, 0);
 
     let result = executor
-        .start(&project, "/gsd-progress".to_string(), ExecutionOptions::default())
+        .start(
+            &project,
+            "/gsd-progress".to_string(),
+            ExecutionOptions::default(),
+        )
         .await;
 
     assert!(

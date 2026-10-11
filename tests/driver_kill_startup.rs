@@ -155,8 +155,8 @@ impl Fixture {
 
     fn journal(&self, run_id: &str) -> PathBuf {
         gsd_meta_manager::journal::run_paths(&self.planning(), run_id)
-        .expect("the fixture run id is a plain path component")
-        .journal
+            .expect("the fixture run id is a plain path component")
+            .journal
     }
 }
 
@@ -196,7 +196,9 @@ fn spawn_detached_driver(fixture: &Fixture, run_id: &str, pidfile: &Path) -> u32
     cmd.kill_on_drop(false);
     cmd.as_std_mut().process_group(0);
 
-    let child = cmd.spawn().expect("the driver binary is built and spawnable");
+    let child = cmd
+        .spawn()
+        .expect("the driver binary is built and spawnable");
     let pid = child.id().expect("a freshly spawned child has a pid");
     drop(child);
     pid
@@ -446,7 +448,10 @@ async fn a_stop_during_agent_startup_tears_down_the_agent_group_and_records_a_ki
             "{label} ({pid}) is a ZOMBIE after the stop: torn down but never \
              reaped, which criterion #1 forbids in as many words"
         );
-        assert!(!present(pid), "{label} ({pid}) is still in the process table");
+        assert!(
+            !present(pid),
+            "{label} ({pid}) is still in the process table"
+        );
     }
     assert!(
         absent_within(driver_pid, Duration::from_secs(10)).await,

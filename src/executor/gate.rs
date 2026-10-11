@@ -309,11 +309,7 @@ mod tests {
 
     /// A healthy 2.1.220 init, varied one field at a time by the tests.
     fn healthy() -> InitMessage {
-        init(
-            Some(&REQUIRED_CAPABILITIES),
-            OBSERVED_VERSION,
-            SUBSCRIPTION,
-        )
+        init(Some(&REQUIRED_CAPABILITIES), OBSERVED_VERSION, SUBSCRIPTION)
     }
 
     fn validate(init: &InitMessage) -> Result<GateOutcome, CapabilityError> {
@@ -477,7 +473,12 @@ mod tests {
     fn a_version_below_the_floor_on_an_earlier_component_is_also_refused() {
         for below in ["1.9.999", "2.0.999"] {
             assert!(
-                validate(&init(Some(&REQUIRED_CAPABILITIES), Some(below), SUBSCRIPTION)).is_err(),
+                validate(&init(
+                    Some(&REQUIRED_CAPABILITIES),
+                    Some(below),
+                    SUBSCRIPTION
+                ))
+                .is_err(),
                 "{below} is below the floor componentwise and must refuse"
             );
         }
@@ -502,7 +503,12 @@ mod tests {
         // refused on version alone — it warns and proceeds (D-07).
         for newer in ["2.1.221", "2.2.0", "3.0.0"] {
             assert!(
-                validate(&init(Some(&REQUIRED_CAPABILITIES), Some(newer), SUBSCRIPTION)).is_ok(),
+                validate(&init(
+                    Some(&REQUIRED_CAPABILITIES),
+                    Some(newer),
+                    SUBSCRIPTION
+                ))
+                .is_ok(),
                 "{newer} is above the tested maximum and must warn-and-proceed, not refuse"
             );
         }
@@ -520,7 +526,14 @@ mod tests {
 
     #[test]
     fn an_unparseable_version_string_is_refused() {
-        for garbage in ["", "2.1", "2.1.x", "two.one.twenty", "2.1.220.1", "v2.1.220"] {
+        for garbage in [
+            "",
+            "2.1",
+            "2.1.x",
+            "two.one.twenty",
+            "2.1.220.1",
+            "v2.1.220",
+        ] {
             let err = validate(&init(
                 Some(&REQUIRED_CAPABILITIES),
                 Some(garbage),

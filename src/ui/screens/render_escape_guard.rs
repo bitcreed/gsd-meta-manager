@@ -1277,7 +1277,10 @@ fn probe_ctx(identity: &str) -> AppContext {
 /// adds to `AgentView` does not break it. Shared by `probe_ctx` and
 /// `the_dashboard_agent_summary_draws_no_identity`, so the view the Agents
 /// sub-view is probed with is the view the dashboard summary is checked on.
-fn hostile_agent_view(identity: &str, project_path: &std::path::Path) -> crate::agents::waves::AgentView {
+fn hostile_agent_view(
+    identity: &str,
+    project_path: &std::path::Path,
+) -> crate::agents::waves::AgentView {
     use crate::agents::adapters::ChildAgent;
     use crate::agents::{AgentLiveness, AgentRow};
     use crate::text::Untrusted;
@@ -1704,10 +1707,7 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
 /// `None` for every screen but `DetailScreen`: the per-state arrival equality
 /// is scoped to that one, and building its extra renders for screens the
 /// equality does not consult would cost time for nothing.
-fn detail_chrome_baseline(
-    type_name: &str,
-    clean: &str,
-) -> Option<BTreeMap<String, usize>> {
+fn detail_chrome_baseline(type_name: &str, clean: &str) -> Option<BTreeMap<String, usize>> {
     if type_name != "DetailScreen" {
         return None;
     }
@@ -1878,22 +1878,25 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
     // drawn only as a truncatable list row and its goal not at all. The key is
     // DERIVED from the fixture's own planned phase, never respelled;
     // `chrome_ctx` has no project state, so the arrange returns early there.
-    ("RoadmapViz tab, cursor on the planned phase", |identity, ctx| {
-        ctx.detail_sub_view_per_project
-            .insert(identity.to_string(), crate::app::DetailSubView::RoadmapViz);
-        let Some(planned) = ctx
-            .project_states
-            .get(identity)
-            .and_then(|state| state.planned_phases.first())
-        else {
-            return;
-        };
-        let key = crate::state_reader::phase_num::phase_key(&planned.number);
-        ctx.view_cache
-            .entry(identity.to_string())
-            .or_default()
-            .roadmap_cursor = Some(crate::ui::roadmap_graph::CursorTarget::Phase(key));
-    }),
+    (
+        "RoadmapViz tab, cursor on the planned phase",
+        |identity, ctx| {
+            ctx.detail_sub_view_per_project
+                .insert(identity.to_string(), crate::app::DetailSubView::RoadmapViz);
+            let Some(planned) = ctx
+                .project_states
+                .get(identity)
+                .and_then(|state| state.planned_phases.first())
+            else {
+                return;
+            };
+            let key = crate::state_reader::phase_num::phase_key(&planned.number);
+            ctx.view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .roadmap_cursor = Some(crate::ui::roadmap_graph::CursorTarget::Phase(key));
+        },
+    ),
     // The synthetic STATE.md band (24-05's adapter, sentriq's shape): only a
     // project with no active roadmap milestone draws `milestone_name`, so the
     // arrange removes the fixture's milestones. Nothing is spelled here.
@@ -2131,13 +2134,11 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
 
         "QueueDeleteConfirmScreen" => Some(|identity| {
             states_over_sub_views(identity, &|identity, _ctx| {
-                Box::new(
-                    super::queue_delete_confirm::QueueDeleteConfirmScreen::new(
-                        identity.to_string(),
-                        0,
-                        identity.to_string(),
-                    ),
-                )
+                Box::new(super::queue_delete_confirm::QueueDeleteConfirmScreen::new(
+                    identity.to_string(),
+                    0,
+                    identity.to_string(),
+                ))
             })
         }),
 
@@ -2163,8 +2164,7 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 ))
             });
             let mut goal_ctx = probe_ctx(identity);
-            let mut goal_screen =
-                super::driver_start::DriverStartScreen::new(identity.to_string());
+            let mut goal_screen = super::driver_start::DriverStartScreen::new(identity.to_string());
             goal_ctx.input_buffer = format!("/{identity}");
             goal_screen.handle_key(
                 crossterm::event::KeyCode::Enter,
@@ -2298,7 +2298,9 @@ fn render_to_text(screen: &dyn Screen, ctx: &AppContext) -> String {
 /// same route the live probe does. A precondition that measured survivorship
 /// through a *different* harness could disagree with the assertion it is meant
 /// to protect, which is the shape of defect this module exists to remove.
-fn render_into_probe_buffer(draw: impl FnOnce(&mut ratatui::Frame, ratatui::layout::Rect)) -> String {
+fn render_into_probe_buffer(
+    draw: impl FnOnce(&mut ratatui::Frame, ratatui::layout::Rect),
+) -> String {
     let mut terminal =
         Terminal::new(TestBackend::new(PROBE_WIDTH, PROBE_HEIGHT)).expect("TestBackend terminal");
     terminal
@@ -2325,7 +2327,9 @@ fn render_into_probe_buffer(draw: impl FnOnce(&mut ratatui::Frame, ratatui::layo
 }
 
 fn invisible_chars(text: &str) -> Vec<char> {
-    text.chars().filter(|c| is_invisible_formatting_char(*c)).collect()
+    text.chars()
+        .filter(|c| is_invisible_formatting_char(*c))
+        .collect()
 }
 
 /// Which widget family a survivorship measurement goes through.
@@ -2422,8 +2426,7 @@ mod tests {
         assert!(
             offences
                 .iter()
-                .any(|o| o.starts_with("UNFIXTURED IMPLEMENTOR")
-                    && o.contains("NobodyFixturedMe")),
+                .any(|o| o.starts_with("UNFIXTURED IMPLEMENTOR") && o.contains("NobodyFixturedMe")),
             "a derived pair whose NAME the table does not carry at all is a \
              screen with no probe fixture and must be reported as that, got: \
              {offences:#?}"
@@ -3172,23 +3175,22 @@ mod tests {
                              render, re-state the adjudication, and escape what \
                              a human reads."
                         );
-                    }
-                    // NO WILDCARD ARM, and its removal is a STRENGTHENING.
-                    //
-                    // Round 9's prohibition on this file required, verbatim:
-                    // "the probe must `panic!` on any third value" — a runtime
-                    // backstop for a hole `&'static str` left open. Since 21-30
-                    // (WR-02) `disposition()` returns `RenderDisposition`, an
-                    // enum with exactly two variants declared in a `pub(crate)`
-                    // module. A third value is not EXPRESSIBLE, so there is
-                    // nothing left for the arm to catch, and the compiler now
-                    // enforces exhaustiveness here: adding a third variant
-                    // would make THIS match fail to compile, which is a louder
-                    // and earlier signal than a panic in one test run.
-                    //
-                    // A reader who finds the arm gone must not read it as a
-                    // weakening. It was removed because its job moved into the
-                    // type, not because the check was dropped.
+                    } // NO WILDCARD ARM, and its removal is a STRENGTHENING.
+                      //
+                      // Round 9's prohibition on this file required, verbatim:
+                      // "the probe must `panic!` on any third value" — a runtime
+                      // backstop for a hole `&'static str` left open. Since 21-30
+                      // (WR-02) `disposition()` returns `RenderDisposition`, an
+                      // enum with exactly two variants declared in a `pub(crate)`
+                      // module. A third value is not EXPRESSIBLE, so there is
+                      // nothing left for the arm to catch, and the compiler now
+                      // enforces exhaustiveness here: adding a third variant
+                      // would make THIS match fail to compile, which is a louder
+                      // and earlier signal than a panic in one test run.
+                      //
+                      // A reader who finds the arm gone must not read it as a
+                      // weakening. It was removed because its job moved into the
+                      // type, not because the check was dropped.
                 }
 
                 // 3. Applies to EVERY state of EVERY implementor whatever its
@@ -3347,7 +3349,8 @@ mod tests {
 
         let mut reached = probe_ctx(&clean);
         reached.status_message = Some((message.clone(), std::time::Instant::now()));
-        let reached_text = render_to_text(&crate::ui::screens::normal::NormalScreen::new(), &reached);
+        let reached_text =
+            render_to_text(&crate::ui::screens::normal::NormalScreen::new(), &reached);
 
         assert!(
             reached_text.contains(STATUS_BRANCH_TOKEN),
@@ -3437,7 +3440,9 @@ mod tests {
         let queued_cell = format!("{GLYPH_QUEUED} {LABEL_QUEUED}");
 
         let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
-            Box::new(crate::ui::screens::detail::DetailScreen::new(identity.to_string()))
+            Box::new(crate::ui::screens::detail::DetailScreen::new(
+                identity.to_string(),
+            ))
         };
         let rendered = |label: &str| -> String {
             let state = states_over_sub_views(&clean, &build)
@@ -3529,7 +3534,9 @@ mod tests {
         let token = crate::ui::screens::detail::DEFAULTS_EDIT_BRANCH_TOKEN;
 
         let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
-            Box::new(crate::ui::screens::detail::DetailScreen::new(identity.to_string()))
+            Box::new(crate::ui::screens::detail::DetailScreen::new(
+                identity.to_string(),
+            ))
         };
         let edit_state = states_over_sub_views(&clean, &build)
             .into_iter()
@@ -3589,9 +3596,8 @@ mod tests {
         // no visibility change anywhere (F3, D-21-60).
         let mut ctx = super::super::tests::ctx_with_aliases(&[ECHO_SPOT_CHECK_ALIAS]);
         ctx.input_buffer = typed.to_string();
-        let screen = crate::ui::screens::enqueue::EnqueueScreen::new(
-            ECHO_SPOT_CHECK_ALIAS.to_string(),
-        );
+        let screen =
+            crate::ui::screens::enqueue::EnqueueScreen::new(ECHO_SPOT_CHECK_ALIAS.to_string());
         render_to_text(&screen, &ctx)
     }
 
@@ -3747,7 +3753,9 @@ mod tests {
             let screen = super::super::detail::DetailScreen::new(identity.clone());
             let text = render_to_text(&screen, &ctx);
             let lines: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
-            let title: Vec<char> = format!("┌ Phase {PROBE_PLANNED_PHASE_ID} ").chars().collect();
+            let title: Vec<char> = format!("┌ Phase {PROBE_PLANNED_PHASE_ID} ")
+                .chars()
+                .collect();
             let (top, left) = lines
                 .iter()
                 .enumerate()
@@ -3763,7 +3771,11 @@ mod tests {
                 .map(|l| l[left..].iter().collect())
                 .collect();
             let shown = crate::text::render_for_terminal(&identity).to_string();
-            assert!(pane[0].contains(&shown), "name line cut: {:?}\n{text}", pane[0]);
+            assert!(
+                pane[0].contains(&shown),
+                "name line cut: {:?}\n{text}",
+                pane[0]
+            );
             assert!(
                 pane.iter().skip(1).any(|l| l.contains(&shown)),
                 "goal not drawn whole:\n{text}"

@@ -97,9 +97,8 @@ fn a_look_alike_alias_cannot_join_its_visible_twin_in_the_registry() {
     add_project(&mut config, &visible("demo"), temp.path()).expect("the visible twin registers");
 
     for (visible_member, look_alike) in gsd_meta_manager::test_support::LOOK_ALIKE_PAIRS {
-        let refusal = Alias::new(look_alike).expect_err(
-            "an alias that renders exactly like its twin must not be constructible",
-        );
+        let refusal = Alias::new(look_alike)
+            .expect_err("an alias that renders exactly like its twin must not be constructible");
         assert!(
             matches!(refusal, AliasRefusal::InvisibleFormatting { .. }),
             "{look_alike:?} renders as {visible_member:?}; the refusal must name \
@@ -152,7 +151,10 @@ fn remove_project_with_existing_alias_succeeds() {
     let mut config = Config::new();
     add_project(&mut config, &visible("myapp"), temp.path()).unwrap();
 
-    let result = remove_project(&mut config, &LegacyRegistryKey::from_argv("myapp".to_string()));
+    let result = remove_project(
+        &mut config,
+        &LegacyRegistryKey::from_argv("myapp".to_string()),
+    );
     assert!(result.is_ok());
     assert!(!config.projects.contains_key("myapp"));
 }

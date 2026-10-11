@@ -47,7 +47,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 /// The binary under test, resolved by cargo for this integration target.
 const BIN: &str = env!("CARGO_BIN_EXE_gsd-meta-manager");
 
@@ -89,8 +88,14 @@ fn parked_events(journal_path: &Path) -> Vec<(String, String)> {
         .filter(|record| record.kind == "parked")
         .map(|record| {
             (
-                record.rest["reason"].as_str().unwrap_or_default().to_string(),
-                record.rest["needs"].as_str().unwrap_or_default().to_string(),
+                record.rest["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                record.rest["needs"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
             )
         })
         .collect()
@@ -347,7 +352,8 @@ fn registry_at(dir: &Path, alias: &str, project: &Path) -> PathBuf {
         },
     );
     let path = dir.join("config.json");
-    gsd_meta_manager::config::save_config(&config, &path).expect("the fixture registry is writable");
+    gsd_meta_manager::config::save_config(&config, &path)
+        .expect("the fixture registry is writable");
     path
 }
 
@@ -519,9 +525,13 @@ fn the_two_helpers_round_trip_a_park_reason_through_the_file() {
     // And the fixture really did produce a resolvable run, or every re-entry
     // assertion below would be proving that a hook cannot find a run that does
     // not exist.
-    assert!(fx.paths.run_json.is_file(), "the run record must be on disk");
+    assert!(
+        fx.paths.run_json.is_file(),
+        "the run record must be on disk"
+    );
     assert_eq!(
-        gsd_meta_manager::journal::writer::read_active_run(&fx.project.join(".planning")).as_deref(),
+        gsd_meta_manager::journal::writer::read_active_run(&fx.project.join(".planning"))
+            .as_deref(),
         Some("wiringrun"),
         "the active pointer is the only thing a re-entering process has"
     );
@@ -771,10 +781,7 @@ fn a_permitted_command_is_permitted_and_parks_nothing() {
         return;
     };
 
-    let out = fx.ask_guard(
-        &format!("git push origin HEAD:{}", fx.inside_ref()),
-        true,
-    );
+    let out = fx.ask_guard(&format!("git push origin HEAD:{}", fx.inside_ref()), true);
 
     assert_eq!(
         out.status.code(),
@@ -1002,7 +1009,9 @@ fn the_envelope_deny_list_and_the_settings_file_carry_the_same_controls() {
         );
     }
     assert_eq!(
-        argv.iter().position(|arg| arg == "--settings").map(|i| &argv[i + 1]),
+        argv.iter()
+            .position(|arg| arg == "--settings")
+            .map(|i| &argv[i + 1]),
         Some(&settings.display().to_string()),
         "the settings file must be named on argv, or it is never loaded at all"
     );

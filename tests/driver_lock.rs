@@ -45,7 +45,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 /// The paced stand-in, whose three leading arguments control how long it stays
 /// alive. It is what holds the first run open while the second attempts.
 const FAKE_SLOW: &str = concat!(
@@ -216,11 +215,7 @@ async fn start_holder(
     let alias_owned = alias.to_string();
     let handle = tokio::spawn(async move {
         let config = config_for(&root_owned, &alias_owned);
-        drive(
-            args(&alias_owned, RUN_A, A_HEARTBEATS, A_INTERVAL),
-            &config,
-        )
-        .await
+        drive(args(&alias_owned, RUN_A, A_HEARTBEATS, A_INTERVAL), &config).await
     });
 
     let planning = planning_of(root);
@@ -384,7 +379,10 @@ async fn a_second_drive_reports_which_run_holds_the_lock() {
         "the refusal names the HOLDING run, not the attempting one"
     );
     assert_ne!(*pgid, 0, "a zero pgid names no process group");
-    assert!(!started_at.is_empty(), "the holder's start time is recorded");
+    assert!(
+        !started_at.is_empty(),
+        "the holder's start time is recorded"
+    );
 
     // Criterion #5 is about what the USER IS TOLD, so the assertion is on the
     // rendered string and not merely on the variant. A `HeldBy` whose `Display`
@@ -439,7 +437,8 @@ async fn a_duplicate_start_refuses_promptly_rather_than_blocking() {
     // generous by orders of magnitude against a `LOCK_NB` syscall, and run A
     // stays alive for about six.
     let root_owned = root.path().to_path_buf();
-    let attempt = tokio::spawn(async move { second_drive(&root_owned, ALIAS_PROMPT_REFUSAL).await });
+    let attempt =
+        tokio::spawn(async move { second_drive(&root_owned, ALIAS_PROMPT_REFUSAL).await });
 
     let refused = tokio::time::timeout(Duration::from_secs(1), attempt).await;
 
@@ -604,11 +603,10 @@ async fn the_lock_is_released_when_the_holding_process_dies() {
     child.kill().expect("SIGKILL the holding driver");
     child.wait().expect("reap the killed driver");
 
-    let recovered = lock::acquire(&planning, "recovery-after-sigkill", std::process::id())
-        .expect(
-            "a SIGKILLed holder releases the lock by dying; if this fails the lock is \
+    let recovered = lock::acquire(&planning, "recovery-after-sigkill", std::process::id()).expect(
+        "a SIGKILLed holder releases the lock by dying; if this fails the lock is \
              not process-death-safe and flock was not what was implemented (D-19)",
-        );
+    );
     assert_eq!(
         recovered.holder().run_id,
         "recovery-after-sigkill",

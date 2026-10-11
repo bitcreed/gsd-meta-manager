@@ -464,7 +464,9 @@ fn fingerprint_tree(dir: &Path) -> Vec<(String, u64, String)> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             if kind.is_dir() {
                 walk(root, &path, out);
             } else {
@@ -474,10 +476,10 @@ fn fingerprint_tree(dir: &Path) -> Vec<(String, u64, String)> {
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .into_owned();
-                let digest = gsd_meta_manager::journal::argv_digest(&[String::from_utf8_lossy(
-                    &bytes,
-                )
-                .into_owned()]);
+                let digest =
+                    gsd_meta_manager::journal::argv_digest(&[
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    ]);
                 out.push((relative, bytes.len() as u64, digest));
             }
         }
@@ -513,7 +515,9 @@ async fn a_run_outlives_the_process_that_spawned_it() {
     cmd.kill_on_drop(false);
     cmd.as_std_mut().process_group(0);
 
-    let child = cmd.spawn().expect("the driver binary is built and spawnable");
+    let child = cmd
+        .spawn()
+        .expect("the driver binary is built and spawnable");
     let pid = child.id().expect("a freshly spawned child has a pid");
 
     assert!(
@@ -548,11 +552,9 @@ async fn a_run_outlives_the_process_that_spawned_it() {
     );
 
     // The configuration this test reproduces, pinned against drift.
-    let production = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/driver/spawn.rs"
-    ))
-    .expect("the production spawn module is readable");
+    let production =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/driver/spawn.rs"))
+            .expect("the production spawn module is readable");
     let executable: String = production
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
@@ -618,7 +620,11 @@ async fn a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step() {
 
     let observed = reconcile::reconcile_all(&fresh.projects);
 
-    assert_eq!(observed.len(), 1, "exactly one project has a run to observe");
+    assert_eq!(
+        observed.len(),
+        1,
+        "exactly one project has a run to observe"
+    );
     let run = &observed[0];
     assert_eq!(run.alias, ALIAS);
     assert_eq!(run.run_id, RUN_ID);
@@ -652,7 +658,8 @@ async fn a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step() {
         journal.display()
     );
 
-    let tail = reader::tail_lines(&journal, TailCursor::default()).expect("the journal is readable");
+    let tail =
+        reader::tail_lines(&journal, TailCursor::default()).expect("the journal is readable");
     assert!(
         !tail.lines.is_empty(),
         "a live run must have written at least its run_started record"
@@ -753,7 +760,10 @@ async fn a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_
     // skips it by definition.
     kill_group(pid);
     let status = child.wait().expect("reap the killed driver");
-    assert!(!status.success(), "a SIGKILLed process does not exit cleanly");
+    assert!(
+        !status.success(),
+        "a SIGKILLed process does not exit cleanly"
+    );
     assert!(gone_within(pid, RUN_ID, Duration::from_secs(10)));
 
     let before = fingerprint_tree(&fixture.planning());

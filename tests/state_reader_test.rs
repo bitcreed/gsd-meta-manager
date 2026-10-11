@@ -1,10 +1,10 @@
+use gsd_meta_manager::state_reader::backlog::parse_backlog_items;
 use gsd_meta_manager::state_reader::config_json::parse_gsd_config;
 use gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases;
 use gsd_meta_manager::state_reader::state_md::{
     extract_frontmatter, parse_state_md, read_frontmatter, FrontmatterFault, FrontmatterOutcome,
     StateVersion,
 };
-use gsd_meta_manager::state_reader::backlog::parse_backlog_items;
 use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state, PhaseMarker};
 use std::fs;
 use tempfile::TempDir;
@@ -431,7 +431,11 @@ fn a_backlog_directory_holding_a_md_heading_is_described_by_that_heading() {
     fs::write(&md, "# Queue editor with drag reorder\n\nbody\n").unwrap();
 
     let items = parse_backlog_items(tmp.path());
-    assert_eq!(items.len(), 1, "the enriched directory must still be parsed");
+    assert_eq!(
+        items.len(),
+        1,
+        "the enriched directory must still be parsed"
+    );
     assert_eq!(
         items[0].description.as_raw_for_logic_only(),
         "Queue editor with drag reorder",
@@ -789,22 +793,20 @@ fn test_no_root_continue_here_does_not_set_the_project_gate() {
 #[test]
 fn test_phase_continue_here_gate_flows_onto_the_phase_inference() {
     let tmp = planning_with_phase("19", "19-thing", &[]);
-    let phase_dir = tmp
-        .path()
-        .join(".planning")
-        .join("phases")
-        .join("19-thing");
+    let phase_dir = tmp.path().join(".planning").join("phases").join("19-thing");
     fs::write(
         phase_dir.join(".continue-here.md"),
         "| Task | Severity |\n|---|---|\n| Decide the schema | blocking |\n",
     )
     .unwrap();
     let state = parse_project_state(&tmp.path().join(".planning"));
-    assert!(state
-        .phase_disk_statuses
-        .get("19")
-        .expect("the declared phase has an inference")
-        .continue_here_blocking);
+    assert!(
+        state
+            .phase_disk_statuses
+            .get("19")
+            .expect("the declared phase has an inference")
+            .continue_here_blocking
+    );
 }
 
 #[test]
@@ -872,7 +874,10 @@ fn test_error_and_failed_project_statuses_read_as_a_gate() {
     use gsd_meta_manager::state_reader::state_md::is_error_status;
 
     for status in ["error", "failed", "ERROR", " Failed "] {
-        assert!(is_error_status(status), "{status:?} is next.md:60-69's hard stop");
+        assert!(
+            is_error_status(status),
+            "{status:?} is next.md:60-69's hard stop"
+        );
     }
     for status in [
         "executing",
@@ -927,8 +932,7 @@ fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
         // conjunction, so it can never coexist with a non-passing verification.
         if inference.status == DiskStatus::Complete {
             assert!(
-                inference.verification_status.is_passed()
-                    || !inference.has_verification,
+                inference.verification_status.is_passed() || !inference.has_verification,
                 "phase {number} reads Complete while its verification status is \
                  {:?}",
                 inference.verification_status
@@ -946,7 +950,11 @@ fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
 fn two_phase_project(verification: Option<&str>) -> TempDir {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path();
-    fs::write(planning.join("STATE.md"), "---\nstatus: executing\n---\n# State\n").unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "---\nstatus: executing\n---\n# State\n",
+    )
+    .unwrap();
     fs::write(
         planning.join("ROADMAP.md"),
         "# Roadmap\n\n- [ ] **Phase 1: First** - implemented, awaiting verification\n\
@@ -1424,13 +1432,19 @@ fn a_phase_complete_on_disk_but_unchecked_in_the_roadmap_reads_done() {
 
     // The two unreliable inputs, unchanged: the count still says 2, and phase
     // 3's checkbox is still unchecked. The marker must not depend on either.
-    assert_eq!(state.completed_phases, 2, "the ## Progress table still says 2");
+    assert_eq!(
+        state.completed_phases, 2,
+        "the ## Progress table still says 2"
+    );
     let phase3 = state
         .phases
         .iter()
         .find(|p| p.number == "3")
         .expect("phase 3 parsed from the roadmap");
-    assert!(!phase3.completed, "phase 3's `- [ ]` checkbox is still stale");
+    assert!(
+        !phase3.completed,
+        "phase 3's `- [ ]` checkbox is still stale"
+    );
 
     assert_eq!(state.active_phase_number(), 4);
     assert_eq!(
@@ -1596,10 +1610,22 @@ fn phases_past_the_named_current_one_read_done_not_future() {
         );
     }
 
-    assert_eq!(PhaseMarker::decide("19", false, &disk, &19.into()), PhaseMarker::Current);
-    assert_eq!(PhaseMarker::decide("20", false, &disk, &19.into()), PhaseMarker::Done);
-    assert_eq!(PhaseMarker::decide("21", false, &disk, &19.into()), PhaseMarker::Done);
-    assert_eq!(PhaseMarker::decide("22", false, &disk, &19.into()), PhaseMarker::Future);
+    assert_eq!(
+        PhaseMarker::decide("19", false, &disk, &19.into()),
+        PhaseMarker::Current
+    );
+    assert_eq!(
+        PhaseMarker::decide("20", false, &disk, &19.into()),
+        PhaseMarker::Done
+    );
+    assert_eq!(
+        PhaseMarker::decide("21", false, &disk, &19.into()),
+        PhaseMarker::Done
+    );
+    assert_eq!(
+        PhaseMarker::decide("22", false, &disk, &19.into()),
+        PhaseMarker::Future
+    );
 }
 
 // ============================================================================
@@ -1942,16 +1968,27 @@ fn ttbook_shaped_planning_dir() -> TempDir {
         fs::write(p1.join(format!("01-0{i}-PLAN.md")), "# Plan").unwrap();
         fs::write(p1.join(format!("01-0{i}-SUMMARY.md")), "# Summary").unwrap();
     }
-    fs::write(p1.join("01-VERIFICATION.md"), "---\nstatus: human_needed\n---\n").unwrap();
+    fs::write(
+        p1.join("01-VERIFICATION.md"),
+        "---\nstatus: human_needed\n---\n",
+    )
+    .unwrap();
     // Phases 5 and 7: executed and verified => Complete.
-    for (n, count, slug) in [("05", 3, "chat-module-redesign-r5"), ("07", 2, "consolidation")] {
+    for (n, count, slug) in [
+        ("05", 3, "chat-module-redesign-r5"),
+        ("07", 2, "consolidation"),
+    ] {
         let dir = phases.join(format!("{n}-{slug}"));
         fs::create_dir_all(&dir).unwrap();
         for i in 1..=count {
             fs::write(dir.join(format!("{n}-0{i}-PLAN.md")), "# Plan").unwrap();
             fs::write(dir.join(format!("{n}-0{i}-SUMMARY.md")), "# Summary").unwrap();
         }
-        fs::write(dir.join(format!("{n}-VERIFICATION.md")), "---\nstatus: passed\n---\n").unwrap();
+        fs::write(
+            dir.join(format!("{n}-VERIFICATION.md")),
+            "---\nstatus: passed\n---\n",
+        )
+        .unwrap();
     }
     // Phase 7.1: planned, not executed, directory zero-padded.
     let p71 = phases.join("07.1-apply-owner-rulings");
@@ -1976,7 +2013,11 @@ fn a_decimal_phase_written_padded_and_unpadded_is_one_row_with_its_disk_data() {
     assert_eq!(numbers, ["1", "5", "7", "7.1"], "no separate `07.1` row");
 
     let inf = &state.phase_disk_statuses["7.1"];
-    assert_eq!(inf.status, DiskStatus::Planned, "the `07.1-…` directory is found for `7.1`");
+    assert_eq!(
+        inf.status,
+        DiskStatus::Planned,
+        "the `07.1-…` directory is found for `7.1`"
+    );
     assert_eq!(inf.plan_count, 3);
     let p71 = state.phases.iter().find(|p| p.number == "7.1").unwrap();
     assert_eq!((p71.completed_plans, p71.total_plans), (0, 3));
@@ -1991,8 +2032,22 @@ fn a_decimal_current_phase_is_the_active_phase_not_the_count_fallback() {
     let tmp = ttbook_shaped_planning_dir();
     let state = parse_project_state(tmp.path());
 
-    assert_eq!(state.state_md_phase_number.as_ref().map(ToString::to_string).as_deref(), Some("7.1"));
-    assert_eq!(state.current_phase_number.as_ref().map(ToString::to_string).as_deref(), Some("7.1"));
+    assert_eq!(
+        state
+            .state_md_phase_number
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("7.1")
+    );
+    assert_eq!(
+        state
+            .current_phase_number
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("7.1")
+    );
     assert_eq!(state.active_phase_number().to_string(), "7.1");
 
     let markers: Vec<(String, PhaseMarker)> = state
@@ -2066,7 +2121,10 @@ fn the_rendered_roadmap_marks_the_decimal_phase_current_once() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(!text.contains("P07.1"), "no duplicate row:\n{text}");
-    assert!(!text.contains("0/?"), "every phase here has plans on disk:\n{text}");
+    assert!(
+        !text.contains("0/?"),
+        "every phase here has plans on disk:\n{text}"
+    );
 }
 
 /// Symptom 3a: a roadmap that never back-filled a phase's plan list
@@ -2083,7 +2141,11 @@ fn plan_counts_fall_back_to_disk_when_the_roadmap_lists_no_plans() {
         phase_plan_counts(phase, &state.phase_disk_statuses)
     };
 
-    assert_eq!(counts("1"), Some((2, 2)), "roadmap TBD, disk 2 PLAN + 2 SUMMARY");
+    assert_eq!(
+        counts("1"),
+        Some((2, 2)),
+        "roadmap TBD, disk 2 PLAN + 2 SUMMARY"
+    );
     assert_eq!(counts("5"), Some((3, 3)));
     assert_eq!(counts("7"), Some((2, 2)), "roadmap list wins when present");
     assert_eq!(counts("7.1"), Some((0, 3)));
@@ -2107,7 +2169,10 @@ fn plan_counts_fall_back_to_disk_when_the_roadmap_lists_no_plans() {
 fn milestone_falls_back_to_the_roadmaps_in_progress_milestone() {
     let tmp = ttbook_shaped_planning_dir();
     let state = parse_project_state(tmp.path());
-    assert_eq!(state.milestone, "Milestone 1: Reassessment and decision records");
+    assert_eq!(
+        state.milestone,
+        "Milestone 1: Reassessment and decision records"
+    );
 
     // STATE.md's own key still wins when present.
     let state_md = fs::read_to_string(tmp.path().join("STATE.md")).unwrap();

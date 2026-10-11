@@ -19,7 +19,11 @@ pub enum ArchiveDepth {
     /// Level 3: Viewing file content with markdown styling
     /// `phase_idx`: `None` = top-level file (entered from PhaseList),
     /// `Some(idx)` = phase file (entered from FileList)
-    FileView { milestone: String, phase_idx: Option<usize>, file_idx: usize },
+    FileView {
+        milestone: String,
+        phase_idx: Option<usize>,
+        file_idx: usize,
+    },
 }
 
 /// Parsed milestone archive with top-level files and phase subdirectories.
@@ -449,7 +453,12 @@ mod tests {
     fn archived_decimal_phases_are_listed_in_numeric_order() {
         let dir = tempfile::tempdir().unwrap();
         let phases = dir.path().join("v1.0-phases");
-        for name in ["08-next", "07.1-inserted-fix", "07-consolidation", "10-later"] {
+        for name in [
+            "08-next",
+            "07.1-inserted-fix",
+            "07-consolidation",
+            "10-later",
+        ] {
             std::fs::create_dir_all(phases.join(name)).unwrap();
         }
         let archive = load_milestone_archive(dir.path(), "v1.0");

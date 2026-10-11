@@ -652,7 +652,11 @@ fn the_oracle_honours_a_non_empty_codex_home() {
         explicit.last(),
         Some(&PathBuf::from("/x/codex/gsd-core/bin/gsd-tools.cjs"))
     );
-    assert_eq!(explicit.len(), 2, "CODEX_HOME replaces ~/.codex, it does not add");
+    assert_eq!(
+        explicit.len(),
+        2,
+        "CODEX_HOME replaces ~/.codex, it does not add"
+    );
     let empty = oracle_candidates(Some(home.clone()), Some(OsString::new()));
     assert_eq!(
         empty.last(),

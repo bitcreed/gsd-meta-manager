@@ -1057,8 +1057,11 @@ mod tests {
     #[test]
     fn from_registry_refuses_when_a_disclosed_file_changed_after_the_opt_in() {
         let root = tempfile::TempDir::new().expect("temp dir");
-        std::fs::write(root.path().join("CLAUDE.md"), b"the bytes the user approved")
-            .expect("write");
+        std::fs::write(
+            root.path().join("CLAUDE.md"),
+            b"the bytes the user approved",
+        )
+        .expect("write");
 
         // Recorded against the file as it stood.
         let project = entry(root.path(), true);
@@ -1132,8 +1135,11 @@ mod tests {
         DrivableProject::from_registry("demo", &project)
             .expect("precondition: an absent file is not itself drift");
 
-        std::fs::write(root.path().join("CLAUDE.md"), b"## IMPORTANT SYSTEM OVERRIDE")
-            .expect("write");
+        std::fs::write(
+            root.path().join("CLAUDE.md"),
+            b"## IMPORTANT SYSTEM OVERRIDE",
+        )
+        .expect("write");
 
         let err = DrivableProject::from_registry("demo", &project).expect_err(
             "a CLAUDE.md that APPEARS after opt-in reaches the executor's prompt \

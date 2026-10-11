@@ -138,7 +138,10 @@ fn write_stub(hooks_dir: &Path, binary: &Path, alias: &str, hook: &str) -> anyho
         tmp.as_file()
             .set_permissions(std::fs::Permissions::from_mode(0o755))
             .with_context(|| {
-                format!("failed to make the {hook} stub executable in {}", hooks_dir.display())
+                format!(
+                    "failed to make the {hook} stub executable in {}",
+                    hooks_dir.display()
+                )
             })?;
     }
 
@@ -277,7 +280,10 @@ pub fn assert_provenance_in(root: &Path, alias: &str, invoked_from: &Path) -> an
         )
     })?;
     let invoked_real = invoked_from.canonicalize().with_context(|| {
-        format!("cannot resolve the hook this process ran from ({})", invoked_from.display())
+        format!(
+            "cannot resolve the hook this process ran from ({})",
+            invoked_from.display()
+        )
     })?;
 
     if invoked_real != sanctioned_real {
@@ -413,7 +419,11 @@ pub fn pre_commit(
         .map(PathBuf::from)
         .collect();
 
-    Ok(if refuse_paths(repo_root, &paths, "commit") > 0 { 1 } else { 0 })
+    Ok(if refuse_paths(repo_root, &paths, "commit") > 0 {
+        1
+    } else {
+        0
+    })
 }
 
 /// Refuse any of `paths` that [`policy::forbidden_repo_path`] names, returning
@@ -510,9 +520,8 @@ fn refuse_swept_paths(repo_root: &Path, ranges: &[(String, String)]) -> usize {
 fn read_ref_lines(stdin: impl BufRead) -> anyhow::Result<Vec<String>> {
     let mut lines = Vec::new();
     for (index, line) in stdin.lines().enumerate() {
-        lines.push(
-            line.with_context(|| format!("failed to read pre-push ref line {}", index + 1))?,
-        );
+        lines
+            .push(line.with_context(|| format!("failed to read pre-push ref line {}", index + 1))?);
     }
     Ok(lines)
 }
@@ -580,7 +589,11 @@ pub fn write_exclude_block(project_root: &Path) -> anyhow::Result<()> {
     // Trailing blank lines are dropped so the second run produces byte-identical
     // output to the first. Without this the block would drift down the file by
     // one line per invocation, which is exactly the accumulation D-23 forbids.
-    while kept.last().map(|line| line.trim().is_empty()).unwrap_or(false) {
+    while kept
+        .last()
+        .map(|line| line.trim().is_empty())
+        .unwrap_or(false)
+    {
         kept.pop();
     }
 
@@ -1304,9 +1317,7 @@ fn classify_segments(
                                 ),
                             )));
                         }
-                        if let Some((platform, label)) =
-                            policy::pr_command_label(&words[index..])
-                        {
+                        if let Some((platform, label)) = policy::pr_command_label(&words[index..]) {
                             let entry = super::ledger::LedgerEntry {
                                 at: chrono::Utc::now()
                                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -1724,7 +1735,11 @@ mod tests {
     #[test]
     fn the_generated_stub_is_three_lines_and_execs_the_absolute_binary_path() {
         let body = stub_body(Path::new(BIN), "demo", PRE_PUSH_HOOK);
-        assert_eq!(body.lines().count(), 3, "the stub must stay a stub:\n{body}");
+        assert_eq!(
+            body.lines().count(),
+            3,
+            "the stub must stay a stub:\n{body}"
+        );
         assert!(body.starts_with("#!/bin/sh\n"));
         assert!(body.ends_with(
             "exec '/opt/gsd-meta-manager' envelope pre-push 'demo' --hook-path \"$0\"\n"
@@ -1819,8 +1834,7 @@ mod tests {
 
     #[test]
     fn a_deletion_is_classified_by_its_destination_ref() {
-        let deleting_main =
-            "(delete) 0000000000000000000000000000000000000000 refs/heads/main 5\n";
+        let deleting_main = "(delete) 0000000000000000000000000000000000000000 refs/heads/main 5\n";
         assert_ne!(classify_refs("demo", &ref_lines(deleting_main)), 0);
     }
 
@@ -1903,7 +1917,10 @@ mod tests {
              thousand blocks (D-23)"
         );
         let text = String::from_utf8(twice).unwrap();
-        assert!(text.contains("scratch.txt"), "the user's own rules survived:\n{text}");
+        assert!(
+            text.contains("scratch.txt"),
+            "the user's own rules survived:\n{text}"
+        );
         assert_eq!(text.matches(EXCLUDE_BLOCK_START).count(), 1, "{text}");
         assert_eq!(text.matches(EXCLUDE_BLOCK_END).count(), 1, "{text}");
         assert!(text.contains(".claude/worktrees/"), "{text}");
@@ -1920,7 +1937,11 @@ mod tests {
         std::fs::create_dir_all(&real_git).unwrap();
         let work = tmp.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
-        std::fs::write(work.join(".git"), format!("gitdir: {}\n", real_git.display())).unwrap();
+        std::fs::write(
+            work.join(".git"),
+            format!("gitdir: {}\n", real_git.display()),
+        )
+        .unwrap();
 
         write_exclude_block(&work).unwrap();
 
@@ -2141,11 +2162,19 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let expanded = ask(tmp.path(), "$TOOL push --force");
         assert!(expanded.denied(), "{}", expanded.stdout);
-        assert!(expanded.reason().contains("shell expansion"), "{}", expanded.reason());
+        assert!(
+            expanded.reason().contains("shell expansion"),
+            "{}",
+            expanded.reason()
+        );
 
         let evaluated = ask(tmp.path(), "eval \"git push --force\"");
         assert!(evaluated.denied(), "{}", evaluated.stdout);
-        assert!(evaluated.reason().contains("eval"), "{}", evaluated.reason());
+        assert!(
+            evaluated.reason().contains("eval"),
+            "{}",
+            evaluated.reason()
+        );
     }
 
     /// The class the renamed test's old name claimed, now actually reached:
@@ -2228,7 +2257,9 @@ mod tests {
 
         let parsed: GuardRequest = serde_json::from_str(&body).unwrap();
         assert!(
-            parsed.extra.contains_key("a_field_from_a_later_cli_release"),
+            parsed
+                .extra
+                .contains_key("a_field_from_a_later_cli_release"),
             "preserved, not merely tolerated: {:?}",
             parsed.extra
         );

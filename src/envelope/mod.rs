@@ -478,7 +478,16 @@ mod tests {
 
     #[test]
     fn a_hostile_alias_yields_no_envelope_directory_at_all() {
-        for hostile in ["", ".", "..", "../escaped", "a/b", "/etc/passwd", "./x", "x/"] {
+        for hostile in [
+            "",
+            ".",
+            "..",
+            "../escaped",
+            "a/b",
+            "/etc/passwd",
+            "./x",
+            "x/",
+        ] {
             assert!(
                 envelope_dir_in(Path::new("/data/envelope"), hostile).is_none(),
                 "{hostile:?} must not be joined into an envelope path"
@@ -560,8 +569,14 @@ mod tests {
             .filter(|record| record.kind == "parked")
             .map(|record| {
                 (
-                    record.rest["reason"].as_str().unwrap_or_default().to_string(),
-                    record.rest["needs"].as_str().unwrap_or_default().to_string(),
+                    record.rest["reason"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    record.rest["needs"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
                 )
             })
             .collect()

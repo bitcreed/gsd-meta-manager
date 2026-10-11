@@ -39,8 +39,16 @@ pub fn routed(event: &MouseEvent) -> Option<Routed> {
     let (column, row) = (event.column, event.row);
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => Some(Routed::Click { column, row }),
-        MouseEventKind::ScrollDown => Some(Routed::Wheel { column, row, down: true }),
-        MouseEventKind::ScrollUp => Some(Routed::Wheel { column, row, down: false }),
+        MouseEventKind::ScrollDown => Some(Routed::Wheel {
+            column,
+            row,
+            down: true,
+        }),
+        MouseEventKind::ScrollUp => Some(Routed::Wheel {
+            column,
+            row,
+            down: false,
+        }),
         _ => None,
     }
 }
@@ -68,7 +76,11 @@ impl ClickTracker {
                 && c.abs_diff(column) <= 1
                 && now.saturating_duration_since(at) <= DOUBLE_CLICK_WINDOW
         );
-        self.last = if double { None } else { Some((now, column, row)) };
+        self.last = if double {
+            None
+        } else {
+            Some((now, column, row))
+        };
         double
     }
 
@@ -139,7 +151,12 @@ mod tests {
     use crossterm::event::KeyModifiers;
 
     fn ev(kind: MouseEventKind) -> MouseEvent {
-        MouseEvent { kind, column: 7, row: 9, modifiers: KeyModifiers::NONE }
+        MouseEvent {
+            kind,
+            column: 7,
+            row: 9,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     #[test]
@@ -150,11 +167,19 @@ mod tests {
         );
         assert_eq!(
             routed(&ev(MouseEventKind::ScrollDown)),
-            Some(Routed::Wheel { column: 7, row: 9, down: true })
+            Some(Routed::Wheel {
+                column: 7,
+                row: 9,
+                down: true
+            })
         );
         assert_eq!(
             routed(&ev(MouseEventKind::ScrollUp)),
-            Some(Routed::Wheel { column: 7, row: 9, down: false })
+            Some(Routed::Wheel {
+                column: 7,
+                row: 9,
+                down: false
+            })
         );
         // Modifiers are ignored.
         let mut shifted = ev(MouseEventKind::Down(MouseButton::Left));
@@ -169,7 +194,11 @@ mod tests {
             MouseEventKind::ScrollLeft,
             MouseEventKind::ScrollRight,
         ] {
-            assert_eq!(routed(&ev(kind)), None, "{kind:?} must never enter the FIFO");
+            assert_eq!(
+                routed(&ev(kind)),
+                None,
+                "{kind:?} must never enter the FIFO"
+            );
         }
     }
 
@@ -202,7 +231,11 @@ mod tests {
 
     #[test]
     fn mouse_list_region_maps_rows_through_the_offset() {
-        let r = ListRegion { rect: Rect::new(2, 4, 30, 5), offset: 10, len: 12 };
+        let r = ListRegion {
+            rect: Rect::new(2, 4, 30, 5),
+            offset: 10,
+            len: 12,
+        };
         assert_eq!(r.row_at(3, 4), Some(10));
         assert_eq!(r.row_at(3, 5), Some(11));
         assert_eq!(r.row_at(3, 6), None, "beyond len");
@@ -216,14 +249,22 @@ mod tests {
         let area = Rect::new(1, 2, 20, 1);
         assert_eq!(
             tab_entry_rects(area, &[4, 5, 3], 1),
-            vec![Rect::new(1, 2, 4, 1), Rect::new(6, 2, 5, 1), Rect::new(12, 2, 3, 1)]
+            vec![
+                Rect::new(1, 2, 4, 1),
+                Rect::new(6, 2, 5, 1),
+                Rect::new(12, 2, 3, 1)
+            ]
         );
         // Clipping: the second entry is cut at the right edge, the third starts
         // past it and gets width 0.
         let narrow = Rect::new(0, 0, 8, 1);
         assert_eq!(
             tab_entry_rects(narrow, &[4, 5, 3], 1),
-            vec![Rect::new(0, 0, 4, 1), Rect::new(5, 0, 3, 1), Rect::new(8, 0, 0, 1)]
+            vec![
+                Rect::new(0, 0, 4, 1),
+                Rect::new(5, 0, 3, 1),
+                Rect::new(8, 0, 0, 1)
+            ]
         );
     }
 

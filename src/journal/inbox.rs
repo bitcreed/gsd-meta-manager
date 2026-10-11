@@ -404,10 +404,7 @@ mod tests {
         assert_eq!(third.messages.len(), 1, "the completed line arrives once");
         assert_eq!(third.messages[0].text, "second");
         assert!(
-            tail(&path, third.cursor)
-                .expect("tail")
-                .messages
-                .is_empty(),
+            tail(&path, third.cursor).expect("tail").messages.is_empty(),
             "and is not re-delivered on the read after that"
         );
     }

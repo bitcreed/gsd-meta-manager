@@ -35,16 +35,16 @@
 //! status suppression that a multi-hour run would otherwise defeat for its whole
 //! duration (D-25, ARCHITECTURE AP1).
 
+use super::confirm_popup::{ConfirmOutcome, ConfirmPopup};
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::config::save_config;
 use crate::registry;
+use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use super::confirm_popup::{ConfirmOutcome, ConfirmPopup};
-use crate::ui::mouse::MouseInput;
 use ratatui::Frame;
 
 /// The GSD command a start is **pre-selected** with.
@@ -304,8 +304,7 @@ fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, command: &str)
     let alias = &crate::text::render_for_terminal(alias);
     match action {
         DriverAction::Start => {
-            let command =
-                crate::text::display_identity(&super::sanitize_render_line(command));
+            let command = crate::text::display_identity(&super::sanitize_render_line(command));
             format!(
                 "Drive \"{alias}\" with {command}? An autonomous agent will run it in that \
                  project with full autonomy, including git operations. [y/n]"
@@ -464,19 +463,21 @@ impl Screen for DriverConfirmScreen {
             DriverAction::ToggleOptIn if opted_in => ("Withdraw driver opt-in", Color::Red),
             DriverAction::ToggleOptIn => ("Allow driver", Color::Yellow),
         };
-        self.popup.record(super::confirm_popup::render_confirm_popup(
-            frame,
-            area,
-            title,
-            body,
-            accent,
-            self.popup.focus,
-        ));
+        self.popup
+            .record(super::confirm_popup::render_confirm_popup(
+                frame,
+                area,
+                title,
+                body,
+                accent,
+                self.popup.focus,
+            ));
     }
 
     fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
-        super::confirm_popup::click_as_key(&self.popup, input)
-            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
+        super::confirm_popup::click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
     }
 
     fn name(&self) -> &str {
@@ -1044,7 +1045,10 @@ pub(crate) mod tests {
 
         // The profile attribution distinguishes the two spawns, because the
         // exposure is different and a list that flattened them would mislead.
-        assert!(rendered.contains("[executor]"), "CLAUDE.md is executor-side");
+        assert!(
+            rendered.contains("[executor]"),
+            "CLAUDE.md is executor-side"
+        );
         assert!(
             rendered.contains("[model seam]"),
             "STATE.md is read by the seams"
@@ -1154,8 +1158,11 @@ pub(crate) mod tests {
     /// bit does not stop a process running as root, which some CI does.
     fn unwritable_config_path(root: &Path) -> std::path::PathBuf {
         let blocker = root.join("not-a-directory");
-        std::fs::write(&blocker, b"a regular file standing where a directory must be")
-            .expect("the blocker is written");
+        std::fs::write(
+            &blocker,
+            b"a regular file standing where a directory must be",
+        )
+        .expect("the blocker is written");
         blocker.join("config.json")
     }
 
@@ -1293,10 +1300,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_failed_save_names_the_save_failure_in_both_directions() {
-        for (direction, prior) in [
-            ("withdrawal", Some(granted_record())),
-            ("grant", None),
-        ] {
+        for (direction, prior) in [("withdrawal", Some(granted_record())), ("grant", None)] {
             let dir = tempfile::tempdir().expect("temp dir");
             let (mut ctx, _rx) = ctx_with_project(dir.path());
             ctx.config_path = unwritable_config_path(dir.path());
@@ -1365,7 +1369,12 @@ pub(crate) mod tests {
 
         // The withdraw prompt says NEW, because disabling does not stop a live
         // run and the code does not pretend it does (T-17-48).
-        let withdraw = prompt_text(ALIAS, DriverAction::ToggleOptIn, true, DEFAULT_DRIVE_COMMAND);
+        let withdraw = prompt_text(
+            ALIAS,
+            DriverAction::ToggleOptIn,
+            true,
+            DEFAULT_DRIVE_COMMAND,
+        );
         assert!(
             withdraw.contains("NEW"),
             "the withdraw prompt must not claim to stop a live run, got: {withdraw}"
@@ -1430,12 +1439,18 @@ pub(crate) mod tests {
              confirmation naming a command other than the one that will run is \
              worse than no confirmation. Got: {prompt}"
         );
-        assert!(prompt.contains(ALIAS) && prompt.ends_with("[y/n]"), "got: {prompt}");
+        assert!(
+            prompt.contains(ALIAS) && prompt.ends_with("[y/n]"),
+            "got: {prompt}"
+        );
 
         // And the default path still says the default, so the assertion above
         // is not passing because the prompt named nothing at all.
         let defaulted = prompt_text(ALIAS, DriverAction::Start, true, DEFAULT_DRIVE_COMMAND);
-        assert!(defaulted.contains(DEFAULT_DRIVE_COMMAND), "got: {defaulted}");
+        assert!(
+            defaulted.contains(DEFAULT_DRIVE_COMMAND),
+            "got: {defaulted}"
+        );
     }
 
     #[test]
@@ -1529,7 +1544,11 @@ pub(crate) mod tests {
             t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
             let buf = t.backend().buffer();
             let text: String = (0..40u16)
-                .map(|y| (0..110u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .map(|y| {
+                    (0..110u16)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
             assert!(text.contains(title), "{action:?}: title missing");
@@ -1565,16 +1584,35 @@ pub(crate) mod tests {
         t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
         let buf = t.backend().buffer();
         let text: String = (0..40u16)
-            .map(|y| (0..110u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..110u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let at = |label: &str| {
-            let (column, row) = crate::ui::screens::confirm_popup::locate(&text, label).expect("button drawn");
-            MouseInput::Click { column, row, double: false }
+            let (column, row) =
+                crate::ui::screens::confirm_popup::locate(&text, label).expect("button drawn");
+            MouseInput::Click {
+                column,
+                row,
+                double: false,
+            }
         };
-        let stray = MouseInput::Click { column: 0, row: 0, double: false };
-        assert!(matches!(screen.handle_mouse(stray, &mut ctx), ScreenAction::None));
-        assert!(matches!(screen.handle_mouse(at("[ No ]"), &mut ctx), ScreenAction::Pop));
+        let stray = MouseInput::Click {
+            column: 0,
+            row: 0,
+            double: false,
+        };
+        assert!(matches!(
+            screen.handle_mouse(stray, &mut ctx),
+            ScreenAction::None
+        ));
+        assert!(matches!(
+            screen.handle_mouse(at("[ No ]"), &mut ctx),
+            ScreenAction::Pop
+        ));
         assert!(rx.try_recv().is_err(), "clicking No must not start a run");
     }
 }

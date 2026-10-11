@@ -1953,7 +1953,7 @@ mod tests {
         ),
         (
             "src/ui/screens/detail.rs",
-            8,
+            6,
             SiteDisposition::Producer,
             "resume_terminal_argv fuses the id to its option name and emits \
              `--resume=<id>` into a terminal emulator's argv. Also carries the \
@@ -2028,8 +2028,7 @@ mod tests {
         }
 
         fn read_back(argv: &[std::ffi::OsString]) -> Option<String> {
-            session_id_in_cmdline(&wire(argv))
-                .map(|id| id.as_raw_for_logic_only().to_string())
+            session_id_in_cmdline(&wire(argv)).map(|id| id.as_raw_for_logic_only().to_string())
         }
 
         // --- The NON-RESUMING shape: a fresh run's assigned id --------------
@@ -2043,7 +2042,8 @@ mod tests {
              be driving nothing through the parser and passing on that"
         );
         assert!(
-            argv.iter().any(|element| element.as_bytes() == assigned.as_bytes()),
+            argv.iter()
+                .any(|element| element.as_bytes() == assigned.as_bytes()),
             "the assigned session id {assigned:?} is not an element of the argv \
              build_argv produced ({argv:?}), so this control would be asserting \
              against a value the producer never emitted"
@@ -2090,7 +2090,8 @@ mod tests {
              satisfied by argv index and certifies nothing about rank."
         );
         assert!(
-            argv.iter().any(|element| element.as_bytes() == fresh.as_bytes()),
+            argv.iter()
+                .any(|element| element.as_bytes() == fresh.as_bytes()),
             "the fresh session id {fresh:?} is not on the resuming argv \
              ({argv:?}), so there is no second id for the rank rule to outrank"
         );

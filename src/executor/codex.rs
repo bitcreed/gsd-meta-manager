@@ -634,8 +634,17 @@ mod tests {
 
     #[test]
     fn the_scrub_keeps_codex_home_and_the_ca_and_drops_every_other_agent_variable() {
-        for kept in ["CODEX_HOME", "CODEX_CA_CERTIFICATE", "PATH", "HOME", "CODEXHOME"] {
-            assert!(!scrubbed_from_codex_child(OsStr::new(kept)), "{kept} is kept");
+        for kept in [
+            "CODEX_HOME",
+            "CODEX_CA_CERTIFICATE",
+            "PATH",
+            "HOME",
+            "CODEXHOME",
+        ] {
+            assert!(
+                !scrubbed_from_codex_child(OsStr::new(kept)),
+                "{kept} is kept"
+            );
         }
         for dropped in [
             "CODEX_THREAD_ID",

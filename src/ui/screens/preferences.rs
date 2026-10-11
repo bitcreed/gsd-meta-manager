@@ -63,7 +63,11 @@ pub(crate) fn step_runtime(prefs: &mut Preferences, forward: bool) {
         .and_then(|s| RUNTIME_CYCLE.iter().position(|c| *c == Some(s)))
         .unwrap_or(0);
     let n = RUNTIME_CYCLE.len();
-    let next = if forward { (current + 1) % n } else { (current + n - 1) % n };
+    let next = if forward {
+        (current + 1) % n
+    } else {
+        (current + n - 1) % n
+    };
     match RUNTIME_CYCLE[next] {
         Some(name) => {
             prefs
@@ -152,8 +156,8 @@ impl Screen for PreferencesScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let path = crate::text::render_for_terminal(&ctx.config_path.display().to_string())
-            .to_string();
+        let path =
+            crate::text::render_for_terminal(&ctx.config_path.display().to_string()).to_string();
         let prefs = &ctx.config.preferences;
         let sel = |row: usize| {
             if self.selected == row {
@@ -166,7 +170,9 @@ impl Screen for PreferencesScreen {
         let lines = vec![
             Line::from(Span::styled(
                 " MANAGER PREFERENCES: apply to this manager, for every project",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" File: {path}"), dim)),
             Line::from(""),
@@ -175,19 +181,27 @@ impl Screen for PreferencesScreen {
                 sel(ROW_RUNTIME),
             )),
             Line::from(Span::styled(
-                format!("  driver_max_concurrent   < {} >", prefs.driver_max_concurrent),
+                format!(
+                    "  driver_max_concurrent   < {} >",
+                    prefs.driver_max_concurrent
+                ),
                 sel(ROW_CONCURRENT),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 " GSD GLOBAL TEMPLATE (~/.gsd/defaults.json)",
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "  Seeds NEW projects only. Existing projects ignore it once they",
                 dim,
             )),
-            Line::from(Span::styled("  have their own .planning/config.json.  g = open editor", dim)),
+            Line::from(Span::styled(
+                "  have their own .planning/config.json.  g = open editor",
+                dim,
+            )),
             Line::from(""),
             Line::from(Span::styled(
                 " j/k select   </> or Enter change (saved at once)   g template   Esc back",
@@ -225,10 +239,14 @@ mod tests {
     #[test]
     fn invalid_runtime_in_file_is_reset_by_stepping() {
         let mut p = Preferences::default();
-        p.extra.insert(DEFAULT_RUNTIME_KEY.into(), Value::from("gemini"));
+        p.extra
+            .insert(DEFAULT_RUNTIME_KEY.into(), Value::from("gemini"));
         assert!(runtime_label(&p).contains("invalid"));
         step_runtime(&mut p, true);
-        assert_eq!(p.default_runtime().unwrap().map(|r| format!("{r:?}")), Some("Claude".into()));
+        assert_eq!(
+            p.default_runtime().unwrap().map(|r| format!("{r:?}")),
+            Some("Claude".into())
+        );
     }
 
     #[test]
@@ -277,7 +295,8 @@ mod tests {
         let ctx = super::super::tests::ctx_with_aliases(&["a"]);
         let backend = ratatui::backend::TestBackend::new(100, 14);
         let mut term = ratatui::Terminal::new(backend).unwrap();
-        term.draw(|f| PreferencesScreen::new().render(f, f.area(), &ctx)).unwrap();
+        term.draw(|f| PreferencesScreen::new().render(f, f.area(), &ctx))
+            .unwrap();
         let text: String = term
             .backend()
             .buffer()

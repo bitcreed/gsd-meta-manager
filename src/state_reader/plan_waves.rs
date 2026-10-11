@@ -56,7 +56,9 @@ impl PlanWave {
 /// `None`; the plan then falls into the unknown bucket instead of panicking or
 /// inventing a number.
 pub fn plan_wave_number(content: &str) -> Option<u32> {
-    leading_frontmatter_value(content, "wave")?.parse::<u32>().ok()
+    leading_frontmatter_value(content, "wave")?
+        .parse::<u32>()
+        .ok()
 }
 
 /// Group `(plan id, wave number)` pairs into waves for display.
@@ -354,10 +356,7 @@ mod tests {
     #[test]
     fn test_plan_waves_inherit_the_frontmatter_anchoring_rules() {
         // A nested key is a different key (WR-05) ...
-        assert_eq!(
-            plan_wave_number("---\nexecution:\n  wave: 2\n---\n"),
-            None
-        );
+        assert_eq!(plan_wave_number("---\nexecution:\n  wave: 2\n---\n"), None);
         // ... and nothing below the closing marker is frontmatter at all.
         assert_eq!(plan_wave_number("---\nphase: 5\n---\nwave: 2\n"), None);
         // ... and a file that does not open with the block marker has none.
@@ -388,7 +387,11 @@ mod tests {
     #[test]
     fn test_plan_waves_are_empty_for_a_phase_whose_plans_record_none() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("05-01-alpha-PLAN.md"), "---\nphase: 5\n---\n").unwrap();
+        fs::write(
+            dir.path().join("05-01-alpha-PLAN.md"),
+            "---\nphase: 5\n---\n",
+        )
+        .unwrap();
         fs::write(dir.path().join("05-02-beta-PLAN.md"), "no frontmatter here").unwrap();
 
         let inf = infer_disk_status(dir.path());

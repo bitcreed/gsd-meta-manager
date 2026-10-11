@@ -852,11 +852,7 @@ pub fn parse_project_state_with(
             //      but the intermediate `All phases complete` must NOT (the milestone
             //      is not done — it awaits `/gsd:complete-milestone`),
             //   4. the legacy stopped_at / count-based completion heuristic.
-            if let Some(name) = fm
-                .current_phase_name
-                .as_deref()
-                .filter(|s| !s.is_empty())
-            {
+            if let Some(name) = fm.current_phase_name.as_deref().filter(|s| !s.is_empty()) {
                 state.current_phase = name.to_string();
             } else if let Some(ph) = fm.current_phase.as_deref().filter(|s| !s.is_empty()) {
                 state.current_phase = format!("Phase {}", ph);
@@ -1083,7 +1079,13 @@ pub(crate) fn write_ttbook_phase13_fixture(planning: &Path) {
         include_str!("../../tests/fixtures/roadmaps/ttbook-phase13-HANDOFF.json"),
     )
     .unwrap();
-    for (num, slug) in [("08", "a"), ("09", "b"), ("10", "c"), ("11", "d"), ("12", "e")] {
+    for (num, slug) in [
+        ("08", "a"),
+        ("09", "b"),
+        ("10", "c"),
+        ("11", "d"),
+        ("12", "e"),
+    ] {
         let dir = planning.join("phases").join(format!("{num}-{slug}"));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(format!("{num}-01-PLAN.md")), "# plan\n").unwrap();
@@ -1123,7 +1125,8 @@ mod tests {
     /// Set a file's mtime (std `File::set_modified`, stable since 1.75).
     fn set_mtime(path: &Path, when: chrono::DateTime<chrono::Utc>) {
         let file = fs::File::options().write(true).open(path).unwrap();
-        file.set_modified(std::time::SystemTime::from(when)).unwrap();
+        file.set_modified(std::time::SystemTime::from(when))
+            .unwrap();
     }
 
     #[test]
@@ -1217,7 +1220,10 @@ mod tests {
     #[test]
     fn stale_handoff_json_phase_behind_state_is_not_paused() {
         let td = make_planning(&[
-            ("STATE.md", "---\nstatus: executing\ncurrent_phase: 13\n---\n"),
+            (
+                "STATE.md",
+                "---\nstatus: executing\ncurrent_phase: 13\n---\n",
+            ),
             (
                 "HANDOFF.json",
                 "{\"phase\":\"12\",\"next_action\":\"Dispatch /gsd-discuss-phase 12\"}",
@@ -1397,7 +1403,10 @@ mod tests {
                        - [x] **Phase 1: One** - a\n\
                        - [x] **Phase 2: Two** - b\n";
         let td = make_planning(&[
-            ("STATE.md", "---\nstatus: verifying\ncurrent_phase: 2\n---\n"),
+            (
+                "STATE.md",
+                "---\nstatus: verifying\ncurrent_phase: 2\n---\n",
+            ),
             ("ROADMAP.md", roadmap),
             ("phases/01-one/01-01-PLAN.md", "# p\n"),
             ("phases/01-one/01-01-SUMMARY.md", "# s\n"),
@@ -1406,10 +1415,7 @@ mod tests {
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
         assert_eq!(state.phases.len(), 2);
-        assert_eq!(
-            state.phase_marker(&state.phases[1]),
-            PhaseMarker::Current
-        );
+        assert_eq!(state.phase_marker(&state.phases[1]), PhaseMarker::Current);
         assert_eq!(state.phase_progress(), PhaseProgress { done: 2, total: 2 });
     }
 
@@ -1580,7 +1586,10 @@ mod tests {
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
         assert_eq!(state.milestones.len(), 1);
-        assert_eq!(state.milestones[0].label.as_raw_for_logic_only(), "v2.0 Next");
+        assert_eq!(
+            state.milestones[0].label.as_raw_for_logic_only(),
+            "v2.0 Next"
+        );
         assert!(state.milestones[0].contains("1"));
     }
 
@@ -1589,13 +1598,23 @@ mod tests {
     #[test]
     fn parse_project_state_reads_planned_build_phases() {
         let td = make_planning(&[
-            ("STATE.md", include_str!("../../tests/fixtures/roadmaps/ttbook-STATE.md")),
-            ("ROADMAP.md", include_str!("../../tests/fixtures/roadmaps/ttbook-ROADMAP.md")),
+            (
+                "STATE.md",
+                include_str!("../../tests/fixtures/roadmaps/ttbook-STATE.md"),
+            ),
+            (
+                "ROADMAP.md",
+                include_str!("../../tests/fixtures/roadmaps/ttbook-ROADMAP.md"),
+            ),
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
         let gsd: Vec<&str> = state.phases.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(gsd, ["8", "9", "10", "11", "12", "13"]);
-        let planned: Vec<&str> = state.planned_phases.iter().map(|p| p.number.as_str()).collect();
+        let planned: Vec<&str> = state
+            .planned_phases
+            .iter()
+            .map(|p| p.number.as_str())
+            .collect();
         assert_eq!(planned, ["14", "15", "16", "17", "18"]);
     }
 
@@ -1617,7 +1636,11 @@ mod tests {
         let state = parse_project_state(&td.path().join(".planning"));
         let gsd: Vec<&str> = state.phases.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(gsd, ["12", "13", "13.1", "14", "16"]);
-        let shipped: Vec<&str> = state.shipped_phases.iter().map(|p| p.number.as_str()).collect();
+        let shipped: Vec<&str> = state
+            .shipped_phases
+            .iter()
+            .map(|p| p.number.as_str())
+            .collect();
         assert_eq!(
             shipped,
             ["1", "2", "2.1", "3", "4", "5", "6", "07", "08", "9", "10", "11"]
@@ -1638,7 +1661,10 @@ mod tests {
     #[test]
     fn a_renumbered_current_phase_is_not_completed_by_its_shipped_namesake() {
         let td = make_planning(&[
-            ("STATE.md", "---\nmilestone: v2.0\nstatus: executing\n---\n# Project State\n"),
+            (
+                "STATE.md",
+                "---\nmilestone: v2.0\nstatus: executing\n---\n# Project State\n",
+            ),
             ("ROADMAP.md", RENUMBERED_ROADMAP),
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
@@ -1666,17 +1692,29 @@ mod tests {
     #[test]
     fn parse_project_state_reads_milestone_name_after_progress() {
         let td = make_planning(&[
-            ("STATE.md", include_str!("../../tests/fixtures/roadmaps/sentriq-STATE.md")),
-            ("ROADMAP.md", include_str!("../../tests/fixtures/roadmaps/sentriq-ROADMAP.md")),
+            (
+                "STATE.md",
+                include_str!("../../tests/fixtures/roadmaps/sentriq-STATE.md"),
+            ),
+            (
+                "ROADMAP.md",
+                include_str!("../../tests/fixtures/roadmaps/sentriq-ROADMAP.md"),
+            ),
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
         assert_eq!(state.milestone, "v0.12");
         assert_eq!(
-            state.milestone_name.as_ref().map(|m| m.as_raw_for_logic_only()),
+            state
+                .milestone_name
+                .as_ref()
+                .map(|m| m.as_raw_for_logic_only()),
             Some("Actuation Routines")
         );
 
-        let td = make_planning(&[("STATE.md", "---\nstatus: executing\nmilestone_name: \n---\n")]);
+        let td = make_planning(&[(
+            "STATE.md",
+            "---\nstatus: executing\nmilestone_name: \n---\n",
+        )]);
         let state = parse_project_state(&td.path().join(".planning"));
         assert_eq!(state.milestone_name, None, "an empty value is no name");
     }
@@ -1685,12 +1723,20 @@ mod tests {
     #[test]
     fn parse_project_state_reads_phase_goals() {
         let td = make_planning(&[
-            ("STATE.md", include_str!("../../tests/fixtures/roadmaps/daily-vow-STATE.md")),
-            ("ROADMAP.md", include_str!("../../tests/fixtures/roadmaps/daily-vow-ROADMAP.md")),
+            (
+                "STATE.md",
+                include_str!("../../tests/fixtures/roadmaps/daily-vow-STATE.md"),
+            ),
+            (
+                "ROADMAP.md",
+                include_str!("../../tests/fixtures/roadmaps/daily-vow-ROADMAP.md"),
+            ),
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
         let goal = state.phase_goals.get("23").expect("phase 23 has a goal");
-        assert!(goal.as_raw_for_logic_only().starts_with("(sanitised) The user can see"));
+        assert!(goal
+            .as_raw_for_logic_only()
+            .starts_with("(sanitised) The user can see"));
         assert_eq!(state.phase_goals.len(), 6);
     }
 
@@ -1771,7 +1817,10 @@ mod tests {
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
         assert!(state.paused);
-        assert_eq!(state.pause_context.as_deref(), Some("Pick up at plan 14-02"));
+        assert_eq!(
+            state.pause_context.as_deref(),
+            Some("Pick up at plan 14-02")
+        );
     }
 
     #[test]
@@ -1866,16 +1915,29 @@ mod tests {
     fn test_workstreams_populated_on_project_state() {
         let td = make_planning(&[
             ("STATE.md", "---\nstatus: executing\n---\n"),
-            ("workstreams/alpha/STATE.md", "---\nstatus: executing\n---\n"),
+            (
+                "workstreams/alpha/STATE.md",
+                "---\nstatus: executing\n---\n",
+            ),
             ("workstreams/beta/STATE.md", "---\nstatus: planning\n---\n"),
             ("active-workstream", "alpha\n"),
         ]);
         let state = parse_project_state(&td.path().join(".planning"));
         assert_eq!(state.workstreams.len(), 2);
         // Bounded recursion: each workstream sub-state has no nested workstreams.
-        assert!(state.workstreams.iter().all(|w| w.state.workstreams.is_empty()));
+        assert!(state
+            .workstreams
+            .iter()
+            .all(|w| w.state.workstreams.is_empty()));
         // Active flag flows through from the active-workstream pointer.
-        assert!(state.workstreams.iter().find(|w| w.name == "alpha").unwrap().active);
+        assert!(
+            state
+                .workstreams
+                .iter()
+                .find(|w| w.name == "alpha")
+                .unwrap()
+                .active
+        );
     }
 
     #[test]

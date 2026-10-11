@@ -213,7 +213,8 @@ const MISSED_GLOSS_SEND_FAILED: &str = "(the write to the agent failed; it never
 /// the recorded reason is not one this build knows — **never** to fall back to
 /// one of the two glosses above, which would attribute a cause the evidence
 /// does not support.
-const MISSED_GLOSS_UNRECOGNISED: &str = "(undeliverable; the journal gives a reason this build does not recognise)";
+const MISSED_GLOSS_UNRECOGNISED: &str =
+    "(undeliverable; the journal gives a reason this build does not recognise)";
 
 // ── Copy (Copywriting Contract, exact strings) ─────────────────────────────
 
@@ -356,9 +357,7 @@ pub fn run_state_glyph(
         Some(RunVerdict::CrashedWithoutEnding) => (GLYPH_FAILED, "crash", Color::Red),
         Some(RunVerdict::Ended) | None => match outcome {
             Some("succeeded_with_changes") => (GLYPH_SUCCEEDED, "ok", Color::Green),
-            Some("succeeded_no_changes") => {
-                (GLYPH_SUCCEEDED_NO_CHANGES, "no-chg", Color::Yellow)
-            }
+            Some("succeeded_no_changes") => (GLYPH_SUCCEEDED_NO_CHANGES, "no-chg", Color::Yellow),
             Some("failed") => (GLYPH_FAILED, "fail", Color::Red),
             Some("permission_denied") => (GLYPH_FAILED, "denied", Color::Red),
             Some("timed_out") => (GLYPH_FAILED, "t/out", Color::Red),
@@ -539,9 +538,11 @@ pub fn terminal_state_cell(state: TerminalState) -> (&'static str, String, Color
         TerminalState::CapabilityRefused => (GLYPH_FAILED, "capability refused", Color::Red),
         TerminalState::SpawnFailed => (GLYPH_FAILED, "spawn failed", Color::Red),
         TerminalState::Killed => (GLYPH_KILLED, "killed", Color::DarkGray),
-        TerminalState::Unrecorded => {
-            (GLYPH_LIVENESS_UNKNOWN, "outcome not recorded", Color::Yellow)
-        }
+        TerminalState::Unrecorded => (
+            GLYPH_LIVENESS_UNKNOWN,
+            "outcome not recorded",
+            Color::Yellow,
+        ),
     };
     (glyph, word.to_string(), color)
 }
@@ -1383,10 +1384,8 @@ fn steps_lines(
     // every width and carries the abbreviation; this row is the one place the
     // full evidence-derived word fits, and it is what makes a finished run
     // reviewable after the fact rather than merely glanceable (OBS-05).
-    let (_, word, color) = terminal_state_cell(TerminalState::observed(
-        verdict,
-        summary.outcome.as_deref(),
-    ));
+    let (_, word, color) =
+        terminal_state_cell(TerminalState::observed(verdict, summary.outcome.as_deref()));
     let (_, started) = local_date_time(&summary.started_at);
 
     let command_style = if live {
@@ -1492,10 +1491,7 @@ fn output_header_line(width: u16, indicator: &str, color: Color) -> Line<'static
         .saturating_sub(head.chars().count())
         .saturating_sub(tail_cells);
     Line::from(vec![
-        Span::styled(
-            format!("{head}{}", "\u{2500}".repeat(pad)),
-            label_style(),
-        ),
+        Span::styled(format!("{head}{}", "\u{2500}".repeat(pad)), label_style()),
         Span::raw(" "),
         Span::styled(indicator.to_string(), Style::default().fg(color)),
         Span::styled(" \u{2500}\u{2500}", label_style()),
@@ -1759,7 +1755,10 @@ pub fn injection_rows(entry: &InjectionEntry, now: DateTime<Utc>) -> Vec<Line<'s
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("{glyph} {label}"), Style::default().fg(color)),
-        Span::styled(format!("  {}", local_time_of_day(&message.ts)), label_style()),
+        Span::styled(
+            format!("  {}", local_time_of_day(&message.ts)),
+            label_style(),
+        ),
     ];
     if *state == InjectionState::Delivered {
         if let Some(at) = at {
@@ -2058,13 +2057,8 @@ fn render_output_section(
     let below = usize::from(tail_offset(metrics).saturating_sub(scroll));
 
     let live = matches!(verdict, Some(RunVerdict::Live));
-    let (indicator, color) = follow_indicator(
-        live,
-        following,
-        below,
-        summary.ended_at.as_deref(),
-        adopted,
-    );
+    let (indicator, color) =
+        follow_indicator(live, following, below, summary.ended_at.as_deref(), adopted);
     frame.render_widget(
         Paragraph::new(output_header_line(rule_area.width, &indicator, color)),
         rule_area,
@@ -2702,12 +2696,11 @@ mod tests {
     #[test]
     fn the_wrapped_line_composition_equals_shown_capped() {
         for raw in composition_fixtures() {
-            let via_carrier =
-                crate::text::Untrusted::from_untrusted_source(super::super::sanitize_render_line(
-                    &raw,
-                ))
-                .shown()
-                .to_string();
+            let via_carrier = crate::text::Untrusted::from_untrusted_source(
+                super::super::sanitize_render_line(&raw),
+            )
+            .shown()
+            .to_string();
             let via_call = shown_capped(&raw);
             assert_eq!(
                 via_carrier, via_call,
@@ -2834,8 +2827,7 @@ mod tests {
     #[test]
     fn the_empty_run_list_copy_differs_by_opt_in_state() {
         let opted_in: Vec<String> = no_runs_lines("meta-mgr", true).iter().map(text).collect();
-        let not_opted_in: Vec<String> =
-            no_runs_lines("meta-mgr", false).iter().map(text).collect();
+        let not_opted_in: Vec<String> = no_runs_lines("meta-mgr", false).iter().map(text).collect();
 
         assert!(opted_in[0].contains("No runs yet for \"meta-mgr\"."));
         assert!(opted_in[1].contains("[s]"));
@@ -2884,7 +2876,10 @@ mod tests {
             );
         }
         // A goal that WAS given is never replaced by the placeholder.
-        let given: String = goal_lines("ship the driver tab", 80).iter().map(text).collect();
+        let given: String = goal_lines("ship the driver tab", 80)
+            .iter()
+            .map(text)
+            .collect();
         assert!(!given.contains(GOAL_NONE_GIVEN), "{given:?}");
         assert!(given.contains("ship the driver tab"), "{given:?}");
     }
@@ -2894,7 +2889,11 @@ mod tests {
         let long = "ship ".repeat(200);
         let lines = goal_lines(&long, 60);
         assert_eq!(lines.len(), 3);
-        assert!(text(&lines[2]).ends_with('\u{2026}'), "{:?}", text(&lines[2]));
+        assert!(
+            text(&lines[2]).ends_with('\u{2026}'),
+            "{:?}",
+            text(&lines[2])
+        );
     }
 
     /// Below the two-pane floor the run list is not rendered, and the selection
@@ -2903,7 +2902,10 @@ mod tests {
     fn the_sub_sixty_tier_returns_a_single_pane_and_still_honours_the_selection() {
         let narrow = Rect::new(0, 0, DRIVER_TWO_PANE_MIN_CELLS - 1, 24);
         let (list, detail) = driver_panes(narrow);
-        assert!(list.is_none(), "the run list must be dropped below 60 columns");
+        assert!(
+            list.is_none(),
+            "the run list must be dropped below 60 columns"
+        );
         assert_eq!(detail, narrow);
 
         let wide = Rect::new(0, 0, DRIVER_TWO_PANE_MIN_CELLS, 24);
@@ -2938,7 +2940,10 @@ mod tests {
             (GLYPH_FAILED, "crash", Color::Red)
         );
         for (label, expected) in [
-            ("succeeded_with_changes", (GLYPH_SUCCEEDED, "ok", Color::Green)),
+            (
+                "succeeded_with_changes",
+                (GLYPH_SUCCEEDED, "ok", Color::Green),
+            ),
             (
                 "succeeded_no_changes",
                 (GLYPH_SUCCEEDED_NO_CHANGES, "no-chg", Color::Yellow),
@@ -3050,8 +3055,14 @@ mod tests {
         let mut output = DriverOutput::default();
         output.push_record(DriverLineKind::Output, "ordinary output");
         output.push_record(DriverLineKind::Stderr, "a warning on stderr");
-        output.push_record(DriverLineKind::Diagnostic, "journal gap: 3 record(s) not read");
-        output.push_record(DriverLineKind::Terminal, "run ended: succeeded_with_changes");
+        output.push_record(
+            DriverLineKind::Diagnostic,
+            "journal gap: 3 record(s) not read",
+        );
+        output.push_record(
+            DriverLineKind::Terminal,
+            "run ended: succeeded_with_changes",
+        );
 
         let lines = body(Some(&output));
         let rendered: Vec<String> = lines.iter().map(text).collect();
@@ -3116,7 +3127,10 @@ mod tests {
             DriverLineKind::Output,
             &"row\n".repeat(super::super::DRIVER_OUTPUT_RECORD_MAX_LINES + 10),
         );
-        output.push_record(DriverLineKind::Terminal, "run ended: succeeded_with_changes");
+        output.push_record(
+            DriverLineKind::Terminal,
+            "run ended: succeeded_with_changes",
+        );
         assert!(output.dropped() > 0 && output.record_truncated() && !output.is_empty());
 
         output.retarget("run-b");
@@ -3134,7 +3148,11 @@ mod tests {
         // batches and each batch retargets before its first push.
         output.push_record(DriverLineKind::Output, "run B says something");
         output.retarget("run-b");
-        assert_eq!(output.len(), 1, "an unchanged run id must not clear the ring");
+        assert_eq!(
+            output.len(),
+            1,
+            "an unchanged run id must not clear the ring"
+        );
     }
 
     /// CR-02, at the chooser.
@@ -3147,10 +3165,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let alias = super::super::driver_confirm::tests::ALIAS;
         let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
-        ctx.driver_output.insert(
-            alias.to_string(),
-            ring_for("run-a", &["run A said this"]),
-        );
+        ctx.driver_output
+            .insert(alias.to_string(), ring_for("run-a", &["run A said this"]));
 
         assert!(
             output_for_run(&ctx, alias, None, "run-a").is_some(),
@@ -3234,12 +3250,19 @@ mod tests {
     #[test]
     fn the_output_header_keeps_its_indicator_at_every_width() {
         for width in [20u16, 39, 60, 80, 120] {
-            let rendered = text(&output_header_line(width, INDICATOR_FOLLOWING, Color::Green));
+            let rendered = text(&output_header_line(
+                width,
+                INDICATOR_FOLLOWING,
+                Color::Green,
+            ));
             assert!(
                 rendered.contains(INDICATOR_FOLLOWING),
                 "the indicator was dropped at {width} columns: {rendered:?}"
             );
-            assert!(rendered.starts_with("\u{2500}\u{2500} output"), "{rendered:?}");
+            assert!(
+                rendered.starts_with("\u{2500}\u{2500} output"),
+                "{rendered:?}"
+            );
         }
     }
 
@@ -3294,8 +3317,7 @@ mod tests {
             "killed",
         ] {
             let (list_glyph, _, list_color) = run_state_glyph(None, Some(label));
-            let (glyph, word, color) =
-                terminal_state_cell(TerminalState::from_label(Some(label)));
+            let (glyph, word, color) = terminal_state_cell(TerminalState::from_label(Some(label)));
             assert_eq!(glyph, list_glyph, "{label}");
             assert_eq!(color, list_color, "{label}");
             assert!(!word.is_empty(), "{label}");
@@ -3423,8 +3445,7 @@ mod tests {
         let mut output = DriverOutput::default();
         output.push_record(DriverLineKind::Output, "ordinary output");
 
-        let adopted =
-            output_body_lines(Some(&output), &[], fixed_now(), true, Color::Green);
+        let adopted = output_body_lines(Some(&output), &[], fixed_now(), true, Color::Green);
         assert!(
             text(&adopted[0]).contains(ADOPTED_RUN_NOTICE),
             "the notice must be the FIRST row: {:?}",
@@ -3608,14 +3629,12 @@ mod tests {
             vec![InjectionState::Missed(MissedReason::Unrecognised)]
         );
 
-        let rendered: String = injection_rows(
-            &derive_injection_states(&inbox, &records)[0],
-            fixed_now(),
-        )
-        .iter()
-        .map(text)
-        .collect::<Vec<_>>()
-        .join("\n");
+        let rendered: String =
+            injection_rows(&derive_injection_states(&inbox, &records)[0], fixed_now())
+                .iter()
+                .map(text)
+                .collect::<Vec<_>>()
+                .join("\n");
         assert!(rendered.contains(LABEL_MISSED), "{rendered}");
         assert!(rendered.contains(MISSED_GLOSS_UNRECOGNISED), "{rendered}");
         assert!(
@@ -3644,7 +3663,10 @@ mod tests {
         let inbox = vec![message("aaa", "skip the UI review")];
         // A journal full of other kinds must not disturb it.
         let noise = [
-            record("exec_event", serde_json::json!({ "stream": "assistant", "text": "hi" })),
+            record(
+                "exec_event",
+                serde_json::json!({ "stream": "assistant", "text": "hi" }),
+            ),
             record("cost", serde_json::json!({ "cumulative_usd": 1.83 })),
         ];
         assert_eq!(state_of(&inbox, &noise), vec![InjectionState::Queued]);
@@ -3848,7 +3870,10 @@ mod tests {
         output.push_record(DriverLineKind::Output, "ordinary output");
         output.push_record(DriverLineKind::Injection, "skip the UI review");
         output.push_record(DriverLineKind::Injection, "interjection acted on: aaa");
-        output.push_record(DriverLineKind::Terminal, "run ended: succeeded_with_changes");
+        output.push_record(
+            DriverLineKind::Terminal,
+            "run ended: succeeded_with_changes",
+        );
 
         let lines = output_body_lines(Some(&output), &entries, fixed_now(), false, Color::Green);
         let rendered: Vec<String> = lines.iter().map(text).collect();
@@ -3871,7 +3896,10 @@ mod tests {
         // untouched.
         assert!(rendered[0].contains("ordinary output"), "{joined}");
         assert!(
-            rendered.last().expect("a terminal row").contains("run ended"),
+            rendered
+                .last()
+                .expect("a terminal row")
+                .contains("run ended"),
             "{joined}"
         );
     }
@@ -4000,8 +4028,7 @@ mod tests {
         let alias = super::super::driver_confirm::tests::ALIAS;
 
         for width in [60u16, 80, 120] {
-            let (mut ctx, _rx) =
-                super::super::driver_confirm::tests::ctx_with_project(dir.path());
+            let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
             ctx.project_states.insert(
                 alias.to_string(),
                 crate::state_reader::ProjectState {
@@ -4110,7 +4137,15 @@ mod tests {
             terminal
                 .draw(|frame| {
                     let area = frame.area();
-                    render_driver_tab(frame, area, &ctx, alias, ctx.view_cache.get(alias), &viewport, &Cell::new(0));
+                    render_driver_tab(
+                        frame,
+                        area,
+                        &ctx,
+                        alias,
+                        ctx.view_cache.get(alias),
+                        &viewport,
+                        &Cell::new(0),
+                    );
                 })
                 .expect("draw the driver tab");
 
@@ -4311,7 +4346,15 @@ mod tests {
             terminal
                 .draw(|frame| {
                     let area = frame.area();
-                    render_driver_tab(frame, area, ctx, alias, ctx.view_cache.get(alias), &viewport, &Cell::new(0));
+                    render_driver_tab(
+                        frame,
+                        area,
+                        ctx,
+                        alias,
+                        ctx.view_cache.get(alias),
+                        &viewport,
+                        &Cell::new(0),
+                    );
                 })
                 .expect("draw the driver tab");
             let buffer = terminal.backend().buffer().clone();

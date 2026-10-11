@@ -75,7 +75,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 /// This file's own text, for the completeness guard.
 const OWN_SOURCE: &str = include_str!("driver_refusal_record.rs");
 
@@ -101,7 +100,10 @@ const CLEAN_BASELINE: &str = concat!(
 /// **This file adds nothing to it.** 21-05's SUMMARY records that the corpus
 /// directory has exactly one author, and the four classes below are the four it
 /// planted and deliberately left unasserted for this plan.
-const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/injection-corpus");
+const CORPUS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/injection-corpus"
+);
 
 const ALIAS: &str = "refusalrecord";
 
@@ -370,8 +372,14 @@ fn parked_events(root: &Path, run_id: &str) -> Vec<(String, String)> {
         .filter(|record| record.kind == "parked")
         .map(|record| {
             (
-                record.rest["reason"].as_str().unwrap_or_default().to_string(),
-                record.rest["needs"].as_str().unwrap_or_default().to_string(),
+                record.rest["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                record.rest["needs"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
             )
         })
         .collect()
@@ -540,9 +548,12 @@ async fn an_out_of_enum_action_is_refused_recorded_verbatim_and_never_executed()
     let workdir = seam_workdir();
     plant_payload(workdir.path(), &one_step(OUT_OF_ENUM_NAMED));
 
-    drive(routed_args(REFUSED_RUN, workdir.path()), &config_for(root.path()))
-        .await
-        .expect("a run that parks is not an error");
+    drive(
+        routed_args(REFUSED_RUN, workdir.path()),
+        &config_for(root.path()),
+    )
+    .await
+    .expect("a run that parks is not an error");
 
     // The run really happened, so nothing below is vacuous.
     assert!(
@@ -710,7 +721,9 @@ fn alphabet_verbs() -> Vec<&'static str> {
 /// that reads as runnable in the residue was CONSTRUCTED.
 fn residue(record: &str, named: &str) -> String {
     let bounded = untrusted::bounded(named);
-    record.replace(named, "«NAMED»").replace(&bounded, "«NAMED»")
+    record
+        .replace(named, "«NAMED»")
+        .replace(&bounded, "«NAMED»")
 }
 
 fn assert_nothing_reads_as_runnable(residue: &str, context: &str) {
@@ -765,9 +778,12 @@ async fn no_part_of_a_refusal_record_reads_as_a_constructed_command_line() {
         let workdir = seam_workdir();
         plant_payload(workdir.path(), &one_step(named));
 
-        drive(routed_args(run_id, workdir.path()), &config_for(root.path()))
-            .await
-            .expect("a run that parks is not an error");
+        drive(
+            routed_args(run_id, workdir.path()),
+            &config_for(root.path()),
+        )
+        .await
+        .expect("a run that parks is not an error");
 
         let refused = escalate::EscalationReason::ActionRefused.as_str();
         assert_eq!(
@@ -1110,9 +1126,12 @@ async fn the_envelope_refuses_a_model_named_push_under_its_own_reason() {
     let named = "git push --force origin main";
     plant_payload(workdir.path(), &one_step(named));
 
-    drive(routed_args(RUN_ID, workdir.path()), &config_for(root.path()))
-        .await
-        .expect("a run that parks is not an error");
+    drive(
+        routed_args(RUN_ID, workdir.path()),
+        &config_for(root.path()),
+    )
+    .await
+    .expect("a run that parks is not an error");
 
     let refused = escalate::EscalationReason::ActionRefused.as_str();
     assert_eq!(
@@ -1121,10 +1140,7 @@ async fn the_envelope_refuses_a_model_named_push_under_its_own_reason() {
         "layer one: a model-named git action is not a member of the alphabet and \
          is refused before it becomes a command"
     );
-    assert!(
-        agent_spawns(workdir.path()).is_empty(),
-        "and nothing ran"
-    );
+    assert!(agent_spawns(workdir.path()).is_empty(), "and nothing ran");
 
     // ---- layer two: the Phase 19 envelope, on real git -------------------
     let Some(fx) = envelope_fixture("envprobe") else {
@@ -1307,8 +1323,9 @@ fn the_four_proofs_are_all_present_by_name() {
 
     // And the premise that makes all four non-vacuous.
     assert!(
-        OWN_SOURCE
-            .contains("fn the_no_rule_state_this_file_depends_on_is_reached_through_the_shipped_reader"),
+        OWN_SOURCE.contains(
+            "fn the_no_rule_state_this_file_depends_on_is_reached_through_the_shipped_reader"
+        ),
         "the reachability premise is gone; without it every driven proof above \
          could pass against a run that never reached the seam"
     );

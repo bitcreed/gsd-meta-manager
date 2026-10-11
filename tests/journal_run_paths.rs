@@ -48,7 +48,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 const ALIAS: &str = "victim";
 const COMMAND: &str = "/gsd-progress";
 const PLAIN_RUN_ID: &str = "2026-07-29T21-40-02Z-3f2a";
@@ -106,7 +105,9 @@ impl Sandbox {
                 driver_opt_in: Some(DriverOptIn {
                     opted_in_at: "2026-07-29T11:59:00Z".to_string(),
                     claude_md_digest: None,
-                    prompt_inputs: gsd_meta_manager::registry::current_prompt_inputs(&self.project()),
+                    prompt_inputs: gsd_meta_manager::registry::current_prompt_inputs(
+                        &self.project(),
+                    ),
                     extra: Default::default(),
                     branch_namespace: None,
                     credential: None,

@@ -2354,7 +2354,10 @@ mod tests {
             paths.active,
             Path::new("/p/.planning/meta-manager/runs/active")
         );
-        assert_eq!(runs_root(planning), Path::new("/p/.planning/meta-manager/runs"));
+        assert_eq!(
+            runs_root(planning),
+            Path::new("/p/.planning/meta-manager/runs")
+        );
     }
 
     #[test]
@@ -2397,7 +2400,9 @@ mod tests {
     /// An approval covering `plan_digest` against `files`.
     fn approval(plan_digest: &str, files: &[crate::config::PromptInput]) -> ApprovedPlan {
         ApprovedPlan {
-            steps: vec!["command=/gsd-plan-phase phase=21 terminal=verification_passed".to_string()],
+            steps: vec![
+                "command=/gsd-plan-phase phase=21 terminal=verification_passed".to_string(),
+            ],
             target_phase: "21".to_string(),
             plan_digest: plan_digest.to_string(),
             approval_digest: approval_digest(plan_digest, files),
@@ -2436,7 +2441,10 @@ mod tests {
             ("CLAUDE.md", Some("sha256:1111")),
             (".planning/STATE.md", Some("sha256:3333")),
         ]);
-        assert_ne!(approval_digest(plan, &before), approval_digest(plan, &appeared));
+        assert_ne!(
+            approval_digest(plan, &before),
+            approval_digest(plan, &appeared)
+        );
 
         // And the same set in a different enumeration order is the same set: the
         // digest is a fact about which files carry which bytes, not about the
@@ -2445,7 +2453,10 @@ mod tests {
             (".planning/STATE.md", None),
             ("CLAUDE.md", Some("sha256:1111")),
         ]);
-        assert_eq!(approval_digest(plan, &before), approval_digest(plan, &reordered));
+        assert_eq!(
+            approval_digest(plan, &before),
+            approval_digest(plan, &reordered)
+        );
 
         // The control: a changed PLAN moves it too, so the assertions above are
         // about the file half rather than about a digest that changes for
@@ -2542,8 +2553,8 @@ mod tests {
              got: {token}"
         );
 
-        let (parsed_plan, parsed_approval) = parse_approval_token(&token)
-            .expect("a token this module rendered must parse back");
+        let (parsed_plan, parsed_approval) =
+            parse_approval_token(&token).expect("a token this module rendered must parse back");
         assert_eq!(
             parsed_plan, plan,
             "the PLAN half comes first. Order is not a detail: the two halves are \
@@ -2582,7 +2593,8 @@ mod tests {
         );
 
         // Three values concatenated must not be read as two.
-        let three = format!("{half}{APPROVAL_TOKEN_SEPARATOR}{other}{APPROVAL_TOKEN_SEPARATOR}{half}");
+        let three =
+            format!("{half}{APPROVAL_TOKEN_SEPARATOR}{other}{APPROVAL_TOKEN_SEPARATOR}{half}");
         assert_eq!(
             parse_approval_token(&three),
             Err(ApprovalTokenError::SeparatorRepeated),
@@ -2654,8 +2666,8 @@ mod tests {
         for key in ["approved_plan", "escalation_cap", "escalations_used"] {
             stripped.remove(key);
         }
-        let loaded: RunRecord =
-            serde_json::from_value(serde_json::Value::Object(stripped)).expect("a pre-Phase-21 record still loads");
+        let loaded: RunRecord = serde_json::from_value(serde_json::Value::Object(stripped))
+            .expect("a pre-Phase-21 record still loads");
         assert!(loaded.approved_plan.is_none());
         assert_eq!(loaded.escalation_cap, None);
         assert_eq!(loaded.escalations_used, None);
@@ -2674,11 +2686,17 @@ mod tests {
         assert_eq!(round.escalation_cap, Some(3));
         assert_eq!(round.escalations_used, Some(1));
         assert_eq!(
-            round.approved_plan.as_ref().map(|plan| plan.plan_digest.as_str()),
+            round
+                .approved_plan
+                .as_ref()
+                .map(|plan| plan.plan_digest.as_str()),
             Some("fnv1a64:aaaaaaaaaaaaaaaa")
         );
         assert_eq!(
-            round.approved_plan.as_ref().map(|plan| plan.target_phase.as_str()),
+            round
+                .approved_plan
+                .as_ref()
+                .map(|plan| plan.target_phase.as_str()),
             Some("21")
         );
     }
@@ -2689,8 +2707,7 @@ mod tests {
         // SHA-256 rather than merely stops being stable against itself.
         let digest = sha256_digest(b"abc");
         assert_eq!(
-            digest,
-            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            digest, "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             "the published SHA-256 vector for `abc`; comparing the function with \
              itself would not detect a swap to a different hash"
         );
@@ -2712,7 +2729,10 @@ mod tests {
         assert_ne!(sha256_digest(b"one"), sha256_digest(b"two"));
         // A single flipped byte must move the digest — the whole point of the
         // upgrade is that a crafted near-identical file does not slip through.
-        assert_ne!(sha256_digest(b"CLAUDE.md v1"), sha256_digest(b"CLAUDE.md v2"));
+        assert_ne!(
+            sha256_digest(b"CLAUDE.md v1"),
+            sha256_digest(b"CLAUDE.md v2")
+        );
     }
 
     #[test]
@@ -3087,9 +3107,16 @@ mod tests {
         let planning = dir.path().join(".planning");
 
         let mut run = JournalRun::start(&planning, run_record(RUN_ID)).expect("start the run");
-        assert_eq!(run.record_writes(), 1, "write one lands at run start (D-06)");
+        assert_eq!(
+            run.record_writes(),
+            1,
+            "write one lands at run start (D-06)"
+        );
         assert!(run.paths().run_json.is_file());
-        assert!(run.paths().gitignore.is_file(), "the ignore file lands first");
+        assert!(
+            run.paths().gitignore.is_file(),
+            "the ignore file lands first"
+        );
         assert_eq!(
             writer::read_active_run(&planning).as_deref(),
             Some(RUN_ID),
@@ -3104,7 +3131,11 @@ mod tests {
             })
             .expect("append");
         }
-        assert_eq!(run.record_writes(), 1, "journalling never rewrites run.json");
+        assert_eq!(
+            run.record_writes(),
+            1,
+            "journalling never rewrites run.json"
+        );
 
         run.finish("completed").expect("finish the run");
         assert_eq!(
@@ -3383,10 +3414,7 @@ mod tests {
             "a leading slash is what a real GSD command looks like; the marker \
              must not be mistakable for one"
         );
-        assert!(
-            !marker.starts_with('-'),
-            "nor for a flag"
-        );
+        assert!(!marker.starts_with('-'), "nor for a flag");
         assert!(
             marker.contains("decided"),
             "the marker earns its place by pointing at where the real sequence \
@@ -3471,7 +3499,10 @@ mod tests {
             Vec::<(u64, u64)>::new(),
             "a journal written in one process has no sequence gaps (D-29)"
         );
-        assert_eq!(diagnostics.unparseable, 0, "every line the writer wrote parses");
+        assert_eq!(
+            diagnostics.unparseable, 0,
+            "every line the writer wrote parses"
+        );
         assert_eq!(
             records.len(),
             events.len() + 2,
@@ -3484,16 +3515,16 @@ mod tests {
             kinds,
             vec![
                 "run_started",
-                "exec_started",     // SessionStarted
-                "exec_event",       // Message
-                "exec_event",       // Unknown
-                "exec_event",       // Unparseable
-                "diagnostic",       // LineTruncated
-                "exec_event",       // Stderr
-                "exec_event",       // TurnCompleted — a turn is NOT the run
-                "cost",             // Cost
-                "events_dropped",   // EventsDropped
-                "exec_finished",    // Exited
+                "exec_started",   // SessionStarted
+                "exec_event",     // Message
+                "exec_event",     // Unknown
+                "exec_event",     // Unparseable
+                "diagnostic",     // LineTruncated
+                "exec_event",     // Stderr
+                "exec_event",     // TurnCompleted — a turn is NOT the run
+                "cost",           // Cost
+                "events_dropped", // EventsDropped
+                "exec_finished",  // Exited
                 "run_ended",
             ],
             "the kinds must appear in the order the stream produced them"

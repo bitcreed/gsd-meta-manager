@@ -292,7 +292,10 @@ fn plan_title(content: &str) -> Option<String> {
     let line = objective_line(content)?;
     let mut rest = content.lines().skip(line - 1);
     let tag_line = rest.next()?;
-    let after_tag = tag_line.split_once("<objective>").map(|(_, r)| r).unwrap_or("");
+    let after_tag = tag_line
+        .split_once("<objective>")
+        .map(|(_, r)| r)
+        .unwrap_or("");
     let first = std::iter::once(after_tag)
         .chain(rest)
         .map(str::trim)
@@ -986,8 +989,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // plans a descriptive slug and summaries none. `plan_indices` therefore
     // carries the second, shared key (see [`plan_index`]) alongside it.
     let mut plan_ids: HashSet<String> = HashSet::new();
-    let mut plan_indices: HashMap<(super::phase_num::PhaseNum, u32), Vec<String>> =
-        HashMap::new();
+    let mut plan_indices: HashMap<(super::phase_num::PhaseNum, u32), Vec<String>> = HashMap::new();
     let mut summary_names: Vec<String> = Vec::new();
     // `estimate.tokens` per surviving plan, read out of the SAME plan-file read
     // the superseded check already performs, so it costs no extra I/O. Only a
@@ -1633,15 +1635,30 @@ mod tests {
 
     #[test]
     fn test_disk_status_ordering() {
-        assert!(DiskStatus::NoDirectory < DiskStatus::Empty, "{APPEND_HAZARD}");
+        assert!(
+            DiskStatus::NoDirectory < DiskStatus::Empty,
+            "{APPEND_HAZARD}"
+        );
         assert!(DiskStatus::Empty < DiskStatus::Discussed, "{APPEND_HAZARD}");
-        assert!(DiskStatus::Discussed < DiskStatus::Researched, "{APPEND_HAZARD}");
-        assert!(DiskStatus::Researched < DiskStatus::Planned, "{APPEND_HAZARD}");
+        assert!(
+            DiskStatus::Discussed < DiskStatus::Researched,
+            "{APPEND_HAZARD}"
+        );
+        assert!(
+            DiskStatus::Researched < DiskStatus::Planned,
+            "{APPEND_HAZARD}"
+        );
         assert!(DiskStatus::Planned < DiskStatus::Partial, "{APPEND_HAZARD}");
         // The two that pin `Executed`'s inserted position. An appended
         // `Executed` would sort ABOVE `Complete` and fail the second.
-        assert!(DiskStatus::Partial < DiskStatus::Executed, "{APPEND_HAZARD}");
-        assert!(DiskStatus::Executed < DiskStatus::Complete, "{APPEND_HAZARD}");
+        assert!(
+            DiskStatus::Partial < DiskStatus::Executed,
+            "{APPEND_HAZARD}"
+        );
+        assert!(
+            DiskStatus::Executed < DiskStatus::Complete,
+            "{APPEND_HAZARD}"
+        );
     }
 
     // ── Plan 20-03 Task 1: GSD's vocabulary + the verification frontmatter ──
@@ -1909,7 +1926,11 @@ mod tests {
             let dir = implementation_complete_dir();
             fs::write(dir.path().join("19-VERIFICATION.md"), content).unwrap();
             let result = infer_disk_status(dir.path());
-            assert_eq!(result.verification_status, VerificationStatus::Unparseable, "{label}");
+            assert_eq!(
+                result.verification_status,
+                VerificationStatus::Unparseable,
+                "{label}"
+            );
             assert_eq!(
                 result.status,
                 DiskStatus::Executed,
@@ -1956,7 +1977,10 @@ mod tests {
             verification_status_of("---\nstatus: unparseable\n---\n"),
             VerificationStatus::Unparseable
         );
-        assert_eq!(VerificationStatus::from_raw("UNPARSEABLE"), VerificationStatus::Unparseable);
+        assert_eq!(
+            VerificationStatus::from_raw("UNPARSEABLE"),
+            VerificationStatus::Unparseable
+        );
         assert_eq!(VerificationStatus::Unparseable.as_str(), "unparseable");
         assert!(!VerificationStatus::Unparseable.is_passed());
     }
@@ -1971,16 +1995,27 @@ mod tests {
             "---\nstatus: passed\nscore: 5/5: all verified\n---\n",
             "---\nstatus: passed\nstatus: passed\n---\n",
         ] {
-            assert_eq!(verification_status_of(content), VerificationStatus::Passed, "{content}");
+            assert_eq!(
+                verification_status_of(content),
+                VerificationStatus::Passed,
+                "{content}"
+            );
             let dir = implementation_complete_dir();
             fs::write(dir.path().join("19-VERIFICATION.md"), content).unwrap();
-            assert_eq!(infer_disk_status(dir.path()).status, DiskStatus::Complete, "{content}");
+            assert_eq!(
+                infer_disk_status(dir.path()).status,
+                DiskStatus::Complete,
+                "{content}"
+            );
         }
     }
 
     #[test]
     fn test_closed_empty_block_is_missing_not_unparseable() {
-        assert_eq!(verification_status_of("---\n---\nbody\n"), VerificationStatus::Missing);
+        assert_eq!(
+            verification_status_of("---\n---\nbody\n"),
+            VerificationStatus::Missing
+        );
         assert_eq!(
             verification_status_of("---\nphase: 19\n---\n\nstatus: passed\n"),
             VerificationStatus::Missing,
@@ -2024,7 +2059,10 @@ mod tests {
                 "`{raw}` is in GSD's blocking UAT set and must set the gate"
             );
             assert_eq!(result.uat_status.as_str(), raw);
-            assert!(result.has_uat, "presence is still recorded alongside status");
+            assert!(
+                result.has_uat,
+                "presence is still recorded alongside status"
+            );
         }
     }
 
@@ -2208,7 +2246,10 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("05-01-SECURITY.md"), "security").unwrap();
         let result = infer_disk_status(dir.path());
-        assert!(result.has_security, "has_security should be true for *-SECURITY.md");
+        assert!(
+            result.has_security,
+            "has_security should be true for *-SECURITY.md"
+        );
         // SECURITY.md is informational — must not affect plan/summary/status counts.
         assert_eq!(result.plan_count, 0);
         assert_eq!(result.summary_count, 0);
@@ -2220,7 +2261,10 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("SECURITY.md"), "security").unwrap();
         let result = infer_disk_status(dir.path());
-        assert!(result.has_security, "has_security should be true for bare SECURITY.md");
+        assert!(
+            result.has_security,
+            "has_security should be true for bare SECURITY.md"
+        );
     }
 
     #[test]
@@ -2273,7 +2317,10 @@ mod tests {
         fs::write(dir.path().join("05-AI-SPEC.md"), "ai-spec").unwrap();
         let result = infer_disk_status(dir.path());
         assert!(result.has_ai_spec);
-        assert!(!result.has_spec, "AI-SPEC.md must not be misclassified as SPEC.md");
+        assert!(
+            !result.has_spec,
+            "AI-SPEC.md must not be misclassified as SPEC.md"
+        );
     }
 
     #[test]
@@ -2282,7 +2329,10 @@ mod tests {
         fs::write(dir.path().join("05-EVAL-REVIEW.md"), "eval").unwrap();
         let result = infer_disk_status(dir.path());
         assert!(result.has_eval_review);
-        assert!(!result.has_review, "EVAL-REVIEW.md must not be misclassified as REVIEW.md");
+        assert!(
+            !result.has_review,
+            "EVAL-REVIEW.md must not be misclassified as REVIEW.md"
+        );
     }
 
     // ── quick 260926-gtn: the 1.15.0 REVIEW-DISPOSITION ledger ──
@@ -2369,7 +2419,11 @@ mod tests {
             )),
             Some(disposition(0, 0, 0, 1))
         );
-        assert_eq!(parse_review_disposition(&table("")), None, "zero rows is None");
+        assert_eq!(
+            parse_review_disposition(&table("")),
+            None,
+            "zero rows is None"
+        );
         assert_eq!(parse_review_disposition(""), None);
     }
 
@@ -3435,7 +3489,8 @@ actuals:
             Some("Build the Waves pane first")
         );
         // A frontmatter title wins, quotes stripped.
-        let titled = "---\ntitle: \"The real title\"\n---\n<objective>\nOther words.\n</objective>\n";
+        let titled =
+            "---\ntitle: \"The real title\"\n---\n<objective>\nOther words.\n</objective>\n";
         assert_eq!(plan_title(titled).as_deref(), Some("The real title"));
         assert_eq!(objective_line(titled), Some(4));
         // No title, no objective: None. An empty objective: None.
@@ -3446,7 +3501,10 @@ actuals:
         assert_eq!(objective_line("```\n<objective>\n```\n"), None);
         // Capped.
         let long = format!("<objective>\n{}\n", "x".repeat(400));
-        assert_eq!(plan_title(&long).map(|t| t.chars().count()), Some(MAX_PLAN_TITLE_CHARS));
+        assert_eq!(
+            plan_title(&long).map(|t| t.chars().count()),
+            Some(MAX_PLAN_TITLE_CHARS)
+        );
     }
 
     #[test]
@@ -3478,12 +3536,18 @@ actuals:
         let title = inf.plans[0].title.as_ref().expect("a title");
         assert_eq!(title.as_raw_for_logic_only(), hostile, "stored raw");
         let shown = title.shown().to_string();
-        assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'), "{shown:?}");
+        assert!(
+            !shown.contains('\u{1b}') && !shown.contains('\u{202e}'),
+            "{shown:?}"
+        );
         assert_eq!(inf.plans[0].objective_line, Some(4));
         assert_eq!(inf.plans[1].title, None);
         assert_eq!(inf.plans[1].objective_line, None);
         assert_eq!(
-            inf.plans[2].title.as_ref().map(|t| t.as_raw_for_logic_only().to_string()),
+            inf.plans[2]
+                .title
+                .as_ref()
+                .map(|t| t.as_raw_for_logic_only().to_string()),
             Some("Ten comes after two".to_string())
         );
     }
@@ -3513,7 +3577,11 @@ actuals:
         );
 
         fs::write(dir.path().join("waves.json"), "{ not json").unwrap();
-        assert_eq!(infer_disk_status(dir.path()).waves_manifest, None, "unparsable");
+        assert_eq!(
+            infer_disk_status(dir.path()).waves_manifest,
+            None,
+            "unparsable"
+        );
         fs::write(dir.path().join("waves.json"), r#"{"waves":[]}"#).unwrap();
         assert_eq!(infer_disk_status(dir.path()).waves_manifest, None, "empty");
 
@@ -3524,6 +3592,10 @@ actuals:
             format!(r#"{{"waves":[{{"id":"w1","plans":[]}}]}}{padding}"#),
         )
         .unwrap();
-        assert_eq!(infer_disk_status(dir.path()).waves_manifest, None, "oversized");
+        assert_eq!(
+            infer_disk_status(dir.path()).waves_manifest,
+            None,
+            "oversized"
+        );
     }
 }

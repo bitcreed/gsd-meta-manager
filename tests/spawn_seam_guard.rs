@@ -454,15 +454,21 @@ fn every_process_spawn_site_in_src_is_on_the_allowlist() {
 
     let mut observed: Vec<String> = Vec::new();
     for file in &files {
-        let spawns = executable_lines(file)
-            .any(|(_, line)| SPAWN_MARKERS.iter().any(|marker| calls_marker(line, marker)));
+        let spawns = executable_lines(file).any(|(_, line)| {
+            SPAWN_MARKERS
+                .iter()
+                .any(|marker| calls_marker(line, marker))
+        });
         if spawns {
             observed.push(file.0.clone());
         }
     }
     observed.sort();
 
-    let mut allowed: Vec<String> = SPAWN_ALLOWLIST.iter().map(|path| path.to_string()).collect();
+    let mut allowed: Vec<String> = SPAWN_ALLOWLIST
+        .iter()
+        .map(|path| path.to_string())
+        .collect();
     allowed.sort();
 
     let unexpected: Vec<&String> = observed.iter().filter(|p| !allowed.contains(p)).collect();
@@ -933,7 +939,8 @@ fn the_hook_disabling_scan_fires_on_code_and_not_on_a_comment() {
     // The declined alternative must remain DOCUMENTABLE in a comment — that is
     // what the rationale-in-code convention requires, and `src/executor/mod.rs`
     // really does name it in a doc comment today.
-    let commented = format!("/// The declined alternative: the CLI's `{flag}` flag disables hooks.");
+    let commented =
+        format!("/// The declined alternative: the CLI's `{flag}` flag disables hooks.");
     let synthetic_comment: SourceFile =
         ("src/synthetic.rs".to_string(), vec![(1, commented.clone())]);
     assert!(
@@ -1469,7 +1476,10 @@ fn the_loop_scope_scanner_reports_a_construction_inside_a_label_and_not_one_abov
 
     // And the enclosing-function finder, on the same synthetic text.
     assert_eq!(enclosing_fn(&lines, 2).as_deref(), Some("drive"));
-    assert_eq!(fn_name_on("pub async fn decompose(").as_deref(), Some("decompose"));
+    assert_eq!(
+        fn_name_on("pub async fn decompose(").as_deref(),
+        Some("decompose")
+    );
     assert_eq!(fn_name_on("    let x = 1;"), None);
 }
 
@@ -1540,7 +1550,10 @@ fn every_model_seam_spawn_site_in_src_is_one_of_exactly_two() {
     let mut allowed: Vec<String> = SEAM_SITES.iter().map(|site| site.to_string()).collect();
     allowed.sort();
 
-    let extra: Vec<&String> = observed.iter().filter(|site| !allowed.contains(site)).collect();
+    let extra: Vec<&String> = observed
+        .iter()
+        .filter(|site| !allowed.contains(site))
+        .collect();
     assert!(
         extra.is_empty(),
         "a THIRD model seam appeared. The count is two by design: decomposition \
@@ -1550,7 +1563,10 @@ fn every_model_seam_spawn_site_in_src_is_one_of_exactly_two() {
          guard exists to refuse. Unexpected: {extra:?}"
     );
 
-    let stale: Vec<&String> = allowed.iter().filter(|site| !observed.contains(site)).collect();
+    let stale: Vec<&String> = allowed
+        .iter()
+        .filter(|site| !observed.contains(site))
+        .collect();
     assert!(
         stale.is_empty(),
         "an allowlisted seam site no longer spawns a seam, so the allowlist is \
@@ -2286,9 +2302,12 @@ fn the_terminal_write_scanner_reports_a_bare_call_and_not_the_helpers_own() {
         ],
     );
 
-    let boundary = test_region_start(&home)
-        .expect("the synthetic source declares a column-zero test module");
-    assert_eq!(boundary, 10, "the production region ends at the test module");
+    let boundary =
+        test_region_start(&home).expect("the synthetic source declares a column-zero test module");
+    assert_eq!(
+        boundary, 10,
+        "the production region ends at the test module"
+    );
     assert!(
         test_region_start(&elsewhere).is_none(),
         "the second fixture must declare NO test region, or it is not exercising \
@@ -2333,8 +2352,7 @@ fn the_terminal_write_scanner_reports_a_bare_call_and_not_the_helpers_own() {
     // close journals of their own, and forgiving them by name would be an
     // allowlist where a region boundary is the honest answer.
     assert!(
-        executable_lines(&home)
-            .any(|(number, line)| *number > boundary && writes_terminal(line)),
+        executable_lines(&home).any(|(number, line)| *number > boundary && writes_terminal(line)),
         "the synthetic fixture must contain a test-region write, or the boundary \
          is doing nothing here"
     );
@@ -2644,7 +2662,10 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
     // an evasion spelling, and demanding a match would demand writing the pattern
     // this guard forbids.
     for needle in COMMAND_SOURCE_TYPE_QUALIFIED {
-        let matches = hits.iter().filter(|(_, _, _, line)| line.contains(needle)).count();
+        let matches = hits
+            .iter()
+            .filter(|(_, _, _, line)| line.contains(needle))
+            .count();
         assert!(
             matches >= 1,
             "the needle {needle:?} matches no production line at all. A needle \
@@ -3235,7 +3256,10 @@ fn the_raw_argv_field_scanner_reports_a_planted_string_field() {
 fn the_raw_argv_field_scanner_sees_every_measured_silent_spelling() {
     /// One planted declaration inside an otherwise clean `DriveArgs`.
     fn planted_with(lines: &[&str]) -> Vec<(usize, String)> {
-        let mut body = vec!["pub struct DriveArgs {", "    pub alias: payload::NonBlank,"];
+        let mut body = vec![
+            "pub struct DriveArgs {",
+            "    pub alias: payload::NonBlank,",
+        ];
         body.extend_from_slice(lines);
         body.push("}");
         synthetic_file("src/driver/mod.rs", &body).1
@@ -3742,7 +3766,8 @@ fn drive_args_declares_no_raw_argv_string_field() {
             });
         let actual_type = declared_type_text(&declaration.1);
         assert_eq!(
-            actual_type, expected_type,
+            actual_type,
+            expected_type,
             "`{name}` is on OSSTRING_ALLOWED because it legitimately carries \
              exactly `{expected_type}`. Its declaration now reads {:?}. The \
              allowlist can only SUPPRESS, and it must not be silently repurposed \
@@ -3840,18 +3865,10 @@ const MANUFACTURED_BLANK: &str = "=> String::new()";
 ///
 /// Index 0 is the whitespace member, index 1 the zero-width-space member, index 2
 /// the bidi-override member 21-19 added.
-const DEGENERATE_WITNESS_HEADS: [&str; 3] = [
-    r#""\n "#,
-    r#""\u{2"#,
-    r#""\u{20"#,
-];
+const DEGENERATE_WITNESS_HEADS: [&str; 3] = [r#""\n "#, r#""\u{2"#, r#""\u{20"#];
 
 /// The tails of [`DEGENERATE_WITNESS_HEADS`], by the same index.
-const DEGENERATE_WITNESS_TAILS: [&str; 3] = [
-    r#" \n""#,
-    r#"00b}""#,
-    r#"2e}""#,
-];
+const DEGENERATE_WITNESS_TAILS: [&str; 3] = [r#" \n""#, r#"00b}""#, r#"2e}""#];
 
 /// [`DEGENERATE_WITNESS_HEADS`] and [`DEGENERATE_WITNESS_TAILS`], joined pairwise.
 fn degenerate_witnesses() -> [String; 3] {
@@ -4085,9 +4102,7 @@ fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
 
         let offenders: Vec<(String, usize, String)> = hits
             .iter()
-            .filter(|(path, _, _)| {
-                path != DEGENERATE_HOME && !expected.contains_key(path.as_str())
-            })
+            .filter(|(path, _, _)| path != DEGENERATE_HOME && !expected.contains_key(path.as_str()))
             .cloned()
             .collect();
 

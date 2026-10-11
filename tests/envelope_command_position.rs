@@ -456,7 +456,10 @@ fn a_leading_assignment_naming_an_envelope_key_is_refused_and_the_boundary_is_pi
     // one: `echo FOO=GIT_ASKPASS` carries the same word in an ARGUMENT rather
     // than in a leading assignment, and a check that fired on it would refuse
     // every command that mentions an envelope key in passing.
-    refuses("FOO=GIT_ASKPASS echo hi", policy::REASON_HOOK_BYPASS_BLOCKED);
+    refuses(
+        "FOO=GIT_ASKPASS echo hi",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+    );
     permits("FOO=bar echo hi");
     permits("echo FOO=GIT_ASKPASS");
 }

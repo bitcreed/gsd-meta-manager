@@ -437,7 +437,9 @@ mod tests {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                let Ok(kind) = entry.file_type() else { continue };
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
                 if kind.is_dir() {
                     walk(root, &path, out);
                 } else {
@@ -448,7 +450,9 @@ mod tests {
                         .to_string_lossy()
                         .into_owned();
                     let digest =
-                        crate::journal::argv_digest(&[String::from_utf8_lossy(&bytes).into_owned()]);
+                        crate::journal::argv_digest(
+                            &[String::from_utf8_lossy(&bytes).into_owned()],
+                        );
                     out.push((relative, bytes.len() as u64, digest));
                 }
             }
@@ -504,9 +508,7 @@ mod tests {
         // Pinned against vacuity: two empty walks compare equal to each other,
         // so a fingerprint that silently found nothing would "prove" this.
         assert!(
-            before
-                .iter()
-                .any(|(path, _, _)| path.ends_with("run.json")),
+            before.iter().any(|(path, _, _)| path.ends_with("run.json")),
             "the walk must have seen the run record it is protecting, got: {before:?}"
         );
 

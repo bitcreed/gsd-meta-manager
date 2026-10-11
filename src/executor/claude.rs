@@ -966,7 +966,11 @@ async fn read_stdout(
                 if line.trim().is_empty() {
                     continue;
                 }
-                if tx.send(ReaderItem::Envelope(parse_line(&line))).await.is_err() {
+                if tx
+                    .send(ReaderItem::Envelope(parse_line(&line)))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1035,10 +1039,7 @@ pub(super) async fn read_stderr(
 }
 
 /// The stdin writer task. Never the task awaiting exit (D-04).
-async fn write_stdin(
-    mut stdin: tokio::process::ChildStdin,
-    mut rx: mpsc::Receiver<WriterCommand>,
-) {
+async fn write_stdin(mut stdin: tokio::process::ChildStdin, mut rx: mpsc::Receiver<WriterCommand>) {
     while let Some(command) = rx.recv().await {
         match command {
             WriterCommand::Line(line) => {
@@ -1538,9 +1539,7 @@ impl Coordinator {
         // without the child ever announcing itself.
         if let Some(tx) = gate_tx.take() {
             let _ = tx.send(Err(match breach {
-                Some(Breach::Idle) => SpawnError::StalledBeforeInit {
-                    idle_for: idle_cap,
-                },
+                Some(Breach::Idle) => SpawnError::StalledBeforeInit { idle_for: idle_cap },
                 Some(Breach::WallClock) => SpawnError::TimedOutBeforeInit {
                     after: wall_clock_cap,
                 },
@@ -1838,9 +1837,7 @@ async fn handle_item(
                             ExecutionEvent::SessionStarted {
                                 session_id: facts.session_id.unwrap_or_default(),
                                 capabilities: facts.capabilities,
-                                claude_code_version: facts
-                                    .claude_code_version
-                                    .unwrap_or_default(),
+                                claude_code_version: facts.claude_code_version.unwrap_or_default(),
                                 api_key_source: facts.api_key_source,
                                 permission_mode: facts.permission_mode,
                             },
@@ -2447,7 +2444,14 @@ mod tests {
     /// `prompt_release_grace` produces. The late arm, where the grace releases
     /// the prompt first, needs a real child and lives in
     /// `tests/executor_transport.rs` (260908-uqq).
-    async fn feed(lines: &[&str]) -> (bool, Option<CapabilityError>, Vec<ExecutionEvent>, Vec<String>) {
+    async fn feed(
+        lines: &[&str],
+    ) -> (
+        bool,
+        Option<CapabilityError>,
+        Vec<ExecutionEvent>,
+        Vec<String>,
+    ) {
         let (events_tx, mut events_rx) = mpsc::channel(64);
         let (writer_tx, mut writer_rx) = mpsc::channel(64);
         let pending_control: PendingControl = Arc::new(Mutex::new(Default::default()));
@@ -2508,10 +2512,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_system_init_does_not_re_run_the_gate_or_abort_the_run() {
-        let (keep_going, refused, events, written) =
-            feed(&[GOOD_INIT, HOSTILE_LATER_INIT]).await;
+        let (keep_going, refused, events, written) = feed(&[GOOD_INIT, HOSTILE_LATER_INIT]).await;
 
-        assert!(keep_going, "a later system/init must not stop the run (D-30)");
+        assert!(
+            keep_going,
+            "a later system/init must not stop the run (D-30)"
+        );
         assert!(
             refused.is_none(),
             "a later system/init must not re-arm the guard as a mid-run abort, got: {refused:?}"
@@ -2553,10 +2559,7 @@ mod tests {
 
         assert!(!keep_going, "a refusal stops the run loop");
         assert!(
-            matches!(
-                refused,
-                Some(CapabilityError::MissingCapabilities { .. })
-            ),
+            matches!(refused, Some(CapabilityError::MissingCapabilities { .. })),
             "expected a capability refusal, got: {refused:?}"
         );
         assert!(

@@ -270,9 +270,7 @@ fn find_pane_target<'a>(list_panes_stdout: &'a str, session_tty: &str) -> Option
 /// status bar.
 pub fn switch_to_session(session: &ClaudeSession) -> Result<(), String> {
     if !in_tmux() {
-        return Err(
-            "Tab-switching requires running inside tmux (no $TMUX set)".to_string(),
-        );
+        return Err("Tab-switching requires running inside tmux (no $TMUX set)".to_string());
     }
 
     let tty = session

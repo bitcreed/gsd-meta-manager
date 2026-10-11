@@ -316,7 +316,14 @@ mod tests {
         for focus in [ConfirmFocus::Yes, ConfirmFocus::No] {
             let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
             t.draw(|f| {
-                let _ = render_confirm_popup(f, f.area(), "T", vec![Line::from("x")], Color::Red, focus);
+                let _ = render_confirm_popup(
+                    f,
+                    f.area(),
+                    "T",
+                    vec![Line::from("x")],
+                    Color::Red,
+                    focus,
+                );
             })
             .unwrap();
             let rows = rows_of(&t, 80, 24);
@@ -329,9 +336,13 @@ mod tests {
                 let joined = cells.concat();
                 if joined.contains("[ Yes ]") {
                     let c = cells.iter().position(|s| *s == "[").unwrap();
-                    yes_rev = buf[(c as u16, y as u16)].modifier.contains(Modifier::REVERSED);
+                    yes_rev = buf[(c as u16, y as u16)]
+                        .modifier
+                        .contains(Modifier::REVERSED);
                     let c2 = cells.iter().rposition(|s| *s == "[").unwrap();
-                    no_rev = buf[(c2 as u16, y as u16)].modifier.contains(Modifier::REVERSED);
+                    no_rev = buf[(c2 as u16, y as u16)]
+                        .modifier
+                        .contains(Modifier::REVERSED);
                 }
                 let _ = row;
             }
@@ -370,7 +381,11 @@ mod tests {
     }
 
     fn click(column: u16, row: u16) -> MouseInput {
-        MouseInput::Click { column, row, double: false }
+        MouseInput::Click {
+            column,
+            row,
+            double: false,
+        }
     }
 
     #[test]
@@ -417,19 +432,41 @@ mod tests {
         .unwrap();
         let b = popup.buttons.get().unwrap();
         let on = |r: Rect| click(r.x + r.width - 1, r.y);
-        assert_eq!(popup.on_mouse(click(b.yes.x, b.yes.y)), ConfirmOutcome::Confirm);
+        assert_eq!(
+            popup.on_mouse(click(b.yes.x, b.yes.y)),
+            ConfirmOutcome::Confirm
+        );
         assert_eq!(popup.on_mouse(on(b.yes)), ConfirmOutcome::Confirm);
-        assert_eq!(popup.on_mouse(click(b.no.x, b.no.y)), ConfirmOutcome::Cancel);
+        assert_eq!(
+            popup.on_mouse(click(b.no.x, b.no.y)),
+            ConfirmOutcome::Cancel
+        );
         assert_eq!(popup.on_mouse(on(b.no)), ConfirmOutcome::Cancel);
         // The gap between the buttons, the row above, and a far corner.
-        assert_eq!(popup.on_mouse(click(b.yes.right(), b.yes.y)), ConfirmOutcome::Pending);
-        assert_eq!(popup.on_mouse(click(b.yes.x, b.yes.y - 1)), ConfirmOutcome::Pending);
+        assert_eq!(
+            popup.on_mouse(click(b.yes.right(), b.yes.y)),
+            ConfirmOutcome::Pending
+        );
+        assert_eq!(
+            popup.on_mouse(click(b.yes.x, b.yes.y - 1)),
+            ConfirmOutcome::Pending
+        );
         assert_eq!(popup.on_mouse(click(0, 0)), ConfirmOutcome::Pending);
         // A wheel step never activates.
-        let wheel = MouseInput::Wheel { column: b.yes.x, row: b.yes.y, down: true };
+        let wheel = MouseInput::Wheel {
+            column: b.yes.x,
+            row: b.yes.y,
+            down: true,
+        };
         assert_eq!(popup.on_mouse(wheel), ConfirmOutcome::Pending);
-        assert_eq!(click_as_key(&popup, click(b.yes.x, b.yes.y)), Some(KeyCode::Char('y')));
-        assert_eq!(click_as_key(&popup, click(b.no.x, b.no.y)), Some(KeyCode::Char('n')));
+        assert_eq!(
+            click_as_key(&popup, click(b.yes.x, b.yes.y)),
+            Some(KeyCode::Char('y'))
+        );
+        assert_eq!(
+            click_as_key(&popup, click(b.no.x, b.no.y)),
+            Some(KeyCode::Char('n'))
+        );
         assert_eq!(click_as_key(&popup, click(0, 0)), None);
     }
 }

@@ -356,7 +356,8 @@ fn refuses(command: &str, reason: &str) {
     let answer = ask(envelope.path(), command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "`{command}` must be REFUSED. It was measured at exit 0 against the BUILT BINARY at \
          this file's base commit, with a fresh envelope root and a walk after, and the verb \
          git itself reaches was confirmed with a two-sided probe of the real git binary. \
@@ -725,7 +726,8 @@ fn after_19_21_the_in_namespace_push_with_a_value_taking_flag_is_no_longer_false
         let envelope = TempDir::new().unwrap();
         let answer = ask_in(envelope.path(), Some(&work), command);
         assert_eq!(
-            answer.code, expected, "{why}\n  command: {command}\n  stdout: {}\n  stderr: {}",
+            answer.code, expected,
+            "{why}\n  command: {command}\n  stdout: {}\n  stderr: {}",
             answer.stdout, answer.stderr
         );
         answer
@@ -793,7 +795,9 @@ fn after_19_21_the_in_namespace_push_with_a_value_taking_flag_is_no_longer_false
          to delete this row.",
     );
     assert!(
-        signed.reason().contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
+        signed
+            .reason()
+            .contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
         "and under the namespace identifier, so the row cannot pass by being refused for an \
          unrelated cause (D-24). Got: {}",
         signed.reason()
@@ -1068,8 +1072,14 @@ fn after_19_21_the_unknown_option_cost_rows_are_refused_beside_their_permitted_t
     // carries an attached `=`, and none is `-`, `--` or a non-option word — so
     // each falls to *grammar not established* and `scan_leading` refuses at
     // `ParkReason::EnvelopeAssertionFailed`.
-    refuses("git --bogus-opt status", policy::REASON_ENVELOPE_ASSERTION_FAILED);
-    refuses("git --no-advice status", policy::REASON_ENVELOPE_ASSERTION_FAILED);
+    refuses(
+        "git --bogus-opt status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+    refuses(
+        "git --no-advice status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
     refuses(
         "git --no-lazy-fetch status",
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
@@ -1227,7 +1237,10 @@ fn rule_b_still_reports_a_severed_head_as_not_a_command_position() {
              \n  last    : {:?}\n\
              \nThe correct response is to restore the flush flag for `}}` and `)`, never to \
              delete this test.",
-            last.tokens.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            last.tokens
+                .iter()
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -1370,7 +1383,10 @@ fn a_redirection_operator_is_not_a_separator_and_this_round_must_not_make_it_one
         "`>` must NOT become a separator. Splitting there would hide the command being \
          redirected, which is worse than the defect it would close."
     );
-    assert!(!policy::is_separator("<"), "`<` must NOT become a separator");
+    assert!(
+        !policy::is_separator("<"),
+        "`<` must NOT become a separator"
+    );
     assert!(
         !policy::is_separator(">>"),
         "`>>` must NOT become a separator"

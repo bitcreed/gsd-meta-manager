@@ -89,7 +89,9 @@ pub fn is_secret_key(path: &str) -> bool {
         return false;
     }
     let lower = path.to_lowercase();
-    SECRET_NAME_MARKERS.iter().any(|marker| lower.contains(marker))
+    SECRET_NAME_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 /// The display text for a value stored under a SECRET key (INFERRED I-1).
@@ -164,8 +166,16 @@ mod tests {
 
     #[test]
     fn the_secret_key_lists_are_pinned() {
-        assert_eq!(SECRET_CONFIG_KEYS.len(), 7, "upstream code (3) + upstream docs table (4)");
-        assert_eq!(NON_SECRET_CONFIG_KEYS.len(), 4, "the four measured budget-key exemptions");
+        assert_eq!(
+            SECRET_CONFIG_KEYS.len(),
+            7,
+            "upstream code (3) + upstream docs table (4)"
+        );
+        assert_eq!(
+            NON_SECRET_CONFIG_KEYS.len(),
+            4,
+            "the four measured budget-key exemptions"
+        );
     }
 
     #[test]

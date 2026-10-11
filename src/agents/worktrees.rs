@@ -721,7 +721,10 @@ mod tests {
             parse_agent_branch("agent-p23A.1.2-03-1790386422"),
             plan("23A.1.2-03")
         );
-        assert_eq!(parse_agent_branch("agent-p07.1.2-1790386422"), plan("07.1.2"));
+        assert_eq!(
+            parse_agent_branch("agent-p07.1.2-1790386422"),
+            plan("07.1.2")
+        );
 
         for hostile in [
             "agent-p13x-1790386422",

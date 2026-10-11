@@ -572,8 +572,7 @@ pub fn write_gitconfig_in(
     let dir = super::envelope_dir_in(root, alias).ok_or_else(|| {
         anyhow!("refusing to generate a git config for alias {alias:?}: not a plain path component")
     })?;
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
     let path = dir.join(GITCONFIG_FILE);
     // The `config.rs` atomic-write idiom: a temp file in the *target* directory,
@@ -582,8 +581,12 @@ pub fn write_gitconfig_in(
         .with_context(|| format!("failed to create a temp file in {}", dir.display()))?;
     tmp.write_all(gitconfig_body(name, email).as_bytes())
         .with_context(|| format!("failed to write {}", path.display()))?;
-    tmp.persist(&path)
-        .with_context(|| format!("failed to persist the generated config to {}", path.display()))?;
+    tmp.persist(&path).with_context(|| {
+        format!(
+            "failed to persist the generated config to {}",
+            path.display()
+        )
+    })?;
     Ok(path)
 }
 
@@ -782,8 +785,7 @@ pub fn write_askpass_stub_in(
     let dir = super::envelope_dir_in(root, alias).ok_or_else(|| {
         anyhow!("refusing to generate an askpass responder for alias {alias:?}: not a plain path component")
     })?;
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
     let path = dir.join(ASKPASS_FILE);
     let body = format!(
@@ -807,8 +809,12 @@ pub fn write_askpass_stub_in(
             .set_permissions(std::fs::Permissions::from_mode(0o700))
             .with_context(|| format!("failed to make {} executable", path.display()))?;
     }
-    tmp.persist(&path)
-        .with_context(|| format!("failed to persist the askpass responder to {}", path.display()))?;
+    tmp.persist(&path).with_context(|| {
+        format!(
+            "failed to persist the askpass responder to {}",
+            path.display()
+        )
+    })?;
     Ok(path)
 }
 
@@ -966,7 +972,11 @@ fn askpass_reply(
         ));
     };
 
-    if prompt.trim_start().to_ascii_lowercase().starts_with("username") {
+    if prompt
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("username")
+    {
         return Ok(ASKPASS_USERNAME.to_string());
     }
     Ok(credential.to_string())
@@ -1072,10 +1082,8 @@ pub fn askpass_with_config(
 /// user's attribution, not to impose a new one.
 fn resolve_identity(project_root: &Path) -> (String, String) {
     let read = |key: &str| -> Option<String> {
-        let raw = crate::state_reader::git_ops::git_read_raw(
-            project_root,
-            &["config", "--get", key],
-        )?;
+        let raw =
+            crate::state_reader::git_ops::git_read_raw(project_root, &["config", "--get", key])?;
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return None;
@@ -1376,7 +1384,10 @@ mod tests {
         );
 
         let empty = CredentialSource::Command { argv: Vec::new() };
-        assert_eq!(resolve_credential(&empty).expect("an empty argv is not an error"), None);
+        assert_eq!(
+            resolve_credential(&empty).expect("an empty argv is not an error"),
+            None
+        );
     }
 
     #[test]
@@ -1448,8 +1459,8 @@ mod tests {
             (&format!("Password for 'https://{HOST}': ") as &str, ""),
         ] {
             let mut out = Vec::new();
-            let code =
-                askpass_into(&mut out, prompt, host, Some("ghp_secret")).expect("the responder writes");
+            let code = askpass_into(&mut out, prompt, host, Some("ghp_secret"))
+                .expect("the responder writes");
             assert_eq!(code, 1, "{prompt:?} against host {host:?} must be refused");
             assert!(out.is_empty(), "{prompt:?} produced output");
         }
@@ -1458,8 +1469,13 @@ mod tests {
     #[test]
     fn an_unconfigured_credential_fails_closed_with_a_named_reason() {
         let mut out = Vec::new();
-        let code = askpass_into(&mut out, &format!("Password for 'https://{HOST}': "), HOST, None)
-            .expect("the responder writes");
+        let code = askpass_into(
+            &mut out,
+            &format!("Password for 'https://{HOST}': "),
+            HOST,
+            None,
+        )
+        .expect("the responder writes");
 
         assert_eq!(code, 1, "no credential must not mean the user's credential");
         assert!(
@@ -1490,7 +1506,10 @@ mod tests {
         .expect("the responder writes");
 
         assert_eq!(code, 0);
-        assert_eq!(String::from_utf8_lossy(&out), format!("{ASKPASS_USERNAME}\n"));
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            format!("{ASKPASS_USERNAME}\n")
+        );
     }
 
     #[test]
@@ -1546,7 +1565,10 @@ mod tests {
             ("https://github.com/owner/repo.git", Some("github.com")),
             ("https://user@github.com/owner/repo.git", Some("github.com")),
             ("https://GitHub.com:443/owner/repo.git", Some("github.com")),
-            ("ssh://git@git.example.com:2222/o/r.git", Some("git.example.com")),
+            (
+                "ssh://git@git.example.com:2222/o/r.git",
+                Some("git.example.com"),
+            ),
             ("git@github.com:owner/repo.git", Some("github.com")),
             ("http://[::1]:8080/repo.git", Some("::1")),
             // Local: nobody to authenticate to, so nothing to answer for.

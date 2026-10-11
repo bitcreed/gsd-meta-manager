@@ -109,7 +109,9 @@ pub fn extract_phase_id(text: &str) -> Option<String> {
 /// Numeric, so GSD's padded spellings (`00`, `0999.1`) are sentinels too.
 fn is_sentinel_phase(number: &str) -> bool {
     let n = match number.split_once('-') {
-        Some((prefix, rest)) if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphabetic()) => {
+        Some((prefix, rest))
+            if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
             rest
         }
         _ => number,
@@ -210,8 +212,8 @@ fn dep_ref_key(id: &str) -> String {
                 .find(|c: char| !c.is_ascii_digit())
                 .unwrap_or(segment.len());
             let (digits, rest) = segment.split_at(digits_end);
-            let letter_ok = rest.is_empty()
-                || (rest.len() == 1 && rest.as_bytes()[0].is_ascii_alphabetic());
+            let letter_ok =
+                rest.is_empty() || (rest.len() == 1 && rest.as_bytes()[0].is_ascii_alphabetic());
             if digits.is_empty() || !letter_ok {
                 return segment.to_string();
             }
@@ -343,7 +345,11 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
             completed_plans: 0,
             depends_on: Vec::new(),
         });
-        RecognizedLine { phase, tally, shape }
+        RecognizedLine {
+            phase,
+            tally,
+            shape,
+        }
     };
 
     if let Some(caps) = checklist_re().captures(line) {
@@ -434,8 +440,8 @@ fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
     // same token [`PHASE_ID`] recognises in the phase line itself.
     let plan_re = plan_checklist_re();
     // `**Depends on**: …`, with the emphasis markers optional.
-    let depends_re =
-        DEPENDS.get_or_init(|| Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap());
+    let depends_re = DEPENDS
+        .get_or_init(|| Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap());
 
     let lines: Vec<&str> = content.lines().collect();
     let closed = closed_milestone_lines(&lines);
@@ -593,9 +599,11 @@ fn closed_milestone_lines(lines: &[&str]) -> Vec<bool> {
     static ACTIVE_MARKER: OnceLock<Regex> = OnceLock::new();
     let open = OPEN.get_or_init(|| Regex::new(r"(?i)<details\b").unwrap());
     let close = CLOSE.get_or_init(|| Regex::new(r"(?i)</details>").unwrap());
-    let summary = SUMMARY.get_or_init(|| Regex::new(r"(?i)<summary[^>]*>([^<]*)</summary>").unwrap());
+    let summary =
+        SUMMARY.get_or_init(|| Regex::new(r"(?i)<summary[^>]*>([^<]*)</summary>").unwrap());
     let closed_marker = CLOSED_MARKER.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:CLOSED|ARCHIVED|ABANDONED|SHIPPED|FAILED)\b|\x{2705}|\x{1F5C4}").unwrap()
+        Regex::new(r"(?i)\b(?:CLOSED|ARCHIVED|ABANDONED|SHIPPED|FAILED)\b|\x{2705}|\x{1F5C4}")
+            .unwrap()
     });
     let active_marker = ACTIVE_MARKER.get_or_init(|| {
         Regex::new(r"(?i)\b(?:STARTED|ACTIVE|WIP)\b|in\s+progress|\x{1F6A7}|\x{1F504}").unwrap()
@@ -637,12 +645,17 @@ struct PlanTally {
 fn plan_tally_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\((\d+)/(\d+) plans?\)|\((\d+) plans?(?:,\s*(complete|completed|done))?\)").unwrap()
+        Regex::new(r"(?i)\((\d+)/(\d+) plans?\)|\((\d+) plans?(?:,\s*(complete|completed|done))?\)")
+            .unwrap()
     })
 }
 
 fn read_tally(caps: &regex::Captures<'_>) -> PlanTally {
-    let num = |i: usize| caps.get(i).and_then(|m| m.as_str().parse::<u32>().ok()).unwrap_or(0);
+    let num = |i: usize| {
+        caps.get(i)
+            .and_then(|m| m.as_str().parse::<u32>().ok())
+            .unwrap_or(0)
+    };
     if caps.get(1).is_some() {
         PlanTally {
             completed: num(1),
@@ -692,7 +705,10 @@ fn collapse_whitespace(text: &str) -> String {
 /// separator stripped. With neither, the whole text is the name.
 fn split_summary_rest(rest: &str) -> (String, String, Option<PlanTally>) {
     let tally = plan_tally_re().captures(rest);
-    let tally_span = tally.as_ref().and_then(|c| c.get(0)).map(|m| (m.start(), m.end()));
+    let tally_span = tally
+        .as_ref()
+        .and_then(|c| c.get(0))
+        .map(|m| (m.start(), m.end()));
     let sep_start = spaced_separator_re().find(rest).map(|m| m.start());
     let cut = match (tally_span.map(|(s, _)| s), sep_start) {
         (Some(a), Some(b)) => a.min(b),
@@ -705,7 +721,11 @@ fn split_summary_rest(rest: &str) -> (String, String, Option<PlanTally>) {
         Some((s, e)) => format!("{} {}", &rest[cut..s], &rest[e..]),
         None => rest[cut..].to_string(),
     };
-    (name, tidy_description(&remainder), tally.as_ref().map(read_tally))
+    (
+        name,
+        tidy_description(&remainder),
+        tally.as_ref().map(read_tally),
+    )
 }
 
 /// R3, the plain (non-bold) checkbox phase line GSD's `complete-milestone`
@@ -738,9 +758,10 @@ fn split_bold_tail(tail: &str) -> (Vec<String>, String, Option<PlanTally>) {
             break;
         };
         let group = &rest[..=end];
-        let whole_tally = tally_re
-            .captures(group)
-            .filter(|c| c.get(0).is_some_and(|m| m.start() == 0 && m.end() == group.len()));
+        let whole_tally = tally_re.captures(group).filter(|c| {
+            c.get(0)
+                .is_some_and(|m| m.start() == 0 && m.end() == group.len())
+        });
         match whole_tally {
             Some(caps) if tally.is_none() => tally = Some(read_tally(&caps)),
             _ => tags.push(group.to_string()),
@@ -1097,7 +1118,8 @@ fn ends_field_continuation(line: &str) -> bool {
     static TABLE_ROW: OnceLock<Regex> = OnceLock::new();
     static FENCE: OnceLock<Regex> = OnceLock::new();
     let list_item = LIST_ITEM.get_or_init(|| Regex::new(r"^\s*[-*+]\s").unwrap());
-    let label = LABEL.get_or_init(|| Regex::new(r"^\s*\*\*[A-Za-z][A-Za-z ]*:?(?:\*\*)?:?\s").unwrap());
+    let label =
+        LABEL.get_or_init(|| Regex::new(r"^\s*\*\*[A-Za-z][A-Za-z ]*:?(?:\*\*)?:?\s").unwrap());
     let table_row = TABLE_ROW.get_or_init(|| Regex::new(r"^\s*\|").unwrap());
     let fence = FENCE.get_or_init(|| Regex::new(r"^\s*(?:`{3,}|~{3,})").unwrap());
 
@@ -1274,7 +1296,11 @@ pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
         if cells.len() < headers.len() {
             continue;
         }
-        let phase_cell = cells.get(phase_col).map(String::as_str).unwrap_or("").trim();
+        let phase_cell = cells
+            .get(phase_col)
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
         if phase_cell.is_empty() || is_progress_sentinel(phase_cell) {
             continue;
         }
@@ -1449,10 +1475,7 @@ pub fn split_milestone_label(label: &str) -> (String, String) {
         .trim();
     let unquoted = [('"', '"'), ('\u{201C}', '\u{201D}')]
         .iter()
-        .find_map(|&(open, close)| {
-            rest.strip_prefix(open)
-                .and_then(|r| r.strip_suffix(close))
-        })
+        .find_map(|&(open, close)| rest.strip_prefix(open).and_then(|r| r.strip_suffix(close)))
         .unwrap_or(rest);
     (short, unquoted.to_string())
 }
@@ -1607,15 +1630,18 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
 
     let endpoint = |text: &str| extract_phase_id(text).and_then(|id| PhaseNum::parse(&id));
     let cut_label = |text: &str| -> String {
-        let t = text.trim().trim_start_matches(|c: char| !c.is_alphanumeric());
+        let t = text
+            .trim()
+            .trim_start_matches(|c: char| !c.is_alphanumeric());
         let t = match t.find(" (") {
             Some(at) => &t[..at],
             None => t,
         };
         t.trim().to_string()
     };
-    let marks_progress =
-        |line: &str| line.contains('\u{1F6A7}') || line.to_ascii_lowercase().contains("in progress");
+    let marks_progress = |line: &str| {
+        line.contains('\u{1F6A7}') || line.to_ascii_lowercase().contains("in progress")
+    };
 
     let mut raw: Vec<(String, RoadmapMilestone)> = Vec::new();
     let mut push = |label: String, line: &str, singular: bool| -> usize {
@@ -1665,7 +1691,10 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
             }
             let text = &caps[2];
             let is_phase = phase_heading.is_match(line);
-            if !is_phase && (2..=4).contains(&level) && (version.is_match(text) || numbered.is_match(text)) {
+            if !is_phase
+                && (2..=4).contains(&level)
+                && (version.is_match(text) || numbered.is_match(text))
+            {
                 let label = cut_label(text);
                 if !label.is_empty() {
                     let at = push(label, line, false);
@@ -1713,7 +1742,10 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
     // Dedupe (PI-7): keep the first entry's label and position.
     let mut out: Vec<(String, RoadmapMilestone)> = Vec::new();
     for (label, m) in raw {
-        match out.iter_mut().find(|(seen, _)| same_milestone(seen, &label)) {
+        match out
+            .iter_mut()
+            .find(|(seen, _)| same_milestone(seen, &label))
+        {
             Some((_, kept)) => {
                 kept.in_progress |= m.in_progress;
                 if kept.first.is_none() {
@@ -1770,7 +1802,11 @@ mod tests {
             - [ ] 07.1-02-PLAN.md — b\n";
         let phases = parse_roadmap_phases(roadmap);
         let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
-        assert_eq!(numbers, ["7", "7.1"], "one row per phase, first spelling kept");
+        assert_eq!(
+            numbers,
+            ["7", "7.1"],
+            "one row per phase, first spelling kept"
+        );
         assert_eq!(phases[0].total_plans, 1);
         assert!(phases[0].completed);
         assert_eq!(phases[1].total_plans, 2);
@@ -1844,10 +1880,16 @@ mod tests {
         );
         assert_eq!(letter.depends_on, ["12A"]);
 
-        assert_eq!(extract_phase_id("23A.1.2-some-slug").as_deref(), Some("23A.1.2"));
+        assert_eq!(
+            extract_phase_id("23A.1.2-some-slug").as_deref(),
+            Some("23A.1.2")
+        );
         assert_eq!(extract_phase_id("Phase 12A").as_deref(), Some("12A"));
         let section = phase_section(roadmap, "23A.1.2").expect("the entry is found");
-        assert!(section.starts_with("### Phase 23A.1.2: Letter"), "{section}");
+        assert!(
+            section.starts_with("### Phase 23A.1.2: Letter"),
+            "{section}"
+        );
         assert_eq!(
             goal_of(&parse_phase_goals(roadmap), "23A.1.2").as_deref(),
             Some("letter-suffixed goal")
@@ -1882,7 +1924,9 @@ mod tests {
     #[test]
     fn test_depends_on_ignores_a_parenthetical_qualifier() {
         assert_eq!(
-            depends_of("Phase 16, Phase 17, Phase 19 (and Phase 22 must land before this phase closes)"),
+            depends_of(
+                "Phase 16, Phase 17, Phase 19 (and Phase 22 must land before this phase closes)"
+            ),
             vec!["16", "17", "19"],
             "a parenthetical qualifier is prose about ordering, not a declared \
              dependency. Promoting `22` out of the aside would state a \
@@ -1996,7 +2040,10 @@ mod tests {
     #[test]
     fn depends_on_keeps_project_code_prefixed_refs_unlike_gsd_1_15() {
         assert_eq!(
-            depends_of_row("31", "Subphase 4, Build phases 8-13, Phase M-2, phase 5 through 6"),
+            depends_of_row(
+                "31",
+                "Subphase 4, Build phases 8-13, Phase M-2, phase 5 through 6"
+            ),
             vec!["8", "13", "M-2", "5", "6"],
             "divergence B: 1.15.0 reads 8, 13, 5, 6 — its token has no project-code \
              prefix, so `Phase M-2` is skipped there and kept here"
@@ -2556,7 +2603,11 @@ Plans:
         assert_eq!(milestone_index_of(&ms, "7.1"), Some(1), "exact range wins");
         assert_eq!(milestone_index_of(&ms, "7.2"), Some(1));
         assert_eq!(milestone_index_of(&ms, "12"), Some(1));
-        assert_eq!(milestone_index_of(&ms, "12.1"), Some(1), "decimal rule still applies");
+        assert_eq!(
+            milestone_index_of(&ms, "12.1"),
+            Some(1),
+            "decimal rule still applies"
+        );
         assert_eq!(milestone_index_of(&ms, "13"), None);
     }
 
@@ -2681,7 +2732,9 @@ Plans:
             "`Build phases 8-13` expands to the known ids inside the range; \
              lists and singles read as written"
         );
-        assert!(planned.iter().all(|p| !p.completed && p.description.is_empty()));
+        assert!(planned
+            .iter()
+            .all(|p| !p.completed && p.description.is_empty()));
         assert!(planned.iter().all(|p| p.total_plans == 0));
     }
 
@@ -2694,11 +2747,16 @@ Plans:
             .collect();
         assert_eq!(shorts, ["v1", "v2", "M3", "M4", "M5"]);
         assert!(
-            ms.iter().all(|m| !m.label.as_raw_for_logic_only().starts_with("Build phase")),
+            ms.iter()
+                .all(|m| !m.label.as_raw_for_logic_only().starts_with("Build phase")),
             "`#### Build phase 14 (Milestone 3): …` is a phase heading, not a milestone"
         );
         for (phase, milestone) in [("14", 2), ("15", 2), ("16", 3), ("17", 3), ("18", 4)] {
-            assert_eq!(milestone_index_of(&ms, phase), Some(milestone), "phase {phase}");
+            assert_eq!(
+                milestone_index_of(&ms, phase),
+                Some(milestone),
+                "phase {phase}"
+            );
         }
         // The heading scope collects them too, independent of the bullet ranges.
         assert_eq!(ms[2].scoped_phases, ["14", "15"]);
@@ -2754,7 +2812,9 @@ Plans:
     const SENTRIQ_ROADMAP: &str = include_str!("../../tests/fixtures/roadmaps/sentriq-ROADMAP.md");
 
     fn goal_of(goals: &HashMap<String, crate::text::Untrusted>, key: &str) -> Option<String> {
-        goals.get(key).map(|g| g.as_raw_for_logic_only().to_string())
+        goals
+            .get(key)
+            .map(|g| g.as_raw_for_logic_only().to_string())
     }
 
     #[test]
@@ -2789,7 +2849,10 @@ Plans:
             ## Notes\n\n**Goal**: belongs to no phase\n\n\
             #### Build phase 2 (Milestone 2): Planned\n\n**Goal**: a build goal\n";
         let goals = parse_phase_goals(roadmap);
-        assert!(!goals.contains_key("1"), "the Goal line sits after `## Notes`");
+        assert!(
+            !goals.contains_key("1"),
+            "the Goal line sits after `## Notes`"
+        );
         assert_eq!(goal_of(&goals, "2").as_deref(), Some("a build goal"));
         assert_eq!(goals.len(), 1);
     }
@@ -2833,17 +2896,29 @@ Plans:
                 "**Goal**: Ship it\n   indented wrap   \n| a | table |",
                 Some("Ship it indented wrap"),
             ),
-            ("**Goal**: Do the thing\n```\nnot this\n```", Some("Do the thing")),
-            ("**Goal**: Do the thing\n~~~\nnot this\n~~~", Some("Do the thing")),
+            (
+                "**Goal**: Do the thing\n```\nnot this\n```",
+                Some("Do the thing"),
+            ),
+            (
+                "**Goal**: Do the thing\n~~~\nnot this\n~~~",
+                Some("Do the thing"),
+            ),
             ("**Goal:** ```js\nfoo()\n```", None),
-            ("**Goal** without colon\nwrapped too", Some("without colon wrapped too")),
+            (
+                "**Goal** without colon\nwrapped too",
+                Some("without colon wrapped too"),
+            ),
             ("**Goal**: one\n**requirements**: lower", Some("one")),
             ("**Goal**: eight\n\ntail after blank", Some("eight")),
             (
                 "**Goal**: nine\n1. numbered item\nPlans:",
                 Some("nine 1. numbered item Plans:"),
             ),
-            ("**Goal:**\nnext line goal\nwrapped", Some("next line goal wrapped")),
+            (
+                "**Goal:**\nnext line goal\nwrapped",
+                Some("next line goal wrapped"),
+            ),
         ];
         for (body, expected) in rows {
             assert_eq!(
@@ -2886,12 +2961,20 @@ Plans:
     #[test]
     fn fixture_goals_cover_every_detailed_phase() {
         for (name, content, keys) in [
-            ("daily-vow", DAILY_VOW_ROADMAP, (18..=23).collect::<Vec<u32>>()),
+            (
+                "daily-vow",
+                DAILY_VOW_ROADMAP,
+                (18..=23).collect::<Vec<u32>>(),
+            ),
             ("sentriq", SENTRIQ_ROADMAP, (9..=12).collect()),
             ("ttbook", TTBOOK_ROADMAP, (8..=18).collect()),
         ] {
             let goals = parse_phase_goals(content);
-            assert_eq!(goals.len(), keys.len(), "{name}: one goal per detailed phase");
+            assert_eq!(
+                goals.len(),
+                keys.len(),
+                "{name}: one goal per detailed phase"
+            );
             for key in keys {
                 let goal = goal_of(&goals, &key.to_string())
                     .unwrap_or_else(|| panic!("{name}: phase {key} has a goal"));
@@ -2931,8 +3014,15 @@ Plans:
     #[test]
     fn sentriq_v0_11_is_shipped_by_version_order() {
         let ms = roadmap_milestones(SENTRIQ_ROADMAP);
-        assert_eq!(labels(&ms), ["v0.11 Phases", "Scope Explicitly Excluded from v0.12"]);
-        assert_eq!(ms[0].first, PhaseNum::parse("4"), "`Phases (4-7)` range is read");
+        assert_eq!(
+            labels(&ms),
+            ["v0.11 Phases", "Scope Explicitly Excluded from v0.12"]
+        );
+        assert_eq!(
+            ms[0].first,
+            PhaseNum::parse("4"),
+            "`Phases (4-7)` range is read"
+        );
         assert_eq!(ms[0].last, PhaseNum::parse("7"));
         assert_eq!(
             active_milestone_index(&ms, "v0.12"),
@@ -2946,7 +3036,10 @@ Plans:
     #[test]
     fn ttbook_v1_is_shipped() {
         let ms = roadmap_milestones(TTBOOK_ROADMAP);
-        assert_eq!(shipped_milestones(&ms, "v2"), [true, false, false, false, false]);
+        assert_eq!(
+            shipped_milestones(&ms, "v2"),
+            [true, false, false, false, false]
+        );
         assert_eq!(
             declared_phase_count(&ms[0]),
             7,
@@ -2963,16 +3056,26 @@ Plans:
              - 🚧 **v2.0 Now** - Phases 3-4 (in progress)\n",
         );
         assert_eq!(shipped_milestones(&ms, "v2.0"), [false, true, false]);
-        assert_eq!(shipped_milestones(&ms, ""), [false, true, false], "in-progress fallback");
+        assert_eq!(
+            shipped_milestones(&ms, ""),
+            [false, true, false],
+            "in-progress fallback"
+        );
 
         // Version order is numeric by segment, never lexicographic.
         let ms = roadmap_milestones(
             "## Plan\n\n### v0.9 Early (Phases 1-2)\n\n### v0.11 Later (Phases 3-4)\n\n\
              ### v0.20 Future (Phases 9-10)\n\n### v0.10 Loose\n",
         );
-        assert_eq!(labels(&ms), ["v0.9 Early", "v0.11 Later", "v0.20 Future", "v0.10 Loose"]);
+        assert_eq!(
+            labels(&ms),
+            ["v0.9 Early", "v0.11 Later", "v0.20 Future", "v0.10 Loose"]
+        );
         assert_eq!(shipped_milestones(&ms, "v0.12"), [true, true, false, false]);
-        assert_eq!(shipped_milestones(&ms, "v0.9 Early"), [false, false, false, false]);
+        assert_eq!(
+            shipped_milestones(&ms, "v0.9 Early"),
+            [false, false, false, false]
+        );
         assert_eq!(
             shipped_milestones(&ms, "v0.10.1"),
             [true, false, false, false],
@@ -3001,7 +3104,11 @@ Plans:
              ## Later\n\n### Milestone 5 \"E\"\n\n#### Build phase 20: X\n#### Build phase 21: Y\n",
         );
         let counts: Vec<u32> = ms.iter().map(declared_phase_count).collect();
-        assert_eq!(counts, [7, 6, 1, 0, 2], "range majors, else scoped members, else 0");
+        assert_eq!(
+            counts,
+            [7, 6, 1, 0, 2],
+            "range majors, else scoped members, else 0"
+        );
     }
 
     /// T-24-03: the fixtures are excerpts of PRIVATE roadmaps shipped in a
@@ -3040,7 +3147,10 @@ Plans:
         ];
         let mut goal_lines = 0;
         for (name, content) in fixtures {
-            assert!(!content.contains("/home/"), "{name} carries an absolute home path");
+            assert!(
+                !content.contains("/home/"),
+                "{name} carries an absolute home path"
+            );
             for (no, line) in content.lines().enumerate() {
                 if line.contains("**Goal") {
                     goal_lines += 1;
@@ -3052,7 +3162,11 @@ Plans:
                 }
             }
         }
-        assert_eq!(goal_lines, 6 + 4 + 11 + 11, "the guard saw every fixture goal");
+        assert_eq!(
+            goal_lines,
+            6 + 4 + 11 + 11,
+            "the guard saw every fixture goal"
+        );
     }
 
     // --- phase_section (debug backlog-content-empty) -----------------------
@@ -3155,7 +3269,16 @@ Plans:
             .collect();
         assert_eq!(
             plans,
-            [(6, 6), (13, 13), (8, 8), (9, 9), (9, 9), (8, 8), (12, 12), (16, 16)]
+            [
+                (6, 6),
+                (13, 13),
+                (8, 8),
+                (9, 9),
+                (9, 9),
+                (8, 8),
+                (12, 12),
+                (16, 16)
+            ]
         );
         assert!(shipped.iter().all(|p| p.completed));
         assert_eq!(shipped[0].description, "completed 2026-09-23; (sanitised)");
@@ -3215,7 +3338,10 @@ Plans:
                        - [x] 01-01-PLAN.md - archived\n</details>\n\n- [ ] 05-01-PLAN.md - live\n";
         let lines: Vec<&str> = roadmap.lines().collect();
         let flags = closed_milestone_lines(&lines);
-        assert_eq!(flags, [false, false, true, true, true, true, true, false, false]);
+        assert_eq!(
+            flags,
+            [false, false, true, true, true, true, true, false, false]
+        );
         let live = parse_roadmap_phases(roadmap);
         assert_eq!(live.len(), 1);
         assert_eq!((live[0].completed_plans, live[0].total_plans), (0, 0));
@@ -3223,7 +3349,8 @@ Plans:
 
     // ── quick 260926-fi9 Task 2: every observed shape, both channels ───────
 
-    const V1_ERA_ROADMAP: &str = include_str!("../../tests/fixtures/roadmap-shapes/v1-era-ROADMAP.md");
+    const V1_ERA_ROADMAP: &str =
+        include_str!("../../tests/fixtures/roadmap-shapes/v1-era-ROADMAP.md");
 
     fn numbers_of(phases: &[RoadmapPhase]) -> Vec<&str> {
         phases.iter().map(|p| p.number.as_str()).collect()
@@ -3299,7 +3426,12 @@ Plans:
         );
         assert_eq!(
             facts("2.1"),
-            ("Hotfix Insert (INSERTED)", "completed 2026-01-03", true, (2, 2))
+            (
+                "Hotfix Insert (INSERTED)",
+                "completed 2026-01-03",
+                true,
+                (2, 2)
+            )
         );
         assert_eq!(
             facts("3"),
@@ -3320,7 +3452,12 @@ Plans:
         );
         assert_eq!(
             facts("6"),
-            ("Zeta Wiring", "Wire the parts (completed 2026-02-02)", true, (0, 0))
+            (
+                "Zeta Wiring",
+                "Wire the parts (completed 2026-02-02)",
+                true,
+                (0, 0)
+            )
         );
         assert_eq!(facts("07"), ("Eta Accuracy", "", true, (5, 5)));
         assert_eq!(facts("08"), ("Theta Cleanup", "", true, (1, 1)));
@@ -3344,7 +3481,11 @@ Plans:
             .map(|p| phase_key(&p.number))
             .collect();
         for p in parse_shipped_phases(V1_ERA_ROADMAP) {
-            assert!(!live.contains(&phase_key(&p.number)), "{} in both channels", p.number);
+            assert!(
+                !live.contains(&phase_key(&p.number)),
+                "{} in both channels",
+                p.number
+            );
         }
 
         let negatives = [
@@ -3362,10 +3503,20 @@ Plans:
             "<summary>\u{2705} v1.0 MVP (Phases 1-4) — SHIPPED 2026-01-10</summary>",
         ];
         for line in negatives {
-            assert!(parse_roadmap_phases(line).is_empty(), "current region: {line}");
-            let collapsed = format!("<details>\n<summary>v0 SHIPPED</summary>\n\n{line}\n\n</details>\n");
-            assert!(parse_shipped_phases(&collapsed).is_empty(), "closed region: {line}");
-            assert!(parse_roadmap_phases(&collapsed).is_empty(), "closed region: {line}");
+            assert!(
+                parse_roadmap_phases(line).is_empty(),
+                "current region: {line}"
+            );
+            let collapsed =
+                format!("<details>\n<summary>v0 SHIPPED</summary>\n\n{line}\n\n</details>\n");
+            assert!(
+                parse_shipped_phases(&collapsed).is_empty(),
+                "closed region: {line}"
+            );
+            assert!(
+                parse_roadmap_phases(&collapsed).is_empty(),
+                "closed region: {line}"
+            );
         }
         // A bare `Phase N:` line is prose outside a closed collapse.
         let bare = "Phase 20: a bare line outside any closed milestone is prose, not a phase";
@@ -3399,7 +3550,10 @@ Plans:
             .map(|p| phase_key(&p.number))
             .collect();
         for id in &expected {
-            assert!(!live.contains(&phase_key(id)), "{id} leaked into the GSD-facing list");
+            assert!(
+                !live.contains(&phase_key(id)),
+                "{id} leaked into the GSD-facing list"
+            );
         }
     }
 
@@ -3446,7 +3600,8 @@ Plans:
         assert_eq!(tagged[0].name, "Tagged (INSERTED)");
         assert_eq!(tagged[0].description, "desc");
 
-        let tallied = parse_roadmap_phases("- [x] **Phase 4: Four** (2/3 plans) — completed 2026-01-01\n");
+        let tallied =
+            parse_roadmap_phases("- [x] **Phase 4: Four** (2/3 plans) — completed 2026-01-01\n");
         assert_eq!(tallied[0].description, "completed 2026-01-01");
         assert_eq!((tallied[0].completed_plans, tallied[0].total_plans), (2, 3));
 

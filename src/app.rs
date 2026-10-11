@@ -202,11 +202,7 @@ pub fn driver_line_for_record(
         )),
         "interjection_missed" => Some((
             DriverLineKind::Injection,
-            format!(
-                "interjection missed: {} ({})",
-                text("id"),
-                text("reason")
-            ),
+            format!("interjection missed: {} ({})", text("id"), text("reason")),
         )),
         "diagnostic" => Some((
             DriverLineKind::Diagnostic,
@@ -235,7 +231,10 @@ pub fn driver_line_for_record(
                 .rest
                 .get("exit")
                 .and_then(|value| value.as_i64())
-                .map_or_else(|| "no exit status".to_string(), |code| format!("exit {code}"));
+                .map_or_else(
+                    || "no exit status".to_string(),
+                    |code| format!("exit {code}"),
+                );
             Some((
                 DriverLineKind::Terminal,
                 format!("agent finished: {exit} after {}s", number("duration_s")),
@@ -272,10 +271,7 @@ pub fn update_driver_tally(
                 run_id: run_id.to_string(),
                 ..DriverRunTally::default()
             });
-            cache
-                .driver_tally
-                .as_mut()
-                .expect("just assigned")
+            cache.driver_tally.as_mut().expect("just assigned")
         }
     };
 
@@ -485,7 +481,9 @@ fn phase_display_label(state: &ProjectState) -> String {
     let phase_name = state
         .phases
         .iter()
-        .find(|p| crate::state_reader::phase_num::PhaseNum::parse(&p.number).as_ref() == Some(&phase_num))
+        .find(|p| {
+            crate::state_reader::phase_num::PhaseNum::parse(&p.number).as_ref() == Some(&phase_num)
+        })
         .map(|p| p.name.as_str())
         .unwrap_or("Unknown");
     format!("P{}: {}", phase_num, phase_name)
@@ -519,7 +517,11 @@ pub struct App {
 /// **An unknown editor gets the path alone** (INFERRED): a guessed `+N` handed
 /// to an editor that does not understand it would open a file literally named
 /// `+N` — worse than opening at the top.
-pub fn editor_args(editor: &str, path: &std::path::Path, line: Option<usize>) -> Vec<std::ffi::OsString> {
+pub fn editor_args(
+    editor: &str,
+    path: &std::path::Path,
+    line: Option<usize>,
+) -> Vec<std::ffi::OsString> {
     use std::ffi::OsString;
     let Some(line) = line.filter(|n| *n > 0) else {
         return vec![path.as_os_str().to_owned()];
@@ -536,7 +538,10 @@ pub fn editor_args(editor: &str, path: &std::path::Path, line: Option<usize>) ->
     match name.as_str() {
         "vi" | "vim" | "nvim" | "view" | "gvim" | "vis" | "nano" | "pico" | "emacs"
         | "emacsclient" | "kak" | "micro" | "joe" | "jed" | "ne" | "mg" => {
-            vec![OsString::from(format!("+{line}")), path.as_os_str().to_owned()]
+            vec![
+                OsString::from(format!("+{line}")),
+                path.as_os_str().to_owned(),
+            ]
         }
         "code" | "code-insiders" | "codium" | "vscodium" | "cursor" => {
             vec![OsString::from("-g"), with_suffix()]
@@ -761,7 +766,12 @@ impl App {
         // line unchanged now that the value carries a `seq` as well as an offset
         // (D-28, PATTERNS note 4).
         let key = (alias.to_string(), run_id.to_string());
-        let stored = self.ctx.journal_cursors.get(&key).copied().unwrap_or_default();
+        let stored = self
+            .ctx
+            .journal_cursors
+            .get(&key)
+            .copied()
+            .unwrap_or_default();
         let (alias_for_task, run_id_for_task) = key;
 
         let planning_dir = project_path.join(".planning");
@@ -969,13 +979,7 @@ impl App {
     ///
     /// The status the UI shows is set by the `DriverInjectWritten` handler and
     /// never here — nothing may read `queued` before the write returns `Ok`.
-    pub fn schedule_inbox_append(
-        &mut self,
-        alias: &str,
-        run_id: &str,
-        id: String,
-        text: String,
-    ) {
+    pub fn schedule_inbox_append(&mut self, alias: &str, run_id: &str, id: String, text: String) {
         let Some(planning_dir) = self.planning_dir_for(alias) else {
             return;
         };
@@ -1150,9 +1154,7 @@ impl App {
             }
 
             let state = state_reader::parse_project_state(&planning_dir);
-            self.ctx
-                .change_tracker
-                .record_initial(alias, &state);
+            self.ctx.change_tracker.record_initial(alias, &state);
             self.ctx.project_states.insert(alias.clone(), state);
 
             tracing::info!(
@@ -1230,9 +1232,8 @@ impl App {
                             // plus small reads, so a second task would double
                             // the scheduling for no extra freshness — the same
                             // reasoning that forbids a second timer.
-                            let last_outcomes = crate::driver::reconcile::last_ended_outcomes(
-                                &projects,
-                            );
+                            let last_outcomes =
+                                crate::driver::reconcile::last_ended_outcomes(&projects);
                             let _ = tx.send(Action::RunsReconciled {
                                 runs,
                                 last_outcomes,
@@ -1289,17 +1290,16 @@ impl App {
                             self.ctx.agents_scan_in_flight = true;
                             tokio::task::spawn_blocking(move || {
                                 let now = std::time::SystemTime::now();
-                                let per_project = std::panic::catch_unwind(
-                                    std::panic::AssertUnwindSafe(|| {
+                                let per_project =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         let probe = crate::session_detector::process_probe();
                                         crate::agents::scan_projects_guarded(
                                             &projects,
                                             probe.as_ref(),
                                             now,
                                         )
-                                    }),
-                                )
-                                .unwrap_or_default();
+                                    }))
+                                    .unwrap_or_default();
                                 let _ = tx.send(Action::AgentsScanned { per_project });
                             });
                         }
@@ -1367,8 +1367,7 @@ impl App {
                             // Dedup: skip if last refresh was less than 500ms ago
                             let now = std::time::Instant::now();
                             if let Some(last) = self.ctx.last_refresh.get(&alias) {
-                                if now.duration_since(*last)
-                                    < std::time::Duration::from_millis(500)
+                                if now.duration_since(*last) < std::time::Duration::from_millis(500)
                                 {
                                     return;
                                 }
@@ -1630,8 +1629,7 @@ impl App {
                     .journal_cursors
                     .get(&key)
                     .map_or(0, |stored| stored.last_seq);
-                let gaps =
-                    crate::journal::reader::seq_gaps_from(previous_last_seq, &records).len();
+                let gaps = crate::journal::reader::seq_gaps_from(previous_last_seq, &records).len();
                 if gaps > 0 {
                     tracing::warn!(
                         alias = %key.0,
@@ -2382,8 +2380,7 @@ impl App {
         let run_id_for_task = run_id.clone();
 
         tokio::spawn(async move {
-            let outcome =
-                crate::driver::kill::stop_run(pid, pgid, &run_id_for_task, arm).await;
+            let outcome = crate::driver::kill::stop_run(pid, pgid, &run_id_for_task, arm).await;
             let _ = tx.send(Action::DriverStopped {
                 alias: alias_for_task,
                 run_id: run_id_for_task,
@@ -2539,9 +2536,15 @@ mod tests {
         cache.browser_file_path = Some(f.clone());
         std::fs::write(&f, "new").unwrap();
         app.refresh_after_editor(&dir.path().join("other.md"));
-        assert_eq!(app.ctx.view_cache["p"].browser_file_content.as_deref(), Some("old"));
+        assert_eq!(
+            app.ctx.view_cache["p"].browser_file_content.as_deref(),
+            Some("old")
+        );
         app.refresh_after_editor(&f);
-        assert_eq!(app.ctx.view_cache["p"].browser_file_content.as_deref(), Some("new"));
+        assert_eq!(
+            app.ctx.view_cache["p"].browser_file_content.as_deref(),
+            Some("new")
+        );
         assert!(app.needs_redraw);
     }
 
@@ -2558,9 +2561,15 @@ mod tests {
         cache.archive_file_path = Some(f.clone());
         std::fs::write(&f, "new").unwrap();
         app.refresh_after_editor(&dir.path().join("other.md"));
-        assert_eq!(app.ctx.view_cache["p"].archive_file_content.as_deref(), Some("old"));
+        assert_eq!(
+            app.ctx.view_cache["p"].archive_file_content.as_deref(),
+            Some("old")
+        );
         app.refresh_after_editor(&f);
-        assert_eq!(app.ctx.view_cache["p"].archive_file_content.as_deref(), Some("new"));
+        assert_eq!(
+            app.ctx.view_cache["p"].archive_file_content.as_deref(),
+            Some("new")
+        );
         assert!(app.needs_redraw);
     }
 
@@ -2569,9 +2578,7 @@ mod tests {
     #[test]
     fn announce_gsd_install_sets_the_startup_summary() {
         use crate::state_reader::config_json::GSD_CORE_SYNCED_TREE_VERSION;
-        use crate::state_reader::gsd_install::{
-            detect_gsd_install, startup_summary, InstallRoots,
-        };
+        use crate::state_reader::gsd_install::{detect_gsd_install, startup_summary, InstallRoots};
         let home = tempfile::tempdir().unwrap();
         let core = home.path().join(".claude/gsd-core");
         std::fs::create_dir_all(&core).unwrap();
@@ -2605,13 +2612,22 @@ mod tests {
             &detect_gsd_install(None, &roots),
             app.ctx.project_states.values().map(|s| &s.gsd_install),
         );
-        let (text, _) = app.ctx.status_message.clone().expect("a status message is set");
+        let (text, _) = app
+            .ctx
+            .status_message
+            .clone()
+            .expect("a status message is set");
         assert_eq!(text, expected);
         assert!(
-            text.starts_with(&format!("GSD {GSD_CORE_SYNCED_TREE_VERSION} (global Claude)")),
+            text.starts_with(&format!(
+                "GSD {GSD_CORE_SYNCED_TREE_VERSION} (global Claude)"
+            )),
             "{text}"
         );
-        assert!(text.ends_with("1 project uses a project-local GSD"), "{text}");
+        assert!(
+            text.ends_with("1 project uses a project-local GSD"),
+            "{text}"
+        );
         assert!(app.needs_redraw);
     }
 
@@ -2621,22 +2637,40 @@ mod tests {
         use std::ffi::OsString;
         let p = std::path::Path::new("/r/.planning/ROADMAP.md");
         let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
-        assert_eq!(editor_args("nvim", p, Some(42)), os(&["+42", "/r/.planning/ROADMAP.md"]));
+        assert_eq!(
+            editor_args("nvim", p, Some(42)),
+            os(&["+42", "/r/.planning/ROADMAP.md"])
+        );
         assert_eq!(
             editor_args("/usr/bin/vim", p, Some(7)),
             os(&["+7", "/r/.planning/ROADMAP.md"])
         );
-        assert_eq!(editor_args("nano", p, Some(3)), os(&["+3", "/r/.planning/ROADMAP.md"]));
+        assert_eq!(
+            editor_args("nano", p, Some(3)),
+            os(&["+3", "/r/.planning/ROADMAP.md"])
+        );
         assert_eq!(
             editor_args("code", p, Some(9)),
             os(&["-g", "/r/.planning/ROADMAP.md:9"])
         );
-        assert_eq!(editor_args("hx", p, Some(5)), os(&["/r/.planning/ROADMAP.md:5"]));
+        assert_eq!(
+            editor_args("hx", p, Some(5)),
+            os(&["/r/.planning/ROADMAP.md:5"])
+        );
         // Unknown editor: path only, never a guessed flag.
-        assert_eq!(editor_args("ed", p, Some(5)), os(&["/r/.planning/ROADMAP.md"]));
+        assert_eq!(
+            editor_args("ed", p, Some(5)),
+            os(&["/r/.planning/ROADMAP.md"])
+        );
         // No line (or a nonsensical 0): path only, whatever the editor.
-        assert_eq!(editor_args("nvim", p, None), os(&["/r/.planning/ROADMAP.md"]));
-        assert_eq!(editor_args("nvim", p, Some(0)), os(&["/r/.planning/ROADMAP.md"]));
+        assert_eq!(
+            editor_args("nvim", p, None),
+            os(&["/r/.planning/ROADMAP.md"])
+        );
+        assert_eq!(
+            editor_args("nvim", p, Some(0)),
+            os(&["/r/.planning/ROADMAP.md"])
+        );
     }
 
     #[test]
@@ -2852,10 +2886,7 @@ mod tests {
     #[test]
     fn test_classify_status_all_phases_complete_is_idle() {
         // Intermediate ADR-2207 state — NOT Complete.
-        assert_eq!(
-            classify_status("All phases complete"),
-            StatusCategory::Idle
-        );
+        assert_eq!(classify_status("All phases complete"), StatusCategory::Idle);
     }
 
     #[test]
@@ -3019,7 +3050,8 @@ mod tests {
         }
 
         assert_eq!(
-            app.ctx.reparse_dispatches, before,
+            app.ctx.reparse_dispatches,
+            before,
             "OBS-06: five hundred journal appends leaked {} full re-parses",
             app.ctx.reparse_dispatches - before
         );
@@ -3379,7 +3411,10 @@ mod tests {
         (
             app.ctx.observed_runs.contains_key(OBS_ALIAS),
             app.ctx.session_spawned_runs.contains("run-x"),
-            app.ctx.status_message.as_ref().map(|(text, _)| text.clone()),
+            app.ctx
+                .status_message
+                .as_ref()
+                .map(|(text, _)| text.clone()),
         )
     }
 
@@ -3680,7 +3715,11 @@ mod tests {
                 "reading src/driver/run.rs".to_string()
             )
         );
-        assert_eq!(lines[1].0, DriverLineKind::Stderr, "stderr is its own class");
+        assert_eq!(
+            lines[1].0,
+            DriverLineKind::Stderr,
+            "stderr is its own class"
+        );
         assert_eq!(
             lines[2].0,
             DriverLineKind::Terminal,
@@ -3813,7 +3852,11 @@ mod tests {
                 "stdin closed",
             ),
             (
-                journal_record(7, "exec_finished", &[("exit", 0.into()), ("duration_s", 12.into())]),
+                journal_record(
+                    7,
+                    "exec_finished",
+                    &[("exit", 0.into()), ("duration_s", 12.into())],
+                ),
                 DriverLineKind::Terminal,
                 "exit 0",
             ),
@@ -3920,9 +3963,10 @@ mod tests {
         );
 
         // Now a detail view on the Driver tab, over the same live run.
-        app.screen_stack.push(Box::new(
-            crate::ui::screens::detail::DetailScreen::new(OBS_ALIAS.to_string()),
-        ));
+        app.screen_stack
+            .push(Box::new(crate::ui::screens::detail::DetailScreen::new(
+                OBS_ALIAS.to_string(),
+            )));
         app.ctx
             .detail_sub_view_per_project
             .insert(OBS_ALIAS.to_string(), DetailSubView::Driver);
@@ -3944,9 +3988,10 @@ mod tests {
         let (mut app, rx) = obs_app(root);
         app.ctx.recompute_filtered_aliases();
         app.ctx.table_state.select(Some(0));
-        app.screen_stack.push(Box::new(
-            crate::ui::screens::detail::DetailScreen::new(OBS_ALIAS.to_string()),
-        ));
+        app.screen_stack
+            .push(Box::new(crate::ui::screens::detail::DetailScreen::new(
+                OBS_ALIAS.to_string(),
+            )));
         app.ctx
             .detail_sub_view_per_project
             .insert(OBS_ALIAS.to_string(), DetailSubView::Driver);
@@ -4150,7 +4195,10 @@ mod tests {
             !app.screen_stack.iter().any(|s| s.name() == "driver_start"),
             "and REPLACES itself doing so — the wizard must not be waiting \
              underneath: {:?}",
-            app.screen_stack.iter().map(|s| s.name()).collect::<Vec<_>>()
+            app.screen_stack
+                .iter()
+                .map(|s| s.name())
+                .collect::<Vec<_>>()
         );
 
         app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
@@ -4197,7 +4245,11 @@ mod tests {
         let interjected = journal_record(
             7,
             "interjected",
-            &[("id", "abc".into()), ("text", "steer".into()), ("delivered", true.into())],
+            &[
+                ("id", "abc".into()),
+                ("text", "steer".into()),
+                ("delivered", true.into()),
+            ],
         );
         let acted_on = journal_record(8, "interjection_acted_on", &[("id", "abc".into())]);
 
@@ -4321,7 +4373,9 @@ mod tests {
             .expect("a registered alias keeps its view cache");
         assert_eq!(kept.driver_selected_run, 2);
         assert_eq!(
-            kept.driver_tally.as_ref().and_then(|t| t.cumulative_cost_usd),
+            kept.driver_tally
+                .as_ref()
+                .and_then(|t| t.cumulative_cost_usd),
             Some(1.83),
             "the prune must not clear a live cache's contents"
         );
@@ -4367,7 +4421,10 @@ mod tests {
         let inbox = crate::journal::run_paths(&dir.path().join(".planning"), OBS_RUN)
             .expect("a plain run id resolves")
             .inbox;
-        assert!(!inbox.exists(), "nothing was written must mean nothing was written");
+        assert!(
+            !inbox.exists(),
+            "nothing was written must mean nothing was written"
+        );
     }
 
     /// A traversing run id is refused before any path is joined (T-18-27).
@@ -4597,7 +4654,13 @@ mod tests {
             use crate::driver::spawn::drive_argv;
             let config = std::path::Path::new("/tmp/config.json");
 
-            let empty = drive_argv(config, "proj", "/gsd-progress", "run-1", goal_or_none(Some("")));
+            let empty = drive_argv(
+                config,
+                "proj",
+                "/gsd-progress",
+                "run-1",
+                goal_or_none(Some("")),
+            );
             assert!(
                 !empty.iter().any(|arg| arg == "--goal"),
                 "an empty goal must omit the flag entirely, got: {empty:?}"
@@ -4691,7 +4754,9 @@ mod tests {
 
         let mine = (OBS_ALIAS.to_string(), "run-a".to_string());
         let theirs = (OBS_ALIAS.to_string(), "run-b".to_string());
-        app.ctx.journal_cursors.insert(mine.clone(), cursor_at(10, 1));
+        app.ctx
+            .journal_cursors
+            .insert(mine.clone(), cursor_at(10, 1));
         app.ctx
             .journal_cursors
             .insert(theirs.clone(), cursor_at(20, 7));
@@ -5188,8 +5253,7 @@ mod tests {
         wanted: impl Fn(&Action) -> bool,
     ) -> bool {
         loop {
-            let next =
-                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
+            let next = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
             let Ok(Some(action)) = next else {
                 return false;
             };
@@ -5207,9 +5271,7 @@ mod tests {
     }
 
     fn is_discovery_for(alias: &'static str) -> impl Fn(&Action) -> bool {
-        move |action| {
-            matches!(action, Action::ArchiveMilestonesDiscovered { alias: a, .. } if a == alias)
-        }
+        move |action| matches!(action, Action::ArchiveMilestonesDiscovered { alias: a, .. } if a == alias)
     }
 
     fn is_load_for(alias: &'static str, milestone: &'static str) -> impl Fn(&Action) -> bool {
@@ -5336,8 +5398,7 @@ mod tests {
         let loaded = drill_into_v1_2(&mut app, &mut rx, OTHER).await;
         let second_view = render_top_screen(&app);
         assert!(
-            second_view.contains("Phase 01: Bravo Work")
-                && !second_view.contains("Alpha Work"),
+            second_view.contains("Phase 01: Bravo Work") && !second_view.contains("Alpha Work"),
             "project `{OTHER}`'s Archive > v1.2 must show its own phases \
              (its load arrived: {loaded}):\n{second_view}"
         );
@@ -5683,13 +5744,19 @@ mod tests {
             unreachable!("next_agents_scan returns AgentsScanned only");
         };
         assert_eq!(
-            per_project.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
+            per_project
+                .iter()
+                .map(|(a, _)| a.as_str())
+                .collect::<Vec<_>>(),
             vec![OBS_ALIAS],
             "the scan covers the registered projects"
         );
 
         app.update(scan);
-        assert!(!app.ctx.agents_scan_in_flight, "the handler clears the flag");
+        assert!(
+            !app.ctx.agents_scan_in_flight,
+            "the handler clears the flag"
+        );
         assert!(
             app.ctx.agent_views.is_empty(),
             "a non-git directory has no agent rows, so no view"
@@ -5821,7 +5888,9 @@ mod tests {
         use ratatui::backend::TestBackend;
         let mut terminal =
             ratatui::Terminal::new(TestBackend::new(100, 30)).expect("TestBackend terminal");
-        terminal.draw(|frame| crate::ui::render(frame, app)).expect("draw");
+        terminal
+            .draw(|frame| crate::ui::render(frame, app))
+            .expect("draw");
         let buf = terminal.backend().buffer().clone();
         (0..30u16)
             .find(|&y| {
@@ -5848,11 +5917,21 @@ mod tests {
         assert!(app.mouse_capture, "the default config turns capture on");
         press(&mut app, KeyCode::Char('M'));
         assert!(!app.mouse_capture);
-        let msg = app.ctx.status_message.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        let msg = app
+            .ctx
+            .status_message
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_default();
         assert!(msg.contains("Mouse off"), "{msg}");
         press(&mut app, KeyCode::Char('M'));
         assert!(app.mouse_capture);
-        let msg = app.ctx.status_message.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        let msg = app
+            .ctx
+            .status_message
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_default();
         assert!(msg.contains("Shift+drag"), "{msg}");
 
         // In the `/` search, `M` is text.
@@ -5891,7 +5970,10 @@ mod tests {
         assert!(app.open_project_view("projb"), "a registered alias opens");
         assert_eq!(app.screen_stack.len(), 2, "overview + project view");
         assert_eq!(
-            app.screen_stack.last().map(|s| s.name().to_string()).as_deref(),
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
             Some(crate::ui::screens::detail::DetailScreen::NAME)
         );
         assert_eq!(app.ctx.selected_alias().as_deref(), Some("projb"));
@@ -5943,8 +6025,18 @@ mod tests {
         let row = mouse_draw_and_find(&mut app, "projc");
         app.update(left_press(5, row));
         app.update(left_press(5, row));
-        assert_eq!(app.screen_stack.len(), 2, "the double-click opened the detail view");
-        assert_eq!(app.screen_stack.last().map(|s| s.name().to_string()).as_deref(), Some("detail"));
+        assert_eq!(
+            app.screen_stack.len(),
+            2,
+            "the double-click opened the detail view"
+        );
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("detail")
+        );
 
         // A key between the two presses prevents the double.
         let mut app = mouse_app(&["proja", "projb", "projc"]);

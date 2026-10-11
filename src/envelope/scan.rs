@@ -232,7 +232,10 @@ impl ScanReport {
         if self.skipped.is_empty() {
             out.push_str("  declined to read: nothing\n");
         } else {
-            out.push_str(&format!("  declined to read: {} paths\n", self.skipped.len()));
+            out.push_str(&format!(
+                "  declined to read: {} paths\n",
+                self.skipped.len()
+            ));
             for (path, reason) in &self.skipped {
                 out.push_str(&format!("    {}  {}\n", path.display(), reason));
             }
@@ -252,8 +255,10 @@ impl ScanReport {
             ),
             ExternalScanner::Clean => format!("{GITLEAKS_BIN} ran and found nothing"),
             ExternalScanner::Blocked => {
-                format!("{GITLEAKS_BIN} exited non-zero — blocking (its own output is \
-                         deliberately not reproduced here)")
+                format!(
+                    "{GITLEAKS_BIN} exited non-zero — blocking (its own output is \
+                         deliberately not reproduced here)"
+                )
             }
             ExternalScanner::Failed { detail } => {
                 format!("{GITLEAKS_BIN} could not be run ({detail}) — treated as a block")
@@ -315,7 +320,9 @@ pub fn scan_worktree(root: &Path, limits: ScanLimits) -> ScanReport {
                 }
                 report.skip(
                     relative(root, &dir),
-                    SkipReason::Unreadable { detail: err.to_string() },
+                    SkipReason::Unreadable {
+                        detail: err.to_string(),
+                    },
                 );
                 continue;
             }
@@ -327,7 +334,9 @@ pub fn scan_worktree(root: &Path, limits: ScanLimits) -> ScanReport {
                 Err(err) => {
                     report.skip(
                         relative(root, &dir),
-                        SkipReason::Unreadable { detail: err.to_string() },
+                        SkipReason::Unreadable {
+                            detail: err.to_string(),
+                        },
                     );
                     continue;
                 }
@@ -341,7 +350,9 @@ pub fn scan_worktree(root: &Path, limits: ScanLimits) -> ScanReport {
                 Err(err) => {
                     report.skip(
                         relative(root, &path),
-                        SkipReason::Unreadable { detail: err.to_string() },
+                        SkipReason::Unreadable {
+                            detail: err.to_string(),
+                        },
                     );
                     continue;
                 }
@@ -368,7 +379,9 @@ pub fn scan_worktree(root: &Path, limits: ScanLimits) -> ScanReport {
             if !file_type.is_file() {
                 report.skip(
                     relative(root, &path),
-                    SkipReason::Unreadable { detail: "not a regular file".to_string() },
+                    SkipReason::Unreadable {
+                        detail: "not a regular file".to_string(),
+                    },
                 );
                 continue;
             }
@@ -377,9 +390,9 @@ pub fn scan_worktree(root: &Path, limits: ScanLimits) -> ScanReport {
         }
     }
 
-    report.findings.sort_by(|a, b| {
-        (&a.path, a.line, a.rule).cmp(&(&b.path, b.line, b.rule))
-    });
+    report
+        .findings
+        .sort_by(|a, b| (&a.path, a.line, a.rule).cmp(&(&b.path, b.line, b.rule)));
     report.skipped.sort_by(|a, b| a.0.cmp(&b.0));
     report
 }
@@ -425,7 +438,9 @@ fn run_gitleaks(root: &Path) -> ExternalScanner {
         Ok(output) if output.status.success() => ExternalScanner::Clean,
         Ok(_) => ExternalScanner::Blocked,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => ExternalScanner::Absent,
-        Err(err) => ExternalScanner::Failed { detail: err.to_string() },
+        Err(err) => ExternalScanner::Failed {
+            detail: err.to_string(),
+        },
     }
 }
 
@@ -450,7 +465,12 @@ fn scan_file(
     let size = match std::fs::metadata(path) {
         Ok(meta) => meta.len(),
         Err(err) => {
-            report.skip(rel, SkipReason::Unreadable { detail: err.to_string() });
+            report.skip(
+                rel,
+                SkipReason::Unreadable {
+                    detail: err.to_string(),
+                },
+            );
             return;
         }
     };
@@ -462,7 +482,12 @@ fn scan_file(
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => {
-            report.skip(rel, SkipReason::Unreadable { detail: err.to_string() });
+            report.skip(
+                rel,
+                SkipReason::Unreadable {
+                    detail: err.to_string(),
+                },
+            );
             return;
         }
     };
@@ -508,7 +533,11 @@ fn collect_findings(
             continue;
         };
         if seen.insert((line, *rule)) {
-            out.push(Finding { path: rel.to_path_buf(), line, rule });
+            out.push(Finding {
+                path: rel.to_path_buf(),
+                line,
+                rule,
+            });
         }
     }
 }
@@ -630,7 +659,10 @@ mod tests {
         let tmp = tempdir();
         write(tmp.path(), "huge.txt", &vec![b'a'; 4096]);
 
-        let limits = ScanLimits { max_file_bytes: 1024, ..ScanLimits::default() };
+        let limits = ScanLimits {
+            max_file_bytes: 1024,
+            ..ScanLimits::default()
+        };
         let report = scan_worktree(tmp.path(), limits);
 
         let (path, reason) = report
@@ -696,11 +728,7 @@ mod tests {
         // secret gets written.
         let tmp = tempdir();
         write(tmp.path(), ".gitignore", b"secrets/\n*.local\n.env\n");
-        write(
-            tmp.path(),
-            "secrets/prod.pem",
-            PLANTED_PEM.as_bytes(),
-        );
+        write(tmp.path(), "secrets/prod.pem", PLANTED_PEM.as_bytes());
         write(
             tmp.path(),
             ".env",
@@ -728,7 +756,10 @@ mod tests {
             write(tmp.path(), &format!("f{index}.txt"), &[b'a'; 200]);
         }
 
-        let limits = ScanLimits { max_file_bytes: 1024, max_total_bytes: 300 };
+        let limits = ScanLimits {
+            max_file_bytes: 1024,
+            max_total_bytes: 300,
+        };
         let report = scan_worktree(tmp.path(), limits);
 
         assert_eq!(report.files_scanned, 2, "the budget stops the reading");
@@ -755,7 +786,10 @@ mod tests {
 
         let report = scan_worktree(tmp.path(), ScanLimits::default());
 
-        assert!(report.is_clean(), "the object database is out of scope: {report:?}");
+        assert!(
+            report.is_clean(),
+            "the object database is out of scope: {report:?}"
+        );
         assert_eq!(report.files_scanned, 1);
     }
 

@@ -378,7 +378,8 @@ fn refuses_in(project_root: Option<&Path>, command: &str, reason: &str, why: &st
     let answer = ask_in(envelope.path(), project_root, command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "\n\n`{command}` must be REFUSED.\n\n{why}\n\n\
          It was measured against the BUILT BINARY at this file's base commit with a fresh \
          envelope root and a walk after, and every re-parse claim behind it was confirmed \
@@ -581,11 +582,9 @@ fn the_positive_control_proves_the_walk_can_see_a_ledger_line_at_all() {
     let envelope = TempDir::new().unwrap();
     let answer = ask(envelope.path(), "gh pr create --title x");
     assert_eq!(
-        answer.code,
-        0,
+        answer.code, 0,
         "`gh pr create --title x` must be PERMITTED and COUNTED. stdout: {} stderr: {}",
-        answer.stdout,
-        answer.stderr
+        answer.stdout, answer.stderr
     );
     let written = ledger_lines_anywhere(envelope.path());
     assert_eq!(
@@ -1063,7 +1062,10 @@ fn the_permitted_half_of_the_config_axis_stays_permitted() {
             "**this axis's `ls {git,svn}-repo`.** Setting `user.name` on the command line is \
              exactly what a driven run does to make its commits attributable.",
         ),
-        ("git -c core.pager=cat log", "a K2 key, measured INERT for layer 3 in section 13"),
+        (
+            "git -c core.pager=cat log",
+            "a K2 key, measured INERT for layer 3 in section 13",
+        ),
         (
             "git -c includepath=/tmp/evil.cfg status",
             "round 8's discrimination control — a DOTLESS key naming no section at all",
@@ -1073,7 +1075,10 @@ fn the_permitted_half_of_the_config_axis_stays_permitted() {
             "round 8's discrimination control — a section that pulls nothing in",
         ),
         ("git --git-dir=/tmp/g status", "an ordinary leading option"),
-        ("git -C /tmp status", "an ordinary leading option with a separate value"),
+        (
+            "git -C /tmp status",
+            "an ordinary leading option with a separate value",
+        ),
         ("git --no-pager status", "round 7's `ls {git,svn}-repo`"),
     ] {
         permits(command, why);
@@ -1232,7 +1237,10 @@ fn rule_b_still_reports_a_severed_head_as_not_a_command_position() {
              \n  last    : {:?}\n\
              \nThe correct response is to restore the flush flag for `}}` and `)`, never to \
              delete this test.",
-            last.tokens.iter().map(|t| t.text.clone()).collect::<Vec<_>>(),
+            last.tokens
+                .iter()
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -1282,9 +1290,10 @@ fn round_5s_literalness_bit_is_non_vacuous_and_is_right_about_every_word_of_the_
     // literalness**: the guard read a correct argv, found the correct verb, decided
     // correctly that the assignment was confined — and then handed git a VALUE it
     // never re-read.
-    let bypass =
-        policy::split_segments_with_heads("git -c alias.q=\"-c include.path=/tmp/evil.cfg status\" q")
-            .expect("the bypass line splits into segments");
+    let bypass = policy::split_segments_with_heads(
+        "git -c alias.q=\"-c include.path=/tmp/evil.cfg status\" q",
+    )
+    .expect("the bypass line splits into segments");
     let bypass_tokens: Vec<(String, bool)> = bypass
         .iter()
         .flat_map(|s| s.tokens.iter())
@@ -1337,8 +1346,14 @@ fn a_redirection_operator_is_not_a_separator_and_this_round_must_not_make_it_one
         "`>` must NOT become a separator. Splitting there would hide the command being \
          redirected, which is worse than the defect it would close."
     );
-    assert!(!policy::is_separator("<"), "`<` must NOT become a separator");
-    assert!(!policy::is_separator(">>"), "`>>` must NOT become a separator");
+    assert!(
+        !policy::is_separator("<"),
+        "`<` must NOT become a separator"
+    );
+    assert!(
+        !policy::is_separator(">>"),
+        "`>>` must NOT become a separator"
+    );
     // Non-vacuity: the predicate is not constant-false.
     assert!(
         policy::is_separator("&"),
@@ -1521,7 +1536,11 @@ fn real_git_reparses_a_non_shell_alias_body_in_process_including_its_leading_opt
     //    section 4 rests on, and the reason a blanket `alias.*` refusal is
     //    undischargeable.
     assert_eq!(
-        git_says(&repo, &[], &["-c", "alias.b=!git config --get core.hooksPath", "b"]),
+        git_says(
+            &repo,
+            &[],
+            &["-c", "alias.b=!git config --get core.hooksPath", "b"]
+        ),
         "/ENV_WINS",
         "\n\n**K2 — A `!` BODY RUNS IN A CHILD THAT INHERITS THE INJECTION.** This is git's own \
          documented rule and it is a ONE-BYTE fact. Layer 3 is intact for a `!` body, which is \
@@ -1633,8 +1652,7 @@ fn real_git_reparses_a_non_shell_alias_body_in_process_including_its_leading_opt
     // -- **QUOTING: git splits an alias body with its OWN rules, not the shell's**,
     //    with the negative control that proves the dequoting really happened.
     assert!(
-        git_says(&repo, &[], &["config", "--get", "\"core.hooksPath\""])
-            .contains("invalid key"),
+        git_says(&repo, &[], &["config", "--get", "\"core.hooksPath\""]).contains("invalid key"),
         "THE DEQUOTING CONTROL: a LITERALLY quoted key is an `invalid key` error to git"
     );
     assert_eq!(
@@ -1651,7 +1669,11 @@ fn real_git_reparses_a_non_shell_alias_body_in_process_including_its_leading_opt
     // -- **THE NO-`=` SPELLING**, section 9's second recorded row, measured HARMLESS
     //    on git's side: git accepts a dotted key with no value and runs the rest.
     assert_eq!(
-        git_says(&repo, &[], &["-c", "alias.q", "config", "--get", "core.hooksPath"]),
+        git_says(
+            &repo,
+            &[],
+            &["-c", "alias.q", "config", "--get", "core.hooksPath"]
+        ),
         "/ENV_WINS",
         "`-c alias.q` with NO `=` carries NO value half at all, and real git resolves the \
          control value — **no harm on git's side**, which is why section 9 records the guard row \
@@ -1795,11 +1817,19 @@ fn every_k2_representative_is_inert_because_the_child_inherits_the_injection() {
     for (representative, args) in [
         (
             "alias.<n> with a `!` body",
-            vec!["-c".to_string(), format!("alias.b=!{dumper}"), "b".to_string()],
+            vec![
+                "-c".to_string(),
+                format!("alias.b=!{dumper}"),
+                "b".to_string(),
+            ],
         ),
         (
             "diff.external",
-            vec!["-c".to_string(), format!("diff.external={dumper}"), "diff".to_string()],
+            vec![
+                "-c".to_string(),
+                format!("diff.external={dumper}"),
+                "diff".to_string(),
+            ],
         ),
         (
             "filter.<n>.clean",
@@ -1844,7 +1874,12 @@ fn every_k2_representative_is_inert_because_the_child_inherits_the_injection() {
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "core.hooksPath")
         .env("GIT_CONFIG_VALUE_0", "/ENV_WINS")
-        .args(["-c", &format!("credential.helper=!{dumper}"), "credential", "fill"])
+        .args([
+            "-c",
+            &format!("credential.helper=!{dumper}"),
+            "credential",
+            "fill",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1911,12 +1946,19 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
     std::fs::write(work.join("a"), "x\n").unwrap();
     git_ok(&work, &["add", "a"]);
     git_ok(&work, &["commit", "-qm", "init"]);
-    git_ok(&work, &["remote", "add", "origin", upstream.to_str().unwrap()]);
+    git_ok(
+        &work,
+        &["remote", "add", "origin", upstream.to_str().unwrap()],
+    );
     git_ok(&work, &["push", "-q", "-u", "origin", "gsd-auto/alpha/w"]);
 
     for name in ["pre-push", "pre-commit"] {
         let path = hooks_dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\necho '{name}: REFUSED' >&2\nexit 1\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho '{name}: REFUSED' >&2\nexit 1\n"),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1958,7 +2000,9 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
     let before = remote_sha(&upstream);
     let ok = run(&["push", "origin", "refs/heads/gsd-auto/alpha/w"]);
     let after = remote_sha(&upstream);
-    trail.push(format!("LEG 1 CONTROL plain push: ok={ok} {before} -> {after}"));
+    trail.push(format!(
+        "LEG 1 CONTROL plain push: ok={ok} {before} -> {after}"
+    ));
     assert!(
         !ok,
         "LEG 1 CONTROL: the plain in-namespace push must be REFUSED by the `pre-push` hook the \
@@ -1972,11 +2016,17 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
 
     // -- LEG 2 CONTROL: the SAME ALIAS MECHANISM with NO carrier. **This is the
     //    sharpest control in the fixture**: it isolates the carrier from the alias.
-    run(&["config", "alias.noinc", "push origin refs/heads/gsd-auto/alpha/w"]);
+    run(&[
+        "config",
+        "alias.noinc",
+        "push origin refs/heads/gsd-auto/alpha/w",
+    ]);
     let before = remote_sha(&upstream);
     let ok = run(&["noinc"]);
     let after = remote_sha(&upstream);
-    trail.push(format!("LEG 2 CONTROL alias, no carrier: ok={ok} {before} -> {after}"));
+    trail.push(format!(
+        "LEG 2 CONTROL alias, no carrier: ok={ok} {before} -> {after}"
+    ));
     assert!(
         !ok,
         "LEG 2 CONTROL: a persisted NON-SHELL alias WITHOUT the include must still be REFUSED by \
@@ -1996,8 +2046,13 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
     let before = remote_sha(&upstream);
     let ok = run(&["p"]);
     let after = remote_sha(&upstream);
-    trail.push(format!("LEG 3 CARRIER persisted alias: ok={ok} {before} -> {after}"));
-    assert!(ok, "LEG 3: the carrier-bearing persisted alias must carry the push to COMPLETION");
+    trail.push(format!(
+        "LEG 3 CARRIER persisted alias: ok={ok} {before} -> {after}"
+    ));
+    assert!(
+        ok,
+        "LEG 3: the carrier-bearing persisted alias must carry the push to COMPLETION"
+    );
     assert_ne!(
         before, after,
         "\n\nLEG 3: **THE BARE REMOTE'S REF MUST MOVE.** before={before} after={after}\n\n\
@@ -2018,8 +2073,13 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
         "q",
     ]);
     let after = remote_sha(&upstream);
-    trail.push(format!("LEG 4 CARRIER -c alias delivery: ok={ok} {before} -> {after}"));
-    assert!(ok, "LEG 4: the `-c alias.<n>=` delivery must carry the push to COMPLETION");
+    trail.push(format!(
+        "LEG 4 CARRIER -c alias delivery: ok={ok} {before} -> {after}"
+    ));
+    assert!(
+        ok,
+        "LEG 4: the `-c alias.<n>=` delivery must carry the push to COMPLETION"
+    );
     assert_ne!(
         before, after,
         "LEG 4: and the ref must MOVE, on a SINGLE line the guard permits at exit 0. \
@@ -2034,7 +2094,13 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
         "LEG 5 CONTROL: the control commit must be REFUSED by the `pre-commit` hook"
     );
     assert!(
-        run(&["-c", &format!("include.path={evil}"), "commit", "-qam", "c4"]),
+        run(&[
+            "-c",
+            &format!("include.path={evil}"),
+            "commit",
+            "-qam",
+            "c4"
+        ]),
         "LEG 5: and the same commit under the carrier must SUCCEED"
     );
     let head_after = git_says(&work, &[], &["rev-parse", "HEAD"]);
@@ -2055,12 +2121,16 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
     run(&[
         "config",
         "alias.bang",
-        &format!("!git -c include.path={evil} push --force origin HEAD:refs/heads/gsd-auto/alpha/w"),
+        &format!(
+            "!git -c include.path={evil} push --force origin HEAD:refs/heads/gsd-auto/alpha/w"
+        ),
     ]);
     let before = remote_sha(&upstream);
     let ok = run(&["bang"]);
     let after = remote_sha(&upstream);
-    trail.push(format!("T-19-86 `!` pair (NOT CLOSED): ok={ok} {before} -> {after}"));
+    trail.push(format!(
+        "T-19-86 `!` pair (NOT CLOSED): ok={ok} {before} -> {after}"
+    ));
     assert!(
         ok && before != after,
         "\n\n**`T-19-86` IS RECORDED, NOT CLOSED — AND THIS ROW SAYS SO MECHANICALLY.**\n\n\
@@ -2075,7 +2145,10 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
          `tests/envelope_config_resolution.rs:1539-1543` red. before={before} after={after}"
     );
 
-    println!("END-TO-END, reproduced independently of audit 8:\n  {}", trail.join("\n  "));
+    println!(
+        "END-TO-END, reproduced independently of audit 8:\n  {}",
+        trail.join("\n  ")
+    );
 }
 
 // ===========================================================================
@@ -2254,10 +2327,7 @@ fn after_19_25_region_2_refuses_the_persisted_definition_and_permits_the_read() 
             "git config --unset alias.p",
             "a REMOVAL persists no body, so there is nothing for git to re-parse later",
         ),
-        (
-            "git config --list",
-            "the whole-file read",
-        ),
+        ("git config --list", "the whole-file read"),
     ] {
         permits(command, why);
     }

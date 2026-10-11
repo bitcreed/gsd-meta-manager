@@ -48,7 +48,6 @@ fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
         .expect("a visible test literal is a payload")
 }
 
-
 /// The stand-in that records its own `$PWD` before emitting a single stream
 /// byte. Checked in by plan 17-01 for exactly this test.
 const FAKE_CWD: &str = concat!(

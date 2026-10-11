@@ -338,8 +338,7 @@ mod tests {
         const MEASURE: Duration = Duration::from_secs(2);
         const MIN_FRAMES: usize = 20;
 
-        let mut terminal =
-            Terminal::new(TestBackend::new(120, 40)).expect("TestBackend terminal");
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("TestBackend terminal");
         let (_act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
         let (exec_tx, mut exec_rx) = mpsc::channel::<ExecEvent>(EXEC_CHANNEL_CAPACITY);
 

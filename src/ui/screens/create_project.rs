@@ -113,8 +113,9 @@ impl Screen for CreateProjectScreen {
     }
 
     fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
-        confirm_popup::click_as_key(&self.popup, input)
-            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
+        confirm_popup::click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
     }
 
     fn name(&self) -> &str {
@@ -350,7 +351,11 @@ mod tests {
         t.draw(|f| screen.render(f, f.area(), ctx)).unwrap();
         let buf = t.backend().buffer();
         (0..30u16)
-            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -384,14 +389,20 @@ mod tests {
         assert_eq!(screen.popup.focus, confirm_popup::ConfirmFocus::Yes);
         let act = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(act, ScreenAction::None));
-        assert_eq!(ctx.error_message.as_deref(), Some("Event channel not available."));
+        assert_eq!(
+            ctx.error_message.as_deref(),
+            Some("Event channel not available.")
+        );
     }
 
     #[test]
     fn y_n_esc_and_focus_moves_keep_working() {
         let (mut screen, mut ctx) = confirm_screen("fresh");
         screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(ctx.error_message.as_deref(), Some("Event channel not available."));
+        assert_eq!(
+            ctx.error_message.as_deref(),
+            Some("Event channel not available.")
+        );
 
         for code in [KeyCode::Char('n'), KeyCode::Esc] {
             let (mut screen, mut ctx) = confirm_screen("fresh");
@@ -414,27 +425,51 @@ mod tests {
         let click = |screen: &CreateProjectScreen, ctx: &AppContext, label: &str| {
             let (column, row) =
                 confirm_popup::locate(&rows(screen, ctx), label).expect("button drawn");
-            MouseInput::Click { column, row, double: false }
+            MouseInput::Click {
+                column,
+                row,
+                double: false,
+            }
         };
         let (mut screen, mut ctx) = confirm_screen("fresh");
-        let stray = MouseInput::Click { column: 0, row: 0, double: false };
-        assert!(matches!(screen.handle_mouse(stray, &mut ctx), ScreenAction::None));
+        let stray = MouseInput::Click {
+            column: 0,
+            row: 0,
+            double: false,
+        };
+        assert!(matches!(
+            screen.handle_mouse(stray, &mut ctx),
+            ScreenAction::None
+        ));
         let c = click(&screen, &ctx, "[ No ]");
-        assert!(matches!(screen.handle_mouse(c, &mut ctx), ScreenAction::Pop));
+        assert!(matches!(
+            screen.handle_mouse(c, &mut ctx),
+            ScreenAction::Pop
+        ));
         assert!(ctx.error_message.is_none());
 
         let (mut screen, mut ctx) = confirm_screen("fresh");
         let c = click(&screen, &ctx, "[ Yes ]");
         screen.handle_mouse(c, &mut ctx);
-        assert_eq!(ctx.error_message.as_deref(), Some("Event channel not available."));
+        assert_eq!(
+            ctx.error_message.as_deref(),
+            Some("Event channel not available.")
+        );
     }
 
     #[test]
     fn name_phase_ignores_clicks() {
         let mut ctx = crate::ui::screens::tests::ctx_with_aliases(&["demo"]);
         let mut screen = CreateProjectScreen::new_name();
-        let c = MouseInput::Click { column: 5, row: 5, double: false };
-        assert!(matches!(screen.handle_mouse(c, &mut ctx), ScreenAction::None));
+        let c = MouseInput::Click {
+            column: 5,
+            row: 5,
+            double: false,
+        };
+        assert!(matches!(
+            screen.handle_mouse(c, &mut ctx),
+            ScreenAction::None
+        ));
         assert!(matches!(screen.phase, CreatePhase::Name));
     }
 }

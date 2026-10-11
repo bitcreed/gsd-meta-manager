@@ -223,8 +223,7 @@ fn the_command_matcher_fires_on_an_offending_snippet_and_spares_a_clean_one() {
     );
 
     let clean: Vec<String> = vec![
-        "    // Never `/gsd-complete-milestone`: it ends in an interactive prompt."
-            .to_string(),
+        "    // Never `/gsd-complete-milestone`: it ends in an interactive prompt.".to_string(),
         "    /// `/gsd-autonomous` would be the driver driving a driver.".to_string(),
         "    let command = row.action.command_for(target_phase);".to_string(),
     ];
@@ -415,7 +414,11 @@ fn every_empty_input_shape_parks_naming_what_was_observed_and_never_commands() {
 
     for (label, state, expected_detail) in [
         ("empty phases vector", no_phases, "20"),
-        ("phase map lacks the target key", absent_key, OBSERVED_NO_INFERENCE),
+        (
+            "phase map lacks the target key",
+            absent_key,
+            OBSERVED_NO_INFERENCE,
+        ),
         ("empty phase map", empty_map, OBSERVED_NO_INFERENCE),
     ] {
         let decision = decide(&state, "20");

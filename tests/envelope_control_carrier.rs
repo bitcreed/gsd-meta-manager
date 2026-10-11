@@ -354,7 +354,8 @@ fn refuses_carrier(make: impl Fn(&Path) -> String, reason: &str, why: &str) {
     let answer = ask(envelope.path(), &command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "\n\n`{command}` must be REFUSED.\n\n{why}\n\n{CARRIER_OPERAND_DERIVATION}\n\n\
          It was measured against the BUILT BINARY at this file's base commit with a fresh \
          envelope root and a walk after.\n  stdout: {}\n  stderr: {}\nWalked listing:\n{}",
@@ -432,7 +433,12 @@ fn record_only(label: &str, make: impl Fn(&Path) -> String) {
         if answer.reason().is_empty() {
             "(a permit answers nothing at all)".to_string()
         } else {
-            answer.reason().lines().next().unwrap_or_default().to_string()
+            answer
+                .reason()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string()
         },
         listing(envelope.path())
     );
@@ -798,7 +804,8 @@ fn direction_iii_a_symlink_stays_permitted_and_its_measured_partial_mitigation_i
 }
 
 #[test]
-fn direction_iv_a_relative_operand_stays_permitted_and_its_measured_partial_mitigation_is_refused() {
+fn direction_iv_a_relative_operand_stays_permitted_and_its_measured_partial_mitigation_is_refused()
+{
     // **DIRECTION (iv).** The guard does not know the command's working
     // directory. `guard_in` takes a `project_root: Option<&Path>` from
     // `PROJECT_ROOT_ENV`, which is the JOURNAL locator and not the shell's cwd,
@@ -889,7 +896,10 @@ fn the_ordinary_operand_half_stays_permitted_before_and_after() {
         ("truncate -s 0 /tmp/f", "an ordinary truncation"),
         ("cat /tmp/x", "an ordinary read"),
         ("ls", "the command the `Ungoverned` doc names by hand"),
-        ("cargo test", "the command the `Ungoverned` doc names by hand"),
+        (
+            "cargo test",
+            "the command the `Ungoverned` doc names by hand",
+        ),
         (
             "rg pr-ledger.ndjson src/",
             "a SEARCH PATTERN that MENTIONS a carrier filename. It is not a path the command \
@@ -1121,7 +1131,12 @@ fn no_repo_side_row_is_asserted_and_this_file_says_so_mechanically() {
         .find("fn no_repo_side_row_is_asserted_and_this_file_says_so_mechanically")
         .expect("this function exists in this file");
     let body = &SELF[start..end];
-    for banned in ["assert!", "assert_eq!", "refuses_carrier(", "permits_carrier("] {
+    for banned in [
+        "assert!",
+        "assert_eq!",
+        "refuses_carrier(",
+        "permits_carrier(",
+    ] {
         assert!(
             !body.contains(banned),
             "\n\n**A REPO-SIDE ROW HAS BEEN ASSERTED.**\n\n\
@@ -1157,12 +1172,15 @@ fn c05_the_generated_gitconfig_is_a_carrier_and_the_measurement_is_recorded() {
     // reasoning about the case that is not the threat. **RECORDED. NOT
     // un-accepted: un-accepting a risk is a human decision and no plan makes
     // it.**
-    record_only("C-05 write [credential] helper into the generated gitconfig", |root| {
-        format!(
-            "printf '[credential]\\n\\thelper = /tmp/evil\\n' >> {}/alpha/gitconfig",
-            root.display()
-        )
-    });
+    record_only(
+        "C-05 write [credential] helper into the generated gitconfig",
+        |root| {
+            format!(
+                "printf '[credential]\\n\\thelper = /tmp/evil\\n' >> {}/alpha/gitconfig",
+                root.display()
+            )
+        },
+    );
     record_only("C-05 copy over the generated gitconfig", |root| {
         format!("cp /tmp/evil {}/alpha/gitconfig", root.display())
     });
@@ -1244,9 +1262,10 @@ fn c07_the_gh_config_directory_is_a_carrier_and_the_measurement_is_recorded() {
     // terms: "an empty directory is a client that knows about no host and holds
     // no token — which is the whole intent". A written `hosts.yml` falsifies
     // `SECTION_ENVELOPE`'s FIRST `Guaranteed` clause.
-    record_only("C-07 write hosts.yml into the empty gh/ directory", |root| {
-        format!("printf x > {}/alpha/gh/hosts.yml", root.display())
-    });
+    record_only(
+        "C-07 write hosts.yml into the empty gh/ directory",
+        |root| format!("printf x > {}/alpha/gh/hosts.yml", root.display()),
+    );
     record_only("C-07 copy hosts.yml into the empty gh/ directory", |root| {
         format!("cp /tmp/hosts.yml {}/alpha/gh/hosts.yml", root.display())
     });
@@ -1470,7 +1489,10 @@ fn c15_the_registry_config_disarms_the_pr_cap_with_no_ledger_write_at_all() {
     replaced_trail.push(">>> the config file is REPLACED mid-run <<<".to_string());
     for call in 3..=4 {
         let answer = ask_full(replaced.path(), &config, None, "gh pr create --title x");
-        replaced_trail.push(format!("call {call} (after replacement): exit={}", answer.code));
+        replaced_trail.push(format!(
+            "call {call} (after replacement): exit={}",
+            answer.code
+        ));
     }
 
     println!(
@@ -1567,16 +1589,16 @@ fn the_t_19_112_cap_reset_is_driven_end_to_end_in_one_persistent_root() {
     // then PERFORMED — because the drive is about what happens to the cap after
     // the file is gone, and the guard's verdict on the deletion is section 1's
     // row rather than this one's.
-    let deletion = ask(
-        envelope.path(),
-        &format!("rm -f {}", ledger.display()),
-    );
+    let deletion = ask(envelope.path(), &format!("rm -f {}", ledger.display()));
     trail.push(format!(
         "guard verdict on `rm -f <ledger>`: exit={}",
         deletion.code
     ));
     let _ = std::fs::remove_file(&ledger);
-    trail.push(format!("deletion PERFORMED: ledger is now {}", lines(&ledger)));
+    trail.push(format!(
+        "deletion PERFORMED: ledger is now {}",
+        lines(&ledger)
+    ));
 
     let fourth = ask(envelope.path(), "gh pr create --title x");
     trail.push(format!(
@@ -1656,12 +1678,19 @@ fn the_t_19_111_bare_remote_legs_are_rebuilt_and_re_measured_with_a_control_each
     std::fs::write(work.join("a"), "one\n").unwrap();
     git_ok(&work, &["add", "a"]);
     git_ok(&work, &["commit", "-qm", "one"]);
-    git_ok(&work, &["remote", "add", "origin", upstream.to_str().unwrap()]);
+    git_ok(
+        &work,
+        &["remote", "add", "origin", upstream.to_str().unwrap()],
+    );
     git_ok(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
 
     for name in ["pre-push", "pre-commit"] {
         let path = hooks_dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\necho '{name}: REFUSED' >&2\nexit 1\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho '{name}: REFUSED' >&2\nexit 1\n"),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1672,7 +1701,11 @@ fn the_t_19_111_bare_remote_legs_are_rebuilt_and_re_measured_with_a_control_each
     let evil = dir.path().join("evil.cfg");
     let nowhere = dir.path().join("no-hooks-here");
     std::fs::create_dir_all(&nowhere).unwrap();
-    std::fs::write(&evil, format!("[core]\n\thooksPath = {}\n", nowhere.display())).unwrap();
+    std::fs::write(
+        &evil,
+        format!("[core]\n\thooksPath = {}\n", nowhere.display()),
+    )
+    .unwrap();
 
     let run = |args: &[&str]| -> bool {
         std::process::Command::new("git")
@@ -1813,7 +1846,10 @@ fn the_t_19_111_bare_remote_legs_are_rebuilt_and_re_measured_with_a_control_each
          a fact about the STUB rather than about the fixture drifting. ok={ok} {before} -> {after}"
     );
 
-    println!("MEASURED [T-19-111 / T-19-113 bare-remote legs]\n  {}", trail.join("\n  "));
+    println!(
+        "MEASURED [T-19-111 / T-19-113 bare-remote legs]\n  {}",
+        trail.join("\n  ")
+    );
 }
 
 // ===========================================================================
@@ -2207,8 +2243,8 @@ fn a_carrier_operand_beside_a_hooks_path_assignment_answers_the_carrier_clause_a
 }
 
 #[test]
-fn after_19_27_a_governed_program_touching_a_carrier_is_refused_and_an_ungoverned_placement_misses_it()
-{
+fn after_19_27_a_governed_program_touching_a_carrier_is_refused_and_an_ungoverned_placement_misses_it(
+) {
     // **THE ROW THAT EXISTS TO TURN A MIS-PLACED RULE RED.** Both spellings below
     // resolve `Governed` — `git config` and `git status` are programs this
     // envelope governs — so a rule written into the `NoProgram | Ungoverned` arm

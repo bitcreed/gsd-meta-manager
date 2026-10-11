@@ -456,9 +456,13 @@ fn file_relative_position(
     if body_line == 0 {
         return None;
     }
-    let file_line = body_line.checked_add(first_body_file_line)?.checked_sub(1)?;
+    let file_line = body_line
+        .checked_add(first_body_file_line)?
+        .checked_sub(1)?;
     // The last nameable line of the block, in file coordinates.
-    let last_file_line = body_lines.checked_add(first_body_file_line)?.checked_sub(1)?;
+    let last_file_line = body_lines
+        .checked_add(first_body_file_line)?
+        .checked_sub(1)?;
     if file_line > last_file_line {
         return None;
     }
@@ -622,7 +626,10 @@ fn repair_line(line: &str) -> Option<String> {
         return None;
     }
     let opener = value.chars().next()?;
-    if matches!(opener, '"' | '\'' | '|' | '>' | '[' | '{' | '&' | '*' | '!' | '#') {
+    if matches!(
+        opener,
+        '"' | '\'' | '|' | '>' | '[' | '{' | '&' | '*' | '!' | '#'
+    ) {
         return None;
     }
     // A value with none of these is a legal plain scalar; rewriting it would
@@ -862,8 +869,10 @@ mod tests {
 
     #[test]
     fn a_version_from_a_newer_gsd_is_read_not_refused() {
-        let fm = parse_state_md("---\ngsd_state_version: \"2.4\"\nstatus: executing\ncurrent_phase: 7\n---\n")
-            .expect("an unrecognised version must not abort the parse");
+        let fm = parse_state_md(
+            "---\ngsd_state_version: \"2.4\"\nstatus: executing\ncurrent_phase: 7\n---\n",
+        )
+        .expect("an unrecognised version must not abort the parse");
         let v = fm.gsd_state_version.as_ref().unwrap();
         assert_eq!(v.raw(), "2.4");
         assert!(v.is_newer_than_supported());
@@ -1070,8 +1079,7 @@ mod tests {
         let value: Value = serde_yml::from_str(&repaired).expect("the repair must reparse");
         let map = value.as_mapping().expect("a mapping");
         assert_eq!(
-            map.get("stopped_at")
-                .and_then(Value::as_str),
+            map.get("stopped_at").and_then(Value::as_str),
             Some("a. Earlier: b"),
             "the value must round-trip with its colon intact"
         );
@@ -1282,9 +1290,10 @@ mod tests {
     /// byte-identical because the function declined every line in it.
     #[test]
     fn the_repair_is_a_no_op_on_every_valid_frontmatter_this_module_knows() {
-        let own_state_md =
-            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".planning/STATE.md"))
-                .ok();
+        let own_state_md = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".planning/STATE.md"),
+        )
+        .ok();
         let mut fixtures: Vec<(&str, &str)> = vec![
             ("REAL_GSD_STATE_MD", REAL_GSD_STATE_MD),
             (
@@ -1342,7 +1351,11 @@ mod tests {
         assert_eq!(count, 1);
         let parsed: Value = serde_yml::from_str(&repaired).expect("the repair must reparse");
         assert_eq!(
-            parsed.as_mapping().unwrap().get("stopped_at").and_then(Value::as_str),
+            parsed
+                .as_mapping()
+                .unwrap()
+                .get("stopped_at")
+                .and_then(Value::as_str),
             Some(value),
             "every character must come back exactly as it went in"
         );

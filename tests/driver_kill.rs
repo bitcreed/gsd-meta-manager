@@ -143,8 +143,8 @@ impl Fixture {
 
     fn journal(&self, run_id: &str) -> PathBuf {
         gsd_meta_manager::journal::run_paths(&self.planning(), run_id)
-        .expect("the fixture run id is a plain path component")
-        .journal
+            .expect("the fixture run id is a plain path component")
+            .journal
     }
 }
 
@@ -187,7 +187,9 @@ fn spawn_detached_driver(fixture: &Fixture, run_id: &str) -> u32 {
     cmd.kill_on_drop(false);
     cmd.as_std_mut().process_group(0);
 
-    let child = cmd.spawn().expect("the driver binary is built and spawnable");
+    let child = cmd
+        .spawn()
+        .expect("the driver binary is built and spawnable");
     let pid = child.id().expect("a freshly spawned child has a pid");
     drop(child);
     pid
@@ -512,8 +514,8 @@ async fn the_adopted_arm_confirms_death_by_probing_proc_rather_than_by_wait() {
     assert!(
         recorded_within(
             &gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
-        .expect("the fixture run id is a plain path component")
-        .run_json,
+                .expect("the fixture run id is a plain path component")
+                .run_json,
             STARTUP_LIMIT
         )
         .await,
@@ -607,11 +609,10 @@ async fn a_stopped_run_leaves_a_terminal_record_and_a_released_lock() {
     // record; a stop that skipped its terminal write would be indistinguishable
     // from one, and `src/driver/reconcile.rs` would report every stopped run as
     // crashed on the next scan.
-    let ended_at = after
-        .get("ended_at")
-        .and_then(|v| v.as_str())
-        .expect("a stopped run must carry an ended_at — without it the stop is \
-                 indistinguishable on disk from a crash (D-06.3, D-12)");
+    let ended_at = after.get("ended_at").and_then(|v| v.as_str()).expect(
+        "a stopped run must carry an ended_at — without it the stop is \
+                 indistinguishable on disk from a crash (D-06.3, D-12)",
+    );
     assert!(!ended_at.is_empty());
 
     assert_eq!(
@@ -630,11 +631,9 @@ async fn a_stopped_run_leaves_a_terminal_record_and_a_released_lock() {
         records.iter().map(|r| &r.kind).collect::<Vec<_>>()
     );
     assert!(
-        records
-            .iter()
-            .any(|record| record.kind == "diagnostic"
-                && record.rest.get("code").and_then(|v| v.as_str())
-                    == Some("terminate_signal_shutdown")),
+        records.iter().any(|record| record.kind == "diagnostic"
+            && record.rest.get("code").and_then(|v| v.as_str())
+                == Some("terminate_signal_shutdown")),
         "the reason must survive alongside the ending, or a later reader can see \
          that a run was killed but not that a terminate signal is what arrived"
     );
@@ -650,10 +649,9 @@ async fn a_stopped_run_leaves_a_terminal_record_and_a_released_lock() {
     // which happens **after** the terminal write. A fresh acquire from this
     // process is the only way to prove the release actually happened — the file
     // still exists either way, so its presence proves nothing.
-    let reacquired = lock::acquire(&fixture.planning(), "a-later-run", std::process::id())
-        .expect(
-            "the stopped run must have released its lock, or the project is \
+    let reacquired = lock::acquire(&fixture.planning(), "a-later-run", std::process::id()).expect(
+        "the stopped run must have released its lock, or the project is \
              permanently unstartable until the machine is rebooted (D-20.2)",
-        );
+    );
     drop(reacquired);
 }

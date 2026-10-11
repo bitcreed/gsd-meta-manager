@@ -403,6 +403,9 @@ fn both_hooks_are_generated_and_neither_carries_policy_logic() {
                  carries policy an agent can rewrite invisibly (D-04):\n{body}"
             );
         }
-        assert!(body.contains(BIN), "the {hook} stub must exec the binary:\n{body}");
+        assert!(
+            body.contains(BIN),
+            "the {hook} stub must exec the binary:\n{body}"
+        );
     }
 }

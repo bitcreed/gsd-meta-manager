@@ -626,7 +626,12 @@ mod tests {
 
     #[test]
     fn hook_and_retry_subtypes_absorb_into_the_catch_all_too() {
-        for subtype in ["hook_started", "hook_response", "api_retry", "task_progress"] {
+        for subtype in [
+            "hook_started",
+            "hook_response",
+            "api_retry",
+            "task_progress",
+        ] {
             let raw = format!(r#"{{"type":"system","subtype":"{subtype}","session_id":"s"}}"#);
             match parse_line(&raw) {
                 Envelope::Parsed {
@@ -738,10 +743,15 @@ mod tests {
     #[test]
     fn fixture_02_budget_envelope_has_no_result_and_a_populated_errors_array() {
         let results = results(T02);
-        let envelope = results.first().expect("the budget transcript has one result");
+        let envelope = results
+            .first()
+            .expect("the budget transcript has one result");
 
         assert_eq!(envelope.subtype, "error_max_budget_usd");
-        assert_eq!(envelope.terminal_reason.as_deref(), Some("budget_exhausted"));
+        assert_eq!(
+            envelope.terminal_reason.as_deref(),
+            Some("budget_exhausted")
+        );
         assert!(
             envelope.result.is_none(),
             "result is absent on error envelopes and must not default to empty: {:?}",
@@ -786,7 +796,8 @@ mod tests {
 
     #[test]
     fn a_user_message_omitting_the_replay_marker_parses_with_it_false() {
-        let raw = r#"{"type":"user","message":{"role":"user","content":[]},"session_id":"s","uuid":"u"}"#;
+        let raw =
+            r#"{"type":"user","message":{"role":"user","content":[]},"session_id":"s","uuid":"u"}"#;
         match parse_line(raw) {
             Envelope::Parsed {
                 msg: StreamMessage::User(turn),

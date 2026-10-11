@@ -289,7 +289,8 @@ fn refuses_carrier(make: impl Fn(&Path) -> String, reason: &str, why: &str) {
     let answer = ask(envelope.path(), &command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "\n\n`{command}` must be REFUSED.\n\n{why}\n\n\
          It was measured against the BUILT BINARY at this file's base commit with a fresh \
          envelope root and a walk after.\n  stdout: {}\n  stderr: {}\nWalked listing:\n{}",
@@ -363,7 +364,12 @@ fn record_only(label: &str, make: impl Fn(&Path) -> String) {
         if answer.reason().is_empty() {
             "(a permit answers nothing at all)".to_string()
         } else {
-            answer.reason().lines().next().unwrap_or_default().to_string()
+            answer
+                .reason()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string()
         },
         listing(envelope.path())
     );
@@ -633,7 +639,12 @@ fn the_binary_carriers_verdict_preserving_spellings_stay_permitted_before_and_af
          that expanded it would need the environment — which the guard is forbidden.",
     );
     permits_carrier(
-        |_| format!("cd {} && cp /bin/true gsd-meta-manager", this_binary_parent().display()),
+        |_| {
+            format!(
+                "cd {} && cp /bin/true gsd-meta-manager",
+                this_binary_parent().display()
+            )
+        },
         "direction (iv) over the BINARY: segment 2's operand is RELATIVE and the guard has no \
          cwd. **Segment 1 is NOT a partial mitigation here, and that is the difference from \
          the envelope root**: `cd <ENV>/alpha` names an envelope path as `cd`'s own operand and \
@@ -667,21 +678,18 @@ fn whether_current_exe_agrees_with_the_baked_path_is_measured_and_not_assumed() 
     // `19-29` writes no rule for it — following a link means
     // `readlink`/`canonicalize` on the guard's critical path, which
     // `hooks.rs:771-816` forbids.
-    let installed = hooks::install_in(
-        TempDir::new().unwrap().path(),
-        ALIAS,
-        &this_binary(),
-    );
+    let installed = hooks::install_in(TempDir::new().unwrap().path(), ALIAS, &this_binary());
     assert!(
         installed.is_ok(),
         "the fixture must be able to install a stub naming the running binary: {installed:?}"
     );
 
     let exe = this_binary();
-    let canonical = std::fs::canonicalize(&exe)
-        .expect("the running binary exists and canonicalizes");
+    let canonical =
+        std::fs::canonicalize(&exe).expect("the running binary exists and canonicalizes");
     assert_eq!(
-        exe, canonical,
+        exe,
+        canonical,
         "\n\n**`std::env::current_exe()` MUST ALREADY BE THE RESOLVED PATH.**\n\
          \n  current_exe() : {}\
          \n  canonicalized : {}\n\n\
@@ -783,11 +791,20 @@ fn the_t_19_116_binary_replacement_is_driven_end_to_end_with_a_control_on_both_s
     let remote = root.join("remote.git");
     let work = root.join("work");
     std::fs::create_dir_all(&work).unwrap();
-    git_ok(root, &["init", "--bare", "-q", &remote.display().to_string()]);
-    git_ok(root, &["init", "-q", "-b", "main", &work.display().to_string()]);
+    git_ok(
+        root,
+        &["init", "--bare", "-q", &remote.display().to_string()],
+    );
+    git_ok(
+        root,
+        &["init", "-q", "-b", "main", &work.display().to_string()],
+    );
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
-    git_ok(&work, &["remote", "add", "origin", &remote.display().to_string()]);
+    git_ok(
+        &work,
+        &["remote", "add", "origin", &remote.display().to_string()],
+    );
     git_ok(&work, &["push", "-q", "origin", "main"]);
     git_ok(&work, &["checkout", "-q", "-b", "gsd-auto/alpha/w"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "three"]);
@@ -1013,7 +1030,8 @@ fn git_under_envelope_posture(
 /// token into a file on disk — applies to this corpus exactly as it applies to
 /// the ledger.
 fn fill_returned_the_ambient_secret(text: &str, username: &str) -> bool {
-    text.lines().any(|line| line == format!("username={username}"))
+    text.lines()
+        .any(|line| line == format!("username={username}"))
         && text.lines().any(|line| line.starts_with("password="))
 }
 
@@ -1197,7 +1215,6 @@ fn after_19_29_a_redirection_that_writes_the_generated_gitconfig_is_refused() {
             ),
         );
     }
-
 }
 
 #[test]
@@ -1207,12 +1224,7 @@ fn the_four_operand_spellings_of_the_same_write_are_already_reached_and_the_cont
     // rows and nothing else.** These four are the proof that the gap is the
     // DIRECTION and not the file: the same bytes reaching the same path by an
     // OPERAND are already refused today.
-    for spelling in [
-        "cp /tmp/evil.cfg",
-        "sed -i 's/x/y/'",
-        "tee -a",
-        "shred -u",
-    ] {
+    for spelling in ["cp /tmp/evil.cfg", "sed -i 's/x/y/'", "tee -a", "shred -u"] {
         let spelling = spelling.to_string();
         refuses_carrier(
             |root| format!("{spelling} {}/alpha/gitconfig", root.display()),
@@ -1298,8 +1310,10 @@ fn the_empty_credential_helper_candidate_control_is_measured_and_recorded_and_ne
         ("credential.helper", ""),
     ];
 
-    for (label, pairs) in [("NO injected pair (control)", &today), ("EMPTY-helper pair", &candidate)]
-    {
+    for (label, pairs) in [
+        ("NO injected pair (control)", &today),
+        ("EMPTY-helper pair", &candidate),
+    ] {
         let (get_code, get_text) = git_under_envelope_posture(
             &home,
             &gitconfig,
@@ -1475,7 +1489,10 @@ fn direction_v_a_tilde_spelling_stays_permitted_and_its_absolute_literal_twin_is
         ),
         (
             format!("cp /bin/true ~/{ENVELOPE_ROOT_RELATIVE_TO_HOME}/{ALIAS}/hooks/pre-push"),
-            format!("cp /bin/true {}/{ALIAS}/hooks/pre-push", real_root.display()),
+            format!(
+                "cp /bin/true {}/{ALIAS}/hooks/pre-push",
+                real_root.display()
+            ),
             true,
         ),
         (
@@ -1521,7 +1538,9 @@ fn direction_v_a_tilde_spelling_stays_permitted_and_its_absolute_literal_twin_is
                 twin_answer.stdout
             );
             assert!(
-                twin_answer.reason().contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
+                twin_answer
+                    .reason()
+                    .contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
                 "the twin must be refused under `{}`, got: {}",
                 policy::REASON_ENVELOPE_ASSERTION_FAILED,
                 twin_answer.reason()
@@ -1709,7 +1728,10 @@ fn bash_really_reaches_the_file_for_each_spelling_and_where_it_does_not_that_is_
         &format!("rm -rf ~/{ENVELOPE_ROOT_RELATIVE_TO_HOME}/{ALIAS}"),
     );
     assert!(
-        !home.join(ENVELOPE_ROOT_RELATIVE_TO_HOME).join(ALIAS).exists(),
+        !home
+            .join(ENVELOPE_ROOT_RELATIVE_TO_HOME)
+            .join(ALIAS)
+            .exists(),
         "\n\n**THE TILDE SPELLING MUST REACH THE FILE.**\n\
          If bash did not resolve `~/{ENVELOPE_ROOT_RELATIVE_TO_HOME}/{ALIAS}`, the guard's \
          permit costs nothing and `T-19-115`'s direction (v) is not a bypass. This leg is what \
@@ -1928,7 +1950,10 @@ fn after_19_29_t_19_117s_unbounded_work_is_bounded_and_the_forge_split_is_unchan
         }
         curve.push(row);
     }
-    println!("T-19-117 LATENCY CURVE (in-process `guard_in`):\n{}", curve.join("\n"));
+    println!(
+        "T-19-117 LATENCY CURVE (in-process `guard_in`):\n{}",
+        curve.join("\n")
+    );
 
     // -- **THE ASSERTION, POST-FIX.** At this plan's base, a 202,000,000-byte
     //    ledger cost `gh pr create --title x` **7,900 ms against a 5,000 ms
@@ -2119,7 +2144,8 @@ fn after_19_29_a_ledger_past_the_size_bound_refuses_while_one_just_under_it_stil
     let (_, over_bytes) = build_ledger(over.path(), OVER_BYTES / per_line);
     let answer = ask(over.path(), "gh pr create --title x");
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "\n\n**A LEDGER PAST THE SIZE BOUND MUST BE REFUSED.** {over_bytes} bytes against a \
          derived bound of 8 MiB.\n\n\
          `record_and_check_in` reads the ledger WHOLE on the guard's registered critical path \
@@ -2130,7 +2156,9 @@ fn after_19_29_a_ledger_past_the_size_bound_refuses_while_one_just_under_it_stil
         answer.stdout
     );
     assert!(
-        answer.reason().contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
+        answer
+            .reason()
+            .contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
         "the over-bound refusal must carry `{}` and NOT `pr_cap_exceeded`, which names a \
          mechanism this refusal does not use (D-24). Got: {}",
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
@@ -2507,7 +2535,12 @@ fn after_19_29_the_injected_empty_helper_defends_a_spelling_no_path_rule_reaches
     let produced = cred::hooks_path_env(&hooks_dir);
     let produced: Vec<(String, String)> = produced
         .iter()
-        .map(|(k, v)| (k.to_string_lossy().to_string(), v.to_string_lossy().to_string()))
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().to_string(),
+                v.to_string_lossy().to_string(),
+            )
+        })
         .collect();
     let landed: Vec<(&str, &str)> = (0..)
         .map_while(|index| {
@@ -2752,19 +2785,24 @@ fn the_guard_level_twins_of_the_segment_count_pins_are_unchanged() {
 
 #[test]
 fn the_repo_side_and_planner_derived_rows_are_recorded_and_never_asserted() {
-    record_only("C-11 `.git/config` — T-19-111, no rule, five-site attribution done", |_| {
-        "printf '[alias]\\n\\tfp = push --force origin HEAD:refs/heads/main\\n' >> .git/config"
-            .to_string()
-    });
+    record_only(
+        "C-11 `.git/config` — T-19-111, no rule, five-site attribution done",
+        |_| {
+            "printf '[alias]\\n\\tfp = push --force origin HEAD:refs/heads/main\\n' >> .git/config"
+                .to_string()
+        },
+    );
     record_only("C-11 `.git/config` — the operand spelling", |_| {
         "sed -i s/x/y/ .git/config".to_string()
     });
-    record_only("C-12 `.claude/settings.json` — layer 1's own registration", |_| {
-        "printf x >> .claude/settings.json".to_string()
-    });
-    record_only("C-13 `.git/info/exclude` — D-23, the sweep's ignore block", |_| {
-        "rm -f /tmp/proj/.git/info/exclude".to_string()
-    });
+    record_only(
+        "C-12 `.claude/settings.json` — layer 1's own registration",
+        |_| "printf x >> .claude/settings.json".to_string(),
+    );
+    record_only(
+        "C-13 `.git/info/exclude` — D-23, the sweep's ignore block",
+        |_| "rm -f /tmp/proj/.git/info/exclude".to_string(),
+    );
     record_only("C-14 the run journal — D-24/D-25 park EVIDENCE", |_| {
         "rm -rf /tmp/proj/.planning/meta-manager/runs/run-1".to_string()
     });
@@ -2776,7 +2814,10 @@ fn the_repo_side_and_planner_derived_rows_are_recorded_and_never_asserted() {
          rather than a spelling of `T-19-112`, and **no `pr_cap_*` clamp is proposed or \
          written — clamping a configured cap is a PRODUCT decision about what a user may \
          configure, not a guard rule**",
-        |_| "printf '{\"pr_cap_per_24h\":9999}' > ~/.config/gsd-meta-manager/config.json".to_string(),
+        |_| {
+            "printf '{\"pr_cap_per_24h\":9999}' > ~/.config/gsd-meta-manager/config.json"
+                .to_string()
+        },
     );
     record_only(
         "C-08 `settings.json` — the BEHAVIOURAL half. Whether the agent CLI re-reads its \
@@ -2808,7 +2849,9 @@ fn no_repo_side_or_candidate_row_is_asserted_and_this_file_says_so_mechanically(
     // in this phase carries one: an absence assertion cannot tell "the string is
     // not in this file" from "this is not the file I think it is".
     assert!(
-        THIS_FILE.contains("fn no_repo_side_or_candidate_row_is_asserted_and_this_file_says_so_mechanically"),
+        THIS_FILE.contains(
+            "fn no_repo_side_or_candidate_row_is_asserted_and_this_file_says_so_mechanically"
+        ),
         "the self-read must reach THIS file; if it does not, every absence below is vacuous"
     );
     assert!(
@@ -2962,7 +3005,10 @@ fn round_8s_confinement_clause_is_non_dead_and_this_round_must_not_remove_it() {
         "round 8's `--signed no` from the other side: the clause is CONFINED to the key, not a \
          substring search.",
     );
-    permits("git -c a=b status", "round 8: an ordinary `-c` value is untouched.");
+    permits(
+        "git -c a=b status",
+        "round 8: an ordinary `-c` value is untouched.",
+    );
 }
 
 #[test]

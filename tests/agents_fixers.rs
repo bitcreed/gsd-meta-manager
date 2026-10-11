@@ -326,7 +326,11 @@ fn only_the_current_reviews_findings_count_and_fixed_never_exceeds_total() {
     let wt = add_agent_worktree(&headless, FIXER_A);
     commit(&wt, "fix(12): CR-01 WR-01 WR-02 x");
     let agents = scan(&headless, Scripted::fixer());
-    assert_eq!(counts(&agents), Some((1, Some(2), Some(2))), "clamped to the total");
+    assert_eq!(
+        counts(&agents),
+        Some((1, Some(2), Some(2))),
+        "clamped to the total"
+    );
 }
 
 /// WR-03: the denominator is the code review's, even when an eval review and a

@@ -399,7 +399,10 @@ mod tests {
         let root = tmp.path().join("fresh-proj");
         std::fs::create_dir_all(root.join(".planning")).unwrap();
         let mut config = Config::new();
-        assert_eq!(auto_register(&mut config, &root), Some("fresh-proj".to_string()));
+        assert_eq!(
+            auto_register(&mut config, &root),
+            Some("fresh-proj".to_string())
+        );
         assert!(config.projects.contains_key("fresh-proj"));
     }
 

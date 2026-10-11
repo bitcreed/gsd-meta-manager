@@ -486,8 +486,8 @@ pub fn record_and_check_in(
 /// torn line first keeps it counted as the one damaged attempt it is, and keeps
 /// the new attempt countable as its own.
 fn append_entry(path: &Path, entry: &LedgerEntry) -> anyhow::Result<()> {
-    let mut line = serde_json::to_string(entry)
-        .context("failed to render a ledger entry as JSON")?;
+    let mut line =
+        serde_json::to_string(entry).context("failed to render a ledger entry as JSON")?;
     line.push('\n');
 
     if ends_mid_line(path) {
@@ -652,9 +652,13 @@ mod tests {
     #[test]
     fn the_first_attempt_in_an_empty_ledger_is_permitted() {
         let root = tempfile::tempdir().unwrap();
-        let verdict =
-            record_and_check_in(root.path(), "alpha", &entry(&now_stamp(), "run-1"), &policy(3, 1))
-                .unwrap();
+        let verdict = record_and_check_in(
+            root.path(),
+            "alpha",
+            &entry(&now_stamp(), "run-1"),
+            &policy(3, 1),
+        )
+        .unwrap();
         assert_eq!(
             verdict,
             CapVerdict::Permit {
@@ -729,8 +733,13 @@ mod tests {
     fn an_entry_one_second_inside_the_window_counts_toward_it() {
         let root = tempfile::tempdir().unwrap();
         let policy = policy(1, 9);
-        record_and_check_in(root.path(), "alpha", &entry(&ago(WINDOW_SECS - 1), "old"), &policy)
-            .unwrap();
+        record_and_check_in(
+            root.path(),
+            "alpha",
+            &entry(&ago(WINDOW_SECS - 1), "old"),
+            &policy,
+        )
+        .unwrap();
 
         let verdict =
             record_and_check_in(root.path(), "alpha", &entry(&now_stamp(), "new"), &policy)
@@ -745,8 +754,13 @@ mod tests {
     fn an_entry_exactly_at_the_boundary_counts_because_the_window_is_inclusive() {
         let root = tempfile::tempdir().unwrap();
         let policy = policy(1, 9);
-        record_and_check_in(root.path(), "alpha", &entry(&ago(WINDOW_SECS), "old"), &policy)
-            .unwrap();
+        record_and_check_in(
+            root.path(),
+            "alpha",
+            &entry(&ago(WINDOW_SECS), "old"),
+            &policy,
+        )
+        .unwrap();
 
         let verdict =
             record_and_check_in(root.path(), "alpha", &entry(&now_stamp(), "new"), &policy)
@@ -762,8 +776,13 @@ mod tests {
     fn an_entry_one_second_past_the_boundary_does_not_count() {
         let root = tempfile::tempdir().unwrap();
         let policy = policy(1, 9);
-        record_and_check_in(root.path(), "alpha", &entry(&ago(WINDOW_SECS + 1), "old"), &policy)
-            .unwrap();
+        record_and_check_in(
+            root.path(),
+            "alpha",
+            &entry(&ago(WINDOW_SECS + 1), "old"),
+            &policy,
+        )
+        .unwrap();
 
         let verdict =
             record_and_check_in(root.path(), "alpha", &entry(&now_stamp(), "new"), &policy)
@@ -786,7 +805,11 @@ mod tests {
         let path = ledger_path_in(root.path(), "alpha").unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         // A writer killed mid-record: valid JSON up to the cut, no newline.
-        std::fs::write(&path, br#"{"at":"2026-08-18T10:00:00Z","run_id":"run-0","comm"#).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"at":"2026-08-18T10:00:00Z","run_id":"run-0","comm"#,
+        )
+        .unwrap();
 
         let verdict =
             record_and_check_in(root.path(), "alpha", &entry(&now_stamp(), "new"), &policy)
@@ -803,10 +826,19 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = ledger_path_in(root.path(), "alpha").unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, br#"{"at":"2026-08-18T10:00:00Z","run_id":"run-0","comm"#).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"at":"2026-08-18T10:00:00Z","run_id":"run-0","comm"#,
+        )
+        .unwrap();
 
-        record_and_check_in(root.path(), "alpha", &entry(&now_stamp(), "new"), &policy(9, 9))
-            .unwrap();
+        record_and_check_in(
+            root.path(),
+            "alpha",
+            &entry(&now_stamp(), "new"),
+            &policy(9, 9),
+        )
+        .unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();

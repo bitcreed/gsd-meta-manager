@@ -532,9 +532,7 @@ mod tests {
         // censuses `src/` WITHOUT stripping test modules and asserts this file
         // declares exactly 8 `alias:` argv-to-identity declarations.
         match parsed.command {
-            Some(Commands::Drive {
-                alias, command, ..
-            }) => {
+            Some(Commands::Drive { alias, command, .. }) => {
                 assert_eq!(
                     alias, "demo",
                     "the hidden subcommand parsed but did not carry its positional alias"
@@ -637,8 +635,14 @@ mod tests {
         };
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
         let msg = err.to_string();
-        assert!(msg.contains("ttbook"), "the refusal must name the target: {msg}");
-        assert!(msg.contains("path"), "the refusal must point at opening by path: {msg}");
+        assert!(
+            msg.contains("ttbook"),
+            "the refusal must name the target: {msg}"
+        );
+        assert!(
+            msg.contains("path"),
+            "the refusal must point at opening by path: {msg}"
+        );
     }
 
     #[test]

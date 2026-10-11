@@ -89,18 +89,16 @@ impl FileWatcher {
         let debouncer = new_debouncer(
             Duration::from_millis(200),
             None,
-            move |result: DebounceEventResult| {
-                match result {
-                    Ok(events) => {
-                        let paths = events.iter().flat_map(|event| event.paths.iter());
-                        for action in batch_actions(paths.map(PathBuf::as_path)) {
-                            let _ = tx.send(action);
-                        }
+            move |result: DebounceEventResult| match result {
+                Ok(events) => {
+                    let paths = events.iter().flat_map(|event| event.paths.iter());
+                    for action in batch_actions(paths.map(PathBuf::as_path)) {
+                        let _ = tx.send(action);
                     }
-                    Err(errors) => {
-                        for error in errors {
-                            tracing::warn!("File watcher error: {}", error);
-                        }
+                }
+                Err(errors) => {
+                    for error in errors {
+                        tracing::warn!("File watcher error: {}", error);
                     }
                 }
             },
@@ -192,7 +190,10 @@ mod tests {
              in the same batch; got {:?}",
             changed_paths(&actions)
         );
-        assert_eq!(changed_paths(&actions), vec![journal.as_path(), state_md.as_path()]);
+        assert_eq!(
+            changed_paths(&actions),
+            vec![journal.as_path(), state_md.as_path()]
+        );
     }
 
     #[test]
@@ -219,13 +220,19 @@ mod tests {
 
         // Planning first — the ordering the old shape happened to survive.
         let actions = fold(&[state_md.clone(), journal.clone()]);
-        assert_eq!(changed_paths(&actions), vec![state_md.as_path(), journal.as_path()]);
+        assert_eq!(
+            changed_paths(&actions),
+            vec![state_md.as_path(), journal.as_path()]
+        );
 
         for action in &actions {
             let Action::FileChanged { project_path, .. } = action else {
                 unreachable!()
             };
-            assert_eq!(project_path, &root, "both events name the same project root");
+            assert_eq!(
+                project_path, &root,
+                "both events name the same project root"
+            );
         }
 
         // Two planning writes for one root still collapse to one, which is the

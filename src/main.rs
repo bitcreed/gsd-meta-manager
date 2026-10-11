@@ -1,16 +1,16 @@
 mod event;
 mod tui;
 
+use event::EventBus;
 use gsd_meta_manager::app::App;
-use gsd_meta_manager::watcher::FileWatcher;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
 use gsd_meta_manager::config::{load_config, save_config, Config};
 use gsd_meta_manager::driver::{drive, DriveArgs, RawDriveArgs};
-use event::EventBus;
 use gsd_meta_manager::main_loop::{
     pump, ExecEvent, PumpOutcome, EXEC_BATCH, EXEC_CHANNEL_CAPACITY,
 };
 use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
+use gsd_meta_manager::watcher::FileWatcher;
 
 /// Judge an alias arriving on an envelope re-entry, or fail closed with
 /// `refusal_code` after naming the way out.
@@ -406,11 +406,8 @@ async fn main() -> anyhow::Result<()> {
                         std::process::exit(1);
                     }
                 };
-                match gsd_meta_manager::envelope::hooks::pre_commit(
-                    &alias,
-                    &hook_path,
-                    &repo_root,
-                ) {
+                match gsd_meta_manager::envelope::hooks::pre_commit(&alias, &hook_path, &repo_root)
+                {
                     Ok(code) => std::process::exit(code),
                     Err(err) => {
                         // Fail-closed, exactly as the push hook does: a hook
@@ -611,11 +608,7 @@ async fn main() -> anyhow::Result<()> {
                 let planning_dir = project.path.join(".planning");
                 if planning_dir.is_dir() {
                     if let Err(e) = watcher.watch(&planning_dir) {
-                        tracing::warn!(
-                            "Could not watch {}: {}",
-                            planning_dir.display(),
-                            e
-                        );
+                        tracing::warn!("Could not watch {}: {}", planning_dir.display(), e);
                     }
                 }
             }
@@ -771,9 +764,7 @@ async fn run_tui_loop(
                     app.ctx.status_message = Some((
                         format!(
                             "Editor closed: {}",
-                            path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
+                            path.file_name().unwrap_or_default().to_string_lossy()
                         ),
                         std::time::Instant::now(),
                     ));

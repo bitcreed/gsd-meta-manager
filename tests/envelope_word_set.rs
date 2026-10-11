@@ -345,7 +345,8 @@ fn refuses_carrier(make: impl Fn(&Path) -> String, reason: &str, why: &str) {
     let answer = ask(envelope.path(), &command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "\n\n`{command}` must be REFUSED.\n\n{why}\n\n\
          It was measured against the BUILT BINARY at this file's base commit with a fresh \
          envelope root and a walk after.\n  stdout: {}\n  stderr: {}\nWalked listing:\n{}",
@@ -602,17 +603,20 @@ fn protected_after_19_33(
     if dir_parts.is_empty() || root_parts.is_empty() {
         return false;
     }
-    slash_anchored_candidates(word).into_iter().any(|candidate| {
-        let Some(parts) = components(candidate) else {
-            return false;
-        };
-        // A PROPER ancestor of the envelope directory …
-        let proper_ancestor = parts.len() < dir_parts.len() && parts[..] == dir_parts[..parts.len()];
-        // … that is itself AT OR UNDER the envelope root.
-        let at_or_under_root =
-            parts.len() >= root_parts.len() && parts[..root_parts.len()] == root_parts[..];
-        proper_ancestor && at_or_under_root
-    })
+    slash_anchored_candidates(word)
+        .into_iter()
+        .any(|candidate| {
+            let Some(parts) = components(candidate) else {
+                return false;
+            };
+            // A PROPER ancestor of the envelope directory …
+            let proper_ancestor =
+                parts.len() < dir_parts.len() && parts[..] == dir_parts[..parts.len()];
+            // … that is itself AT OR UNDER the envelope root.
+            let at_or_under_root =
+                parts.len() >= root_parts.len() && parts[..root_parts.len()] == root_parts[..];
+            proper_ancestor && at_or_under_root
+        })
 }
 
 // ===========================================================================
@@ -732,7 +736,12 @@ fn after_19_33_a_here_string_word_naming_the_envelope_directory_is_refused() {
         ),
     );
     refuses_carrier(
-        |root| format!("xargs rm -f <<< {}/{ALIAS}/pr-ledger.ndjson", root.display()),
+        |root| {
+            format!(
+                "xargs rm -f <<< {}/{ALIAS}/pr-ledger.ndjson",
+                root.display()
+            )
+        },
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
         &format!(
             "**`T-19-122` over the LEDGER — the same class, `T-19-112`'s harm by a FIFTH \
@@ -950,8 +959,14 @@ fn the_t_19_122_here_string_deletion_moves_a_bare_remote_with_a_control_on_both_
     let remote = root.join("remote.git");
     let work = root.join("work");
     std::fs::create_dir_all(&work).unwrap();
-    git_ok(root, &["init", "--bare", "-q", &remote.display().to_string()]);
-    git_ok(root, &["init", "-q", "-b", "main", &work.display().to_string()]);
+    git_ok(
+        root,
+        &["init", "--bare", "-q", &remote.display().to_string()],
+    );
+    git_ok(
+        root,
+        &["init", "-q", "-b", "main", &work.display().to_string()],
+    );
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
     git_ok(
@@ -1406,10 +1421,7 @@ fn the_ancestor_stop_is_pinned_from_both_sides_before_and_after() {
              concurrent run owns `<root>/beta`, and refusing it would make two envelopes on \
              one machine deny each other",
         ),
-        (
-            "rm -rf {}/beta",
-            "the same, as a deletion",
-        ),
+        ("rm -rf {}/beta", "the same, as a deletion"),
     ] {
         let template = template.to_string();
         permits_carrier(
@@ -1714,7 +1726,10 @@ fn the_no_slash_control_attributes_the_cost_to_the_scan_and_not_to_the_length() 
          slash, so it yields exactly one candidate and the scan cannot be quadratic in it"
     );
     let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 60);
-    println!("  NO-SLASH CONTROL: {} chars, exit={code} after {millis} ms", word.len());
+    println!(
+        "  NO-SLASH CONTROL: {} chars, exit={code} after {millis} ms",
+        word.len()
+    );
     assert_eq!(
         code, 0,
         "\n\n**A 100 000-CHARACTER WORD WITH NO SLASHES MUST BE PERMITTED.** It names no path \
@@ -1756,8 +1771,7 @@ fn the_scans_cost_curve_is_recorded_on_two_trees_and_the_extremes_are_not_assert
     let envelope = TempDir::new().unwrap();
     for slashes in [1_000usize, 2_000, 5_000, 8_000] {
         let word = slash_dense_word(slashes);
-        let (code, millis) =
-            ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 120);
+        let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 120);
         println!(
             "  RECORDED (not asserted) [curve] {slashes:>6} slashes ({:>7} bytes): \
              exit={code} after {millis:>7} ms",
@@ -1819,10 +1833,16 @@ fn after_19_33_the_fail_closed_work_ceiling_can_fire_and_this_row_drives_it() {
     let envelope = TempDir::new().unwrap();
 
     let dense = slash_dense_word(250_000);
-    assert_eq!(dense.len(), 500_000, "the mechanism, pinned before the verdict");
-    let (code, millis) =
-        ask_binary_under_timeout(envelope.path(), &format!("ls {dense}"), 60);
-    println!("  CEILING DRIVEN: 250 000 slashes ({} bytes), exit={code} after {millis} ms", dense.len());
+    assert_eq!(
+        dense.len(),
+        500_000,
+        "the mechanism, pinned before the verdict"
+    );
+    let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {dense}"), 60);
+    println!(
+        "  CEILING DRIVEN: 250 000 slashes ({} bytes), exit={code} after {millis} ms",
+        dense.len()
+    );
     assert_eq!(
         code, 2,
         "\n\n**THE FAIL-CLOSED WORK CEILING MUST FIRE.**\n\n\
@@ -1850,7 +1870,10 @@ fn after_19_33_the_fail_closed_work_ceiling_can_fire_and_this_row_drives_it() {
     );
     let (flat_code, flat_millis) =
         ask_binary_under_timeout(envelope.path(), &format!("ls {flat}"), 60);
-    println!("  CEILING CONTROL: {} chars, ONE slash, exit={flat_code} after {flat_millis} ms", flat.len());
+    println!(
+        "  CEILING CONTROL: {} chars, ONE slash, exit={flat_code} after {flat_millis} ms",
+        flat.len()
+    );
     assert_eq!(
         flat_code, 0,
         "\n\n**THE SAME NUMBER OF BYTES WITH NO SLASHES MUST STAY PERMITTED.** This is what \
@@ -1865,7 +1888,10 @@ fn after_19_33_the_fail_closed_work_ceiling_can_fire_and_this_row_drives_it() {
     //    wrong property is not corrected by moving a number.
     let over = format!("/{}", "a".repeat(1_500_000));
     let answer = ask(envelope.path(), &format!("ls {over}"));
-    assert_eq!(answer.code, 2, "a request over 1 MiB is refused by the INPUT bound");
+    assert_eq!(
+        answer.code, 2,
+        "a request over 1 MiB is refused by the INPUT bound"
+    );
     assert!(
         answer.reason().contains("larger than"),
         "\n\n**THE INPUT BOUND MUST STILL BE DISTINGUISHABLE FROM THE WORK CEILING.** \
@@ -1888,7 +1914,11 @@ fn after_19_33_the_fifty_thousand_slash_row_is_promoted_from_recorded_to_asserte
     // row measures the SCAN and not the machine.
     let envelope = TempDir::new().unwrap();
     let word = slash_dense_word(50_000);
-    assert_eq!(word.len(), 100_000, "the mechanism, pinned before the verdict");
+    assert_eq!(
+        word.len(),
+        100_000,
+        "the mechanism, pinned before the verdict"
+    );
     let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 60);
     println!("  PROMOTED: 50 000 slashes (100 000 bytes), exit={code} after {millis} ms (19-32 RECORDED 151 249 ms)");
     assert_eq!(
@@ -1918,7 +1948,11 @@ fn after_19_33_the_slash_dense_word_just_under_the_input_bound_answers_inside_th
     // just UNDER that bound.
     let envelope = TempDir::new().unwrap();
     let word = slash_dense_word(400_000);
-    assert_eq!(word.len(), 800_000, "the mechanism, pinned before the verdict");
+    assert_eq!(
+        word.len(),
+        800_000,
+        "the mechanism, pinned before the verdict"
+    );
     let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 60);
     println!("  PROMOTED: 400 000 slashes (800 000 bytes), exit={code} after {millis} ms (19-32 RECORDED: no answer in 300 s)");
     assert!(
@@ -2138,7 +2172,10 @@ fn a_symlinked_to_regular_ledger_is_permitted_and_counted_before_and_after() {
 
     let answer = ask(envelope.path(), "gh pr create --title x");
     let counted = std::fs::read_to_string(&real).unwrap().lines().count();
-    println!("  symlinked-to-regular ledger: exit={} counted={counted}", answer.code);
+    println!(
+        "  symlinked-to-regular ledger: exit={} counted={counted}",
+        answer.code
+    );
     assert_eq!(
         answer.code, 0,
         "\n\n**A LEDGER THAT IS A SYMLINK TO A REGULAR FILE MUST BE PERMITTED.**\n\n\
@@ -2149,7 +2186,8 @@ fn a_symlinked_to_regular_ledger_is_permitted_and_counted_before_and_after() {
         answer.stdout
     );
     assert_eq!(
-        counted, 1,
+        counted,
+        1,
         "\n\n**AND THE ATTEMPT MUST HAVE BEEN COUNTED THROUGH THE LINK.** A permit that did \
          not append is a cap that stopped counting, which is `T-19-112`'s harm by a quieter \
          route than any this phase has registered. Walked listing:\n{}",
@@ -2171,7 +2209,10 @@ fn the_ledger_kind_bound_is_non_vacuous_at_four_kinds_and_the_fresh_root_still_p
         .arg(dir.join("pr-ledger.ndjson"))
         .status()
         .expect("mkfifo is on PATH");
-    assert!(made.success(), "the fixture creates a FIFO at the ledger path");
+    assert!(
+        made.success(),
+        "the fixture creates a FIFO at the ledger path"
+    );
     let (code, millis) = ask_binary_under_timeout(fifo.path(), "gh pr create --title x", 12);
     println!("  FIFO ledger: exit={code} after {millis} ms (hard timeout 12 s)");
     assert_eq!(
@@ -2189,7 +2230,9 @@ fn the_ledger_kind_bound_is_non_vacuous_at_four_kinds_and_the_fresh_root_still_p
         "a DIRECTORY at the ledger path is not a regular file either"
     );
     assert!(
-        answer.reason().contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
+        answer
+            .reason()
+            .contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
         "and it must be refused UNDER the GENERAL unresolvable identifier and never under \
          `pr_cap_exceeded`, which names a cap that FIRED (D-24). Got: {}",
         answer.reason()
@@ -2242,10 +2285,10 @@ fn the_link_non_following_stat_variant_is_absent_from_ledger_rs_production_half(
     // `#[cfg(test)]` sentinel and asserted absent above it.
     //
     // **GREEN today and after.**
-    let sentinel = LEDGER_SOURCE
-        .find("#[cfg(test)]")
-        .expect("`ledger.rs` must carry a `#[cfg(test)]` sentinel; without one there is no \
-                 production half to slice");
+    let sentinel = LEDGER_SOURCE.find("#[cfg(test)]").expect(
+        "`ledger.rs` must carry a `#[cfg(test)]` sentinel; without one there is no \
+                 production half to slice",
+    );
     let production = &LEDGER_SOURCE[..sentinel];
 
     // -- **THE POSITIVE CONTROLS COME FIRST**, for the reason every absence
@@ -2335,7 +2378,10 @@ fn the_control_carrier_interior_alphabets_seventh_entry_does_not_reach_and_that_
         archive.display(),
         dir.display()
     ));
-    println!("  entry 7 AS RE-SPELLED: tar exit={as_respelled}, archive exists={}", archive.exists());
+    println!(
+        "  entry 7 AS RE-SPELLED: tar exit={as_respelled}, archive exists={}",
+        archive.exists()
+    );
     assert_ne!(
         as_respelled, 0,
         "**ENTRY 7 AS RE-SPELLED MUST NOT REACH THE FILE**, which is the finding. If it now \
@@ -2443,7 +2489,10 @@ fn every_fenced_row_keeps_its_answer_under_the_widened_path_set_except_the_two_n
              components against a three-component directory — and `[alpha]` is not a prefix \
              of `[tmp, envroot, alpha]`, so the ANCESTOR clause does not reach it either",
         ),
-        ("/tmp/envroot/alphax", "a SIBLING whose name merely EXTENDS the alias"),
+        (
+            "/tmp/envroot/alphax",
+            "a SIBLING whose name merely EXTENDS the alias",
+        ),
         (
             "/tmp/envroot/alpha2/x",
             "the raw-string-prefix trap, one component deeper",
@@ -2458,8 +2507,14 @@ fn every_fenced_row_keeps_its_answer_under_the_widened_path_set_except_the_two_n
             "/tmp/envroot/beta/pr-ledger.ndjson",
             "a SECOND alias directory under the same root, for the same reason",
         ),
-        ("/tmp", "**THE STOP.** The root's own PARENT is above `<root>` and no rule is written for it"),
-        ("/", "the filesystem root, one further up. A boundary reaching here is an OUTAGE"),
+        (
+            "/tmp",
+            "**THE STOP.** The root's own PARENT is above `<root>` and no rule is written for it",
+        ),
+        (
+            "/",
+            "the filesystem root, one further up. A boundary reaching here is an OUTAGE",
+        ),
         ("pr-ledger.ndjson", "a RELATIVE operand with no `/` at all"),
         ("/tmp/pr-ledger.ndjson", "the BASENAME near miss"),
         (
@@ -2471,7 +2526,10 @@ fn every_fenced_row_keeps_its_answer_under_the_widened_path_set_except_the_two_n
             "**the binary's PARENT DIRECTORY. NO ANCESTOR CLAUSE IS WRITTEN FOR THE BINARY**, \
              and `word_is_exactly` stays an EQUALITY",
         ),
-        ("/tmp/envrooz/alpha/pr-ledger.ndjson", "the one-character-changed root"),
+        (
+            "/tmp/envrooz/alpha/pr-ledger.ndjson",
+            "the one-character-changed root",
+        ),
     ] {
         assert!(
             !protected_today(word, Some(dir), Some(binary)),
@@ -2497,7 +2555,10 @@ fn every_fenced_row_keeps_its_answer_under_the_widened_path_set_except_the_two_n
             "of=/tmp/envroot/alpha/pr-ledger.ndjson",
             "**ROUND 12's OWN CLASS**: an interior path behind an `=`",
         ),
-        ("-C/tmp/envroot/alpha", "an interior path behind an attached short option"),
+        (
+            "-C/tmp/envroot/alpha",
+            "an interior path behind an attached short option",
+        ),
     ] {
         assert!(
             protected_today(word, Some(dir), Some(binary)),
@@ -2514,9 +2575,18 @@ fn every_fenced_row_keeps_its_answer_under_the_widened_path_set_except_the_two_n
     // -- **THE ANCESTOR CLAUSE's OWN POSITIVE CONTROLS**, so it is not vacuous.
     for (word, why) in [
         ("/tmp/envroot", "the root, named exactly"),
-        ("/tmp/envroot/", "the trailing-slash spelling, which normalises identically"),
-        ("-C/tmp/envroot", "**the ancestor composed with the interior scan**"),
-        ("/tmp/envroot/./", "a `/.` spelling the normaliser collapses to the root"),
+        (
+            "/tmp/envroot/",
+            "the trailing-slash spelling, which normalises identically",
+        ),
+        (
+            "-C/tmp/envroot",
+            "**the ancestor composed with the interior scan**",
+        ),
+        (
+            "/tmp/envroot/./",
+            "a `/.` spelling the normaliser collapses to the root",
+        ),
     ] {
         assert!(
             protected_after_19_33(word, Some(dir), Some(root), Some(binary)),
@@ -2586,8 +2656,9 @@ fn separators_is_byte_identical_at_its_current_line_and_a_redirection_is_not_one
     // (`84a9b05`, plan 19-05) and `is_separator` is a bare `SEPARATORS.contains`,
     // so these are true by construction.
     assert!(
-        POLICY_SOURCE
-            .contains(r#"const SEPARATORS: &[&str] = &[";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}"];"#),
+        POLICY_SOURCE.contains(
+            r#"const SEPARATORS: &[&str] = &[";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}"];"#
+        ),
         "\n\n**`SEPARATORS` IS NOT BYTE-IDENTICAL.**\n\n\
          It is cited at `policy.rs:2422` in this file — the line it MOVED to when round 12 \
          added prose above it — and `git log -L 2422,2422` returns exactly one commit for the \
@@ -2673,7 +2744,8 @@ fn git_under_envelope_posture(
 
 /// Whether a `git credential fill` answer carried the ambient secret.
 fn fill_returned_the_ambient_secret(text: &str, username: &str) -> bool {
-    text.lines().any(|line| line == format!("username={username}"))
+    text.lines()
+        .any(|line| line == format!("username={username}"))
         && text.lines().any(|line| line.starts_with("password="))
 }
 
@@ -2725,12 +2797,8 @@ fn the_alias_body_credential_route_is_measured_and_recorded_as_t_19_86s_and_is_n
 
     // -- **THE SECOND CONTROL — `T-19-121`'s own row**, so the posture is proved
     //    to be overridable at all before the alias body is blamed for it.
-    let (direct_code, direct_secret) = fill(&[
-        "-c",
-        "credential.helper=store",
-        "credential",
-        "fill",
-    ]);
+    let (direct_code, direct_secret) =
+        fill(&["-c", "credential.helper=store", "credential", "fill"]);
     println!(
         "  `-c credential.helper=store` (T-19-121): exit {direct_code}, ambient secret {}",
         if direct_secret { "PRESENT" } else { "ABSENT" }
@@ -3070,7 +3138,10 @@ fn round_8s_confinement_clause_is_non_dead_and_this_round_must_not_remove_it() {
         "git -c notinclude.path=/tmp/evil.cfg status",
         "round 8's `--signed no` from the other side: the clause is CONFINED to the key.",
     );
-    permits("git -c a=b status", "round 8: an ordinary `-c` value is untouched.");
+    permits(
+        "git -c a=b status",
+        "round 8: an ordinary `-c` value is untouched.",
+    );
 }
 
 #[test]
@@ -3166,7 +3237,8 @@ fn round_11s_own_clauses_are_non_dead_and_both_near_misses_stay_permitted() {
 }
 
 #[test]
-fn round_12s_interior_scan_and_credential_clause_are_non_dead_and_this_round_must_not_narrow_them() {
+fn round_12s_interior_scan_and_credential_clause_are_non_dead_and_this_round_must_not_narrow_them()
+{
     // -- the INTERIOR SCAN at a representative spread of ATTACHMENT CHARACTERS.
     for template in [
         "dd if=/dev/null of={}/alpha/pr-ledger.ndjson",
@@ -3261,7 +3333,12 @@ fn the_unruled_rows_are_recorded_and_never_asserted() {
     );
     record_only(
         "T-19-116 residue 4 — the GLOB spelling. `T-19-116` stays OPEN at `high`",
-        |_| format!("cp /bin/true {}/gsd-meta-manage?", this_binary_parent().display()),
+        |_| {
+            format!(
+                "cp /bin/true {}/gsd-meta-manage?",
+                this_binary_parent().display()
+            )
+        },
     );
     record_only(
         "**T-19-116's FIFTH route, ADDED BY AUDIT 12: `rm -rf <binary-parent>`.** No ancestor \
@@ -3288,7 +3365,9 @@ fn the_unruled_rows_are_recorded_and_never_asserted() {
         |root| {
             format!(
                 "rm -rf {}",
-                root.parent().expect("a temporary root has a parent").display()
+                root.parent()
+                    .expect("a temporary root has a parent")
+                    .display()
             )
         },
     );
@@ -3325,12 +3404,14 @@ fn the_unruled_rows_are_recorded_and_never_asserted() {
                 .to_string()
         },
     );
-    record_only("C-12 `.claude/settings.json` — layer 1's own registration", |_| {
-        "printf x >> .claude/settings.json".to_string()
-    });
-    record_only("C-13 `.git/info/exclude` — D-23, the sweep's ignore block", |_| {
-        "rm -f /tmp/proj/.git/info/exclude".to_string()
-    });
+    record_only(
+        "C-12 `.claude/settings.json` — layer 1's own registration",
+        |_| "printf x >> .claude/settings.json".to_string(),
+    );
+    record_only(
+        "C-13 `.git/info/exclude` — D-23, the sweep's ignore block",
+        |_| "rm -f /tmp/proj/.git/info/exclude".to_string(),
+    );
     record_only("C-14 the run journal — D-24/D-25 park EVIDENCE", |_| {
         "rm -rf /tmp/proj/.planning/meta-manager/runs/run-1".to_string()
     });
@@ -3338,7 +3419,10 @@ fn the_unruled_rows_are_recorded_and_never_asserted() {
         "C-15 `~/.config/gsd-meta-manager/config.json` — **NO `pr_cap_*` CLAMP is proposed or \
          written; clamping a configured cap is a PRODUCT decision about what a user may \
          configure, not a guard rule**",
-        |_| "printf '{\"pr_cap_per_24h\":9999}' > ~/.config/gsd-meta-manager/config.json".to_string(),
+        |_| {
+            "printf '{\"pr_cap_per_24h\":9999}' > ~/.config/gsd-meta-manager/config.json"
+                .to_string()
+        },
     );
     record_only(
         "C-08 `settings.json` — the BEHAVIOURAL half. Whether the agent CLI re-reads its \

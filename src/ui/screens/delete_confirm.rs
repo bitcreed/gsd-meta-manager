@@ -1,12 +1,12 @@
+use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
 use super::{AppContext, Screen, ScreenAction};
 use crate::config::save_config;
 use crate::registry;
+use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
-use crate::ui::mouse::MouseInput;
 use ratatui::Frame;
 
 pub struct DeleteConfirmScreen {
@@ -108,8 +108,9 @@ impl Screen for DeleteConfirmScreen {
     }
 
     fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
-        confirm_popup::click_as_key(&self.popup, input)
-            .map_or(ScreenAction::None, |code| self.handle_key(code, KeyModifiers::NONE, ctx))
+        confirm_popup::click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
     }
 
     fn name(&self) -> &str {
@@ -366,8 +367,10 @@ mod tests {
         // "I do not know" (CR-05, CR-06).
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut ctx, _rx) = ctx_with_project(dir.path());
-        ctx.observed_runs
-            .insert(ALIAS.to_string(), observed(ALIAS, RUN_ID, Liveness::Unknown));
+        ctx.observed_runs.insert(
+            ALIAS.to_string(),
+            observed(ALIAS, RUN_ID, Liveness::Unknown),
+        );
 
         confirm_removal(&mut ctx);
 
@@ -468,7 +471,11 @@ mod tests {
         t.draw(|f| screen.render(f, f.area(), ctx)).unwrap();
         let buf = t.backend().buffer();
         (0..30u16)
-            .map(|y| (0..100u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect()
     }
 
@@ -532,8 +539,16 @@ mod tests {
         label: &str,
     ) -> ScreenAction {
         let text = render_rows(screen, ctx).join("\n");
-        let (column, row) = crate::ui::screens::confirm_popup::locate(&text, label).expect("button drawn");
-        screen.handle_mouse(MouseInput::Click { column, row, double: false }, ctx)
+        let (column, row) =
+            crate::ui::screens::confirm_popup::locate(&text, label).expect("button drawn");
+        screen.handle_mouse(
+            MouseInput::Click {
+                column,
+                row,
+                double: false,
+            },
+            ctx,
+        )
     }
 
     #[test]
@@ -549,7 +564,14 @@ mod tests {
         // A click away from the buttons is inert.
         let mut screen = DeleteConfirmScreen::new(ALIAS.to_string());
         render_rows(&screen, &ctx);
-        let act = screen.handle_mouse(MouseInput::Click { column: 0, row: 0, double: false }, &mut ctx);
+        let act = screen.handle_mouse(
+            MouseInput::Click {
+                column: 0,
+                row: 0,
+                double: false,
+            },
+            &mut ctx,
+        );
         assert!(matches!(act, ScreenAction::None));
         assert!(ctx.config.projects.contains_key(ALIAS));
 

@@ -38,7 +38,10 @@ fn assert_refused_before_the_tui(out: &std::process::Output, needle: &str) {
         Some(1),
         "a refused target must exit exactly 1 before terminal setup; stderr: {stderr}"
     );
-    assert!(stderr.contains(needle), "stderr does not name {needle:?}: {stderr}");
+    assert!(
+        stderr.contains(needle),
+        "stderr does not name {needle:?}: {stderr}"
+    );
     assert!(
         stderr.contains("gsd-meta-manager add"),
         "stderr lacks the `add` suggestion: {stderr}"
@@ -85,8 +88,14 @@ fn a_registered_alias_named_list_still_runs_the_list_subcommand() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout.contains("ALIAS"), "no list table header: {stdout}");
-    assert!(stdout.contains("list"), "the `list` project is not listed: {stdout}");
-    assert!(!stdout.contains(ALT_SCREEN_ENTER), "the TUI started: {stdout:?}");
+    assert!(
+        stdout.contains("list"),
+        "the `list` project is not listed: {stdout}"
+    );
+    assert!(
+        !stdout.contains(ALT_SCREEN_ENTER),
+        "the TUI started: {stdout:?}"
+    );
 }
 
 #[test]

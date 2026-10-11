@@ -68,9 +68,7 @@ impl JournalWriter {
             .create(true)
             .append(true)
             .open(journal_path)
-            .with_context(|| {
-                format!("Failed to open journal at {}", journal_path.display())
-            })?;
+            .with_context(|| format!("Failed to open journal at {}", journal_path.display()))?;
 
         Ok(Self {
             file,
@@ -263,9 +261,8 @@ fn write_runs_gitignore(gitignore_path: &Path) -> anyhow::Result<bool> {
         return Ok(false);
     }
     if let Some(parent) = gitignore_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("Failed to create the runs root at {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create the runs root at {}", parent.display()))?;
     }
     std::fs::write(gitignore_path, RUNS_GITIGNORE_BODY).with_context(|| {
         format!(
@@ -552,7 +549,8 @@ pub fn write_run_record(paths: &RunPaths, record: &RunRecord) -> anyhow::Result<
         )
     })?;
 
-    let json = serde_json::to_string_pretty(record).context("Failed to serialize the run record")?;
+    let json =
+        serde_json::to_string_pretty(record).context("Failed to serialize the run record")?;
     handle
         .write_all(json.as_bytes())
         .context("Failed to write the run record to its temporary file")?;
@@ -566,9 +564,12 @@ pub fn write_run_record(paths: &RunPaths, record: &RunRecord) -> anyhow::Result<
             .context("Failed to make the run record world-readable")?;
     }
 
-    handle
-        .persist(&paths.run_json)
-        .with_context(|| format!("Failed to persist the run record to {}", paths.run_json.display()))?;
+    handle.persist(&paths.run_json).with_context(|| {
+        format!(
+            "Failed to persist the run record to {}",
+            paths.run_json.display()
+        )
+    })?;
 
     Ok(())
 }
@@ -956,8 +957,11 @@ mod tests {
             .expect("mtime");
 
         // A hand edit, then a second run in the same project.
-        std::fs::write(&paths.gitignore, "# edited by the user\n*\n!*/\n!*/run.json\n")
-            .expect("edit the ignore file");
+        std::fs::write(
+            &paths.gitignore,
+            "# edited by the user\n*\n!*/\n!*/run.json\n",
+        )
+        .expect("edit the ignore file");
         let edited = std::fs::read_to_string(&paths.gitignore).expect("read");
         let edited_mtime = paths
             .gitignore
@@ -990,7 +994,10 @@ mod tests {
         // And a second create_run_dir for a different run is likewise quiet.
         let other = create_run_dir(&planning, "2026-07-29T01-00-00Z-b111")
             .expect("create a second run directory");
-        assert_eq!(other.gitignore, paths.gitignore, "one file serves every run");
+        assert_eq!(
+            other.gitignore, paths.gitignore,
+            "one file serves every run"
+        );
         assert_eq!(
             std::fs::read_to_string(&paths.gitignore).expect("read"),
             edited
@@ -1024,7 +1031,10 @@ mod tests {
         let round_tripped: RunRecord =
             serde_json::from_str(&std::fs::read_to_string(&paths.run_json).expect("read"))
                 .expect("the record deserialises");
-        assert_eq!(round_tripped.ended_at.as_deref(), Some("2026-07-28T18:00:00Z"));
+        assert_eq!(
+            round_tripped.ended_at.as_deref(),
+            Some("2026-07-28T18:00:00Z")
+        );
 
         // No temporary litter survives either write.
         let stray: Vec<String> = std::fs::read_dir(&paths.dir)
@@ -1033,7 +1043,10 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| name != "run.json")
             .collect();
-        assert!(stray.is_empty(), "a persisted write leaves nothing behind: {stray:?}");
+        assert!(
+            stray.is_empty(),
+            "a persisted write leaves nothing behind: {stray:?}"
+        );
 
         #[cfg(unix)]
         {
@@ -1041,7 +1054,12 @@ mod tests {
             // `persist` preserves the temp file's 0600, which would make the one
             // file whose purpose is being read later unreadable to a second uid
             // (RESEARCH §1.4). This assertion is what stops that returning.
-            let mode = paths.run_json.metadata().expect("stat").permissions().mode();
+            let mode = paths
+                .run_json
+                .metadata()
+                .expect("stat")
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o644, "got mode {:o}", mode & 0o777);
         }
     }
@@ -1188,7 +1206,10 @@ mod tests {
 
         let kinds = kinds_in(&journal);
         assert_eq!(
-            kinds.iter().filter(|kind| *kind == "journal_truncated").count(),
+            kinds
+                .iter()
+                .filter(|kind| *kind == "journal_truncated")
+                .count(),
             1,
             "exactly one truncation notice, not merely at least one: {kinds:?}"
         );
@@ -1197,11 +1218,17 @@ mod tests {
             .position(|kind| kind == "journal_truncated")
             .expect("the notice is present");
         assert!(
-            !kinds[notice_at + 1..].iter().any(|kind| kind == "exec_event"),
+            !kinds[notice_at + 1..]
+                .iter()
+                .any(|kind| kind == "exec_event"),
             "no content event may follow the notice: {kinds:?}"
         );
-        assert!(kinds[notice_at + 1..].iter().any(|kind| kind == "events_dropped"));
-        assert!(kinds[notice_at + 1..].iter().any(|kind| kind == "diagnostic"));
+        assert!(kinds[notice_at + 1..]
+            .iter()
+            .any(|kind| kind == "events_dropped"));
+        assert!(kinds[notice_at + 1..]
+            .iter()
+            .any(|kind| kind == "diagnostic"));
 
         // The notice carries the numbers a reader would otherwise have to guess.
         let notice: Value = serde_json::from_str(
@@ -1288,8 +1315,14 @@ mod tests {
         assert!(!root.join(R3).is_dir());
         assert!(root.join(R4).is_dir(), "the newest survivors are kept");
         assert!(root.join(R5).is_dir());
-        assert!(stranger.is_dir(), "a directory that is not a run is not ours");
-        assert!(root.join(".gitignore").is_file(), "the ignore file survives");
+        assert!(
+            stranger.is_dir(),
+            "a directory that is not a run is not ours"
+        );
+        assert!(
+            root.join(".gitignore").is_file(),
+            "the ignore file survives"
+        );
 
         // Idempotent: a second prune with the same budget removes nothing.
         assert!(prune_runs(&planning, 2, Some(R1))
@@ -1317,8 +1350,14 @@ mod tests {
             root.join(R2).is_dir(),
             "a run with no end timestamp is Phase 17's crash evidence"
         );
-        assert!(root.join(R5).is_dir(), "a run with no record at all is likewise kept");
-        assert!(root.join(R4).is_dir(), "the newest complete run is retained");
+        assert!(
+            root.join(R5).is_dir(),
+            "a run with no record at all is likewise kept"
+        );
+        assert!(
+            root.join(R4).is_dir(),
+            "the newest complete run is retained"
+        );
         assert!(!root.join(R1).is_dir());
         assert!(!root.join(R3).is_dir());
     }
@@ -1335,9 +1374,15 @@ mod tests {
     #[test]
     fn only_a_d02_shaped_directory_name_parses_as_a_run_id() {
         assert!(parses_as_run_id("2026-07-28T14-03-11Z-a3f9"));
-        assert!(!parses_as_run_id("2026-13-45T99-99-99Z-0000"), "not a calendar date");
+        assert!(
+            !parses_as_run_id("2026-13-45T99-99-99Z-0000"),
+            "not a calendar date"
+        );
         assert!(!parses_as_run_id("notes"));
         assert!(!parses_as_run_id("2026-07-28T14-03-11Z"), "no uuid suffix");
-        assert!(!parses_as_run_id("2026-07-28T14:03:11Z-a3f9"), "colons are not the format");
+        assert!(
+            !parses_as_run_id("2026-07-28T14:03:11Z-a3f9"),
+            "colons are not the format"
+        );
     }
 }

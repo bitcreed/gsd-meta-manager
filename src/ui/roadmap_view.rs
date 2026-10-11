@@ -1822,12 +1822,20 @@ mod tests {
         };
         assert_eq!(heights(0), (9, 9), "0 is panes()");
         assert_eq!(panes_for(area, 0), panes(area));
-        assert_eq!(heights(9), (9, 9), "a list that fits keeps Mockup C's split");
+        assert_eq!(
+            heights(9),
+            (9, 9),
+            "a list that fits keeps Mockup C's split"
+        );
         assert_eq!(heights(10), (10, 8));
         assert_eq!(heights(13), (12, 6));
         assert_eq!(heights(40), (12, 6), "never below six detail rows");
         let tiny = Rect::new(0, 0, 80, 8);
-        assert_eq!(panes_for(tiny, 40), panes(tiny), "a tiny pane keeps its share");
+        assert_eq!(
+            panes_for(tiny, 40),
+            panes(tiny),
+            "a tiny pane keeps its share"
+        );
         let wide = Rect::new(0, 0, 120, 18);
         assert_eq!(panes_for(wide, 40), panes(wide), "side by side ignores it");
     }
@@ -1858,7 +1866,10 @@ mod tests {
         let notes: Vec<&String> = lines.iter().filter(|l| l.contains("Notes")).collect();
         assert_eq!(notes.len(), 1, "{lines:#?}");
         assert!(notes[0].contains("dependency cycles: 2"), "{}", notes[0]);
-        assert!(lines[usize::from(list.height) - 2].contains("Notes"), "{lines:#?}");
+        assert!(
+            lines[usize::from(list.height) - 2].contains("Notes"),
+            "{lines:#?}"
+        );
         for name in ["One", "Two", "Three", "Four"] {
             assert!(lines.iter().any(|l| l.contains(name)), "{name}: {lines:#?}");
         }
@@ -2015,8 +2026,7 @@ mod tests {
                     };
                     let buf = render(&model, Some(&phase("12")), w, h, &mut state);
                     let want = model.rows.len() + 4 + usize::from(!model.notes.is_empty());
-                    let (list, _) =
-                        panes_for(Rect::new(0, 0, w, h), u16::try_from(want).unwrap());
+                    let (list, _) = panes_for(Rect::new(0, 0, w, h), u16::try_from(want).unwrap());
                     let inner = pane_block().inner(list);
                     let body = state.list_body;
                     assert_eq!(body.x, inner.x, "{at}");
@@ -2090,7 +2100,10 @@ mod tests {
         let model = bookly();
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 10));
         StatefulWidget::render(
-            RoadmapView { model: &model, cursor: None },
+            RoadmapView {
+                model: &model,
+                cursor: None,
+            },
             Rect::new(0, 0, 0, 0),
             &mut buf,
             &mut state,
@@ -2181,11 +2194,7 @@ mod tests {
 
             // (c) No lane is drawn past the minimum lane column.
             for r in &rows {
-                let past: String = r
-                    .chars()
-                    .skip(MIN_LANE_CELLS)
-                    .take(MARK_CELLS)
-                    .collect();
+                let past: String = r.chars().skip(MIN_LANE_CELLS).take(MARK_CELLS).collect();
                 assert!(
                     !past
                         .chars()
@@ -2627,7 +2636,11 @@ mod tests {
         let last = spans.last().expect("spans");
         assert_eq!(last.content, format!(" {GLYPH_UNMERGED}3"));
         assert_eq!(last.style.fg, Some(Color::Cyan));
-        assert!(spans_of(&model).contains("2/5 plans"), "{}", spans_of(&model));
+        assert!(
+            spans_of(&model).contains("2/5 plans"),
+            "{}",
+            spans_of(&model)
+        );
     }
 
     // ── quick 261006-ujx: git-graph lane styling ──────────────────────────

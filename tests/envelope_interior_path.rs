@@ -324,7 +324,8 @@ fn refuses_carrier(make: impl Fn(&Path) -> String, reason: &str, why: &str) {
     let answer = ask(envelope.path(), &command);
 
     assert_eq!(
-        answer.code, 2,
+        answer.code,
+        2,
         "\n\n`{command}` must be REFUSED.\n\n{why}\n\n\
          It was measured against the BUILT BINARY at this file's base commit with a fresh \
          envelope root and a walk after.\n  stdout: {}\n  stderr: {}\nWalked listing:\n{}",
@@ -668,7 +669,12 @@ fn after_19_31_an_equals_attached_carrier_path_is_refused_over_both_protected_pa
     );
 
     refuses_carrier(
-        |root| format!("dd if=/dev/null of={}/alpha/pr-ledger.ndjson", root.display()),
+        |root| {
+            format!(
+                "dd if=/dev/null of={}/alpha/pr-ledger.ndjson",
+                root.display()
+            )
+        },
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
         &format!(
             "**`T-19-119` OVER THE ENVELOPE DIRECTORY — this spelling RESETS A FIRED PR CAP**, \
@@ -893,8 +899,14 @@ fn the_t_19_119_option_attached_replacement_moves_a_bare_remote_with_a_control_o
     let remote = root.join("remote.git");
     let work = root.join("work");
     std::fs::create_dir_all(&work).unwrap();
-    git_ok(root, &["init", "--bare", "-q", &remote.display().to_string()]);
-    git_ok(root, &["init", "-q", "-b", "main", &work.display().to_string()]);
+    git_ok(
+        root,
+        &["init", "--bare", "-q", &remote.display().to_string()],
+    );
+    git_ok(
+        root,
+        &["init", "-q", "-b", "main", &work.display().to_string()],
+    );
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
     git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
     git_ok(
@@ -1344,12 +1356,7 @@ fn the_cost_rows_carry_an_equals_and_a_slash_and_stay_permitted_before_and_after
 #[test]
 fn the_near_miss_and_exact_path_controls_stay_permitted_before_and_after() {
     permits_carrier(
-        |root| {
-            format!(
-                "cat {}x/alpha/pr-ledger.ndjson",
-                root.display()
-            )
-        },
+        |root| format!("cat {}x/alpha/pr-ledger.ndjson", root.display()),
         "**THE ONE-CHARACTER-CHANGED ROOT.** Its longest candidate differs from the envelope \
          directory in a single component, and the comparison is COMPONENT-WISE rather than a \
          raw `starts_with` — so a sibling root is not this root. **The interior scan does not \
@@ -1388,7 +1395,10 @@ fn the_verdict_preserving_spellings_from_rounds_10_and_11_stay_permitted() {
     // is produced. If it did, every row here would turn red — a rule that
     // quietly widened.
     if let Some(real_root) = real_envelope_root() {
-        println!("  the real envelope root resolves to {}", real_root.display());
+        println!(
+            "  the real envelope root resolves to {}",
+            real_root.display()
+        );
     }
     permits(
         "rm -rf ~/.local/share/gsd-meta-manager/envelope/alpha",
@@ -1403,12 +1413,7 @@ fn the_verdict_preserving_spellings_from_rounds_10_and_11_stay_permitted() {
          TOCTOU rules forbid. Not `Token.literal`.",
     );
     permits_carrier(
-        |root| {
-            format!(
-                "rm -f {}/alpha/{{pr-ledger.ndjson,x}}",
-                root.display()
-            )
-        },
+        |root| format!("rm -f {}/alpha/{{pr-ledger.ndjson,x}}", root.display()),
         "direction (vii), the BRACE LIST. Not `Token.literal`.",
     );
     permits(
@@ -1487,7 +1492,12 @@ fn the_derived_over_refusal_surface_is_recorded_in_three_instances_and_asserted_
         "INSTANCE 1 — a RELATIVE word containing the carrier path. DERIVED post-fix: exit 2. \
          Under real bash this reaches `$PWD/tmp/<root>/alpha/pr-ledger.ndjson`, a DIFFERENT \
          file — measured with a decoy, which survived the real ledger untouched",
-        |root| format!("rm -f {}/alpha/pr-ledger.ndjson", relative_spelling_of(root)),
+        |root| {
+            format!(
+                "rm -f {}/alpha/pr-ledger.ndjson",
+                relative_spelling_of(root)
+            )
+        },
     );
     record_only(
         "INSTANCE 2 — a NON-PATH VALUE carrying the carrier path. DERIVED post-fix: exit 2. \
@@ -1658,7 +1668,8 @@ fn git_under_envelope_posture(
 /// **The secret is recorded as PRESENT/ABSENT and never transcribed.** SAFE-04's
 /// own reasoning applies to this corpus exactly as it applies to the ledger.
 fn fill_returned_the_ambient_secret(text: &str, username: &str) -> bool {
-    text.lines().any(|line| line == format!("username={username}"))
+    text.lines()
+        .any(|line| line == format!("username={username}"))
         && text.lines().any(|line| line.starts_with("password="))
 }
 
@@ -1698,7 +1709,10 @@ fn t_19_121_the_credential_helper_key_shape_space_is_measured_with_the_control_d
     // -- **THE CONTROL, DRIVEN FIRST.** Without it, every PRESENT below could be
     //    explained by the posture never having failed closed at all.
     let (control_code, control_secret) = fill(&[]);
-    println!("  CONTROL (no `-c`): exit {control_code}, ambient secret {}", if control_secret { "PRESENT" } else { "ABSENT" });
+    println!(
+        "  CONTROL (no `-c`): exit {control_code}, ambient secret {}",
+        if control_secret { "PRESENT" } else { "ABSENT" }
+    );
     assert!(
         !control_secret,
         "\n\n**THE CONTROL POSTURE MUST FAIL CLOSED.**\n\
@@ -1710,7 +1724,10 @@ fn t_19_121_the_credential_helper_key_shape_space_is_measured_with_the_control_d
 
     // -- **THE HARM.**
     let (harm_code, harm_secret) = fill(&["-c", "credential.helper=store"]);
-    println!("  `-c credential.helper=store`: exit {harm_code}, ambient secret {}", if harm_secret { "PRESENT" } else { "ABSENT" });
+    println!(
+        "  `-c credential.helper=store`: exit {harm_code}, ambient secret {}",
+        if harm_secret { "PRESENT" } else { "ABSENT" }
+    );
     assert!(
         harm_secret,
         "\n\n**`T-19-121` DID NOT REPRODUCE.**\n\n\
@@ -1722,16 +1739,36 @@ fn t_19_121_the_credential_helper_key_shape_space_is_measured_with_the_control_d
 
     // -- **THE WHOLE KEY-SHAPE SPACE.**
     for (label, args, expected) in [
-        ("CREDENTIAL.HELPER (case)", vec!["-c", "CREDENTIAL.HELPER=store"], true),
-        ("Credential.Helper (case)", vec!["-c", "Credential.Helper=store"], true),
+        (
+            "CREDENTIAL.HELPER (case)",
+            vec!["-c", "CREDENTIAL.HELPER=store"],
+            true,
+        ),
+        (
+            "Credential.Helper (case)",
+            vec!["-c", "Credential.Helper=store"],
+            true,
+        ),
         (
             "credential.https://github.com.helper (URL-SCOPED)",
             vec!["-c", "credential.https://github.com.helper=store"],
             true,
         ),
-        ("credentialx.helper (near miss)", vec!["-c", "credentialx.helper=store"], false),
-        ("notcredential.helper (near miss)", vec!["-c", "notcredential.helper=store"], false),
-        ("credential.helperx (near miss)", vec!["-c", "credential.helperx=store"], false),
+        (
+            "credentialx.helper (near miss)",
+            vec!["-c", "credentialx.helper=store"],
+            false,
+        ),
+        (
+            "notcredential.helper (near miss)",
+            vec!["-c", "notcredential.helper=store"],
+            false,
+        ),
+        (
+            "credential.helperx (near miss)",
+            vec!["-c", "credential.helperx=store"],
+            false,
+        ),
     ] {
         let (code, secret) = fill(&args);
         println!(
@@ -1786,7 +1823,11 @@ fn t_19_121_the_credential_helper_key_shape_space_is_measured_with_the_control_d
     println!(
         "  --config-env=credential.helper=<VAR>: exit {:?}, ambient secret {}",
         out.status.code(),
-        if config_env_secret { "PRESENT" } else { "ABSENT" }
+        if config_env_secret {
+            "PRESENT"
+        } else {
+            "ABSENT"
+        }
     );
     assert!(
         config_env_secret,
@@ -1818,7 +1859,11 @@ fn t_19_121s_cred_rs_bound_is_quoted_from_the_source_and_the_layers_it_names_are
          scan_leading's leading-option region and layer 2's whole grammar` is \
          {} in the production source at this run.\n  \
          ARGV-VISIBLE it is. GOVERNED it is not — measured below.",
-        if still_present { "PRESENT" } else { "ABSENT (repaired)" }
+        if still_present {
+            "PRESENT"
+        } else {
+            "ABSENT (repaired)"
+        }
     );
 
     // -- The two layers the claim names, MEASURED. Both do act — on OTHER keys.
@@ -1840,9 +1885,18 @@ fn t_19_121s_cred_rs_bound_is_quoted_from_the_source_and_the_layers_it_names_are
     //    asserted PERMITTED lands red if it lands and a row asserted REFUSED
     //    lands red if it is severed — and `19-31` may only ADD to this file.
     for (label, command) in [
-        ("credential fill", "git -c credential.helper=store credential fill"),
-        ("fetch origin", "git -c credential.helper=store fetch origin"),
-        ("ls-remote origin", "git -c credential.helper=store ls-remote origin"),
+        (
+            "credential fill",
+            "git -c credential.helper=store credential fill",
+        ),
+        (
+            "fetch origin",
+            "git -c credential.helper=store fetch origin",
+        ),
+        (
+            "ls-remote origin",
+            "git -c credential.helper=store ls-remote origin",
+        ),
         (
             "an in-namespace push",
             "git -c credential.helper=store push origin HEAD:refs/heads/gsd-auto/alpha/w",
@@ -1936,7 +1990,10 @@ fn after_19_31_a_ledger_that_is_not_a_regular_file_is_refused_rather_than_read()
         .arg(&ledger)
         .status()
         .expect("mkfifo is on PATH");
-    assert!(made.success(), "the fixture creates a FIFO at the ledger path");
+    assert!(
+        made.success(),
+        "the fixture creates a FIFO at the ledger path"
+    );
     let size = std::fs::metadata(&ledger).unwrap().len();
     assert_eq!(
         size, 0,
@@ -1997,7 +2054,10 @@ fn a_regular_ledger_just_under_the_bound_still_permits_and_still_counts_before_a
 
     let answer = ask(envelope.path(), "gh pr create --title x");
     let after = std::fs::read_to_string(&ledger).unwrap().lines().count();
-    println!("  just-under control: {bytes} bytes, exit={}, {before} -> {after} lines", answer.code);
+    println!(
+        "  just-under control: {bytes} bytes, exit={}, {before} -> {after} lines",
+        answer.code
+    );
     assert_eq!(
         answer.code, 0,
         "**A LEDGER JUST UNDER THE BOUND MUST STILL PERMIT.** stdout: {}",
@@ -2366,7 +2426,10 @@ fn every_fenced_unit_pin_and_fenced_corpus_row_keeps_its_answer_under_the_widene
              three-component directory — **and `policy.rs:9719`'s stated REASON for this row \
              goes stale even though the row does not, which is `19-31`'s WR-02 correction**",
         ),
-        ("/tmp/envroot/alphax", "a SIBLING whose name merely EXTENDS the alias"),
+        (
+            "/tmp/envroot/alphax",
+            "a SIBLING whose name merely EXTENDS the alias",
+        ),
         (
             "/tmp/envroot/alpha2/x",
             "the raw-string-prefix trap, one component deeper",
@@ -2899,12 +2962,14 @@ fn the_unruled_rows_are_recorded_and_never_asserted() {
                 .to_string()
         },
     );
-    record_only("C-12 `.claude/settings.json` — layer 1's own registration", |_| {
-        "printf x >> .claude/settings.json".to_string()
-    });
-    record_only("C-13 `.git/info/exclude` — D-23, the sweep's ignore block", |_| {
-        "rm -f /tmp/proj/.git/info/exclude".to_string()
-    });
+    record_only(
+        "C-12 `.claude/settings.json` — layer 1's own registration",
+        |_| "printf x >> .claude/settings.json".to_string(),
+    );
+    record_only(
+        "C-13 `.git/info/exclude` — D-23, the sweep's ignore block",
+        |_| "rm -f /tmp/proj/.git/info/exclude".to_string(),
+    );
     record_only("C-14 the run journal — D-24/D-25 park EVIDENCE", |_| {
         "rm -rf /tmp/proj/.planning/meta-manager/runs/run-1".to_string()
     });
@@ -2912,7 +2977,10 @@ fn the_unruled_rows_are_recorded_and_never_asserted() {
         "C-15 `~/.config/gsd-meta-manager/config.json` — **NO `pr_cap_*` CLAMP is proposed or \
          written; clamping a configured cap is a PRODUCT decision about what a user may \
          configure, not a guard rule**",
-        |_| "printf '{\"pr_cap_per_24h\":9999}' > ~/.config/gsd-meta-manager/config.json".to_string(),
+        |_| {
+            "printf '{\"pr_cap_per_24h\":9999}' > ~/.config/gsd-meta-manager/config.json"
+                .to_string()
+        },
     );
     record_only(
         "C-08 `settings.json` — the BEHAVIOURAL half. Whether the agent CLI re-reads its \
@@ -2978,12 +3046,7 @@ fn the_unruled_rows_are_recorded_and_never_asserted() {
          two-`=` word as a path**, so the reach is not claimed and the row is RECORDED. It is \
          drawn in the AXIS's interior-path alphabet, where it fences the rule SHAPE: a \
          first-`=`-split rule misses it",
-        |root| {
-            format!(
-                "mytool --opt=a={}/alpha/pr-ledger.ndjson",
-                root.display()
-            )
-        },
+        |root| format!("mytool --opt=a={}/alpha/pr-ledger.ndjson", root.display()),
     );
     record_only(
         "`ssh -oControlPath=<ENV>/alpha/s host` — an attached short option with an `=` inside. \
@@ -3022,7 +3085,9 @@ fn no_repo_side_or_unruled_row_is_asserted_and_this_file_says_so_mechanically() 
     // in this phase carries one: an absence assertion cannot tell "the string is
     // not in this file" from "this is not the file I think it is".
     assert!(
-        THIS_FILE.contains("fn no_repo_side_or_unruled_row_is_asserted_and_this_file_says_so_mechanically"),
+        THIS_FILE.contains(
+            "fn no_repo_side_or_unruled_row_is_asserted_and_this_file_says_so_mechanically"
+        ),
         "the self-read must reach THIS file; if it does not, every absence below is vacuous"
     );
     assert!(
@@ -3142,14 +3207,12 @@ fn section_envelope_is_re_measured_and_this_round_spends_none_of_its_headroom() 
          the user's helper while `git credential fill` fails closed."
     );
     assert!(
-        advisory::SECTION_ENVELOPE
-            .contains("the files and the binary this envelope runs on"),
+        advisory::SECTION_ENVELOPE.contains("the files and the binary this envelope runs on"),
         "the `Not guaranteed` half's generalisation already covers this round's route — a \
          command that rewrites the files or the binary this envelope runs on is past the last \
          layer. **No new disclosure is owed here and none is written.**"
     );
 }
-
 
 // ===========================================================================
 // SECTION 13 — `T-19-121`: THE `credential.helper` CLAUSE, MEASURED BEFORE IT
@@ -3303,13 +3366,15 @@ fn t_19_121_what_the_clause_does_not_reach_is_recorded_in_neither_direction() {
     // **`19-30` recorded `T-19-104`'s carrier as `open at exit 0`; it is exit 2
     // `hook_bypass_blocked`, and `19-30`'s own summary corrected the plan on
     // exactly this point.** Re-confirmed here.
-    record_only("T-19-104 / GIT_CONFIG_PARAMETERS — a DIFFERENT mechanism", |_| {
-        "GIT_CONFIG_PARAMETERS='credential.helper=store' git status".to_string()
-    });
+    record_only(
+        "T-19-104 / GIT_CONFIG_PARAMETERS — a DIFFERENT mechanism",
+        |_| "GIT_CONFIG_PARAMETERS='credential.helper=store' git status".to_string(),
+    );
     // The `git config` WRITING form is an OPERAND of the `config` verb, not a
     // leading option. It writes a FILE — the family the injected empty pair does
     // not cover either — and no rule is written for it here.
-    record_only("T-19-121 / the `git config` WRITING form — unreached", |_| {
-        "git config credential.helper store".to_string()
-    });
+    record_only(
+        "T-19-121 / the `git config` WRITING form — unreached",
+        |_| "git config credential.helper store".to_string(),
+    );
 }
