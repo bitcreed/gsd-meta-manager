@@ -134,6 +134,23 @@ pub fn resolve_launch_target(
     }
 }
 
+/// Register the unregistered GSD project at `path` under its folder name.
+///
+/// Called when [`resolve_launch_target`] answered `Unregistered` and `path`
+/// (canonical) holds a `.planning` directory: `gsd-meta-manager .` inside a
+/// fresh GSD project adds it instead of refusing. Returns the new alias, or
+/// `None` when `path` is not a GSD project root or its folder name is not an
+/// admissible alias — the caller then reports the original refusal.
+pub fn auto_register(config: &mut Config, path: &Path) -> Option<String> {
+    if !path.join(".planning").is_dir() {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?;
+    let alias = crate::registry::Alias::new(name).ok()?;
+    crate::registry::add_project(config, &alias, path).ok()?;
+    Some(alias.as_str().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +391,23 @@ mod tests {
         };
         assert!(!unregistered.to_string().contains('\u{1b}'));
         assert!(!unregistered.suggestion().contains('\u{1b}'));
+    }
+
+    #[test]
+    fn auto_register_adds_a_planning_folder_under_its_folder_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("fresh-proj");
+        std::fs::create_dir_all(root.join(".planning")).unwrap();
+        let mut config = Config::new();
+        assert_eq!(auto_register(&mut config, &root), Some("fresh-proj".to_string()));
+        assert!(config.projects.contains_key("fresh-proj"));
+    }
+
+    #[test]
+    fn auto_register_refuses_a_folder_without_planning() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::new();
+        assert_eq!(auto_register(&mut config, tmp.path()), None);
+        assert!(config.projects.is_empty());
     }
 }

@@ -541,6 +541,31 @@ async fn main() -> anyhow::Result<()> {
                         &cwd,
                     ) {
                         Ok(alias) => Some(alias),
+                        Err(gsd_meta_manager::launch_target::LaunchTargetError::Unregistered {
+                            path,
+                            target,
+                        }) => {
+                            // A GSD project folder that is not registered yet
+                            // is added under its folder name, then opened.
+                            match gsd_meta_manager::launch_target::auto_register(
+                                &mut app.ctx.config,
+                                &path,
+                            ) {
+                                Some(alias) => {
+                                    save_config(&app.ctx.config, &app.ctx.config_path)?;
+                                    Some(alias)
+                                }
+                                None => {
+                                    let err = gsd_meta_manager::launch_target::LaunchTargetError::Unregistered {
+                                        path,
+                                        target,
+                                    };
+                                    eprintln!("Error: {err}");
+                                    eprintln!("{}", err.suggestion());
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
                         Err(err) => {
                             // `Display` escapes the target and path (D-21-3).
                             eprintln!("Error: {err}");
