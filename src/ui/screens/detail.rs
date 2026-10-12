@@ -11436,32 +11436,32 @@ fn build_defaults_entries(
     // API KEY (shown masked) or true/false overriding auto-detection.
     let (v, k) = opt_secret(config.brave_search.as_ref());
     push(cat, "brave_search", v, k, false, ConfigHelp::new(
-        "Brave Search API key for research (hidden), or true/false to override detecting BRAVE_API_KEY / ~/.gsd/brave_api_key; x clears.",
+        "Brave Search API key for research (hidden), or true/false to override detecting BRAVE_API_KEY / $GSD_HOME/.gsd/brave_api_key; x clears.",
     ));
     let (v, k) = opt_secret(config.firecrawl.as_ref());
     push(cat, "firecrawl", v, k, false, ConfigHelp::new(
-        "Firecrawl API key for page scraping (hidden), or true/false to override detecting FIRECRAWL_API_KEY / ~/.gsd/firecrawl_api_key; x clears.",
+        "Firecrawl API key for page scraping (hidden), or true/false to override detecting FIRECRAWL_API_KEY / $GSD_HOME/.gsd/firecrawl_api_key; x clears.",
     ));
     let (v, k) = opt_secret(config.exa_search.as_ref());
     push(cat, "exa_search", v, k, false, ConfigHelp::new(
-        "Exa semantic-search API key (hidden), or true/false to override detecting EXA_API_KEY / ~/.gsd/exa_api_key; x clears.",
+        "Exa semantic-search API key (hidden), or true/false to override detecting EXA_API_KEY / $GSD_HOME/.gsd/exa_api_key; x clears.",
     ));
     // top-level key promotion (quick task 260926-jnf), INFERRED I-8.
     let (v, k) = opt_secret(config.tavily_search.as_ref());
     push(cat, "tavily_search", v, k, false, ConfigHelp::new(
-        "Tavily Search API key for web discovery (hidden), or true/false to override detecting TAVILY_API_KEY / ~/.gsd/tavily_api_key; x clears.",
+        "Tavily Search API key for web discovery (hidden), or true/false to override detecting TAVILY_API_KEY / $GSD_HOME/.gsd/tavily_api_key; x clears.",
     ).since("v1.4.0"));
     let (v, k) = opt_secret(config.ref_search.as_ref());
     push(cat, "ref_search", v, k, false, ConfigHelp::new(
-        "Ref docs-search API key (hidden), or true/false to override detecting REF_API_KEY / ~/.gsd/ref_api_key; x clears.",
+        "Ref docs-search API key (hidden), or true/false to override detecting REF_API_KEY / $GSD_HOME/.gsd/ref_api_key; x clears.",
     ).since("v1.4.0"));
     let (v, k) = opt_secret(config.perplexity.as_ref());
     push(cat, "perplexity", v, k, false, ConfigHelp::new(
-        "Perplexity API key for web discovery (hidden), or true/false to override detecting PERPLEXITY_API_KEY / ~/.gsd/perplexity_api_key; x clears.",
+        "Perplexity API key for web discovery (hidden), or true/false to override detecting PERPLEXITY_API_KEY / $GSD_HOME/.gsd/perplexity_api_key; x clears.",
     ).since("v1.4.0"));
     let (v, k) = opt_secret(config.jina.as_ref());
     push(cat, "jina", v, k, false, ConfigHelp::new(
-        "Jina docs/scrape-fallback API key (hidden), or true/false to override detecting JINA_API_KEY; unset counts as available; x clears.",
+        "Jina docs/scrape-fallback API key (hidden), or true/false to override detecting JINA_API_KEY / $GSD_HOME/.gsd/jina_api_key; unset counts as available; x clears.",
     ).since("v1.4.0"));
 
     // ── Model & Pipeline ──────────────────────────────────────
@@ -29970,9 +29970,11 @@ mod tests {
         use crate::state_reader::config_json::parse_gsd_config;
         let project = parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap();
         let global = parse_gsd_config(r#"{"model_profile":"quality"}"#).unwrap();
-        let mut cache = super::super::ProjectViewCache::default();
-        cache.defaults_config = Some(project);
-        cache.defaults_user_config = Some(global);
+        let cache = super::super::ProjectViewCache {
+            defaults_config: Some(project),
+            defaults_user_config: Some(global),
+            ..Default::default()
+        };
         let entries = entries_for_cache(&cache);
         let row = entries
             .iter()

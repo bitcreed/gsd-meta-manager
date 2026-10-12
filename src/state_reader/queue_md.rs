@@ -85,7 +85,9 @@ const GSD_TOOLS_SHIM: &str = "bin/gsd-tools.cjs";
 /// I-4): each candidate `gsd-core` directory mapped onto its
 /// [`GSD_TOOLS_SHIM`], so the launcher resolver and the installed-version
 /// detector read ONE list and cannot drift apart. The order mirrors gsd-core
-/// 1.15.0 `gsd-core/references/gsd-run-resolver.md` (as reworked by #4834):
+/// 1.16.0 `gsd-core/references/gsd-run-resolver.md` (as reworked by #4834 in
+/// 1.15.0; 1.16.0 only extends and reorders the non-Claude home list, which
+/// keeps `CLAUDE_CONFIG_DIR` first and still puts it ahead of `CODEX_HOME`):
 ///   1. `<root>/gsd-core/bin/gsd-tools.cjs`
 ///   2. `<root>/.claude/gsd-core/bin/gsd-tools.cjs`
 ///   3. `<root>/.codex/gsd-core/bin/gsd-tools.cjs`
@@ -119,7 +121,7 @@ fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
 /// `.cjs` shim through `node`; failing that, falls back to a `gsd-tools`
 /// executable on `PATH` (invoked directly). Returns `None` when none resolve.
 ///
-/// Follows upstream gsd-core 1.15.0 `gsd-core/references/gsd-run-resolver.md`
+/// Follows upstream gsd-core 1.16.0 `gsd-core/references/gsd-run-resolver.md`
 /// (#4834). Since #4667 a Codex install is self-contained under
 /// `${CODEX_HOME:-~/.codex}/gsd-core`, so a Codex-only machine has no
 /// `~/.claude/gsd-core`; the Codex candidates keep such a user on GSD's own
@@ -133,7 +135,7 @@ fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
 ///   - upstream's other runtime homes (Gemini, OpenCode, ...) are not probed;
 ///   - the PATH arm is not gated on `gsd-tools runtime-identity`.
 ///
-/// No `GSD_RUNTIME` pin is applied to the `smart-entry` call: 1.15.0
+/// No `GSD_RUNTIME` pin is applied to the `smart-entry` call: 1.16.0
 /// `src/smart-entry.cts` hardcodes the `/gsd:` spelling regardless of the
 /// resolved runtime, so a Codex install answers exactly like a Claude one.
 fn resolve_gsd_tools_from(project_root: &Path, roots: &InstallRoots) -> Option<GsdToolsCmd> {
@@ -550,7 +552,7 @@ mod tests {
         assert!(suggestions[0].contains("discuss-phase 2"));
     }
 
-    // --- gsd-tools resolver order (gsd-core 1.15.0 gsd-run-resolver.md) ---
+    // --- gsd-tools resolver order (gsd-core 1.16.0 gsd-run-resolver.md) ---
 
     const SHIM: &str = "gsd-core/bin/gsd-tools.cjs";
 

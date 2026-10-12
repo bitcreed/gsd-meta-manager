@@ -16,8 +16,7 @@ pending actions at a glance.
 the app reads which gsd-core you have installed and warns when it is newer than
 what this build is synced to -- see [Compatibility](#compatibility) and
 [docs/GSD-CORE-SYNC.md](docs/GSD-CORE-SYNC.md) for the exact baseline. This
-build is synced to the gsd-core 1.15.0 tree (commit `v1.14.0-111-gec81d0d10`),
-with oracle pin `1.14.0`.
+build is synced to gsd-core 1.16.0 (`v1.16.0`), with oracle pin `1.16.0`.
 
 ![Dashboard overview across registered projects](assets/screenshots/gsd-mm-overview.png)
 

@@ -1,62 +1,58 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `release-1.15.0` at
-`v1.14.0-111-gec81d0d10`** (`ec81d0d10f545dd5aea2cc893863a542bc49029d`,
-`package.json` 1.15.0, untagged) **on 2026-09-26. Conformance oracle /
-`GSD_CORE_SYNCED_VERSION` pinned at `1.14.0`**, the latest version published on
-npm.
+**Config surface synced against gsd-core `v1.16.0`**
+(`87e87d34b2d8519e30d1af7d910fc98f2af4bc8d`, `package.json` 1.16.0, tagged
+2026-10-05) **on 2026-10-12. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.16.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
-values as three constants: `GSD_CORE_SYNCED_VERSION` (the oracle pin, `1.14.0`),
-`GSD_CORE_SYNCED_COMMIT` (the synced tree's describe) and
-`GSD_CORE_SYNCED_TREE_VERSION` (the synced tree's `package.json` version,
-`1.15.0`). This file is
-the human-readable half: the full key inventory, per-key status, and the exact
-commands that produced it, so the *next* sync starts from a measured point
-instead of a blank slate.
+values as three constants, which at this sync all name the same release:
+
+| Constant | Value | What it means |
+|---|---|---|
+| `GSD_CORE_SYNCED_VERSION` | `1.16.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.16.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.16.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+
+This file is the human-readable half: the full key inventory, per-key status,
+and the exact commands that produced it, so the *next* sync starts from a
+measured point instead of a blank slate.
 
 Before this record existed the drift was silent in both directions. The sync
 before quick task 260916-vqw was at GSD 1.8.0 (quick task 260722-emn), nothing
 in the tree said so, and by 1.14.0 gsd-core documented **57 scalar keys this
 build modelled nowhere** — including `workflow.compact_content`, the one a human
 happened to notice. The 1.14.0 re-sync (260916-vqw, at `v1.14.0-52-g651511d1e`)
-closed that gap; the release-1.15.0 re-sync (260926-gtk) is the first delta sync
-made FROM this record. Quick task 260926-jnf then promoted the seven real
-top-level keys gtk had left pass-through and made every secret-bearing key
-display masked — see [Top-level key promotion](#top-level-key-promotion-quick-task-260926-jnf)
-and [Secret-bearing keys](#secret-bearing-keys).
+closed that gap; the release-1.15.0 re-sync (260926-gtk, at the untagged
+`v1.14.0-111-gec81d0d10`) was the first delta sync made FROM this record. Quick
+task 260926-jnf then promoted the seven real top-level keys gtk had left
+pass-through and made every secret-bearing key display masked — see
+[Top-level key promotion](#top-level-key-promotion-quick-task-260926-jnf) and
+[Secret-bearing keys](#secret-bearing-keys). The v1.16.0 sync was three quick
+tasks: 261012-jqb (the key delta — six `gates.*` keys retired, `audit.enabled`
+added), 261012-jqc (`$GSD_HOME` for the global defaults file) and 261012-kee
+(this baseline).
 
-> **Keep this file and `config_json.rs`'s three constants in step, in the SAME
-> commit.** A record that outlives its subject tells the next reader a surface
-> is covered when it is not. README.md deliberately carries no version numbers;
-> its `**GSD compatibility:**` note links here for the baseline.
+> **Keep this file, `config_json.rs`'s three constants and README.md's
+> `**GSD compatibility:**` note in step, in the SAME commit.** A record that
+> outlives its subject tells the next reader a surface is covered when it is
+> not; `the_sync_record_names_every_modelled_key_and_the_measured_baseline` and
+> `the_readme_compatibility_note_names_the_synced_baseline` go red otherwise.
 
----
+**When the three disagree.** The oracle pin can only name a version that is on
+npm. If a sync targets an untagged tree past the last published release (as the
+release-1.15.0 sync did: `package.json` 1.15.0, describe
+`v1.14.0-111-gec81d0d10`, pin `1.14.0`), keep the pin at the last published
+version and bump it — re-describing the commit and replacing any provisional
+`since` values with step 5's measured tag — once the tag ships on npm.
+`the_gsd_core_sync_baseline_is_recorded` requires COMMIT to CONTAIN VERSION and
+the pin to be at or below the tree version, which is what flags a half-done
+bump.
 
-## Why VERSION and COMMIT disagree right now
-
-The two constants normally name the same release. Today they deliberately do
-not:
-
-| Constant | Value | What it means |
-|---|---|---|
-| `GSD_CORE_SYNCED_COMMIT` | `v1.14.0-111-gec81d0d10` | The tree the config surface was diffed against: the tip of gsd-core's `release-1.15.0` branch, 111 commits past `v1.14.0`. Its `package.json` says `1.15.0`, but no `v1.15.0` tag exists, so `git describe` still names `v1.14.0`. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.15.0` | The `package.json` version of the tree at `GSD_CORE_SYNCED_COMMIT`. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
-| `GSD_CORE_SYNCED_VERSION` | `1.14.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below that commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. |
-
-`npm view @opengsd/gsd-core versions --json` ends at `1.14.0` as of 2026-09-26:
-1.15.0 is unpublished, so pinning `1.15.0` would make the publish job fail to
-install its oracle.
-
-**Exit condition.** Once `npm view @opengsd/gsd-core version` reports `1.15.0`
-AND a `v1.15.0` tag exists upstream: bump `GSD_CORE_SYNCED_VERSION` to `1.15.0`,
-re-describe `GSD_CORE_SYNCED_COMMIT` (it will then read `v1.15.0…`), replace the
-provisional `v1.15.0` `since` values below with the measured tag, and re-run
-`./scripts/pre-tag-check.sh --container vX.Y.Z` so the new oracle is certified.
-
-`the_gsd_core_sync_baseline_is_recorded` (in `config_json.rs`) requires COMMIT
-to CONTAIN VERSION. That holds today only because 1.15.0 is untagged and the
-describe still names `v1.14.0`; it is the test that will flag a half-done bump.
+**The release-1.15.0 tree is not an ancestor of the tags.** `ec81d0d10` (the
+previous `GSD_CORE_SYNCED_COMMIT`) is reachable from neither `v1.15.0`
+(`b10ab3fde`) nor `v1.16.0` — upstream re-cut the release branch. Diff from a
+TAG (`v1.15.0`), not from that sha, when measuring the v1.15.0..v1.16.0 delta.
 
 ---
 
@@ -67,14 +63,14 @@ it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
 whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.14.0-117-gebe51d68c` with `package.json` 1.14.0) — not the sync target. A
+`v1.16.0-19-g77a12fa84` with `package.json` 1.16.0) — not the sync target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=upstream/release-1.15.0          # the sync target; a tag once one exists
-PREV=651511d1e                       # the previous GSD_CORE_SYNCED_COMMIT's sha
+REF=v1.17.0                          # the sync target: the next release tag
+PREV=v1.16.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -112,8 +108,8 @@ first of those is a `since` that is wrong by several releases. Every key below
 resolved on the dotted form; the leaf-name fallback was never reached.
 
 **When `tag --contains` prints nothing**, the key is not in any release tag
-yet. The `since` is then `v` + the REF's `package.json` version (today
-`v1.15.0`), and it is **provisional** until that tag exists — re-run step 5 at
+yet. The `since` is then `v` + the REF's `package.json` version, and it is
+**provisional** until that tag exists — re-run step 5 at
 the next sync and replace it with the measured tag.
 
 **gsd-core's early tags are spelled oddly and that is not a typo here.**
@@ -594,15 +590,13 @@ warning.
 
 Then, in priority order:
 
-1. **Bump the oracle pin once 1.15.0 ships.** When `npm view @opengsd/gsd-core
-   version` reports `1.15.0` and a `v1.15.0` tag exists: set
-   `GSD_CORE_SYNCED_VERSION` to `1.15.0`, re-describe `GSD_CORE_SYNCED_COMMIT`,
-   replace the two provisional `v1.15.0` `since` values (in
-   `build_defaults_entries` and in the tables above) with step 5's measured tag,
-   and re-run `./scripts/pre-tag-check.sh --container vX.Y.Z`. See "Why VERSION
-   and COMMIT disagree right now".
-2. **Re-measure the baseline pair.** If `GSD_CORE_SYNCED_COMMIT` already
-   matches the new REF, there is nothing else to do.
+1. **Re-measure the baseline trio** with step 1 against the next release tag
+   (`REF=v1.17.0`, `PREV=v1.16.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   matches the new REF, there is nothing else to do. If the target is an
+   untagged tree past the last npm release, see "When the three disagree"
+   above. After moving the oracle pin, re-run
+   `./scripts/pre-tag-check.sh --container vX.Y.Z` so the new oracle is
+   certified.
    **Re-diff the secret-bearing keys every sync** (quick task 260926-jnf):
    upstream `src/secrets.cts` `SECRET_CONFIG_KEYS`, the CONFIGURATION.md
    "Search API keys" table, and the heuristic-matching key cells (the command
@@ -611,16 +605,16 @@ Then, in priority order:
    goes into `NON_SECRET_CONFIG_KEYS`.
    **Decide `context`'s type** once upstream's docs and `config-set` agree,
    then promote it.
-3. **Promote `parallelization.*` (6 keys).** The highest-value pass-through
+2. **Promote `parallelization.*` (6 keys).** The highest-value pass-through
    family: this tab already edits a top-level `parallelization` boolean, so a
    project carrying the namespaced block sees a row that disagrees with the file.
    Decide which path wins before adding rows.
-4. **Promote the flat `review.*` keys** (`default_reviewers`, the three `*_host`
+3. **Promote the flat `review.*` keys** (`default_reviewers`, the three `*_host`
    keys, `max_prompt_tokens`, `max_prompt_tokens_per_reviewer`,
    `parallel_lanes`). All are scalars; only the `models.<cli>` and
    `reviewer_instances.<name>.*` families have to stay pass-through.
-5. **Then `refactor.*` and `safety.*`**, which are small and fully scalar.
-6. **Retro-measure `since` for the 73 rows that have none**, using step 5's
+4. **Then `refactor.*` and `safety.*`**, which are small and fully scalar.
+5. **Retro-measure `since` for the 73 rows that have none**, using step 5's
    command, if a reader ever needs the full history rather than the delta.
-7. **Consider the label rename** described under "Known inconsistency" — as its
+6. **Consider the label rename** described under "Known inconsistency" — as its
    own change, never folded into a sync.
