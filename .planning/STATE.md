@@ -1,13 +1,13 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.12.0
+milestone: v1.13.0
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
-stopped_at: v1.12.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
+stopped_at: v1.13.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
 last_updated: "2026-10-12T19:45:57.413Z"
-last_activity: 2026-10-06
-last_activity_desc: v1.12.0 released — Lanes, Popups and Config Polish
+last_activity: 2026-10-12
+last_activity_desc: v1.13.0 released — gsd-core 1.16.0 Sync
 state_head: faf3eeb41f38b2ecda8ad7286798a333321594b5
 progress:
   total_phases: 10
@@ -15,7 +15,7 @@ progress:
   total_plans: 7
   completed_plans: 112
   percent: 58
-milestone_name: Lanes, Popups and Config Polish
+milestone_name: gsd-core 1.16.0 Sync
 ---
 
 # Project State
@@ -32,7 +32,17 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: v1.12.0 shipped 2026-10-06 (interim release; v2.0 milestone still open)
+Status: v1.13.0 shipped 2026-10-12 (interim release; v2.0 milestone still open)
+  gsd-core v1.16.0 sync: quick batch 261012-jqa (261012-jqb config key delta — six gates.* keys
+  retired, gates.confirm_milestone_scope + audit.enabled modelled, DEFAULTS_OPTION_COUNT 135;
+  261012-jqc GSD_HOME-aware global defaults path) and 261012-kee (baseline constants 1.16.0 /
+  v1.16.0 / 1.16.0, sync doc, README note, $GSD_HOME key-file help); plus fast task 0c525f6
+  (auto-register an unregistered GSD project on `gsd-meta-manager <path>`). All deps bumped: MSRV
+  raised 1.88 -> 1.89 to take uuid 1.28.0 (CI msrv job + container image moved with it).
+  `./scripts/pre-tag-check.sh --container v1.13.0` exit **0**, all five gates PASS, git banner
+  MATCH, 59 suites / **2959 passed / 0 failed** / 15 ignored. Router's next is Phase 19, whose
+  loop is halted by user decision — ask first.
+Earlier (v1.12.0 release, 2026-10-06):
   Quick tasks 261004-gsd-expansion, 261004-readme-accuracy, 261006-cfg, 261006-cfr, 261006-cpp,
   261006-git-lanes and 261006-ujx, plus worktree-only roadmap phases, modal Yes/No confirm popups,
   manager-preferences editor and $EDITOR cache reloads. Release gate also cleared four clippy lints
@@ -167,7 +177,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-12 - Completed quick task 261012-kee: gsd-core v1.16.0 sync finale (baseline 1.16.0 / v1.16.0 / 1.16.0)
+Last activity: 2026-10-12 - v1.13.0 released (gsd-core 1.16.0 Sync; MSRV 1.89)
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -626,7 +636,16 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-06
+Last session: 2026-10-12
+Stopped at: v1.13.0 released (gsd-core 1.16.0 Sync)
+Release: `Cargo.toml` 1.12.0 -> 1.13.0; MSRV `rust-version` 1.88 -> 1.89 (uuid 1.26.1 -> 1.28.0,
+user decision). `cargo update` moved cc, indoc, litrs, mac_address (drops nix), pest*, serde_json,
+sha2, smallvec, syn, unicode-ident; adds stacker/psm. Still held by upstream `=` pins: psm 0.1.24
+(0.1.32, pest), generic-array 0.14.7 (0.14.9), unicode-width 0.2.0 (0.2.2). Container pre-tag
+check green. Phase 19's gap-closure loop is halted by user decision — do not resume without asking.
+Resume file: None
+
+Previous session (v1.12.0 release, 2026-10-06):
 Stopped at: v1.12.0 released (Lanes, Popups and Config Polish)
 Release: `Cargo.toml` 1.11.0 -> 1.12.0; `cargo update` moved cc, either, lazy_static, libc, mio,
 powerfmt, tokio; uuid held at 1.26.1 (1.27.0 needs rustc 1.89, MSRV is 1.88). Still held by upstream

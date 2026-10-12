@@ -37,9 +37,9 @@ RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
-# Rust. `stable` with clippy covers gates 3-5; the 1.88.0 pin is here so gate 2
+# Rust. `stable` with clippy covers gates 3-5; the 1.89.0 pin is here so gate 2
 # — the MSRV gate — can actually run in the container instead of SKIPPING.
-# 1.88.0 MIRRORS THE `dtolnay/rust-toolchain@1.88.0` REF in release.yml's msrv
+# 1.89.0 MIRRORS THE `dtolnay/rust-toolchain@1.89.0` REF in release.yml's msrv
 # job. If the manifest's rust-version floor moves, BOTH move: this line and
 # that ref. Gate 2 derives the floor from cargo metadata, so it will report the
 # mismatch as a SKIP rather than silently certifying the wrong floor.
@@ -53,7 +53,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path \
       --default-toolchain stable --profile minimal --component clippy \
- && rustup toolchain install 1.88.0 --profile minimal \
+ && rustup toolchain install 1.89.0 --profile minimal \
  && chmod -R a+w /usr/local/rustup /usr/local/cargo
 
 # A uid-1000 user with a HOME that is DELIBERATELY FREE OF `.claude`.
