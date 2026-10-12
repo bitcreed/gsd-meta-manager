@@ -676,18 +676,48 @@ pub fn serialize_gsd_config(config: &GsdConfig) -> Result<String, serde_json::Er
     serde_json::to_string_pretty(config)
 }
 
-/// Resolve the absolute path to the user-level GSD defaults file
-/// (`~/.gsd/defaults.json`). Returns None when $HOME is unset.
+/// Name of the environment variable that roots GSD's own store. Production
+/// code and tests reference this one literal.
+pub const GSD_HOME_ENV: &str = "GSD_HOME";
+
+/// Resolve the absolute path to the user-level GSD defaults file,
+/// `$GSD_HOME/.gsd/defaults.json`.
+///
+/// Mirrors gsd-core's own rule, `process.env.GSD_HOME || os.homedir()`
+/// (gsd-core config loader; fd1bfd09e / v1.16.0): a non-empty `GSD_HOME`
+/// roots the store; an unset or empty `GSD_HOME` falls back to `$HOME`.
+/// Returns None when neither is usable, and the defaults file is then not
+/// loaded. This is the single env-reading wrapper; the semantics live in
+/// [`user_defaults_path_from`], which tests drive without touching the
+/// process environment.
 pub fn user_defaults_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|home| {
-        let mut p = std::path::PathBuf::from(home);
-        p.push(".gsd");
-        p.push("defaults.json");
-        p
-    })
+    user_defaults_path_from(
+        std::env::var_os(GSD_HOME_ENV).as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
 }
 
-/// Load `~/.gsd/defaults.json` if present and parsable.
+/// Pure resolver behind [`user_defaults_path`].
+///
+/// An empty `gsd_home` is treated as unset, matching JS `||`. Any other
+/// value is used verbatim — no trimming, no relative-path normalization —
+/// because upstream joins whatever it gets, and normalizing would make the
+/// TUI and gsd-core disagree about which file is live. The `home` fallback
+/// keeps the pre-GSD_HOME semantics exactly (`$HOME` only; upstream's
+/// passwd lookup when HOME is unset is a known, out-of-scope divergence).
+fn user_defaults_path_from(
+    gsd_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    let root = gsd_home.filter(|g| !g.is_empty()).or(home)?;
+    let mut p = std::path::PathBuf::from(root);
+    p.push(".gsd");
+    p.push("defaults.json");
+    Some(p)
+}
+
+/// Load `$GSD_HOME/.gsd/defaults.json` (`GSD_HOME` unset or empty falls
+/// back to `$HOME`; see [`user_defaults_path`]) if present and parsable.
 /// GSD layers this under project config at `/gsd-new-project` time;
 /// we surface it in the TUI so users can see which fields fall back
 /// to global defaults.
@@ -716,6 +746,30 @@ mod tests {
         let config = load_user_defaults_from(&path).expect("a present file loads");
         assert_eq!(config.mode, "yolo");
         assert!(load_user_defaults_from(&td.path().join("missing.json")).is_none());
+    }
+
+    fn os(s: &str) -> Option<&std::ffi::OsStr> {
+        Some(std::ffi::OsStr::new(s))
+    }
+
+    #[test]
+    fn gsd_home_wins_over_home_for_the_global_defaults_path() {
+        let want = Some(std::path::PathBuf::from("/g/.gsd/defaults.json"));
+        assert_eq!(user_defaults_path_from(os("/g"), os("/h")), want);
+        assert_eq!(user_defaults_path_from(os("/g"), None), want);
+    }
+
+    #[test]
+    fn an_unset_or_empty_gsd_home_falls_back_to_home() {
+        let want = Some(std::path::PathBuf::from("/h/.gsd/defaults.json"));
+        assert_eq!(user_defaults_path_from(None, os("/h")), want);
+        assert_eq!(user_defaults_path_from(os(""), os("/h")), want);
+    }
+
+    #[test]
+    fn no_usable_root_means_no_global_defaults_path() {
+        assert_eq!(user_defaults_path_from(None, None), None);
+        assert_eq!(user_defaults_path_from(os(""), None), None);
     }
 
     #[test]

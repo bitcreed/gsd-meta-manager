@@ -272,7 +272,7 @@ Tab-specific keys:
 | Sessions › Agents | `Enter` | Jump to the agent's plan in the Phases Waves pane (navigation only; nothing is sent to the agent) |
 | Config | `Enter` | Edit the selected value; in an open dropdown, apply the choice. On a secret row (an API key, shown as `•••••••• (set)`) the prompt opens empty with hidden input, and an empty `Enter` keeps the current key — see [Secret values](docs/CONFIGURATION.md#secret-values-in-gsd-project-config-config-tab) |
 | Config | `x` | Clear (unset) the selected value |
-| Config | `g` (or `d`) | Switch between the project's config and `~/.gsd/defaults.json` |
+| Config | `g` (or `d`) | Switch between the project's config and `$GSD_HOME/.gsd/defaults.json` (`GSD_HOME` defaults to your home directory) |
 | Config | `r` | Reload the config from disk |
 | Config | `/` | Filter the rows; `Esc` clears the filter |
 | Docs › Files | `Enter` | Open the selected directory or file |

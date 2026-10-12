@@ -7939,7 +7939,7 @@ impl DetailScreen {
                     "  No config loaded (project may not have .planning/config.json)"
                 }
                 DefaultsEditTarget::Global => {
-                    "  No global template loaded (~/.gsd/defaults.json missing — saving will create it)"
+                    "  No global template loaded ($GSD_HOME/.gsd/defaults.json missing — saving will create it)"
                 }
             };
             let mut lines = vec![Line::from(Span::styled(
@@ -8077,7 +8077,7 @@ impl DetailScreen {
         let mut title = match edit_target {
             DefaultsEditTarget::Project => " Project Config (.planning/config.json) ".to_string(),
             DefaultsEditTarget::Global => {
-                " Global: template for NEW projects (~/.gsd/defaults.json) ".to_string()
+                " Global: template for NEW projects ($GSD_HOME/.gsd/defaults.json) ".to_string()
             }
         };
         // Filter echo + count ([INFERRED A5]). The filter is operator-typed
@@ -12375,7 +12375,7 @@ fn config_scope_status(target: super::DefaultsEditTarget) -> &'static str {
     use super::DefaultsEditTarget;
     match target {
         DefaultsEditTarget::Project => "Editing this project only (.planning/config.json)",
-        DefaultsEditTarget::Global => "Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it",
+        DefaultsEditTarget::Global => "Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it",
     }
 }
 
@@ -22178,7 +22178,7 @@ mod tests {
             rows[0]
         );
         assert!(
-            rows[1].contains(" Global: template for NEW projects (~/.gsd/defaults.json) "),
+            rows[1].contains(" Global: template for NEW projects ($GSD_HOME/.gsd/defaults.json) "),
             "{:?}",
             rows[1]
         );
@@ -22528,7 +22528,7 @@ mod tests {
         assert_eq!(scope_strip_target(&ctx), DefaultsEditTarget::Global);
         assert_eq!(
             scope_strip_status(&ctx).as_deref(),
-            Some("Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it")
+            Some("Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it")
         );
         assert_eq!(screen.focus, DetailFocus::ScopeStrip);
         let (row, _) = strip_row(&screen, &ctx);
@@ -22592,7 +22592,7 @@ mod tests {
             (
                 KeyCode::Right,
                 DefaultsEditTarget::Global,
-                Some("Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it"),
+                Some("Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it"),
             ),
             (KeyCode::Right, DefaultsEditTarget::Global, None),
             (
@@ -27535,7 +27535,7 @@ mod tests {
         );
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("Editing global template for NEW projects (~/.gsd/defaults.json); existing projects ignore it")
+            Some("Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it")
         );
         assert_eq!(screen.focus, DetailFocus::Content);
         assert_eq!(
