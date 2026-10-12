@@ -645,6 +645,10 @@ pub fn serialize_gsd_config(config: &GsdConfig) -> Result<String, serde_json::Er
     serde_json::to_string_pretty(config)
 }
 
+/// Name of the environment variable that roots GSD's own store. Production
+/// code and tests reference this one literal.
+pub const GSD_HOME_ENV: &str = "GSD_HOME";
+
 /// Resolve the absolute path to the user-level GSD defaults file
 /// (`~/.gsd/defaults.json`). Returns None when $HOME is unset.
 pub fn user_defaults_path() -> Option<std::path::PathBuf> {
