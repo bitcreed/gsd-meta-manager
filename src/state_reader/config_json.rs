@@ -224,6 +224,12 @@ pub struct GsdConfig {
     /// Surfaced read-only, like the other shape-varying values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_skills: Option<serde_json::Value>,
+    // --- gsd-core v1.16.0 delta (quick task 261012-jqb) ---
+    /// The LAST typed field, directly before `extra` (INFERRED I-3): a file
+    /// that already carried an `audit` block — until now emitted at the end
+    /// through the top-level pass-through map — keeps it near the end on save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<AuditConfig>,
     /// Top-level gsd-core keys this build does not model — see [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -254,6 +260,10 @@ pub struct GatesConfig {
     pub confirm_roadmap: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm_transition: Option<bool>,
+    /// Added to gsd-core's schema by ded8b6259 (#4974, first tag v1.16.0);
+    /// read by complete-milestone.md, and only under mode `interactive`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_milestone_scope: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execute_next_plan: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,6 +324,30 @@ pub struct PlanReviewConfig {
 pub struct PlannerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stall_detection_enabled: Option<bool>,
+    /// See [`ExtraKeys`].
+    #[serde(flatten)]
+    pub extra: ExtraKeys,
+}
+
+/// gsd-core's `audit` block, with one documented key, `enabled` (off by
+/// default; the trail is `.planning/.gsd-trace.jsonl`).
+///
+/// af464656e (#4975, first tag v1.16.0) made the key EFFECTIVE: it registered
+/// it in the schema and wired the live dispatch seams to read it. Upstream is
+/// strict — only a real JSON `true` enables the trail (the string `"true"`
+/// leaves it off) — and `GSD_AUDIT=1` enables it independently; neither turns
+/// the other off.
+///
+/// **A deliberate divergence from gsd-core (INFERRED I-2, accepted).** gsd-core
+/// treats a non-boolean `enabled` as off. The typed `Option<bool>` here instead
+/// makes such a hand edit a whole-file parse failure, exactly like
+/// [`PlannerConfig`]'s INFERRED I-5. gsd-core's own `config-set` accepts
+/// booleans only, so only a hand edit can produce the case, and a failed parse
+/// draws no Defaults rows and therefore cannot save over (and lose) the file.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct AuditConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -1084,6 +1118,62 @@ mod tests {
         );
     }
 
+    /// The two keys gsd-core v1.16.0 added (quick task 261012-jqb):
+    /// `gates.confirm_milestone_scope` (ded8b6259, #4974) and `audit.enabled`
+    /// (af464656e, #4975). Both are typed, neither leaks into a pass-through
+    /// map, and the save path is a fixed point over them.
+    #[test]
+    fn the_gsd_core_1_16_0_keys_are_modelled() {
+        let content =
+            r#"{"gates":{"confirm_milestone_scope":false},"audit":{"enabled":true,"zz_probe":1}}"#;
+        let config = parse_gsd_config(content).expect("the v1.16.0 fixture parses");
+        assert_eq!(
+            config.gates.as_ref().unwrap().confirm_milestone_scope,
+            Some(false)
+        );
+        let audit = config.audit.as_ref().expect("audit is a typed block");
+        assert_eq!(audit.enabled, Some(true));
+        let extra: Vec<&str> = audit.extra.keys().map(String::as_str).collect();
+        assert_eq!(
+            extra,
+            ["zz_probe"],
+            "the audit pass-through map must hold exactly the probe"
+        );
+        assert!(
+            !config.extra.contains_key("audit") && !config.extra.contains_key("gates"),
+            "a v1.16.0 block fell through to the top-level pass-through map"
+        );
+
+        let serialized = serialize_gsd_config(&config).expect("serialises");
+        let reparsed = parse_gsd_config(&serialized).expect("re-parses");
+        assert_eq!(
+            serialized,
+            serialize_gsd_config(&reparsed).unwrap(),
+            "the save path is not a fixed point over the v1.16.0 keys"
+        );
+        assert_eq!(
+            reparsed.gates.as_ref().unwrap().confirm_milestone_scope,
+            Some(false)
+        );
+        assert_eq!(reparsed.audit.as_ref().unwrap().enabled, Some(true));
+
+        assert!(
+            !serialize_gsd_config(&GsdConfig::default())
+                .unwrap()
+                .contains("audit"),
+            "a default config invented an audit block"
+        );
+        assert!(parse_gsd_config("{}").unwrap().audit.is_none());
+
+        // INFERRED I-2 (accepted divergence, pinned): gsd-core reads a string
+        // "true" as off; this build refuses to parse the file at all, and a
+        // failed parse draws no rows and so cannot save over it.
+        assert!(
+            parse_gsd_config(r#"{"audit":{"enabled":"true"}}"#).is_none(),
+            "a non-boolean audit.enabled became lenient — make that deliberate"
+        );
+    }
+
     /// Every `workflow.*` key the gsd-core 1.14.0 re-sync added, parsed from
     /// GSD's own spelling and round-tripped.
     ///
@@ -1330,6 +1420,7 @@ mod tests {
             "plan_review",
             "planner",
             "context_window",
+            "audit",
         ] {
             assert!(
                 !serialized.contains(block),
@@ -1343,6 +1434,7 @@ mod tests {
         assert!(empty.plan_review.is_none());
         assert!(empty.planner.is_none());
         assert!(empty.context_window.is_none());
+        assert!(empty.audit.is_none());
     }
 
     /// ID-1: the baseline a future sync diffs from has to be measured, and a

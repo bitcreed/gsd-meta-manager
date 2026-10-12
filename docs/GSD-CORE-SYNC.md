@@ -518,7 +518,20 @@ assertions refuse a row with no `ConfigHelp`.
 | `gates.confirm_plan` | v1.01.0 |
 | `gates.execute_next_plan` | v1.01.0 |
 | `gates.confirm_transition` | v1.01.0 |
+| `gates.confirm_milestone_scope` | v1.16.0 |
 | `gates.issues_review` | v1.01.0 |
+
+### Observability
+
+| Key | since |
+|---|---|
+| `audit.enabled` | v1.16.0 |
+
+`since` here is the release that made the key EFFECTIVE: af464656e (#4975,
+first tag v1.16.0) registered it in the schema and wired the dispatch seams to
+read it. Step 5's first-mention recipe answers v1.2.0 (2d14eb887), but that
+commit only documented a key `config-set` rejected and nothing read — a
+prose-only promise, so v1.2.0 would advertise an inert key (INFERRED I-1).
 
 ---
 

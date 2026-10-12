@@ -11892,10 +11892,30 @@ fn build_defaults_entries(
         ConfigHelp::new("Stops at a phase boundary and asks before moving on to the one after it.")
             .since("v1.01.0"),
     );
+    // gsd-core v1.16.0 delta (quick task 261012-jqb): added to the schema by
+    // ded8b6259 (#4974), first tag v1.16.0; read by complete-milestone.md.
+    let (v, k) = opt_bool(pga.and_then(|g| g.confirm_milestone_scope));
+    push(cat, "gates.confirm_milestone_scope", v, k, false, ConfigHelp::new(
+        "Interactive mode only: asks yes / wait / adjust scope before /gsd-complete-milestone marks the milestone shipped; yolo never asks.",
+    ).since("v1.16.0"));
     let (v, k) = opt_bool(pga.and_then(|g| g.issues_review));
     push(cat, "gates.issues_review", v, k, false, ConfigHelp::new(
         "Shows you the open issues and waits for a yes before any fix plan is written from them.",
     ).since("v1.01.0"));
+
+    // ── Observability ─────────────────────────────────────────
+    // gsd-core's own section name for the audit trail (INFERRED I-3).
+    let cat = "Observability";
+    // `since` is v1.16.0 — the release that made the key EFFECTIVE (INFERRED
+    // I-1): af464656e (#4975, `tag --contains` -> v1.16.0) registered it in the
+    // schema and wired the dispatch seams to read it. The step-5 first-mention
+    // recipe answers v1.2.0 (2d14eb887, the DispatchLogger seam), but that
+    // commit only documented a key config-set rejected and nothing read, so
+    // v1.2.0 would advertise a key that was inert for fourteen releases.
+    let (v, k) = opt_bool(config.audit.as_ref().and_then(|a| a.enabled));
+    push(cat, "audit.enabled", v, k, true, ConfigHelp::new(
+        "Writes the dispatch trail to .planning/.gsd-trace.jsonl. Off by default; only a real boolean true enables it; GSD_AUDIT=1 enables it independently.",
+    ).since("v1.16.0"));
 
     append_passthrough_entries(&mut entries, config);
 
@@ -11936,7 +11956,12 @@ fn builtin_default_for_key(key: &str) -> Option<&'static str> {
         | "planning.commit_docs"
         | "parallelization"
         | "git.create_tag"
-        | "context_warnings" => "true",
+        | "context_warnings"
+        // gsd-core v1.16.0's config-defaults manifest gained a `gates` block
+        // with exactly these three (INFERRED I-4); it has no `audit` entry.
+        | "gates.execute_next_plan"
+        | "gates.confirm_transition"
+        | "gates.confirm_milestone_scope" => "true",
         "workflow.plan_bounce"
         | "planning.pr_strict"
         | "skip_discuss"
@@ -12083,6 +12108,13 @@ fn append_passthrough_entries(
         // `PlannerConfig::extra` and must be walked here to stay visible.
         if let Some(block) = config.planner.as_ref() {
             take("planner.", &block.extra);
+        }
+        // --- gsd-core v1.16.0 delta (quick task 261012-jqb) ---
+        //
+        // `audit` became a typed block; its unmodelled keys land in
+        // `AuditConfig::extra` and must be walked to stay visible.
+        if let Some(block) = config.audit.as_ref() {
+            take("audit.", &block.extra);
         }
     }
 
@@ -12830,6 +12862,13 @@ fn set_config_value(
                     .confirm_transition = Some(b);
                 return true;
             }
+            "gates.confirm_milestone_scope" => {
+                config
+                    .gates
+                    .get_or_insert_with(GatesConfig::default)
+                    .confirm_milestone_scope = Some(b);
+                return true;
+            }
             "gates.execute_next_plan" => {
                 config
                     .gates
@@ -12884,6 +12923,14 @@ fn set_config_value(
                     .planner
                     .get_or_insert_with(PlannerConfig::default)
                     .stall_detection_enabled = Some(b);
+                return true;
+            }
+            // gsd-core v1.16.0 delta (quick task 261012-jqb).
+            "audit.enabled" => {
+                config
+                    .audit
+                    .get_or_insert_with(AuditConfig::default)
+                    .enabled = Some(b);
                 return true;
             }
             "git.create_tag" => {
@@ -13880,6 +13927,13 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
                 .confirm_transition = None;
             true
         }
+        "gates.confirm_milestone_scope" => {
+            config
+                .gates
+                .get_or_insert_with(GatesConfig::default)
+                .confirm_milestone_scope = None;
+            true
+        }
         "gates.execute_next_plan" => {
             config
                 .gates
@@ -13941,6 +13995,14 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
                 .planner
                 .get_or_insert_with(PlannerConfig::default)
                 .stall_detection_enabled = None;
+            true
+        }
+        // gsd-core v1.16.0 delta (quick task 261012-jqb).
+        "audit.enabled" => {
+            config
+                .audit
+                .get_or_insert_with(AuditConfig::default)
+                .enabled = None;
             true
         }
         "git.create_tag" => {
@@ -14404,6 +14466,11 @@ fn mutate_config_entry(
                     g.confirm_transition = Some(!g.confirm_transition.unwrap_or(false));
                     true
                 }
+                "gates.confirm_milestone_scope" => {
+                    let g = config.gates.get_or_insert_with(GatesConfig::default);
+                    g.confirm_milestone_scope = Some(!g.confirm_milestone_scope.unwrap_or(false));
+                    true
+                }
                 "gates.execute_next_plan" => {
                     let g = config.gates.get_or_insert_with(GatesConfig::default);
                     g.execute_next_plan = Some(!g.execute_next_plan.unwrap_or(false));
@@ -14446,6 +14513,14 @@ fn mutate_config_entry(
                 "planner.stall_detection_enabled" => {
                     let p = config.planner.get_or_insert_with(PlannerConfig::default);
                     p.stall_detection_enabled = Some(!p.stall_detection_enabled.unwrap_or(false));
+                    true
+                }
+                // gsd-core v1.16.0 delta (quick task 261012-jqb). From unset the
+                // first toggle writes `true` — the opt-in direction for the
+                // audit trail (INFERRED I-5).
+                "audit.enabled" => {
+                    let a = config.audit.get_or_insert_with(AuditConfig::default);
+                    a.enabled = Some(!a.enabled.unwrap_or(false));
                     true
                 }
                 "git.create_tag" => {
@@ -14835,9 +14910,11 @@ mod tests {
                 "confirm_project": true,
                 "confirm_roadmap": true,
                 "confirm_transition": true,
+                "confirm_milestone_scope": true,
                 "execute_next_plan": true,
                 "issues_review": true
             },
+            "audit": { "enabled": false },
             "planning": {
                 "chunked_parallel": false,
                 "commit_docs": true,
@@ -14991,7 +15068,7 @@ mod tests {
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 139;
+    const DEFAULTS_OPTION_COUNT: usize = 141;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -15530,6 +15607,7 @@ mod tests {
     /// exhaustively so the next block added to `GsdConfig` fails HERE rather
     /// than becoming invisible in the same way.
     const NESTED_CONFIG_BLOCKS: &[&str] = &[
+        "audit",
         "capabilities",
         "claude_orchestration",
         "dynamic_routing",
@@ -15696,17 +15774,25 @@ mod tests {
         );
     }
 
-    /// Each gsd-core 1.15.0 key is a first-class editable row, and every arm
-    /// that can mutate it writes the key's OWN JSON path.
+    /// Each gsd-core delta key (release-1.15.0 and v1.16.0) is a first-class
+    /// editable row, and every arm that can mutate it writes the key's OWN
+    /// JSON path.
     ///
     /// **Asserted through `serde_json::to_value` + a JSON pointer, not through
     /// the struct**: a field that is set correctly but serialises under a
     /// different name (or in the wrong block) passes a struct assertion and
     /// still writes the wrong config.json.
     #[test]
-    fn every_gsd_core_1_15_0_key_is_an_editable_row_writing_its_own_json_path() {
+    fn every_gsd_core_delta_key_is_an_editable_row_writing_its_own_json_path() {
         let entries = all_config_entries();
-        for (key, expected_kind) in RESYNCED_KEYS_1_15_0 {
+        let tables = [
+            (RESYNCED_KEYS_1_15_0, "v1.15.0"),
+            (RESYNCED_KEYS_1_16_0, "v1.16.0"),
+        ];
+        for (key, expected_kind, since) in tables
+            .iter()
+            .flat_map(|(table, since)| table.iter().map(move |(k, kind)| (k, kind, *since)))
+        {
             assert_eq!(*expected_kind, "bool", "this loop only drives bool rows");
             let matching: Vec<(usize, &ConfigEntry)> = entries
                 .iter()
@@ -15725,8 +15811,8 @@ mod tests {
                 "`{key}` rendered as pass-through"
             );
             assert_eq!(
-                entry.help.since, "v1.15.0",
-                "`{key}` must name gsd-core v1.15.0"
+                entry.help.since, since,
+                "`{key}` must name gsd-core {since}"
             );
 
             let pointer = format!("/{}", key.replace('.', "/"));
@@ -15757,7 +15843,7 @@ mod tests {
 
             let rendered = squeeze_ws(&render_defaults_to_text(120, 40, idx));
             assert!(
-                rendered.contains(&squeeze_ws(&format!("{SINCE_PREFIX}v1.15.0"))),
+                rendered.contains(&squeeze_ws(&format!("{SINCE_PREFIX}{since}"))),
                 "the help pane for `{key}` did not draw the `since` marker: {rendered}"
             );
         }
@@ -15820,6 +15906,57 @@ mod tests {
         assert_eq!(
             value.pointer("/planner/stall_threshold_minutes"),
             Some(&serde_json::json!(10))
+        );
+    }
+
+    /// Where the two gsd-core v1.16.0 rows sit, and which built-in default an
+    /// unset one shows (quick task 261012-jqb, INFERRED I-3 / I-4).
+    #[test]
+    fn the_gsd_core_1_16_0_rows_are_placed_and_carry_the_manifest_defaults() {
+        let entries = all_config_entries();
+        let pos = |key: &str| {
+            entries
+                .iter()
+                .position(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("`{key}` has no row"))
+        };
+        assert_eq!(
+            pos("gates.confirm_milestone_scope"),
+            pos("gates.confirm_transition") + 1,
+            "gates.confirm_milestone_scope must directly follow gates.confirm_transition"
+        );
+        let audit = &entries[pos("audit.enabled")];
+        assert_eq!(audit.category, "Observability");
+        assert!(
+            audit.show_category,
+            "audit.enabled opens the Observability category"
+        );
+
+        let unset = build_defaults_entries(
+            &crate::state_reader::config_json::parse_gsd_config("{}").unwrap(),
+        );
+        let default_of = |key: &str| {
+            unset
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("`{key}` has no row"))
+                .builtin_default
+        };
+        for key in [
+            "gates.execute_next_plan",
+            "gates.confirm_transition",
+            "gates.confirm_milestone_scope",
+        ] {
+            assert_eq!(
+                default_of(key),
+                Some("true"),
+                "`{key}`: the v1.16.0 defaults manifest says true"
+            );
+        }
+        assert_eq!(
+            default_of("audit.enabled"),
+            None,
+            "the defaults manifest has no audit entry, so this build invents none"
         );
     }
 
@@ -15908,6 +16045,18 @@ mod tests {
     const RESYNCED_KEYS_1_15_0: &[(&str, &str)] = &[
         ("planner.stall_detection_enabled", "bool"),
         ("workflow.ui_interaction_capture", "bool"),
+    ];
+
+    /// Every key gsd-core v1.16.0 added (quick task 261012-jqb), with the kind
+    /// its row must carry — MEASURED from the `docs/CONFIGURATION.md` key-cell
+    /// diff ec81d0d10..v1.16.0 (+2 / -8; the eight removed keys are six
+    /// `gates.*` and two never-modelled `safety.*`).
+    ///
+    /// Kept separate from the earlier tables for the same reason they are
+    /// separate: each pins its own measurement. The per-key loops iterate all.
+    const RESYNCED_KEYS_1_16_0: &[(&str, &str)] = &[
+        ("gates.confirm_milestone_scope", "bool"),
+        ("audit.enabled", "bool"),
     ];
 
     /// The real top-level gsd-core keys that were still pass-through after the
@@ -16063,6 +16212,12 @@ mod tests {
              gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
         );
         assert_eq!(
+            RESYNCED_KEYS_1_16_0.len(),
+            2,
+            "the v1.16.0 delta was MEASURED at +2 keys; re-measure against \
+             gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        assert_eq!(
             PROMOTED_TOP_LEVEL_KEYS.len(),
             7,
             "quick task 260926-jnf promoted exactly 7 top-level keys (kg_backend is \
@@ -16073,7 +16228,7 @@ mod tests {
     /// Each promoted top-level key (quick task 260926-jnf) carries its MEASURED
     /// `since`, and every arm that can change it writes the key's OWN
     /// top-level JSON path — asserted through `serde_json::to_value`, not the
-    /// struct, for the reason `every_gsd_core_1_15_0_key_is_...` gives.
+    /// struct, for the reason `every_gsd_core_delta_key_is_...` gives.
     #[test]
     fn every_promoted_top_level_key_writes_its_own_json_path() {
         use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config, GsdConfig};
@@ -16216,6 +16371,7 @@ mod tests {
         for (key, expected_kind) in RESYNCED_KEYS
             .iter()
             .chain(RESYNCED_KEYS_1_15_0)
+            .chain(RESYNCED_KEYS_1_16_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let matching: Vec<&ConfigEntry> = entries
@@ -16266,6 +16422,7 @@ mod tests {
         for (key, expected_kind) in RESYNCED_KEYS
             .iter()
             .chain(RESYNCED_KEYS_1_15_0)
+            .chain(RESYNCED_KEYS_1_16_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let entry = entries
