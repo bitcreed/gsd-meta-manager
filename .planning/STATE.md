@@ -5,10 +5,10 @@ current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: shipped
 stopped_at: v1.12.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-10-11T17:47:20.804Z"
+last_updated: "2026-10-12T19:45:57.413Z"
 last_activity: 2026-10-06
 last_activity_desc: v1.12.0 released — Lanes, Popups and Config Polish
-state_head: 0c525f6543e79dd8ddada53f41cbf69dca940991
+state_head: faf3eeb41f38b2ecda8ad7286798a333321594b5
 progress:
   total_phases: 10
   completed_phases: 7
@@ -167,7 +167,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-06 - Completed quick task 261006-ujx: Roadmap tab rounded lane curves and ANSI colour; shared LANE_PALETTE
+Last activity: 2026-10-12 - Completed quick task 261012-kee: gsd-core v1.16.0 sync finale (baseline 1.16.0 / v1.16.0 / 1.16.0)
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -622,6 +622,7 @@ Recent decisions affecting current work:
 | 52 | Auto-register unregistered GSD project on 'gsd-meta-manager .' | 2026-10-11 | 0c525f6 | — |
 | 261012-jqb | Config key delta for gsd-core v1.16.0 (gates removals, confirm_milestone_scope, audit.enabled, help refresh) | 2026-10-12 | 467a82d | .planning/quick/261012-jqb-config-key-delta-for-gsd-core-v1-16-0-tag-v1-16-0-87e87d34b |
 | 261012-jqc | Honour GSD_HOME for global defaults.json | 2026-10-12 | d042dd6 | .planning/quick/261012-jqc-honour-gsd-home-for-global-defaults-upstream-documents-globa |
+| 261012-kee | gsd-core v1.16.0 sync finale: baseline constants, sync doc, README, queue_md comments, GSD_HOME key-file help, clippy fix | 2026-10-12 | faf3eeb | [261012-kee-gsd-core-v1-16-0-sync-finale-baseline-co](./quick/261012-kee-gsd-core-v1-16-0-sync-finale-baseline-co/) |
 
 ## Session Continuity
 
