@@ -294,7 +294,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         // Quick 260927-t3s (D-01): `g` switches the Config tab's editing
         // scope. `d`, the old key, is a working alias documented here only
         // (I-2), as `m` is.
-        row("g", "Config tab: switch between project and global (~/.gsd/defaults.json) settings; d is an alias (detail view)"),
+        row("g", "Config tab: switch between project and global ($GSD_HOME/.gsd/defaults.json; GSD_HOME defaults to ~) settings; d is an alias (detail view)"),
         // Still true on the dashboard; the detail view's split of the two is
         // documented in the navigation block below.
         row("q / Esc", "Quit / Back"),
@@ -1158,7 +1158,7 @@ mod tests {
     fn the_g_config_scope_switch_is_documented() {
         let expected = row(
             "g",
-            "Config tab: switch between project and global (~/.gsd/defaults.json) settings; d is an alias (detail view)",
+            "Config tab: switch between project and global ($GSD_HOME/.gsd/defaults.json; GSD_HOME defaults to ~) settings; d is an alias (detail view)",
         )
         .spans[0]
             .content

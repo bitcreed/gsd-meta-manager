@@ -104,7 +104,8 @@ The binary itself does not require any environment variables to start. It does, 
 | `EDITOR` | Optional | `src/main.rs` (TUI editor launch) | Fallback editor if `$VISUAL` is unset. |
 | `TERMINAL` | Optional | `src/ui/screens/detail.rs` (`find_terminal`) | Preferred terminal emulator for launching new Claude sessions. Probed before falling back to `kitty`, `alacritty`, `gnome-terminal`, then `xterm`. |
 | `TMUX` | Optional | `src/terminal_switch.rs` | Presence of `$TMUX` indicates the binary is running inside tmux; required for the "switch to existing Claude session" feature. Absent → tab-switching returns a clear error. |
-| `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Used to resolve `~/.gsd/defaults.json` for GSD user defaults overlay. If unset, the defaults file is simply not loaded. |
+| `GSD_HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Root of the GSD-owned store. GSD user defaults are read from, and the Config tab's global scope writes to, `$GSD_HOME/.gsd/defaults.json`. Unset or empty falls back to `$HOME`, matching gsd-core's own `GSD_HOME \|\| homedir()` rule. Any other value is used as given. |
+| `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Fallback root for `$GSD_HOME/.gsd/defaults.json` (the GSD user defaults overlay) when `GSD_HOME` is unset or empty. If neither is set, the defaults file is simply not loaded. |
 | `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
 
 Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
@@ -195,7 +196,7 @@ There is no first-class notion of development/staging/production environments in
 
 ## Secret values in GSD project config (Config tab)
 
-A GSD project's `.planning/config.json` (and `~/.gsd/defaults.json`) can hold API keys. The Config tab (`7:Cfg`) never draws one — not in a row, not in the edit prompt, not in a status message, and not in the log file. Assume anything the TUI draws ends up in a screenshot or a screen share.
+A GSD project's `.planning/config.json` (and `$GSD_HOME/.gsd/defaults.json`) can hold API keys. The Config tab (`7:Cfg`) never draws one — not in a row, not in the edit prompt, not in a status message, and not in the log file. Assume anything the TUI draws ends up in a screenshot or a screen share.
 
 **Which keys are secret.**
 
@@ -222,7 +223,7 @@ The mask is always exactly eight bullets. Unlike gsd-core's own `****<last-4>`, 
 - An empty `Enter` keeps the current value and says `<key> unchanged`. It never clears a key.
 - `x` clears the value back to `(unset)`, as on any other row.
 
-**Storage.** The key is still written in plaintext to `.planning/config.json` (or `~/.gsd/defaults.json` in the `d` view) — masking is a display rule. As gsd-core itself states, that file is the security boundary, so its permissions are yours to set.
+**Storage.** The key is still written in plaintext to `.planning/config.json` (or `$GSD_HOME/.gsd/defaults.json` in the `d` view) — masking is a display rule. As gsd-core itself states, that file is the security boundary, so its permissions are yours to set.
 
 **Logs.** When a `config.json` fails to parse, the log line names only the error category and its line and column, never the offending value.
 
@@ -232,6 +233,6 @@ The mask is always exactly eight bullets. Unlike gsd-core's own `****<last-4>`, 
 - `src/cli.rs` — `clap` definitions for `--config`, `add`, `remove`, `list`.
 - `src/main.rs` — log directory setup, editor launch, TUI bootstrap.
 - `src/project_creator.rs` — `pre_create` / `post_create` hook execution and `GSD_PROJECT_*` env vars.
-- `src/state_reader/config_json.rs` — separate concern: parses each registered project's own `.planning/config.json` (GSD project config), not the meta-manager's config. `~/.gsd/defaults.json` is also read here.
+- `src/state_reader/config_json.rs` — separate concern: parses each registered project's own `.planning/config.json` (GSD project config), not the meta-manager's config. `$GSD_HOME/.gsd/defaults.json` is also read here.
 - `src/state_reader/config_secrets.rs` — which GSD config keys are secret (the explicit list, the name heuristic and its exemptions) and the masking the Config tab applies to them.
 - `Cargo.toml` — declares the `version` printed by `--version`.

@@ -6,7 +6,8 @@
 //! * **Manager preferences** (this screen): `default_runtime` and
 //!   `driver_max_concurrent` in the manager's own `config.json`. They apply
 //!   to the manager across every project.
-//! * **GSD global template** (`~/.gsd/defaults.json`): reached with `g` from
+//! * **GSD global template** (`$GSD_HOME/.gsd/defaults.json`; `GSD_HOME`
+//!   defaults to the home directory): reached with `g` from
 //!   here; it only seeds NEW projects, because gsd-core ignores it once a
 //!   project has its own `.planning/config.json`.
 //!
@@ -189,7 +190,7 @@ impl Screen for PreferencesScreen {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                " GSD GLOBAL TEMPLATE (~/.gsd/defaults.json)",
+                " GSD GLOBAL TEMPLATE ($GSD_HOME/.gsd/defaults.json; GSD_HOME defaults to ~)",
                 Style::default()
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
@@ -307,5 +308,6 @@ mod tests {
         assert!(text.contains("MANAGER PREFERENCES"));
         assert!(text.contains("NEW projects only"));
         assert!(text.contains("driver_max_concurrent"));
+        assert!(text.contains("$GSD_HOME/.gsd/defaults.json"));
     }
 }
