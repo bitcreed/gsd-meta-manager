@@ -140,9 +140,9 @@ Measured on 2026-09-26 between the previous baseline `651511d1e`
 | `config-defaults.manifest.json` | — | — | one new top-level block, `"planner": { "stall_detection_enabled": true }` |
 | Existing keys whose default changed | | | **none** |
 
-The two added keys, both now modelled as editable Bool rows with the
-provisional `since` `v1.15.0` (`git tag --contains` is empty for both
-introducing commits; they are reachable only from the release-1.15.0 branch):
+The two added keys, both now modelled as editable Bool rows with `since`
+`v1.15.0` — `git tag --contains` resolved both introducing commits to v1.15.0
+once the tag existed, re-measured at quick task 261012-jqb:
 
 | Key | Type / default | Introduced by | Notes |
 |---|---|---|---|
@@ -304,17 +304,19 @@ in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **139
-rows**: **57** carry a `since` measured at the 1.14.0 re-sync (260916-vqw), **2**
-carry the provisional `v1.15.0` added by the release-1.15.0 re-sync
-(260926-gtk), **7** carry a `since` measured when quick task 260926-jnf promoted
-them, and the **73** without one predate this record and were not
-retro-measured.
+Every key `build_defaults_entries` pushes a row for, in display order. **135
+rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
+measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
+260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
+`since` measured when quick task 260926-jnf promoted them, **2** carry
+`v1.16.0` (261012-jqb), and the **73** without one predate this record and were
+not retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 139
-(132 -> 139 at 260926-jnf), `RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` /
-`PROMOTED_TOP_LEVEL_KEYS` pin the three key lists, and three coverage
-assertions refuse a row with no `ConfigHelp`.
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 135
+(132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb), `RESYNCED_KEYS` /
+`RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` / `PROMOTED_TOP_LEVEL_KEYS` pin
+the four key lists, `REMOVED_KEYS_1_16_0` pins the six retired ones, and three
+coverage assertions refuse a row with no `ConfigHelp`.
 
 ### Planning
 
@@ -511,14 +513,24 @@ assertions refuse a row with no `ConfigHelp`.
 
 | Key | since |
 |---|---|
-| `gates.confirm_project` | v1.01.0 |
-| `gates.confirm_roadmap` | v1.01.0 |
-| `gates.confirm_phases` | v1.01.0 |
-| `gates.confirm_breakdown` | v1.01.0 |
-| `gates.confirm_plan` | v1.01.0 |
 | `gates.execute_next_plan` | v1.01.0 |
 | `gates.confirm_transition` | v1.01.0 |
-| `gates.issues_review` | v1.01.0 |
+| `gates.confirm_milestone_scope` | v1.16.0 |
+
+gsd-core v1.16.0 (ded8b6259, #4974) retired six never-read gates; they have no
+typed row here and are listed under [Pass-through](#pass-through).
+
+### Observability
+
+| Key | since |
+|---|---|
+| `audit.enabled` | v1.16.0 |
+
+`since` here is the release that made the key EFFECTIVE: af464656e (#4975,
+first tag v1.16.0) registered it in the schema and wired the dispatch seams to
+read it. Step 5's first-mention recipe answers v1.2.0 (2d14eb887), but that
+commit only documented a key `config-set` rejected and nothing read — a
+prose-only promise, so v1.2.0 would advertise an inert key (INFERRED I-1).
 
 ---
 
@@ -547,7 +559,8 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 | `code_quality.fallow.*` | Four keys of one opt-in subsystem this TUI surfaces nowhere else. |
 | `mempalace.*` (11 keys) | An optional integration this build has no other awareness of. |
 | `parallelization.*` (6 keys) | gsd-core's namespaced expansion of the top-level `parallelization` boolean this tab already edits; promoting them needs a decision about which wins. |
-| `refactor.*`, `safety.*`, `security.injection_blocking` | Small coherent blocks, no typed row yet. |
+| `refactor.*`, `security.injection_blocking` | Small coherent blocks, no typed row yet. |
+| `gates.confirm_project`, `gates.confirm_phases`, `gates.confirm_roadmap`, `gates.confirm_breakdown`, `gates.confirm_plan`, `gates.issues_review`, `safety.always_confirm_destructive`, `safety.always_confirm_external_services` | Removed upstream at v1.16.0 (ded8b6259, #4974): no longer read by anything and rejected by gsd-core's `config-set`. They never get a typed row; a pre-1.16.0 file keeps them (`GatesConfig.extra` / the top-level extra map) and shows them read-only. The six `gates.*` keys had typed rows from 260916-vqw until 261012-jqb retired them. |
 | `executor.stall_*`, `planner.stall_detect_interval_minutes`, `planner.stall_threshold_minutes`, `manager.flags.*` | Runtime tuning knobs, rarely edited by hand. Since 260926-gtk `planner` is a TYPED block (`planner.stall_detection_enabled` is modelled), so its two remaining knobs render as separate `planner.<key>` rows; before it, the whole `planner` object was a single top-level `planner` row. |
 | `context` | The one undotted top-level key still pass-through: upstream's docs call it a free-form string, its `config-set` an enum. See "Still pass-through at the top level". |
 | `claude_md_assembly.mode`, `learnings.max_inject` | Singletons that did not fit an existing category. |
