@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "batch_id": "261012-jqa",
+  "created_at": "2026-10-12T19:12:21.184Z",
+  "options": {},
+  "base_revision": "7303b41d0a9bcaa12d30370221c806b037ccf7b6",
+  "items": [
+    {
+      "quick_id": "261012-jqb",
+      "client_id": null,
+      "description": "Config key delta for gsd-core v1.16.0 (tag v1.16.0/87e87d34b in ~/projects/node/gsd-core; previous baseline ec81d0d10). Upstream removed gates.confirm_project, gates.confirm_phases, gates.confirm_roadmap, gates.confirm_breakdown, gates.confirm_plan, gates.issues_review (no longer read; config-set rejects them — upstream ded8b6259, #4974): remove their Defaults-tab rows and all set/clear/mutate arms (src/ui/screens/detail.rs ~11826-11900, GatesConfig in src/state_reader/config_json.rs ~244); unmodelled keys must stay lossless via the flatten `extra` map (existing user files containing them must round-trip, with a test). Add gates.confirm_milestone_scope (default true, since v1.16.0) and audit.enabled (default false, strict boolean, new AuditConfig; effective since af464656e #4975 — choose and justify the `since` value; it became a table row in 1.16.0) with ConfigHelp and all mutation paths. DEFAULTS_OPTION_COUNT 139 -> 135. Drop the PROVISIONAL markers on the two v1.15.0 since values (detail.rs ~11179, ~11351) in code and doc — measured as v1.15.0. Refresh help: workflow.drift_threshold now counts modified+deleted files too; gates help should note they apply only in interactive mode. Update only the key-inventory tables in docs/GSD-CORE-SYNC.md (not its header/baseline sections — a later task rewrites those).",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/config_json.rs",
+        "src/ui/screens/detail.rs",
+        "docs/GSD-CORE-SYNC.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "467a82d",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261012-jqc",
+      "client_id": null,
+      "description": "Honour GSD_HOME for global defaults. Upstream documents global defaults as $GSD_HOME/.gsd/defaults.json (gsd-core fd1bfd09e; loader honoured GSD_HOME already). Resolve as $GSD_HOME falling back to $HOME in user_defaults_path (src/state_reader/config_json.rs ~649-659), with tests (env-var tests must not race other tests); update labels/docs in src/ui help.rs (~297, ~1161), preferences.rs (~9, ~192), README.md keys table (~275), docs/CONFIGURATION.md (~107). Do NOT touch README lines 15-20 (compatibility note) — a later task does.",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/config_json.rs",
+        "tests/state_reader_gsd_home.rs",
+        "src/ui/screens/help.rs",
+        "src/ui/screens/preferences.rs",
+        "src/ui/screens/detail.rs",
+        "README.md",
+        "docs/CONFIGURATION.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "d042dd6",
+      "failure_reason": null
+    }
+  ]
+}

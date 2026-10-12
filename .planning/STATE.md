@@ -620,6 +620,8 @@ Recent decisions affecting current work:
 | 261006-cpp | Create-project confirm uses the shared Yes/No popup (default Yes); click on [ Yes ]/[ No ] works on all four confirm popups | 2026-10-06 | aa34fde | [261006-cpp-create-confirm-popup-mouse](./quick/261006-cpp-create-confirm-popup-mouse/) |
 | 261006-ujx | Roadmap tab: rounded lane curves and ANSI colour per UX spec; shared LANE_PALETTE | 2026-10-06 | 8e29ddf | [261006-ujx-roadmap-tab-rounded-lane-curves-and-ansi](./quick/261006-ujx-roadmap-tab-rounded-lane-curves-and-ansi/) |
 | 52 | Auto-register unregistered GSD project on 'gsd-meta-manager .' | 2026-10-11 | 0c525f6 | — |
+| 261012-jqb | Config key delta for gsd-core v1.16.0 (gates removals, confirm_milestone_scope, audit.enabled, help refresh) | 2026-10-12 | 467a82d | .planning/quick/261012-jqb-config-key-delta-for-gsd-core-v1-16-0-tag-v1-16-0-87e87d34b |
+| 261012-jqc | Honour GSD_HOME for global defaults.json | 2026-10-12 | d042dd6 | .planning/quick/261012-jqc-honour-gsd-home-for-global-defaults-upstream-documents-globa |
 
 ## Session Continuity
 
