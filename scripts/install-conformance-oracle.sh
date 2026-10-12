@@ -8,14 +8,14 @@
 # GSD's own router, and it FAILS BY DESIGN when the oracle is absent — an
 # absent oracle means nothing checked that the transcription still holds, and
 # a test that passes because it checked nothing is worse than no test. A
-# GitHub `ubuntu-latest` runner has Node but no GSD, so the publish job was
+# GitHub `ubuntu-24.04` runner has Node but no GSD, so the publish job was
 # running that test with its subject missing. The crate failed to publish
 # three times, once on exactly this. THE FIX IS TO PROVIDE THE DEPENDENCY.
 # Setting the test's missing-oracle opt-out would make the check vacuous,
 # which is the fail-open shape this codebase repeatedly rejects.
 #
 # SINGLE SOURCE OF TRUTH. This script is the whole answer to "what does the
-# publish job need on top of a bare ubuntu-latest so that `cargo test` tests
+# publish job need on top of a bare ubuntu-24.04 so that `cargo test` tests
 # something?", and it is invoked by BOTH:
 #   - .github/workflows/release.yml, the publish job, before its Test step; and
 #   - scripts/pre-tag-check.sh --container, inside the runner lookalike.

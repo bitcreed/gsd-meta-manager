@@ -1,4 +1,4 @@
-# pre-tag-check.Dockerfile — an `ubuntu-latest` LOOKALIKE for
+# pre-tag-check.Dockerfile — an `ubuntu-24.04` LOOKALIKE for
 # `./scripts/pre-tag-check.sh --container`.
 #
 # WHY THIS IMAGE EXISTS. A bare local pre-tag run cannot certify the publish
@@ -9,7 +9,7 @@
 # runner closely enough that a green run in here is evidence about CI.
 #
 # EVERY LINE BELOW MIRRORS A MEASURED RUNNER FACT. When one of them stops
-# matching `ubuntu-latest`, this image starts lying, so say WHY each line is
+# matching `ubuntu-24.04`, this image starts lying, so say WHY each line is
 # here and not just what it installs.
 
 FROM ubuntu:24.04
@@ -75,7 +75,7 @@ RUN (userdel -r ubuntu 2>/dev/null || true) \
 # whose uid is 1001 gets a HOME they cannot write and the npm install fails.
 RUN chmod 0777 /home/runner
 
-# `gh` — PREINSTALLED ON ubuntu-latest, from the SAME apt repo and the same
+# `gh` — PREINSTALLED ON ubuntu-24.04, from the SAME apt repo and the same
 # keyring path GitHub's own runner image uses, which yields gh 2.101.0.
 #
 # READ THIS BEFORE REMOVING THE LINE TO SAVE A LAYER. The two gh_grammar_probe

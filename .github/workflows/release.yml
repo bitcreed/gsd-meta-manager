@@ -8,12 +8,18 @@ on:
 permissions:
   contents: read
 
+# Both jobs pin ubuntu-24.04 rather than ubuntu-latest. The publish job's tests
+# are environment-sensitive (the git-version witness in src/envelope/policy.rs
+# is derived against the runner's ambient git), and
+# scripts/pre-tag-check.Dockerfile is built FROM ubuntu:24.04 to mirror this
+# runner. A floating label would move the runner under a release without moving
+# that image; bump both together, deliberately.
 jobs:
   msrv:
     name: Verify the declared MSRV floor compiles
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the declared MSRV toolchain
         uses: dtolnay/rust-toolchain@1.89.0
@@ -41,10 +47,10 @@ jobs:
 
   publish:
     name: Verify and publish to crates.io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: msrv
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -57,14 +63,14 @@ jobs:
       # the conformance oracle below is a Node program. 24 is the major
       # scripts/pre-tag-check.Dockerfile carries, so the dry run and this job
       # meet the same runtime.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
       # tests/driver_router_conformance.rs compares this crate's router rule
       # table against GSD's OWN router, and fails BY DESIGN when that oracle is
       # absent — an absent oracle means nothing checked that the transcription
-      # still holds. An ubuntu-latest runner has Node but no GSD, which is how
+      # still holds. An ubuntu-24.04 runner has Node but no GSD, which is how
       # v1.7.1 died here. THE POINT IS TO PROVIDE THE DEPENDENCY, not to switch
       # the check off. The script pins the exact GSD version read out of
       # GSD_CORE_SYNCED_VERSION and exits non-zero if the oracle does not
@@ -103,3 +109,11 @@ jobs:
         run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # `cargo publish` leaves the unpacked crate under target/package/. The
+      # rust-cache post step's target cleaner walks into it as if it were a
+      # project and errors on its missing tests/target and tests/trybuild. It is
+      # scratch, never worth caching, so drop it before that post step runs.
+      - name: Drop cargo package scratch
+        if: always()
+        run: rm -rf target/package

@@ -17,7 +17,7 @@
 # .github/workflows/release.yml IS THE AUTHORITY. Wherever this script and that
 # workflow disagree, the workflow is right and this script is stale.
 #
-# --container RUNS THESE SAME GATES INSIDE AN ubuntu-latest LOOKALIKE. A BARE
+# --container RUNS THESE SAME GATES INSIDE AN ubuntu-24.04 LOOKALIKE. A BARE
 # local run cannot certify the publish job: this machine has GSD installed and
 # a different ambient git, so the two tests that have actually blocked
 # publication — the router-conformance oracle test and the git-version witness
@@ -56,7 +56,7 @@ Runs, locally, the gates that .github/workflows/release.yml runs on a tag push.
                Cargo.toml version and hard-stops on disagreement. When omitted,
                gate 1 just reports the crate version and is marked SKIPPED.
 
-  --container  run the gates inside an ubuntu-latest lookalike built from
+  --container  run the gates inside an ubuntu-24.04 lookalike built from
                scripts/pre-tag-check.Dockerfile, after provisioning the GSD
                conformance oracle in there with the same
                scripts/install-conformance-oracle.sh the publish job calls.
@@ -193,7 +193,7 @@ if [ "$CONTAINER" -eq 1 ]; then
 	echo "  dockerfile : $CONTAINER_SCRIPT_DIR/pre-tag-check.Dockerfile"
 	echo "  repo       : $CONTAINER_REPO_ROOT -> /work"
 	echo "$THIN"
-	echo "  The gates below run inside an ubuntu-latest lookalike, after the SAME"
+	echo "  The gates below run inside an ubuntu-24.04 lookalike, after the SAME"
 	echo "  scripts/install-conformance-oracle.sh the publish job calls has"
 	echo "  provisioned the conformance oracle in there. What you are about to read"
 	echo "  is the inner run's own banner and summary."
@@ -348,7 +348,7 @@ print_summary() {
 		echo "  ADVISORY:   derived-against constant : $DERIVED_GIT_VERSION"
 		echo "  ADVISORY:     ($CONST_NAME"
 		echo "  ADVISORY:      in $POLICY_FILE)"
-		echo "  ADVISORY: the GitHub ubuntu-latest runner's ambient git is the AUTHORITY"
+		echo "  ADVISORY: the GitHub ubuntu-24.04 runner's ambient git is the AUTHORITY"
 		echo "  ADVISORY: for that witness test. A GREEN LOCAL GATE DOES NOT GUARANTEE"
 		echo "  ADVISORY: the publish job passes."
 		if [ "$G4_STATUS" = "FAILED" ] && [ "$WITNESS_IN_FAILURES" -eq 1 ]; then
@@ -445,7 +445,7 @@ else
 	GIT_ADVISORY=1
 	echo "  MISMATCH — read this:"
 	echo "    1. THIS LOCAL RUN CANNOT VALIDATE THAT TEST THE WAY CI WILL."
-	echo "    2. The GitHub ubuntu-latest runner's ambient git is the AUTHORITY for it."
+	echo "    2. The GitHub ubuntu-24.04 runner's ambient git is the AUTHORITY for it."
 	echo "    3. A GREEN LOCAL GATE THEREFORE DOES NOT GUARANTEE THE PUBLISH JOB PASSES."
 fi
 echo "$RULE"
