@@ -11110,14 +11110,14 @@ fn build_defaults_entries(
     ).since("v1.13.0"));
     let (v, k) = opt_u32(pwf.and_then(|w| w.drift_threshold));
     push(cat, "workflow.drift_threshold", v, k, false, ConfigHelp::new(
-        "How many new directories, migrations or route modules must appear before the codebase-drift gate reacts; default 3.",
+        "Drift elements that trip the codebase-drift gate: new directories, migrations, route modules, plus modified or deleted files in mapped directories; default 3.",
     ).since("v1.01.0"));
     let (v, k) = opt_enum(
         pwf.and_then(|w| w.drift_action.as_deref()),
         &["warn", "auto-remap"],
     );
     push(cat, "workflow.drift_action", v, k, false, ConfigHelp::with_choices(
-        "What happens after a wave when the codebase has grown more new structure than that threshold allows.",
+        "What happens after a wave when the codebase has drifted further than that threshold allows.",
         &[
             ("warn", "suggests re-mapping the affected paths by hand"),
             ("auto-remap", "spawns the codebase mapper over those paths"),
@@ -11165,9 +11165,8 @@ fn build_defaults_entries(
         "Drops every .planning path from a generated PR branch, structural files included, rather than just the transient ones.",
     ).since("v1.12.0"));
     // gsd-core 1.15.0 re-sync (quick task 260926-gtk). The `since` is
-    // PROVISIONAL (INFERRED I-1): no v1.15.0 tag exists (`tag --contains` on
-    // the introducing commit 1e3e1f7cd, #4570, is empty); that commit is
-    // reachable only from release-1.15.0, whose package.json says 1.15.0.
+    // MEASURED: `git tag --contains 1e3e1f7cd` (the introducing commit, #4570)
+    // resolves to v1.15.0, re-measured at quick task 261012-jqb.
     let ppn = config.planner.as_ref();
     let (v, k) = opt_bool(ppn.and_then(|p| p.stall_detection_enabled));
     push(cat, "planner.stall_detection_enabled", v, k, false, ConfigHelp::with_choices(
@@ -11343,8 +11342,8 @@ fn build_defaults_entries(
     ).since("v1.12.0"));
     // gsd-core 1.15.0 re-sync (quick task 260926-gtk): introduced by 88b5775dc
     // (#4223). Placed beside the other browser-driven gate (INFERRED I-2); the
-    // `since` is provisional for the same reason as
-    // `planner.stall_detection_enabled` (INFERRED I-1).
+    // `since` is MEASURED: `git tag --contains 88b5775dc` resolves to v1.15.0,
+    // re-measured at quick task 261012-jqb.
     let (v, k) = opt_bool(pwf.and_then(|w| w.ui_interaction_capture));
     push(cat, "workflow.ui_interaction_capture", v, k, false, ConfigHelp::new(
         "Lets the UI auditor add hover, focus, open-menu and filled-form screenshots via the chrome-devtools CLI; needs Chrome.",
@@ -11840,7 +11839,7 @@ fn build_defaults_entries(
         k,
         true,
         ConfigHelp::new(
-            "Stops between two plans of the same phase and asks before starting the following one.",
+            "Interactive mode only: stops between two plans of the same phase and asks before starting the next; yolo never stops.",
         )
         .since("v1.01.0"),
     );
@@ -11851,8 +11850,10 @@ fn build_defaults_entries(
         v,
         k,
         false,
-        ConfigHelp::new("Stops at a phase boundary and asks before moving on to the one after it.")
-            .since("v1.01.0"),
+        ConfigHelp::new(
+            "Interactive mode only: stops at a phase boundary and asks before moving on to the one after it; yolo never asks.",
+        )
+        .since("v1.01.0"),
     );
     // gsd-core v1.16.0 delta (quick task 261012-jqb): added to the schema by
     // ded8b6259 (#4974), first tag v1.16.0; read by complete-milestone.md.
@@ -15874,6 +15875,44 @@ mod tests {
                 "{pointer} changed value across a toggle-then-save"
             );
         }
+    }
+
+    /// gsd-core v1.16.0 help refresh (quick task 261012-jqb): every gate says
+    /// it applies only in interactive mode (ded8b6259), and the drift threshold
+    /// counts modified and deleted files too (a2c43db27, #5134).
+    #[test]
+    fn the_gsd_core_1_16_0_help_refresh_is_in_place() {
+        let entries = all_config_entries();
+        let summary = |key: &str| {
+            entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("`{key}` has no row"))
+                .help
+                .summary
+        };
+        let gates: Vec<&ConfigEntry> = entries
+            .iter()
+            .filter(|e| e.key.starts_with("gates."))
+            .collect();
+        assert_eq!(gates.len(), 3, "the non-vacuity floor: three live gates");
+        for entry in gates {
+            assert!(
+                entry.help.summary.contains("nteractive"),
+                "`{}`'s help does not say the gate applies only in interactive mode: {}",
+                entry.key,
+                entry.help.summary
+            );
+        }
+        let threshold = summary("workflow.drift_threshold");
+        assert!(
+            threshold.contains("modified") && threshold.contains("deleted"),
+            "workflow.drift_threshold must say modified and deleted files count: {threshold}"
+        );
+        assert!(
+            !summary("workflow.drift_action").contains("new structure"),
+            "workflow.drift_action still speaks of new structure only (INFERRED I-7)"
+        );
     }
 
     /// The Gates category is exactly the three gates gsd-core still reads,

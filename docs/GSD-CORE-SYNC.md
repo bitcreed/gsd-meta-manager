@@ -140,9 +140,9 @@ Measured on 2026-09-26 between the previous baseline `651511d1e`
 | `config-defaults.manifest.json` | — | — | one new top-level block, `"planner": { "stall_detection_enabled": true }` |
 | Existing keys whose default changed | | | **none** |
 
-The two added keys, both now modelled as editable Bool rows with the
-provisional `since` `v1.15.0` (`git tag --contains` is empty for both
-introducing commits; they are reachable only from the release-1.15.0 branch):
+The two added keys, both now modelled as editable Bool rows with `since`
+`v1.15.0` — `git tag --contains` resolved both introducing commits to v1.15.0
+once the tag existed, re-measured at quick task 261012-jqb:
 
 | Key | Type / default | Introduced by | Notes |
 |---|---|---|---|
@@ -304,17 +304,19 @@ in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **139
-rows**: **57** carry a `since` measured at the 1.14.0 re-sync (260916-vqw), **2**
-carry the provisional `v1.15.0` added by the release-1.15.0 re-sync
-(260926-gtk), **7** carry a `since` measured when quick task 260926-jnf promoted
-them, and the **73** without one predate this record and were not
-retro-measured.
+Every key `build_defaults_entries` pushes a row for, in display order. **135
+rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
+measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
+260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
+`since` measured when quick task 260926-jnf promoted them, **2** carry
+`v1.16.0` (261012-jqb), and the **73** without one predate this record and were
+not retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 139
-(132 -> 139 at 260926-jnf), `RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` /
-`PROMOTED_TOP_LEVEL_KEYS` pin the three key lists, and three coverage
-assertions refuse a row with no `ConfigHelp`.
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 135
+(132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb), `RESYNCED_KEYS` /
+`RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` / `PROMOTED_TOP_LEVEL_KEYS` pin
+the four key lists, `REMOVED_KEYS_1_16_0` pins the six retired ones, and three
+coverage assertions refuse a row with no `ConfigHelp`.
 
 ### Planning
 
