@@ -511,15 +511,12 @@ assertions refuse a row with no `ConfigHelp`.
 
 | Key | since |
 |---|---|
-| `gates.confirm_project` | v1.01.0 |
-| `gates.confirm_roadmap` | v1.01.0 |
-| `gates.confirm_phases` | v1.01.0 |
-| `gates.confirm_breakdown` | v1.01.0 |
-| `gates.confirm_plan` | v1.01.0 |
 | `gates.execute_next_plan` | v1.01.0 |
 | `gates.confirm_transition` | v1.01.0 |
 | `gates.confirm_milestone_scope` | v1.16.0 |
-| `gates.issues_review` | v1.01.0 |
+
+gsd-core v1.16.0 (ded8b6259, #4974) retired six never-read gates; they have no
+typed row here and are listed under [Pass-through](#pass-through).
 
 ### Observability
 
@@ -560,7 +557,8 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 | `code_quality.fallow.*` | Four keys of one opt-in subsystem this TUI surfaces nowhere else. |
 | `mempalace.*` (11 keys) | An optional integration this build has no other awareness of. |
 | `parallelization.*` (6 keys) | gsd-core's namespaced expansion of the top-level `parallelization` boolean this tab already edits; promoting them needs a decision about which wins. |
-| `refactor.*`, `safety.*`, `security.injection_blocking` | Small coherent blocks, no typed row yet. |
+| `refactor.*`, `security.injection_blocking` | Small coherent blocks, no typed row yet. |
+| `gates.confirm_project`, `gates.confirm_phases`, `gates.confirm_roadmap`, `gates.confirm_breakdown`, `gates.confirm_plan`, `gates.issues_review`, `safety.always_confirm_destructive`, `safety.always_confirm_external_services` | Removed upstream at v1.16.0 (ded8b6259, #4974): no longer read by anything and rejected by gsd-core's `config-set`. They never get a typed row; a pre-1.16.0 file keeps them (`GatesConfig.extra` / the top-level extra map) and shows them read-only. The six `gates.*` keys had typed rows from 260916-vqw until 261012-jqb retired them. |
 | `executor.stall_*`, `planner.stall_detect_interval_minutes`, `planner.stall_threshold_minutes`, `manager.flags.*` | Runtime tuning knobs, rarely edited by hand. Since 260926-gtk `planner` is a TYPED block (`planner.stall_detection_enabled` is modelled), so its two remaining knobs render as separate `planner.<key>` rows; before it, the whole `planner` object was a single top-level `planner` row. |
 | `context` | The one undotted top-level key still pass-through: upstream's docs call it a free-form string, its `config-set` an enum. See "Still pass-through at the top level". |
 | `claude_md_assembly.mode`, `learnings.max_inject` | Singletons that did not fit an existing category. |

@@ -246,18 +246,17 @@ pub struct FeaturesConfig {
     pub extra: ExtraKeys,
 }
 
+/// gsd-core's `gates` block.
+///
+/// gsd-core >= 1.16.0 reads exactly three gates, and each only under mode
+/// `interactive` (yolo auto-approves all of them). The six it removed in
+/// ded8b6259 (#4974) — `confirm_breakdown`, `confirm_phases`, `confirm_plan`,
+/// `confirm_project`, `confirm_roadmap`, `issues_review` — were never read by
+/// any workflow, are rejected by its `config-set`, and are no longer typed
+/// here: a pre-1.16.0 file that still carries them keeps them through
+/// [`Self::extra`] on save, like any other unmodelled key.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct GatesConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirm_breakdown: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirm_phases: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirm_plan: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirm_project: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirm_roadmap: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm_transition: Option<bool>,
     /// Added to gsd-core's schema by ded8b6259 (#4974, first tag v1.16.0);
@@ -266,8 +265,6 @@ pub struct GatesConfig {
     pub confirm_milestone_scope: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execute_next_plan: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issues_review: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -1174,6 +1171,91 @@ mod tests {
         );
     }
 
+    /// The six `gates.*` keys gsd-core v1.16.0 removed (ded8b6259, #4974) and
+    /// the two `safety.*` keys removed with them are no longer typed, but a
+    /// pre-1.16.0 file that carries them must keep every one, with its exact
+    /// value, through a save (T-jqb-01).
+    ///
+    /// Compared through `serde_json::to_value(..).pointer(..)` rather than
+    /// struct fields: the struct no longer HAS those fields, and the property
+    /// that matters is what the written file contains.
+    #[test]
+    fn the_gates_keys_gsd_core_1_16_0_removed_round_trip_through_extra() {
+        let content = r#"{
+            "gates": {
+                "confirm_breakdown": false,
+                "confirm_phases": true,
+                "confirm_plan": false,
+                "confirm_project": true,
+                "confirm_roadmap": false,
+                "confirm_transition": false,
+                "confirm_milestone_scope": true,
+                "execute_next_plan": true,
+                "issues_review": true
+            },
+            "safety": {
+                "always_confirm_destructive": true,
+                "always_confirm_external_services": false
+            }
+        }"#;
+        let original: serde_json::Value = serde_json::from_str(content).unwrap();
+        let config = parse_gsd_config(content).expect("a pre-1.16.0 config still parses");
+
+        let gates = config.gates.as_ref().unwrap();
+        assert_eq!(gates.execute_next_plan, Some(true));
+        assert_eq!(gates.confirm_transition, Some(false));
+        assert_eq!(gates.confirm_milestone_scope, Some(true));
+        const REMOVED: [&str; 6] = [
+            "confirm_breakdown",
+            "confirm_phases",
+            "confirm_plan",
+            "confirm_project",
+            "confirm_roadmap",
+            "issues_review",
+        ];
+        let mut extra: Vec<&str> = gates.extra.keys().map(String::as_str).collect();
+        extra.sort_unstable();
+        assert_eq!(
+            extra, REMOVED,
+            "exactly the six removed keys belong in gates.extra"
+        );
+        for key in REMOVED {
+            assert_eq!(
+                gates.extra.get(key),
+                original.pointer(&format!("/gates/{key}")),
+                "gates.{key} lost its value on parse"
+            );
+        }
+        assert!(
+            config.extra.contains_key("safety"),
+            "safety is unmodelled and must sit in the top-level extra map"
+        );
+
+        let serialized = serialize_gsd_config(&config).expect("serialises");
+        let reparsed = parse_gsd_config(&serialized).expect("re-parses");
+        let written = serde_json::to_value(&reparsed).unwrap();
+        for pointer in REMOVED.iter().map(|key| format!("/gates/{key}")).chain(
+            [
+                "always_confirm_destructive",
+                "always_confirm_external_services",
+            ]
+            .iter()
+            .map(|key| format!("/safety/{key}")),
+        ) {
+            assert_eq!(
+                written.pointer(&pointer),
+                original.pointer(&pointer),
+                "{pointer} did not survive a save"
+            );
+            assert!(written.pointer(&pointer).is_some(), "{pointer} vanished");
+        }
+        assert_eq!(
+            serialized,
+            serialize_gsd_config(&reparsed).unwrap(),
+            "the save path is not a fixed point over a pre-1.16.0 gates block"
+        );
+    }
+
     /// Every `workflow.*` key the gsd-core 1.14.0 re-sync added, parsed from
     /// GSD's own spelling and round-tripped.
     ///
@@ -1295,21 +1377,17 @@ mod tests {
     }
 
     /// The 30 non-`workflow` keys the gsd-core 1.14.0 re-sync added, including
-    /// four blocks this build had never seen at all.
+    /// four blocks this build had never seen at all — less the six `gates.*`
+    /// keys since retired at v1.16.0 (quick task 261012-jqb), which are covered
+    /// by `the_gates_keys_gsd_core_1_16_0_removed_round_trip_through_extra`.
     #[test]
     fn the_resynced_non_workflow_keys_parse_and_round_trip() {
         let content = r#"{
             "context_window": 1000000,
             "features": { "global_learnings": true, "thinking_partner": true },
             "gates": {
-                "confirm_breakdown": false,
-                "confirm_phases": false,
-                "confirm_plan": false,
-                "confirm_project": false,
-                "confirm_roadmap": false,
                 "confirm_transition": false,
-                "execute_next_plan": false,
-                "issues_review": false
+                "execute_next_plan": false
             },
             "planning": {
                 "chunked_parallel": true,
@@ -1347,8 +1425,8 @@ mod tests {
         assert_eq!(features.global_learnings, Some(true));
         assert_eq!(features.thinking_partner, Some(true));
         let gates = config.gates.as_ref().unwrap();
-        assert_eq!(gates.confirm_breakdown, Some(false));
-        assert_eq!(gates.issues_review, Some(false));
+        assert_eq!(gates.confirm_transition, Some(false));
+        assert_eq!(gates.execute_next_plan, Some(false));
         assert!(
             gates.extra.is_empty(),
             "a gates.* key fell through: {:?}",
@@ -1390,7 +1468,10 @@ mod tests {
         let serialized = serialize_gsd_config(&config).expect("serialises");
         let reparsed = parse_gsd_config(&serialized).expect("re-parses");
         assert_eq!(reparsed.context_window, Some(1_000_000));
-        assert_eq!(reparsed.gates.as_ref().unwrap().confirm_plan, Some(false));
+        assert_eq!(
+            reparsed.gates.as_ref().unwrap().confirm_transition,
+            Some(false)
+        );
         assert_eq!(
             reparsed
                 .plan_review
