@@ -1,0 +1,8 @@
+# run A: LOG.md (grammar comment stripped)
+# Driver log: spike-001
+
+
+# git log
+3f0e4d6 test: add unit test for calc.add
+8c0776f docs: add usage example for add() to README
+005081f init scratch project

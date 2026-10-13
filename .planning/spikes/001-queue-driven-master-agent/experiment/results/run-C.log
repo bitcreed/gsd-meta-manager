@@ -1,0 +1,17 @@
+# run C: LOG.md (grammar comment stripped)
+# Driver log: spike-001
+
+
+2026-10-13T20:59:42Z | RUN | start | driver=pid:217 session=57a0287a-b8c2-4506-a802-eb94c0217a41 mode=headless
+2026-10-13T20:59:42Z | RUN | reconcile | found=0
+2026-10-13T20:59:44Z | I-01 | status | state=running
+2026-10-13T20:59:44Z | I-01 | dispatched | step=add usage line to README.md base=d7b8f3d round=1 dispatch=1/2
+2026-10-13T21:00:02Z | I-01 | report | status=done
+  commit 0ccb471, README.md +8 lines, tree clean, findings 0
+2026-10-13T21:00:04Z | I-01 | verified | done-when=met evidence=grep "add(" README.md ok; commit 0ccb471; git status clean
+2026-10-13T21:00:04Z | I-01 | status | state=done outcome=README usage section committed
+2026-10-13T21:00:04Z | RUN | end | reason=pause
+
+# git log
+0ccb471 docs: add usage line for add()
+d7b8f3d init scratch project

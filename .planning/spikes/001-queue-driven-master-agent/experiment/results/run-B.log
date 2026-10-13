@@ -1,0 +1,31 @@
+# run B: LOG.md (grammar comment stripped)
+# Driver log: spike-001
+
+
+2026-10-13T20:58:00Z | RUN | start | driver=pid:217 session=e66f20dc-8677-4e9e-b6ff-1e5b369e6e1c mode=headless/loop
+2026-10-13T20:58:00Z | RUN | reconcile | found=0
+2026-10-13T20:58:03Z | I-01 | status | state=running
+2026-10-13T20:58:03Z | I-01 | dispatched | step=add README usage line for add() base=7727718 round=1 dispatch=1/2
+2026-10-13T20:58:25Z | RUN | start | driver=pid:291 session=ed814c94-5f0a-4b60-b9a4-04e1ce806318 mode=headless/fresh-per-item
+2026-10-13T20:58:25Z | I-01 | recovered | action=reset reason=stale lock pid 217 dead; no commits, clean tree, no new artifacts; lost dispatch still counts
+2026-10-13T20:58:25Z | RUN | reconcile | found=1
+2026-10-13T20:58:25Z | I-01 | dispatched | step=add README usage line for add() base=7727718 round=1 dispatch=2/2
+2026-10-13T20:58:43Z | I-01 | report | status=done
+    STEP: appended Usage section to README.md; COMMITS: 3f08c34; FINDINGS: 0; NEEDS_HUMAN: none
+2026-10-13T20:58:43Z | I-01 | verified | done-when=met evidence=grep "add(" README.md ok; git status clean outside meta-manager; commit 3f08c34
+2026-10-13T20:58:43Z | I-01 | status | state=done outcome=README usage line committed
+2026-10-13T20:58:43Z | RUN | end | reason=fresh-exit
+2026-10-13T20:58:55Z | RUN | start | driver=pid:228 session=bcf38cd5-ee6e-4b8a-bbea-cc3ea03e62f7 mode=headless/fresh-per-item
+2026-10-13T20:58:55Z | RUN | reconcile | found=0
+2026-10-13T20:58:57Z | I-02 | status | state=running
+2026-10-13T20:58:57Z | I-02 | dispatched | step=add unit test test_calc.py for add() base=3f08c34 round=1 dispatch=1/2
+2026-10-13T20:59:15Z | I-02 | report | status=done
+    STEP: wrote test_calc.py (TestAdd), ran unittest; COMMITS: 3f16dbd; FINDINGS: 1 - untracked __pycache__/ (no .gitignore); NEEDS_HUMAN: none
+2026-10-13T20:59:15Z | I-02 | verified | done-when=met evidence=python3 -m unittest -q test_calc OK; git ls-files lists test_calc.py; commit 3f16dbd
+2026-10-13T20:59:15Z | I-02 | status | state=done outcome=unit test for add() committed
+2026-10-13T20:59:15Z | RUN | end | reason=fresh-exit
+
+# git log
+3f16dbd test: add unit test for add()
+3f08c34 docs: add README usage line
+7727718 init scratch project

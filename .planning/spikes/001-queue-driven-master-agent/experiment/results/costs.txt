@@ -1,0 +1,4 @@
+runA success cost_usd=0.229 session= b5e37831-2bae-45a3-b949-2b2e856985de models= ['claude-haiku-5-5', 'claude-sonnet-5-5']
+runB2 success cost_usd=0.187 session= ed814c94-5f0a-4b60-b9a4-04e1ce806318 models= ['claude-haiku-5-5', 'claude-sonnet-5-5']
+runB3 success cost_usd=0.187 session= bcf38cd5-ee6e-4b8a-bbea-cc3ea03e62f7 models= ['claude-haiku-5-5', 'claude-sonnet-5-5']
+runC success cost_usd=0.184 session= 57a0287a-b8c2-4506-a802-eb94c0217a41 models= ['claude-haiku-5-5', 'claude-sonnet-5-5']
