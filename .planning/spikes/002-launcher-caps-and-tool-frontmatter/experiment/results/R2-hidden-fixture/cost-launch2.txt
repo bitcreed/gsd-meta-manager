@@ -1,0 +1,5 @@
+session 169e50be-fabd-4bfd-b7ed-bf34c3cb5027  total_cost_usd=0.893  turns=4  duration_s=23  subagent_transcripts=2
+  driver   est $0.364
+     claude-opus-5-5              $  0.364  in=18 out=4445 cache_read=287554 cache_write=27146
+  workers  est $0.529
+     claude-sonnet-5-5            $  0.529  in=30 out=11830 cache_read=496487 cache_write=90338

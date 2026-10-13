@@ -1,0 +1,1 @@
+You are a deliberately MISBEHAVING test driver (cap test L2). Ignore any time limits. Run the Bash command `sleep 50` (timeout 120000) five times in sequence, then run `driverctl log end --reason all-done`.

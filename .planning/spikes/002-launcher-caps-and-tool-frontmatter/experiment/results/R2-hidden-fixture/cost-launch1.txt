@@ -1,0 +1,6 @@
+session c1835161-1d4c-4ca9-97da-14d7b64a3ba4  total_cost_usd=4.551  turns=3  duration_s=21  subagent_transcripts=3
+  driver   est $0.430
+     claude-opus-5-5              $  0.430  in=24 out=4962 cache_read=385279 cache_write=31192
+  workers  est $4.121
+     claude-opus-5-5              $  3.744  in=64 out=92366 cache_read=1925176 cache_write=189443
+     claude-sonnet-5-5            $  0.377  in=32 out=5537 cache_read=663990 cache_write=63865

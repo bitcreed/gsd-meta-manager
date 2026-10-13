@@ -1,0 +1,4 @@
+session 901e6557-e100-418b-ac4e-ef97fd97f57b  total_cost_usd=0.265  turns=4  duration_s=22  subagent_transcripts=0
+  driver   est $0.265
+     claude-opus-5-5              $  0.265  in=8 out=2037 cache_read=111947 cache_write=25254
+  workers  est $0.000

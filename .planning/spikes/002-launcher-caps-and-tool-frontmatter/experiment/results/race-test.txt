@@ -1,0 +1,6 @@
+naive    rename  saves=   343 regens= 315812 LOST=  292 transient=   0 final_body_sane=True tool={'ok': 315812}
+naive    inplace saves=   345 regens= 313539 LOST=  292 transient=   0 final_body_sane=True tool={'ok': 313467, 'skipped-insane-body': 72}
+reread   rename  saves=  3408 regens= 205074 LOST=  224 transient=   0 final_body_sane=True tool={'ok': 205074}
+reread   inplace saves=  4616 regens= 178682 LOST=  196 transient=   0 final_body_sane=True tool={'ok': 178522, 'skipped-insane-body': 160}
+exchange rename  saves= 12943 regens=  42364 LOST=    0 transient=   2 final_body_sane=True tool={'ok': 42363, 'gave-up': 1}
+exchange inplace saves= 13466 regens=  50699 LOST=    1 transient=   0 final_body_sane=True tool={'ok': 49838, 'skipped-insane-body': 861}

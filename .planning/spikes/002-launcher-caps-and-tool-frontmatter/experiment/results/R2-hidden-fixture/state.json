@@ -1,0 +1,179 @@
+{
+ "schema": 1,
+ "run_id": "spike-002b",
+ "project_root": "/tmp/claude-1000/-home-blk-projects-rust-gsd-meta-manager/7f57fcef-0611-4d81-9ec4-016e7916fbee/scratchpad/proj2",
+ "status": "parked",
+ "status_reason": "driver:all-parked",
+ "created_at": "2026-10-13T22:20:50Z",
+ "updated_at": "2026-10-13T22:41:04Z",
+ "launches": 3,
+ "current": {
+  "item": "I-01",
+  "phase": "1",
+  "step": "/gsd-execute-phase 1"
+ },
+ "items": {
+  "I-01": {
+   "state": "parked",
+   "outcome": "answer read; no gap round dispatched: identical input needs two outputs, and launcher gap_rounds cap is 0 (used 1)",
+   "dispatches": 2,
+   "first_dispatch_at": "2026-10-13T22:21:07Z",
+   "findings": [
+    1,
+    1
+   ]
+  }
+ },
+ "connections": [
+  {
+   "role": "driver",
+   "state": "disconnected",
+   "session_id": "c1835161-1d4c-4ca9-97da-14d7b64a3ba4",
+   "model": "opus",
+   "mode": "headless",
+   "pid": 2396066,
+   "scope_unit": "gsdmm-spike-002b-1791930059.scope",
+   "host": "mediabox",
+   "started_at": "2026-10-13T22:20:59Z",
+   "last_heartbeat": "2026-10-13T22:29:42Z"
+  },
+  {
+   "role": "driver",
+   "state": "disconnected",
+   "session_id": "169e50be-fabd-4bfd-b7ed-bf34c3cb5027",
+   "model": "opus",
+   "mode": "headless",
+   "pid": 2456043,
+   "scope_unit": "gsdmm-spike-002b-1791930798.scope",
+   "host": "mediabox",
+   "started_at": "2026-10-13T22:33:18Z",
+   "last_heartbeat": "2026-10-13T22:36:06Z"
+  },
+  {
+   "role": "launcher",
+   "state": "disconnected",
+   "pid": 2480977,
+   "host": "mediabox",
+   "started_at": "2026-10-13T22:40:40Z",
+   "last_heartbeat": "2026-10-13T22:40:58Z",
+   "mode": "bwrap",
+   "scope_unit": "gsdmm-spike-002b-1791931240.scope"
+  },
+  {
+   "role": "driver",
+   "state": "disconnected",
+   "session_id": "901e6557-e100-418b-ac4e-ef97fd97f57b",
+   "model": "opus",
+   "mode": "headless",
+   "pid": 2480979,
+   "scope_unit": "gsdmm-spike-002b-1791931240.scope",
+   "host": "mediabox",
+   "started_at": "2026-10-13T22:40:40Z",
+   "last_heartbeat": "2026-10-13T22:41:03Z"
+  }
+ ],
+ "caps": {
+  "dispatches": {
+   "used": 2,
+   "limit": 10
+  },
+  "wall_clock_min": {
+   "used": 12.0,
+   "limit": 75
+  },
+  "gap_rounds": {
+   "limit": 0,
+   "per_phase": {
+    "1": 1
+   },
+   "seen": {
+    "ef96e438c0866daa": {
+     "phase": "1",
+     "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+    }
+   }
+  }
+ },
+ "hook_dispatches": 2,
+ "denied_dispatches": 0,
+ "last_event": {
+  "at": "2026-10-13T22:41:04Z",
+  "item": "RUN",
+  "event": "launch-end",
+  "summary": "rc=0 cost_usd=0.26519339999999997 status=parked"
+ },
+ "cost": [
+  {
+   "launch": 1,
+   "total_cost_usd": 4.551376000000001,
+   "subtype": "success",
+   "num_turns": 3,
+   "duration_s": 21,
+   "session_id": "c1835161-1d4c-4ca9-97da-14d7b64a3ba4",
+   "by_model": {
+    "claude-opus-5-5": {
+     "cost_usd": 4.174083,
+     "in": 88,
+     "out": 97328,
+     "cache_read": 2310455,
+     "cache_write": 220635
+    },
+    "claude-sonnet-5-5": {
+     "cost_usd": 0.37729299999999993,
+     "in": 32,
+     "out": 5537,
+     "cache_read": 663990,
+     "cache_write": 63865
+    }
+   }
+  },
+  {
+   "launch": 2,
+   "total_cost_usd": 0.8930115,
+   "subtype": "success",
+   "num_turns": 4,
+   "duration_s": 23,
+   "session_id": "169e50be-fabd-4bfd-b7ed-bf34c3cb5027",
+   "by_model": {
+    "claude-opus-5-5": {
+     "cost_usd": 0.36365080000000005,
+     "in": 18,
+     "out": 4445,
+     "cache_read": 287554,
+     "cache_write": 27146
+    },
+    "claude-sonnet-5-5": {
+     "cost_usd": 0.5293606999999999,
+     "in": 30,
+     "out": 11830,
+     "cache_read": 496487,
+     "cache_write": 90338
+    }
+   }
+  },
+  {
+   "launch": 3,
+   "total_cost_usd": 0.26519339999999997,
+   "subtype": "success",
+   "num_turns": 4,
+   "duration_s": 22,
+   "session_id": "901e6557-e100-418b-ac4e-ef97fd97f57b",
+   "by_model": {
+    "claude-opus-5-5": {
+     "cost_usd": 0.26519339999999997,
+     "in": 8,
+     "out": 2037,
+     "cache_read": 111947,
+     "cache_write": 25254
+    }
+   }
+  }
+ ],
+ "ended_by_driver": true,
+ "auth": {
+  "mode": "env-access-token",
+  "expires_at": "2026-10-14T06:16:48Z",
+  "minutes_left_at_launch": 456.1
+ },
+ "active_seconds": 718.1231899261475
+}
