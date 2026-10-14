@@ -9,7 +9,7 @@
 - ✅ **v1.4 Live Sessions & Document Browsing** - 4 quick tasks (shipped 2026-05-12)
 - ✅ **v1.5.0 Sub-phase Artifact Detection** - 2 quick tasks (shipped 2026-05-15)
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
-- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-25 (in progress)
+- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-31 (in progress; re-planned 2026-10-14: Phases 19, 21, 22, 23 superseded by spikes 001/002, replaced by Phases 26-31)
 
 ## Phases
 
@@ -83,20 +83,26 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 
 </details>
 
-### v2.0 Autonomous Orchestration (Phases 14-25)
+### v2.0 Autonomous Orchestration (Phases 14-31)
 
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
 - [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
 - [x] **Phase 16: Run Journal & State Substrate** - Durable, redacted, cheap-to-read run record (completed 2026-07-29)
 - [x] **Phase 17: Supervisor** - Detach, kill switch, dry-run, single-run lock, opt-in gate (completed 2026-07-29)
 - [x] **Phase 18: Driver Tab, Live Watch & Durable Injection** - Manual ship point: run and steer from the TUI
-- [ ] **Phase 19: GITSAFE — Git & Blast-Radius Envelope** - Mechanically enforced push boundary
-- [ ] **Phase 20: Deterministic Decision Router & Run Bounds** - Rules pick the next command; runs stop themselves
-- [ ] **Phase 21: LLM Goal Layer & Prompt-Injection Hardening** - One stated goal, model confined to two seams
-- [ ] **Phase 22: Container Execution Target** - Docker/podman parity with the host path
-- [ ] **Phase 23: Gate Policy & Auto-Validation** - The verify gate is a choice, not a law: skip, defer, or auto-validate
+- [ ] ~~**Phase 19: GITSAFE — Git & Blast-Radius Envelope**~~ - SUPERSEDED 2026-10-14 by spikes 001/002 (sandbox without push credentials, plus a gsd-mm push step outside it). Halted after 13 gap rounds; code kept until Phase 31
+- [x] **Phase 20: Deterministic Decision Router & Run Bounds** - Rules pick the next command; runs stop themselves (verified 5/5 on 2026-08-19; kept as the advisory `next --json` hint) [inferred: completion marked at re-plan]
+- [ ] ~~**Phase 21: LLM Goal Layer & Prompt-Injection Hardening**~~ - SUPERSEDED 2026-10-14. The master driver is the goal layer, DIRECTION.md is the approved plan, and injection is contained by the sandbox. Paused at 4/5 (hard ceiling); the gap loop must not be resumed. Code kept until Phase 31
+- [ ] ~~**Phase 22: Container Execution Target**~~ - SUPERSEDED 2026-10-14 by bwrap + `systemd-run --user --scope` (Phase 28). 0/4 plans executed, no code landed
+- [ ] ~~**Phase 23: Gate Policy & Auto-Validation**~~ - SUPERSEDED 2026-10-14 by per-item done-when plus standing rules in DIRECTION.md (Phase 29). Never planned
 - [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
 - [x] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata (completed 2026-09-25)
+- [ ] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust
+- [ ] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md
+- [ ] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode
+- [ ] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation
+- [ ] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control`
+- [ ] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
 Phase 22 depends only on Phase 15 and may run alongside Phases 17-21, but must land
@@ -107,6 +113,9 @@ Phase 24 is a TUI-only phase with no dependency on the orchestration work (Phase
 like Phase 14 it is parallel-safe and can ship any time.
 Phase 25 is likewise TUI-only and read-only (worktrees, subagent metadata, plan files);
 it has no dependency on Phases 15-23 and is parallel-safe.
+**Re-plan (2026-10-14):** the constraints above that involve Phases 19-23 no longer bind, because
+those phases are superseded. Phase 26 gates the rest. Phases 28 and 29 both depend only on 27 and
+can run in parallel. Phase 30 needs 27, 28 and 29. Phase 31 runs last.
 
 ## Phase Details
 
@@ -351,6 +360,11 @@ Plans:
 
 ### Phase 19: GITSAFE — Git & Blast-Radius Envelope
 
+> **SUPERSEDED 2026-10-14.** Replaced by capability removal: the sandbox holds no push credentials, and gsd-mm pushes outside it
+> (`.planning/spikes/001-queue-driven-master-agent/`, `.planning/spikes/002-launcher-caps-and-tool-frontmatter/`).
+> The gap loop halted after 13 rounds by user decision and is not to be resumed. The existing code stays in place `[inferred]`.
+> SAFE-01/03/06 move to the Phase 28 push step. Removing or rewiring the rest is Phase 31.
+
 **Goal**: Autonomous git operations are bounded by mechanisms the agent cannot argue its way past
 **Depends on**: Phase 17 (spawn seam for tool denylists and per-run credentials)
 **Requirements**: SAFE-01, SAFE-02, SAFE-03, SAFE-05, SAFE-06
@@ -509,6 +523,10 @@ Plans:
 - [x] 20-05-PLAN.md — Quota park: observe the rate-limit signal on the transport, name the window and reset, and stop without retrying (CTRL-07, DRIVE-06)
 
 ### Phase 21: LLM Goal Layer & Prompt-Injection Hardening
+
+> **SUPERSEDED 2026-10-14.** The Opus master driver is the goal layer, and the human-owned DIRECTION.md is the approved plan.
+> Prompt injection is contained by the sandbox (blast radius), not prevented (spikes 001/002). The phase is paused at 4/5,
+> which is the hard ceiling; **do NOT resume its gap loop**. The code stays in place `[inferred]`, and retiring it is Phase 31.
 
 **Goal**: A user states a goal once and the run pursues it, with the model confined to two narrow, bounded, hardened seams
 **Depends on**: Phase 20
@@ -681,6 +699,10 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 
 ### Phase 22: Container Execution Target
 
+> **SUPERSEDED 2026-10-14.** On Linux, bwrap plus `systemd-run --user --scope` replaces it, verified with auth in spikes 001/002;
+> see Phase 28. The 4 plans were never executed, so no code landed and `bollard` was never added. The plans and research are kept
+> for provenance. macOS is covered by Phase 28's degraded mode, not by containers `[inferred]`.
+
 **Goal**: A driven project can run inside a container on either runtime, indistinguishably from the host path
 **Depends on**: Phase 15 only — parallel-eligible with Phases 17-21, but must land before Phase 20 closes
 **Requirements**: CTNR-01, CTNR-02, CTNR-03, CTNR-04, CTNR-05
@@ -717,6 +739,9 @@ Plans:
 - [ ] 22-04-PLAN.md — **The verified target, the durable record, and the TUI's stop.** The selection becomes a `VerifiedRuntime`-carrying target through the pre-flight or the run **refuses** rather than falling back to the host; the durable `target` string stops being a `Debug` rendering and gets one total label function with the reader accepting **both** spellings (which is what discharges D-22-16's `one-way` rating by design change rather than by re-rating); `container_id` and `egress` land on the run record with the scope word their own census demands; and stop reaches the container through the API before the process-group teardown. Plus the contract test that stops the singular host assumption returning (CTNR-01, CTNR-04, CTNR-05)
 
 ### Phase 23: Gate Policy & Auto-Validation
+
+> **SUPERSEDED 2026-10-14.** Each item's done-when plus the DIRECTION.md standing rules replace the gate policy (spike 001), in Phase 29.
+> Auto-validation by driving a real surface (DRIVE-07) is deferred to Future Requirements `[inferred]`.
 
 **Goal**: Whether a human-judgement verification gate stops the run is the user's configured choice, and under `auto` the driver earns the verification by driving the real surface rather than asserting it
 **Depends on**: Phase 20 (the gate taxonomy and the router's safe alphabet), Phase 22 (a containerized surface is one of the surfaces `auto` must be able to drive)
@@ -825,6 +850,266 @@ Plans:
 
 - [x] 25-07-PLAN.md — close CR-01: orphaned agent worktrees age out (`MAX_AGENT_AGE_SECS` → `Ended`), `Finished` alone never switches the Status cell on, running agents choose phase/ladder (WR-01), fixer estimate needs a running fixer; byte-identical dashboard regressions
 
+### Re-plan 2026-10-14: capability-removal driver (Phases 26-31)
+
+Phases 19, 21, 22 and 23 never converged, because each one enforced safety by parsing bash or by
+auditing without end. Spikes 001 and 002 replaced that direction:
+
+- `.planning/spikes/001-queue-driven-master-agent/` (PARTIAL)
+- `.planning/spikes/002-launcher-caps-and-tool-frontmatter/` (PARTIAL)
+
+Safety now comes from **capability removal plus hard caps in the launcher**, not from parsing:
+
+- An Opus master driver reads a human-owned `DIRECTION.md` and dispatches one fresh subagent per GSD step.
+- A tool, `driverctl`, writes the status frontmatter and LOG.md.
+- A bwrap sandbox runs under `systemd-run --user --scope`, and hard caps are enforced outside the
+  sandbox.
+- Credentials and pushes stay outside the sandbox.
+
+Phases 15-18 and 20 are kept as building blocks:
+
+- the router becomes an advisory hint;
+- the supervisor, journal and Driver tab become infrastructure.
+
+The milestone is restructured in place, not closed and reopened `[inferred]`. Closing v2.0 would mean
+a release tag and an audit of two phases that cannot close. v2.0 has never been released, and the
+reason for the major version bump ("passive dashboard becomes active orchestrator") still applies.
+The interim releases v1.7.x-v1.13.0 already sit inside this milestone.
+
+**Open human calls.** Each one is recorded with an `[inferred]` default and does not block planning:
+
+- **OQ-R1:** Do driver stop rules outrank a human `answer:` in DIRECTION.md?
+  - Default: **yes**. Only an edit to the budget or caps can lift a stop rule (spike 002, finding 5).
+    `[inferred]`
+- **OQ-R2:** Do driven runs see the user's global `CLAUDE.md`?
+  - Default: **no**. The GSD and rtk hooks are kept, the user's global CLAUDE.md is not linked, and
+    the driver's rules come from its prompt (spike 002, A2.1). `[inferred]`
+
+### Phase 26: Driver Validation Spike 003
+
+**Goal**: Before any Rust is written, prove on a real GSD phase that the spike-002 driver handles a gap
+that looks closable but cannot be closed. It must run gap rounds 1 and 2, detect divergence, park, and
+never re-spawn a background agent.
+
+**Depends on**: Nothing. It uses the spike-002 Python launcher and driverctl as they are.
+
+**Requirements**: VALID-01, VALID-02, VALID-03, VALID-04
+
+**Success Criteria** (what must be TRUE):
+
+  1. A scratch GSD project is seeded with a verifier criterion that has a moving target. The driver
+     dispatches gap-closure rounds 1 and 2. It parks `needs-human` no later than the third
+     `gaps_found`, and LOG.md shows the rule that fired. The record is tool-written by driverctl.
+  2. Divergence detection fires on its own, at "two consecutive rounds with new findings". It is not
+     masked by the launcher gap cap. In a second run with the prompt rule disabled, the launcher cap
+     trips instead (deny at limit+1, kill at limit+2).
+  3. Across every dispatch, the transcripts show **zero** duplicate planner or executor runs. This
+     tests the "wait for the async agent notification, never re-spawn" rule, measured with
+     `cost_split.py`.
+  4. The spike README records:
+     - the verdict;
+     - the measured cost of an Opus driver for each phase;
+     - an explicit go / adjust / no-go for Phases 27-31.
+
+     On a no-go, the roadmap is re-planned before Phase 27 starts.
+
+**Notes**: This is a spike under the spike CONVENTIONS: no `src/` changes, and scratch projects only.
+`[inferred]`: it runs as `/gsd-spike` work tracked by this phase, not as a code phase.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 26 to break down)
+
+### Phase 27: driverctl & Driver Frontmatter
+
+**Goal**: The single writer of a run's state is a Rust subcommand of gsd-mm. Its frontmatter on
+DIRECTION.md is format-correct by construction and never costs a human edit.
+
+**Depends on**: Phase 26 (go verdict)
+
+**Requirements**: DCTL-01, DCTL-02, DCTL-03, DCTL-04
+
+**Success Criteria** (what must be TRUE):
+
+  1. `gsd-meta-manager driverctl serve|log|hook|show` replaces `tools/driverctl.py` and uses the same
+     socket protocol. The spike-002 MASTER-PROMPT runs against the Rust binary unchanged.
+  2. The editor-race test, ported from `race_test.py`, measures zero lost rename-saves. The in-place
+     loss stays at or below the spike's measured rate. gsd-mm's own DIRECTION writes take the shared
+     flock, so they never race.
+  3. Every generated frontmatter (template, starting, running, stopped, crashed) parses into a typed
+     `DriverFrontmatter` in `state_reader`. A body without `## Direction` and `## Items` is never
+     written back.
+  4. Malformed events and unknown items are rejected with rc=2. Dispatches are counted from hook
+     payloads (no `agent_id` means a driver-level dispatch). Gap rounds come from `gaps_found`
+     VERIFICATION.md writes on disk, never from the driver's own account. Heartbeat-only rewrites
+     are coalesced to at most one every 120 s.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 27 to break down)
+
+### Phase 28: Sandboxed Driver Launcher
+
+**Goal**: `gsd-meta-manager driver launch` starts a headless master inside a sandbox it cannot write
+out of, enforces the hard caps from outside, and pushes on the driver's behalf. On Linux this is the
+default. Hosts without bwrap or systemd-run get an explicit degraded mode.
+
+**Depends on**: Phase 27
+
+**Requirements**: LNCH-01, LNCH-02, LNCH-03, LNCH-04, LNCH-05, LNCH-06, LNCH-07, LNCH-08, DRIVE-01 (re-mapped)
+
+**Success Criteria** (what must be TRUE):
+
+  1. A launch runs the master inside `bwrap` under `systemd-run --user --scope`. Stop from the TUI or
+     CLI kills the whole scope, including descendants. A second launcher on the same run is refused
+     by the launcher-held flock (Phase 17 CTRL-05), and a relaunch logs `crash-detected`.
+  2. The spike-002 L1-L5 misbehaving-driver cases pass against the Rust launcher:
+     - the dispatch cap denies at the limit;
+     - the wall clock kills the scope, with `RuntimeMaxSec` as backstop;
+     - the gap cap denies at limit+1 and kills at limit+2;
+     - a rate-limit result parks without retry.
+  3. Inside the sandbox:
+     - host `~/.claude` is read-only;
+     - `.credentials.json` and `~/.claude.json` are unreadable;
+     - `~/.ssh` is empty;
+     - `SSH_AUTH_SOCK`, `GH_TOKEN` and `ANTHROPIC_API_KEY` are absent;
+     - the run dir is read-only.
+
+     The run uses a per-run `CLAUDE_CONFIG_DIR` that keeps the GSD and rtk hooks and does not link
+     the global CLAUDE.md (OQ-R2 default) `[inferred]`.
+  4. Auth comes from a stored long-lived `claude setup-token` token passed as `CLAUDE_CODE_OAUTH_TOKEN`.
+     A guided onboarding step covers it. A host-token fallback detects `OAuth token revoked` and
+     relaunches. No refresh token ever enters the sandbox.
+  5. A driven run's commits leave the machine only through gsd-mm's push step, outside the sandbox.
+     That step uses a fixed refspec into the reserved namespace and reuses Phase 19's secret scan,
+     protected-branch refusal and PR cap. A push attempted inside the sandbox fails for lack of
+     credentials.
+  6. Without bwrap or systemd-run (macOS), the launcher refuses by default. An explicit opt-in
+     degraded mode then runs unsandboxed, with caps enforced by process supervision, and the posture
+     is recorded on the run and shown in the TUI. Headless operation never needs tmux.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 28 to break down)
+
+### Phase 29: Master Prompt & Run Templates
+
+**Goal**: The driver's contract ships with gsd-mm as a versioned prompt and file templates. A new run
+is one command from a ready DIRECTION.md, and stop-rule precedence is stated explicitly instead of
+left implicit.
+
+**Depends on**: Phase 27. It may run alongside Phase 28.
+
+**Requirements**: PRMT-01, PRMT-02, PRMT-03, PRMT-04, PRMT-05, DRIVE-03 (re-mapped)
+
+**Success Criteria** (what must be TRUE):
+
+  1. The master prompt is embedded in the binary and versioned, with its version recorded on the run.
+     It carries:
+     - one fresh subagent per GSD step;
+     - the 11-field report of at most 15 lines, copied verbatim;
+     - nested `isolation: "worktree"` pass-through;
+     - the async-agent no-respawn rule;
+     - every record going through driverctl.
+  2. `gsd-meta-manager driver new <project> <slug>` mints `<yyyymmdd>-<slug>` and creates
+     `.planning/meta-manager/drivers/<run-id>/`, with a self-ignoring `.gitignore`, a DIRECTION.md
+     from the template (`control: run|pause|stop`, items with done-when and budget), and LOG.md
+     carrying its grammar inline.
+  3. The stop rules are explicit in the prompt and in the template's standing rules, with written
+     precedence (OQ-R1 default: stop rules outrank `answer:`, and only a budget edit lifts them)
+     `[inferred]`:
+     - item budget;
+     - at most 2 gap rounds;
+     - divergence;
+     - no progress;
+     - run budget.
+  4. A scripted crash-and-relaunch reconciles every `running` item to exactly one of
+     done, resume, reset or park. A `control: pause` edit made mid-dispatch ends the run after the
+     current item.
+  5. `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory hint, which
+     the prompt cites as advisory only.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 29 to break down)
+
+### Phase 30: Driver Tab on DIRECTION.md
+
+**Goal**: The TUI observes and steers driver runs only through the run's files. Status, caps,
+heartbeat and crash detection come from the tool-written frontmatter, and steering is an edit to
+DIRECTION.md.
+
+**Depends on**: Phase 27 (reader), Phase 28 (launch/stop), Phase 29 (templates)
+
+**Requirements**: DTAB-01, DTAB-02, DTAB-03, DTAB-04
+
+**Success Criteria** (what must be TRUE):
+
+  1. The Driver tab lists a project's run dirs. For the selected run it shows:
+     - status;
+     - per-item state;
+     - caps used/limit;
+     - the dispatch audit (logged == observed);
+     - heartbeat age;
+     - `connected[]`.
+
+     All of it is read from frontmatter, with no Claude call.
+  2. A run whose frontmatter says `running` but whose lock probe finds the flock free is shown as
+     **crashed**. A stale heartbeat is flagged. The dashboard marks projects that are driven, parked
+     or crashed, reusing OBS-02 and OBS-07.
+  3. From the tab, a user can:
+     - set `control: run|pause|stop`;
+     - answer or un-hold a parked item;
+     - open DIRECTION.md in `$EDITOR`.
+
+     Every edit goes through the shared flock and never touches the frontmatter block.
+  4. From the tab, a user can:
+     - start a new run (mint id, edit DIRECTION, launch);
+     - relaunch a crashed one;
+     - tail LOG.md live.
+
+     The Phase 18 stream-json injection UI is no longer the steering path.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 30 to break down)
+
+### Phase 31: Retire Superseded Envelope & Goal-Layer Code
+
+**Goal**: Code from superseded Phases 19, 21 and 22 is either removed or rewired into the new path, so
+the codebase carries no unfinished parallel safety model.
+
+**Depends on**: Phase 28 (the push step must own SAFE-01/03/06 before the guard goes), Phase 30 (the new steering path replaces injection)
+
+**Requirements**: RETIRE-01, RETIRE-02, RETIRE-03
+
+**Success Criteria** (what must be TRUE):
+
+  1. The Phase 19 argv/bash-classifying `PreToolUse` guard and its carrier corpora are deleted, along
+     with the Phase 21 goal-layer seams and the stream-json durable-injection steering path. These
+     pieces are kept and rewired into the push step or the launcher:
+     - namespace refusal;
+     - secret scan;
+     - PR ledger;
+     - capture-time redaction (SAFE-04);
+     - the `Untrusted` display type;
+     - the router.
+  2. The Phase 22 plans are archived as superseded, and `bollard` is never added.
+     `GSDMM_EXPERIMENTAL_FEATURES` gates only surfaces that still exist.
+  3. Open threat ids are closed with a pointer to the superseding mechanism, each named in
+     `deferred-items.md`: T-19-86, T-19-91, T-19-111, T-19-116, and the Phase 21 criterion 4.
+  4. `./scripts/pre-tag-check.sh --container` passes on the reduced tree.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 31 to break down)
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -834,13 +1119,19 @@ Plans:
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 33/33 | In Progress|  |
-| 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
-| 22. Container Execution Target | 0/? | Not started | - |
-| 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 33/33 | Superseded | 2026-10-14 |
+| 20. Deterministic Decision Router & Run Bounds | 5/5 | Complete    | 2026-08-19 |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | Superseded | 2026-10-14 |
+| 22. Container Execution Target | 0/4 | Superseded | 2026-10-14 |
+| 23. Gate Policy & Auto-Validation | 0/0 | Superseded | 2026-10-14 |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
+| 26. Driver Validation Spike 003 | 0/0 | Not started | - |
+| 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
+| 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
+| 29. Master Prompt & Run Templates | 0/0 | Not started | - |
+| 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
+| 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 
 ## Backlog
 

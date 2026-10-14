@@ -3,6 +3,7 @@
 **Milestone:** v2.0
 **Defined:** 2026-07-28
 **Source:** `.planning/research/SUMMARY.md` + backlog 999.2 / 999.3 + four pending UI todos
+**Re-planned:** 2026-10-14, after spikes 001 and 002 (`.planning/spikes/`). See "Re-plan 2026-10-14" below.
 
 > **Scoping note.** The user directed that this milestone be scoped and run without
 > further questions ("best well-reasoned guess is good enough"). Every scoping call
@@ -47,9 +48,9 @@ interleave and corrupt each other.
 - [x] **CTRL-03**: A project is driven only when explicitly opted in; non-opted-in projects are never spawned against, enforced at the process-spawn seam
 - [x] **CTRL-04**: An autonomous run survives the TUI being closed, and the TUI reconciles live runs on restart
 - [x] **CTRL-05**: Only one driver may execute against a given project at a time, enforced by an OS-level lock
-- [ ] **CTRL-06**: A run halts itself when it stops making progress, repeats a command, exceeds a step cap, or exceeds a wall-clock cap
-- [ ] **CTRL-07**: A run parks rather than retrying when it hits a Claude subscription rate limit, and reports which quota window blocked it
-- [ ] **CTRL-08**: The policy for a human-judgement verification gate is user-configurable to skip, defer, or auto-validate — settable both per-run and per-project/session, with `defer` the default and every non-default choice visible in the run record
+- [x] **CTRL-06**: A run halts itself when it stops making progress, repeats a command, exceeds a step cap, or exceeds a wall-clock cap
+- [x] **CTRL-07**: A run parks rather than retrying when it hits a Claude subscription rate limit, and reports which quota window blocked it
+- [ ] **CTRL-08**: The policy for a human-judgement verification gate is user-configurable to skip, defer, or auto-validate — settable both per-run and per-project/session, with `defer` the default and every non-default choice visible in the run record *(superseded 2026-10-14; see Traceability)*
 
 ### Git & Blast Radius (SAFE)
 
@@ -59,8 +60,8 @@ interleave and corrupt each other.
 - [x] **SAFE-04**: Credentials and tokens are redacted when captured into the run log, not when rendered
 - [x] **SAFE-05**: A driven run uses a scoped git credential rather than inheriting the user's ambient credentials or SSH agent
 - [x] **SAFE-06**: PR creation is rate-capped per project per day
-- [ ] **SAFE-07**: `.planning/` content read by the driver is passed to the model inside an explicit untrusted-content boundary, never concatenated into instructions
-- [ ] **SAFE-08**: The model's chosen action is constrained to a fixed enum of GSD commands; free-form shell strings are never executed
+- [ ] **SAFE-07**: `.planning/` content read by the driver is passed to the model inside an explicit untrusted-content boundary, never concatenated into instructions *(superseded 2026-10-14; see Traceability)*
+- [ ] **SAFE-08**: The model's chosen action is constrained to a fixed enum of GSD commands; free-form shell strings are never executed *(superseded 2026-10-14; see Traceability)*
 
 ### Run State & Observability (OBS)
 
@@ -81,20 +82,20 @@ interleave and corrupt each other.
 ### Autonomous Driver (DRIVE)
 
 - [ ] **DRIVE-01**: A user states a goal once in natural language and the driver pursues it across multiple GSD commands without further input
-- [ ] **DRIVE-02**: The driver chooses the next GSD command from observed project state using deterministic rules, not a model call, for every case the rules cover
+- [x] **DRIVE-02**: The driver chooses the next GSD command from observed project state using deterministic rules, not a model call, for every case the rules cover
 - [ ] **DRIVE-03**: The driver's goal is decomposed into a structured, machine-checkable plan that the user can review before the run starts
-- [ ] **DRIVE-04**: The driver escalates to a model only for goal decomposition and for ambiguity the rules cannot resolve, with a per-run cap on such escalations
-- [ ] **DRIVE-05**: The driver parks and flags for a human when it encounters a GSD gate that requires human judgement
-- [ ] **DRIVE-06**: The driver reports a terminal outcome — goal met, parked, or halted — with the reason
-- [ ] **DRIVE-07**: Under the `auto` gate policy the driver attempts the verification a human would perform — driving the real surface (TUI, browser, or app) rather than asserting from source — and an auto-validated result is permanently distinguishable on disk from a human-verified one
+- [ ] **DRIVE-04**: The driver escalates to a model only for goal decomposition and for ambiguity the rules cannot resolve, with a per-run cap on such escalations *(superseded 2026-10-14; see Traceability)*
+- [x] **DRIVE-05**: The driver parks and flags for a human when it encounters a GSD gate that requires human judgement
+- [x] **DRIVE-06**: The driver reports a terminal outcome — goal met, parked, or halted — with the reason
+- [ ] **DRIVE-07**: Under the `auto` gate policy the driver attempts the verification a human would perform — driving the real surface (TUI, browser, or app) rather than asserting from source — and an auto-validated result is permanently distinguishable on disk from a human-verified one *(superseded 2026-10-14; see Traceability)*
 
 ### Containerized Sessions (CTNR)
 
-- [ ] **CTNR-01**: A user can run a driven project inside a container instead of on the host
-- [ ] **CTNR-02**: The container runtime is auto-detected; both docker and podman work without configuration
-- [ ] **CTNR-03**: Claude subscription authentication works inside the container without bind-mounting the host credential store
-- [ ] **CTNR-04**: A user can start, stop, and resume containerized sessions from the TUI
-- [ ] **CTNR-05**: Container and host execution behave identically from the driver's perspective, including session resume
+- [ ] **CTNR-01**: A user can run a driven project inside a container instead of on the host *(superseded 2026-10-14; see Traceability)*
+- [ ] **CTNR-02**: The container runtime is auto-detected; both docker and podman work without configuration *(superseded 2026-10-14; see Traceability)*
+- [ ] **CTNR-03**: Claude subscription authentication works inside the container without bind-mounting the host credential store *(superseded 2026-10-14; see Traceability)*
+- [ ] **CTNR-04**: A user can start, stop, and resume containerized sessions from the TUI *(superseded 2026-10-14; see Traceability)*
+- [ ] **CTNR-05**: Container and host execution behave identically from the driver's perspective, including session resume *(superseded 2026-10-14; see Traceability)*
 
 ### UI Fixes (UIFIX)
 
@@ -113,6 +114,146 @@ interleave and corrupt each other.
 - [x] **AGENT-06**: The Sessions tab of the detail view has an Agents sub-view with the summary, per-wave running/done/queued rows, a scrollable per-agent list and a worktree-less group, with explicit empty and degraded states
 - [x] **AGENT-07**: For code-review fix runs, the summary shows an estimated fixed/total count from REVIEW.md `findings.total` and finding ids in `fix(NN):` commit subjects, labelled as an estimate
 
+## Re-plan 2026-10-14: capability-removal driver
+
+Phases 19 (GITSAFE), 21 (LLM goal layer), 22 (containers) and 23 (gate policy) are **superseded**. The
+replacement direction comes from spikes 001 and 002, both PARTIAL. Safety comes from **capability
+removal and hard caps in the launcher**, not from parsing bash or auditing without end:
+
+- An Opus master driver reads a human-owned
+  `.planning/meta-manager/drivers/<run-id>/DIRECTION.md`.
+- It dispatches one fresh subagent per GSD step.
+- The launcher owns a bwrap sandbox under `systemd-run --user --scope`, the run lock and the caps.
+
+The requirement IDs below are new. Superseded IDs are not deleted. Each is re-marked in Traceability
+with what supersedes it. Inferred calls are marked `[inferred]`.
+
+### Driver Validation (VALID): Phase 26
+
+- [ ] **VALID-01**: On a real GSD scratch project seeded with a gap that looks closable but keeps
+  producing new findings, the driver runs gap-closure rounds 1 and 2. It parks `needs-human` no later
+  than the third `gaps_found`, and driverctl records the rule that fired.
+- [ ] **VALID-02**: Divergence detection (two consecutive rounds with new findings) parks the run on
+  its own. With the prompt rule disabled, the launcher gap cap trips instead: deny at limit+1, kill at
+  limit+2.
+- [ ] **VALID-03**: After an async Agent launch, the driver and its workers wait for the notification
+  and never re-spawn. The transcripts show zero duplicate planner or executor runs.
+- [ ] **VALID-04**: The spike records the measured per-phase cost of an Opus driver and gives an
+  explicit go / adjust / no-go for Phases 27-31.
+
+### driverctl & Frontmatter (DCTL): Phase 27
+
+- [ ] **DCTL-01**: `gsd-meta-manager driverctl serve|log|hook|show` is the single writer of a run's
+  `state.json`, `LOG.md` and DIRECTION.md frontmatter. It speaks the spike-002 socket protocol and
+  runs on the launcher side, outside the sandbox.
+- [ ] **DCTL-02**: The frontmatter is rewritten by exchange-verify splice: `renameat2(RENAME_EXCHANGE)`,
+  a check of the displaced inode, and a swap back on mismatch.
+  - The human body is preserved byte-for-byte.
+  - A body missing `## Direction` or `## Items` is never written back.
+  - gsd-mm's own DIRECTION writes share a flock with driverctl.
+- [ ] **DCTL-03**: Frontmatter schema v1 is a typed `DriverFrontmatter` in `state_reader`. Liveness is
+  derived from a non-blocking probe of the launcher's run flock, so `running` with a free lock reads
+  as crashed.
+- [ ] **DCTL-04**: Counters come only from tool-observed state:
+  - dispatches from hook payloads, where a missing `agent_id` means a driver-level call;
+  - gap rounds from `gaps_found` VERIFICATION.md writes on disk.
+
+  Malformed or unknown events are rejected with rc=2. Heartbeat-only rewrites are coalesced to at
+  most one every 120 s.
+
+### Launcher (LNCH): Phase 28
+
+- [ ] **LNCH-01**: `gsd-meta-manager driver launch` runs the master headless inside bwrap under
+  `systemd-run --user --scope`. Stop kills the whole scope, including descendants.
+- [ ] **LNCH-02**: The run lock is an flock held by the launcher outside the sandbox. It reuses
+  Phase 17 CTRL-05 and is never a pid file. A second launcher is refused, and a relaunch after a
+  crash logs `crash-detected`.
+- [ ] **LNCH-03**: Hard caps are enforced from outside the sandbox:
+  - dispatch count: denied at the limit;
+  - active wall-clock minutes: kill the scope, with `RuntimeMaxSec` as backstop;
+  - gap rounds: deny at limit+1, kill at limit+2.
+
+  A rate-limit result parks the run without retry and names the quota window.
+- [ ] **LNCH-04**: Each run gets its own `CLAUDE_CONFIG_DIR`.
+  - GSD agents, skills and hooks are linked read-only.
+  - The user's GSD and rtk hooks are kept.
+  - The global `CLAUDE.md` is not linked (OQ-R2 default) `[inferred]`.
+
+  Inside the sandbox:
+  - host `~/.claude` is read-only;
+  - `.credentials.json` and `~/.claude.json` are masked;
+  - `~/.ssh` is empty;
+  - `SSH_AUTH_SOCK`, `GH_TOKEN` and `ANTHROPIC_API_KEY` are stripped;
+  - the run dir is read-only.
+- [ ] **LNCH-05**: Auth is passed as `CLAUDE_CODE_OAUTH_TOKEN` from a stored long-lived
+  `claude setup-token` token, set up by a guided onboarding step. A host-token fallback detects
+  `OAuth token revoked` and relaunches. No refresh token ever enters the sandbox.
+- [ ] **LNCH-06**: A driven run's commits leave the machine only through gsd-mm's push step outside
+  the sandbox. That step uses a fixed refspec into the reserved namespace and reuses the namespace
+  refusal, secret scan and PR cap (SAFE-01/03/06).
+- [ ] **LNCH-07**: Without bwrap or systemd-run (macOS), the launcher refuses by default. An explicit
+  opt-in degraded mode runs unsandboxed, with caps enforced by process supervision, and the posture
+  is recorded on the run and shown in the TUI `[inferred]`.
+- [ ] **LNCH-08**: Headless operation needs no tmux. An interactive or tmux attach is optional and
+  never on the control path.
+
+### Master Prompt & Templates (PRMT): Phase 29
+
+- [ ] **PRMT-01**: The master prompt ships embedded and versioned, and its version is recorded on the
+  run. It requires:
+  - one fresh subagent per GSD step;
+  - the 11-field report of at most 15 lines, copied verbatim;
+  - nested `isolation: "worktree"` pass-through;
+  - the async no-respawn rule;
+  - every record going through driverctl.
+- [ ] **PRMT-02**: `gsd-meta-manager driver new` mints a `<yyyymmdd>-<slug>` run id. It creates
+  `.planning/meta-manager/drivers/<run-id>/`, with a self-ignoring `.gitignore`, DIRECTION.md, and
+  LOG.md with its grammar inline. DIRECTION.md holds `control: run|pause|stop`, standing rules, and
+  items with intent, done-when, budget, after, hold and answer.
+- [ ] **PRMT-03**: The prompt and the template state these stop rules, and their precedence:
+  - item budget;
+  - at most 2 gap rounds per phase;
+  - divergence;
+  - no progress;
+  - run budget.
+
+  Stop rules outrank a human `answer:`, and only a budget edit lifts one (OQ-R1 default)
+  `[inferred]`.
+- [ ] **PRMT-04**: Startup reconciliation resolves every `running` item to exactly one of done,
+  resume, reset or park. A `control` edit is honoured before the next dispatch.
+- [ ] **PRMT-05**: `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory
+  hint that never binds the driver.
+
+### Driver Tab (DTAB): Phase 30
+
+- [ ] **DTAB-01**: The Driver tab lists a project's run dirs. For the selected run it shows, from
+  frontmatter only:
+  - status;
+  - per-item state;
+  - caps used/limit;
+  - the dispatch audit;
+  - heartbeat age;
+  - `connected[]`.
+- [ ] **DTAB-02**: Crashed runs and stale heartbeats are flagged. The dashboard marks projects that
+  are driven, parked or crashed.
+- [ ] **DTAB-03**: A user can set `control`, answer or un-hold a parked item, and open DIRECTION.md
+  in `$EDITOR` from the tab. Every edit takes the shared flock and never touches the frontmatter.
+- [ ] **DTAB-04**: A user can start a new run, relaunch a crashed run, and tail LOG.md live from the
+  tab.
+
+### Retirement (RETIRE): Phase 31
+
+- [ ] **RETIRE-01**: The following superseded paths are removed:
+  - the Phase 19 argv/bash-classifying `PreToolUse` guard and its carrier corpora;
+  - the Phase 21 goal-layer seams;
+  - stream-json durable-injection steering.
+
+  The parts that survive are rewired into the launcher or the push step: namespace refusal, secret
+  scan, PR ledger, SAFE-04 redaction, the `Untrusted` display type, and the router.
+- [ ] **RETIRE-02**: The Phase 22 plans are archived as superseded, and `bollard` is never added.
+- [ ] **RETIRE-03**: The open Phase 19/21 threat ids and criterion 4 are closed as superseded, each
+  with a pointer. `./scripts/pre-tag-check.sh --container` passes on the reduced tree.
+
 ## Future Requirements
 
 Deferred to a later milestone — deliberately out of v2.0 scope:
@@ -121,6 +262,8 @@ Deferred to a later milestone — deliberately out of v2.0 scope:
 - Fleet-level driving — one driver goal spanning multiple projects at once. v2.0 is one driver per project. **[ASSUMED]**
 - Replacing `session_detector.rs`'s pgrep+`/proc` scraping with `claude agents --json`. Research found this is strictly better (yields `sessionId` and busy/idle), but it is a v1.x subsystem refactor, not a v2.0 capability. Captured as a follow-up. **[ASSUMED]**
 - Live re-streaming of a run's output after TUI restart. Research established this is impossible by construction — once the TUI exits, the child's stdout pipe is gone. Reattachment is journal-based and read-only; OBS-01/CTRL-04 are scoped accordingly.
+- Auto-validation by driving a real surface (DRIVE-07, from superseded Phase 23). Deferred by the 2026-10-14 re-plan `[inferred]`.
+- Container execution target (CTNR-01..05, from superseded Phase 22). Deferred; Linux isolation comes from bwrap + cgroup scope `[inferred]`.
 - Windows support for the driver. `process_group(0)` is Unix-only; the TUI remains cross-platform but driving is Unix-only in v2.0. **[ASSUMED]**
 
 ## Out of Scope
@@ -136,7 +279,7 @@ Deferred to a later milestone — deliberately out of v2.0 scope:
 ## Traceability
 
 Every v2.0 requirement maps to exactly one phase. Phase numbering continues from
-the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-25.
+the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (re-plan 2026-10-14 added 26-31).
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
@@ -150,17 +293,17 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-25.
 | CTRL-03 | Phase 17: Supervisor | Complete |
 | CTRL-04 | Phase 17: Supervisor | Complete |
 | CTRL-05 | Phase 17: Supervisor | Complete |
-| CTRL-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
-| CTRL-07 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
-| CTRL-08 | Phase 23: Gate Policy & Auto-Validation | Pending |
-| SAFE-01 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
-| SAFE-02 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
-| SAFE-03 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
+| CTRL-06 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; hard caps re-homed to Phase 28 (LNCH-03) |
+| CTRL-07 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; launcher-side park in Phase 28 (LNCH-03) |
+| CTRL-08 | Phase 23 (superseded) | Superseded by per-item done-when + standing rules, Phase 29 (PRMT-02/03) |
+| SAFE-01 | Phase 19 (superseded) | Complete in code; enforcement moves to push step outside sandbox, Phase 28 (LNCH-06) |
+| SAFE-02 | Phase 19 (superseded) | Superseded by capability removal (no push creds in sandbox, LNCH-04/06); guard retired in Phase 31 |
+| SAFE-03 | Phase 19 (superseded) | Complete in code; reused by the Phase 28 push step (LNCH-06) |
 | SAFE-04 | Phase 16: Run Journal & State Substrate | Complete |
-| SAFE-05 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
-| SAFE-06 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
-| SAFE-07 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
-| SAFE-08 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
+| SAFE-05 | Phase 19 (superseded) | Moot: sandbox holds no credentials (LNCH-04) |
+| SAFE-06 | Phase 19 (superseded) | Complete in code; reused by the Phase 28 push step (LNCH-06) |
+| SAFE-07 | Phase 21 (superseded) | Superseded: injection contained by sandbox (LNCH-04), not prevented |
+| SAFE-08 | Phase 21 (superseded) | Superseded: blast radius bounded by sandbox + launcher caps (LNCH-03/04) |
 | OBS-01 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
@@ -171,18 +314,18 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-25.
 | STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| DRIVE-01 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
-| DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
-| DRIVE-03 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
-| DRIVE-04 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
-| DRIVE-05 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
-| DRIVE-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
-| DRIVE-07 | Phase 23: Gate Policy & Auto-Validation | Pending |
-| CTNR-01 | Phase 22: Container Execution Target | Pending |
-| CTNR-02 | Phase 22: Container Execution Target | Pending |
-| CTNR-03 | Phase 22: Container Execution Target | Pending |
-| CTNR-04 | Phase 22: Container Execution Target | Pending |
-| CTNR-05 | Phase 22: Container Execution Target | Pending |
+| DRIVE-01 | Phase 28/29 (re-mapped) | Pending: master driver pursues DIRECTION.md items headless |
+| DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; now an advisory hint (PRMT-05) |
+| DRIVE-03 | Phase 29 (re-mapped) | Pending: DIRECTION.md items with done-when/budget are the reviewable plan |
+| DRIVE-04 | Phase 21 (superseded) | Superseded: the master is the model; dispatch cap replaces escalation cap (LNCH-03) |
+| DRIVE-05 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred] |
+| DRIVE-06 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred] |
+| DRIVE-07 | Phase 23 (superseded) | Deferred to Future Requirements [inferred] |
+| CTNR-01 | Phase 22 (superseded) | Superseded by bwrap + systemd-run scope (Phase 28); deferred [inferred] |
+| CTNR-02 | Phase 22 (superseded) | Superseded by bwrap + systemd-run scope (Phase 28); deferred [inferred] |
+| CTNR-03 | Phase 22 (superseded) | Superseded by bwrap + systemd-run scope (Phase 28); deferred [inferred] |
+| CTNR-04 | Phase 22 (superseded) | Superseded by bwrap + systemd-run scope (Phase 28); deferred [inferred] |
+| CTNR-05 | Phase 22 (superseded) | Superseded by bwrap + systemd-run scope (Phase 28); deferred [inferred] |
 | UIFIX-01 | Phase 14: UI Fixes | Complete |
 | UIFIX-02 | Phase 14: UI Fixes | Complete |
 | UIFIX-03 | Phase 14: UI Fixes | Complete |
@@ -194,3 +337,31 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-25.
 | AGENT-05 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-06 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-07 | Phase 25: Running Agents & Live Wave View | Complete |
+| VALID-01 | Phase 26 | Pending |
+| VALID-02 | Phase 26 | Pending |
+| VALID-03 | Phase 26 | Pending |
+| VALID-04 | Phase 26 | Pending |
+| DCTL-01 | Phase 27 | Pending |
+| DCTL-02 | Phase 27 | Pending |
+| DCTL-03 | Phase 27 | Pending |
+| DCTL-04 | Phase 27 | Pending |
+| LNCH-01 | Phase 28 | Pending |
+| LNCH-02 | Phase 28 | Pending |
+| LNCH-03 | Phase 28 | Pending |
+| LNCH-04 | Phase 28 | Pending |
+| LNCH-05 | Phase 28 | Pending |
+| LNCH-06 | Phase 28 | Pending |
+| LNCH-07 | Phase 28 | Pending |
+| LNCH-08 | Phase 28 | Pending |
+| PRMT-01 | Phase 29 | Pending |
+| PRMT-02 | Phase 29 | Pending |
+| PRMT-03 | Phase 29 | Pending |
+| PRMT-04 | Phase 29 | Pending |
+| PRMT-05 | Phase 29 | Pending |
+| DTAB-01 | Phase 30 | Pending |
+| DTAB-02 | Phase 30 | Pending |
+| DTAB-03 | Phase 30 | Pending |
+| DTAB-04 | Phase 30 | Pending |
+| RETIRE-01 | Phase 31 | Pending |
+| RETIRE-02 | Phase 31 | Pending |
+| RETIRE-03 | Phase 31 | Pending |

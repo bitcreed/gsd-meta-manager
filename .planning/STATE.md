@@ -1,21 +1,20 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.13.0
-current_phase: 19
-current_phase_name: GITSAFE — Git & Blast-Radius Envelope
-status: shipped
-stopped_at: v1.13.0 released (interim, mid v2.0); next is Phase 19 (halted — ask first)
-last_updated: "2026-10-12T19:45:57.413Z"
-last_activity: 2026-10-12
-last_activity_desc: v1.13.0 released — gsd-core 1.16.0 Sync
-state_head: faf3eeb41f38b2ecda8ad7286798a333321594b5
+milestone: v2.0
+current_phase: 26
+current_phase_name: Driver Validation Spike 003
+status: planning
+stopped_at: v2.0 re-planned 2026-10-14 (Phases 19/21/22/23 superseded by spikes 001/002; Phases 26-31 added); next is /gsd-plan-phase 26
+last_updated: "2026-10-14T05:49:47.773Z"
+last_activity: 2026-10-14
+last_activity_desc: v2.0 re-planned around the capability-removal driver (spikes 001/002)
+state_head: a0d252d48de6f649988e60263c42bea8844fce8b
 progress:
   total_phases: 10
   completed_phases: 7
   total_plans: 7
   completed_plans: 112
-  percent: 58
-milestone_name: gsd-core 1.16.0 Sync
+milestone_name: Autonomous Orchestration
 ---
 
 # Project State
@@ -25,13 +24,43 @@ milestone_name: gsd-core 1.16.0 Sync
 See: .planning/PROJECT.md (updated 2026-09-25)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 19 — GITSAFE — Git & Blast-Radius Envelope (gap-closure loop halted by user decision — ask before resuming) [inferred]
+**Current focus:** Phase 26, Driver Validation Spike 003. This is the first phase of the v2.0 re-plan of
+2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
 cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-target).
 
 ## Current Position
 
+Status: v2.0 re-planned 2026-10-14. The milestone was restructured in place rather than closed. No
+tag was created, Cargo.toml was not bumped, and nothing was pushed `[inferred]`.
+
+- **Superseded:** Phases 19 (GITSAFE), 21 (LLM goal layer), 22 (containers) and 23 (gate policy),
+  replaced by spikes 001/002 (`.planning/spikes/`).
+  - Safety now comes from capability removal, with a bwrap sandbox under `systemd-run --user
+    --scope`, no push credentials and a read-only run dir.
+  - Launcher hard caps are counted from tool-written state.
+  - An Opus master driver steers through a human-owned DIRECTION.md, with frontmatter written by
+    driverctl.
+- **Code:** the existing Phase 19/21 code stays in place `[inferred]`. Phase 31 retires or rewires
+  it.
+- **Phase 21:** its gap loop must NOT be resumed. 4/5 is the hard ceiling.
+- **Phase 20:** marked complete (`20-VERIFICATION.md` passed 5/5) `[inferred]`. It is kept as the
+  advisory router hint.
+- **Building blocks:** Phases 15-18 are kept as infrastructure.
+- **New phases:**
+  - 26 Driver Validation Spike 003
+  - 27 driverctl & Driver Frontmatter
+  - 28 Sandboxed Driver Launcher
+  - 29 Master Prompt & Run Templates
+  - 30 Driver Tab on DIRECTION.md
+  - 31 Retire Superseded Envelope & Goal-Layer Code
+- **Open human calls**, recorded with `[inferred]` defaults and not blocking:
+  - OQ-R1: stop rules outrank a human `answer:` (default yes).
+  - OQ-R2: driven runs do not see the global CLAUDE.md (default no).
+- **Next:** `/gsd-plan-phase 26`.
+
+Earlier (v1.13.0 release, 2026-10-12):
 Status: v1.13.0 shipped 2026-10-12 (interim release; v2.0 milestone still open)
   gsd-core v1.16.0 sync: quick batch 261012-jqa (261012-jqb config key delta — six gates.* keys
   retired, gates.confirm_milestone_scope + audit.enabled modelled, DEFAULTS_OPTION_COUNT 135;
@@ -140,9 +169,9 @@ Carried forward from v1.7.0 (unchanged by this patch):
   (all plans executed; `/gsd-secure-phase 19` has not cleared, T-19-86/T-19-91 open at high).
   MSRV is 1.88 in this release — consumer-visible.
 
-Active milestone (unchanged by the release, resume here):
-Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
-Phase: 19 — GITSAFE — Git & Blast-Radius Envelope
+Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
+Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
+Phase: 26 — Driver Validation Spike 003
 Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
@@ -177,7 +206,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-14 - Completed quick task 261014-0jv: worktree-only phase plans browsable in the TUI
+Last activity: 2026-10-14 - v2.0 re-planned (spikes 001/002; Phases 19/21/22/23 superseded, 26-31 added); earlier the same day: completed quick task 261014-0jv: worktree-only phase plans browsable in the TUI
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -494,11 +523,15 @@ Recent decisions affecting current work:
 - [Phase 25]: 25-07: orphans aged past MAX_AGENT_AGE_SECS (a day of inactivity) read Ended, not a new variant [inferred]
 - [Phase 25]: 25-07: only Live/Idle (AgentLiveness::is_running) switch the Status-cell summary, the fixer estimate and the executor ladder on; Finished counts only inside a running run [inferred, CR-01]
 - [Phase 25]: 25-07: active-phase vote is tiered - running rows first, Finished/Stalled fallback (WR-01 folded in) [inferred]
+- [Phase 26]: v2.0 re-planned around a queue-driven Opus master driver: safety by capability removal (bwrap + systemd-run scope, no push creds, read-only run dir) and launcher hard caps counted from tool-written state, replacing Phase 19 bash parsing, Phase 21 goal layer, Phase 22 containers and Phase 23 gate policy — Phases 19 and 21 did not converge after 13 gap rounds each; spikes 001/002 validated the replacement mechanism (PARTIAL: gap loop and divergence still unobserved — Phase 26)
+- [Phase 26]: OQ-R1 [inferred]: driver stop rules outrank a human answer: in DIRECTION.md; only a budget/cap edit lifts them — spike 002 finding 5 default; open human call, does not block
+- [Phase 26]: OQ-R2 [inferred]: driven runs do not see the user's global CLAUDE.md; GSD + rtk hooks are kept in the per-run CLAUDE_CONFIG_DIR — spike 002 A2.1 default; open human call, does not block
 
 ### Roadmap Evolution
 
 - Phase 25 added (2026-09-25): Running Agents & Live Wave View — TUI-only, read-only view of running GSD agents and executor wave progress (worktrees + `~/.claude/projects/.../subagents/*.meta.json` + transcript mtime + PLAN `wave:`); seed evidence from ttbook in ROADMAP Phase 25 details; landed in v2.0 after the v1.8.0 interim release [inferred — no new milestone, same pattern as Phase 24]; Phase 19/21 left untouched (halted by user decision)
 - Phase 24 added (2026-09-23): Roadmap tab redesign and detail-tab consolidation — TUI-only, no dependency on Phases 15-23; Phase 21 left untouched (stopped by user decision)
+- Phase 19 changed: 2026-10-14 re-plan: Phases 19, 21, 22, 23 SUPERSEDED by spikes 001/002 (capability removal + launcher hard caps instead of bash parsing / open-ended audit); code kept in place until Phase 31 [inferred]. Phase 20 marked complete (20-VERIFICATION passed 5/5) [inferred]. Phases 26-31 added: 26 Driver Validation Spike 003, 27 driverctl & Driver Frontmatter, 28 Sandboxed Driver Launcher, 29 Master Prompt & Run Templates, 30 Driver Tab on DIRECTION.md, 31 Retire Superseded Envelope & Goal-Layer Code. v2.0 restructured in place, not closed (no tag, no Cargo bump) [inferred].
 
 ### Pending Todos
 
@@ -515,6 +548,16 @@ Recent decisions affecting current work:
 - [2026-10-02] [ui] Git view should draw merges as gitk-style tracks — [todo file](.planning/todos/pending/2026-10-02-git-view-show-merges-as-gitk-style-tracks.md)
 
 ### Blockers/Concerns
+
+- [Re-plan 2026-10-14] The T-19-* rows below and the open gaps from Phase 21 round 13 no longer
+  block the milestone. Those phases are superseded. Phase 31 closes their ids, each with a pointer to
+  the mechanism that superseded it. Do not resume either gap loop.
+- [Phase 26] Several risks are still unproven, and each needs a go verdict before Phase 27:
+  - the gap-closure loop and divergence detection have never been observed on a real GSD phase;
+  - the async-Agent "wait, never re-spawn" rule is untested, and in spike 002 it doubled the Opus
+    planner cost;
+  - a host OAuth refresh revokes the env token a sandboxed run is using. The fix, a
+    `claude setup-token` long-lived token, is in Phase 28.
 
 - `--bare` is slated to become the `-p` default and is incompatible with subscription
   auth; Phase 15 ships a version gate and a regression guard against it
@@ -637,6 +680,33 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
+Last session: 2026-10-14
+Stopped at: v2.0 re-planned around the capability-removal driver from spikes 001 and 002.
+
+- Phases 19, 21, 22 and 23 are superseded, and Phases 26-31 were added.
+- No tag was created, Cargo.toml was not bumped, and nothing was pushed.
+
+Next: `/gsd-plan-phase 26`. Phase 26 is the validation spike. It must give a go verdict before
+Phase 27 starts.
+
+Still unproven, and owned by Phase 26:
+
+- gap rounds 1-2 on a real phase;
+- divergence detection;
+- the async-agent no-respawn rule.
+
+macOS is unproven too, and is owned by Phase 28's degraded mode.
+
+Open human calls, each with an `[inferred]` default:
+
+- OQ-R1: stop rules outrank `answer:` (default yes).
+- OQ-R2: driven runs do not see the global CLAUDE.md (default no).
+
+The Phase 19 and Phase 21 threat and blocker rows below are moot once Phase 31 closes them as
+superseded.
+Resume file: None
+
+Previous session (v1.13.0 release, 2026-10-12):
 Last session: 2026-10-12
 Stopped at: v1.13.0 released (gsd-core 1.16.0 Sync)
 Release: `Cargo.toml` 1.12.0 -> 1.13.0; MSRV `rust-version` 1.88 -> 1.89 (uuid 1.26.1 -> 1.28.0,

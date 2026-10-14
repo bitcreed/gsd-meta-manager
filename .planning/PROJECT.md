@@ -64,10 +64,24 @@ See the state of every GSD project at a glance and act on any of them without le
 **Milestone v2.0 — Autonomous Orchestration.** Requirements are defined in
 `.planning/REQUIREMENTS.md` and mapped to phases in `.planning/ROADMAP.md`.
 
-- Autonomous driver — LLM agent drives the GSD pipeline toward a user-stated goal
-- Live visibility and interjection — watch driver state, read the originating prompt, inject messages mid-run
-- Container support — Claude sessions in docker/podman containers with command injection
-- UI fixes — HANDOFF pause badge, DRPEV leading blank, markdown edit mode, PageDown clamp
+*Re-planned 2026-10-14 after spikes 001 and 002. Phases 19, 21, 22 and 23 are superseded, and
+Phases 26-31 replace them.*
+
+- **Driver validation (spike 003).** Before any Rust is written, gap rounds 1-2, divergence parking
+  and the async no-respawn rule must be shown on a real GSD phase.
+- **driverctl.** A Rust single writer of the run state and the tool-written frontmatter on
+  DIRECTION.md.
+- **Sandboxed launcher.** It provides:
+  - bwrap under `systemd-run --user --scope`;
+  - an outside-sandbox flock and hard caps;
+  - a per-run `CLAUDE_CONFIG_DIR` with setup-token auth;
+  - a push step outside the sandbox;
+  - a macOS degraded mode.
+- **Master prompt and run templates.** The prompt is shipped and versioned. Stop-rule precedence is
+  explicit, and a crashed run is reconciled on restart.
+- **Driver tab on DIRECTION.md.** It reads status, caps, heartbeat and crash state, and steers by
+  editing `control`.
+- **Retirement.** The superseded Phase 19, 21 and 22 code is removed or rewired.
 
 ### Out of Scope
 
@@ -87,9 +101,13 @@ across state readers, config schema, and UI).
 
 ## Current Milestone: v2.0 Autonomous Orchestration
 
-**Goal:** Turn the meta-manager from a dashboard that watches GSD projects into
-one that runs them — an LLM agent drives the pipeline toward a user-stated goal,
-in containers or on the host, watchable and interruptible from the TUI.
+**Goal:** Turn the meta-manager from a dashboard that watches GSD projects into one that runs them.
+An Opus master driver works through a human-owned DIRECTION.md, one fresh subagent per GSD step. It
+runs inside a sandbox that has no credentials and is bounded by hard caps in the launcher. It is
+watchable and steerable from the TUI through the run's files.
+
+**Re-plan (2026-10-14):** the original target features below, as far as containers and the
+LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Decisions.
 
 **Target features:**
 
@@ -138,9 +156,9 @@ in containers or on the host, watchable and interruptible from the TUI.
 | Per-item isolation for queue execution (v1.3) | Simpler than session chaining, each item runs independently from disk state | — Pending v1.3 implementation |
 | LLM-agnostic queue execution design | GSD could use any LLM backend, not just Claude | ✓ Good — Executor trait interface designed |
 | Ship v1.3–v1.6 via `/gsd-quick` instead of formal phases | Each was a bounded, well-understood change; phase overhead wasn't earning its keep | ✓ Good — 4 milestones shipped, but PROJECT.md/MILESTONES.md drifted 3 milestones behind (backfilled at v2.0 start) |
-| v2.0 driver transport: `claude -p` drives, tmux pane watches | `-p` gives real exit codes and reliable completion signals; `tmux send-keys` is screen-scraping with no delivery confirmation. Splitting the roles keeps reliability *and* live watch/interject | — Pending v2.0 |
+| v2.0 driver transport: `claude -p` drives, tmux pane watches | `-p` gives real exit codes and reliable completion signals; `tmux send-keys` is screen-scraping with no delivery confirmation. Splitting the roles keeps reliability *and* live watch/interject | ✓ Kept: headless `claude -p` and no tmux on the control path. Steering moved from stdin injection to DIRECTION.md edits (2026-10-14) |
 | v2.0 autonomy: fully autonomous including push and PR | User's explicit choice for maximum leverage; kill switch and dry-run made hard requirements to bound the blast radius | — Pending v2.0 |
-| Container runtime auto-detected (docker or podman) | Hardcoding either one contradicts the portability constraint; probing costs little | — Pending v2.0 |
+| Container runtime auto-detected (docker or podman) | Hardcoding either one contradicts the portability constraint; probing costs little | ✗ Superseded 2026-10-14 (Phase 22 dropped; bwrap + scope instead) |
 | 999.2 injection plumbing sequenced before 999.3 driver | The driver is a decision layer built on top of injection/monitoring — building it first would mean stubbing the transport twice | — Pending v2.0 |
 | Major version bump to v2.0 | The tool's category changes from passive dashboard to active orchestrator, and it narrows a stated constraint | — Pending v2.0 |
 | ROADMAP `Build phase` headings kept in `planned_phases`, never `phases` (Phase 24) | GSD's own heading grammar does not count them; keeping them out keeps the driver router/frontier GSD-conformant | ✓ Good — conformance test green, build phases still drawn |
@@ -150,6 +168,14 @@ in containers or on the host, watchable and interruptible from the TUI.
 | Agent observation via a facts-only `AgentAdapter` seam with `catch_unwind` per adapter and per project (Phase 25) | Runtime metadata formats are third-party and unstable; a failing adapter must degrade a row to git facts, never drop it or fail the scan | ✓ Good — Claude Code adapter added as one module + registry entry |
 | Agent-worktree git reads use `--no-optional-locks` + `GIT_OPTIONAL_LOCKS=0` (Phase 25) | Scanning must never take a lock inside a live agent's worktree (non-intrusive constraint) | ✓ Good — real-worktree test proves the live index is untouched |
 | One running predicate, `AgentLiveness::is_running` (Live/Idle); agents silent > `MAX_AGENT_AGE_SECS` read `Ended` (Phase 25, 25-07) | Orphaned worktrees from aborted runs hijacked the Status cell (CR-01); one predicate stops activation, phase vote and counts from disagreeing | ✓ Good — CR-01/WR-01 resolved; WR-06 shows `fixers.rs` still counts Finished orphans [inferred: follow-up] |
+| v2.0 re-plan (2026-10-14): safety by capability removal + launcher hard caps instead of parsing bash (Phase 19) or an LLM goal layer (Phase 21) | Both phases ran 13 gap rounds without converging. Each round found a new carrier class. Spikes 001/002 showed that a sandbox with no push credentials, a read-only run dir and caps counted from tool-written state bound the blast radius mechanically | — Pending; Phase 26 must confirm gap-loop and divergence behaviour |
+| Phases 19/21/22/23 superseded, code kept until a dedicated retirement phase (31) `[inferred]` | Removing code before the launcher's push step owns SAFE-01/03/06 would leave a gap. An explicit phase keeps the removal reviewable | — Pending |
+| v2.0 restructured in place, not closed and reopened `[inferred]` | Closing would need a release tag and an audit of two phases that cannot close. v2.0 never released, and the major-bump rationale still holds | — Pending |
+| Containers (Phase 22) replaced by bwrap + `systemd-run --user --scope` on Linux, with a recorded degraded mode on macOS `[inferred]` | Verified with auth in spikes 001/002, with no new dependency (bollard never added). Containers move to Future Requirements | — Pending |
+| Status frontmatter on DIRECTION.md is tool-written by driverctl (single writer, exchange-verify splice), never by the model | Spike 002 measured 0 lost rename-saves in 12,943. The driver made 18 driverctl calls with 0 hand-edits. The Rust reader already parses it | — Pending (Phase 27) |
+| Auth through a long-lived `claude setup-token` token passed as an env var; no refresh token in the sandbox | Spike 002 measured that a host refresh rotates the refresh token and revokes the previous access token, so copied credentials would log the host out | — Pending (Phase 28) |
+| OQ-R1: driver stop rules outrank a human `answer:`; only a budget edit lifts them `[inferred]` | Spike 002 finding 5 default. Open human call | ⚠️ Revisit — human to confirm |
+| OQ-R2: driven runs do not see the user's global CLAUDE.md; GSD + rtk hooks kept `[inferred]` | Spike 002 A2.1 default. The driver's rules come from its prompt | ⚠️ Revisit — human to confirm |
 | Fixer progress shown as an estimate (`~F/T`) from REVIEW.md `findings.total` + `fix(NN)` commit ids (Phase 25) | No authoritative fix ledger exists mid-run; labelling it approximate is honest | ⚠️ Revisit — WR-03/WR-04 (wrong REVIEW file, inflated count) open |
 
 ## Evolution
@@ -170,4 +196,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-25 after Phase 25 (Running Agents & Live Wave View)*
+*Last updated: 2026-10-14 after the v2.0 re-plan (spikes 001/002; Phases 19/21/22/23 superseded, 26-31 added)*
