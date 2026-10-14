@@ -97,6 +97,12 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
   above every agent with its plan, commits, dirty files and last activity;
   `Enter` on an agent jumps to its plan in the Phases tab's Waves pane, and
   `Enter` on a plan there jumps back to its agent
+- Worktree-only plans -- plans that live only in a linked git worktree (main's
+  phase directory is empty or absent) are browsable in the Phases tab's Waves
+  pane, titled `plans in worktree <name> (<branch>)`, and counted on the
+  Roadmap with an `@<ref>` badge. Main's plans always win; with several
+  worktrees holding the phase, the one with the newest PLAN wins (` +N more`
+  names the rest). Read-only, and refreshed on the ~5 s agents poll
 - Auto-registration of GSD projects from active Claude sessions, with git
   linked worktrees resolved to their main worktree so many concurrent agent
   sessions yield a single entry (see [Quick start](#quick-start))

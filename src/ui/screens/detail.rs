@@ -2731,6 +2731,34 @@ fn status_color(category: &StatusCategory) -> Color {
 /// Owned (key, label, badge, counts) tuple for a worktree-only ghost node.
 type GhostNode = (String, String, String, Option<(u32, u32)>);
 
+/// The bracket-less stage label [`disk_suffix_spans`] prints for an inference:
+/// `Executing 1/2`, `Planned (2 plans)`, `Executed`, `Complete`, ... Shared with
+/// the worktree-held `[<stage> @<ref>]` badge (quick 261014-0jv).
+fn disk_stage_label(inf: &DiskInference) -> String {
+    let word = match inf.status {
+        DiskStatus::NoDirectory => "Not started",
+        DiskStatus::Empty => "Empty",
+        DiskStatus::Discussed => "Discussed",
+        DiskStatus::Researched => "Researched",
+        DiskStatus::Planned => "Planned",
+        DiskStatus::Partial => "Executing",
+        // Implementation done, verification not passed. Deliberately NOT
+        // "Complete": a phase awaiting a human's verification judgement
+        // must not read as finished on the one screen a human reads.
+        DiskStatus::Executed => "Executed",
+        DiskStatus::Complete => "Complete",
+    };
+    match inf.status {
+        DiskStatus::Partial if inf.plan_count > 0 => {
+            format!("Executing {}/{}", inf.summary_count, inf.plan_count)
+        }
+        DiskStatus::Planned if inf.plan_count > 0 => {
+            format!("Planned ({} plans)", inf.plan_count)
+        }
+        _ => word.to_string(),
+    }
+}
+
 /// Compute disk-inferred status suffix spans for a phase line, e.g. " [Executing 2/3]".
 /// When `show_badges` is true, appends a [verified] or [inferred] badge based on artifact presence.
 ///
@@ -2747,42 +2775,10 @@ fn disk_suffix_spans(
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let disk_inf = phase_disk_statuses.get(phase_number);
-    let disk_label = match disk_inf {
-        Some(inf) => match inf.status {
-            DiskStatus::NoDirectory => "Not started",
-            DiskStatus::Empty => "Empty",
-            DiskStatus::Discussed => "Discussed",
-            DiskStatus::Researched => "Researched",
-            DiskStatus::Planned => "Planned",
-            DiskStatus::Partial => "Executing",
-            // Implementation done, verification not passed. Deliberately NOT
-            // "Complete": a phase awaiting a human's verification judgement
-            // must not read as finished on the one screen a human reads.
-            DiskStatus::Executed => "Executed",
-            DiskStatus::Complete => "Complete",
-        },
-        None => "",
-    };
+    let disk_label = disk_inf.map(disk_stage_label).unwrap_or_default();
 
     if !disk_label.is_empty() {
-        let label = if disk_label == "Executing" {
-            match disk_inf {
-                Some(inf) if inf.plan_count > 0 => {
-                    format!(" [Executing {}/{}]", inf.summary_count, inf.plan_count)
-                }
-                _ => format!(" [{}]", disk_label),
-            }
-        } else if disk_label == "Planned" {
-            match disk_inf {
-                Some(inf) if inf.plan_count > 0 => {
-                    format!(" [Planned ({} plans)]", inf.plan_count)
-                }
-                _ => format!(" [{}]", disk_label),
-            }
-        } else {
-            format!(" [{}]", disk_label)
-        };
-        spans.push(Span::raw(label));
+        spans.push(Span::raw(format!(" [{disk_label}]")));
     }
 
     // Append verified/inferred badge when gsd_integration is enabled
@@ -2844,6 +2840,12 @@ fn disk_suffix_spans(
 ///   out from the markers before this pass, so they keep their Blocked/Ready
 ///   status: unmerged work never satisfies a dependent. `None` for the view
 ///   leaves the model exactly as `layout_list` built it.
+/// * **Worktree-held plans (quick 261014-0jv):** a main phase with no main
+///   plans but plans in a linked worktree ([`browsed_inference`]) shows the
+///   worktree's `d/t` instead of `—` (a main ROADMAP checklist still wins the
+///   counts) and the badge `[<stage> @<short_ref>]`. In the unmerged post-pass
+///   such counts treat `d` as 0: main holds none of those plans, so `d + k`
+///   would double count the SUMMARYs `k` already counts.
 ///
 /// In-memory state only — no I/O — because the render loop calls it
 /// (CLAUDE.md: never block the render loop). Fold toggles come from `cache`
@@ -2968,15 +2970,38 @@ pub(crate) fn roadmap_model_for(
         })
         .collect();
 
+    // Phases whose counts come from a linked worktree (quick 261014-0jv): main
+    // holds none of those plans, so the unmerged post-pass must not add main's
+    // `done` to the worktree's own.
+    let mut worktree_counted: std::collections::HashSet<String> = std::collections::HashSet::new();
     let nodes = shipped_nodes
         .into_iter()
         .chain(entries.into_iter().map(|(p, planned)| {
-            let badge: String =
-                disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
+            let browsed = browsed_inference(state, view, &p.number);
+            let worktree = browsed.and_then(|(_, wp)| wp);
+            let badge: String = match worktree {
+                Some(wp) => format!(
+                    "[{} @{}]",
+                    disk_stage_label(&wp.inference),
+                    wp.short_ref.shown()
+                ),
+                None => disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
                     .iter()
                     .map(|s| s.content.as_ref())
-                    .collect();
+                    .collect(),
+            };
             let badge = badge.trim();
+            // A main ROADMAP plan checklist still wins the counts; otherwise a
+            // worktree's own PLAN/SUMMARY counts stand in for main's absent ones.
+            let plans =
+                state_reader::phase_plan_counts(p, &state.phase_disk_statuses).or_else(|| {
+                    let wp = worktree?;
+                    worktree_counted.insert(phase_key(&p.number));
+                    Some((
+                        wp.inference.summary_count.min(wp.inference.plan_count),
+                        wp.inference.plan_count,
+                    ))
+                });
             roadmap_graph::ListNode {
                 id: &p.number,
                 name: &p.name,
@@ -2988,7 +3013,7 @@ pub(crate) fn roadmap_model_for(
                     p.completed,
                     &state.phase_disk_statuses,
                 ),
-                plans: state_reader::phase_plan_counts(p, &state.phase_disk_statuses),
+                plans,
                 goal: state.phase_goals.get(&phase_key(&p.number)),
                 planned,
                 badge: (!badge.is_empty()).then(|| badge.to_string()),
@@ -3016,9 +3041,13 @@ pub(crate) fn roadmap_model_for(
             }
             let k = view.unmerged_in_phase(&facts.key);
             facts.unmerged = k;
+            // Worktree-sourced counts are not done in main (quick 261014-0jv):
+            // `k` already counts their worktree SUMMARYs, so `d` would double it.
+            let from_worktree = worktree_counted.contains(&facts.key);
             let all_remaining_unmerged = matches!(
                 facts.plans,
-                Some((d, t)) if t > 0 && d.saturating_add(k) >= t
+                Some((d, t)) if t > 0
+                    && (if from_worktree { 0 } else { d }).saturating_add(k) >= t
             );
             if k > 0 && facts.status != roadmap_graph::PhaseStatus::Done && all_remaining_unmerged {
                 unmerged_nodes.push(u);
@@ -30374,5 +30403,129 @@ mod tests {
         let bare = worktree_plans_ctx(waves_inference(&[], &[]), None);
         let text = render_detail_to_text_at(&screen, &bare, 140, 30);
         assert!(!text.contains("2w"), "{text}");
+    }
+
+    // ── quick 261014-0jv: the Roadmap counts and `@ref` badge ────────────
+
+    /// Phase 15 with one of two worktree plans summarized (`Executing 1/2`).
+    fn worktree_plans_roadmap(with_view: bool) -> (state_reader::ProjectState, Option<AgentView>) {
+        let ctx = worktree_plans_ctx(waves_inference(&[], &[]), None);
+        let state = ctx.project_states[TEST_ALIAS].clone();
+        let view = with_view.then(|| AgentView {
+            worktree_plans: vec![worktree_plans_entry(worktree_plans_inference())],
+            ..Default::default()
+        });
+        (state, view)
+    }
+
+    /// An unmerged-plan view for `15-01..=15-NN` on top of `base`.
+    fn with_unmerged_15(mut base: AgentView, n: usize) -> AgentView {
+        use crate::agents::unmerged::{UnmergedItem, UnmergedKey, UnmergedState};
+        base.unmerged = (1..=n)
+            .map(|i| UnmergedItem {
+                key: UnmergedKey::Plan(
+                    crate::agents::waves::PlanRef::from_id(&format!("15-0{i}")).expect("id"),
+                ),
+                worktree: std::path::PathBuf::from("/wt/lanes-15"),
+                branch: None,
+                short_ref: Untrusted::from_untrusted_source("phase-15".to_string()),
+                commits_ahead: Some(1),
+                dirty: Some(0),
+                state: UnmergedState::AwaitingMerge,
+            })
+            .collect();
+        base
+    }
+
+    #[test]
+    fn worktree_plans_give_the_roadmap_counts_and_a_worktree_badge() {
+        let (state, view) = worktree_plans_roadmap(true);
+        let model = roadmap_model_for(&state, None, false, view.as_ref());
+        let facts = facts_of(&model, "15");
+        assert_eq!(facts.plans, Some((1, 2)));
+        let badge = facts.badge.clone().expect("a badge");
+        assert!(badge.contains("@phase-15"), "{badge}");
+        assert!(badge.contains("Executing 1/2"), "{badge}");
+        assert!(!badge.contains("Empty"), "{badge}");
+        assert_eq!(badge, "[Executing 1/2 @phase-15]");
+    }
+
+    #[test]
+    fn worktree_plans_without_a_view_leave_the_roadmap_unchanged() {
+        let (state, _) = worktree_plans_roadmap(true);
+        let model = roadmap_model_for(&state, None, false, None);
+        let facts = facts_of(&model, "15");
+        assert_eq!(facts.plans, None);
+        assert_eq!(facts.badge.as_deref(), Some("[Empty]"));
+    }
+
+    #[test]
+    fn worktree_plans_roadmap_checklist_counts_still_win() {
+        let (mut state, view) = worktree_plans_roadmap(true);
+        state.phases[0].total_plans = 3;
+        state.phases[0].completed_plans = 1;
+        let model = roadmap_model_for(&state, None, false, view.as_ref());
+        let facts = facts_of(&model, "15");
+        assert_eq!(facts.plans, Some((1, 3)));
+        assert!(facts
+            .badge
+            .as_deref()
+            .is_some_and(|b| b.contains("@phase-15")));
+    }
+
+    #[test]
+    fn worktree_plans_count_as_unmerged_only_when_every_plan_is_held_unmerged() {
+        let (state, view) = worktree_plans_roadmap(true);
+        let view = view.expect("view");
+
+        // (1, 2) with one unmerged plan: the worktree's SUMMARY is that plan,
+        // so `d + k` must not count it twice.
+        let one = with_unmerged_15(view.clone(), 1);
+        let model = roadmap_model_for(&state, None, false, Some(&one));
+        assert_ne!(
+            facts_of(&model, "15").status,
+            roadmap_graph::PhaseStatus::Unmerged
+        );
+
+        // Every plan unmerged: Unmerged.
+        let mut all = view;
+        all.worktree_plans[0].inference = waves_inference(
+            &[
+                ("15-01-alpha", None, Some(1)),
+                ("15-02-beta", None, Some(2)),
+            ],
+            &["15-01-alpha", "15-02-beta"],
+        );
+        let all = with_unmerged_15(all, 2);
+        let model = roadmap_model_for(&state, None, false, Some(&all));
+        assert_eq!(facts_of(&model, "15").plans, Some((2, 2)));
+        assert_eq!(
+            facts_of(&model, "15").status,
+            roadmap_graph::PhaseStatus::Unmerged
+        );
+    }
+
+    #[test]
+    fn worktree_plans_reach_the_roadmap_row_and_detail_line() {
+        let (state, view) = worktree_plans_roadmap(true);
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(TEST_ALIAS.to_string(), state);
+        ctx.agent_views
+            .insert(TEST_ALIAS.to_string(), view.expect("view"));
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        set_roadmap_cursor(&mut ctx, phase_target("15"));
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
+        assert!(text.contains("1/2"), "{text}");
+        assert!(text.contains("1/2 plans"), "{text}");
+        assert!(!text.contains("plans TBD"), "{text}");
+        assert!(text.contains("@phase-15"), "{text}");
+
+        // Without the view the row reads as before.
+        ctx.agent_views.clear();
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
+        assert!(text.contains("plans TBD"), "{text}");
+        assert!(!text.contains("@phase-15"), "{text}");
     }
 }
