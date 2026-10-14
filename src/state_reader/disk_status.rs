@@ -219,7 +219,7 @@ impl UatStatus {
 /// identity `plan_ids` carries. It is third-party filename text from another
 /// project's directory: every renderer must put [`PlanTokens::label`] through
 /// the UI's `shown()` escape before it reaches a terminal cell.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlanTokens {
     pub id: String,
     pub estimate: Option<u64>,
@@ -254,7 +254,7 @@ impl PlanTokens {
 /// project's file and therefore arrives [`Untrusted`]; a renderer reads it
 /// only through `Untrusted::shown`. `objective_line` is the 1-based line of the
 /// `<objective>` tag, the convention `editor_args` hands `$EDITOR`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanMeta {
     pub id: String,
     pub title: Option<crate::text::Untrusted>,
@@ -415,7 +415,7 @@ fn read_review_disposition(phase_dir: &Path, mut names: Vec<String>) -> Option<R
 /// The largest `waves.json` the scan reads (T-2l4-03, [inferred I-13]).
 const MAX_WAVES_MANIFEST_BYTES: u64 = 1024 * 1024;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiskInference {
     pub status: DiskStatus,
     pub plan_count: u32,

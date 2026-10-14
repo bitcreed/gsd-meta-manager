@@ -196,6 +196,10 @@ pub struct AgentView {
     /// Phases only a linked worktree holds, copied from
     /// [`ProjectAgents::worktree_phases`].
     pub worktree_phases: Vec<super::worktree_phases::WorktreePhase>,
+    /// Phases whose plans only a linked worktree holds, copied from
+    /// [`ProjectAgents::worktree_plans`] (quick 261014-0jv). The Phases tab and
+    /// the Roadmap read this scan-time list; it never reaches `ProjectState`.
+    pub worktree_plans: Vec<super::worktree_plans::WorktreePlans>,
 }
 
 /// Strip the punctuation a sentence wraps around a captured token.
@@ -482,6 +486,7 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
         fixers: agents.fixer_estimate.clone(),
         unmerged: agents.unmerged.clone(),
         worktree_phases: agents.worktree_phases.clone(),
+        worktree_plans: agents.worktree_plans.clone(),
     }
 }
 
@@ -507,6 +512,16 @@ fn with_unmerged(forms: Vec<String>, n: u32) -> Vec<String> {
 }
 
 impl AgentView {
+    /// The worktree-held plans for `phase_number` (pad-insensitive: `09` finds
+    /// key `9`), if a linked worktree holds plans main lacks (quick 261014-0jv).
+    pub fn worktree_plans_for(
+        &self,
+        phase_number: &str,
+    ) -> Option<&super::worktree_plans::WorktreePlans> {
+        let key = crate::state_reader::phase_num::phase_key(phase_number);
+        self.worktree_plans.iter().find(|wp| wp.key == key)
+    }
+
     /// The state [`derive`] computed for the plan `stem` names, looked up in
     /// the waves (or, for a phase without wave metadata, the unwaved list).
     ///

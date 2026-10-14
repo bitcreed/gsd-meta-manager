@@ -1793,9 +1793,14 @@ impl App {
                     // dashboard row stays byte-identical to today's (D-C14).
                     // Unmerged worktree work alone is something to show: its
                     // `◐N` is a pending action (quick 260929-szq, I-7).
+                    // Worktree-held plans are something to show too, in the
+                    // Phases pane and on the Roadmap (quick 261014-0jv); the
+                    // dashboard cell is unchanged because `summary_forms`
+                    // yields no form for them (ID-10).
                     if agents.rows.is_empty()
                         && agents.worktreeless.is_empty()
                         && agents.unmerged.is_empty()
+                        && agents.worktree_plans.is_empty()
                     {
                         continue;
                     }
@@ -5697,6 +5702,58 @@ mod tests {
         assert!(
             screen.contains("\u{25D0}1"),
             "the Status cell must carry the unmerged count:\n{screen}"
+        );
+    }
+
+    /// Quick 261014-0jv: a scan holding only worktree-held plans still gets a
+    /// view (the Phases pane reads it), but the dashboard Status cell stays
+    /// exactly as it was.
+    #[tokio::test]
+    async fn a_worktree_plans_only_scan_gets_a_view_but_leaves_the_status_cell_alone() {
+        use crate::agents::worktree_plans::WorktreePlans;
+        use crate::agents::ProjectAgents;
+        use crate::text::Untrusted;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .project_states
+            .insert(OBS_ALIAS.to_string(), wave_state());
+        app.ctx.recompute_filtered_aliases();
+        let before = render_top_screen(&app);
+
+        let wp = WorktreePlans {
+            key: "15".to_string(),
+            worktree: PathBuf::from("/nonexistent/lanes-15"),
+            phase_dir: PathBuf::from("/nonexistent/lanes-15/.planning/phases/15-x"),
+            worktree_name: Untrusted::from_untrusted_source("lanes-15".into()),
+            branch: Some(Untrusted::from_untrusted_source("gsd/phase-15".into())),
+            short_ref: Untrusted::from_untrusted_source("phase-15".into()),
+            others: 0,
+            inference: Default::default(),
+        };
+        app.update(Action::AgentsScanned {
+            per_project: vec![(
+                OBS_ALIAS.to_string(),
+                ProjectAgents {
+                    worktree_plans: vec![wp.clone()],
+                    scanned_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                    ..Default::default()
+                },
+            )],
+        });
+        app.ctx.recompute_filtered_aliases();
+
+        let view = app
+            .ctx
+            .agent_views
+            .get(OBS_ALIAS)
+            .expect("worktree plans alone must give the alias a view");
+        assert_eq!(view.worktree_plans, vec![wp]);
+        assert_eq!(
+            render_top_screen(&app),
+            before,
+            "the dashboard row must be byte-identical"
         );
     }
 

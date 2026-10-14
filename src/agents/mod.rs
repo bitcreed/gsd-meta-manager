@@ -44,6 +44,7 @@ pub mod processes;
 pub mod unmerged;
 pub mod waves;
 pub mod worktree_phases;
+pub mod worktree_plans;
 pub mod worktrees;
 
 use std::collections::HashMap;
@@ -304,6 +305,10 @@ pub struct ProjectAgents {
     /// Roadmap phases that exist only in a linked worktree
     /// ([`worktree_phases::detect`]), sorted by phase number.
     pub worktree_phases: Vec<worktree_phases::WorktreePhase>,
+    /// Phases whose plans only a linked worktree holds
+    /// ([`worktree_plans::detect`], quick 261014-0jv), sorted by phase number.
+    /// Display-only: never merged into `ProjectState`.
+    pub worktree_plans: Vec<worktree_plans::WorktreePlans>,
 }
 
 /// Run one adapter, turning a panic into an empty report.
@@ -499,6 +504,7 @@ pub fn scan_project_with_probe(
     // a holder that is not already an agent row (quick 260929-szq, I-3).
     let unmerged = unmerged::detect(&core, &rows, project_root);
     let worktree_phases = worktree_phases::detect(&core, &rows, project_root);
+    let worktree_plans = worktree_plans::detect(&core, project_root);
 
     let raw = |value: &Option<Untrusted>| {
         value
@@ -530,6 +536,7 @@ pub fn scan_project_with_probe(
         fixer_estimate,
         unmerged,
         worktree_phases,
+        worktree_plans,
     }
 }
 

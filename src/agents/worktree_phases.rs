@@ -64,7 +64,7 @@ pub struct WorktreePhase {
 
 /// Split `12-intake-throttle` into (`12`, `intake-throttle`); `None` when the
 /// directory does not start with a numeric phase id followed by `-`.
-fn split_dir(name: &str) -> Option<(&str, &str)> {
+pub(super) fn split_dir(name: &str) -> Option<(&str, &str)> {
     let (id, slug) = name.split_once('-')?;
     PhaseNum::parse(id)?;
     Some((id, slug))

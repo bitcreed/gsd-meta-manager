@@ -8,6 +8,7 @@ use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::agents::adapters::ChildAgent;
 use crate::agents::waves::{AgentView, WaveRow};
+use crate::agents::worktree_plans::WorktreePlans;
 use crate::agents::AgentLiveness;
 use crate::app::{classify_status, DetailSubView, StatusCategory};
 use crate::change_tracker::ChangeTracker;
@@ -1790,12 +1791,19 @@ impl DetailScreen {
         let cache = ctx.view_cache.get(&self.alias);
         let selected = cache.map_or(0, |c| c.pipeline_selected.min(last));
         let phase = &state.phases[selected];
-        let inf = state.phase_disk_statuses.get(&phase.number)?;
+        let view = ctx.agent_views.get(&self.alias);
+        let (inf, worktree) = browsed_inference(state, view, &phase.number)?;
         let active = crate::state_reader::phase_num::same_phase(
             &state.active_phase_number().to_string(),
             &phase.number,
         );
-        let model = waves_model(&phase.number, inf, ctx.agent_views.get(&self.alias), active);
+        let mut model = waves_model(&phase.number, inf, view, active);
+        if let Some(wp) = worktree {
+            model.worktree = Some(WavesWorktree::from_plans(wp));
+            // The partial-progress note is about main's queued plans; a
+            // worktree-sourced pane is labelled by its own marker instead.
+            model.no_live_agents = false;
+        }
         let empty = std::collections::HashSet::new();
         let rows = waves_rows(&model, cache.map_or(&empty, |c| &c.waves_toggles));
         Some((model, rows))
@@ -8953,6 +8961,55 @@ struct WavesModel {
     /// The active phase is part-way done and no agent view covers it: the
     /// title says so rather than implying the queued plans are moving.
     no_live_agents: bool,
+    /// Set when the plans come from a linked worktree because main holds none
+    /// (quick 261014-0jv); `None` for every main-sourced phase.
+    worktree: Option<WavesWorktree>,
+}
+
+/// Where a worktree-sourced Waves pane got its plans (quick 261014-0jv).
+///
+/// `name` and `branch` are third-party text (a hostile clone chooses both), so
+/// they are stored ALREADY escaped through `Untrusted::shown`, which keeps
+/// [`waves_pane_title`]'s "already escaped" contract (T-0jv-01). `phase_dir` is
+/// a path for `e`, never rendered.
+#[derive(Debug, Clone, PartialEq)]
+struct WavesWorktree {
+    name: String,
+    branch: Option<String>,
+    others: u32,
+    phase_dir: std::path::PathBuf,
+}
+
+impl WavesWorktree {
+    fn from_plans(wp: &WorktreePlans) -> Self {
+        Self {
+            name: wp.worktree_name.shown().to_string(),
+            branch: wp.branch.as_ref().map(|b| b.shown().to_string()),
+            others: wp.others,
+            phase_dir: wp.phase_dir.clone(),
+        }
+    }
+}
+
+/// The inference the Phases tab browses for `number`, and the worktree it came
+/// from when main holds no plans for it (quick 261014-0jv).
+///
+/// Main always wins: main's inference is returned whenever it has
+/// `plan_count > 0`. Otherwise a linked worktree's plans for the phase (from the
+/// agents scan's cached [`AgentView`]) stand in. With neither, main's entry (if
+/// any) is returned unchanged. Memory only.
+fn browsed_inference<'a>(
+    state: &'a state_reader::ProjectState,
+    view: Option<&'a AgentView>,
+    number: &str,
+) -> Option<(&'a DiskInference, Option<&'a WorktreePlans>)> {
+    let main = state.phase_disk_statuses.get(number);
+    if main.is_none_or(|inf| inf.plan_count == 0) {
+        if let Some(wp) = view.and_then(|v| v.worktree_plans_for(number)) {
+            return Some((&wp.inference, Some(wp)));
+        }
+    }
+    main.map(|inf| (inf, None))
 }
 
 impl WavesModel {
@@ -9156,6 +9213,7 @@ fn waves_model(
         current_wave,
         shape,
         no_live_agents,
+        worktree: None,
     }
 }
 
@@ -9587,6 +9645,37 @@ fn waves_pane_title(model: &WavesModel, cells: usize) -> String {
     let has_tokens = plans
         .iter()
         .any(|p| p.estimate.is_some() || p.actual.is_some());
+    // A worktree-sourced pane (quick 261014-0jv): the marker is never dropped
+    // before the counts; the narrowest form is ` Waves · worktree `. A
+    // worktree source always has plans, so `NoPlans` never reaches here.
+    if let Some(wt) = &model.worktree {
+        let more = if wt.others > 0 {
+            format!(" +{} more", wt.others)
+        } else {
+            String::new()
+        };
+        let marker = match &wt.branch {
+            Some(b) => format!("plans in worktree {} ({}){more}", wt.name, b),
+            None => format!("plans in worktree {}{more}", wt.name),
+        };
+        let marker_short = format!("plans in worktree {}", wt.name);
+        let counted = if model.shape == WavesShape::NoWaveMetadata {
+            format!(" Waves \u{b7} {done}/{total} done \u{b7} {marker} ")
+        } else {
+            format!(" Waves {waves} \u{b7} {done}/{total} done \u{b7} {marker} ")
+        };
+        let forms = [
+            counted,
+            format!(" Waves \u{b7} {marker} "),
+            format!(" Waves \u{b7} {marker_short} "),
+            " Waves \u{b7} worktree ".to_string(),
+        ];
+        let last = forms[forms.len() - 1].clone();
+        return forms
+            .into_iter()
+            .find(|f| Span::raw(f.as_str()).width() + 2 <= cells)
+            .unwrap_or(last);
+    }
     let forms: Vec<String> = match model.shape {
         WavesShape::NoPlans => vec![" Waves \u{b7} no plans ".to_string(), " Waves ".to_string()],
         WavesShape::NoWaveMetadata => vec![
@@ -30090,5 +30179,100 @@ mod tests {
             "cursor {} is on a hidden row (visible: {visible:?})",
             cache.defaults_selected
         );
+    }
+
+    // ── quick 261014-0jv: phase plans that only a linked worktree holds ──
+
+    /// A scan-time entry for phase `15` held by worktree `lanes-15`.
+    fn worktree_plans_entry(inf: DiskInference) -> WorktreePlans {
+        WorktreePlans {
+            key: "15".to_string(),
+            worktree: std::path::PathBuf::from("/wt/lanes-15"),
+            phase_dir: std::path::PathBuf::from("/wt/lanes-15/.planning/phases/15-digest"),
+            worktree_name: Untrusted::from_untrusted_source("lanes-15".to_string()),
+            branch: Some(Untrusted::from_untrusted_source("gsd/phase-15".to_string())),
+            short_ref: Untrusted::from_untrusted_source("phase-15".to_string()),
+            others: 0,
+            inference: inf,
+        }
+    }
+
+    /// The two-wave worktree inference: `15-01-alpha` done, `15-02-beta` not.
+    fn worktree_plans_inference() -> DiskInference {
+        waves_inference(
+            &[
+                ("15-01-alpha", Some("Alpha the first"), Some(1)),
+                ("15-02-beta", Some("Beta the second"), Some(2)),
+            ],
+            &["15-01-alpha"],
+        )
+    }
+
+    /// Phase 15 with `main` as main's inference and `wp` in the agent view.
+    fn worktree_plans_ctx(main: DiskInference, wp: Option<WorktreePlans>) -> AppContext {
+        let mut ctx = waves_ctx(vec![("15", "Digest", main)], "15");
+        if let Some(wp) = wp {
+            ctx.agent_views.insert(
+                TEST_ALIAS.to_string(),
+                AgentView {
+                    worktree_plans: vec![wp],
+                    ..Default::default()
+                },
+            );
+        }
+        ctx
+    }
+
+    #[test]
+    fn worktree_plans_fill_an_empty_main_phase_in_the_waves_pane() {
+        let ctx = worktree_plans_ctx(
+            waves_inference(&[], &[]),
+            Some(worktree_plans_entry(worktree_plans_inference())),
+        );
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
+        assert!(
+            text.contains("plans in worktree lanes-15 (gsd/phase-15)"),
+            "{text}"
+        );
+        assert!(text.contains("15-02"), "{text}");
+        assert!(!text.contains("No plans yet"), "{text}");
+        assert!(!text.contains("no plans"), "{text}");
+    }
+
+    #[test]
+    fn worktree_plans_title_ladder_keeps_the_marker_last() {
+        let ctx = worktree_plans_ctx(
+            waves_inference(&[], &[]),
+            Some(worktree_plans_entry(worktree_plans_inference())),
+        );
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let (model, _) = screen.selected_waves(&ctx).expect("a model");
+        let marker = " Waves \u{b7} plans in worktree lanes-15 (gsd/phase-15) ";
+        let width = Span::raw(marker).width() + 2;
+        assert_eq!(waves_pane_title(&model, width), marker);
+        assert_eq!(waves_pane_title(&model, 22), " Waves \u{b7} worktree ");
+        // Wide enough for the counts: they come BEFORE the marker.
+        assert_eq!(
+            waves_pane_title(&model, 120),
+            " Waves 2 \u{b7} 1/2 done \u{b7} plans in worktree lanes-15 (gsd/phase-15) "
+        );
+        // The short marker drops the branch before the marker itself goes.
+        let short = " Waves \u{b7} plans in worktree lanes-15 ";
+        assert_eq!(
+            waves_pane_title(&model, Span::raw(short).width() + 2),
+            short
+        );
+    }
+
+    #[test]
+    fn worktree_plans_never_replace_main_plans() {
+        let main = waves_inference(&[("15-01-main", Some("Main plan"), Some(1))], &[]);
+        let ctx = worktree_plans_ctx(main, Some(worktree_plans_entry(worktree_plans_inference())));
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
+        assert!(text.contains("15-01"), "{text}");
+        assert!(!text.contains("in worktree"), "{text}");
+        assert!(!text.contains("15-02"), "{text}");
     }
 }
