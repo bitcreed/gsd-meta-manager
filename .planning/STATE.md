@@ -177,7 +177,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-12 - v1.13.0 released (gsd-core 1.16.0 Sync; MSRV 1.89)
+Last activity: 2026-10-14 - Completed quick task 261014-0jv: worktree-only phase plans browsable in the TUI
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -633,6 +633,7 @@ Recent decisions affecting current work:
 | 261012-jqb | Config key delta for gsd-core v1.16.0 (gates removals, confirm_milestone_scope, audit.enabled, help refresh) | 2026-10-12 | 467a82d | .planning/quick/261012-jqb-config-key-delta-for-gsd-core-v1-16-0-tag-v1-16-0-87e87d34b |
 | 261012-jqc | Honour GSD_HOME for global defaults.json | 2026-10-12 | d042dd6 | .planning/quick/261012-jqc-honour-gsd-home-for-global-defaults-upstream-documents-globa |
 | 261012-kee | gsd-core v1.16.0 sync finale: baseline constants, sync doc, README, queue_md comments, GSD_HOME key-file help, clippy fix | 2026-10-12 | faf3eeb | [261012-kee-gsd-core-v1-16-0-sync-finale-baseline-co](./quick/261012-kee-gsd-core-v1-16-0-sync-finale-baseline-co/) |
+| 261014-0jv | Phase plans held only in a linked git worktree are browsable in the Phases Waves pane ("plans in worktree <name> (<branch>)") with Roadmap counts + `@ref` badge | 2026-10-14 | 14aa20c | [261014-0jv-make-phase-plans-that-exist-only-in-a-li](./quick/261014-0jv-make-phase-plans-that-exist-only-in-a-li/) |
 
 ## Session Continuity
 
