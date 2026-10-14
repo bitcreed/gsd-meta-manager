@@ -22,8 +22,9 @@
 //!   holds any `PLAN.md` / `*-PLAN.md`, or when main archives the key under
 //!   `milestones/*-phases/` (an archived phase is "held" by main).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::unmerged::{names, short_ref, subdirs};
 use super::worktree_phases::split_dir;
@@ -50,7 +51,9 @@ pub struct WorktreePlans {
     /// The `@ref` form (`phase-15`) the Roadmap badge uses.
     pub short_ref: Untrusted,
     /// How many OTHER holders also had plans for this key and lost (see
-    /// [`detect`] for the winner rule).
+    /// [`detect`] for the winner rule: newest PLAN mtime, then smallest path,
+    /// superseded-only holders falling through). The pane title shows it as
+    /// ` +N more`.
     pub others: u32,
     /// `infer_disk_status` of [`WorktreePlans::phase_dir`]: the same plans,
     /// waves, summarized plans and tokens a main phase would carry.
@@ -86,12 +89,34 @@ pub(crate) fn main_plan_keys(main_planning: &Path) -> BTreeSet<String> {
     keys
 }
 
+/// The newest `*-PLAN.md` mtime in `dir` (an unreadable mtime ranks oldest).
+fn newest_plan_mtime(dir: &Path, entries: &[String]) -> SystemTime {
+    entries
+        .iter()
+        .filter(|n| is_plan_name(n))
+        .filter_map(|n| std::fs::metadata(dir.join(n)).ok()?.modified().ok())
+        .max()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// One live worktree's phase dir that holds plans for a key main lacks.
+struct Candidate<'a> {
+    wt: &'a worktrees::CoreWorktree,
+    dir: PathBuf,
+    newest: SystemTime,
+}
+
 /// Every phase main holds no plans for but a linked worktree does, one entry
 /// per phase key, sorted by phase number. Empty without reading main when no
 /// live linked worktree exists.
 ///
-/// With one holder per key that holder wins. (Several holders: see the winner
-/// rule added in the ranking step.)
+/// **Winner rule [inferred ID-4].** Several worktrees can hold plans for one
+/// key. They are ranked by the newest `*-PLAN.md` mtime in their phase dir
+/// (descending; an unreadable mtime ranks oldest), then by ascending worktree
+/// path, so two scans of the same disk agree. The first holder whose
+/// [`DiskInference::plan_count`] is above zero wins: a holder whose plans are
+/// all superseded falls through to the next. [`WorktreePlans::others`] counts
+/// the remaining candidates, which the pane title shows as ` +N more`.
 pub fn detect(core: &worktrees::CoreScan, project_root: &Path) -> Vec<WorktreePlans> {
     let main_root = core.main_worktree.as_deref().unwrap_or(project_root);
     let mut live: Vec<&worktrees::CoreWorktree> = core
@@ -110,52 +135,71 @@ pub fn detect(core: &worktrees::CoreScan, project_root: &Path) -> Vec<WorktreePl
         .filter_map(|wt| wt.agent_id.as_deref())
         .collect();
 
-    let mut found: Vec<(PhaseNum, WorktreePlans)> = Vec::new();
+    // Names-only discovery: every holder's candidate dirs, grouped by key.
+    let mut by_key: BTreeMap<PhaseNum, (String, Vec<Candidate<'_>>)> = BTreeMap::new();
     for wt in live {
         for (dir_name, dir) in subdirs(&wt.path.join(".planning").join("phases")) {
             let Some((id, _)) = split_dir(&dir_name) else {
                 continue;
             };
             let key = phase_key(id);
-            if main.contains(&key) || found.iter().any(|(_, p)| p.key == key) {
+            if main.contains(&key) {
                 continue;
             }
-            if !names(&dir).iter().any(|n| is_plan_name(n)) {
+            let entries = names(&dir);
+            if !entries.iter().any(|n| is_plan_name(n)) {
                 continue;
             }
             let Some(num) = PhaseNum::parse(id) else {
                 continue;
             };
-            let inference = infer_disk_status(&dir);
+            let newest = newest_plan_mtime(&dir, &entries);
+            by_key
+                .entry(num)
+                .or_insert_with(|| (key, Vec::new()))
+                .1
+                .push(Candidate { wt, dir, newest });
+        }
+    }
+
+    let mut out = Vec::new();
+    for (key, mut candidates) in by_key.into_values() {
+        // `live` is path-sorted and the sort is stable, so equal mtimes keep
+        // ascending path order.
+        candidates.sort_by(|a, b| {
+            b.newest
+                .cmp(&a.newest)
+                .then_with(|| a.wt.path.cmp(&b.wt.path))
+        });
+        let total = candidates.len();
+        for c in candidates {
+            let inference = infer_disk_status(&c.dir);
             if inference.plan_count == 0 {
                 continue;
             }
-            found.push((
-                num,
-                WorktreePlans {
-                    key,
-                    worktree: wt.path.clone(),
-                    phase_dir: dir,
-                    worktree_name: Untrusted::from_untrusted_source(
-                        wt.path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                    ),
-                    branch: wt.branch.clone(),
-                    short_ref: short_ref(wt.branch.as_ref(), &wt.path, &agent_ids),
-                    others: 0,
-                    inference,
-                },
-            ));
+            out.push(WorktreePlans {
+                key,
+                worktree: c.wt.path.clone(),
+                phase_dir: c.dir,
+                worktree_name: Untrusted::from_untrusted_source(
+                    c.wt.path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+                branch: c.wt.branch.clone(),
+                short_ref: short_ref(c.wt.branch.as_ref(), &c.wt.path, &agent_ids),
+                others: u32::try_from(total - 1).unwrap_or(u32::MAX),
+                inference,
+            });
+            break;
         }
     }
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    if !found.is_empty() {
+    if !out.is_empty() {
         // Counts only: never a branch, path or directory name (D-C13).
-        tracing::debug!(phases = found.len(), "worktree plans detected");
+        tracing::debug!(phases = out.len(), "worktree plans detected");
     }
-    found.into_iter().map(|(_, p)| p).collect()
+    out
 }
 
 #[cfg(test)]

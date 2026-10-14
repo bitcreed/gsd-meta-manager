@@ -2033,25 +2033,27 @@ impl DetailScreen {
             ));
         };
         let p = &model.waves[wave].plans[plan];
-        let target = ctx
-            .config
-            .projects
-            .get(&self.alias)
-            .and_then(|project| {
+        // A worktree-sourced pane opens the HOLDER's file, never a path in main
+        // (quick 261014-0jv, T-0jv-02); the parent-equality guard below is the
+        // same one that protects the main-sourced path.
+        let phase_dir = match &model.worktree {
+            Some(wt) => Some(wt.phase_dir.clone()),
+            None => ctx.config.projects.get(&self.alias).and_then(|project| {
                 crate::state_reader::disk_status::find_phase_dir(
                     &project.path.join(".planning"),
                     &model.phase_number,
                 )
-            })
-            .and_then(|dir| {
-                let name = if p.id.is_empty() {
-                    "PLAN.md".to_string()
-                } else {
-                    format!("{}-PLAN.md", p.id)
-                };
-                let path = dir.join(name);
-                (path.is_file() && path.parent() == Some(dir.as_path())).then_some(path)
-            });
+            }),
+        };
+        let target = phase_dir.and_then(|dir| {
+            let name = if p.id.is_empty() {
+                "PLAN.md".to_string()
+            } else {
+                format!("{}-PLAN.md", p.id)
+            };
+            let path = dir.join(name);
+            (path.is_file() && path.parent() == Some(dir.as_path())).then_some(path)
+        });
         Some(match target {
             Some(path) => ScreenAction::SuspendAndEdit(path, p.objective_line),
             None => ScreenAction::SetStatusMessage("No PLAN.md found for this plan".to_string()),
@@ -6968,9 +6970,12 @@ impl DetailScreen {
             .phases
             .iter()
             .map(|phase| {
+                // The `Nw` marker follows the pane: a worktree-held phase shows
+                // its worktree plans' waves (quick 261014-0jv). Memory only.
                 ListItem::new(phase_list_label(
                     phase,
-                    state.phase_disk_statuses.get(&phase.number),
+                    browsed_inference(state, ctx.agent_views.get(alias), &phase.number)
+                        .map(|(inf, _)| inf),
                 ))
             })
             .collect();
@@ -30274,5 +30279,100 @@ mod tests {
         assert!(text.contains("15-01"), "{text}");
         assert!(!text.contains("in worktree"), "{text}");
         assert!(!text.contains("15-02"), "{text}");
+    }
+
+    #[test]
+    fn worktree_plans_e_opens_the_holders_plan_md() {
+        use crate::config::RegisteredProject;
+        let main = tempfile::tempdir().expect("main tempdir");
+        let holder = tempfile::tempdir().expect("holder tempdir");
+        std::fs::create_dir_all(main.path().join(".planning/phases/15-digest")).expect("main dir");
+        let phase_dir = holder.path().join(".planning/phases/15-digest");
+        std::fs::create_dir_all(&phase_dir).expect("holder dir");
+        std::fs::write(phase_dir.join("15-01-alpha-PLAN.md"), "---\nwave: 1\n---\n").expect("plan");
+        let inf = waves_inference(&[("15-01-alpha", Some("Alpha"), Some(1))], &[]);
+        let mut wp = worktree_plans_entry(inf);
+        wp.phase_dir = phase_dir.clone();
+        let mut ctx = worktree_plans_ctx(waves_inference(&[], &[]), Some(wp));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: main.path().to_path_buf(),
+                added: "2026-10-14".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        match action {
+            ScreenAction::SuspendAndEdit(path, line) => {
+                assert_eq!(path, phase_dir.join("15-01-alpha-PLAN.md"));
+                assert!(
+                    !path.starts_with(main.path()),
+                    "never a path in main: {path:?}"
+                );
+                assert_eq!(line, Some(7), "the objective tag's 1-based line");
+            }
+            _ => panic!("expected an edit"),
+        }
+
+        // The holder's file is gone: the authored message, no edit.
+        std::fs::remove_file(phase_dir.join("15-01-alpha-PLAN.md")).expect("rm");
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(&action, ScreenAction::SetStatusMessage(m) if m == "No PLAN.md found for this plan"),
+            "expected the authored status message"
+        );
+    }
+
+    #[test]
+    fn worktree_plans_title_names_the_other_holders() {
+        let mut wp = worktree_plans_entry(worktree_plans_inference());
+        wp.others = 1;
+        let ctx = worktree_plans_ctx(waves_inference(&[], &[]), Some(wp));
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 160, 30);
+        assert!(text.contains("+1 more"), "{text}");
+        assert!(
+            text.contains("plans in worktree lanes-15 (gsd/phase-15) +1 more"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn worktree_plans_hostile_worktree_name_and_branch_reach_no_cell_unescaped() {
+        let mut wp = worktree_plans_entry(worktree_plans_inference());
+        wp.worktree_name = Untrusted::from_untrusted_source("lanes-\u{1b}[31m15".to_string());
+        wp.branch = Some(Untrusted::from_untrusted_source(
+            "gsd/\u{1b}[2Jphase".to_string(),
+        ));
+        let ctx = worktree_plans_ctx(waves_inference(&[], &[]), Some(wp));
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        for width in [60, 100, 160] {
+            let text = render_detail_to_text_at(&screen, &ctx, width, 30);
+            assert!(
+                !text.contains('\u{1b}'),
+                "an escape byte reached a cell at {width} cols:\n{text:?}"
+            );
+        }
+        let (model, _) = screen.selected_waves(&ctx).expect("a model");
+        assert!(!waves_pane_title(&model, 200).contains('\u{1b}'));
+    }
+
+    #[test]
+    fn worktree_plans_drive_the_phase_list_wave_marker() {
+        let ctx = worktree_plans_ctx(
+            waves_inference(&[], &[]),
+            Some(worktree_plans_entry(worktree_plans_inference())),
+        );
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
+        assert!(text.contains("P15: Digest  2w"), "{text}");
+        // Without the view the marker is gone: main holds no waves.
+        let bare = worktree_plans_ctx(waves_inference(&[], &[]), None);
+        let text = render_detail_to_text_at(&screen, &bare, 140, 30);
+        assert!(!text.contains("2w"), "{text}");
     }
 }
