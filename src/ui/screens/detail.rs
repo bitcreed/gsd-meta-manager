@@ -5618,7 +5618,7 @@ impl Screen for DetailScreen {
                         // at its own render site (EnqueueScreen's footer),
                         // which the probe covers.
                         ctx.input_buffer = format!(
-                            "/gsd:review-backlog {}",
+                            "/gsd-review-backlog {}",
                             item.dir_name.as_raw_for_logic_only()
                         );
                     } else {
@@ -7125,7 +7125,7 @@ impl DetailScreen {
         if model.shape == WavesShape::NoPlans {
             // The number is third-party text: escaped (T-2l4-01).
             let hint = format!(
-                "  No plans yet \u{2014} /gsd:plan-phase {}",
+                "  No plans yet \u{2014} /gsd-plan-phase {}",
                 shown(&model.phase_number)
             );
             frame.render_widget(
@@ -8731,17 +8731,18 @@ fn stage_block_lines(
 ///
 /// The remedies are gsd-core 1.15.0's `VERIFICATION_ROUTING_TABLE`
 /// `next_command`s, measured through the 1.15.0 oracle's
-/// `init.manager` `verification_next_command` and spelled in this tab's `/gsd:`
-/// convention (the neighbouring `No plans yet — /gsd:plan-phase N` hint):
+/// `init.manager` `verification_next_command` and spelled in the registered
+/// `/gsd-<name>` form gsd-core 1.17.0 emits (e288f4ab2, #4859), like the
+/// neighbouring `No plans yet — /gsd-plan-phase N` hint:
 ///
-/// - `stale` → `/gsd:execute-phase N`, which re-runs the verifier (#4682 —
+/// - `stale` → `/gsd-execute-phase N`, which re-runs the verifier (#4682 —
 ///   verify-work never rewrites VERIFICATION.md);
 /// - `unparseable` → no command: fix the YAML (#4806 — re-running execute-phase
 ///   cannot fix a typo in an existing report);
-/// - `human_needed` → `/gsd:verify-work N`; `gaps_found` →
-///   `/gsd:plan-phase N --gaps`;
+/// - `human_needed` → `/gsd-verify-work N`; `gaps_found` →
+///   `/gsd-plan-phase N --gaps`;
 /// - an unknown value, or a report with no status (upstream `missing`) →
-///   `/gsd:execute-phase N`.
+///   `/gsd-execute-phase N`.
 ///
 /// Display only: the router still parks on every one of these (DRIVE-05). The
 /// phase number and an unknown status value are third-party text and go through
@@ -8753,12 +8754,12 @@ fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Ve
         VerificationStatus::Missing if !inf.has_verification => return None,
         VerificationStatus::Missing => (
             "no status".to_string(),
-            format!(" \u{2014} /gsd:execute-phase {n}"),
+            format!(" \u{2014} /gsd-execute-phase {n}"),
         ),
         VerificationStatus::Stale => (
             "stale".to_string(),
             format!(
-                " \u{2014} /gsd:execute-phase {n} re-runs the verifier (a stale report is not refreshed by re-verifying)"
+                " \u{2014} /gsd-execute-phase {n} re-runs the verifier (a stale report is not refreshed by re-verifying)"
             ),
         ),
         VerificationStatus::Unparseable => (
@@ -8768,15 +8769,15 @@ fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Ve
         ),
         VerificationStatus::HumanNeeded => (
             "human_needed".to_string(),
-            format!(" \u{2014} /gsd:verify-work {n}"),
+            format!(" \u{2014} /gsd-verify-work {n}"),
         ),
         VerificationStatus::GapsFound => (
             "gaps_found".to_string(),
-            format!(" \u{2014} /gsd:plan-phase {n} --gaps"),
+            format!(" \u{2014} /gsd-plan-phase {n} --gaps"),
         ),
         VerificationStatus::Unknown(value) => (
             shown(value),
-            format!(" \u{2014} /gsd:execute-phase {n}"),
+            format!(" \u{2014} /gsd-execute-phase {n}"),
         ),
     };
     let dim = Style::default().fg(Color::DarkGray);
@@ -21896,6 +21897,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn e_on_a_backlog_item_enqueues_the_registered_review_backlog_command() {
+        let (mut screen, mut ctx, _td) = backlog_content_fixture();
+
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].backlog_items.len(),
+            1,
+            "precondition: the .gitkeep-only directory is listed"
+        );
+        press(&mut screen, &mut ctx, KeyCode::Char('e'));
+        assert_eq!(
+            ctx.input_buffer,
+            "/gsd-review-backlog 999.1-alternate-transport-fallback"
+        );
+    }
+
     /// The latent co-defect: the body was escaped WHOLE through `shown()`,
     /// which turns every `\n` into a visible `·`, so any multi-line content
     /// collapsed into ONE clipped row. Each source line must get its own row.
@@ -26104,7 +26122,7 @@ mod tests {
         );
         let stale = verify_hint_text(VerificationStatus::Stale, true).unwrap();
         assert!(
-            stale.contains("stale") && stale.contains("/gsd:execute-phase 7"),
+            stale.contains("stale") && stale.contains("/gsd-execute-phase 7"),
             "{stale}"
         );
         assert!(
@@ -26117,27 +26135,37 @@ mod tests {
             "{broken}"
         );
         assert!(
-            !broken.contains("/gsd:"),
+            !broken.contains("/gsd"),
             "unparseable has no command upstream: {broken}"
         );
         assert!(verify_hint_text(VerificationStatus::HumanNeeded, true)
             .unwrap()
-            .contains("/gsd:verify-work 7"));
+            .contains("/gsd-verify-work 7"));
         assert!(verify_hint_text(VerificationStatus::GapsFound, true)
             .unwrap()
-            .contains("/gsd:plan-phase 7 --gaps"));
+            .contains("/gsd-plan-phase 7 --gaps"));
         let unknown =
             verify_hint_text(VerificationStatus::Unknown("odd\x1b[31m".to_string()), true).unwrap();
-        assert!(unknown.contains("/gsd:execute-phase 7"), "{unknown}");
+        assert!(unknown.contains("/gsd-execute-phase 7"), "{unknown}");
         assert!(
             !unknown.contains('\x1b'),
             "the unknown value is escaped: {unknown:?}"
         );
         let no_status = verify_hint_text(VerificationStatus::Missing, true).unwrap();
         assert!(
-            no_status.contains("no status") && no_status.contains("/gsd:execute-phase 7"),
+            no_status.contains("no status") && no_status.contains("/gsd-execute-phase 7"),
             "{no_status}"
         );
+        for status in [
+            VerificationStatus::Stale,
+            VerificationStatus::HumanNeeded,
+            VerificationStatus::GapsFound,
+            VerificationStatus::Missing,
+            VerificationStatus::Unknown("odd".to_string()),
+        ] {
+            let hint = verify_hint_text(status, true).unwrap();
+            assert!(!hint.contains("/gsd:"), "colon form emitted: {hint}");
+        }
     }
 
     #[test]
@@ -26593,7 +26621,7 @@ mod tests {
             let ctx = waves_ctx(vec![("7", "Empty", none.clone())], "7");
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
             assert!(
-                text.contains("No plans yet \u{2014} /gsd:plan-phase 7"),
+                text.contains("No plans yet \u{2014} /gsd-plan-phase 7"),
                 "at {w}: {text}"
             );
         }

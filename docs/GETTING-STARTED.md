@@ -170,9 +170,9 @@ two-line stage summary. The summary's `Checks` line shows
 `(N open, M deferred)` beside `✓Code Review` when gsd-core 1.15's
 `NN-REVIEW-DISPOSITION.md` findings ledger is present. When the phase's
 verification report is present but not passed, one more `Verify:` line names
-its state and what to run next: `/gsd:execute-phase N` for a stale report
-(it re-runs the verifier), `/gsd:verify-work N` for `human_needed`,
-`/gsd:plan-phase N --gaps` for `gaps_found`, and, for an `unparseable`
+its state and what to run next: `/gsd-execute-phase N` for a stale report
+(it re-runs the verifier), `/gsd-verify-work N` for `human_needed`,
+`/gsd-plan-phase N --gaps` for `gaps_found`, and, for an `unparseable`
 VERIFICATION.md, fixing the YAML frontmatter in the report itself. Below the
 summary is the **Waves pane**: one row per plan, grouped by
 the `wave:` each PLAN.md declares. Every row shows a glyph and a state word —
@@ -190,7 +190,7 @@ expanded along with the next one; later waves show as header rows.
 a phase not started yet (`not started`, every wave open), a completed phase
 (one merged row), plans with no `wave:` metadata (a flat
 `Plans (no wave metadata)` list) and no plans at all
-(`No plans yet — /gsd:plan-phase N`). Below 100 columns, focusing the pane
+(`No plans yet — /gsd-plan-phase N`). Below 100 columns, focusing the pane
 widens it to the full width under a one-line breadcrumb.
 
 ## Common setup issues
