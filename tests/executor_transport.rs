@@ -376,6 +376,35 @@ async fn send_writes_the_observed_ndjson_wire_shape_to_the_child_stdin() {
 }
 
 #[tokio::test]
+async fn a_colon_form_command_reaches_claude_in_the_registered_hyphen_form() {
+    let scratch = TempDir::new().expect("temp dir");
+    let stdin_log = scratch.path().join("stdin.log");
+    let project = DrivableProject::for_testing_bypassing_opt_in("colon", scratch.path());
+    let executor = reacting(&stdin_log);
+
+    let mut handle = executor
+        .start(
+            &project,
+            "/gsd:execute-phase 7".to_string(),
+            ExecutionOptions::default(),
+        )
+        .await
+        .expect("the stand-in advertises every required capability");
+    handle.close_input().await.expect("close stdin");
+
+    while handle.events.recv().await.is_some() {}
+    handle.wait_outcome().await;
+
+    let written = stdin_lines(&stdin_log);
+    assert_eq!(written.len(), 1, "only the released prompt: {written:?}");
+    assert_eq!(
+        written[0],
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/gsd-execute-phase 7"}]}}"#,
+        "a colon-form command must reach Claude in the registered hyphen form"
+    );
+}
+
+#[tokio::test]
 async fn a_message_sent_mid_turn_is_not_buffered_by_the_driver() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");

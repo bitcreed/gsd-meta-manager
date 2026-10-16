@@ -118,6 +118,31 @@ pub fn resolve(project: Option<AgentRuntime>, global: Option<AgentRuntime>) -> A
 /// already-translated command is normalised rather than double-prefixed.
 const GSD_COMMAND_PREFIXES: [&str; 4] = ["/gsd-", "/gsd:", "gsd:", "$gsd-"];
 
+/// Split a prefixed GSD command into `(token, tail)`.
+///
+/// Matches an entry of [`GSD_COMMAND_PREFIXES`] ASCII case-insensitively and
+/// splits the remainder at the first whitespace char. `None` when the input is
+/// unprefixed or when no command token follows the prefix, so callers pass such
+/// input through verbatim.
+fn gsd_command_parts(command: &str) -> Option<(&str, &str)> {
+    for prefix in GSD_COMMAND_PREFIXES {
+        let Some(head) = command.get(..prefix.len()) else {
+            continue;
+        };
+        if !head.eq_ignore_ascii_case(prefix) {
+            continue;
+        }
+        let rest = &command[prefix.len()..];
+        let split = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, tail) = rest.split_at(split);
+        if token.is_empty() {
+            return None;
+        }
+        return Some((token, tail));
+    }
+    None
+}
+
 /// Translate a canonical GSD command into Codex's skill-mention form.
 ///
 /// `/gsd-execute-phase 3` becomes `$gsd-execute-phase 3`. Under Codex, GSD
@@ -131,24 +156,36 @@ const GSD_COMMAND_PREFIXES: [&str; 4] = ["/gsd-", "/gsd:", "gsd:", "$gsd-"];
 /// prefix with no command token after it is also returned verbatim.
 ///
 /// Called at the executor boundary and nowhere else: the driver, the bounds,
-/// the router and the journal all compare canonical `/gsd-…` strings.
+/// the router and the journal all compare canonical `/gsd-…` strings. Its
+/// Claude counterpart is [`claude_command`].
 pub fn codex_command(canonical: &str) -> String {
-    for prefix in GSD_COMMAND_PREFIXES {
-        let Some(head) = canonical.get(..prefix.len()) else {
-            continue;
-        };
-        if !head.eq_ignore_ascii_case(prefix) {
-            continue;
-        }
-        let rest = &canonical[prefix.len()..];
-        let split = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        let (token, tail) = rest.split_at(split);
-        if token.is_empty() {
-            return canonical.to_string();
-        }
-        return format!("$gsd-{}{tail}", token.to_lowercase());
+    match gsd_command_parts(canonical) {
+        Some((token, tail)) => format!("$gsd-{}{tail}", token.to_lowercase()),
+        None => canonical.to_string(),
     }
-    canonical.to_string()
+}
+
+/// Translate a GSD command into the slash form Claude installs register.
+///
+/// `/gsd:execute-phase 7` becomes `/gsd-execute-phase 7`. gsd-core 1.17.0
+/// (e288f4ab2, #4859) made runtime guidance name the registered `/gsd-<name>`
+/// form: Claude installs register only that spelling, yet QUEUE.md entries
+/// written by users or by earlier builds of this app still carry the colon form.
+///
+/// Mirrors upstream `formatGsdSlash`'s slash branch: the command token keeps its
+/// case and the argument tail is kept byte for byte. Like [`codex_command`]
+/// (ID-7), only prefixed input is rewritten — prose, the empty string and a
+/// prefix with no command token come back verbatim.
+///
+/// Called at the executor boundary (`ClaudeExecutor::start_run`) and nowhere
+/// else.
+///
+/// [inferred 261016-dx4 I-1/I-2]
+pub fn claude_command(command: &str) -> String {
+    match gsd_command_parts(command) {
+        Some((token, tail)) => format!("/gsd-{token}{tail}"),
+        None => command.to_string(),
+    }
 }
 
 #[cfg(unix)]
@@ -365,6 +402,32 @@ mod tests {
         assert_eq!(
             codex_command("/gsd-plan-phase  Ünïcode\targ \"Q\""),
             "$gsd-plan-phase  Ünïcode\targ \"Q\""
+        );
+    }
+
+    #[test]
+    fn a_gsd_command_reaches_claude_in_the_registered_hyphen_form() {
+        for (given, expected) in [
+            ("/gsd:execute-phase 7", "/gsd-execute-phase 7"),
+            ("/GSD:Plan-Phase 3 --X", "/gsd-Plan-Phase 3 --X"),
+            ("gsd:quick", "/gsd-quick"),
+            ("$gsd-progress", "/gsd-progress"),
+            ("/gsd-progress", "/gsd-progress"),
+            ("hello world", "hello world"),
+            ("", ""),
+            ("/gsd:", "/gsd:"),
+            ("/gsd: tail", "/gsd: tail"),
+            ("/g", "/g"),
+        ] {
+            assert_eq!(claude_command(given), expected, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn the_claude_rewrite_keeps_the_argument_tail_byte_for_byte() {
+        assert_eq!(
+            claude_command("/gsd:plan-phase  Ünïcode\targ \"Q\""),
+            "/gsd-plan-phase  Ünïcode\targ \"Q\""
         );
     }
 }

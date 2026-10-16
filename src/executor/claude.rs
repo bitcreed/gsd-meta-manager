@@ -78,6 +78,7 @@ use crate::error::{CapabilityError, SendError, SpawnError};
 use crate::executor::codex_json::{self, CodexStep};
 use crate::executor::gate::{self, GateOutcome};
 use crate::executor::outcome::{derive_run_outcome_from_envelopes, RunSnapshot};
+use crate::executor::runtime;
 use crate::executor::stream_json::{
     parse_line, Envelope, ResultMessage, StreamMessage, SystemMessage, UserMessage,
 };
@@ -460,6 +461,10 @@ impl ClaudeExecutor {
             return Err(SpawnError::ProjectRootUnusable { root });
         }
 
+        // Translated here and nowhere else: the driver, the bounds, the router and
+        // the journal all compare the canonical spelling, and `send()` text is
+        // prose that replay-echo correlation matches verbatim (261016-dx4 I-1).
+        let command = runtime::claude_command(&command);
         let first_message = serde_json::to_string(&UserMessage::text(command))
             .map_err(|source| SpawnError::EncodeCommand { source })?;
 
