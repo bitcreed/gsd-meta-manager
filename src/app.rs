@@ -372,6 +372,12 @@ pub fn classify_status(status: &str) -> StatusCategory {
         StatusCategory::Active
     } else if s.contains("blocked") {
         StatusCategory::Blocked
+    } else if s.contains("ready for verification") {
+        // gsd-core's awaiting-verification status must not fall through to the
+        // `complete` branch below. It ranks below Active/Blocked and above
+        // Complete (upstream: "verif outranks complete"). Idle = a user step
+        // is next, as for `ready to plan`.
+        StatusCategory::Idle
     } else if s.contains("complete") || s.contains("done") {
         StatusCategory::Complete
     } else if s.contains("idle") || s.contains("ready") || s.contains("plan") {
@@ -2902,6 +2908,15 @@ mod tests {
         assert_eq!(classify_status("shipped"), StatusCategory::Unknown);
         // A plain phase-completion status still classifies as Complete.
         assert_eq!(classify_status("phase complete"), StatusCategory::Complete);
+    }
+
+    #[test]
+    fn test_classify_status_awaiting_verification_is_idle() {
+        // Body wording written by gsd-core fde7d4e80 `nextPhaseWording`.
+        assert_eq!(
+            classify_status("Phase complete — ready for verification"),
+            StatusCategory::Idle
+        );
     }
 
     #[test]
