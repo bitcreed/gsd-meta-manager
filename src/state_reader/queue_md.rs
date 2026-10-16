@@ -35,8 +35,9 @@ impl GsdToolsCmd {
 /// Shape of GSD `smart-entry --json` output.
 ///
 /// See gsd-core `tests/smart-entry.unit.test.cjs`:
-/// `{ situation, actions: [ { command: "/gsd:...", recommended: bool }, ... ] }`
-/// with exactly one `recommended: true`.
+/// `{ situation, actions: [ { command: "/gsd-...", recommended: bool }, ... ] }`
+/// with exactly one `recommended: true`. gsd-core 1.17.0 (e288f4ab2) spells the
+/// actions via `formatGsdSlash`, i.e. in the registered hyphen form.
 #[derive(Debug, Deserialize)]
 struct SmartEntryOutput {
     #[serde(default)]
@@ -135,9 +136,15 @@ fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
 ///   - upstream's other runtime homes (Gemini, OpenCode, ...) are not probed;
 ///   - the PATH arm is not gated on `gsd-tools runtime-identity`.
 ///
-/// No `GSD_RUNTIME` pin is applied to the `smart-entry` call: 1.16.0
-/// `src/smart-entry.cts` hardcodes the `/gsd:` spelling regardless of the
-/// resolved runtime, so a Codex install answers exactly like a Claude one.
+/// The `smart-entry` call pins `GSD_RUNTIME=claude` (see [`smart_entry_command`]):
+/// since 1.17.0 (e288f4ab2, #4859) smart-entry spells each action through
+/// `resolveRuntime(cwd)` (`GSD_RUNTIME` > project `config.json` `runtime` >
+/// install marker), so a Codex-resolved install would answer `$gsd-...`. The pin
+/// makes suggestions arrive in the canonical `/gsd-...` spelling, with the same
+/// reasoning as `tests/driver_router_conformance.rs` `query_command`. Pre-1.17
+/// installs still answer in the colon form, which `claude_command` /
+/// `codex_command` repair at dispatch.
+/// [inferred 261016-dx4 I-3]
 fn resolve_gsd_tools_from(project_root: &Path, roots: &InstallRoots) -> Option<GsdToolsCmd> {
     for candidate in gsd_tools_candidates(project_root, roots) {
         if candidate.is_file() {
@@ -167,6 +174,15 @@ fn gsd_tools_on_path() -> bool {
     })
 }
 
+/// The `smart-entry --json` child for `project_root`, pinned to
+/// `GSD_RUNTIME=claude` with `Command::env` (that child only; the process
+/// environment is never mutated). [inferred 261016-dx4 I-3]
+fn smart_entry_command(launcher: &GsdToolsCmd, project_root: &Path) -> Command {
+    let mut cmd = launcher.command(&["smart-entry", "--json"]);
+    cmd.current_dir(project_root).env("GSD_RUNTIME", "claude");
+    cmd
+}
+
 /// Run `gsd-tools smart-entry --json` in `project_root` and parse its output.
 ///
 /// Returns `None` on launcher-resolution failure, spawn failure, non-zero
@@ -174,11 +190,7 @@ fn gsd_tools_on_path() -> bool {
 /// so the caller can fall back to the keyword heuristic.
 fn smart_entry_commands(project_root: &Path) -> Option<Vec<String>> {
     let launcher = resolve_gsd_tools(project_root)?;
-    let output = launcher
-        .command(&["smart-entry", "--json"])
-        .current_dir(project_root)
-        .output()
-        .ok()?;
+    let output = smart_entry_command(&launcher, project_root).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -282,7 +294,7 @@ pub fn save_queue(planning_dir: &Path, actions: &[QueuedAction]) -> anyhow::Resu
 ///
 /// Prefers GSD 1.8.0's `gsd-tools smart-entry`, which understands situations
 /// the keyword heuristic cannot (idle-stranded, external-job-waiting, milestone
-/// boundaries) and always returns exactly one recommended `/gsd:*` action. When
+/// boundaries) and always returns exactly one recommended `/gsd-*` action. When
 /// the project has a resolvable launcher and smart-entry yields a non-empty
 /// list, that list is used; otherwise it falls back to the keyword heuristic.
 ///
@@ -308,29 +320,29 @@ fn keyword_suggestions(state: &super::ProjectState) -> Vec<String> {
     let status_lower = state.status.to_lowercase();
     // The phase these commands should target is the one that is actually next
     // on disk, not the one the roadmap's completion count implies — see
-    // `ProjectState::active_phase_number`. Suggesting `/gsd:plan-phase 3` for a
+    // `ProjectState::active_phase_number`. Suggesting `/gsd-plan-phase 3` for a
     // project already executing phase 4 is worse than suggesting nothing.
     let next_phase = state.active_phase_number();
 
     let mut suggestions = Vec::new();
 
     if status_lower.contains("ready to plan") || status_lower.contains("idle") {
-        suggestions.push(format!("/gsd:discuss-phase {}", next_phase));
-        suggestions.push(format!("/gsd:plan-phase {}", next_phase));
+        suggestions.push(format!("/gsd-discuss-phase {}", next_phase));
+        suggestions.push(format!("/gsd-plan-phase {}", next_phase));
     } else if status_lower.contains("executing") || status_lower.contains("active") {
-        suggestions.push(format!("/gsd:execute-phase {}", next_phase));
-        suggestions.push(format!("/gsd:verify-work {}", next_phase));
+        suggestions.push(format!("/gsd-execute-phase {}", next_phase));
+        suggestions.push(format!("/gsd-verify-work {}", next_phase));
     } else if status_lower.contains("complete") || status_lower.contains("done") {
-        suggestions.push("/gsd:progress".to_string());
+        suggestions.push("/gsd-progress".to_string());
     } else {
         // Default fallback
-        suggestions.push(format!("/gsd:discuss-phase {}", next_phase));
-        suggestions.push(format!("/gsd:plan-phase {}", next_phase));
-        suggestions.push(format!("/gsd:execute-phase {}", next_phase));
+        suggestions.push(format!("/gsd-discuss-phase {}", next_phase));
+        suggestions.push(format!("/gsd-plan-phase {}", next_phase));
+        suggestions.push(format!("/gsd-execute-phase {}", next_phase));
     }
 
-    // Always include /gsd:quick as a generic suggestion
-    suggestions.push("/gsd:quick".to_string());
+    // Always include /gsd-quick as a generic suggestion
+    suggestions.push("/gsd-quick".to_string());
 
     suggestions
 }
@@ -395,7 +407,7 @@ mod tests {
         };
         let suggestions = suggest_next_commands(&state);
         assert!(suggestions[0].contains("discuss-phase 3"));
-        assert!(suggestions.last().unwrap() == "/gsd:quick");
+        assert!(suggestions.last().unwrap() == "/gsd-quick");
     }
 
     #[test]
@@ -414,33 +426,73 @@ mod tests {
         let json = r#"{
             "situation": "idle",
             "actions": [
-                { "command": "/gsd:progress", "recommended": false },
-                { "command": "/gsd:discuss-phase 3", "recommended": true },
-                { "command": "/gsd:quick", "recommended": false }
+                { "command": "/gsd-progress", "recommended": false },
+                { "command": "/gsd-discuss-phase 3", "recommended": true },
+                { "command": "/gsd-quick", "recommended": false }
             ]
         }"#;
         let commands = parse_smart_entry_json(json).expect("valid JSON should parse");
-        assert_eq!(commands[0], "/gsd:discuss-phase 3");
+        assert_eq!(commands[0], "/gsd-discuss-phase 3");
         // The two non-recommended commands follow in their original order.
-        assert_eq!(commands[1], "/gsd:progress");
-        assert_eq!(commands[2], "/gsd:quick");
+        assert_eq!(commands[1], "/gsd-progress");
+        assert_eq!(commands[2], "/gsd-quick");
     }
 
     #[test]
     fn test_parse_smart_entry_preserves_non_recommended_order() {
         let json = r#"{
             "actions": [
-                { "command": "/gsd:execute-phase 4", "recommended": true },
-                { "command": "/gsd:verify-work 4", "recommended": false }
+                { "command": "/gsd-execute-phase 4", "recommended": true },
+                { "command": "/gsd-verify-work 4", "recommended": false }
             ]
         }"#;
         let commands = parse_smart_entry_json(json).expect("valid JSON should parse");
         assert_eq!(
             commands,
             vec![
-                "/gsd:execute-phase 4".to_string(),
-                "/gsd:verify-work 4".to_string()
+                "/gsd-execute-phase 4".to_string(),
+                "/gsd-verify-work 4".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn keyword_suggestions_emit_only_the_registered_hyphen_form() {
+        for status in [
+            "idle",
+            "ready to plan",
+            "executing phase 4",
+            "active",
+            "complete",
+            "done",
+            "something else entirely",
+        ] {
+            let state = super::super::ProjectState {
+                status: status.to_string(),
+                completed_phases: 2,
+                ..Default::default()
+            };
+            let suggestions = keyword_suggestions(&state);
+            assert!(!suggestions.is_empty(), "{status:?}");
+            for s in &suggestions {
+                assert!(s.starts_with("/gsd-"), "{status:?}: {s:?}");
+            }
+            assert_eq!(suggestions.last().unwrap(), "/gsd-quick", "{status:?}");
+        }
+    }
+
+    #[test]
+    fn smart_entry_is_pinned_to_the_canonical_spelling() {
+        let td = tempfile::tempdir().unwrap();
+        let launcher = node_cmd(Path::new("/x/gsd-tools.cjs"));
+        let cmd = smart_entry_command(&launcher, td.path());
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, ["/x/gsd-tools.cjs", "smart-entry", "--json"]);
+        assert_eq!(cmd.get_current_dir(), Some(td.path()));
+        assert!(
+            cmd.get_envs()
+                .any(|(k, v)| k == "GSD_RUNTIME" && v.is_some_and(|v| v == "claude")),
+            "GSD_RUNTIME=claude must be pinned on the child"
         );
     }
 
@@ -465,7 +517,7 @@ mod tests {
             ..Default::default()
         };
         let suggestions = suggest_next_commands(&state);
-        assert_eq!(suggestions[0], "/gsd:progress");
+        assert_eq!(suggestions[0], "/gsd-progress");
     }
 
     #[test]
