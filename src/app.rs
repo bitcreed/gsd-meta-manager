@@ -372,11 +372,13 @@ pub fn classify_status(status: &str) -> StatusCategory {
         StatusCategory::Active
     } else if s.contains("blocked") {
         StatusCategory::Blocked
-    } else if s.contains("ready for verification") {
-        // gsd-core's awaiting-verification status must not fall through to the
-        // `complete` branch below. It ranks below Active/Blocked and above
-        // Complete (upstream: "verif outranks complete"). Idle = a user step
-        // is next, as for `ready to plan`.
+    } else if s.contains("ready for verification") || s.contains("verifying") {
+        // gsd-core's awaiting-verification status, in both forms: the upstream
+        // body wording (`Phase complete — ready for verification`) and the
+        // normalized frontmatter token (`verifying`). Neither may fall through
+        // to the `complete` branch below (or to Unknown). Ranks below
+        // Active/Blocked and above Complete (upstream: "verif outranks
+        // complete"). Idle = a user step is next, as for `ready to plan`.
         StatusCategory::Idle
     } else if s.contains("complete") || s.contains("done") {
         StatusCategory::Complete
@@ -2917,6 +2919,27 @@ mod tests {
             classify_status("Phase complete — ready for verification"),
             StatusCategory::Idle
         );
+        // The value actually read from disk: `ProjectState.status` is the
+        // frontmatter `status:` (state_md.rs:683) and upstream
+        // `STATUS_EXACT_TOKENS` normalizes the wording above to `verifying`.
+        assert_eq!(classify_status("verifying"), StatusCategory::Idle);
+        // Upstream's anchored `verifying phase N` form.
+        assert_eq!(classify_status("Verifying phase 5"), StatusCategory::Idle);
+        // ASCII-hyphen variant passes through the exact-token normalizer verbatim.
+        assert_eq!(
+            classify_status("Phase complete - ready for verification"),
+            StatusCategory::Idle
+        );
+        // Blocked keeps precedence over awaiting-verification.
+        assert_eq!(
+            classify_status("blocked — ready for verification"),
+            StatusCategory::Blocked
+        );
+    }
+
+    #[test]
+    fn test_classify_status_ready_to_execute_is_idle() {
+        assert_eq!(classify_status("Ready to execute"), StatusCategory::Idle);
     }
 
     #[test]
