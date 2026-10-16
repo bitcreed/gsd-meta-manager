@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.16.0`**
-(`87e87d34b2d8519e30d1af7d910fc98f2af4bc8d`, `package.json` 1.16.0, tagged
-2026-10-05) **on 2026-10-12. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.16.0`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.17.0`**
+(`962c1192e062b5278281cd3a7bfd671a67a4db44`, `package.json` 1.17.0, tagged
+2026-10-14) **on 2026-10-16. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.17.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.16.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.16.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.16.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.17.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.17.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.17.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -31,7 +31,9 @@ pass-through and made every secret-bearing key display masked — see
 [Secret-bearing keys](#secret-bearing-keys). The v1.16.0 sync was three quick
 tasks: 261012-jqb (the key delta — six `gates.*` keys retired, `audit.enabled`
 added), 261012-jqc (`$GSD_HOME` for the global defaults file) and 261012-kee
-(this baseline).
+(the v1.16.0 baseline). The v1.17.0 sync (quick task 261016-dx3) was
+baseline-only, with no config key, default or loader change — see
+[The v1.17.0 delta](#the-v1170-delta-quick-task-261016-dx3).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -63,14 +65,14 @@ it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
 whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.16.0-19-g77a12fa84` with `package.json` 1.16.0) — not the sync target. A
+`v1.17.0-75-g46a119f06` with `package.json` 1.17.0) — not the sync target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=v1.17.0                          # the sync target: the next release tag
-PREV=v1.16.0                         # the previous GSD_CORE_SYNCED_COMMIT
+REF=v1.18.0                          # the sync target: the next release tag
+PREV=v1.17.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -121,6 +123,54 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.17.0 delta (quick task 261016-dx3)
+
+Measured on 2026-10-16 between `v1.16.0` and `v1.17.0`
+(`962c1192e062b5278281cd3a7bfd671a67a4db44`), against the tags, not the
+working tree:
+
+| Measurement | v1.16.0 | v1.17.0 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 254 | 255 | **+1 / -0** (`review.effort.opencode`) |
+| `config-schema.manifest.json` | — | — | unchanged (no diff) |
+| `config-defaults.manifest.json` | — | — | unchanged |
+| `src/config-loader.cts`, `src/config.cts` | — | — | unchanged |
+| Existing keys whose default changed | | | **none** |
+| `capabilities/*/capability.json` | | | 45 files bump `version` 1.16.0 -> 1.17.0; 8 also change runtime-only fields |
+
+**`review.effort.opencode`** is the one added key cell, and it is not a new
+family. The `review.effort.<slug>` family has been capability-registered since
+v1.13.0 (5ad9a36f3, #4255) through the `effortConfigKey` entries of the
+claude, codex and opencode `capability.json` files; v1.17.0 is merely the first
+release whose CONFIGURATION.md gives one of its members a leading key cell, so
+step 2 sees it. Accepted values: `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max`, `inherit`. This build parses it into `ReviewConfig.extra`; it shows as a
+read-only `Not modelled` row and round-trips on save with no code change. It
+is recorded under Pass-through, so the Modelled count stays 135 and
+`DEFAULTS_OPTION_COUNT` stays 135.
+
+**Config-adjacent diffs in the range that are NOT new keys:**
+
+- `runtime.hostBehaviors.unsupportedFeatures: ["context-warnings"]` was added
+  to the antigravity, augment, codebuddy, hermes, kimi-code, kimi and qwen
+  capability manifests.
+- opencode's `dispatch.nested` went from `"undocumented"` to `false` and
+  `dispatch.maxDepth` from `"undocumented"` to `1`.
+- opencode gained a `nativeCliPlugin` block (the OpenCode statusline TUI
+  plugin, `plugins/gsd-statusline/tui.tsx`).
+- CONFIGURATION.md gained an "OpenCode 1.x and 2.x" subsection. Its new names
+  are environment variables (`GSD_OPENCODE_GENERATION`, `GSD_HOOK_RUNTIME`,
+  `GSD_HOOK_SHELL`), not config keys; its `review.models.opencode` row
+  re-documents a key already documented at v1.16.0.
+- The 45 capability `version` bumps.
+
+The secret-bearing re-diff found no change: `src/secrets.cts` is unchanged and
+the heuristic still matches only the four exempt budget keys.
+`gsd-core/references/gsd-run-resolver.md` is unchanged, so the resolver-order
+comments in `src/state_reader/queue_md.rs` that cite 1.16.0 stay accurate.
 
 ---
 
@@ -545,7 +595,7 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 
 | Family | Why no typed row |
 |---|---|
-| `review.models.<cli>`, `review.reviewer_instances.<name>.*` | Templated by CLI / instance name; a typed field per unknown name is not expressible. |
+| `review.models.<cli>`, `review.effort.<slug>`, `review.reviewer_instances.<name>.*` | Templated by CLI / reviewer-lane slug / instance name; a typed field per unknown name is not expressible. The effort family is owned by each lane's capability manifest (`effortConfigKey`). |
 | `review.default_reviewers`, `review.*_host`, `review.max_prompt_tokens*`, `review.parallel_lanes` | Would be typeable; deferred because the whole `review.*` block is one editing surface and splitting it half-and-half reads worse than leaving it whole. |
 | `model_policy.*`, `model_profile_overrides.<runtime>.<tier>` | Keyed by runtime and tier; templated. |
 | `effort.*`, `fast_mode.*` | Both carry `agent_overrides.<agent-id>` and `routing_tier_defaults.*`; templated. |
@@ -591,7 +641,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.17.0`, `PREV=v1.16.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.18.0`, `PREV=v1.17.0`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run
@@ -611,8 +661,9 @@ Then, in priority order:
    Decide which path wins before adding rows.
 3. **Promote the flat `review.*` keys** (`default_reviewers`, the three `*_host`
    keys, `max_prompt_tokens`, `max_prompt_tokens_per_reviewer`,
-   `parallel_lanes`). All are scalars; only the `models.<cli>` and
-   `reviewer_instances.<name>.*` families have to stay pass-through.
+   `parallel_lanes`). All are scalars; only the `models.<cli>`,
+   `effort.<slug>` and `reviewer_instances.<name>.*` families have to stay
+   pass-through.
 4. **Then `refactor.*` and `safety.*`**, which are small and fully scalar.
 5. **Retro-measure `since` for the 73 rows that have none**, using step 5's
    command, if a reader ever needs the full history rather than the delta.
