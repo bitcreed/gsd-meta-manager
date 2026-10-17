@@ -1,20 +1,20 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.0
+milestone: v1.14.0
 current_phase: 26
 current_phase_name: Driver Validation Spike 003
-status: planning
-stopped_at: v2.0 re-planned 2026-10-14 (Phases 19/21/22/23 superseded by spikes 001/002; Phases 26-31 added); next is /gsd-plan-phase 26
-last_updated: "2026-10-14T05:49:47.773Z"
-last_activity: 2026-10-14
-last_activity_desc: v2.0 re-planned around the capability-removal driver (spikes 001/002)
+status: shipped
+stopped_at: v1.14.0 released (interim, mid v2.0); next is /gsd-plan-phase 26
+last_updated: "2026-10-17T02:00:00.000Z"
+last_activity: 2026-10-16
+last_activity_desc: v1.14.0 released — gsd-core 1.17.0 Sync
 state_head: a0d252d48de6f649988e60263c42bea8844fce8b
 progress:
   total_phases: 10
   completed_phases: 7
   total_plans: 7
   completed_plans: 112
-milestone_name: Autonomous Orchestration
+milestone_name: gsd-core 1.17.0 Sync
 ---
 
 # Project State
@@ -32,6 +32,17 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
+Status: v1.14.0 shipped 2026-10-16 (interim release; v2.0 milestone still open)
+  gsd-core v1.17.0 sync: quick batch 261016-dx2 (261016-dx3 baseline constants 1.17.0 / v1.17.0 /
+  1.17.0, sync doc, README note; 261016-dx4 `/gsd-<name>` command form in suggestions, hints,
+  backlog enqueue and docs, colon form rewritten at the Claude executor edge, smart-entry pinned to
+  GSD_RUNTIME=claude; 261016-dx5 awaiting-verification wording and `verifying` classify as Idle),
+  plus quick 261014-0jv (worktree-held phase plans browsable in the TUI). `cargo update`: deranged,
+  equivalent, kasuari, libc, pest*, tokio patch bumps. `./scripts/pre-tag-check.sh --container
+  v1.14.0` exit **0**, all five gates PASS, git banner MATCH, oracle @opengsd/gsd-core@1.17.0,
+  60 suites / **2991 passed / 0 failed** / 16 ignored. Next: `/gsd-plan-phase 26`.
+
+Earlier (v2.0 re-plan, 2026-10-14):
 Status: v2.0 re-planned 2026-10-14. The milestone was restructured in place rather than closed. No
 tag was created, Cargo.toml was not bumped, and nothing was pushed `[inferred]`.
 
@@ -683,11 +694,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-14
-Stopped at: v2.0 re-planned around the capability-removal driver from spikes 001 and 002.
+Last session: 2026-10-16
+Stopped at: v1.14.0 released (gsd-core 1.17.0 sync, interim, mid v2.0); tag and master pushed.
 
-- Phases 19, 21, 22 and 23 are superseded, and Phases 26-31 were added.
-- No tag was created, Cargo.toml was not bumped, and nothing was pushed.
+Earlier (2026-10-14): v2.0 re-planned around the capability-removal driver from spikes 001 and
+002. Phases 19, 21, 22 and 23 are superseded, and Phases 26-31 were added.
 
 Next: `/gsd-plan-phase 26`. Phase 26 is the validation spike. It must give a go verdict before
 Phase 27 starts.
