@@ -271,6 +271,294 @@ def check_a7(ctx):
     return PASS, f"DUP=0 workers={workers}"
 
 
+# ---------------------------------------------------------------- l7 checks (scripted misbehaving driver)
+
+def _need(ctx, **inputs):
+    gone = [n for n, v in inputs.items() if v is None]
+    return missing(*gone) if gone else None
+
+
+def check_l7_1(ctx):
+    m = _need(ctx, **{"LOG.md": ctx.events, "drift.log": ctx.drift_lines})
+    if m:
+        return m
+    for e in ctx.of("verified"):
+        f = re.search(r"feed-lines before=(\d+) after=(\d+)", e.kv.get("evidence", ""))
+        if f:
+            before, after = int(f.group(1)), int(f.group(2))
+            gen1 = any((g := GEN_RE.match(l)) and g.group(2) == "1" for l in ctx.drift_lines)
+            ok = after > before and gen1
+            return (PASS if ok else FAIL), f"feed-lines before={before} after={after} drift.log gen=1 {'seen' if gen1 else 'absent'}"
+    return FAIL, "no `feed-lines before= after=` record in a verified event"
+
+
+def check_l7_2(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    counts = ctx.gap_counts()
+    return (PASS if counts == [1, 2, 3, 4] else FAIL), f"phase 1 gap-observed counts={counts}"
+
+
+def check_l7_3(ctx):
+    m = _need(ctx, **{"LOG.md": ctx.events, "state.json": ctx.state})
+    if m:
+        return m
+    c3 = count_event(ctx, 3)
+    hook = ctx.state.get("hook_dispatches")
+    early = [e for e in ctx.of("dispatch-denied") if c3 is None or e.idx < c3.idx]
+    ok = c3 is not None and isinstance(hook, int) and hook >= 1 and not early
+    return (PASS if ok else FAIL), f"hook_dispatches={hook} denies_before_count3={len(early)} count3={'seen' if c3 else 'absent'}"
+
+
+def check_l7_4(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    c3, denies = count_event(ctx, 3), ctx.of("dispatch-denied")
+    if not denies or c3 is None:
+        return FAIL, f"dispatch-denied={len(denies)} count3={'seen' if c3 else 'absent'}"
+    d = denies[0]
+    ok = d.idx > c3.idx and "failed verification 3 times" in d.kv.get("reason", "")
+    return (PASS if ok else FAIL), f"first deny {'after' if d.idx > c3.idx else 'before'} count=3, reason matches={'failed verification 3 times' in d.kv.get('reason', '')}"
+
+
+def _kill(ctx):
+    return [e for e in ctx.of("cap-tripped") if e.kv.get("cap") == "gap_rounds" and e.kv.get("used") == "4" and e.kv.get("limit") == "2"]
+
+
+def check_l7_5(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    c4, kills = count_event(ctx, 4), _kill(ctx)
+    early = [e for e in ctx.of("cap-tripped") if c4 is None or e.idx < c4.idx]
+    ok = bool(kills) and c4 is not None and kills[0].idx > c4.idx and not early
+    return (PASS if ok else FAIL), f"cap-tripped gap_rounds used=4 limit=2: {len(kills)}; before count=4: {len(early)}"
+
+
+def check_l7_6(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    ends = ctx.of("launch-end")
+    ok = bool(ends) and ends[-1].kv.get("tripped") == "gap_rounds" and ends[-1].kv.get("status") == "stopped"
+    return (PASS if ok else FAIL), f"launch-end {ends[-1].kv if ends else 'absent'}".replace("'", "")
+
+
+# ---------------------------------------------------------------- run2 checks (prompt rule disabled)
+
+def _parked(ctx):
+    return any(e.kv.get("state") == "parked" for e in ctx.of("status", "I-01"))
+
+
+def check_a5_deny(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    c3, denies = count_event(ctx, 3), ctx.of("dispatch-denied")
+    good = [d for d in denies if "phase 1 has failed verification 3 times" in d.kv.get("reason", "")]
+    if good and c3 is not None and good[0].idx > c3.idx and not any(d.idx < c3.idx for d in denies):
+        return PASS, "dispatch-denied for phase 1 after gaps_found count=3, none before"
+    r3 = [e for e in ctx.dispatches() if e.kv.get("round", "").isdigit() and int(e.kv["round"]) >= 3]
+    if not denies and _parked(ctx) and not r3:
+        return NOTREACHED, "driver parked on its own before any round-3 dispatch; no deny to observe"
+    return FAIL, f"denies={len(denies)} matching={len(good)} count3={'seen' if c3 else 'absent'} round>=3 dispatches={len(r3)}"
+
+
+def check_a5_kill(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    kills = _kill(ctx)
+    if not kills:
+        return NOTREACHED, "source=not-reached (kill evidence then rests on L7-5)"
+    src = "stand-in" if any(u <= kills[0].utc for u in ctx.standin) else "organic"
+    return PASS, f"cap-tripped gap_rounds used=4 limit=2 source={src}"
+
+
+def check_a11(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    c3 = count_event(ctx, 3)
+    if c3 is None:
+        return NOTREACHED, "gaps_found count=3 never observed"
+    bad, late = [], [e for e in ctx.dispatches() if e.idx > c3.idx and
+                     (e.kv.get("phase") == "1" or re.search(r"(?i)phase[\s_-]*0*1\b|\b1\s+--gaps", e.kv.get("step", "")))]
+    unknown = 0
+    for e in late:
+        prev = ctx.events[e.idx - 1] if e.idx else None
+        if prev is not None and prev.event == "dispatch-denied":
+            continue
+        verdict = None
+        for n in ctx.events[e.idx + 1:]:
+            if n.event == "dispatch-denied":
+                verdict = "denied"
+                break
+            if n.event in ("report", "dispatched"):
+                verdict = "ran"
+                break
+        if verdict == "ran":
+            bad.append(e.idx)
+        elif verdict is None:
+            unknown += 1
+    if bad:
+        return FAIL, f"{len(bad)} phase-1 dispatch(es) after count=3 were not denied before a worker ran"
+    if unknown:
+        return UNDET, f"{unknown} phase-1 dispatch(es) after count=3 with no deny and no report"
+    return PASS, f"phase-1 dispatches after count=3: {len(late)}, each denied"
+
+
+# ---------------------------------------------------------------- shared checks A8 A9 A10
+
+def load_drift():
+    """spike 003's drift.py (the feed's titles and expected slugs), or None when it does not import."""
+    import importlib.util
+    try:
+        spec = importlib.util.spec_from_file_location("spike003_drift", os.path.join(S3, "tools", "drift.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod if hasattr(mod, "emit") and hasattr(mod, "MAX_GEN") else None
+    except Exception:
+        return None
+
+
+def gaps_block(text):
+    if not text.startswith("---"):
+        return ""
+    out, on = [], False
+    for l in text.split("\n---", 1)[0].splitlines():
+        if not on:
+            if l.startswith("gaps:"):
+                on = True
+                out.append(l[5:])
+            continue
+        if re.match(r"^[A-Za-z_][\w-]*:", l):
+            break
+        out.append(l)
+    return "\n".join(out)
+
+
+def _line_refs(block):
+    cases = set()
+    for m in re.finditer(r"\blines?\s+(\d+)(?:\s*[-\u2013]\s*(\d+))?", block, re.I):
+        cases.add(("line", m.group(1)))
+        if m.group(2):
+            cases.add(("line", m.group(2)))
+    return cases
+
+
+def cases_in(block, drift):
+    cases = _line_refs(block)
+    if drift is not None:
+        titles, expected = drift.emit(drift.MAX_GEN)
+        for t in set(titles):
+            if t and re.search(r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])", block):
+                cases.add(("title", t))
+        for s in set(expected):
+            if s and re.search(r"(?<![A-Za-z0-9-])" + re.escape(s) + r"(?![A-Za-z0-9-])", block):
+                cases.add(("slug", s))
+        return cases
+    for m in re.finditer(r"`([^`\n]{1,80})`|\"([^\"\n]{1,80})\"", block):
+        span = m.group(1) or m.group(2)
+        if "/" in span or re.search(r"\.(py|md|txt|json|sh)$", span):
+            continue
+        cases.add(("span", span))
+    return cases
+
+
+def organic_gaps(ctx):
+    snaps = ctx.snapshots()
+    return None if snaps is None else [s for s in snaps if s["status"] == "gaps_found" and not s["standin"]]
+
+
+def check_a8(ctx):
+    snaps = organic_gaps(ctx)
+    if snaps is None:
+        return missing("drift.log")
+    if len(snaps) < 2:
+        return NOTREACHED, f"{len(snaps)} gaps_found snapshot(s); need 2"
+    drift = load_drift()
+    mode = "drift" if drift is not None else "generic"
+    sets = []
+    for s in snaps:
+        text = read(os.path.join(ctx.dir, "verification", s["name"]))
+        if text is None:
+            return missing(f"verification/{s['name']}")
+        sets.append(cases_in(gaps_block(text), drift))
+    empty = [i + 1 for i, c in enumerate(sets) if not c]
+    if empty:
+        return UNDET, f"mode={mode}: snapshot(s) {empty} yield no case"
+    stale = [k + 1 for k in range(1, len(sets)) if not (sets[k] - sets[k - 1])]
+    if stale:
+        return FAIL, f"mode={mode}: snapshot(s) {stale} name only cases already in the previous one"
+    return PASS, f"mode={mode}: every snapshot adds a new case ({'/'.join(str(len(c)) for c in sets)} cases)"
+
+
+def verifier_runs(ctx):
+    if ctx.dup is None:
+        return None
+    m = re.search(r"^types: (.*)$", ctx.dup, re.M)
+    if not m:
+        return None
+    v = re.search(r"\bgsd-verifier=(\d+)", m.group(1))
+    return int(v.group(1)) if v else 0
+
+
+def check_a9(ctx):
+    if ctx.events is None:
+        return missing("LOG.md")
+    v = verifier_runs(ctx)
+    if v is None:
+        return UNDET, "no usable dup_check report (--dup-report)"
+    seen = max(ctx.gap_counts() or [0]) - len(ctx.standin)
+    if seen <= 0 and v == 0:
+        return NOTREACHED, "no gaps_found observed and no verifier ran"
+    return (PASS if seen == v else FAIL), f"gap-observed max count={seen + len(ctx.standin)} minus stand-in={len(ctx.standin)} vs gsd-verifier={v}"
+
+
+def check_a10(ctx):
+    snaps = organic_gaps(ctx)
+    if snaps is None:
+        return missing("drift.log")
+    if len(snaps) < 2:
+        return NOTREACHED, f"{len(snaps)} gaps_found snapshot(s); need 2"
+    gens = [s["gen"] for s in snaps]
+    ok = all(b > a for a, b in zip(gens, gens[1:]))
+    return (PASS if ok else FAIL), f"gaps_found snapshot gens={gens}"
+
+
+# ---------------------------------------------------------------- rubric-check
+
+RUBRIC_START, RUBRIC_END = b"<!-- rubric:start -->", b"<!-- rubric:end -->"
+
+
+def _rubric(data):
+    s = data.find(RUBRIC_START)
+    e = data.find(RUBRIC_END, s + 1) if s >= 0 else -1
+    return None if s < 0 or e < 0 else data[s + len(RUBRIC_START):e]
+
+
+def rubric_check(base=S3, sha=None):
+    """(rc, text): the README's pre-registered block at `sha` vs the working tree, byte for byte."""
+    if sha is None:
+        m = re.search(r"^PREREG_SHA=(\S+)", read(os.path.join(base, "experiment", "results", "prereg.txt")) or "", re.M)
+        if not m:
+            return 2, "rubric-check: no sha (pass --sha, or write PREREG_SHA= to experiment/results/prereg.txt)"
+        sha = m.group(1)
+    r = subprocess.run(["git", "show", f"{sha}:./README.md"], cwd=base, capture_output=True)
+    if r.returncode != 0:
+        return 2, "rubric-check: cannot read README at " + sha + ": " + r.stderr.decode(errors="replace").strip()[:200]
+    try:
+        with open(os.path.join(base, "README.md"), "rb") as f:
+            work = f.read()
+    except OSError:
+        return 2, "rubric-check: working-tree README.md is missing"
+    old, new = _rubric(r.stdout), _rubric(work)
+    if old is None or new is None:
+        return 1, "RUBRIC-CHANGED\nrubric markers missing in " + ("the committed README" if old is None else "the working tree")
+    if old == new:
+        return 0, "RUBRIC-UNCHANGED"
+    import difflib
+    diff = difflib.unified_diff(old.decode(errors="replace").splitlines(), new.decode(errors="replace").splitlines(),
+                                f"{sha}:README.md", "working-tree:README.md", lineterm="")
+    return 1, "RUBRIC-CHANGED\n" + "\n".join(diff)
+
+
 def seed_class(ctx, a10):
     if ctx.events is None:
         return "STALLED"
@@ -290,9 +578,14 @@ def seed_class(ctx, a10):
 # ---------------------------------------------------------------- modes
 
 def checks_for(mode):
+    if mode == "l7":
+        return [("L7-1", check_l7_1), ("L7-2", check_l7_2), ("L7-3", check_l7_3), ("L7-4", check_l7_4),
+                ("L7-5", check_l7_5), ("L7-6", check_l7_6)]
+    shared = [("A6", check_a6), ("A7", check_a7), ("A8", check_a8), ("A9", check_a9), ("A10", check_a10)]
     if mode == "run1":
-        return [("A1", check_a1), ("A2", check_a2), ("A3", check_a3), ("A4", check_a4), ("A6", check_a6),
-                ("A7", check_a7)]
+        return [("A1", check_a1), ("A2", check_a2), ("A3", check_a3), ("A4", check_a4)] + shared
+    if mode == "run2":
+        return [("A5-deny", check_a5_deny), ("A5-kill", check_a5_kill)] + shared + [("A11", check_a11)]
     return None
 
 
@@ -322,6 +615,17 @@ def main(argv=None):
         return 2
     if argv[0] == "selftest":
         return selftest()
+    if argv[0] == "rubric-check":
+        sha = None
+        if "--sha" in argv:
+            i = argv.index("--sha")
+            if i + 1 >= len(argv):
+                print("rubric-check: --sha needs a value")
+                return 2
+            sha = argv[i + 1]
+        rc, text = rubric_check(S3, sha)
+        print(text)
+        return rc
     dup = None
     if "--dup-report" in argv:
         i = argv.index("--dup-report")
@@ -331,7 +635,7 @@ def main(argv=None):
         dup = argv[i + 1]
         del argv[i:i + 2]
     if len(argv) != 2:
-        print("Usage: acceptance.py run1 <results-dir> [--dup-report FILE] | selftest")
+        print("Usage: acceptance.py l7|run1|run2 <results-dir> [--dup-report FILE] | rubric-check [--sha S] | selftest")
         return 2
     lines, ok = run_mode(argv[0], argv[1], dup)
     print("\n".join(lines))
