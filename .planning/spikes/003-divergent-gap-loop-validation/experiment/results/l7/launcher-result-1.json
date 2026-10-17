@@ -1,0 +1,8 @@
+{
+ "rc": -15,
+ "status": "stopped",
+ "reason": "launcher-cap:gap_rounds",
+ "tripped": "gap_rounds",
+ "cost": null,
+ "stream": "/home/blk/.local/state/gsd-meta-manager/spike-003/l7-20261017T021900Z/state/launch-1.jsonl"
+}
