@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.14.0
 current_phase: 26
 current_phase_name: Driver Validation Spike 003
-status: shipped
+status: executing
 stopped_at: v1.14.0 released (interim, mid v2.0); next is /gsd-plan-phase 26
-last_updated: "2026-10-17T02:11:50.657Z"
+last_updated: "2026-10-17T02:14:29.105Z"
 last_activity: 2026-10-16
-last_activity_desc: v1.14.0 released — gsd-core 1.17.0 Sync
-state_head: 258053deac2182d715084fe077d07670eb2019be
+last_activity_desc: Phase 26 execution started
+state_head: 3cdf52e460e642d1fca3900712b5586246cc4389
 progress:
   total_phases: 10
   completed_phases: 7
@@ -24,7 +24,7 @@ milestone_name: gsd-core 1.17.0 Sync
 See: .planning/PROJECT.md (updated 2026-09-25)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 26, Driver Validation Spike 003. This is the first phase of the v2.0 re-plan of
+**Current focus:** Phase 26 — Driver Validation Spike 003
 2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
@@ -32,7 +32,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: v1.14.0 shipped 2026-10-16 (interim release; v2.0 milestone still open)
+Status: Executing Phase 26
   gsd-core v1.17.0 sync: quick batch 261016-dx2 (261016-dx3 baseline constants 1.17.0 / v1.17.0 /
   1.17.0, sync doc, README note; 261016-dx4 `/gsd-<name>` command form in suggestions, hints,
   backlog enqueue and docs, colon form rewritten at the Claude executor edge, smart-entry pinned to
@@ -182,8 +182,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 26 (Driver Validation Spike 003) — READY TO EXECUTE
-Plan: Not started
+Phase: 26 (Driver Validation Spike 003) — EXECUTING
+Plan: 1 of 3
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -217,7 +217,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-14 - v2.0 re-planned (spikes 001/002; Phases 19/21/22/23 superseded, 26-31 added); earlier the same day: completed quick task 261014-0jv: worktree-only phase plans browsable in the TUI
+Last activity: 2026-10-16 — Phase 26 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal

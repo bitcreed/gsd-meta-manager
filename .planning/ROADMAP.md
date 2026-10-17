@@ -916,12 +916,12 @@ never re-spawn a background agent.
 **Notes**: This is a spike under the spike CONVENTIONS: no `src/` changes, and scratch projects only.
 `[inferred]`: it runs as `/gsd-spike` work tracked by this phase, not as a code phase.
 
-**Plans**: 3 plans
+**Plans**: 2/3 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 26-01-PLAN.md — Seed and launch kit: moving-target feed, in-place launcher runner, L7 deny/kill tracer, prompt v0.3 and the Run-2 variant (wave 1)
-- [ ] 26-02-PLAN.md — Measurement and pre-registration: dup_check, stage_cost, acceptance, README rubric committed before any Opus run (wave 1)
+- [x] 26-01-PLAN.md — Seed and launch kit: moving-target feed, in-place launcher runner, L7 deny/kill tracer, prompt v0.3 and the Run-2 variant (wave 1)
+- [x] 26-02-PLAN.md — Measurement and pre-registration: dup_check, stage_cost, acceptance, README rubric committed before any Opus run (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 26-03-PLAN.md — Run 1 and Run 2 on Opus, measured; rubric applied; README verdict, MANIFEST row 003, STATE routing (wave 2)
@@ -1131,7 +1131,7 @@ Plans:
 | 23. Gate Policy & Auto-Validation | 0/0 | Superseded | 2026-10-14 |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
-| 26. Driver Validation Spike 003 | 0/0 | Not started | - |
+| 26. Driver Validation Spike 003 | 2/3 | In Progress | - |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
