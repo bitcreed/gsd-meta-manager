@@ -1,0 +1,11 @@
+A1 FAIL dispatched rounds=[0]
+A2 FAIL I-01 never parked
+A3 FAIL I-01 never parked
+A4 PASS dispatch-denied=0 cap-tripped=0 state.denied_dispatches=0
+A6 PASS dispatched=1 logged=1 observed=1 denied=0
+A7 PASS DUP=0 workers=1
+A8 NOT-REACHED 0 gaps_found snapshot(s); need 2
+A9 NOT-REACHED no gaps_found observed and no verifier ran
+A10 NOT-REACHED 0 gaps_found snapshot(s); need 2
+SEED STALLED
+RESULT FAIL
