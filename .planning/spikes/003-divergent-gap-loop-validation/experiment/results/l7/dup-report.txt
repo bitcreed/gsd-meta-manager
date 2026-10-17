@@ -1,0 +1,3 @@
+dup_check: sessions=1 workers=1 DUP=0 EXECUTOR_MISSING=0 DRIVER_AGENT_CALLS=2 LOG_DISPATCHED=0 LOG_DENIED=1 SENDMESSAGE=0 driver_check=skipped
+types: general-purpose=1
+worker a1d38db21426fc784 desc="Gap-closure round 2 ping" -

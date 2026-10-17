@@ -1,0 +1,4 @@
+stage_cost: sessions=1 launches=1 priced=yes rates_from=/home/blk/.local/state/gsd-meta-manager/spike-003/smoke1-20261017T022215Z/state/launch-1.jsonl
+stage startup window=02:19:00Z..02:20:27Z driver_usd=0.0097 workers_usd=0.0024 total_usd=0.0122 driver_msgs=11
+TOTAL driver=0.0097 workers=0.0024 total=0.0122 driver_share=80.0%
+CHECK stages_driver_sum=0.0097 driver_total=0.0097 ok
