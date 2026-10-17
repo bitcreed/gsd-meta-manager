@@ -916,7 +916,7 @@ never re-spawn a background agent.
 **Notes**: This is a spike under the spike CONVENTIONS: no `src/` changes, and scratch projects only.
 `[inferred]`: it runs as `/gsd-spike` work tracked by this phase, not as a code phase.
 
-**Plans**: 2/3 plans executed
+**Plans**: 3/3 plans executed
 
 Plans:
 **Wave 1**
@@ -924,7 +924,7 @@ Plans:
 - [x] 26-02-PLAN.md — Measurement and pre-registration: dup_check, stage_cost, acceptance, README rubric committed before any Opus run (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 26-03-PLAN.md — Run 1 and Run 2 on Opus, measured; rubric applied; README verdict, MANIFEST row 003, STATE routing (wave 2)
+- [x] 26-03-PLAN.md — Run 1 and Run 2 on Opus, measured; rubric applied; README verdict, MANIFEST row 003, STATE routing (wave 2)
 
 ### Phase 27: driverctl & Driver Frontmatter
 
@@ -1131,7 +1131,7 @@ Plans:
 | 23. Gate Policy & Auto-Validation | 0/0 | Superseded | 2026-10-14 |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
-| 26. Driver Validation Spike 003 | 2/3 | In Progress | - |
+| 26. Driver Validation Spike 003 | 3/3 | In Progress | - |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
