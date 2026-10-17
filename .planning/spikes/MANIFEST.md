@@ -30,6 +30,12 @@ plus `systemd-run --user --scope`.
   from the driver's account. Prompt rules stay the first line of defence.
 - (spike 002) The sandbox never receives a refresh token. The host `~/.claude` is read-only and its
   secrets are masked.
+- (spike 003, verdict INCONCLUSIVE) Prompt v0.3's round-numbering (D1), finding-granularity (D3), divergence-precedence (D1c),
+  needs-human-on-park (D2) and OQ-R1 wording is Phase 29's stop-rule-precedence input; D1 and D2 behaved as written in a real
+  Opus run, D1c, D3 and OQ-R1 were not exercised.
+- (spike 003, observation) One verifier re-write of `VERIFICATION.md` made the launcher count a third gap after a single gap round
+  (gap count 3, two verifier runs); a divergence signal must not depend on the raw file-hash count. The headless driver also ended
+  its session with a worker unreported in one of two Opus launches. Both need a seed/instrument redesign before Phase 27.
 
 ## Spikes
 
@@ -37,3 +43,4 @@ plus `systemd-run --user --scope`.
 |---|------|------|------|-----------|---------|------|
 | 001 | queue-driven-master-agent | queue-driven-master-agent | standard | Given a direction file, when a headless master dispatches one worker per step and decides on done-when and budget, then items complete, file steering works, and interrupted runs reconcile, with no tmux | PARTIAL | driver, autonomy, v2.0, headless, bwrap, reconciliation |
 | 002 | queue-driven-master-agent | launcher-caps-and-tool-frontmatter | standard | Given the 001 driver on a real GSD project with a planted unclosable gap, when a launcher owns the lock, per-run CLAUDE_CONFIG_DIR and hard caps, and a tool writes log and status frontmatter, then the run parks within 2 gap rounds, caps trip mechanically, the host login is untouched, and human edits are never lost | PARTIAL | driver, launcher, caps, bwrap, claude-config-dir, oauth, frontmatter, single-writer |
+| 003 | queue-driven-master-agent | divergent-gap-loop-validation | standard | Given the unmodified spike-002 launcher and driverctl and a v0.3 Opus driver on a real GSD scratch project whose verifier criterion tests a feed that advances after every plan SUMMARY commit, when it runs gap closure, then it dispatches rounds 1 and 2, parks needs-human with rule divergence at the third gaps_found without any launcher deny, a prompt-rule-disabled run is stopped by the launcher gap cap at L+1/L+2, no planner or executor runs twice, and the Opus driver cost per stage and per phase is measured | PARTIAL | driver, gap-loop, divergence, async-agent, launcher-caps, cost |

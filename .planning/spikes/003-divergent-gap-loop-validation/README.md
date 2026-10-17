@@ -4,7 +4,7 @@ idea: queue-driven-master-agent
 name: divergent-gap-loop-validation
 type: standard
 validates: "Given the unmodified spike-002 launcher and driverctl and a v0.3 Opus driver on a real GSD scratch project whose verifier criterion tests a feed that advances after every plan SUMMARY commit, when it runs gap closure, then it dispatches rounds 1 and 2, parks needs-human with rule divergence at the third gaps_found without any launcher deny, a prompt-rule-disabled run is stopped by the launcher gap cap at L+1/L+2, no planner or executor runs twice, and the Opus driver cost per stage and per phase is measured"
-verdict: PENDING
+verdict: PARTIAL
 related: [001, 002]
 tags: [driver, gap-loop, divergence, async-agent, launcher-caps, cost, bwrap]
 ---
@@ -207,9 +207,178 @@ Each is a call made without the operator; all are open to audit.
 
 ## Results
 
-Recorded by plan 26-03 after the runs. Until then no number in this README is a measurement.
+All numbers below were read from the committed files under `experiment/results/<label>/` (cited per row or
+per section). Costs are list-price equivalents (`total_cost_usd`), not charges: the host is on a subscription.
+Scratch roots (not in the repo): `~/.local/state/gsd-meta-manager/spike-003/{l7,smoke1,smoke2,run1,run1b}-<utc>/`.
+
+### Run table
+
+"Dispatches" is LOG `dispatched` lines / `hook_dispatches` / `denied_dispatches` from `state.json`.
+
+| label | model | launches (relaunches) | dispatches | rounds dispatched | highest gap-observed | park rule | needs-human | dispatch-denied | cap-tripped | DUP | list price |
+|-------|-------|----------------------|------------|-------------------|----------------------|-----------|-------------|-----------------|-------------|-----|------------|
+| l7 | haiku (scripted) | 1 (0) | 0 / 1 / 1 | scripted | 4 | none (stopped by launcher) | no | 1 | 1 (`gap_rounds` 4/2) | 0 (`driver_check=skipped`) | $0.0122 (stage-cost.txt, priced via smoke1 rates; killed launch has no result event) |
+| smoke1 | haiku | 1 (0) | 0 / 0 / 1 | none | 0 | `launcher-cap` | yes | 1 | 0 | n/a | $0.0088 (launcher-result-1.json) |
+| smoke2 | haiku | 1 (0) | 0 / 0 / 1 | none | 1 (stand-in write) | `launcher-cap` | no | 1 | 0 | n/a | $0.0083 (launcher-result-1.json) |
+| run1 | opus | 1 (0) | 4 / 4 / 0 | 0, 1 | 3 | `gap-rounds` | yes | 0 | 0 | 0 (workers=4) | $5.1667 |
+| run1b | opus | 1 (0) | 1 / 1 / 0 | 0 | 0 (none observed) | none; launcher status `crashed` | no | 0 | 0 | 0 (workers=1) | $2.6120 |
+| run2 | - | not launched | - | - | - | - | - | - | - | - | - (`results/run2/SKIPPED.txt`) |
+
+Sources: `results/<label>/{state.json,LOG.md,dup-report.txt,stage-cost.txt,launcher-result-1.json}`.
+Measured list-price total of the real (Opus) launches: $5.1667 + $2.6120 = $7.7787; with the three Haiku
+runs the whole phase is $7.8080 against the $60 campaign ceiling.
+
+### Run 1 attempts
+
+- **run1** (`results/run1/acceptance.txt`): A1 FAIL (`rounds=[0, 1]`), A2 PASS, A3 FAIL (`rule=gap-rounds`),
+  A4 PASS, A6 PASS, A7 PASS, A8 PASS (3/7/7 cases), A9 FAIL (`gap-observed max count=3` vs `gsd-verifier=2`),
+  A10 FAIL (`gens=[1, 2, 2]`), `SEED STALLED`, `RESULT FAIL`. The driver read the moving gap as closable,
+  ran `/gsd-plan-phase 1 --gaps` and `/gsd-execute-phase 1 --gaps-only` (round 1), and parked at the launcher's
+  third `gap-observed`, naming `gap-rounds`, not `divergence`. A second gap round was never dispatched.
+- **run1b** (`results/run1b/acceptance.txt`): the pre-registered as-is retry for STALLED (nothing changed;
+  `PROMPT_SHA256` equals run1's). The launcher closed it as `status=crashed`, `reason=driver exited rc=0
+  without RUN end` (`results/run1b/launcher-result-1.json`) after the single round-0 planning dispatch and
+  before any `report`: A1 FAIL (`rounds=[0]`), A2 FAIL, A3 FAIL, A4 PASS, A6 PASS, A7 PASS, A8/A9/A10
+  NOT-REACHED, `SEED STALLED`, `RESULT FAIL`.
+- Neither attempt counts as "the Run 1": the retry rule allows one retry and run1b was not VALID either, so
+  there is no Run 1 whose checks can be judged against the rubric's design conditions (see Verdict).
+- `cmp` of every results `LOG.md` and `state.json` against its run-dir copy printed no difference for run1 and
+  run1b. The rubric block did not change: `prereg.txt` is committed before `results/run1/` and `rubric-check` prints `RUBRIC-UNCHANGED`.
+
+## Cost
+
+Each table is copied from the named stage-cost.txt (stage windows come from LOG event timestamps; worker cost is
+the whole subtree of each top-level worker, bucketed by the worker's first timestamp).
+
+**Run 1** (`results/run1/stage-cost.txt`, `CHECK ... ok`):
+
+| stage | window (UTC) | driver | workers | total |
+|-------|--------------|--------|---------|-------|
+| startup | 02:39:46-02:40:08 | $0.1270 | $0.0000 | $0.1270 |
+| plan-r0 | 02:40:08-02:44:16 | $0.1015 | $0.7632 | $0.8648 |
+| execute-r0 | 02:44:16-02:48:45 | $0.1215 | $1.5200 | $1.6414 |
+| plan-r1 | 02:48:45-02:54:35 | $0.1508 | $1.2250 | $1.3758 |
+| execute-r1 | 02:54:35-02:57:50 | $0.2208 | $0.9040 | $1.1248 |
+| close | 02:57:50-02:57:57 | $0.0329 | $0.0000 | $0.0329 |
+| **TOTAL** | | **$0.7545** | **$4.4122** | **$5.1667** |
+
+Per driven phase (`PER_PHASE`): phase 1 driver $0.5947, workers $4.4122, total $5.0068 (the remaining driver
+$0.1598 is the startup and close stages, not attributable to a phase). Opus driver share 14.6 %.
+
+**Run 1b** (`results/run1b/stage-cost.txt`, `CHECK ... ok`): startup driver $0.1842; plan-r0 driver $0.1328,
+workers $2.2950, total $2.4278; TOTAL driver $0.3170, workers $2.2950, total $2.6120, driver share 12.1 %;
+phase 1 driver $0.1328, workers $2.2950 (partial: the worker was still running when the session ended).
+
+**Baseline.** Spike 002's real runs: driver $1.39 of $6.17 (23 %) (`002/README.md` § Cost). Both measured Opus
+driver shares here (14.6 % and 12.1 %) are lower, on different workloads (spike 002 parked on sight; run1 ran
+two plan/execute pairs). Run 2 was not run, so no prompt-rule-disabled cost exists.
+
+Per-launch `cost_split.py` output is kept as `results/<label>/cost-launch-1.txt` (`subagent_transcripts=11` for
+run1 and `=2` for run1b); see Findings for why this differs from the worker counts.
+
+## Evidence sources
+
+- **VALID-02 launcher deny at L+1 (A5-deny).** Run 2 was not run. The only deny evidence is the scripted Haiku
+  driver in `results/l7` (L7-4 PASS: first `dispatch-denied` after `count=3`, reason `failed verification 3 times`).
+  It is scripted, not an organic Opus trip, and is not claimed as one.
+- **VALID-02 launcher kill at L+2 (A5-kill).** Not-reached by an Opus run; the kill evidence is `results/l7`
+  L7-5 PASS (`cap-tripped | cap=gap_rounds | used=4 | limit=2` after `count=4`, `launch-end tripped=gap_rounds`).
+  The count-4 write there is the scripted driver's, not a stand-in and not organic. No Run 2 stand-in exists.
+- **VALID-01 / divergence naming.** No run shows `rule=divergence` (run1 A3 FAIL, run1b never parked).
+
+## Findings
+
+1. **The moving target works as a seed against a real Opus driver.** Across two gaps_found snapshots the
+   verifier named new failing cases (`results/run1/acceptance.txt` A8 PASS, 3/7/7 cases), the feed advanced
+   after SUMMARY commits (`results/run1/drift.log`: `gen=1` 02:46:23Z, `gen=2` 02:55:56Z), and the Opus driver
+   dispatched a gap round on it instead of recognising it (SEED was not RECOGNISED; `results/run1/LOG.md`
+   `round=1` dispatches).
+2. **The launcher's gap count counts file-hash changes, not verifier runs.** In run1 `gap-observed count=2`
+   (02:57:04Z) and `count=3` (02:57:12Z) fired 8 s apart for one gap round (`results/run1/LOG.md`); the scratch
+   history shows a `docs(01): re-verify phase 1 after gap closure` commit rewriting `01-VERIFICATION.md`
+   (`results/run1/scratch-git-log.txt`), and `results/run1/dup-report.txt` shows `gsd-verifier=2` for count 3
+   (A9 FAIL). The two snapshots are both `gen=2` with different hashes (`results/run1/drift.log`; A10 FAIL).
+   The driver noted "counts 2+3 8s apart likely one re-verify" in its own park line and parked `gap-rounds`
+   because the launcher count (3/2) is authoritative. Consequence for design: a divergence check that depends on
+   `gap-observed` order is broken by one verifier re-write.
+3. **v0.3 clause outcomes.** D1 (round numbering) held: run1 used `round=0` for the first plan/execute and
+   `round=1` for the gap pair (`results/run1/LOG.md`). D2 (needs-human on a gap-rounds park) held: a
+   `needs-human` line followed the park. D1c (divergence precedence) and D3 (finding granularity) were not
+   exercised to a decision: the park came from the launcher count before a third distinct finding existed.
+   OQ-R1 wording was not exercised.
+4. **A9, A10, A11.** A9 FAIL and A10 FAIL in run1 (Finding 2), NOT-REACHED in run1b. A11 was never measured
+   (Run 2 not run).
+5. **The headless driver can end its session while a worker is still running.** In run1b the driver dispatched
+   the round-0 plan worker and ended its turn; the session exited rc=0 without `RUN end`, the worker's report was
+   never logged and the launcher recorded `crashed` (`results/run1b/state.json`, `launcher-result-1.json`).
+   The launch stream (not committed) shows the driver's last turns acknowledging the nested planner's result
+   notification and saying it was waiting for the worker's own report. This is the async-agent wake-up hazard in
+   an unfavourable instance; it occurred in one of two Opus launches and was not reproduced.
+6. **Duplicates.** `DUP=0`, `EXECUTOR_MISSING=0`, `SENDMESSAGE=0` for run1 (workers=4: planner 2, executor 2,
+   verifier 2, code-reviewer 1, `results/run1/dup-report.txt`) and run1b (workers=1, `results/run1b/dup-report.txt`).
+   No stall-watch observation (RESEARCH Pitfall 8) is recorded by any instrument.
+7. **cost_split.py vs dup_check.py worker counts.** `cost_split.py` counts every subagent transcript,
+   nested ones included (run1 11, run1b 2), and cannot see agent types; `dup_check.py` counts top-level workers
+   (run1 4, run1b 1) and types them. The two numbers are not comparable.
+8. **Environment.** Claude Code `2.1.302`; scrubbed names `CLAUDECODE, CLAUDE_CODE_BRIDGE_SESSION_ID,
+   CLAUDE_CODE_CHILD_SESSION, CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING, CLAUDE_CODE_ENTRYPOINT,
+   CLAUDE_CODE_EXECPATH, CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_CODE_MESSAGING_TOKEN,
+   CLAUDE_CODE_SESSION_ATTENDED, CLAUDE_CODE_SESSION_ID, CLAUDE_EFFORT, CLAUDE_PID`
+   (`results/run1/run-env.txt` and `results/run1b/run-env.txt`, identical). No auth relaunch (`RELAUNCHES=0`).
+9. **Truncated reports.** One run1 report carries `truncated=yes` (`results/run1/LOG.md`, `report | status=partial`,
+   02:57:36Z): the report tool's own flag. No `rtk` string appears in either LOG; whether rtk shortened a worker's
+   output inside the driven run cannot be told from the committed files.
+
+## Verdict
+
+Rubric: `acceptance.py rubric-check` printed `RUBRIC-UNCHANGED` against `PREREG_SHA=4ba61955a3a847a5005af2ec17d6771479d5f0ed`
+(`results/prereg.txt`). Applied in the pre-registered precedence.
+
+**NO-GO** (evaluated on a Run 1 whose SEED is VALID; none exists, see the inferred reading below):
+
+- (a) round of 3 or higher dispatched: not held. `results/run1/acceptance.txt` A1 `rounds=[0, 1]`; `results/run1b/acceptance.txt` A1 `rounds=[0]`.
+- (b) A4 FAIL while A9 PASS: not held. A4 PASS in both (`results/run1/acceptance.txt`, `results/run1b/acceptance.txt`).
+- (c) A7 FAIL: not held. A7 PASS in both (`DUP=0`, `results/run1/dup-report.txt`, `results/run1b/dup-report.txt`).
+- (d) A3 FAIL while A8 PASS: literal reading held for run1 only (A3 FAIL `rule=gap-rounds`, A8 PASS); not held for run1b (A8 NOT-REACHED). Not applied, see below.
+- (e) A2 FAIL: literal reading held for run1b only (A2 FAIL `I-01 never parked`, launcher `crashed`); not held for run1 (A2 PASS). Not applied, see below.
+
+**INCONCLUSIVE:**
+
+- SEED not VALID on both Run 1 attempts: **held.** `results/run1/acceptance.txt` `SEED STALLED`; `results/run1b/acceptance.txt` `SEED STALLED`.
+- Run 1's rule not divergence with A8 UNDETERMINED: not held. A8 PASS in run1, NOT-REACHED in run1b (not UNDETERMINED).
+- A run could not complete after its allowed relaunches: **held** [inferred]. run1b ended `crashed` (`results/run1b/launcher-result-1.json`); `RELAUNCHES=0` because run.sh relaunches only on auth revocation.
+- Campaign ceiling stopped the campaign before Run 2: not held. $7.8080 measured against $60; Run 2 was skipped because of the SEED condition (`results/run2/SKIPPED.txt`).
+
+**ADJUST** (J1-J5) and **GO** are preempted by the INCONCLUSIVE conditions above and not decided. Observations that
+would have triggered them on run1 had it counted, recorded for the redesign and not as carried items: J2 (A9
+FAIL, `results/run1/acceptance.txt`) and J5 (parked after round 1 with A4 PASS). J1, J3 and J4 are unevaluated: J1
+and J3 need Run 2, J4 had no A7 FAIL.
+
+**[inferred] Reading of precedence.** NO-GO is evaluated before INCONCLUSIVE, and (d) and (e) can be satisfied by
+a STALLED run: run1's A3 FAIL follows a measurement artefact (Finding 2: the same artefact fails A9 and A10), and
+run1b's A2 FAIL follows a session that ended after one dispatch with no gap evidence at all. The rubric itself
+defines STALLED as "crash, auth, cap before round 1" and routes a non-VALID seed after the retry to INCONCLUSIVE;
+applying (d) or (e) to a STALLED run would make that route unreachable for any crash. This README therefore judges
+the NO-GO conditions only on a Run 1 whose SEED is VALID, and there is none. A reader who applies (d) to run1 or (e)
+to run1b literally gets NO-GO; the routing (a STATE.md blocker that holds Phase 27) is identical for both labels.
+
+**Verdict for Phases 27-31: INCONCLUSIVE**
+
+Carried (any non-NO-GO verdict): prompt v0.3's D1, D3, D1c, D2 and OQ-R1 wording is Phase 29's stop-rule-precedence
+input (Finding 3: D1 and D2 behaved as written; D1c, D3 and OQ-R1 untested). The routing is a seed and instrument
+redesign before Phase 27: (i) make the divergence signal robust to a verifier re-write, for example by deduplicating
+snapshots within a few seconds and counting gaps per verifier run (A9, A10 and the launcher count all assumed one
+VERIFICATION write per verifier run, RESEARCH A5); (ii) understand the round-0 wake-up failure in run1b before
+trusting the "wait, never re-spawn" rule. Neither change was made in this phase, and the rubric block is not
+adapted to these results.
 
 ## Not validated
 
 The spike-002 list stays open: setup-token authentication, macOS, interactive mode, parallel items, and
 rate-limit exhaustion.
+
+Added by this spike: every NOT-REACHED or UNDETERMINED check and every check the runs never reached. Round 2
+dispatch (A1) and divergence naming (A3) were never observed; A8, A9 and A10 are NOT-REACHED in run1b; Run 2's
+A5-deny, A5-kill, A11 and A7 were never measured, so the launcher deny at L+1 and kill at L+2 are shown only by
+the scripted L7 run; the organic gap-rounds-versus-divergence precedence (D1c) was never exercised; and the
+wait-never-respawn rule over a complete loop was not demonstrated (run1b ended with the worker unreported).
