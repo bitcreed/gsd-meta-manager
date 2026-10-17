@@ -916,10 +916,15 @@ never re-spawn a background agent.
 **Notes**: This is a spike under the spike CONVENTIONS: no `src/` changes, and scratch projects only.
 `[inferred]`: it runs as `/gsd-spike` work tracked by this phase, not as a code phase.
 
-**Plans**: 0 plans
+**Plans**: 3 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 26 to break down)
+**Wave 1**
+- [ ] 26-01-PLAN.md — Seed and launch kit: moving-target feed, in-place launcher runner, L7 deny/kill tracer, prompt v0.3 and the Run-2 variant (wave 1)
+- [ ] 26-02-PLAN.md — Measurement and pre-registration: dup_check, stage_cost, acceptance, README rubric committed before any Opus run (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 26-03-PLAN.md — Run 1 and Run 2 on Opus, measured; rubric applied; README verdict, MANIFEST row 003, STATE routing (wave 2)
 
 ### Phase 27: driverctl & Driver Frontmatter
 
