@@ -1,0 +1,4 @@
+session 59258af2-4bbe-44ec-b7d2-1fafe9396351  total_cost_usd=0.008  turns=7  duration_s=19  subagent_transcripts=0
+  driver   est $0.008
+     claude-haiku-5-5             $  0.008  in=12 out=2706 cache_read=177021 cache_write=25707
+  workers  est $0.000

@@ -1,0 +1,11 @@
+69da1a5 chore: scratch GSD project (slugkit)
+ .gitignore                                |  2 ++
+ .planning/PROJECT.md                      | 16 +++++++++++++
+ .planning/REQUIREMENTS.md                 | 15 ++++++++++++
+ .planning/ROADMAP.md                      | 40 +++++++++++++++++++++++++++++++
+ .planning/STATE.md                        | 33 +++++++++++++++++++++++++
+ .planning/config.json                     | 24 +++++++++++++++++++
+ .planning/phases/01-slugify/01-CONTEXT.md |  8 +++++++
+ README.md                                 |  3 +++
+ slugkit/__init__.py                       |  1 +
+ 9 files changed, 142 insertions(+)

@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # Spike 003 runner: one scratch project + host feed watcher + the unmodified spike-002 launcher.
-# Usage: run.sh <mode>        mode: l7
-#   l7 = scripted Haiku driver (cap test L7): feed-visibility probe, gap writes 1-4, allow at the
-#        gap cap, deny at cap+1, kill at cap+2. (More modes are added by the next task.)
+# Usage: run.sh <mode>        mode: l7 | smoke1 | smoke2 | run1 | run2
+#   l7     scripted Haiku driver (cap test L7): feed-visibility probe, gap writes 1-4, allow at the
+#          gap cap, deny at cap+1, kill at cap+2.
+#   smoke1 Haiku, prompt v0.3, dispatch cap 0 (first dispatch is denied): proves the driver starts.
+#   smoke2 as smoke1 with the Run-2 prompt/DIRECTION and the kill stand-in on.
+#   run1   Opus, prompt v0.3 (gap-round and divergence rules on), run-1 DIRECTION.
+#   run2   Opus, Run-2 prompt/DIRECTION (rules removed), kill stand-in on.
+#   Kill stand-in (smoke2/run2): after the first `dispatch-denied` it waits for the item to park (or
+#   60 s) and then runs spike 002's gap-writer.sh once, writing one more gaps_found. This stands in
+#   for "a worker already in flight writes a fourth verification" and is labelled in standin.log.
 # Env:  SCRATCH_ROOT  default ${XDG_STATE_HOME:-$HOME/.local/state}/gsd-meta-manager/spike-003/<label>-<utc>
 #       RESULTS_LABEL default = mode; the run id is s003-<label>
 #       MODEL         overrides the mode table's model
@@ -16,7 +23,8 @@ set -euo pipefail
 SELF="$(cd "$(dirname "$0")" && pwd)"
 S3="$(cd "$SELF/.." && pwd)"
 S2="$(cd "$S3/../002-launcher-caps-and-tool-frontmatter" && pwd)"
-USAGE="Usage: run.sh <l7>   (env: SCRATCH_ROOT RESULTS_LABEL MODEL RELAUNCH)"
+USAGE="Usage: run.sh <l7|smoke1|smoke2|run1|run2>   (env: SCRATCH_ROOT RESULTS_LABEL MODEL RELAUNCH)"
+export PYTHONDONTWRITEBYTECODE=1
 
 MODE="${1:-}"
 STANDIN=0
@@ -24,9 +32,26 @@ case "$MODE" in
   l7)
     MODEL_D=haiku; PROMPT="$S3/experiment/cap-tests/L7-drift-gap-cap.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
     CAP_D=5; CAP_M=5; CAP_G=2; BUDGET=1 ;;
+  smoke1)
+    MODEL_D=haiku; PROMPT="$S3/MASTER-PROMPT.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
+    CAP_D=0; CAP_M=5; CAP_G=2; BUDGET=1 ;;
+  smoke2)
+    MODEL_D=haiku; PROMPT="$S3/experiment/MASTER-PROMPT.run2.md"; DIRECTION="$S3/templates/DIRECTION.run2.md"
+    CAP_D=0; CAP_M=5; CAP_G=2; BUDGET=1; STANDIN=1 ;;
+  run1)
+    MODEL_D=opus; PROMPT="$S3/MASTER-PROMPT.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
+    CAP_D=10; CAP_M=90; CAP_G=2; BUDGET=15 ;;
+  run2)
+    MODEL_D=opus; PROMPT="$S3/experiment/MASTER-PROMPT.run2.md"; DIRECTION="$S3/templates/DIRECTION.run2.md"
+    CAP_D=10; CAP_M=90; CAP_G=2; BUDGET=15; STANDIN=1 ;;
   *) echo "$USAGE" >&2; exit 2 ;;
 esac
 MODEL="${MODEL:-$MODEL_D}"
+# The Run-2 files are asserted derivations of the v0.3 prompt; refuse to launch on drift.
+if [ "$STANDIN" = 1 ] && ! python3 -I "$S3/tools/make_variant.py" --check >&2; then
+  echo "run.sh: make_variant.py --check reports drift" >&2
+  exit 7
+fi
 LABEL="${RESULTS_LABEL:-$MODE}"
 RUN_ID="s003-$LABEL"
 RES="$S3/experiment/results/$LABEL"
@@ -94,28 +119,62 @@ if [ "${RELAUNCH:-0}" != 1 ]; then
   bash "$SELF/setup-scratch.sh" "$PROJECT" "$RUN_ID" "$DIRECTION" > "$SCRATCH_ROOT/setup.out"
 fi
 
+# Kill stand-in (smoke2/run2): see header. Runs as a background subshell; never touches launcher.py.
+standin_loop() {
+  local log="$RUN_DIR/LOG.md" ln="" t0 trig=timeout
+  while [ -z "$ln" ]; do
+    ln="$(grep -nF '| RUN | dispatch-denied |' "$log" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+    [ -n "$ln" ] || sleep 0.5
+  done
+  t0="$(date +%s)"
+  while [ $(( $(date +%s) - t0 )) -lt 60 ]; do
+    if tail -n +"$((ln + 1))" "$log" | grep -F '| I-01 | status | state=parked' >/dev/null; then trig=parked; break; fi
+    sleep 0.5
+  done
+  bash "$S2/experiment/cap-tests/gap-writer.sh" "$PROJECT" 1 0 > /dev/null
+  echo "$(date -u +%FT%TZ) trigger=$trig wrote gaps_found via gap-writer.sh" >> "$SCRATCH_ROOT/standin.log"
+}
+
+cred_expiry() {
+  python3 -I -c 'import json,os;print(json.load(open(os.path.expanduser("~/.claude/.credentials.json")))["claudeAiOauth"]["expiresAt"])'
+}
+
 # (e) host feed watcher for the life of the launch
 python3 -I "$S3/tools/drift.py" watch --project "$PROJECT" --log "$SCRATCH_ROOT/drift.log" \
   --snapshots "$SCRATCH_ROOT/verification" > "$SCRATCH_ROOT/watch.out" 2>&1 &
 WATCH_PID=$!
+if [ "$STANDIN" = 1 ]; then standin_loop & STANDIN_PID=$!; fi
 
-# (f) launch under a CLAUDE*/ANTHROPIC*-scrubbed environment
+# (f) launch under a CLAUDE*/ANTHROPIC*-scrubbed environment; relaunch after an auth failure
 mkdir -p "$STATE_DIR"
 N=$(( $(find "$STATE_DIR" -maxdepth 1 -name "launch-*.jsonl" | wc -l) + 1 ))
-set +e
-env "${SCRUB[@]}" python3 "$S2/tools/launcher.py" run --project "$PROJECT" --run-id "$RUN_ID" --model "$MODEL" \
-  --loop-mode loop --cap-dispatches "$CAP_D" --cap-minutes "$CAP_M" --cap-gap-rounds "$CAP_G" \
-  --max-budget-usd "$BUDGET" --state-dir "$STATE_DIR" --prompt-file "$PROMPT" \
-  > "$SCRATCH_ROOT/launcher-result-$N.json" 2> "$SCRATCH_ROOT/launcher-stderr-$N.txt"
-LRC=$?
-set -e
+while :; do
+  EXP0="$(cred_expiry)"
+  set +e
+  env "${SCRUB[@]}" python3 "$S2/tools/launcher.py" run --project "$PROJECT" --run-id "$RUN_ID" --model "$MODEL" \
+    --loop-mode loop --cap-dispatches "$CAP_D" --cap-minutes "$CAP_M" --cap-gap-rounds "$CAP_G" \
+    --max-budget-usd "$BUDGET" --state-dir "$STATE_DIR" --prompt-file "$PROMPT" \
+    > "$SCRATCH_ROOT/launcher-result-$N.json" 2> "$SCRATCH_ROOT/launcher-stderr-$N.txt"
+  LRC=$?
+  set -e
+  if [ "$RELAUNCHES" -lt 2 ] && [ -f "$STATE_DIR/launch-$N.jsonl" ] \
+     && grep -qE 'OAuth token revoked|Failed to authenticate' "$STATE_DIR/launch-$N.jsonl" \
+     && grep -q '"tripped": null' "$SCRATCH_ROOT/launcher-result-$N.json" 2>/dev/null; then
+    waited=0
+    while [ "$(cred_expiry)" = "$EXP0" ] && [ "$waited" -lt 1800 ]; do sleep 60; waited=$((waited + 60)); done
+    if [ "$(cred_expiry)" != "$EXP0" ]; then
+      RELAUNCHES=$((RELAUNCHES + 1)); N=$((N + 1)); continue
+    fi
+  fi
+  break
+done
 sleep 2    # let the watcher take its last poll before it is stopped
 
 # (g) derived outputs only
 cp "$RUN_DIR/LOG.md" "$RUN_DIR/state.json" "$RUN_DIR/DIRECTION.md" "$RES/" 2>/dev/null || true
 cp "$SCRATCH_ROOT/drift.log" "$RES/" 2>/dev/null || true
 [ -d "$SCRATCH_ROOT/verification" ] && cp -r "$SCRATCH_ROOT/verification" "$RES/verification" || true
-cp "$SCRATCH_ROOT/launcher-result-$N.json" "$RES/" 2>/dev/null || true
+cp "$SCRATCH_ROOT"/launcher-result-*.json "$RES/" 2>/dev/null || true
 [ -f "$SCRATCH_ROOT/standin.log" ] && cp "$SCRATCH_ROOT/standin.log" "$RES/" || true
 git -C "$PROJECT" log --oneline --stat > "$RES/scratch-git-log.txt" 2>&1 || true
 for f in "$STATE_DIR"/launch-*.jsonl; do

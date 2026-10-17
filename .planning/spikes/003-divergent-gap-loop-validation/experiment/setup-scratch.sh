@@ -10,7 +10,7 @@ SELF="$(cd "$(dirname "$0")" && pwd)"
 S3="$SELF/.."
 S2="$S3/../002-launcher-caps-and-tool-frontmatter"
 [ "$#" -eq 3 ] || { echo "Usage: setup-scratch.sh <project-dir> <run-id> <direction-template>" >&2; exit 2; }
-P="$1"; RUN_ID="$2"; TEMPLATE="$3"
+P="$1"; RUN_ID="$2"; TEMPLATE="$(cd "$(dirname "$3")" && pwd)/$(basename "$3")"
 case "$P" in /?*) ;; *) echo "setup-scratch: project dir must be absolute" >&2; exit 2 ;; esac
 [ "$P" != "/" ] || exit 2
 rm -rf "$P"; mkdir -p "$P/.planning/phases/01-slugify" "$P/slugkit"
@@ -184,5 +184,5 @@ if [ -n "$(git -C "$P" remote)" ]; then echo "setup-scratch: scratch repo must n
 
 DIRECTION="$(mktemp)"
 sed "s/{run-id}/$RUN_ID/g" "$TEMPLATE" > "$DIRECTION"
-python3 -I "$S2/tools/launcher.py" init --project "$P" --run-id "$RUN_ID" --direction "$DIRECTION"
+python3 -I -B "$S2/tools/launcher.py" init --project "$P" --run-id "$RUN_ID" --direction "$DIRECTION"
 rm -f "$DIRECTION"

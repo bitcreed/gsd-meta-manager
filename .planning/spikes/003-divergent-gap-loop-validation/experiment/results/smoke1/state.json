@@ -1,0 +1,97 @@
+{
+ "schema": 1,
+ "run_id": "s003-smoke1",
+ "project_root": "/home/blk/.local/state/gsd-meta-manager/spike-003/smoke1-20261017T022215Z/project",
+ "status": "parked",
+ "status_reason": "driver:all-parked",
+ "created_at": "2026-10-17T02:22:16Z",
+ "updated_at": "2026-10-17T02:22:40Z",
+ "launches": 1,
+ "current": {
+  "item": "I-01",
+  "phase": "1",
+  "step": "/gsd-plan-phase 1"
+ },
+ "items": {
+  "I-01": {
+   "state": "parked",
+   "outcome": "dispatch denied by launcher cap (dispatches 0/0); item budget says 8; no worker ran",
+   "dispatches": 1,
+   "first_dispatch_at": "2026-10-17T02:22:26Z",
+   "findings": []
+  }
+ },
+ "connections": [
+  {
+   "role": "launcher",
+   "state": "disconnected",
+   "pid": 1417919,
+   "host": "mediabox",
+   "started_at": "2026-10-17T02:22:16Z",
+   "last_heartbeat": "2026-10-17T02:22:34Z",
+   "mode": "bwrap",
+   "scope_unit": "gsdmm-s003-smoke1-1792203736.scope"
+  },
+  {
+   "role": "driver",
+   "state": "disconnected",
+   "session_id": "49d82cb6-99fc-40d0-b567-d16de8b1f888",
+   "model": "haiku",
+   "mode": "headless",
+   "pid": 1417923,
+   "scope_unit": "gsdmm-s003-smoke1-1792203736.scope",
+   "host": "mediabox",
+   "started_at": "2026-10-17T02:22:16Z",
+   "last_heartbeat": "2026-10-17T02:22:38Z"
+  }
+ ],
+ "caps": {
+  "dispatches": {
+   "used": 0,
+   "limit": 0
+  },
+  "wall_clock_min": {
+   "used": 0.4,
+   "limit": 5
+  },
+  "gap_rounds": {
+   "limit": 2,
+   "per_phase": {},
+   "seen": {}
+  }
+ },
+ "hook_dispatches": 0,
+ "denied_dispatches": 1,
+ "last_event": {
+  "at": "2026-10-17T02:22:40Z",
+  "item": "RUN",
+  "event": "launch-end",
+  "summary": "rc=0 cost_usd=0.008837010000000001 status=parked"
+ },
+ "cost": [
+  {
+   "launch": 1,
+   "total_cost_usd": 0.008837010000000001,
+   "subtype": "success",
+   "num_turns": 6,
+   "duration_s": 21,
+   "session_id": "49d82cb6-99fc-40d0-b567-d16de8b1f888",
+   "by_model": {
+    "claude-haiku-5-5": {
+     "cost_usd": 0.008837010000000001,
+     "in": 12,
+     "out": 3205,
+     "cache_read": 182491,
+     "cache_write": 27042
+    }
+   }
+  }
+ ],
+ "ended_by_driver": true,
+ "auth": {
+  "mode": "env-access-token",
+  "expires_at": "2026-10-17T06:50:41Z",
+  "minutes_left_at_launch": 268.4
+ },
+ "active_seconds": 24.023540258407593
+}

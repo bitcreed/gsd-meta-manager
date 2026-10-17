@@ -1,0 +1,104 @@
+{
+ "schema": 1,
+ "run_id": "s003-smoke2",
+ "project_root": "/home/blk/.local/state/gsd-meta-manager/spike-003/smoke2-20261017T022242Z/project",
+ "status": "parked",
+ "status_reason": "driver:all-parked",
+ "created_at": "2026-10-17T02:22:42Z",
+ "updated_at": "2026-10-17T02:23:02Z",
+ "launches": 1,
+ "current": {
+  "item": "I-01",
+  "phase": "1",
+  "step": "/gsd-plan-phase 1"
+ },
+ "items": {
+  "I-01": {
+   "state": "parked",
+   "outcome": "Dispatch denied by launcher: dispatch cap 0/0; no worker ran",
+   "dispatches": 1,
+   "first_dispatch_at": "2026-10-17T02:22:51Z",
+   "findings": []
+  }
+ },
+ "connections": [
+  {
+   "role": "launcher",
+   "state": "disconnected",
+   "pid": 1419128,
+   "host": "mediabox",
+   "started_at": "2026-10-17T02:22:42Z",
+   "last_heartbeat": "2026-10-17T02:23:00Z",
+   "mode": "bwrap",
+   "scope_unit": "gsdmm-s003-smoke2-1792203762.scope"
+  },
+  {
+   "role": "driver",
+   "state": "disconnected",
+   "session_id": "59258af2-4bbe-44ec-b7d2-1fafe9396351",
+   "model": "haiku",
+   "mode": "headless",
+   "pid": 1419132,
+   "scope_unit": "gsdmm-s003-smoke2-1792203762.scope",
+   "host": "mediabox",
+   "started_at": "2026-10-17T02:22:42Z",
+   "last_heartbeat": "2026-10-17T02:23:01Z"
+  }
+ ],
+ "caps": {
+  "dispatches": {
+   "used": 0,
+   "limit": 0
+  },
+  "wall_clock_min": {
+   "used": 0.3,
+   "limit": 5
+  },
+  "gap_rounds": {
+   "limit": 2,
+   "per_phase": {
+    "1": 1
+   },
+   "seen": {
+    "dbe509f85f80a8b7": {
+     "phase": "1",
+     "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+    }
+   }
+  }
+ },
+ "hook_dispatches": 0,
+ "denied_dispatches": 1,
+ "last_event": {
+  "at": "2026-10-17T02:23:02Z",
+  "item": "RUN",
+  "event": "launch-end",
+  "summary": "rc=0 cost_usd=0.00826581 status=parked"
+ },
+ "cost": [
+  {
+   "launch": 1,
+   "total_cost_usd": 0.00826581,
+   "subtype": "success",
+   "num_turns": 7,
+   "duration_s": 19,
+   "session_id": "59258af2-4bbe-44ec-b7d2-1fafe9396351",
+   "by_model": {
+    "claude-haiku-5-5": {
+     "cost_usd": 0.00826581,
+     "in": 12,
+     "out": 2706,
+     "cache_read": 177021,
+     "cache_write": 25707
+    }
+   }
+  }
+ ],
+ "ended_by_driver": true,
+ "auth": {
+  "mode": "env-access-token",
+  "expires_at": "2026-10-17T06:50:41Z",
+  "minutes_left_at_launch": 268.0
+ },
+ "active_seconds": 20.026302099227905
+}

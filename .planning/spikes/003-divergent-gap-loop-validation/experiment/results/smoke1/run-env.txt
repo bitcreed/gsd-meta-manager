@@ -1,0 +1,21 @@
+MODE=smoke1
+LABEL=smoke1
+RUN_ID=s003-smoke1
+MODEL=haiku
+SCRATCH_ROOT=/home/blk/.local/state/gsd-meta-manager/spike-003/smoke1-20261017T022215Z
+PROJECT=/home/blk/.local/state/gsd-meta-manager/spike-003/smoke1-20261017T022215Z/project
+STATE_DIR=/home/blk/.local/state/gsd-meta-manager/spike-003/smoke1-20261017T022215Z/state
+RUN_DIR=/home/blk/.local/state/gsd-meta-manager/spike-003/smoke1-20261017T022215Z/project/.planning/meta-manager/drivers/s003-smoke1
+PROMPT_FILE=/home/blk/projects/rust/gsd-meta-manager/.planning/spikes/003-divergent-gap-loop-validation/MASTER-PROMPT.md
+PROMPT_SHA256=c675087a71c8498011b2d5b0bb4d68e63e3d206fbf388649e8bd8c9a8791105c
+DIRECTION_FILE=/home/blk/projects/rust/gsd-meta-manager/.planning/spikes/003-divergent-gap-loop-validation/templates/DIRECTION.run1.md
+CAPS=dispatches=0,minutes=5,gap_rounds=2
+MAX_BUDGET_USD=1
+CLAUDE_VERSION=2.1.302 (Claude Code)
+LAUNCHER_SHA256=c9ffc5ac935d459c56533a4965be91386df85444b4961384e5f306d3c09c6783
+DRIVERCTL_SHA256=f42b9819749865e261b993b3ab120908206d2d40aae33502a1a66a3cd4bd743f
+ENV_SCRUBBED=CLAUDECODE,CLAUDE_CODE_BRIDGE_SESSION_ID,CLAUDE_CODE_CHILD_SESSION,CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING,CLAUDE_CODE_ENTRYPOINT,CLAUDE_CODE_EXECPATH,CLAUDE_CODE_MESSAGING_SOCKET,CLAUDE_CODE_MESSAGING_TOKEN,CLAUDE_CODE_SESSION_ATTENDED,CLAUDE_CODE_SESSION_ID,CLAUDE_EFFORT,CLAUDE_PID
+STARTED_UTC=2026-10-17T02:22:15Z
+ENDED_UTC=2026-10-17T02:22:42Z
+LAUNCHER_RC=0
+RELAUNCHES=0
