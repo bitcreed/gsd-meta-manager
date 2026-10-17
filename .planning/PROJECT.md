@@ -69,6 +69,16 @@ Phases 26-31 replace them.*
 
 - **Driver validation (spike 003).** Before any Rust is written, gap rounds 1-2, divergence parking
   and the async no-respawn rule must be shown on a real GSD phase.
+  *Phase 26 (2026-10-16): NOT validated. Spike 003 verdict INCONCLUSIVE. Both Run 1 attempts were
+  SEED STALLED, Run 2 was skipped under the pre-registered rule, and $7.81 of the $60 ceiling was
+  spent. Rounds 1+2, divergence parking and the Opus-tripped launcher cap were never observed
+  (VALID-01 Unproven, VALID-02 Partial: launcher deny L+1 / kill L+2 shown only by a scripted run).
+  Zero duplicate worker dispatches were measured where dispatches occurred.*
+- **Spike 003 redesign or re-plan (emerged, Phase 26).** Before Phase 27 starts, either redesign
+  the seed and instruments, or re-plan Phases 27-31. A redesign needs a divergence signal that
+  survives a verifier re-writing VERIFICATION.md (one gap round was counted twice), and a way to
+  wake the headless driver before a worker reports. See
+  `.planning/spikes/003-divergent-gap-loop-validation/README.md`.
 - **driverctl.** A Rust single writer of the run state and the tool-written frontmatter on
   DIRECTION.md.
 - **Sandboxed launcher.** It provides:
@@ -168,7 +178,9 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | Agent observation via a facts-only `AgentAdapter` seam with `catch_unwind` per adapter and per project (Phase 25) | Runtime metadata formats are third-party and unstable; a failing adapter must degrade a row to git facts, never drop it or fail the scan | ✓ Good — Claude Code adapter added as one module + registry entry |
 | Agent-worktree git reads use `--no-optional-locks` + `GIT_OPTIONAL_LOCKS=0` (Phase 25) | Scanning must never take a lock inside a live agent's worktree (non-intrusive constraint) | ✓ Good — real-worktree test proves the live index is untouched |
 | One running predicate, `AgentLiveness::is_running` (Live/Idle); agents silent > `MAX_AGENT_AGE_SECS` read `Ended` (Phase 25, 25-07) | Orphaned worktrees from aborted runs hijacked the Status cell (CR-01); one predicate stops activation, phase vote and counts from disagreeing | ✓ Good — CR-01/WR-01 resolved; WR-06 shows `fixers.rs` still counts Finished orphans [inferred: follow-up] |
-| v2.0 re-plan (2026-10-14): safety by capability removal + launcher hard caps instead of parsing bash (Phase 19) or an LLM goal layer (Phase 21) | Both phases ran 13 gap rounds without converging. Each round found a new carrier class. Spikes 001/002 showed that a sandbox with no push credentials, a read-only run dir and caps counted from tool-written state bound the blast radius mechanically | — Pending; Phase 26 must confirm gap-loop and divergence behaviour |
+| v2.0 re-plan (2026-10-14): safety by capability removal + launcher hard caps instead of parsing bash (Phase 19) or an LLM goal layer (Phase 21) | Both phases ran 13 gap rounds without converging. Each round found a new carrier class. Spikes 001/002 showed that a sandbox with no push credentials, a read-only run dir and caps counted from tool-written state bound the blast radius mechanically | — Pending. Phase 26 did NOT confirm gap-loop or divergence behaviour (spike 003 INCONCLUSIVE), and Phase 27 is held |
+| Spike 003 verdict read as INCONCLUSIVE, not NO-GO (Phase 26) `[inferred]` | The rubric's NO-GO (d)/(e) conditions hold literally on the two STALLED runs. They are judged only on a Run 1 with a VALID seed, and none exists; the literal reading would leave the INCONCLUSIVE clauses unreachable | ⚠️ Revisit. Human to confirm; a literal reading gives NO-GO. Routing is the same either way: Phase 27 is blocked until a redesign or re-plan |
+| Spike 003 rubric and instruments frozen before spend; post-hoc fixes recorded only as redesign inputs (Phase 26) | Pre-registration (PREREG_SHA 4ba6195) keeps the verdict mechanical. Adapting the instruments to the results would launder it | ✓ Good. The verdict is honest, and the gap double-count was identified as a redesign input |
 | Phases 19/21/22/23 superseded, code kept until a dedicated retirement phase (31) `[inferred]` | Removing code before the launcher's push step owns SAFE-01/03/06 would leave a gap. An explicit phase keeps the removal reviewable | — Pending |
 | v2.0 restructured in place, not closed and reopened `[inferred]` | Closing would need a release tag and an audit of two phases that cannot close. v2.0 never released, and the major-bump rationale still holds | — Pending |
 | Containers (Phase 22) replaced by bwrap + `systemd-run --user --scope` on Linux, with a recorded degraded mode on macOS `[inferred]` | Verified with auth in spikes 001/002, with no new dependency (bollard never added). Containers move to Future Requirements | — Pending |
@@ -196,4 +208,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-14 after the v2.0 re-plan (spikes 001/002; Phases 19/21/22/23 superseded, 26-31 added)*
+*Last updated: 2026-10-16 after Phase 26 (spike 003 INCONCLUSIVE; driver not validated; Phase 27 held)*

@@ -22,10 +22,10 @@ milestone_name: gsd-core 1.17.0 Sync
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-09-25)
+See: .planning/PROJECT.md (updated 2026-10-16)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 26 — Driver Validation Spike 003
+**Current focus:** Phase 27 — driverctl & Driver Frontmatter (BLOCKED: spike 003 INCONCLUSIVE; redesign spike 003 or re-plan Phases 27-31 first)
 2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
@@ -33,6 +33,14 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
+Status: Ready to plan Phase 27, but BLOCKED. Phase 26 completed 2026-10-16 (3/3 plans; verification
+  passed against the plan contract). Spike 003 verdict: INCONCLUSIVE. Both Run 1 attempts were SEED
+  STALLED, Run 2 was skipped, and $7.81 of $60 was spent. The driver is NOT validated: VALID-01
+  Unproven, VALID-02 Partial (REQUIREMENTS.md). Phase 27 stays held until spike 003's seed and
+  instruments are redesigned or Phases 27-31 are re-planned. See Blockers.
+  Progress: 129/133 plans across v2.0 (roadmap.analyze).
+
+Earlier (v1.14.0 release, 2026-10-16):
 Status: Ready to plan
   gsd-core v1.17.0 sync: quick batch 261016-dx2 (261016-dx3 baseline constants 1.17.0 / v1.17.0 /
   1.17.0, sync doc, README note; 261016-dx4 `/gsd-<name>` command form in suggestions, hints,
@@ -539,6 +547,10 @@ Recent decisions affecting current work:
 - [Phase 26]: v2.0 re-planned around a queue-driven Opus master driver: safety by capability removal (bwrap + systemd-run scope, no push creds, read-only run dir) and launcher hard caps counted from tool-written state, replacing Phase 19 bash parsing, Phase 21 goal layer, Phase 22 containers and Phase 23 gate policy — Phases 19 and 21 did not converge after 13 gap rounds each; spikes 001/002 validated the replacement mechanism (PARTIAL: gap loop and divergence still unobserved — Phase 26)
 - [Phase 26]: OQ-R1 [inferred]: driver stop rules outrank a human answer: in DIRECTION.md; only a budget/cap edit lifts them — spike 002 finding 5 default; open human call, does not block
 - [Phase 26]: OQ-R2 [inferred]: driven runs do not see the user's global CLAUDE.md; GSD + rtk hooks are kept in the per-run CLAUDE_CONFIG_DIR — spike 002 A2.1 default; open human call, does not block
+- [Phase 26]: 26-03 [inferred]: spike 003 verdict INCONCLUSIVE, not NO-GO. NO-GO (d)/(e) are judged only on a Run 1 with a VALID seed, and none exists. A literal reading gives NO-GO; the routing (Phase 27 held) is the same either way. Human to confirm
+- [Phase 26]: 26-02: rubric frozen before spend (PREREG_SHA 4ba6195). Post-hoc ideas (dedupe snapshots, count gaps per verifier run) are redesign inputs only, never applied to these results
+- [Phase 26]: 26-03 [inferred]: a launcher `crashed` with RELAUNCHES=0 counts as "could not complete after its allowed relaunches"
+- [Phase 26]: 26-03: v0.3 prompt wording (D1/D3/D1c/D2/OQ-R1) carried to Phase 29. D1 and D2 were observed as written; D1c, D3 and OQ-R1 are untested
 
 ### Roadmap Evolution
 
@@ -698,7 +710,13 @@ Recent decisions affecting current work:
 ## Session Continuity
 
 Last session: 2026-10-16
-Stopped at: Phase 26 complete, ready to plan Phase 27
+Stopped at: Phase 26 complete (spike 003 INCONCLUSIVE). Phase 27 is next but BLOCKED until spike
+003 is redesigned or Phases 27-31 are re-planned. That is a human decision.
+Resume file: None
+
+Next: a human decides between (a) redesigning spike 003 and re-running it, and (b) re-planning
+Phases 27-31 with `/gsd-phase`. Either way, use `/gsd-progress` to route. Do NOT run
+`/gsd-discuss-phase 27` or `/gsd-plan-phase 27` while the Phase 26 blocker stands.
 
 Earlier (2026-10-14): v2.0 re-planned around the capability-removal driver from spikes 001 and
 002. Phases 19, 21, 22 and 23 are superseded, and Phases 26-31 were added.
