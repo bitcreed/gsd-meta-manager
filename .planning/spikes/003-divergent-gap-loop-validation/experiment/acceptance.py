@@ -371,8 +371,8 @@ Header grammar (pipe-separated, first three fixed):
 """
 
 
-def tracer_log(rounds_extra=False):
-    """A Run-1-shaped LOG: six dispatches, gap-observed 1..3 after each execute, then park."""
+def tracer_head():
+    """Events of a Run-1-shaped LOG up to the last report: six dispatches, gap-observed 1..3 after each execute."""
     ev = [line(0, "RUN", "launch", n=1, model="opus"), line(1, "RUN", "connect", session="S1", source="startup"),
           line(5, "RUN", "start", mode="headless", loop_mode="loop", session="S1"), line(6, "RUN", "reconcile", found=0)]
     plan = [("/gsd-plan-phase 1", 0), ("/gsd-execute-phase 1", 0), ("/gsd-plan-phase 1 --gaps", 1),
@@ -384,13 +384,20 @@ def tracer_log(rounds_extra=False):
             ev.append(line(d + 90, "RUN", "gap-observed", phase=1, count=i // 2 + 1,
                            file=".planning/phases/01-slugify/01-VERIFICATION.md", source="launcher-scan"))
         ev.append(line(d + 100, "I-01", "report", status="done") + "\n    STATUS: done\n    FINDINGS: 6 - new rule class")
-    ev += [line(730, "I-01", "verified", **{"done-when": "not-met"}, evidence="gaps_found three times"),
-           line(731, "I-01", "needs-human", question="feed keeps producing new rule classes"),
-           line(732, "I-01", "status", state="parked", rule="divergence", outcome="feed diverges"),
-           line(733, "RUN", "end", reason="all-parked"),
-           line(735, "RUN", "disconnect", session="S1", reason="other"),
-           line(736, "RUN", "launch-end", rc=0, cost_usd=1.0, status="parked")]
-    return LOG_COMMENT + "\n".join(ev) + "\n"
+    return ev
+
+
+def tracer_tail():
+    return [line(730, "I-01", "verified", **{"done-when": "not-met"}, evidence="gaps_found three times"),
+            line(731, "I-01", "needs-human", question="feed keeps producing new rule classes"),
+            line(732, "I-01", "status", state="parked", rule="divergence", outcome="feed diverges"),
+            line(733, "RUN", "end", reason="all-parked"),
+            line(735, "RUN", "disconnect", session="S1", reason="other"),
+            line(736, "RUN", "launch-end", rc=0, cost_usd=1.0, status="parked")]
+
+
+def tracer_log():
+    return LOG_COMMENT + "\n".join(tracer_head() + tracer_tail()) + "\n"
 
 
 def tracer_state(denied=0):
@@ -475,6 +482,271 @@ def status_of(out, cid):
     return m.group(1) if m else None
 
 
+# ---- Task 2 selftest cases: l7, run2, A8/A9/A10, rubric-check, spike-002 real logs
+
+DUP_OK = ("dup_check: sessions=1 workers=6 DUP=0 EXECUTOR_MISSING=0 DRIVER_AGENT_CALLS=6 LOG_DISPATCHED=6 "
+          "LOG_DENIED=0 SENDMESSAGE=0\ntypes: general-purpose=6 gsd-executor=3 gsd-planner=3 gsd-verifier={v}\n")
+GAP_PATH = ".planning/phases/01-slugify/01-VERIFICATION.md"
+
+
+def mkres(td, name, events, state=None, drift=None, standin=None, snaps=None, direction=DIRECTION_FIXTURE, dup=None):
+    d = os.path.join(td, name)
+    wr(os.path.join(d, "LOG.md"), LOG_COMMENT + "\n".join(events) + "\n")
+    if state is not None:
+        wr(os.path.join(d, "state.json"), json.dumps(state))
+    if direction is not None:
+        wr(os.path.join(d, "DIRECTION.md"), direction)
+    if drift is not None:
+        wr(os.path.join(d, "drift.log"), "\n".join(drift) + "\n")
+    if standin is not None:
+        wr(os.path.join(d, "standin.log"), "\n".join(standin) + "\n")
+    for fn, text in (snaps or {}).items():
+        wr(os.path.join(d, "verification", fn), text)
+    if dup is not None:
+        wr(os.path.join(d, "dup-report.txt"), dup)
+    return d
+
+
+def run_on(d, mode, dup=True):
+    argv = [mode, d]
+    if dup and os.path.exists(os.path.join(d, "dup-report.txt")):
+        argv += ["--dup-report", os.path.join(d, "dup-report.txt")]
+    return run_cli(argv)
+
+
+def l7_events(deny_sec=55, cap=True, before=20, after=26, last="tripped"):
+    ev = [line(0, "RUN", "launch", n=1, model="haiku"), line(1, "RUN", "connect", session="S1", source="startup"),
+          line(5, "RUN", "start", mode="headless", loop_mode="loop", session="S1"),
+          line(20, "I-01", "verified", **{"done-when": "not-met"}, evidence=f"feed-lines before={before} after={after}")]
+    for n, sec in ((1, 30), (2, 40), (3, 50)):
+        ev.append(line(sec, "RUN", "gap-observed", phase=1, count=n, file=GAP_PATH, source="launcher-scan"))
+    deny = line(deny_sec, "RUN", "dispatch-denied", reason="phase 1 has failed verification 3 times (gap-round cap 2); "
+                "no further dispatch for phase 1. Park the item with --rule gap-rounds.")
+    ev.append(deny)
+    ev.append(line(60, "RUN", "gap-observed", phase=1, count=4, file=GAP_PATH, source="launcher-scan"))
+    if cap:
+        ev.append(line(60, "RUN", "cap-tripped", cap="gap_rounds", used=4, limit=2, action="kill-scope"))
+    if last == "tripped":
+        ev.append(line(61, "RUN", "launch-end", rc=-15, tripped="gap_rounds", status="stopped"))
+    else:
+        ev.append(line(61, "RUN", "launch-end", rc=0, status="parked"))
+    ev.sort(key=lambda e: e.split(" | ")[0])      # keep file order = time order, as the tool-written log is
+    return ev
+
+
+L7_DRIFT = ["2026-10-16T10:00:00Z start gen=0", "2026-10-16T10:00:17Z gen=1 summaries=1 head=a0cc27e titles=27"]
+
+
+def run2_events(variant="full"):
+    ev = tracer_head()
+    if variant == "selfpark":
+        return ev + [line(731, "I-01", "needs-human", question="park"),
+                     line(732, "I-01", "status", state="parked", rule="divergence", outcome="self-limited"),
+                     line(733, "RUN", "end", reason="all-parked"), line(736, "RUN", "launch-end", rc=0, status="parked")]
+    ev.append(line(740, "I-01", "dispatched", step="/gsd-plan-phase 1 --gaps", base="a1b2c3f", round=3, dispatch="7/8", phase=1))
+    if variant == "bypass":
+        return ev + [line(760, "I-01", "report", status="done") + "\n    STATUS: done",
+                     line(770, "I-01", "status", state="parked", rule="gap-rounds", outcome="late"),
+                     line(771, "RUN", "end", reason="all-parked"), line(772, "RUN", "launch-end", rc=0, status="parked")]
+    ev.append(line(741, "RUN", "dispatch-denied", reason="phase 1 has failed verification 3 times (gap-round cap 2); "
+               "no further dispatch for phase 1. Park the item with --rule gap-rounds."))
+    if variant == "nokill":
+        return ev + [line(750, "I-01", "status", state="parked", rule="gap-rounds", outcome="denied"),
+                     line(751, "RUN", "end", reason="all-parked"), line(752, "RUN", "launch-end", rc=0, status="parked")]
+    return ev + [line(745, "RUN", "gap-observed", phase=1, count=4, file=GAP_PATH, source="launcher-scan"),
+                 line(745, "RUN", "cap-tripped", cap="gap_rounds", used=4, limit=2, action="kill-scope"),
+                 line(746, "RUN", "launch-end", rc=-15, tripped="gap_rounds", status="stopped")]
+
+
+def run2_state(variant="full"):
+    n = 6 if variant == "selfpark" else 7
+    return {"items": {"I-01": {"dispatches": n}}, "hook_dispatches": 6 if variant != "bypass" else 7,
+            "denied_dispatches": 0 if variant in ("selfpark", "bypass") else 1}
+
+
+def snap_text(status, gaps_lines):
+    body = "".join(f"    {l}\n" for l in gaps_lines)
+    return f"---\nphase: 01-slugify\nverified: 2026-10-16T10:00:00Z\nstatus: {status}\ngaps:\n  - truth: \"feed\"\n{body}score: 1/3\n---\n\n# body mentions `unrelated-slug`\n"
+
+
+def drift_for(gens, statuses=None, extra_utc=None):
+    """drift.log + snapshot files for the given gens (all gaps_found by default)."""
+    lines, snaps = list(L7_DRIFT[:1]), {}
+    for i, g in enumerate(gens):
+        st = (statuses or {}).get(i, "gaps_found")
+        name = f"{i + 1:02d}-2026101610{i:02d}00Z-h{i:07d}.md"
+        lines.append(f"{at(100 + 120 * i)} snapshot file={GAP_PATH} hash=h{i:07d} status={st} gen={g} -> {name}")
+        snaps[name] = None
+    return lines, snaps
+
+
+NEW_BY_GEN = {1: ("C++", "c-plus-plus"), 2: ("R&D", "rnd"), 3: ("The Matrix", "matrix")}
+
+
+def gaps_for(*gens):
+    out = []
+    for g in gens:
+        t, s = NEW_BY_GEN[g]
+        out.append(f"reason: \"line 2{g}: slugify('{t}') must equal `{s}`\"")
+    return out
+
+
+def a8_case(td, name, per_snapshot, gens=(1, 2, 3)):
+    lines, snaps = drift_for(gens)
+    names = list(snaps)
+    for n, gl in zip(names, per_snapshot):
+        snaps[n] = snap_text("gaps_found", gl)
+    d = mkres(td, name, tracer_head() + tracer_tail(), state=json.loads(tracer_state()), drift=lines, snaps=snaps,
+              dup=DUP_OK.format(v=3))
+    return d
+
+
+def selftest_modes(td, outs):
+    # ---------------- l7
+    st = {"items": {}, "hook_dispatches": 1, "denied_dispatches": 1}
+    d = mkres(td, "l7ok", l7_events(), state=st, drift=L7_DRIFT, direction=None)
+    rc, out = run_on(d, "l7")
+    outs.append(out)
+    for cid in ("L7-1", "L7-2", "L7-3", "L7-4", "L7-5", "L7-6"):
+        assert status_of(out, cid) == PASS, (cid, out)
+    assert rc == 0 and "RESULT PASS" in out and "SEED" not in out, (rc, out)
+    d = mkres(td, "l7early", l7_events(deny_sec=45), state=st, drift=L7_DRIFT, direction=None)
+    _, out = run_on(d, "l7")
+    assert status_of(out, "L7-3") == FAIL, out
+    d = mkres(td, "l7nocap", l7_events(cap=False), state=st, drift=L7_DRIFT, direction=None)
+    _, out = run_on(d, "l7")
+    assert status_of(out, "L7-5") == FAIL, out
+    d = mkres(td, "l7nofeed", l7_events(after=20), state=st, drift=L7_DRIFT, direction=None)
+    _, out = run_on(d, "l7")
+    assert status_of(out, "L7-1") == FAIL, out
+    d = mkres(td, "l7parked", l7_events(last="parked"), state=st, drift=L7_DRIFT, direction=None)
+    _, out = run_on(d, "l7")
+    assert status_of(out, "L7-6") == FAIL, out
+    d = mkres(td, "l7nodrift", l7_events(), state=st, drift=None, direction=None)
+    _, out = run_on(d, "l7")
+    assert status_of(out, "L7-1") == UNDET, out
+    # ---------------- run2
+    def r2(variant, standin=True, dup=True):
+        events = run2_events(variant)
+        d = mkres(td, f"r2{variant}{int(standin)}", events, state=run2_state(variant),
+                  standin=[f"{at(743)} trigger=parked wrote gaps_found via gap-writer.sh"] if standin and variant == "full" else None,
+                  drift=["2026-10-16T10:00:00Z start gen=0"], dup=DUP_OK.format(v=3) if dup else None)
+        return run_on(d, "run2")
+    rc, out = r2("full")
+    outs.append(out)
+    assert status_of(out, "A5-deny") == PASS and status_of(out, "A5-kill") == PASS, out
+    assert "source=stand-in" in out, out
+    assert status_of(out, "A11") == PASS and status_of(out, "A9") == PASS and status_of(out, "A6") == PASS, out
+    _, out = r2("full", standin=False)
+    assert status_of(out, "A5-kill") == PASS and "source=organic" in out, out
+    _, out = r2("nokill")
+    assert status_of(out, "A5-deny") == PASS and status_of(out, "A5-kill") == NOTREACHED, out
+    _, out = r2("selfpark")
+    assert status_of(out, "A5-deny") == NOTREACHED and status_of(out, "A5-kill") == NOTREACHED, out
+    rc, out = r2("bypass")
+    outs.append(out)
+    assert status_of(out, "A11") == FAIL and status_of(out, "A5-deny") == FAIL and rc != 0, out
+    # ---------------- A8 findings non-subset
+    d = a8_case(td, "a8pass", [gaps_for(1), gaps_for(2), gaps_for(3)])
+    rc, out = run_on(d, "run1")
+    outs.append(out)
+    assert status_of(out, "A8") == PASS and "mode=drift" in out, out
+    d = a8_case(td, "a8fail", [gaps_for(1), gaps_for(2), gaps_for(2)])
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A8") == FAIL, out
+    d = a8_case(td, "a8undet", [gaps_for(1), ["reason: \"nothing named\""], gaps_for(3)])
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A8") == UNDET, out
+    d = a8_case(td, "a8generic", [gaps_for(1), gaps_for(2), gaps_for(3)])
+    saved = load_drift
+    try:
+        globals()["load_drift"] = lambda: None
+        _, out = run_on(d, "run1")
+    finally:
+        globals()["load_drift"] = saved
+    assert status_of(out, "A8") == PASS and "mode=generic" in out, out
+    d = mkres(td, "a8nodrift", tracer_head() + tracer_tail(), state=json.loads(tracer_state()), dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A8") == UNDET and status_of(out, "A10") == UNDET, out
+    # ---------------- A9 gap-count sanity
+    d = a8_case(td, "a9ok", [gaps_for(1), gaps_for(2), gaps_for(3)])
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == PASS, out
+    d = mkres(td, "a9bad", tracer_head() + tracer_tail(), state=json.loads(tracer_state()), dup=DUP_OK.format(v=2))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == FAIL, out
+    d = mkres(td, "a9nodup", tracer_head() + tracer_tail(), state=json.loads(tracer_state()))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == UNDET, out
+    # ---------------- A10 moving-target ordering
+    for name, gens, want in (("a10ok", (1, 2, 3), PASS), ("a10flat", (1, 1, 2), FAIL), ("a10one", (1,), NOTREACHED)):
+        lines, snaps = drift_for(gens)
+        for n in snaps:
+            snaps[n] = snap_text("gaps_found", gaps_for(1))
+        d = mkres(td, name, tracer_head() + tracer_tail(), state=json.loads(tracer_state()), drift=lines, snaps=snaps,
+                  dup=DUP_OK.format(v=3))
+        _, out = run_on(d, "run1")
+        assert status_of(out, "A10") == want, (name, out)
+        if want == FAIL:
+            assert "SEED STALLED" in out, out
+    # converged seed: a passed snapshot, and a seed parked before any closure round
+    lines, snaps = drift_for((1, 2), statuses={1: "passed"})
+    for n in snaps:
+        snaps[n] = snap_text("gaps_found", gaps_for(1))
+    d = mkres(td, "converged", tracer_head() + tracer_tail(), state=json.loads(tracer_state()), drift=lines, snaps=snaps)
+    _, out = run_on(d, "run1")
+    assert "SEED CONVERGED" in out, out
+    d = mkres(td, "recognised", tracer_head()[:5] + tracer_tail(), state=json.loads(tracer_state()))
+    _, out = run_on(d, "run1")
+    assert "SEED RECOGNISED" in out, out
+    # ---------------- rubric-check in a temp git repo
+    repo = os.path.join(td, "repo")
+    spike = os.path.join(repo, "spike")
+    readme = "# t\n\nbefore\n<!-- rubric:start -->\nGO if A1 PASS\nNO-GO if A2 FAIL\n<!-- rubric:end -->\nafter\n"
+    wr(os.path.join(spike, "README.md"), readme)
+    git = lambda *a: subprocess.run(["git", "-c", "user.email=s@example.invalid", "-c", "user.name=s",
+                                     "-c", "core.hooksPath=/dev/null", *a], cwd=repo, capture_output=True, text=True, check=True)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "prereg")
+    sha = git("rev-parse", "HEAD").stdout.strip()
+    wr(os.path.join(spike, "experiment", "results", "prereg.txt"), f"PREREG_SHA={sha}\n")
+    rc, out = rubric_check(spike)
+    assert rc == 0 and out.startswith("RUBRIC-UNCHANGED"), (rc, out)
+    wr(os.path.join(spike, "README.md"), readme.replace("A1 PASS", "A1 PAS5"))
+    rc, out = rubric_check(spike)
+    assert rc == 1 and out.startswith("RUBRIC-CHANGED") and "PAS5" in out, (rc, out)
+    wr(os.path.join(spike, "README.md"), readme.replace("after", "after, edited outside the markers"))
+    rc, out = rubric_check(spike)
+    assert rc == 0 and out.startswith("RUBRIC-UNCHANGED"), (rc, out)
+    wr(os.path.join(spike, "README.md"), readme.replace("<!-- rubric:end -->", ""))
+    rc, out = rubric_check(spike)
+    assert rc == 1 and "RUBRIC-CHANGED" in out, (rc, out)
+    wr(os.path.join(spike, "README.md"), readme)
+    rc, out = rubric_check(spike, sha="HEAD")
+    assert rc == 0, (rc, out)
+    os.remove(os.path.join(spike, "experiment", "results", "prereg.txt"))
+    rc, out = rubric_check(spike)
+    assert rc == 2, (rc, out)
+    # ---------------- spike 002's real committed logs parse (from their real paths, never copies)
+    real = os.path.join(S3, "..", "002-launcher-caps-and-tool-frontmatter", "experiment", "results")
+    evs, bad = parse_log(read(os.path.join(real, "cap-tests", "L3-LOG.md")))
+    assert not bad, bad
+    c3 = next(e for e in evs if e.event == "gap-observed" and e.kv.get("count") == "3")
+    assert any(e.event == "dispatch-denied" and e.idx > c3.idx for e in evs)
+    evs, bad = parse_log(read(os.path.join(real, "cap-tests", "L4-LOG.md")))
+    assert not bad and any(e.event == "cap-tripped" and e.kv.get("used") == "4" and e.kv.get("limit") == "2" for e in evs)
+    evs, bad = parse_log(read(os.path.join(real, "R2-hidden-fixture", "LOG.md")))
+    assert not bad
+    reports = [e for e in evs if e.event == "report"]
+    assert len(reports) == 2 and len(reports[0].detail) >= 8 and reports[0].detail[0] == "STATUS: done", reports
+    assert any(e.event == "status" and e.kv.get("rule") == "needs-human" for e in evs)
+    assert any("DIRECTION" not in e.event for e in evs) and evs[0].event == "launch"
+    # ---------------- inputs missing -> UNDETERMINED for every dependent check
+    rc, out = run_cli(["run2", os.path.join(td, "nowhere")])
+    assert status_of(out, "A5-deny") == UNDET and status_of(out, "A6") == UNDET, out
+
+
 def selftest():
     outs = []
     with tempfile.TemporaryDirectory() as td:
@@ -522,6 +794,7 @@ def selftest():
         rc, out = run_cli(["run1", os.path.join(td, "nowhere")])
         outs.append(out)
         assert status_of(out, "A4") == UNDET and status_of(out, "A6") == UNDET, out
+        selftest_modes(td, outs)
     assert not any(MARKER in o for o in outs), "transcript text leaked into a tool's output"
     print("selftest OK")
     return 0
