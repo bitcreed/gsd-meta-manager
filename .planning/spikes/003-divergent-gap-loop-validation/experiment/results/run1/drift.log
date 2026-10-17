@@ -1,0 +1,6 @@
+2026-10-17T02:39:45Z start gen=0
+2026-10-17T02:46:23Z gen=1 summaries=1 head=b9282d6 titles=27
+2026-10-17T02:48:10Z snapshot file=.planning/phases/01-slugify/01-VERIFICATION.md hash=2d5970e9 status=gaps_found gen=1 -> 01-20261017T024810Z-2d5970e9.md
+2026-10-17T02:55:56Z gen=2 summaries=2 head=af706c9 titles=33
+2026-10-17T02:57:05Z snapshot file=.planning/phases/01-slugify/01-VERIFICATION.md hash=37f93bac status=gaps_found gen=2 -> 02-20261017T025705Z-37f93bac.md
+2026-10-17T02:57:11Z snapshot file=.planning/phases/01-slugify/01-VERIFICATION.md hash=aad67fb9 status=gaps_found gen=2 -> 03-20261017T025711Z-aad67fb9.md

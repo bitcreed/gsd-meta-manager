@@ -1,0 +1,58 @@
+9590b77 docs(01): re-verify phase 1 after gap closure
+ .planning/phases/01-slugify/01-VERIFICATION.md | 117 +++++++++++++++----------
+ 1 file changed, 70 insertions(+), 47 deletions(-)
+af706c9 docs(01-02): complete slugify + gap closure plan
+ .planning/STATE.md                           |  16 ++--
+ .planning/phases/01-slugify/01-02-SUMMARY.md | 124 +++++++++++++++++++++++++++
+ 2 files changed, 133 insertions(+), 7 deletions(-)
+1e94984 docs(01-02): mark SLUG-02 complete after live-feed verification
+ .planning/REQUIREMENTS.md | 4 ++--
+ .planning/ROADMAP.md      | 6 +++---
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+14698e3 fix(01-02): speak each "+" as "plus" in slugify
+ slugkit/slug.py | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+4e26a99 test(01-02): feed-independent "+" tests
+ tests/test_slug.py | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+10f9d62 docs(01): plan gap closure 01-02 for SLUG-02 '+' rule
+ .planning/REQUIREMENTS.md                 |   4 +-
+ .planning/ROADMAP.md                      |   5 +-
+ .planning/phases/01-slugify/01-02-PLAN.md | 233 ++++++++++++++++++++++++++++++
+ 3 files changed, 238 insertions(+), 4 deletions(-)
+377ce46 docs(01): code review and verification report (gaps_found)
+ .planning/phases/01-slugify/01-REVIEW.md       |  85 ++++++++++++++++
+ .planning/phases/01-slugify/01-VERIFICATION.md | 133 +++++++++++++++++++++++++
+ 2 files changed, 218 insertions(+)
+b9282d6 docs(01-01): complete slugify plan
+ .planning/REQUIREMENTS.md                    |   8 +-
+ .planning/ROADMAP.md                         |  10 +-
+ .planning/STATE.md                           |  46 ++++++---
+ .planning/phases/01-slugify/01-01-SUMMARY.md | 144 +++++++++++++++++++++++++++
+ 4 files changed, 188 insertions(+), 20 deletions(-)
+728a8c1 test(01-01): edge-case unit tests that pass without the feed
+ tests/test_slug.py | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+853237d test(01-01): feed conformance test - feed line N slugifies to expected line N
+ tests/test_slug.py | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+2b85a44 feat(01-01): tracer - slugify("Hello World") via package import and unittest discovery
+ slugkit/__init__.py |  4 ++++
+ slugkit/slug.py     | 13 +++++++++++++
+ tests/__init__.py   |  0
+ tests/test_slug.py  | 12 ++++++++++++
+ 4 files changed, 29 insertions(+)
+33de174 docs(01): plan phase 1
+ .planning/phases/01-slugify/01-01-PLAN.md | 223 ++++++++++++++++++++++++++++++
+ 1 file changed, 223 insertions(+)
+4de348c chore: scratch GSD project (slugkit)
+ .gitignore                                |  2 ++
+ .planning/PROJECT.md                      | 16 +++++++++++++
+ .planning/REQUIREMENTS.md                 | 15 ++++++++++++
+ .planning/ROADMAP.md                      | 40 +++++++++++++++++++++++++++++++
+ .planning/STATE.md                        | 33 +++++++++++++++++++++++++
+ .planning/config.json                     | 24 +++++++++++++++++++
+ .planning/phases/01-slugify/01-CONTEXT.md |  8 +++++++
+ README.md                                 |  3 +++
+ slugkit/__init__.py                       |  1 +
+ 9 files changed, 142 insertions(+)
