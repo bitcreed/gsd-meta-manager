@@ -136,9 +136,9 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 - [ ] **VALID-02**: Divergence detection (two consecutive rounds with new findings) parks the run on
   its own. With the prompt rule disabled, the launcher gap cap trips instead: deny at limit+1, kill at
   limit+2.
-- [ ] **VALID-03**: After an async Agent launch, the driver and its workers wait for the notification
+- [x] **VALID-03**: After an async Agent launch, the driver and its workers wait for the notification
   and never re-spawn. The transcripts show zero duplicate planner or executor runs.
-- [ ] **VALID-04**: The spike records the measured per-phase cost of an Opus driver and gives an
+- [x] **VALID-04**: The spike records the measured per-phase cost of an Opus driver and gives an
   explicit go / adjust / no-go for Phases 27-31.
 
 ### driverctl & Frontmatter (DCTL): Phase 27
@@ -337,10 +337,10 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | AGENT-05 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-06 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-07 | Phase 25: Running Agents & Live Wave View | Complete |
-| VALID-01 | Phase 26 | Pending |
-| VALID-02 | Phase 26 | Pending |
-| VALID-03 | Phase 26 | Pending |
-| VALID-04 | Phase 26 | Pending |
+| VALID-01 | Phase 26 | Unproven — spike 003 INCONCLUSIVE (see 26-VERIFICATION.md) |
+| VALID-02 | Phase 26 | Partial — divergence park unproven; launcher deny/kill shown on scripted L7 only |
+| VALID-03 | Phase 26 | Complete |
+| VALID-04 | Phase 26 | Complete |
 | DCTL-01 | Phase 27 | Pending |
 | DCTL-02 | Phase 27 | Pending |
 | DCTL-03 | Phase 27 | Pending |

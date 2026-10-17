@@ -97,7 +97,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [ ] ~~**Phase 23: Gate Policy & Auto-Validation**~~ - SUPERSEDED 2026-10-14 by per-item done-when plus standing rules in DIRECTION.md (Phase 29). Never planned
 - [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
 - [x] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata (completed 2026-09-25)
-- [ ] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust
+- [x] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust (completed 2026-10-16)
 - [ ] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md
 - [ ] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode
 - [ ] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation
@@ -916,7 +916,7 @@ never re-spawn a background agent.
 **Notes**: This is a spike under the spike CONVENTIONS: no `src/` changes, and scratch projects only.
 `[inferred]`: it runs as `/gsd-spike` work tracked by this phase, not as a code phase.
 
-**Plans**: 3/3 plans executed
+**Plans**: 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -1131,7 +1131,7 @@ Plans:
 | 23. Gate Policy & Auto-Validation | 0/0 | Superseded | 2026-10-14 |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
-| 26. Driver Validation Spike 003 | 3/3 | In Progress | - |
+| 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
