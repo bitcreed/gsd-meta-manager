@@ -1,0 +1,8 @@
+RUN2 SKIPPED (pre-registered INCONCLUSIVE path, README retry rule)
+
+Reason: SEED was not VALID on both Run 1 attempts.
+  results/run1/acceptance.txt   SEED STALLED (A10 FAIL: gaps_found snapshot gens=[1, 2, 2]; A9 FAIL; A1 FAIL rounds=[0, 1]; A3 FAIL rule=gap-rounds)
+  results/run1b/acceptance.txt  SEED STALLED (launcher status=crashed: driver exited rc=0 without RUN end after one dispatch; A1 FAIL rounds=[0])
+README: "Run 2 runs only after a VALID Run 1 and uses the same seed."
+No Opus launch for run2 happened (no run-env.txt in this directory). No further spend was made.
+Measured list-price total of the real launches: run1 5.1667 USD + run1b 2.6120 USD (campaign ceiling 60 USD not reached).
