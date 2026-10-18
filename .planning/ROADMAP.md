@@ -965,12 +965,12 @@ blocker)
 27-31 exactly as Phase 26 did. `[inferred]` spend cap: $52.19 for 26.1 (the unspent remainder of
 spike 003's $60 ceiling after Phase 26's $7.81), keeping the original rubric's total — audit.
 
-**Plans**: 1/5 plans executed
+**Plans**: 2/5 plans executed
 
 Plans:
 **Wave 1**
 - [x] 26.1-01-PLAN.md — Counting and liveness core: gapcount coalescing, launcher_s003 fork, exitclass, stop_guard, replays of Run 1 / Run 1b, L7 re-spaced, L8 (wave 1)
-- [ ] 26.1-03-PLAN.md — Launch kit, seed and prompt: campaign_budget gate, run.sh WR-01/07/08/09 + l8 + fork launch, stall detection off, prompt v0.4 (wave 1)
+- [x] 26.1-03-PLAN.md — Launch kit, seed and prompt: campaign_budget gate, run.sh WR-01/07/08/09 + l8 + fork launch, stall detection off, prompt v0.4 (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 26.1-02-PLAN.md — Verdict tooling: T-26-11 three-way RESULT, WR-03..06, burst-grouped A8/A10, l8 checks, rubric-check --block 26.1, dup_check WR-10, drift WR-02/07 (wave 2)
@@ -1187,7 +1187,7 @@ Plans:
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
-| 26.1. Driver Validation Spike 003 Re-run | 1/5 | In Progress | - |
+| 26.1. Driver Validation Spike 003 Re-run | 2/5 | In Progress | - |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
