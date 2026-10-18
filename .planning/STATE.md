@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: "26.1"
 current_phase_name: Driver Validation Spike 003 Re-run (INSERTED)
 status: executing
-stopped_at: Completed 26.1-02-PLAN.md
-last_updated: "2026-10-18T01:40:51.557Z"
+stopped_at: Completed 26.1-04-PLAN.md
+last_updated: "2026-10-18T01:56:02.189Z"
 last_activity: 2026-10-17
 last_activity_desc: Phase 26.1 execution started
-state_head: fb022c2cc985b6a76b6f7408b1b6abc149f7aec3
+state_head: fccaebec8a84409ab2a234293c5549b6e033c6b9
 progress:
   total_phases: 10
   completed_phases: 9
@@ -206,7 +206,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 26.1 (Driver Validation Spike 003 Re-run (INSERTED)) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -441,6 +441,7 @@ verify-phase if the gate is fixed.
 | Phase 26.1 P01 | 8 min | 2 tasks | 8 files |
 | Phase 26.1 P03 | 14 min | 2 tasks | 6 files |
 | Phase 26.1 P02 | 12 min | 3 tasks | 3 files |
+| Phase 26.1 P04 | 20 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -574,6 +575,7 @@ Recent decisions affecting current work:
 - [Phase 26.1]: [26.1-01] New driver exit status 'stalled' (clean exit, result success, dispatch unreported) distinct from crashed; Stop guard blocks at most 3 times and fails open; Phase 27 status enum needs the variant [inferred - audit]
 - [Phase 26.1]: 26.1-03: campaign gate counts Haiku launches (SPENT_ALL 7.8080); prompt v0.4 keeps rule 5 byte-identical; unmeasurable spend fails closed with exit 8 [inferred]
 - [Phase 26.1]: 26.1-02: acceptance RESULT is three-way (PASS exit 0 / FAIL exit 1 / INCONCLUSIVE exit 2); SEED VALID needs A10 PASS; A8/A10 score the last snapshot of each gapcount.coalesce burst; l8 and rubric-check --block 26.1 (fail-closed) added [inferred - audit: SEED STALLED on stalled/crashed exit, L8-4 FAIL without launch-end]
+- [Phase 26.1]: 26.1-04: Haiku gates r261-l8/l7/smoke1/smoke2 passed on attempt 1 ($0.0460); 26.1 rubric block pre-registered at b09f66e, PREREG_SHA recorded in e470b81, before any paid launch; T-26-11 closed, Phase 26 review dispositions open: 0
 
 ### Roadmap Evolution
 
@@ -733,8 +735,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-18T01:40:50.816Z
-Stopped at: Completed 26.1-02-PLAN.md
+Last session: 2026-10-18T01:56:01.477Z
+Stopped at: Completed 26.1-04-PLAN.md
 Resume file: None
 
 Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
