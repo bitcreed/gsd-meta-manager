@@ -128,7 +128,7 @@ removal and hard caps in the launcher**, not from parsing bash or auditing witho
 The requirement IDs below are new. Superseded IDs are not deleted. Each is re-marked in Traceability
 with what supersedes it. Inferred calls are marked `[inferred]`.
 
-### Driver Validation (VALID): Phase 26
+### Driver Validation (VALID): Phase 26, re-run in 26.1 (VALID-01/02)
 
 - [ ] **VALID-01**: On a real GSD scratch project seeded with a gap that looks closable but keeps
   producing new findings, the driver runs gap-closure rounds 1 and 2. It parks `needs-human` no later
@@ -337,8 +337,8 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | AGENT-05 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-06 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-07 | Phase 25: Running Agents & Live Wave View | Complete |
-| VALID-01 | Phase 26 | Unproven — spike 003 INCONCLUSIVE (see 26-VERIFICATION.md) |
-| VALID-02 | Phase 26 | Partial — divergence park unproven; launcher deny/kill shown on scripted L7 only |
+| VALID-01 | Phase 26.1 | Pending — reopened from Phase 26 (spike 003 INCONCLUSIVE, see 26-VERIFICATION.md) |
+| VALID-02 | Phase 26.1 | Pending — reopened from Phase 26 (partial: divergence park unproven; deny/kill on scripted L7 only) |
 | VALID-03 | Phase 26 | Complete |
 | VALID-04 | Phase 26 | Complete |
 | DCTL-01 | Phase 27 | Pending |

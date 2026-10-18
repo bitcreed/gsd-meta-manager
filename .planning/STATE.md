@@ -1,20 +1,19 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.14.0
-current_phase: 27
-current_phase_name: driverctl & Driver Frontmatter
+current_phase: 26.1
+current_phase_name: Driver Validation Spike 003 Re-run
 status: planning
-stopped_at: Phase 26 complete, ready to plan Phase 27
-last_updated: "2026-10-17T03:21:22.100Z"
-last_activity: 2026-10-16
-last_activity_desc: Phase 26 complete, transitioned to Phase 27
-state_head: f4ad5dd3e60ed5bc241eb90173973396cd96816e
+stopped_at: Phase 26.1 inserted (resolves Phase 27 blocker), ready to plan Phase 26.1
+last_updated: "2026-10-18T00:22:14.347Z"
+last_activity: 2026-10-17
+last_activity_desc: Inserted Phase 26.1 (spike 003 re-run) after INCONCLUSIVE verdict
+state_head: 6a5731377094d6350a2c0145ffa66acba28af0d2
 progress:
   total_phases: 10
   completed_phases: 9
   total_plans: 3
   completed_plans: 112
-  percent: 50
 milestone_name: gsd-core 1.17.0 Sync
 ---
 
@@ -25,7 +24,7 @@ milestone_name: gsd-core 1.17.0 Sync
 See: .planning/PROJECT.md (updated 2026-10-16)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 27 — driverctl & Driver Frontmatter (BLOCKED: spike 003 INCONCLUSIVE; redesign spike 003 or re-plan Phases 27-31 first)
+**Current focus:** Phase 26.1 — Driver Validation Spike 003 Re-run (gates Phases 27-31)
 2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
@@ -33,6 +32,16 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
+Status: Phase 26.1 inserted 2026-10-17, ready to plan. Resolution of the Phase 27 blocker: re-run a
+  revised spike 003 as decimal Phase 26.1 BEFORE Phase 27 (option (a), redesign + re-run). Scope:
+  (1) count gap rounds per verifier run so one verifier re-write cannot inflate the gap count or trip
+  the cap; (2) keep the headless driver alive until its dispatched worker reports, or make the
+  launcher tell that case apart from a crash; (3) close T-26-11 (acceptance.py PASS when every check
+  is undetermined) and cheap 26-REVIEW warnings; (4) re-run Opus Run 1 (and Run 2 if the rubric
+  allows) to prove VALID-01 / VALID-02. Spend cap `[inferred — audit]`: $52.19, the unspent remainder
+  of spike 003's $60 ceiling. 26.1 gates Phases 27-31. Next: `/gsd-plan-phase 26.1`.
+
+Earlier (2026-10-16):
 Status: Ready to plan Phase 27, but BLOCKED. Phase 26 completed 2026-10-16 (3/3 plans; verification
   passed against the plan contract). Spike 003 verdict: INCONCLUSIVE. Both Run 1 attempts were SEED
   STALLED, Run 2 was skipped, and $7.81 of $60 was spent. The driver is NOT validated: VALID-01
@@ -432,6 +441,8 @@ verify-phase if the gate is fixed.
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [2026-10-17] Phase 27 blocker resolved by re-running a revised spike 003 as Phase 26.1 before Phase 27 (not re-planning 27-31). VALID-01/02 reopened and mapped to 26.1. Spend cap $52.19 for 26.1 so spike 003 stays within the original $60 rubric `[inferred — audit]`.
+
 - [v1.2]: Tech debt first to prevent archive browser from needing deleted ScreenAction variants
 - [v1.2]: No new Cargo dependencies for v1.2 (except potentially pulldown-cmark for archive markdown styling)
 - [v1.2]: Archive browser uses existing ListState pattern (not tui-tree-widget)
@@ -557,6 +568,7 @@ Recent decisions affecting current work:
 - Phase 25 added (2026-09-25): Running Agents & Live Wave View — TUI-only, read-only view of running GSD agents and executor wave progress (worktrees + `~/.claude/projects/.../subagents/*.meta.json` + transcript mtime + PLAN `wave:`); seed evidence from ttbook in ROADMAP Phase 25 details; landed in v2.0 after the v1.8.0 interim release [inferred — no new milestone, same pattern as Phase 24]; Phase 19/21 left untouched (halted by user decision)
 - Phase 24 added (2026-09-23): Roadmap tab redesign and detail-tab consolidation — TUI-only, no dependency on Phases 15-23; Phase 21 left untouched (stopped by user decision)
 - Phase 19 changed: 2026-10-14 re-plan: Phases 19, 21, 22, 23 SUPERSEDED by spikes 001/002 (capability removal + launcher hard caps instead of bash parsing / open-ended audit); code kept in place until Phase 31 [inferred]. Phase 20 marked complete (20-VERIFICATION passed 5/5) [inferred]. Phases 26-31 added: 26 Driver Validation Spike 003, 27 driverctl & Driver Frontmatter, 28 Sandboxed Driver Launcher, 29 Master Prompt & Run Templates, 30 Driver Tab on DIRECTION.md, 31 Retire Superseded Envelope & Goal-Layer Code. v2.0 restructured in place, not closed (no tag, no Cargo bump) [inferred].
+- Phase 26.1 inserted after Phase 26: Driver Validation Spike 003 Re-run: fix gap-round counting, headless-driver liveness, T-26-11; re-run Opus to prove VALID-01/02; gates 27-31 (URGENT)
 
 ### Pending Todos
 
@@ -577,7 +589,7 @@ Recent decisions affecting current work:
 - [Re-plan 2026-10-14] The T-19-* rows below and the open gaps from Phase 21 round 13 no longer
   block the milestone. Those phases are superseded. Phase 31 closes their ids, each with a pointer to
   the mechanism that superseded it. Do not resume either gap loop.
-- [Phase 26] Several risks are still unproven, and each needs a go verdict before Phase 27:
+- [Phase 26] **RESOLVED 2026-10-17 → Phase 26.1** (re-run revised spike 003 before Phase 27; 26.1 now carries the go/no-go gate for 27-31). Original entry: several risks are still unproven, and each needs a go verdict before Phase 27:
   - the gap-closure loop and divergence detection have never been observed on a real GSD phase;
   - the async-Agent "wait, never re-spawn" rule is untested, and in spike 002 it doubled the Opus
     planner cost;
@@ -709,10 +721,13 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-16
-Stopped at: Phase 26 complete (spike 003 INCONCLUSIVE). Phase 27 is next but BLOCKED until spike
-003 is redesigned or Phases 27-31 are re-planned. That is a human decision.
+Last session: 2026-10-17
+Stopped at: Phase 26.1 (spike 003 re-run) inserted; resolves the Phase 27 blocker.
 Resume file: None
+
+Next: `/gsd-plan-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
+
+Earlier (2026-10-16): Phase 26 complete (spike 003 INCONCLUSIVE). The blocker decision recorded then:
 
 Next: a human decides between (a) redesigning spike 003 and re-running it, and (b) re-planning
 Phases 27-31 with `/gsd-phase`. Either way, use `/gsd-progress` to route. Do NOT run

@@ -98,6 +98,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
 - [x] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata (completed 2026-09-25)
 - [x] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust (completed 2026-10-16)
+- [ ] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02
 - [ ] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md
 - [ ] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode
 - [ ] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation
@@ -114,7 +115,7 @@ like Phase 14 it is parallel-safe and can ship any time.
 Phase 25 is likewise TUI-only and read-only (worktrees, subagent metadata, plan files);
 it has no dependency on Phases 15-23 and is parallel-safe.
 **Re-plan (2026-10-14):** the constraints above that involve Phases 19-23 no longer bind, because
-those phases are superseded. Phase 26 gates the rest. Phases 28 and 29 both depend only on 27 and
+those phases are superseded. Phase 26 gates the rest (since 2026-10-17: Phase 26.1, after 26 came back INCONCLUSIVE). Phases 28 and 29 both depend only on 27 and
 can run in parallel. Phase 30 needs 27, 28 and 29. Phase 31 runs last.
 
 ## Phase Details
@@ -926,12 +927,53 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 - [x] 26-03-PLAN.md — Run 1 and Run 2 on Opus, measured; rubric applied; README verdict, MANIFEST row 003, STATE routing (wave 2)
 
+### Phase 26.1: Driver Validation Spike 003 Re-run (INSERTED)
+
+**Goal**: Repair the spike-003 seed and instruments that made Phase 26 INCONCLUSIVE, then re-run the
+Opus experiment so that VALID-01 and VALID-02 are proven (or definitively refuted) before any Rust is
+written for Phases 27-31.
+
+**Depends on**: Phase 26 (INCONCLUSIVE verdict; inserted 2026-10-17 as the resolution of the Phase 27
+blocker)
+
+**Requirements**: VALID-01, VALID-02 (reopened from Phase 26)
+
+**Success Criteria** (what must be TRUE):
+
+  1. Gap-round signal: one verifier re-write can no longer inflate the gap count or trip the gap-round
+     cap. Gap rounds are counted per verifier run (deduplicated), and a scripted replay of the Phase 26
+     Run 1 transcript (3 gaps across 2 verifier runs) counts at most 2 rounds and does not park on the
+     cap.
+  2. Headless driver liveness: the driver stays alive until its dispatched worker reports, or the
+     launcher distinguishes "driver ended its turn while a worker was outstanding" from a crash. A
+     scripted replay of the Run 1b shape is no longer recorded as a crash.
+  3. T-26-11 closed: `acceptance.py` never reports PASS when every check is undetermined. That case
+     yields INCONCLUSIVE (or FAIL), pinned by a test. Cheap 26-REVIEW.md advisory warnings are fixed;
+     the rest are dispositioned.
+  4. Opus Run 1 is re-run under the revised instruments and observes gap rounds 1 and 2 plus a
+     `needs-human` park no later than the third `gaps_found`, with the rule recorded by driverctl in
+     LOG.md (VALID-01). If the rubric allows after Run 1 succeeds, Run 2 (prompt rule disabled) shows
+     the launcher cap tripping at deny L+1 / kill L+2 (VALID-02). Zero duplicate planner/executor runs
+     stays true (VALID-03 regression).
+  5. The spike README records the revised verdict (GO / ADJUST / NO-GO / INCONCLUSIVE) and the
+     go / adjust / no-go for Phases 27-31, and total spike-003 spend (Phase 26 + 26.1) stays within
+     the original $60 rubric ceiling.
+
+**Notes**: Spike CONVENTIONS still apply: no `src/` changes, scratch projects only. 26.1 gates Phases
+27-31 exactly as Phase 26 did. `[inferred]` spend cap: $52.19 for 26.1 (the unspent remainder of
+spike 003's $60 ceiling after Phase 26's $7.81), keeping the original rubric's total — audit.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 26.1 to break down)
+
 ### Phase 27: driverctl & Driver Frontmatter
 
 **Goal**: The single writer of a run's state is a Rust subcommand of gsd-mm. Its frontmatter on
 DIRECTION.md is format-correct by construction and never costs a human edit.
 
-**Depends on**: Phase 26 (go verdict)
+**Depends on**: Phase 26.1 (go verdict; Phase 26 was INCONCLUSIVE)
 
 **Requirements**: DCTL-01, DCTL-02, DCTL-03, DCTL-04
 
@@ -1132,6 +1174,7 @@ Plans:
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
+| 26.1. Driver Validation Spike 003 Re-run | 0/0 | Not started | - |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
