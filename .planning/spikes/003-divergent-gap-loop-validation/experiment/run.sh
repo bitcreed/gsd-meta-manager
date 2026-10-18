@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Spike 003 runner: one scratch project + host feed watcher + the spike-003 fork of the spike-002 launcher
 # (every launch is `tools/launcher_s003.py run`, after `launcher_s003.py selftest` passes).
-# Usage: run.sh <mode>        mode: l7 | l8 | smoke1 | smoke2 | run1 | run2 | selftest
+# Usage: run.sh <mode>        mode: l7 | l8 | smoke1 | smoke2 | run1 | run2 | seed2 | selftest
 #   l7     scripted Haiku driver (cap test L7): feed-visibility probe, gap writes 1-4 spaced past the
 #          coalescing window, allow at the gap cap, deny at cap+1, kill at cap+2.
 #   l8     scripted Haiku driver (liveness test L8): early-ending worker, Stop-guard block, SendMessage resume.
 #   smoke1 Haiku, prompt v0.4, dispatch cap 0 (first dispatch is denied): proves the driver starts.
 #   smoke2 as smoke1 with the Run-2 prompt/DIRECTION and the kill stand-in on.
 #   run1   Opus, prompt v0.4 (gap-round and divergence rules on), run-1 DIRECTION.
-#   run2   Opus, Run-2 prompt/DIRECTION (rules removed), kill stand-in on.
+#   run2   Opus, Run-2 prompt/DIRECTION (rules removed), kill stand-in on, verifier-spawn drift trigger.
+#   seed2  Haiku driver, Run-2 prompt and DIRECTION, dispatch cap 2: the seed v2 gate (first verification must
+#          be gaps_found). Workers follow the Run-2 DIRECTION (Sonnet), no kill stand-in, 30 min, budget $4.
 #   selftest  offline harness (no claude, no systemctl, no network, nothing written under experiment/results):
 #          checks the gate functions and prints `run.sh selftest OK`.
+#   Drift trigger: run2 and seed2 advance the drift feed on a verifier spawn (`drift.py watch --trigger verifier`);
+#   every other mode keeps the summary trigger. run-env.txt records DRIFT_TRIGGER= and DRIFT_SHA256=.
 #   Kill stand-in (smoke2/run2): after the first `dispatch-denied` it waits for the item to park (or
 #   60 s), then until the gap-round coalescing window (gapcount.py window) + 5 s has passed since the last
 #   gap-observed / gap-coalesced LOG line, and runs spike 002's gap-writer.sh once, writing one more
@@ -24,10 +28,13 @@
 #       CAMPAIGN_CEILING_USD  default 60, may only lower the $60 spike-003 ceiling (D-07)
 # Exit: 0 launcher ran to completion; 1 launcher failed, feed watcher dead at start, or a results copy
 #       failed; 2 bad mode, bad or existing label, ceiling above 60, scratch root inside a git work tree;
+#       an existing <SCRATCH_ROOT>/project without RELAUNCH=1;
 #       5 host token too short; 6 secret gate hit; 7 kit integrity check failed (make_variant.py --check
 #       drift or launcher_s003.py selftest failure); 8 campaign ceiling would be exceeded (or unmeasurable),
 #       at the first launch or at an in-script auth relaunch (run-env.txt gets RELAUNCH_REFUSED=ceiling; the
-#       results are still copied and the secret gate still runs before the exit).
+#       results are still copied and the secret gate still runs before the exit); 9 pre-registration gate:
+#       modes run1, run2 and seed2 refuse unless `acceptance.py rubric-check --block 26.1-run2` prints
+#       RUBRIC-UNCHANGED and the PREREG_SHA of results/prereg-26.1-run2.txt is an ancestor of HEAD (no bypass).
 # Stdout line 1 is SCRATCH_ROOT=<abs path>. On exit $SCRATCH_ROOT/DONE is touched.
 # Results (derived files only, never *.jsonl / claude-config / transcripts) go to
 # experiment/results/<label>/. Spike-002 files are executed in place and never edited.
@@ -35,7 +42,7 @@ set -euo pipefail
 SELF="$(cd "$(dirname "$0")" && pwd)"
 S3="$(cd "$SELF/.." && pwd)"
 S2="$(cd "$S3/../002-launcher-caps-and-tool-frontmatter" && pwd)"
-USAGE="Usage: run.sh <l7|l8|smoke1|smoke2|run1|run2|selftest>   (env: SCRATCH_ROOT RESULTS_LABEL MODEL RELAUNCH CAMPAIGN_CEILING_USD)"
+USAGE="Usage: run.sh <l7|l8|smoke1|smoke2|run1|run2|seed2|selftest>   (env: SCRATCH_ROOT RESULTS_LABEL MODEL RELAUNCH CAMPAIGN_CEILING_USD)"
 export PYTHONDONTWRITEBYTECODE=1
 
 # ---- D-07 campaign-ceiling helpers (defined before the mode dispatch so `selftest` can call them)
@@ -54,8 +61,92 @@ relaunch_gate() {
   ceiling_ok "$1" "$4" "$5"
 }
 
+# mode_config MODE: the mode table. Sets MODEL_D PROMPT DIRECTION CAP_D CAP_M CAP_G BUDGET STANDIN TRIGGER VARIANT_CHECK.
+mode_config() {
+  STANDIN=0; TRIGGER=summary; VARIANT_CHECK=0; CAP_G=2
+  case "$1" in
+    l7)
+      MODEL_D=haiku; PROMPT="$S3/experiment/cap-tests/L7-drift-gap-cap.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
+      CAP_D=5; CAP_M=10; BUDGET=1 ;;
+    l8)
+      MODEL_D=haiku; PROMPT="$S3/experiment/cap-tests/L8-early-worker.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
+      CAP_D=3; CAP_M=10; BUDGET=1 ;;
+    smoke1)
+      MODEL_D=haiku; PROMPT="$S3/MASTER-PROMPT.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
+      CAP_D=0; CAP_M=5; BUDGET=1 ;;
+    smoke2)
+      MODEL_D=haiku; PROMPT="$S3/experiment/MASTER-PROMPT.run2.md"; DIRECTION="$S3/templates/DIRECTION.run2.md"
+      CAP_D=0; CAP_M=5; BUDGET=1; STANDIN=1; VARIANT_CHECK=1 ;;
+    run1)
+      MODEL_D=opus; PROMPT="$S3/MASTER-PROMPT.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
+      CAP_D=10; CAP_M=90; BUDGET=15 ;;
+    run2)
+      MODEL_D=opus; PROMPT="$S3/experiment/MASTER-PROMPT.run2.md"; DIRECTION="$S3/templates/DIRECTION.run2.md"
+      CAP_D=10; CAP_M=90; BUDGET=15; STANDIN=1; TRIGGER=verifier; VARIANT_CHECK=1 ;;
+    seed2)
+      MODEL_D=haiku; PROMPT="$S3/experiment/MASTER-PROMPT.run2.md"; DIRECTION="$S3/templates/DIRECTION.run2.md"
+      CAP_D=2; CAP_M=30; BUDGET=4; TRIGGER=verifier; VARIANT_CHECK=1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# prereg_gate BLOCK (operator item 3, D-07): the rubric clause must be committed before any paid spend. Requires
+# `acceptance.py rubric-check --block BLOCK` to print exactly RUBRIC-UNCHANGED (rc 0) and the PREREG_SHA recorded in
+# results/prereg-BLOCK.txt to be an ancestor of HEAD. Read-only; no environment variable skips it.
+PREREG_BLOCK=26.1-run2
+prereg_gate() {
+  local block="$1" out rc=0 pf sha
+  case "$block" in ''|.*|*[!A-Za-z0-9._-]*) echo "run.sh: prereg_gate: bad block name '$block'" >&2; return 1 ;; esac
+  out="$(python3 -I "$S3/experiment/acceptance.py" rubric-check --block "$block" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] || [ "$out" != RUBRIC-UNCHANGED ]; then
+    echo "run.sh: rubric-check --block $block is not RUBRIC-UNCHANGED (rc=$rc): $(printf '%s\n' "$out" | head -1)" >&2
+    return 1
+  fi
+  pf="$S3/experiment/results/prereg-$block.txt"
+  sha="$(sed -n 's/^PREREG_SHA=\([0-9a-f]\{7,40\}\)$/\1/p' "$pf" 2>/dev/null | head -1 || true)"
+  if [ -z "$sha" ]; then echo "run.sh: no valid PREREG_SHA= in $pf" >&2; return 1; fi
+  if ! git -C "$S3" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+    echo "run.sh: PREREG_SHA $sha in $pf is not an ancestor of HEAD" >&2
+    return 1
+  fi
+  return 0
+}
+
+# own_scope_units RUN_ID (WR-06): reads unit lines on stdin; prints the first field only when it is exactly
+# gsdmm-<RUN_ID>-<one or more digits>.scope. String operations only, so a '.' in a label matches itself alone.
+own_scope_units() {
+  local pre="gsdmm-$1-" unit rest
+  while read -r unit rest || [ -n "$unit" ]; do
+    case "$unit" in '●'|'*') unit="${rest%% *}" ;; esac    # systemctl marks failed units with a leading bullet
+    case "$unit" in "$pre"*.scope) ;; *) continue ;; esac
+    rest="${unit#"$pre"}"; rest="${rest%.scope}"
+    case "$rest" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\n' "$unit"
+  done
+}
+
+# standin_write PROJECT LOGFILE TRIGGER (WR-08): the timestamp is taken BEFORE gap-writer.sh writes, so the snapshot
+# of that write is never older than the stand-in's own timestamp and acceptance.py labels it stand-in, even at
+# 1-second resolution.
+standin_write() {
+  local ts
+  ts="$(date -u +%FT%TZ)"
+  bash "$S2/experiment/cap-tests/gap-writer.sh" "$1" 1 0 > /dev/null
+  echo "$ts trigger=$3 wrote gaps_found via gap-writer.sh" >> "$2"
+}
+
+# scratch_guard PROJECT RELAUNCH (WR-09): setup-scratch.sh rm -rf's PROJECT; an existing one is evidence unless this
+# is an explicit RELAUNCH=1 (which skips setup).
+scratch_guard() {
+  if [ -e "$1" ] && [ "$2" != 1 ]; then
+    echo "run.sh: $1 already exists; choose a new SCRATCH_ROOT" >&2
+    return 2
+  fi
+  return 0
+}
+
 run_selftest() {
-  local tmp rc root lrj
+  local tmp rc root lrj got vf ts mt
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   st_fail() { echo "run.sh selftest FAIL: $1" >&2; exit 1; }
@@ -81,39 +172,63 @@ run_selftest() {
   [ "$rc" = 1 ] || st_fail "relaunch_gate lowered ceiling 8 want rc 1 got $rc"
   rc=0; relaunch_gate "$root" "$root/cur" "$tmp/scratch/no-such.json" 60 15 2>/dev/null || rc=$?
   [ "$rc" = 2 ] || st_fail "relaunch_gate missing launcher-result want rc 2 (unmeasurable) got $rc"
+  # mode_config: the mode table
+  mc() { ( mode_config "$1" && echo "$MODEL_D/$CAP_D/$CAP_M/$CAP_G/$BUDGET/$STANDIN/$TRIGGER/$VARIANT_CHECK/${PROMPT##*/}/${DIRECTION##*/}" ); }
+  [ "$(mc seed2)" = "haiku/2/30/2/4/0/verifier/1/MASTER-PROMPT.run2.md/DIRECTION.run2.md" ] || st_fail "mode_config seed2: $(mc seed2)"
+  [ "$(mc run2)" = "opus/10/90/2/15/1/verifier/1/MASTER-PROMPT.run2.md/DIRECTION.run2.md" ] || st_fail "mode_config run2: $(mc run2)"
+  [ "$(mc run1)" = "opus/10/90/2/15/0/summary/0/MASTER-PROMPT.md/DIRECTION.run1.md" ] || st_fail "mode_config run1: $(mc run1)"
+  [ "$(mc l7)" = "haiku/5/10/2/1/0/summary/0/L7-drift-gap-cap.md/DIRECTION.run1.md" ] || st_fail "mode_config l7: $(mc l7)"
+  [ "$(mc l8)" = "haiku/3/10/2/1/0/summary/0/L8-early-worker.md/DIRECTION.run1.md" ] || st_fail "mode_config l8: $(mc l8)"
+  [ "$(mc smoke1)" = "haiku/0/5/2/1/0/summary/0/MASTER-PROMPT.md/DIRECTION.run1.md" ] || st_fail "mode_config smoke1: $(mc smoke1)"
+  [ "$(mc smoke2)" = "haiku/0/5/2/1/1/summary/1/MASTER-PROMPT.run2.md/DIRECTION.run2.md" ] || st_fail "mode_config smoke2: $(mc smoke2)"
+  rc=0; ( mode_config bogus ) || rc=$?
+  [ "$rc" = 2 ] || st_fail "mode_config bogus want rc 2 got $rc"
+  # own_scope_units (WR-06): only gsdmm-<RUN_ID>-<digits>.scope
+  got="$(printf '%s\n' 'gsdmm-s003-r261-run2-1792290303.scope loaded active running x' \
+    'gsdmm-s003-r261-run2-retry-1792290400.scope loaded active running x' \
+    'gsdmm-s003-r261-run2b-1792290500.scope loaded active running x' \
+    'gsdmm-s003-r261-run2-.scope loaded active running x' \
+    'gsdmm-s003-r261-run2-12a.scope loaded active running x' \
+    'gsdmm-s003-r261-run2-12.scope.d loaded active running x' \
+    'xgsdmm-s003-r261-run2-12.scope loaded active running x' | own_scope_units s003-r261-run2)"
+  [ "$got" = "gsdmm-s003-r261-run2-1792290303.scope" ] || st_fail "own_scope_units s003-r261-run2 printed: $got"
+  got="$(printf '%s\n' 'gsdmm-s003-r261-run2-1792290303.scope loaded' 'gsdmm-s003-r261-run2b-5.scope loaded' | own_scope_units s003-r261-run2b)"
+  [ "$got" = "gsdmm-s003-r261-run2b-5.scope" ] || st_fail "own_scope_units printed a unit of another run id: $got"
+  got="$(printf '%s\n' 'gsdmm-s003-rXYZ-1.scope loaded' 'gsdmm-s003-r261-1.scope loaded' | own_scope_units 's003-r.61')"
+  [ -z "$got" ] || st_fail "own_scope_units: a '.' in the run id must match only itself, printed: $got"
+  # standin_write (WR-08): the logged timestamp is not after the written VERIFICATION file's mtime
+  mkdir -p "$tmp/p/.planning/phases/01-slugify"
+  standin_write "$tmp/p" "$tmp/standin.log" parked
+  vf="$tmp/p/.planning/phases/01-slugify/01-VERIFICATION.md"
+  [ -f "$vf" ] || st_fail "standin_write did not write 01-VERIFICATION.md via gap-writer.sh"
+  ts="$(cut -d' ' -f1 "$tmp/standin.log")"; mt="$(date -u -r "$vf" +%FT%TZ)"
+  [ "$(sed -n 's/^[^ ]* //p' "$tmp/standin.log")" = "trigger=parked wrote gaps_found via gap-writer.sh" ] || st_fail "standin.log line form: $(cat "$tmp/standin.log")"
+  [[ "$ts" < "$mt" || "$ts" == "$mt" ]] || st_fail "standin_write ts $ts is after the VERIFICATION mtime $mt"
+  # scratch_guard (WR-09)
+  mkdir -p "$tmp/existing"
+  rc=0; scratch_guard "$tmp/existing" 0 2>/dev/null || rc=$?
+  [ "$rc" = 2 ] || st_fail "scratch_guard existing dir, RELAUNCH 0 want rc 2 got $rc"
+  rc=0; scratch_guard "$tmp/missing" 0 2>/dev/null || rc=$?
+  [ "$rc" = 0 ] || st_fail "scratch_guard missing dir want rc 0 got $rc"
+  rc=0; scratch_guard "$tmp/existing" 1 2>/dev/null || rc=$?
+  [ "$rc" = 0 ] || st_fail "scratch_guard existing dir, RELAUNCH 1 want rc 0 got $rc"
+  # prereg_gate: a block that does not exist refuses (fail closed) and touches nothing
+  rc=0; prereg_gate no-such-block 2>/dev/null || rc=$?
+  [ "$rc" != 0 ] || st_fail "prereg_gate no-such-block must refuse"
+  rc=0; prereg_gate '../x' 2>/dev/null || rc=$?
+  [ "$rc" != 0 ] || st_fail "prereg_gate bad block name must refuse"
   echo "run.sh selftest OK"
   exit 0
 }
 
 MODE="${1:-}"
 [ "$MODE" = selftest ] && run_selftest
-STANDIN=0
-case "$MODE" in
-  l7)
-    MODEL_D=haiku; PROMPT="$S3/experiment/cap-tests/L7-drift-gap-cap.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
-    CAP_D=5; CAP_M=10; CAP_G=2; BUDGET=1 ;;
-  l8)
-    MODEL_D=haiku; PROMPT="$S3/experiment/cap-tests/L8-early-worker.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
-    CAP_D=3; CAP_M=10; CAP_G=2; BUDGET=1 ;;
-  smoke1)
-    MODEL_D=haiku; PROMPT="$S3/MASTER-PROMPT.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
-    CAP_D=0; CAP_M=5; CAP_G=2; BUDGET=1 ;;
-  smoke2)
-    MODEL_D=haiku; PROMPT="$S3/experiment/MASTER-PROMPT.run2.md"; DIRECTION="$S3/templates/DIRECTION.run2.md"
-    CAP_D=0; CAP_M=5; CAP_G=2; BUDGET=1; STANDIN=1 ;;
-  run1)
-    MODEL_D=opus; PROMPT="$S3/MASTER-PROMPT.md"; DIRECTION="$S3/templates/DIRECTION.run1.md"
-    CAP_D=10; CAP_M=90; CAP_G=2; BUDGET=15 ;;
-  run2)
-    MODEL_D=opus; PROMPT="$S3/experiment/MASTER-PROMPT.run2.md"; DIRECTION="$S3/templates/DIRECTION.run2.md"
-    CAP_D=10; CAP_M=90; CAP_G=2; BUDGET=15; STANDIN=1 ;;
-  *) echo "$USAGE" >&2; exit 2 ;;
-esac
+mode_config "$MODE" || { echo "$USAGE" >&2; exit 2; }
 MODEL="${MODEL:-$MODEL_D}"
 
 # ---- pre-launch gate chain: every gate runs before any scratch root, results dir, systemctl or credential read
 # (1) The Run-2 files are asserted derivations of the v0.4 prompt; refuse to launch on drift.
-if [ "$STANDIN" = 1 ] && ! python3 -I "$S3/tools/make_variant.py" --check >&2; then
+if [ "$VARIANT_CHECK" = 1 ] && ! python3 -I "$S3/tools/make_variant.py" --check >&2; then
   echo "run.sh: make_variant.py --check reports drift" >&2
   exit 7
 fi
@@ -145,6 +260,15 @@ if [ -e "$RES" ] && [ "${RELAUNCH:-0}" != 1 ]; then
   echo "run.sh: experiment/results/$LABEL exists; choose a new RESULTS_LABEL (or RELAUNCH=1 to continue it)" >&2
   exit 2
 fi
+# (4b) D-07 pre-registration (operator item 3): no paid mode launches before the 26.1-run2 rubric clause is
+# committed. Placed before the campaign gate; there is deliberately no environment bypass.
+case "$MODE" in
+  run1|run2|seed2)
+    if ! prereg_gate "$PREREG_BLOCK"; then
+      echo "run.sh: rubric block $PREREG_BLOCK is not pre-registered (commit it and prereg-$PREREG_BLOCK.txt first)" >&2
+      exit 9
+    fi ;;
+esac
 # (5) D-07 campaign gate: measured spike-003 spend (Phase 26 + 26.1, Haiku included) + this launch's
 # budget must stay within the ceiling. Applies to RELAUNCH=1 too.
 CB_RC=0
@@ -182,6 +306,7 @@ if git -C "$anc" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 2
 fi
 PROJECT="$SCRATCH_ROOT/project"; STATE_DIR="$SCRATCH_ROOT/state"; RUN_DIR="$PROJECT/.planning/meta-manager/drivers/$RUN_ID"
+scratch_guard "$PROJECT" "${RELAUNCH:-0}" || exit 2     # WR-09
 
 # (b) host token life
 MINUTES_LEFT="$(python3 -I - <<'PY'
@@ -210,7 +335,10 @@ stop_bg() {
 }
 cleanup() {
   stop_bg
-  systemctl --user stop "gsdmm-$RUN_ID-*.scope" >/dev/null 2>&1 || true
+  # WR-06: stop only this run's own scope units, matched exactly (gsdmm-<RUN_ID>-<digits>.scope)
+  { systemctl --user list-units --all --plain --no-legend --type=scope 'gsdmm-*' 2>/dev/null || true; } \
+    | own_scope_units "$RUN_ID" \
+    | while IFS= read -r unit; do systemctl --user stop "$unit" >/dev/null 2>&1 || true; done || true
   [ -d "$SCRATCH_ROOT" ] && touch "$SCRATCH_ROOT/DONE" || true
 }
 trap cleanup EXIT
@@ -223,6 +351,7 @@ if [ "${RELAUNCH:-0}" != 1 ]; then
     echo "SCRATCH_ROOT=$SCRATCH_ROOT"; echo "PROJECT=$PROJECT"; echo "STATE_DIR=$STATE_DIR"; echo "RUN_DIR=$RUN_DIR"
     echo "PROMPT_FILE=$PROMPT"; echo "PROMPT_SHA256=$(sha256sum "$PROMPT" | cut -d' ' -f1)"
     echo "DIRECTION_FILE=$DIRECTION"
+    echo "DRIFT_TRIGGER=$TRIGGER"; echo "DRIFT_SHA256=$(sha256sum "$S3/tools/drift.py" | cut -d' ' -f1)"
     echo "CAPS=dispatches=$CAP_D,minutes=$CAP_M,gap_rounds=$CAP_G"; echo "MAX_BUDGET_USD=$BUDGET"
     echo "CLAUDE_VERSION=$(claude --version 2>/dev/null | head -1)"
     echo "LAUNCHER_SHA256=$(sha256sum "$S2/tools/launcher.py" | cut -d' ' -f1)"
@@ -265,8 +394,7 @@ standin_loop() {
     if awk -v n="$now" -v l="$last" -v w="$win" 'BEGIN { exit !(n - l >= w + 5) }'; then break; fi
     sleep 0.5
   done
-  bash "$S2/experiment/cap-tests/gap-writer.sh" "$PROJECT" 1 0 > /dev/null
-  echo "$(date -u +%FT%TZ) trigger=$trig wrote gaps_found via gap-writer.sh" >> "$SCRATCH_ROOT/standin.log"
+  standin_write "$PROJECT" "$SCRATCH_ROOT/standin.log" "$trig"
 }
 
 cred_expiry() {
@@ -274,8 +402,11 @@ cred_expiry() {
 }
 
 # (e) host feed watcher for the life of the launch; WR-07: a dead watcher aborts the launch
-python3 -I "$S3/tools/drift.py" watch --project "$PROJECT" --log "$SCRATCH_ROOT/drift.log" \
-  --snapshots "$SCRATCH_ROOT/verification" > "$SCRATCH_ROOT/watch.out" 2>&1 &
+# The verifier-spawn trigger reads the driver's claude-config, which may not exist yet (mkdir -p is idempotent).
+mkdir -p "$STATE_DIR"
+WATCH_ARGS=(--project "$PROJECT" --log "$SCRATCH_ROOT/drift.log" --snapshots "$SCRATCH_ROOT/verification" --trigger "$TRIGGER")
+if [ "$TRIGGER" = verifier ]; then WATCH_ARGS+=(--claude-config "$STATE_DIR/claude-config"); fi
+python3 -I "$S3/tools/drift.py" watch "${WATCH_ARGS[@]}" > "$SCRATCH_ROOT/watch.out" 2>&1 &
 WATCH_PID=$!
 sleep 1
 if kill -0 "$WATCH_PID" 2>/dev/null; then
@@ -290,7 +421,6 @@ fi
 if [ "$STANDIN" = 1 ]; then standin_loop & STANDIN_PID=$!; fi
 
 # (f) launch under a CLAUDE*/ANTHROPIC*-scrubbed environment; relaunch after an auth failure
-mkdir -p "$STATE_DIR"
 N=$(( $(find "$STATE_DIR" -maxdepth 1 -name "launch-*.jsonl" | wc -l) + 1 ))
 while :; do
   EXP0="$(cred_expiry)"
