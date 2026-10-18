@@ -2,18 +2,31 @@
 """Spike 003 mechanical acceptance checks over a run's tool-written LOG.md and state files.
 
 Reads only files a run produced under experiment/results/<label>/ (LOG.md, state.json, DIRECTION.md,
-drift.log, verification/, standin.log, and a dup_check report). It never reads a transcript and never
-writes anything. A check whose input file is missing prints UNDETERMINED, never PASS.
+drift.log, verification/, standin.log, stop-guard.log, and a dup_check report). It never reads a transcript
+and never writes anything. A check whose input file is missing prints UNDETERMINED, never PASS.
 
-Check ids (the README pre-registers them verbatim):
+Modes and check ids (the README pre-registers them verbatim):
+  l7    L7-1 L7-2 L7-3 L7-4 L7-5 L7-6                      scripted misbehaving driver (gap-round cap)
+  l8    L8-1 L8-2 L8-3 L8-4                                scripted early-worker probe (Stop guard, SendMessage)
   run1  A1 A2 A3 A4 A6 A7 A8 A9 A10   then `SEED {VALID|RECOGNISED|CONVERGED|STALLED}`
+  run2  A5-deny A5-kill A11 A6 A7 A8 A9 A10   then `SEED ...` (prompt divergence rule disabled)
 
 Usage:
-  acceptance.py run1 <results-dir> [--dup-report FILE]
+  acceptance.py l7|l8|run1|run2 <results-dir> [--dup-report FILE]
+  acceptance.py rubric-check [--sha S] [--block 26.1]
   acceptance.py selftest
 
-Each check prints `{ID} {PASS|FAIL|NOT-REACHED|UNDETERMINED} {evidence}`; then `RESULT {PASS|FAIL}`.
-Exit 0 iff no FAIL line.
+Each check prints `{ID} {PASS|FAIL|NOT-REACHED|UNDETERMINED} {evidence}`; then `RESULT {PASS|FAIL|INCONCLUSIVE}`.
+  RESULT FAIL          exit 1   some check printed FAIL
+  RESULT INCONCLUSIVE  exit 2   no FAIL, but a check printed UNDETERMINED or no check printed PASS
+                                (a missing or empty results dir lands here: closes T-26-11)
+  RESULT PASS          exit 0   no FAIL, no UNDETERMINED and at least one PASS (NOT-REACHED never blocks PASS)
+
+`rubric-check` compares the README's pre-registered block with the one at the prereg sha:
+  (no --block)   `<!-- rubric:start -->`..`<!-- rubric:end -->` against results/prereg.txt (the Phase 26 rubric)
+  --block 26.1   `<!-- rubric-26.1:start -->`..`<!-- rubric-26.1:end -->` against results/prereg-26.1.txt;
+                 fail-closed: RUBRIC-MISSING (exit 2) while the prereg file or either block is absent
+  RUBRIC-UNCHANGED exit 0, RUBRIC-CHANGED exit 1, RUBRIC-MISSING exit 2.
 """
 import contextlib
 import io
@@ -563,14 +576,21 @@ def seed_class(ctx, a10):
     if ctx.events is None:
         return "STALLED"
     parked = any(e.kv.get("state") == "parked" for e in ctx.of("status", "I-01"))
+    done = any(e.kv.get("state") == "done" for e in ctx.of("status", "I-01"))
     round1 = any(e.kv.get("round", "").isdigit() and int(e.kv["round"]) >= 1 for e in ctx.dispatches())
     snaps = ctx.snapshots() or []
-    passed = any(s["status"] == "passed" for s in snaps) or any(e.kv.get("state") == "done" for e in ctx.of("status", "I-01"))
+    passed = any(s["status"] == "passed" for s in snaps) or done
     if parked and not round1:
         return "RECOGNISED"
     if passed:
         return "CONVERGED"
-    if round1 and a10 != FAIL:
+    # [inferred - audit, pre-registered by 26.1-04] an instrument death after round 1 (last launch-end stalled or
+    # crashed, I-01 never parked or done) is a STALLED run for the retry rule, never a VALID seed that NO-GO (e)
+    # could then fire on.
+    ends = ctx.of("launch-end")
+    if ends and ends[-1].kv.get("status") in ("stalled", "crashed") and not (parked or done):
+        return "STALLED"
+    if round1 and a10 == PASS:                      # WR-06: VALID needs a passing A10, not "not FAIL"
         return "VALID"
     return "STALLED"
 
@@ -589,12 +609,22 @@ def checks_for(mode):
     return None
 
 
+def aggregate(statuses):
+    """(result, rc) for a set of check statuses. D-04 / T-26-11: only a decided run with a PASS reads as PASS."""
+    vals = set(statuses)
+    if FAIL in vals:
+        return "FAIL", 1
+    if UNDET in vals or PASS not in vals:
+        return "INCONCLUSIVE", 2
+    return "PASS", 0
+
+
 def run_mode(mode, results, dup_report=None):
-    """(lines, ok). One line per check, then SEED (run1/run2), then RESULT."""
+    """(lines, rc). One line per check, then SEED (run1/run2), then RESULT; rc 0 PASS / 1 FAIL / 2 INCONCLUSIVE."""
     ctx = Ctx(results, dup_report)
     table = checks_for(mode)
     if table is None:
-        return [f"acceptance: unknown mode {mode!r}"], False
+        return [f"acceptance: unknown mode {mode!r}"], 2
     res = {}
     lines = []
     for cid, fn in table:
@@ -603,9 +633,9 @@ def run_mode(mode, results, dup_report=None):
         lines.append(f"{cid} {st} {ev}")
     if mode in ("run1", "run2"):
         lines.append("SEED " + seed_class(ctx, res.get("A10")))
-    ok = FAIL not in res.values()
-    lines.append("RESULT " + ("PASS" if ok else "FAIL"))
-    return lines, ok
+    result, rc = aggregate(res.values())
+    lines.append("RESULT " + result)
+    return lines, rc
 
 
 def main(argv=None):
@@ -637,9 +667,9 @@ def main(argv=None):
     if len(argv) != 2:
         print("Usage: acceptance.py l7|run1|run2 <results-dir> [--dup-report FILE] | rubric-check [--sha S] | selftest")
         return 2
-    lines, ok = run_mode(argv[0], argv[1], dup)
+    lines, rc = run_mode(argv[0], argv[1], dup)
     print("\n".join(lines))
-    return 0 if ok else 1
+    return rc
 
 
 # ---------------------------------------------------------------- selftest
@@ -1003,6 +1033,32 @@ def selftest_modes(td, outs):
     d = mkres(td, "recognised", tracer_head()[:5] + tracer_tail(), state=json.loads(tracer_state()))
     _, out = run_on(d, "run1")
     assert "SEED RECOGNISED" in out, out
+    # ---------------- WR-06 / T-26-11: SEED VALID needs A10 PASS; a stalled or crashed exit is STALLED
+    d = mkres(td, "seedundet", tracer_head() + tracer_tail(), state=json.loads(tracer_state()), dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A10") == UNDET and "SEED STALLED" in out and "SEED VALID" not in out, out
+    d = mkres(td, "seednotreached", tracer_head() + tracer_tail(), state=json.loads(tracer_state()),
+              drift=["2026-10-16T10:00:00Z start gen=0"], dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A10") == NOTREACHED and "SEED STALLED" in out and "SEED VALID" not in out, out
+    lines, snaps = drift_for((1, 2, 3))
+    for n, gl in zip(snaps, (gaps_for(1), gaps_for(2), gaps_for(3))):
+        snaps[n] = snap_text("gaps_found", gl)
+
+    def seeded(name, tail):
+        return run_on(mkres(td, name, tracer_head() + tail, state=json.loads(tracer_state()), drift=lines, snaps=snaps,
+                            dup=DUP_OK.format(v=3)), "run1")[1]
+    out = seeded("seedvalid", tracer_tail())
+    assert status_of(out, "A10") == PASS and "SEED VALID" in out, out
+    for how in ("crashed", "stalled"):
+        out = seeded("seed" + how, [line(736, "RUN", "launch-end", rc=0, cost_usd=1.0, status=how)])
+        assert status_of(out, "A10") == PASS and "SEED STALLED" in out and "SEED VALID" not in out, (how, out)
+    out = seeded("seedstalledparked", tracer_tail()[:3] + [line(736, "RUN", "launch-end", rc=0, status="stalled")])
+    assert "SEED VALID" in out, out            # I-01 did park, so the instrument-death precondition does not apply
+    # ---------------- three-way RESULT through the CLI: PASS with NOT-REACHED, FAIL outranks UNDETERMINED
+    rc, out = r2("selfpark")
+    assert status_of(out, "A5-deny") == NOTREACHED and status_of(out, "A10") == NOTREACHED, out
+    assert rc == 0 and out.rstrip().endswith("RESULT PASS") and "UNDETERMINED" not in out, (rc, out)
     # ---------------- rubric-check in a temp git repo
     repo = os.path.join(td, "repo")
     spike = os.path.join(repo, "spike")
@@ -1076,11 +1132,19 @@ def selftest():
         tot_line = re.search(r"^TOTAL driver=\S+ workers=\S+ total=([0-9.]+)", cost_out, re.M)
         assert tot_line and abs(float(tot_line.group(1)) - want_total) < 0.01, (cost_out, want_total)
 
+        # T-26-11: this fixture used to carry no drift.log, so A8 and A10 were UNDETERMINED and the old aggregate
+        # still printed RESULT PASS. It now gains drift.log + snapshots (three bursts, gens 1 2 3) so EVERY check
+        # decides; the undecided variants are asserted INCONCLUSIVE below.
+        lines, snaps = drift_for((1, 2, 3))
+        for n, gl in zip(snaps, (gaps_for(1), gaps_for(2), gaps_for(3))):
+            wr(os.path.join(res, "verification", n), snap_text("gaps_found", gl))
+        wr(os.path.join(res, "drift.log"), "\n".join(lines) + "\n")
+
         rc, out = run_cli(["run1", res, "--dup-report", os.path.join(res, "dup-report.txt")])
         outs.append(out)
-        for cid in ("A1", "A2", "A3", "A4", "A6", "A7"):
+        for cid in ("A1", "A2", "A3", "A4", "A6", "A7", "A8", "A9", "A10"):
             assert status_of(out, cid) == PASS, (cid, out)
-        assert "SEED VALID" in out and rc == 0 and "RESULT PASS" in out, (rc, out)
+        assert "SEED VALID" in out and rc == 0 and out.rstrip().endswith("RESULT PASS"), (rc, out)
 
         # a third closure round makes A1 FAIL and the exit non-zero
         with open(os.path.join(res, "LOG.md"), "a") as f:
@@ -1088,16 +1152,40 @@ def selftest():
                          dispatch="7/8", phase=1) + "\n")
         rc, out = run_cli(["run1", res, "--dup-report", os.path.join(res, "dup-report.txt")])
         outs.append(out)
-        assert status_of(out, "A1") == FAIL and rc != 0 and "RESULT FAIL" in out, (rc, out)
+        assert status_of(out, "A1") == FAIL and rc == 1 and out.rstrip().endswith("RESULT FAIL"), (rc, out)
 
-        # no dup report -> A7 UNDETERMINED, never PASS
+        # no dup report -> A7 UNDETERMINED, never PASS; PASS plus UNDETERMINED (and a FAIL absent) is INCONCLUSIVE
         rc, out = run_cli(["run1", res])
         outs.append(out)
         assert status_of(out, "A7") == UNDET, out
-        # missing results dir -> UNDETERMINED across the board, no PASS
+        # (the appended third round still makes A1 FAIL, so FAIL outranks UNDETERMINED: RESULT FAIL, rc 1)
+        assert rc == 1 and out.rstrip().endswith("RESULT FAIL"), (rc, out)
+        wr(os.path.join(res, "LOG.md"), tracer_log())
+        rc, out = run_cli(["run1", res])
+        outs.append(out)
+        assert status_of(out, "A7") == UNDET and status_of(out, "A1") == PASS, out
+        assert rc == 2 and out.rstrip().endswith("RESULT INCONCLUSIVE"), (rc, out)
+        # missing results dir and empty results dir -> UNDETERMINED across the board, INCONCLUSIVE, rc 2, in every mode
         rc, out = run_cli(["run1", os.path.join(td, "nowhere")])
         outs.append(out)
         assert status_of(out, "A4") == UNDET and status_of(out, "A6") == UNDET, out
+        empty = os.path.join(td, "emptydir")
+        os.makedirs(empty)
+        for mode in ("l7", "run1", "run2"):
+            for target in (os.path.join(td, "nowhere"), empty):
+                rc, out = run_cli([mode, target])
+                outs.append(out)
+                assert rc == 2 and out.rstrip().endswith("RESULT INCONCLUSIVE"), (mode, target, rc, out)
+                assert "RESULT PASS" not in out, (mode, target, out)
+        assert run_mode("bogus", empty)[1] == 2
+        # three-way aggregate, pure
+        assert aggregate([PASS, PASS]) == ("PASS", 0)
+        assert aggregate([PASS, NOTREACHED]) == ("PASS", 0)
+        assert aggregate([PASS, FAIL, UNDET]) == ("FAIL", 1)
+        assert aggregate([PASS, UNDET]) == ("INCONCLUSIVE", 2)
+        assert aggregate([UNDET, UNDET]) == ("INCONCLUSIVE", 2)
+        assert aggregate([NOTREACHED, NOTREACHED]) == ("INCONCLUSIVE", 2)       # nothing ever passed
+        assert aggregate([]) == ("INCONCLUSIVE", 2)
         selftest_modes(td, outs)
     assert not any(MARKER in o for o in outs), "transcript text leaked into a tool's output"
     print("selftest OK")
