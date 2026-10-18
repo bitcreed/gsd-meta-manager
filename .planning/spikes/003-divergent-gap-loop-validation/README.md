@@ -382,3 +382,91 @@ dispatch (A1) and divergence naming (A3) were never observed; A8, A9 and A10 are
 A5-deny, A5-kill, A11 and A7 were never measured, so the launcher deny at L+1 and kill at L+2 are shown only by
 the scripted L7 run; the organic gap-rounds-versus-divergence precedence (D1c) was never exercised; and the
 wait-never-respawn rule over a complete loop was not demonstrated (run1b ended with the worker unreported).
+
+## Phase 26.1 revision (pre-registered before the first 26.1 paid launch)
+
+Phase 26.1 repairs the two instruments that stalled Phase 26 (the gap count and driver liveness) and re-runs
+the Opus experiment. The Phase 26 rubric above (the first marked block) applies to every 26.1 run except
+where the 26.1 block below says otherwise; the Phase 26 block is byte-unchanged and
+`acceptance.py rubric-check` still compares it with `results/prereg.txt`. The 26.1 block is committed alone,
+then `experiment/results/prereg-26.1.txt` records that commit's sha in a later commit; both precede every
+launch whose label is `r261a`, `r261b` or `r261-run2`. `acceptance.py rubric-check --block 26.1` compares the
+block with the one at that sha (`RUBRIC-MISSING` while either is absent). The Haiku gate runs (`r261-l8`,
+`r261-l7`, `r261-smoke1`, `r261-smoke2`) ran before this commit so that a kit defect found live could still
+change an instrument; no verdict input is fitted to them (the L8 definitions were committed in 26.1-02 before
+those runs, and the L7 checks are Phase 26's unchanged).
+
+<!-- rubric-26.1:start -->
+1. **Counting.** A new gap round is a `gaps_found` VERIFICATION.md write more than `COALESCE_S = 45` seconds
+   (sliding window, float mtime, strict comparison) after the previous such write for the same phase. The rule
+   is defined once in `tools/gapcount.py`, gated live by `tools/launcher_s003.py` (spike 002's gate and trip
+   predicates are unchanged), and scored by A8 and A10 on the last snapshot of each burst of consecutive
+   `gaps_found` snapshots. A9's text is unchanged and reads only `gap-observed` lines. Precision edge
+   `[inferred — audit]`: scoring groups on `drift.log`'s whole-second UTC while the launcher groups on float
+   mtime; a disagreement between the two surfaces as an A9 FAIL (ADJUST J2), never as a silent pass.
+2. **Liveness instruments.** The Stop guard (`tools/stop_guard.py`, at most 3 blocks per run) keeps a driver
+   alive while a dispatch has no report, and the launcher labels a clean exit (rc 0, result success) with a
+   dispatch that has no report and no tripped cap as `stalled`, not `crashed`.
+3. **RESULT is three-way.** `RESULT PASS` needs zero FAIL, zero UNDETERMINED and at least one PASS (exit 0);
+   `RESULT FAIL` is exit 1; `RESULT INCONCLUSIVE` is exit 2. This supersedes "`RESULT PASS` means no FAIL
+   line" for 26.1 runs.
+4. **Check and class changes.** `SEED VALID` requires A10 PASS (WR-06). `SEED STALLED` also holds when the last
+   `launch-end` status is `stalled` or `crashed` and I-01 never reached `parked` or `done` `[inferred — audit]`
+   (a RECOGNISED or CONVERGED run is never reclassified). A9 also passes with verifier runs equal to the count
+   plus one on a converged run (WR-03). A8 counts a title or slug only when it equals a quoted or backticked
+   span of the `gaps:` block (WR-04). A11 uses only the look-ahead (WR-05).
+5. **Mode l8 and the gates before the first paid launch.** L8-1: `stop-guard.log` has a
+   `block item=I-01` line. L8-2: the dup report shows `SENDMESSAGE=` at least 1. L8-3: `DUP=0` and `workers=`
+   equals the LOG `dispatched` count. L8-4: I-01 has a `report` and `RUN | end` is present, and the last
+   `launch-end` status is neither `crashed` nor `stalled`; a log with no `launch-end` line is FAIL
+   `[inferred — audit]` (no observed exit status). Before the first paid launch: one `r261-l7` attempt with
+   L7-1 to L7-6 PASS (scripted at 50 s spacing), one `r261-l8` attempt with `RESULT PASS`, and both smokes
+   started (`| RUN | start |` and a first dispatch denied at cap 0). All four are recorded by 26.1-04 Task 1.
+6. **NO-GO (d) and (e) are evaluated only on a 26.1 Run 1 whose SEED is VALID** `[inferred — audit]`. This
+   codifies the Phase 26 reading of the rubric (a STALLED run routes to INCONCLUSIVE and cannot trigger (d) or
+   (e)) and removes the literal-reading ambiguity before any money is spent.
+7. **Retry and skip** `[inferred — audit]`. The retry counter restarts for 26.1. Run 1 is `r261a`. It is
+   retried once as `r261b` when SEED is not VALID: as-is for STALLED (including a `stalled` or `crashed`
+   exit), after one seed redesign for RECOGNISED (hide more) or CONVERGED (harder, more orthogonal classes),
+   exactly as the original retry rule. Run 2 is `r261-run2`: it runs only after a VALID counting Run 1 on which
+   no NO-GO condition already holds (Run 2 could not change such a verdict), uses the same seed, and has no
+   retry; otherwise `results/r261-run2/SKIPPED.txt` records why.
+8. **Campaign ceiling** `[inferred — audit]`. No launch starts when the measured spike-003 total (Phase 26 and
+   Phase 26.1, Haiku launches included) plus that launch's `--max-budget-usd` exceeds $60. This is enforced
+   by `tools/campaign_budget.py` inside `run.sh` (exit 8), and 26.1's own cap is therefore $52.19. The
+   original INCONCLUSIVE condition "the campaign ceiling stopped the campaign before Run 2" still applies.
+9. **Seed and prompt delta.** The scratch project config sets `planner.stall_detection_enabled: false`
+   (rubric J4's named cheap fix, applied up front), so a 26.1 A7 PASS says nothing about GSD's stall-watch
+   path; that stays a Phase 28 and Phase 29 carry. Prompt `v0.4` is `v0.3` plus the worker-brief and Loop
+   step 4 early-worker wording, with stop rule 5 byte-identical to `v0.3` `[inferred — audit]`; the Run-2
+   variant is `v0.4-run2`, generated by `tools/make_variant.py`.
+10. **Evidence scope and output.** Phase 26's run1 and run1b are not re-scored (their count came from the old
+    instrument). The revised verdict uses `r261a` and, only under item 7, `r261b`, plus `r261-run2` and the
+    passing `r261-l7` attempt (L7-5 as the kill fallback). The verdict line is
+    `**Revised verdict for Phases 27-31 (Phase 26.1): GO|ADJUST|NO-GO|INCONCLUSIVE**`; the frontmatter mapping
+    and STATE routing are as in the original block. VALID-01 is recorded complete only when the counting Run 1
+    has A1, A2 and A6 PASS and an I-01 `needs-human` line. VALID-02 is recorded complete only when that run has
+    A3 and A4 PASS, Run 2 has A5-deny PASS, and the kill at L+2 passes (A5-kill with any labelled source, or
+    L7-5 in the passing `r261-l7` attempt).
+<!-- rubric-26.1:end -->
+
+### What changed in the kit (not part of the pre-registered rules)
+
+| File | Change |
+|------|--------|
+| `tools/gapcount.py` | the one definition of a gap round (`COALESCE_S = 45`); `selftest`, `replay`, `window` |
+| `tools/launcher_s003.py` | marker-delimited fork of spike 002's `launcher.py` (coalesced count, Stop-guard hook, `stalled` exit label); spike 002 itself is untouched |
+| `tools/exitclass.py`, `tools/stop_guard.py` | outstanding-dispatch exit classification and the Stop-hook keep-alive |
+| `tools/campaign_budget.py` | measured spike-003 spend against the $60 ceiling |
+| `experiment/acceptance.py` | three-way `RESULT`, mode `l8`, burst-grouped A8/A10, `rubric-check --block 26.1` |
+| `tools/dup_check.py`, `tools/drift.py` | orphan-parent workers (WR-10); a watcher that survives git and poll errors (WR-02, WR-07, IN-05) |
+| `experiment/run.sh`, `experiment/setup-scratch.sh` | gate chain, fork launch, label guard, honest results copy; seed with `planner.stall_detection_enabled: false` |
+| `MASTER-PROMPT.md`, `experiment/MASTER-PROMPT.run2.md` | prompt `v0.4` and `v0.4-run2` |
+| `experiment/cap-tests/L7-drift-gap-cap.md`, `L8-early-worker.md` | L7 re-spaced to 50 s writes; new early-worker liveness probe |
+
+`run.sh` modes are `l7 | l8 | smoke1 | smoke2 | run1 | run2`; 26.1 labels are `r261-l7`, `r261-l8`, `r261-smoke1`,
+`r261-smoke2`, `r261a`, `r261b` and `r261-run2` (the run id is `s003-<label>`; Phase 26 labels are refused).
+`run.sh` adds exit code 8 (campaign ceiling would be exceeded, or spend could not be measured). Commands:
+`python3 -I tools/campaign_budget.py [--ceiling USD] [--next USD]` and
+`python3 -I experiment/acceptance.py rubric-check --block 26.1`. The fork also writes `RUN | gap-coalesced`
+LOG lines in addition to spike 002's LOG grammar.
