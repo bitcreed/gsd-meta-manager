@@ -2,9 +2,20 @@
 """Spike 003 moving target: a host-fed title feed that grows by one house-rule class per plan SUMMARY.
 
 The scratch project's verifier criterion tests `feed/titles.txt` against `feed/expected.txt`. `feed/`
-is gitignored inside the scratch repo; only this host-side tool writes it. generation = number of
-`*-SUMMARY.md` files in the scratch repo's HEAD (capped at MAX_GEN), so the feed advances between
-"execute" and "verify" of every GSD round, and each verification lists cases the previous one did not.
+is gitignored inside the scratch repo; only this host-side tool writes it. Two triggers move it:
+
+  --trigger summary   (default) generation = number of `*-SUMMARY.md` files in the scratch repo's HEAD
+                      (capped at MAX_GEN). The executor's own SUMMARY commit is not its last action, so
+                      an executor that stays alive can still see the new rule and absorb it (r261-run2).
+  --trigger verifier  (seed v2, D-06) generation = number of distinct gsd-verifier spawns in the run's
+                      transcripts under --claude-config (capped at MAX_GEN). A spawn is an `Agent` or
+                      `Task` tool_use block whose `input.subagent_type` is `gsd-verifier`, de-duplicated by
+                      tool_use id. The feed therefore moves after the executor has ended and before the
+                      verifier reads it; SUMMARY commits do not move it. A watcher restart recounts the
+                      spawns from the transcripts and logs no duplicate advance.
+
+Either way the feed advances between "execute" and "verify" of every GSD round, and each verification
+lists cases the previous one did not.
 
 Generation 0 is 21 plain titles a trivial slugify passes (lowercase, each run of non-alphanumerics
 becomes one hyphen, ends stripped). Generation k >= 1 appends six lines of one new house-rule class and
@@ -27,16 +38,23 @@ pre-pass a later one. MAX_GEN = 9.
 `ref_slugify` is the reference implementation of classes 1..k; it exists only for `selftest` and is
 never written into a scratch project.
 
+Privacy: from transcripts this tool takes only a tool_use block's `id`, `name`, `input.subagent_type` and
+the line `timestamp`. It never writes message text to drift.log, stdout or a fixture.
+
 Usage:
   drift.py emit N --project P
   drift.py watch --project P --log FILE --snapshots DIR [--interval 0.4] [--once]
+                 [--trigger summary|verifier] [--claude-config DIR]    (verifier needs --claude-config)
+  drift.py extract-spawns CLAUDE_CONFIG       (one skeleton line per Agent/Task tool_use, by timestamp)
   drift.py selftest
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import glob
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -231,11 +249,119 @@ def count_summaries(project: str):
     return sum(1 for n in out.splitlines() if n.endswith("-SUMMARY.md"))
 
 
+# --------------------------------------------------------------------------- verifier spawns (seed v2)
+
+SPAWN_TOOLS = ("Agent", "Task")
+VERIFIER_TYPE = "gsd-verifier"
+_TS_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$")
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+_TYPE_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+def _spawn_blocks(lines):
+    """(timestamp, tool_use id, tool name, subagent_type) for every Agent/Task tool_use block in `lines`
+    (str or bytes JSON lines). Only those four fields are read, each checked against a strict pattern so a
+    hostile or odd value can neither reach a log line nor carry message text. Anything else is skipped."""
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:                                   # includes UnicodeDecodeError on bad bytes
+            continue
+        if not isinstance(d, dict):
+            continue
+        ts, msg = d.get("timestamp"), d.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(ts, str) or not _TS_RE.match(ts) or not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "tool_use" or b.get("name") not in SPAWN_TOOLS:
+                continue
+            tid, inp = b.get("id"), b.get("input")
+            if not isinstance(tid, str) or not _ID_RE.match(tid) or not isinstance(inp, dict):
+                continue
+            st = inp.get("subagent_type")
+            if isinstance(st, str) and _TYPE_RE.match(st):
+                yield ts, tid, b["name"], st
+
+
+def verifier_spawns(lines):
+    """[(timestamp, tool_use_id)] for every gsd-verifier spawn in the transcript lines, in line order."""
+    return [(ts, tid) for ts, tid, _, st in _spawn_blocks(lines) if st == VERIFIER_TYPE]
+
+
+def _transcript_files(cfg: str):
+    """Parent session transcripts and every subagent transcript under a claude-config dir (dup_check's layout)."""
+    found = set()
+    for pat in (os.path.join(cfg, "projects", "*", "*.jsonl"),
+                os.path.join(cfg, "projects", "*", "*", "subagents", "**", "agent-*.jsonl")):
+        found.update(glob.glob(pat, recursive=True))
+    return sorted(found)
+
+
+class SpawnScanner:
+    """Incremental reader of the transcripts: a byte offset per file, only complete lines processed (a partial
+    last line waits for its newline), and the set of distinct gsd-verifier tool_use ids seen so far."""
+
+    def __init__(self, cfg: str):
+        self.cfg = cfg
+        self.offsets = {}
+        self.spawns = {}                                      # tool_use id -> timestamp
+
+    def scan(self):
+        """-> [(timestamp, id)] of verifier spawns first seen by this call, in timestamp order."""
+        new = []
+        for path in _transcript_files(self.cfg):
+            off = self.offsets.get(path, 0)
+            try:
+                if os.path.getsize(path) < off:
+                    off = 0                                   # truncated or replaced: reread; ids de-duplicate
+                with open(path, "rb") as f:
+                    f.seek(off)
+                    data = f.read()
+            except OSError:
+                continue
+            end = data.rfind(b"\n")
+            if end < 0:
+                self.offsets[path] = off
+                continue
+            self.offsets[path] = off + end + 1
+            for ts, tid in verifier_spawns(data[:end + 1].split(b"\n")):
+                if tid not in self.spawns:
+                    self.spawns[tid] = ts
+                    new.append((ts, tid))
+        return sorted(new)
+
+
+def extract_spawns(cfg: str):
+    """Skeleton lines (strings) for every Agent/Task tool_use block of any subagent type, sorted by timestamp."""
+    seen, rows = set(), []
+    for path in _transcript_files(cfg):
+        try:
+            with open(path, "rb") as f:
+                lines = f.read().split(b"\n")
+        except OSError:
+            continue
+        for ts, tid, name, st in _spawn_blocks(lines):
+            if tid not in seen:
+                seen.add(tid)
+                rows.append((ts, tid, name, st))
+    rows.sort()
+    return [json.dumps({"type": "assistant", "timestamp": ts, "message": {"content": [
+        {"type": "tool_use", "id": tid, "name": name, "input": {"subagent_type": st}}]}}, separators=(",", ":"))
+        for ts, tid, name, st in rows]
+
+
 class Watcher:
-    def __init__(self, project: str, log: str, snapshots: str):
+    def __init__(self, project: str, log: str, snapshots: str, trigger: str = "summary", claude_config=None):
+        if trigger not in ("summary", "verifier"):
+            raise ValueError(f"unknown trigger {trigger!r}")
+        if trigger == "verifier" and not claude_config:
+            raise ValueError("--trigger verifier requires --claude-config")
         self.project = os.path.abspath(project)
         self.log = log
         self.snapshots = snapshots
+        self.trigger = trigger
+        self.scanner = SpawnScanner(claude_config) if trigger == "verifier" else None
         self.count = None
         self.gen = 0
         self.seen_hashes = set()
@@ -247,6 +373,12 @@ class Watcher:
     def start(self) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self.log)), exist_ok=True)
         os.makedirs(self.snapshots, exist_ok=True)
+        if self.trigger == "verifier":
+            self.scanner.scan()                              # a missing claude-config dir is zero spawns
+            self.gen = min(len(self.scanner.spawns), MAX_GEN)
+            write_feed(self.project, self.gen)
+            self._log(f"start gen={self.gen} trigger=verifier")
+            return
         self.count = count_summaries(self.project) or 0      # None (git failed) starts at generation 0
         self.gen = min(self.count, MAX_GEN)
         write_feed(self.project, self.gen)
@@ -262,7 +394,23 @@ class Watcher:
             except OSError:
                 pass
 
+    def _poll_verifier(self) -> None:
+        """Seed v2: each new gsd-verifier spawn raises the generation by one (capped); SUMMARY commits do not."""
+        for ts, tid in self.scanner.scan():
+            if self.gen >= MAX_GEN:
+                self._log(f"exhausted spawns={len(self.scanner.spawns)}")
+                continue
+            self.gen += 1
+            titles = write_feed(self.project, self.gen)
+            head = (_git(self.project, "rev-parse", "--short=7", "HEAD") or "").strip() or "none"
+            self._log(f"gen={self.gen} summaries={count_summaries(self.project) or 0} head={head} "
+                      f"titles={titles} trigger=verifier spawn={tid[-8:]} spawn_at={ts}")
+
     def poll(self) -> None:
+        if self.trigger == "verifier":
+            self._poll_verifier()
+            self._snapshot_verifications()
+            return
         n = count_summaries(self.project)
         if n is not None and n != self.count:         # WR-02: a git failure (None) is 'no change'
             self.count = n
@@ -318,18 +466,136 @@ def watch_loop(w: "Watcher", interval: float, polls=None) -> None:
 
 
 def cmd_watch(a) -> int:
-    w = Watcher(a.project, a.log, a.snapshots)
+    w = Watcher(a.project, a.log, a.snapshots, a.trigger, a.claude_config)
     w.start()
-    w.poll()
+    w.poll_safe()                                           # IN-05: the first poll is guarded like every later one
     if a.once:
         return 0
     try:
         watch_loop(w, a.interval)
     except KeyboardInterrupt:
-        return 0
+        pass
+    return 0
 
 
 # --------------------------------------------------------------------------- selftest
+
+PLANTED = "PLANTED-SECRET-c0ffee"
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "experiment", "replay",
+                       "run2-spawn-skeleton.jsonl")
+ADV_RE = re.compile(r"^(\S+) gen=(\d+) summaries=(\d+)")     # acceptance.py GEN_RE
+
+
+def _selftest_verifier(tmp: str, me: str) -> None:
+    """Seed v2 end to end on a synthetic claude-config tree, then r261-run2's real spawn timeline."""
+    p = os.path.join(tmp, "pv")
+    os.makedirs(os.path.join(p, ".planning"))
+    sh = lambda *c: subprocess.run(c, cwd=p, check=True, capture_output=True)  # noqa: E731
+    sh("git", "init", "-q", "-b", "main")
+    sh("git", "config", "user.email", "t@example.invalid")
+    sh("git", "config", "user.name", "t")
+    with open(os.path.join(p, ".gitignore"), "w") as f:
+        f.write("feed/\n")
+    sh("git", "add", ".gitignore")
+    sh("git", "commit", "-qm", "init")
+    cfg = os.path.join(tmp, "cfg")                          # does not exist yet: gen 0, no error
+    log, snaps = os.path.join(tmp, "vdrift.log"), os.path.join(tmp, "vsnaps")
+    w = Watcher(p, log, snaps, "verifier", cfg)
+    w.start()
+    w.poll_safe()
+    feed = lambda: open(os.path.join(p, "feed", "titles.txt")).read().splitlines()  # noqa: E731
+    readlog = lambda: open(log).read()  # noqa: E731
+    assert w.gen == 0 and feed() == emit(0)[0] and "start gen=0 trigger=verifier" in readlog()
+    assert "poll-error" not in readlog()
+    sub = os.path.join(cfg, "projects", "-proj", "sess1", "subagents")
+    os.makedirs(sub)
+    tp = os.path.join(sub, "agent-aaa.jsonl")
+
+    def spawn(ts, tid, st, name="Agent", prompt=None):
+        inp = {"subagent_type": st}
+        if prompt:
+            inp["prompt"] = prompt
+        return json.dumps({"type": "assistant", "timestamp": ts, "message": {"content": [
+            {"type": "text", "text": PLANTED}, {"type": "tool_use", "id": tid, "name": name, "input": inp}]}})
+
+    def append(path, text):
+        with open(path, "a") as f:
+            f.write(text)
+    # an executor spawn does not advance
+    append(tp, spawn("2026-10-18T02:31:05.029Z", "toolu_exec00000001", "gsd-executor") + "\n")
+    w.poll_safe()
+    assert w.gen == 0 and feed() == emit(0)[0], "an executor spawn must not advance the feed"
+    # a verifier spawn line without its newline waits
+    line = spawn("2026-10-18T02:33:31.810Z", "toolu_veri00000001", "gsd-verifier", prompt=PLANTED)
+    append(tp, line)
+    w.poll_safe()
+    assert w.gen == 0 and " trigger=verifier spawn=" not in readlog(), "a partial last line must wait"
+    append(tp, "\n")
+    w.poll_safe()
+    assert w.gen == 1 and feed() == emit(1)[0], "the verifier spawn must advance the feed to gen 1"
+    assert " trigger=verifier spawn=00000001 spawn_at=2026-10-18T02:33:31.810Z" in readlog(), readlog()
+    # the next VERIFICATION write is snapshotted with gen=1
+    vd = os.path.join(p, ".planning", "phases", "01-x")
+    os.makedirs(vd)
+    with open(os.path.join(vd, "01-VERIFICATION.md"), "w") as f:
+        f.write("---\nphase: 01-x\nstatus: gaps_found\n---\nbody\n")
+    w.poll_safe()
+    assert "status=gaps_found gen=1" in readlog(), readlog()
+    # the same tool_use id again (here in a second transcript) is ignored
+    tp2 = os.path.join(sub, "agent-bbb.jsonl")
+    append(tp2, line + "\n")
+    w.poll_safe()
+    assert w.gen == 1 and readlog().count(" trigger=verifier spawn=") == 1
+    # a SUMMARY commit does not advance in verifier mode
+    with open(os.path.join(p, "x-SUMMARY.md"), "w") as f:
+        f.write("s\n")
+    sh("git", "add", "x-SUMMARY.md")
+    sh("git", "commit", "-qm", "summary")
+    w.poll_safe()
+    assert w.gen == 1 and feed() == emit(1)[0] and readlog().count(" trigger=verifier spawn=") == 1
+    # a second verifier spawn: gen 2
+    append(tp, spawn("2026-10-18T02:40:00.000Z", "toolu_veri00000002", "gsd-verifier", name="Task") + "\n")
+    w.poll_safe()
+    assert w.gen == 2 and feed() == emit(2)[0] and "summaries=1 " in readlog()
+    # restart on the same tree: start gen=2, no new advance line, no second snapshot
+    r = subprocess.run([sys.executable, "-I", me, "watch", "--project", p, "--log", log, "--snapshots", snaps,
+                        "--once", "--trigger", "verifier", "--claude-config", cfg], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    lg = readlog()
+    assert "start gen=2 trigger=verifier" in lg and lg.count(" trigger=verifier spawn=") == 2, lg
+    assert lg.count("snapshot ") == 1, lg
+    # past MAX_GEN the feed stops and `exhausted spawns=` is logged
+    append(tp, "".join(spawn("2026-10-18T03:00:%02d.000Z" % i, "toolu_veri%08d" % (i + 3), "gsd-verifier") + "\n"
+                       for i in range(8)))
+    w.poll_safe()
+    assert w.gen == MAX_GEN and feed() == emit(MAX_GEN)[0] and "exhausted spawns=10" in readlog()
+    # every advance line (summary mode in the first test, verifier mode here) matches acceptance's GEN_RE
+    adv = [ln for ln in readlog().splitlines() if " gen=" in ln and " summaries=" in ln]
+    assert len(adv) == MAX_GEN and all(ADV_RE.match(ln) for ln in adv), adv
+    # privacy: planted message text reaches neither the log, the snapshots nor extract-spawns
+    r = subprocess.run([sys.executable, "-I", me, "extract-spawns", cfg], capture_output=True, text=True)
+    assert r.returncode == 0 and PLANTED not in r.stdout and PLANTED not in r.stderr and PLANTED not in readlog()
+    out = [json.loads(x) for x in r.stdout.splitlines()]
+    assert len(out) == 11 and all(set(x) == {"type", "timestamp", "message"} for x in out), out
+    assert [x["timestamp"] for x in out] == sorted(x["timestamp"] for x in out)
+    for n in os.listdir(snaps):
+        assert PLANTED not in open(os.path.join(snaps, n)).read()
+    # bad values never reach the log: a hostile id / timestamp is skipped
+    assert verifier_spawns([spawn("2026-10-18T02:33:31.810Z", "bad id\nINJECT", "gsd-verifier"),
+                            spawn("not a time", "toolu_okokokok", "gsd-verifier"), "not json " + PLANTED,
+                            "[]", b"\xff\xfe"]) == []
+    # a summary-mode watcher on the same tree ignores the transcripts entirely
+    ws = Watcher(p, os.path.join(tmp, "s.log"), os.path.join(tmp, "ssn"))
+    ws.start()
+    assert ws.gen == 1 and ws.scanner is None
+    # r261-run2's real spawn timeline: exactly one verifier spawn, after the executor spawn
+    with open(FIXTURE, encoding="utf-8") as f:
+        fx = f.read().splitlines()
+    assert verifier_spawns(fx) == [("2026-10-18T02:33:31.810Z", "toolu_015GDTpWSNpjHL7mEX31oR1E")], verifier_spawns(fx)
+    execs = [ts for ts, _, _, st in _spawn_blocks(fx) if st == "gsd-executor"]
+    assert execs == ["2026-10-18T02:31:05.029Z"] and execs[0] < "2026-10-18T02:33:31.810Z", execs
+    assert PLANTED not in "".join(fx)
+
 
 def selftest() -> int:
     # determinism and prefix
@@ -457,6 +723,10 @@ def selftest() -> int:
         with open(log) as f:
             lg = f.read()
         assert lg.count("status=gaps_found") == 3 and "status=unknown" not in lg, lg
+        # summary-mode advance lines match acceptance's GEN_RE too, and the start line carries no trigger field
+        adv = [ln for ln in lg.splitlines() if " gen=" in ln and " summaries=" in ln]
+        assert adv and all(ADV_RE.match(ln) for ln in adv) and "trigger=" not in lg, adv
+        _selftest_verifier(tmp, me)
     print(f"selftest OK gens={MAX_GEN}")
     return 0
 
@@ -473,14 +743,24 @@ def main() -> int:
     w.add_argument("--snapshots", required=True)
     w.add_argument("--interval", type=float, default=0.4)
     w.add_argument("--once", action="store_true")
+    w.add_argument("--trigger", choices=("summary", "verifier"), default="summary")
+    w.add_argument("--claude-config")
+    x = sp.add_parser("extract-spawns")
+    x.add_argument("claude_config")
     sp.add_parser("selftest")
     a = ap.parse_args()
+    if a.cmd == "watch" and a.trigger == "verifier" and not a.claude_config:
+        ap.error("--trigger verifier requires --claude-config")
     if a.cmd == "emit":
         n = write_feed(a.project, a.n)
         print(f"emitted gen={min(a.n, MAX_GEN)} titles={n}")
         return 0
     if a.cmd == "watch":
         return cmd_watch(a)
+    if a.cmd == "extract-spawns":
+        for ln in extract_spawns(a.claude_config):
+            print(ln)
+        return 0
     return selftest()
 
 
