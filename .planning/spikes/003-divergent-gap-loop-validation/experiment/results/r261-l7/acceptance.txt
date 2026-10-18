@@ -1,0 +1,7 @@
+L7-1 PASS feed-lines before=21 after=27 drift.log gen=1 seen
+L7-2 PASS phase 1 gap-observed counts=[1, 2, 3, 4]
+L7-3 PASS hook_dispatches=1 denies_before_count3=0 count3=seen
+L7-4 PASS first deny after count=3, reason matches=True
+L7-5 PASS cap-tripped gap_rounds used=4 limit=2: 1; before count=4: 0
+L7-6 PASS launch-end {rc: -15, tripped: gap_rounds, cost_usd: 0.007907299999999999, status: stopped}
+RESULT PASS

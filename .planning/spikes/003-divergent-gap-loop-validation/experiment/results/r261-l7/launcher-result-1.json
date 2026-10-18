@@ -1,0 +1,24 @@
+{
+ "rc": -15,
+ "status": "stopped",
+ "reason": "launcher-cap:gap_rounds",
+ "tripped": "gap_rounds",
+ "cost": {
+  "launch": 1,
+  "total_cost_usd": 0.007907299999999999,
+  "subtype": "success",
+  "num_turns": 7,
+  "duration_s": 119,
+  "session_id": "f775d45f-0e96-4e50-96c9-7e63b6957dd9",
+  "by_model": {
+   "claude-haiku-5-5": {
+    "cost_usd": 0.007907299999999999,
+    "in": 14,
+    "out": 2136,
+    "cache_read": 153850,
+    "cache_write": 26497
+   }
+  }
+ },
+ "stream": "/home/blk/.local/state/gsd-meta-manager/spike-003/r261-l7-20261018T014625Z/state/launch-1.jsonl"
+}

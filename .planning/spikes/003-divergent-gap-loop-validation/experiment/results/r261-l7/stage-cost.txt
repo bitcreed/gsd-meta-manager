@@ -1,0 +1,4 @@
+stage_cost: sessions=1 launches=1 priced=yes rates_from=result
+stage startup window=01:46:27Z..01:49:26Z driver_usd=0.0089 workers_usd=0.0016 total_usd=0.0105 driver_msgs=10
+TOTAL driver=0.0089 workers=0.0016 total=0.0105 driver_share=85.0%
+CHECK stages_driver_sum=0.0089 driver_total=0.0089 ok

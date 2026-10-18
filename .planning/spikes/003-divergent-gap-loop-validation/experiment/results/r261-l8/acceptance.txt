@@ -1,0 +1,5 @@
+L8-1 PASS stop-guard block item=I-01 lines=1
+L8-2 PASS SENDMESSAGE=1
+L8-3 PASS DUP=0 workers=1 LOG dispatched=1
+L8-4 PASS I-01 report=1 RUN end=1 last launch-end status=stopped
+RESULT PASS

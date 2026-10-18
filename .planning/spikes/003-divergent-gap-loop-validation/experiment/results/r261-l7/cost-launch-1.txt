@@ -1,0 +1,5 @@
+session f775d45f-0e96-4e50-96c9-7e63b6957dd9  total_cost_usd=0.008  turns=7  duration_s=119  subagent_transcripts=1
+  driver   est $0.009
+     claude-haiku-5-5             $  0.009  in=20 out=2716 cache_read=267718 cache_write=20950
+  workers  est $0.002
+     claude-haiku-5-5             $  0.002  in=2 out=205 cache_read=6103 cache_write=8110

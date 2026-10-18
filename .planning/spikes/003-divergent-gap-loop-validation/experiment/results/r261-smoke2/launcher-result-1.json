@@ -1,0 +1,24 @@
+{
+ "rc": 0,
+ "status": "parked",
+ "reason": "driver:all-parked",
+ "tripped": null,
+ "cost": {
+  "launch": 1,
+  "total_cost_usd": 0.00888035,
+  "subtype": "success",
+  "num_turns": 6,
+  "duration_s": 22,
+  "session_id": "917bd876-62ee-458d-88b5-43d372bd5cea",
+  "by_model": {
+   "claude-haiku-5-5": {
+    "cost_usd": 0.00888035,
+    "in": 12,
+    "out": 3575,
+    "cache_read": 178925,
+    "cache_write": 26512
+   }
+  }
+ },
+ "stream": "/home/blk/.local/state/gsd-meta-manager/spike-003/r261-smoke2-20261018T015151Z/state/launch-1.jsonl"
+}
