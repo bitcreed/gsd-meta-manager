@@ -4,17 +4,16 @@ milestone: v1.14.0
 current_phase: 27
 current_phase_name: driverctl & Driver Frontmatter
 status: planning
-stopped_at: Phase 26.1 complete, ready to plan Phase 27
-last_updated: "2026-10-18T05:03:10.487Z"
+stopped_at: Phase 27 context gathered
+last_updated: "2026-10-18T05:08:36.614Z"
 last_activity: 2026-10-18
 last_activity_desc: Phase 26.1 complete, transitioned to Phase 27
-state_head: 05330ffe5c45966dacd77c11e31204d68759249e
+state_head: 6b4193b34ebb4e0d3703d0571932cc87e0fd3ef4
 progress:
   total_phases: 10
   completed_phases: 10
   total_plans: 11
   completed_plans: 112
-  percent: 53
 milestone_name: gsd-core 1.17.0 Sync
 ---
 
@@ -775,9 +774,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-18T04:33:52.960Z
-Stopped at: Phase 26.1 complete, ready to plan Phase 27
-Resume file: None
+Last session: 2026-10-18T05:08:35.586Z
+Stopped at: Phase 27 context gathered
+Resume file: .planning/phases/27-driverctl-driver-frontmatter/27-CONTEXT.md
 
 Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
 
