@@ -130,7 +130,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 ### Driver Validation (VALID): Phase 26, re-run in 26.1 (VALID-01/02)
 
-- [x] **VALID-01**: On a real GSD scratch project seeded with a gap that looks closable but keeps
+- [ ] **VALID-01**: On a real GSD scratch project seeded with a gap that looks closable but keeps
   producing new findings, the driver runs gap-closure rounds 1 and 2. It parks `needs-human` no later
   than the third `gaps_found`, and driverctl records the rule that fired.
 - [ ] **VALID-02**: Divergence detection (two consecutive rounds with new findings) parks the run on
