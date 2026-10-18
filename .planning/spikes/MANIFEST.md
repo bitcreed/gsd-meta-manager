@@ -49,6 +49,15 @@ plus `systemd-run --user --scope`.
   (Run 2 converged: the feed advance was absorbed before the first verification); Phase 28 keeps the cap and the L7 cases as acceptance cases.
 - (spike 003, 26.1) Stop guard (`tools/stop_guard.py`, at most 3 blocks per run) kept an early-ending Haiku worker's driver alive (L8); it never
   fired in the two paid Opus runs. GSD's stall-watch path was off (`planner.stall_detection_enabled: false`) and is a Phase 28/29 carry.
+- (spike 003, 26.1 gap closure, verdict ADJUST) J1: on the gap-closure Run 2 (`r261-run2b`, seed v2) an Opus driver with the gap-round rules removed
+  parked `needs-human` at the second `gaps_found`, before any round-3 dispatch, so the launcher's organic deny at L+1 and kill at L+2 stayed unobserved.
+  Phase 28 keeps the cap and the L7 cases (`results/r261-l7`) as acceptance cases; Phase 29 records prompt-independent self-limiting: the prompt rules are
+  not the only stop, and the launcher cap is a backstop never organically exercised.
+- (spike 003, 26.1 gap closure) Seed v2 for the Phase 28/29 test harness: the moving target must advance after the executor ends; the verifier spawn is
+  the earliest host-visible point (the feed advanced under 1 s after each `gsd-verifier` spawn and before its first read). Advancing on the executor's
+  SUMMARY commit lets the executor absorb the change before verification (`r261-run2` converged).
+- (spike 003, 26.1 gap closure) The Phase 27 driver status enum needs `stalled`, and Phase 28 ports the coalescing gap count (`COALESCE_S = 45`); both
+  carry unchanged. `planner.stall_detection_enabled: false` was set in every paid run, so the stall-watch path stays a Phase 28/29 carry.
 
 ## Spikes
 

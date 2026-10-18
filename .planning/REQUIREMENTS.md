@@ -338,7 +338,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | AGENT-06 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-07 | Phase 25: Running Agents & Live Wave View | Complete |
 | VALID-01 | Phase 26.1 | Complete — Phase 26.1 (results/r261a/acceptance.txt A1 A2 A3 A6; I-01 needs-human in results/r261a/LOG.md) |
-| VALID-02 | Phase 26.1 | Partial — Phase 26.1 verdict INCONCLUSIVE (results/r261a/acceptance.txt A3 A4 PASS; results/r261-l7/acceptance.txt L7-4 L7-5 PASS, scripted; results/r261-run2/acceptance.txt A5-deny FAIL, A5-kill NOT-REACHED: Run 2 converged) |
+| VALID-02 | Phase 26.1 | Partial — Phase 26.1 gap-closure verdict ADJUST (results/r261a/acceptance.txt A3 A4 PASS; results/r261-l7/acceptance.txt L7-4 L7-5 PASS, scripted; results/r261-run2b/acceptance.txt A5-deny NOT-REACHED, A5-kill NOT-REACHED, A11 NOT-REACHED: the Opus driver parked needs-human at gap-observed count=2, J1) |
 | VALID-03 | Phase 26 | Complete |
 | VALID-04 | Phase 26 | Complete |
 | DCTL-01 | Phase 27 | Pending |
