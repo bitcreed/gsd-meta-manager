@@ -214,17 +214,21 @@ def utc_compact() -> str:
 
 
 _GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
-_STATUS_RE = re.compile(r"^status:\s*([A-Za-z_]+)", re.M)
+_STATUS_RE = re.compile(r"""^status:\s*["']?([A-Za-z_]+)""", re.M)         # IN-05: the value may be quoted
 
 
-def _git(project: str, *args: str) -> str:
+def _git(project: str, *args: str):
+    """stdout of a git command, or None when git failed (WR-02: failure is not 'empty output')."""
     r = subprocess.run(["git", "-C", project, *args], capture_output=True, text=True, env=_GIT_ENV)
-    return r.stdout if r.returncode == 0 else ""
+    return r.stdout if r.returncode == 0 else None
 
 
-def count_summaries(project: str) -> int:
-    names = _git(project, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
-    return sum(1 for n in names if n.endswith("-SUMMARY.md"))
+def count_summaries(project: str):
+    """Number of *-SUMMARY.md files in HEAD, or None when git could not list the tree."""
+    out = _git(project, "ls-tree", "-r", "--name-only", "HEAD")
+    if out is None:
+        return None
+    return sum(1 for n in out.splitlines() if n.endswith("-SUMMARY.md"))
 
 
 class Watcher:
@@ -243,18 +247,28 @@ class Watcher:
     def start(self) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self.log)), exist_ok=True)
         os.makedirs(self.snapshots, exist_ok=True)
-        self.count = count_summaries(self.project)
+        self.count = count_summaries(self.project) or 0      # None (git failed) starts at generation 0
         self.gen = min(self.count, MAX_GEN)
         write_feed(self.project, self.gen)
         self._log(f"start gen={self.gen}")
 
+    def poll_safe(self) -> None:
+        """WR-07: one poll that cannot kill the watcher; the failure is logged as `poll-error {ExceptionName}`."""
+        try:
+            self.poll()
+        except Exception as exc:                      # noqa: BLE001  (the watcher must outlive any single poll)
+            try:
+                self._log(f"poll-error {type(exc).__name__}")
+            except OSError:
+                pass
+
     def poll(self) -> None:
         n = count_summaries(self.project)
-        if n != self.count:
+        if n is not None and n != self.count:         # WR-02: a git failure (None) is 'no change'
             self.count = n
-            self.gen = min(n, MAX_GEN)
+            self.gen = max(self.gen, min(n, MAX_GEN))        # the moving target never moves backwards
             titles = write_feed(self.project, self.gen)
-            head = _git(self.project, "rev-parse", "--short=7", "HEAD").strip() or "none"
+            head = (_git(self.project, "rev-parse", "--short=7", "HEAD") or "").strip() or "none"
             self._log(f"gen={self.gen} summaries={n} head={head} titles={titles}")
             if n > MAX_GEN:
                 self._log(f"exhausted summaries={n}")
@@ -294,6 +308,15 @@ class Watcher:
                 self._log(f"snapshot file={rel} hash={h8} status={status} gen={self.gen} -> {name}")
 
 
+def watch_loop(w: "Watcher", interval: float, polls=None) -> None:
+    """Poll every `interval` s; `polls` (tests) bounds the iterations, None runs until interrupted."""
+    n = 0
+    while polls is None or n < polls:
+        time.sleep(interval)
+        w.poll_safe()
+        n += 1
+
+
 def cmd_watch(a) -> int:
     w = Watcher(a.project, a.log, a.snapshots)
     w.start()
@@ -301,9 +324,7 @@ def cmd_watch(a) -> int:
     if a.once:
         return 0
     try:
-        while True:
-            time.sleep(a.interval)
-            w.poll()
+        watch_loop(w, a.interval)
     except KeyboardInterrupt:
         return 0
 
@@ -396,6 +417,46 @@ def selftest() -> int:
             lg = f.read()
         assert "status=gaps_found gen=1" in lg and lg.count("snapshot ") == 1, lg
         assert lg.count(" start gen=1") == 1 and "start gen=0" in lg
+        # WR-02: a git failure is 'no change': the feed stays at its generation and gen=0 is never logged
+        assert count_summaries(os.path.join(tmp, "not-a-repo")) is None and count_summaries(p) == 1
+        real_git = globals()["_git"]
+        globals()["_git"] = lambda project, *args: None
+        try:
+            w.poll()
+            w.poll()
+        finally:
+            globals()["_git"] = real_git
+        with open(os.path.join(p, "feed", "titles.txt")) as f:
+            assert f.read().splitlines() == emit(1)[0], "a git failure must not rewrite the feed"
+        with open(log) as f:
+            lg = f.read()
+        assert w.gen == 1 and "gen=0 summaries" not in lg and lg.count(" gen=1 summaries=1 ") == 1, lg
+        # WR-07: a poll that raises is logged and the next poll still runs (watch_loop, not just poll_safe)
+        real_poll, calls = w.poll, []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            real_poll()
+        w.poll = flaky
+        try:
+            watch_loop(w, 0, polls=3)
+        finally:
+            del w.poll
+        with open(log) as f:
+            lg = f.read()
+        assert len(calls) == 3 and lg.count(" poll-error RuntimeError\n") == 1 and "boom" not in lg, (calls, lg)
+        # IN-05: a quoted status value is read as the status
+        for q, nm in (('"', "02-q"), ("'", "03-s")):
+            qd = os.path.join(p, ".planning", "phases", nm)
+            os.makedirs(qd)
+            with open(os.path.join(qd, nm[:2] + "-VERIFICATION.md"), "w") as f:
+                f.write(f"---\nphase: {nm}\nstatus: {q}gaps_found{q}\n---\nbody {nm}\n")
+        w.poll()
+        with open(log) as f:
+            lg = f.read()
+        assert lg.count("status=gaps_found") == 3 and "status=unknown" not in lg, lg
     print(f"selftest OK gens={MAX_GEN}")
     return 0
 
