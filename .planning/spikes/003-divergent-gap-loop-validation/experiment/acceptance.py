@@ -43,7 +43,9 @@ sys.dont_write_bytecode = True      # never leave a __pycache__ inside spike 002
 S3 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 S2_TOOLS = os.path.join(S3, "..", "002-launcher-caps-and-tool-frontmatter", "tools")
 sys.path.insert(0, S2_TOOLS)
+sys.path.insert(0, os.path.join(S3, "tools"))      # `python3 -I` drops the script dir; gapcount is the one round definition
 import driverctl as dc  # noqa: E402
+import gapcount  # noqa: E402  (coalesce: the same 45 s rule the live launcher gates on)
 
 PASS, FAIL, NOTREACHED, UNDET = "PASS", "FAIL", "NOT-REACHED", "UNDETERMINED"
 EV_RE = re.compile(r"^- (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) \| (\S+) \| (\S+)((?: \| .*)?)$")
@@ -128,6 +130,7 @@ class Ctx:
         st = read(os.path.join(results, "standin.log"))
         self.standin = [l.split()[0] for l in st.splitlines() if l.strip()] if st else []
         self.dup = read(dup_report) if dup_report else None
+        self.guard = read(os.path.join(results, "stop-guard.log"))
 
     def of(self, event, item=None):
         return [e for e in (self.events or []) if e.event == event and (item is None or e.item == item)]
@@ -355,6 +358,57 @@ def check_l7_6(ctx):
     return (PASS if ok else FAIL), f"launch-end {ends[-1].kv if ends else 'absent'}".replace("'", "")
 
 
+# ---------------------------------------------------------------- l8 checks (scripted early-worker probe)
+
+def dup_line_fields(ctx):
+    """{name: int} of the dup report's `dup_check:` line (line 1), or None without a usable report."""
+    if ctx.dup is None:
+        return None
+    m = re.search(r"^dup_check: .*$", ctx.dup, re.M)
+    if not m:
+        return None
+    return {k: int(v) for k, v in re.findall(r"\b([A-Za-z_]+)=(\d+)", m.group(0))}
+
+
+def check_l8_1(ctx):
+    """guard fired: stop-guard.log has a `block item=I-01` line."""
+    if ctx.guard is None:
+        return missing("stop-guard.log")
+    blocks = [l for l in ctx.guard.splitlines() if re.search(r"\bblock item=I-01\b", l)]
+    return (PASS if blocks else FAIL), f"stop-guard block item=I-01 lines={len(blocks)}"
+
+
+def check_l8_2(ctx):
+    """resumed by SendMessage: the dup report's SENDMESSAGE= is at least 1."""
+    f = dup_line_fields(ctx)
+    if f is None or "SENDMESSAGE" not in f:
+        return UNDET, "no usable dup_check report (--dup-report)"
+    return (PASS if f["SENDMESSAGE"] >= 1 else FAIL), f"SENDMESSAGE={f['SENDMESSAGE']}"
+
+
+def check_l8_3(ctx):
+    """no respawn: DUP=0 and workers= equals the number of LOG dispatched lines."""
+    f = dup_line_fields(ctx)
+    if f is None or "DUP" not in f or "workers" not in f:
+        return UNDET, "no usable dup_check report (--dup-report)"
+    if ctx.events is None:
+        return missing("LOG.md")
+    n = len(ctx.dispatches())
+    ok = f["DUP"] == 0 and f["workers"] == n
+    return (PASS if ok else FAIL), f"DUP={f['DUP']} workers={f['workers']} LOG dispatched={n}"
+
+
+def check_l8_4(ctx):
+    """reported, not crashed: an I-01 report, a RUN end, and a last launch-end that is neither crashed nor stalled."""
+    if ctx.events is None:
+        return missing("LOG.md")
+    reports, ends, lends = ctx.of("report", "I-01"), ctx.of("end", "RUN"), ctx.of("launch-end")
+    # [inferred - audit] no launch-end line at all is a FAIL: "not crashed" needs an observed exit status.
+    status = lends[-1].kv.get("status") if lends else None
+    ok = bool(reports) and bool(ends) and status is not None and status not in ("crashed", "stalled")
+    return (PASS if ok else FAIL), f"I-01 report={len(reports)} RUN end={len(ends)} last launch-end status={status}"
+
+
 # ---------------------------------------------------------------- run2 checks (prompt rule disabled)
 
 def _parked(ctx):
@@ -394,9 +448,8 @@ def check_a11(ctx):
                      (e.kv.get("phase") == "1" or re.search(r"(?i)phase[\s_-]*0*1\b|\b1\s+--gaps", e.kv.get("step", "")))]
     unknown = 0
     for e in late:
-        prev = ctx.events[e.idx - 1] if e.idx else None
-        if prev is not None and prev.event == "dispatch-denied":
-            continue
+        # WR-05: no look-behind. A dispatch is denied only if a dispatch-denied follows it before the next
+        # report or dispatched; the denial that preceded it belongs to the earlier dispatch.
         verdict = None
         for n in ctx.events[e.idx + 1:]:
             if n.event == "dispatch-denied":
@@ -455,16 +508,28 @@ def _line_refs(block):
     return cases
 
 
+def quoted_spans(block):
+    """Exact contents of the backticked and quoted spans in a gaps block (WR-04). YAML-escaped `\\"x\\"` and plain
+    "x" / 'x' / `x` are all found; an apostrophe inside a word does not open a span."""
+    t = block.replace('\\"', "\x00")
+    spans = re.findall(r"`([^`\n]{1,120})`", t)
+    spans += re.findall(r"\x00([^\x00\n]{1,120}?)\x00", t)
+    spans += re.findall(r'"([^"\n]{1,120}?)"', t.replace("\x00", " "))
+    spans += re.findall(r"(?<![\w])'([^'\n]{1,120}?)'(?![\w])", t.replace("\x00", " "))
+    return {x.strip() for x in spans if x.strip()}
+
+
 def cases_in(block, drift):
     cases = _line_refs(block)
     if drift is not None:
         titles, expected = drift.emit(drift.MAX_GEN)
+        spans = quoted_spans(block)          # WR-04: a title or slug counts only when quoted or backticked
         for t in set(titles):
-            if t and re.search(r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])", block):
+            if t and t in spans:
                 cases.add(("title", t))
-        for s in set(expected):
-            if s and re.search(r"(?<![A-Za-z0-9-])" + re.escape(s) + r"(?![A-Za-z0-9-])", block):
-                cases.add(("slug", s))
+        for x in set(expected):
+            if x and x in spans:
+                cases.add(("slug", x))
         return cases
     for m in re.finditer(r"`([^`\n]{1,80})`|\"([^\"\n]{1,80})\"", block):
         span = m.group(1) or m.group(2)
@@ -475,8 +540,15 @@ def cases_in(block, drift):
 
 
 def organic_gaps(ctx):
+    """Organic gaps_found snapshots, one per burst (D-01 in scoring). A verifier that rewrites its report seconds later
+    produces consecutive snapshots; `gapcount.coalesce` (the launcher's own 45 s sliding rule, on drift.log's
+    whole-second UTC) groups them and the LAST snapshot of each burst is the round's snapshot."""
     snaps = ctx.snapshots()
-    return None if snaps is None else [s for s in snaps if s["status"] == "gaps_found" and not s["standin"]]
+    if snaps is None:
+        return None
+    organic = [s for s in snaps if s["status"] == "gaps_found" and not s["standin"]]
+    times = [gapcount.epoch(s["utc"]) for s in organic]
+    return [organic[b[-1]] for b in gapcount.coalesce(times)]
 
 
 def check_a8(ctx):
@@ -512,16 +584,27 @@ def verifier_runs(ctx):
     return int(v.group(1)) if v else 0
 
 
+def converged(ctx):
+    """The run reached a passing verification: a `passed` drift snapshot or an I-01 `status state=done` line."""
+    return (any(s["status"] == "passed" for s in (ctx.snapshots() or []))
+            or any(e.kv.get("state") == "done" for e in ctx.of("status", "I-01")))
+
+
 def check_a9(ctx):
     if ctx.events is None:
         return missing("LOG.md")
     v = verifier_runs(ctx)
     if v is None:
         return UNDET, "no usable dup_check report (--dup-report)"
-    seen = max(ctx.gap_counts() or [0]) - len(ctx.standin)
+    seen = max(ctx.gap_counts() or [0]) - len(ctx.standin)      # gap-observed only; gap-coalesced lines are not rounds
     if seen <= 0 and v == 0:
         return NOTREACHED, "no gaps_found observed and no verifier ran"
-    return (PASS if seen == v else FAIL), f"gap-observed max count={seen + len(ctx.standin)} minus stand-in={len(ctx.standin)} vs gsd-verifier={v}"
+    ev = f"gap-observed max count={seen + len(ctx.standin)} minus stand-in={len(ctx.standin)} vs gsd-verifier={v}"
+    if seen == v:
+        return PASS, ev
+    if v == seen + 1 and converged(ctx):          # WR-03: a converged run's last verifier run passes, it is no gap round
+        return PASS, ev + " (converged: the final verifier run found no gaps)"
+    return FAIL, ev
 
 
 def check_a10(ctx):
@@ -530,7 +613,7 @@ def check_a10(ctx):
         return missing("drift.log")
     if len(snaps) < 2:
         return NOTREACHED, f"{len(snaps)} gaps_found snapshot(s); need 2"
-    gens = [s["gen"] for s in snaps]
+    gens = [s["gen"] for s in snaps]                 # one snapshot per burst (see organic_gaps)
     ok = all(b > a for a, b in zip(gens, gens[1:]))
     return (PASS if ok else FAIL), f"gaps_found snapshot gens={gens}"
 
@@ -538,16 +621,54 @@ def check_a10(ctx):
 # ---------------------------------------------------------------- rubric-check
 
 RUBRIC_START, RUBRIC_END = b"<!-- rubric:start -->", b"<!-- rubric:end -->"
+# `--block NAME` -> (start marker, end marker, prereg file). The default (no --block) is the Phase 26 block above,
+# untouched (T-26-10). Named blocks are fail-closed: anything absent is RUBRIC-MISSING, never RUBRIC-UNCHANGED.
+RUBRIC_BLOCKS = {"26.1": (b"<!-- rubric-26.1:start -->", b"<!-- rubric-26.1:end -->", "prereg-26.1.txt")}
 
 
-def _rubric(data):
-    s = data.find(RUBRIC_START)
-    e = data.find(RUBRIC_END, s + 1) if s >= 0 else -1
-    return None if s < 0 or e < 0 else data[s + len(RUBRIC_START):e]
+def _rubric(data, start=RUBRIC_START, end=RUBRIC_END):
+    s = data.find(start)
+    e = data.find(end, s + 1) if s >= 0 else -1
+    return None if s < 0 or e < 0 else data[s + len(start):e]
 
 
-def rubric_check(base=S3, sha=None):
+def _rubric_block(base, sha, block):
+    """Fail-closed comparison for a named block: (rc, text) with RUBRIC-MISSING / exit 2 for any absent input."""
+    start, end, prereg = RUBRIC_BLOCKS[block]
+
+    def missing_(why):
+        return 2, "RUBRIC-MISSING\nrubric-check --block " + block + ": " + why
+    if sha is None:
+        t = read(os.path.join(base, "experiment", "results", prereg))
+        if t is None:
+            return missing_(f"experiment/results/{prereg} is absent")
+        m = re.search(r"^PREREG_SHA=(\S+)", t, re.M)
+        if not m:
+            return missing_(f"no PREREG_SHA= in experiment/results/{prereg}")
+        sha = m.group(1)
+    r = subprocess.run(["git", "show", f"{sha}:./README.md"], cwd=base, capture_output=True)
+    if r.returncode != 0:
+        return missing_("cannot read README at " + sha + ": " + r.stderr.decode(errors="replace").strip()[:200])
+    try:
+        with open(os.path.join(base, "README.md"), "rb") as f:
+            work = f.read()
+    except OSError:
+        return missing_("working-tree README.md is missing")
+    old, new = _rubric(r.stdout, start, end), _rubric(work, start, end)
+    if old is None or new is None:
+        return missing_("block markers absent in " + ("the README at the prereg sha" if old is None else "the working tree"))
+    if old == new:
+        return 0, "RUBRIC-UNCHANGED"
+    import difflib
+    diff = difflib.unified_diff(old.decode(errors="replace").splitlines(), new.decode(errors="replace").splitlines(),
+                                f"{sha}:README.md", "working-tree:README.md", lineterm="")
+    return 1, "RUBRIC-CHANGED\n" + "\n".join(diff)
+
+
+def rubric_check(base=S3, sha=None, block=None):
     """(rc, text): the README's pre-registered block at `sha` vs the working tree, byte for byte."""
+    if block is not None:
+        return _rubric_block(base, sha, block)
     if sha is None:
         m = re.search(r"^PREREG_SHA=(\S+)", read(os.path.join(base, "experiment", "results", "prereg.txt")) or "", re.M)
         if not m:
@@ -576,7 +697,7 @@ def seed_class(ctx, a10):
     if ctx.events is None:
         return "STALLED"
     parked = any(e.kv.get("state") == "parked" for e in ctx.of("status", "I-01"))
-    done = any(e.kv.get("state") == "done" for e in ctx.of("status", "I-01"))
+    done = any(e.kv.get("state") == "done" for e in ctx.of("status", "I-01"))   # (converged() minus the snapshot half)
     round1 = any(e.kv.get("round", "").isdigit() and int(e.kv["round"]) >= 1 for e in ctx.dispatches())
     snaps = ctx.snapshots() or []
     passed = any(s["status"] == "passed" for s in snaps) or done
@@ -598,6 +719,8 @@ def seed_class(ctx, a10):
 # ---------------------------------------------------------------- modes
 
 def checks_for(mode):
+    if mode == "l8":
+        return [("L8-1", check_l8_1), ("L8-2", check_l8_2), ("L8-3", check_l8_3), ("L8-4", check_l8_4)]
     if mode == "l7":
         return [("L7-1", check_l7_1), ("L7-2", check_l7_2), ("L7-3", check_l7_3), ("L7-4", check_l7_4),
                 ("L7-5", check_l7_5), ("L7-6", check_l7_6)]
@@ -653,7 +776,14 @@ def main(argv=None):
                 print("rubric-check: --sha needs a value")
                 return 2
             sha = argv[i + 1]
-        rc, text = rubric_check(S3, sha)
+        block = None
+        if "--block" in argv:
+            i = argv.index("--block")
+            if i + 1 >= len(argv) or argv[i + 1] not in RUBRIC_BLOCKS:
+                print("rubric-check: --block needs one of: " + ", ".join(sorted(RUBRIC_BLOCKS)))
+                return 2
+            block = argv[i + 1]
+        rc, text = rubric_check(S3, sha, block)
         print(text)
         return rc
     dup = None
@@ -665,7 +795,7 @@ def main(argv=None):
         dup = argv[i + 1]
         del argv[i:i + 2]
     if len(argv) != 2:
-        print("Usage: acceptance.py l7|run1|run2 <results-dir> [--dup-report FILE] | rubric-check [--sha S] | selftest")
+        print("Usage: acceptance.py l7|l8|run1|run2 <results-dir> [--dup-report FILE] | rubric-check [--sha S] [--block 26.1] | selftest")
         return 2
     lines, rc = run_mode(argv[0], argv[1], dup)
     print("\n".join(lines))
@@ -903,13 +1033,14 @@ def snap_text(status, gaps_lines):
     return f"---\nphase: 01-slugify\nverified: 2026-10-16T10:00:00Z\nstatus: {status}\ngaps:\n  - truth: \"feed\"\n{body}score: 1/3\n---\n\n# body mentions `unrelated-slug`\n"
 
 
-def drift_for(gens, statuses=None, extra_utc=None):
-    """drift.log + snapshot files for the given gens (all gaps_found by default)."""
+def drift_for(gens, statuses=None, secs=None):
+    """drift.log + snapshot files for the given gens (all gaps_found by default); `secs` = snapshot times
+    (default 120 s apart, so every snapshot is its own burst)."""
     lines, snaps = list(L7_DRIFT[:1]), {}
     for i, g in enumerate(gens):
         st = (statuses or {}).get(i, "gaps_found")
         name = f"{i + 1:02d}-2026101610{i:02d}00Z-h{i:07d}.md"
-        lines.append(f"{at(100 + 120 * i)} snapshot file={GAP_PATH} hash=h{i:07d} status={st} gen={g} -> {name}")
+        lines.append(f"{at(secs[i] if secs else 100 + 120 * i)} snapshot file={GAP_PATH} hash=h{i:07d} status={st} gen={g} -> {name}")
         snaps[name] = None
     return lines, snaps
 
@@ -925,8 +1056,8 @@ def gaps_for(*gens):
     return out
 
 
-def a8_case(td, name, per_snapshot, gens=(1, 2, 3)):
-    lines, snaps = drift_for(gens)
+def a8_case(td, name, per_snapshot, gens=(1, 2, 3), secs=None):
+    lines, snaps = drift_for(gens, secs=secs)
     names = list(snaps)
     for n, gl in zip(names, per_snapshot):
         snaps[n] = snap_text("gaps_found", gl)
@@ -1059,6 +1190,120 @@ def selftest_modes(td, outs):
     rc, out = r2("selfpark")
     assert status_of(out, "A5-deny") == NOTREACHED and status_of(out, "A10") == NOTREACHED, out
     assert rc == 0 and out.rstrip().endswith("RESULT PASS") and "UNDETERMINED" not in out, (rc, out)
+    # ---------------- D-01 in scoring: A8 / A10 score the last snapshot of each burst (committed results/run1 shape)
+    burst = [gaps_for(1), gaps_for(2), gaps_for(2)]            # a verifier re-write: same findings, seconds later
+    d = a8_case(td, "burst", burst, gens=(1, 2, 2), secs=(100, 700, 706))
+    _, out = run_on(d, "run1")
+    outs.append(out)
+    assert status_of(out, "A10") == PASS and "gens=[1, 2]" in out and status_of(out, "A8") == PASS, out
+    assert re.search(r"^A8 PASS .*\(\d+/\d+ cases\)", out, re.M), out
+    d = a8_case(td, "burst44", burst, gens=(1, 2, 2), secs=(100, 700, 744))     # 44 s after: still one burst
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A10") == PASS and "gens=[1, 2]" in out, out
+    d = a8_case(td, "burst45", burst, gens=(1, 2, 2), secs=(100, 700, 745))         # exactly 45 s: a new round
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A10") == FAIL and "gens=[1, 2, 2]" in out and status_of(out, "A8") == FAIL, out
+    d = a8_case(td, "burstone", [gaps_for(1), gaps_for(1)], gens=(1, 1), secs=(100, 110))   # one burst: one round
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A10") == NOTREACHED and status_of(out, "A8") == NOTREACHED, out
+    # a stand-in snapshot is still excluded before grouping
+    lines, snaps = drift_for((1, 2, 3), secs=(100, 700, 706))
+    for n, gl in zip(snaps, (gaps_for(1), gaps_for(2), gaps_for(3))):
+        snaps[n] = snap_text("gaps_found", gl)
+    d = mkres(td, "burststandin", run2_events("full"), state=run2_state("full"),
+              standin=[at(705)], drift=lines, snaps=snaps, dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run2")
+    assert status_of(out, "A10") == PASS and "gens=[1, 2]" in out, out
+    # ---------------- WR-03: a converged run (gaps, gaps, passed) has verifier runs = gaps_found + 1
+    two_gaps = [e for e in tracer_head() if "count=3" not in e]
+    lines, snaps = drift_for((1, 2, 3), statuses={2: "passed"})
+    for n, gl in zip(snaps, (gaps_for(1), gaps_for(2), gaps_for(3))):
+        snaps[n] = snap_text("gaps_found", gl)
+    d = mkres(td, "a9conv", two_gaps, state=json.loads(tracer_state()), drift=lines, snaps=snaps, dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == PASS and "converged" in out and "SEED CONVERGED" in out, out
+    lines, snaps = drift_for((1, 2, 3))
+    for n, gl in zip(snaps, (gaps_for(1), gaps_for(2), gaps_for(3))):
+        snaps[n] = snap_text("gaps_found", gl)
+    d = mkres(td, "a9noconv", two_gaps, state=json.loads(tracer_state()), drift=lines, snaps=snaps, dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == FAIL, out                  # without the passed snapshot: compared as before
+    d = mkres(td, "a9done", two_gaps + [line(735, "I-01", "status", state="done", outcome="closed")],
+              state=json.loads(tracer_state()), drift=lines, snaps=snaps, dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == PASS, out                  # I-01 status done also marks convergence
+    d = mkres(td, "a9conv4", two_gaps, state=json.loads(tracer_state()), drift=drift_for((1, 2, 3), statuses={2: "passed"})[0],
+              dup=DUP_OK.format(v=4))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == FAIL, out                  # only +1 is allowed
+    # a gap-coalesced line never raises A9's count
+    coal = tracer_head() + [line(640, "RUN", "gap-coalesced", phase=1, count=3, file=GAP_PATH, source="launcher-scan")]
+    d = mkres(td, "a9coal", coal, state=json.loads(tracer_state()), dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == PASS and "max count=3" in out, out
+    coal = tracer_head() + [line(640, "RUN", "gap-coalesced", phase=1, count=7, file=GAP_PATH, source="launcher-scan")]
+    d = mkres(td, "a9coal7", coal, state=json.loads(tracer_state()), dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A9") == PASS and "max count=3" in out, out
+    # ---------------- WR-04: a title or slug is a case only when quoted or backticked
+    dr = load_drift()
+    assert dr is not None
+    prose = 'reason: "the report says The End and the end of the file, then stops"'
+    assert ("title", "The End") not in cases_in(prose, dr) and ("slug", "end") not in cases_in(prose, dr), cases_in(prose, dr)
+    for quoted in ("reason: \"title `The End` fails\"", "reason: \"title 'The End' fails\"",
+                   "reason: \"title \\\"The End\\\" fails\"", "reason: \"slug `end` wrong\""):
+        c = cases_in(quoted, dr)
+        assert ("title", "The End") in c or ("slug", "end") in c, (quoted, c)
+    assert ("title", "The End") not in cases_in("reason: \"doesn't treat The End as a title\"", dr)
+    d = a8_case(td, "a8prose", [gaps_for(1), gaps_for(1) + [prose]], gens=(1, 2))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A8") == FAIL, out                  # prose "The End" is no new case
+    d = a8_case(td, "a8quoted", [gaps_for(1), gaps_for(1) + ["reason: \"title `The End` fails\""]], gens=(1, 2))
+    _, out = run_on(d, "run1")
+    assert status_of(out, "A8") == PASS, out
+    # ---------------- WR-05: dispatched(A), dispatch-denied, dispatched(B), report -> A11 FAIL for B
+    deny = line(741, "RUN", "dispatch-denied", reason="phase 1 has failed verification 3 times (gap-round cap 2); "
+                "no further dispatch for phase 1. Park the item with --rule gap-rounds.")
+    disp = lambda sec, n: line(sec, "I-01", "dispatched", step="/gsd-plan-phase 1 --gaps", base="a1b2c3f", round=3,
+                               dispatch=f"{n}/8", phase=1)
+    seq = tracer_head() + [disp(740, 7), deny, disp(742, 8), line(760, "I-01", "report", status="done") + "\n    STATUS: done"]
+    d = mkres(td, "a11adjacent", seq, state=run2_state("full"), drift=["2026-10-16T10:00:00Z start gen=0"], dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run2")
+    assert status_of(out, "A11") == FAIL and "1 phase-1 dispatch" in out, out
+    seq = tracer_head() + [disp(740, 7), deny, disp(742, 8), line(743, "RUN", "dispatch-denied", reason="phase 1 has failed verification 3 times (gap-round cap 2)")]
+    d = mkres(td, "a11bothdenied", seq, state=run2_state("full"), drift=["2026-10-16T10:00:00Z start gen=0"], dup=DUP_OK.format(v=3))
+    _, out = run_on(d, "run2")
+    assert status_of(out, "A11") == PASS, out
+    # ---------------- l8: guard fired, resumed by SendMessage, no respawn, reported and not crashed
+    def l8_case(name, block=True, sendmsg=1, dup_n=0, workers=1, report=True, end=True, status="parked", guard=True, dup=True):
+        ev = [line(0, "RUN", "launch", n=1, model="haiku"), line(1, "RUN", "connect", session="S1", source="startup"),
+              line(5, "RUN", "start", mode="headless", loop_mode="loop", session="S1"),
+              line(10, "I-01", "dispatched", step="/gsd-plan-phase 1", base="a1b2c3d", round=0, dispatch="1/8", phase=1)]
+        if report:
+            ev.append(line(60, "I-01", "report", status="done") + "\n    STATUS: done")
+        if end:
+            ev.append(line(61, "RUN", "end", reason="all-parked"))
+        ev.append(line(62, "RUN", "launch-end", rc=0, status=status))
+        d = mkres(td, name, ev, direction=None,
+                  dup=(f"dup_check: sessions=1 workers={workers} DUP={dup_n} EXECUTOR_MISSING=0 DRIVER_AGENT_CALLS=1 "
+                       f"LOG_DISPATCHED=1 LOG_DENIED=0 SENDMESSAGE={sendmsg}\ntypes: general-purpose=1\n") if dup else None)
+        if guard:
+            wr(os.path.join(d, "stop-guard.log"), (f"{at(30)} block item=I-01 attempt=1\n" if block else "") + f"{at(55)} allow reason=no-outstanding\n")
+        return run_on(d, "l8")
+    rc, out = l8_case("l8ok")
+    outs.append(out)
+    for cid in ("L8-1", "L8-2", "L8-3", "L8-4"):
+        assert status_of(out, cid) == PASS, (cid, out)
+    assert rc == 0 and out.rstrip().endswith("RESULT PASS") and "SEED" not in out, (rc, out)
+    for name, kw, cid in (("l8noblock", {"block": False}, "L8-1"), ("l8nosend", {"sendmsg": 0}, "L8-2"),
+                          ("l8dup", {"dup_n": 1}, "L8-3"), ("l8respawn", {"workers": 2}, "L8-3"),
+                          ("l8noreport", {"report": False}, "L8-4"), ("l8noend", {"end": False}, "L8-4"),
+                          ("l8stalled", {"status": "stalled"}, "L8-4"), ("l8crashed", {"status": "crashed"}, "L8-4")):
+        rc, out = l8_case(name, **kw)
+        assert status_of(out, cid) == FAIL and rc == 1 and out.rstrip().endswith("RESULT FAIL"), (name, rc, out)
+    for name, kw, cids in (("l8noguard", {"guard": False}, ("L8-1",)), ("l8nodup", {"dup": False}, ("L8-2", "L8-3"))):
+        rc, out = l8_case(name, **kw)
+        assert all(status_of(out, c) == UNDET for c in cids) and rc == 2 and out.rstrip().endswith("RESULT INCONCLUSIVE"), (name, rc, out)
     # ---------------- rubric-check in a temp git repo
     repo = os.path.join(td, "repo")
     spike = os.path.join(repo, "spike")
@@ -1087,6 +1332,43 @@ def selftest_modes(td, outs):
     assert rc == 0, (rc, out)
     os.remove(os.path.join(spike, "experiment", "results", "prereg.txt"))
     rc, out = rubric_check(spike)
+    assert rc == 2, (rc, out)
+    # ---- rubric-check --block 26.1: fail-closed, and the default path is untouched by it
+    r261 = "<!-- rubric-26.1:start -->\nGO if L1 PASS\nNO-GO if L2 FAIL\n<!-- rubric-26.1:end -->\n"
+    pre = os.path.join(spike, "experiment", "results", "prereg-26.1.txt")
+    rc, out = rubric_check(spike, block="26.1")
+    assert rc == 2 and out.splitlines()[0] == "RUBRIC-MISSING" and "RUBRIC-UNCHANGED" not in out, (rc, out)
+    wr(os.path.join(spike, "README.md"), readme + r261)
+    git("add", "-A")
+    git("commit", "-q", "-m", "prereg 26.1")
+    sha2 = git("rev-parse", "HEAD").stdout.strip()
+    wr(pre, "RECORDED_UTC=2026-10-17T00:00:00Z\n")                        # no PREREG_SHA line
+    rc, out = rubric_check(spike, block="26.1")
+    assert rc == 2 and out.splitlines()[0] == "RUBRIC-MISSING", (rc, out)
+    wr(pre, f"PREREG_SHA={sha2}\n")
+    rc, out = rubric_check(spike, block="26.1")
+    assert rc == 0 and out == "RUBRIC-UNCHANGED", (rc, out)
+    wr(os.path.join(spike, "README.md"), (readme + r261).replace("L1 PASS", "L1 PAS5"))
+    rc, out = rubric_check(spike, block="26.1")
+    assert rc == 1 and out.startswith("RUBRIC-CHANGED") and "PAS5" in out, (rc, out)
+    wr(os.path.join(spike, "experiment", "results", "prereg.txt"), f"PREREG_SHA={sha}\n")
+    rc, out = rubric_check(spike)                                          # editing the 26.1 block leaves the old rubric intact
+    assert rc == 0 and out == "RUBRIC-UNCHANGED", (rc, out)
+    wr(os.path.join(spike, "README.md"), readme)                           # working tree lost the 26.1 block
+    rc, out = rubric_check(spike, block="26.1")
+    assert rc == 2 and out.splitlines()[0] == "RUBRIC-MISSING", (rc, out)
+    wr(pre, f"PREREG_SHA={sha}\n")                                        # README at that sha never had the 26.1 block
+    wr(os.path.join(spike, "README.md"), readme + r261)
+    rc, out = rubric_check(spike, block="26.1")
+    assert rc == 2 and out.splitlines()[0] == "RUBRIC-MISSING", (rc, out)
+    rc, out = rubric_check(spike, sha=sha2, block="26.1")                  # --sha overrides the prereg file
+    assert rc == 0 and out == "RUBRIC-UNCHANGED", (rc, out)
+    os.remove(pre)
+    rc, out = rubric_check(spike, sha=sha2, block="26.1")
+    assert rc == 0, (rc, out)
+    rc, out = run_cli(["rubric-check", "--block", "27"])
+    assert rc == 2 and "RUBRIC-UNCHANGED" not in out, (rc, out)
+    rc, out = run_cli(["rubric-check", "--block"])
     assert rc == 2, (rc, out)
     # ---------------- spike 002's real committed logs parse (from their real paths, never copies)
     real = os.path.join(S3, "..", "002-launcher-caps-and-tool-frontmatter", "experiment", "results")
@@ -1171,7 +1453,7 @@ def selftest():
         assert status_of(out, "A4") == UNDET and status_of(out, "A6") == UNDET, out
         empty = os.path.join(td, "emptydir")
         os.makedirs(empty)
-        for mode in ("l7", "run1", "run2"):
+        for mode in ("l7", "l8", "run1", "run2"):
             for target in (os.path.join(td, "nowhere"), empty):
                 rc, out = run_cli([mode, target])
                 outs.append(out)
