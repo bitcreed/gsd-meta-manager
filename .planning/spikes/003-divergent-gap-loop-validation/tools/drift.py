@@ -63,6 +63,12 @@ import sys
 import tempfile
 import time
 
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:               # `python3 -I` drops the script directory from sys.path
+    sys.path.insert(0, HERE)
+import gapcount  # noqa: E402  (WR-03: the one status definition, shared with the fork launcher)
+
 # --------------------------------------------------------------------------- the feed
 
 GEN0 = [
@@ -232,7 +238,6 @@ def utc_compact() -> str:
 
 
 _GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
-_STATUS_RE = re.compile(r"""^status:\s*["']?([A-Za-z_]+)""", re.M)         # IN-05: the value may be quoted
 
 
 def _git(project: str, *args: str):
@@ -445,10 +450,7 @@ class Watcher:
                 self.seen_hashes.add(h8)
                 if any(x.endswith(f"-{h8}.md") for x in os.listdir(self.snapshots)):
                     continue                        # watcher restart: already snapshotted
-                text = raw.decode(errors="replace")
-                fm = text.split("\n---", 1)[0] if text.startswith("---") else ""
-                m = _STATUS_RE.search(fm)
-                status = m.group(1) if m else "unknown"
+                status = gapcount.fm_status(raw) or "unknown"      # WR-03: one definition (quote-tolerant)
                 nn = len(os.listdir(self.snapshots)) + 1
                 name = f"{nn:02d}-{utc_compact()}-{h8}.md"
                 shutil.copyfile(path, os.path.join(self.snapshots, name))

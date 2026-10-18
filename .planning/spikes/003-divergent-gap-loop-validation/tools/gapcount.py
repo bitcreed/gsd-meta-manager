@@ -12,6 +12,9 @@ Rule (strict, float seconds, no rounding or truncation):
   * otherwise, if the previous gaps_found write of the same phase is less than COALESCE_S earlier,
     the write is `coalesced` (the anchor slides to it, so three writes 20 s apart are one round);
   * otherwise it is `new` and the phase count goes up by one.
+The status of a VERIFICATION.md is read by one definition too, `STATUS_RE` / `fm_status(raw)` below: the
+`status:` key of the leading frontmatter, with the value optionally quoted. The fork launcher's live scan
+and drift.py's snapshots both call it, so a `status: "gaps_found"` write is counted and scored alike (WR-03).
 The state lives in the `caps.gap_rounds` dict (`seen`, `per_phase`, `last_write`, `coalesced`) so a
 relaunch that reloads state.json keeps the window. spike 002's gate and trip read only `per_phase`.
 
@@ -55,6 +58,19 @@ COALESCE_S = 45
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 VERIF_PATH = re.compile(r"[^\s'\"]*-VERIFICATION\.md")
 WRITE_TOOLS = ("Write", "Edit")
+
+
+STATUS_RE = re.compile(r"""^status:\s*["']?([A-Za-z_]+)""", re.M)
+
+
+def fm_status(raw):
+    """The one status definition (WR-03): the `status:` value in the leading frontmatter of a VERIFICATION.md
+    (bytes or str), or None. The frontmatter is the text before the first `\\n---`, and only when the text
+    starts with `---`; a `status:` line in the body does not count, and the value may be quoted."""
+    text = raw.decode(errors="replace") if isinstance(raw, (bytes, bytearray)) else raw
+    fm = text.split("\n---", 1)[0] if text.startswith("---") else ""
+    m = STATUS_RE.search(fm)
+    return m.group(1) if m else None
 
 
 def epoch(utc):
@@ -124,7 +140,11 @@ def replay(results, writes=None, gap_limit=2):
     gc = GapCounter()
     new, coalesced = [], 0
     for n, (utc, kv) in enumerate(obs):
-        kind, k = gc.observe("1", epoch(utc), f"obs{n}", kv.get("file"))
+        try:
+            at = epoch(utc)
+        except ValueError:
+            return 2, ["gapcount: ERROR bad timestamp in LOG.md"]            # IN-02
+        kind, k = gc.observe("1", at, f"obs{n}", kv.get("file"))
         if kind == "new":
             new.append(k)
         elif kind == "coalesced":
@@ -309,6 +329,15 @@ def selftest():
     assert coalesce([100, 0, 20]) == [[1, 2], [0]]
     assert coalesce([]) == []
 
+    # WR-03: the one status definition is quote-tolerant and frontmatter-only
+    assert fm_status(b'---\nstatus: "gaps_found"\n---\n') == "gaps_found"
+    assert fm_status("---\nstatus: gaps_found\n---\nx") == "gaps_found"
+    assert fm_status("---\nphase: x\nstatus: 'passed'\n---\n") == "passed"
+    assert fm_status("status: gaps_found\n") is None                       # no leading frontmatter
+    assert fm_status("---\nphase: x\n---\nstatus: gaps_found\n") is None  # status only in the body
+    assert fm_status(b"\xff\xfe---\nstatus: gaps_found\n") is None
+    assert STATUS_RE.pattern == r"""^status:\s*["']?([A-Za-z_]+)"""
+
     with tempfile.TemporaryDirectory() as td:
         # extract-writes: planted marker in message text and in the Bash command must not reach the output
         tdir = os.path.join(td, "sub")
@@ -371,6 +400,14 @@ def selftest():
             f.write(g.format("2026-10-17T02:26:42Z", 4) + "\n")
         rc, lines = replay(res, None, 2)
         assert lines[1] == "NEW counts=[1, 2, 3, 4]" and lines[4] == "CAP tripped=yes", lines
+        # IN-02: a malformed LOG timestamp is a bad input (exit 2), not a traceback
+        with open(os.path.join(res, "LOG.md"), "w") as f:
+            f.write(g.format("2026-13-40T25:61:61Z", 1) + "\n")
+        rc, lines = replay(res, None, 2)
+        assert (rc, lines) == (2, ["gapcount: ERROR bad timestamp in LOG.md"]), (rc, lines)
+        r = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "replay", "--results", res],
+                           capture_output=True, text=True)
+        assert r.returncode == 2 and r.stdout == "gapcount: ERROR bad timestamp in LOG.md\n" and not r.stderr, r
         # no data -> exit 2
         with open(os.path.join(res, "LOG.md"), "w") as f:
             f.write("# nothing\n")

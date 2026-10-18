@@ -146,24 +146,21 @@ def scan_gaps(project, state: dict):
 # s003:H2 end
     new = []
     for p in sorted(glob.glob(os.path.join(project, ".planning", "phases", "*", "*-VERIFICATION.md"))):
-        try:
-            with open(p, "rb") as f:
+# s003:H2 begin
+        try:                                           # WR-07: stat, read, stat; a moved mtime skips the file
+            st1 = os.stat(p)                           # this tick (the next 2 s tick retries), so the mtime
+            with open(p, "rb") as f:                   # belongs to the bytes that were hashed
                 raw = f.read()
+            st2 = os.stat(p)
         except OSError:
             continue
-        text = raw.decode(errors="replace")
-        fm = text.split("\n---", 1)[0] if text.startswith("---") else ""
-        m = FM_STATUS.search(fm)
-        if not m or m.group(1) != "gaps_found":
+        if st1.st_mtime_ns != st2.st_mtime_ns:
+            continue
+        if gapcount.fm_status(raw) != "gaps_found":    # WR-03: the one quote-tolerant status definition
             continue
         key = hashlib.sha256(raw).hexdigest()[:16]
-# s003:H2 begin
         phase = re.match(r"0*(\d+(?:\.\d+)?)", os.path.basename(os.path.dirname(p))).group(1)
-        try:
-            mtime = os.stat(p).st_mtime
-        except OSError:
-            continue
-        kind, count = counter.observe(phase, mtime, key, os.path.relpath(p, project))
+        kind, count = counter.observe(phase, st2.st_mtime, key, os.path.relpath(p, project))
         if kind != "duplicate":
             new.append((kind, phase, os.path.relpath(p, project), count))
 # s003:H2 end
@@ -550,6 +547,50 @@ def _selftest_scan():
         # the S2 gate / trip predicates stay unchanged: count 2 is allowed, 3 is denied, 4 trips
         gl = 2
         assert not (2 >= gl + 1) and (3 >= gl + 1) and not (3 > gl + 1) and (4 > gl + 1)
+    _selftest_scan_status_and_race()
+
+
+def _selftest_scan_status_and_race():
+    """WR-03: a quoted `status: "gaps_found"` is counted like the bare form (one definition, gapcount.fm_status).
+    WR-07: a write landing between the first stat and the read is skipped for that tick and observed on the
+    next one with its own mtime."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = os.path.join(td, ".planning", "phases", "01-slugify")
+        os.makedirs(d)
+        p = os.path.join(d, "01-VERIFICATION.md")
+        rel = os.path.relpath(p, td)
+        t = 1_700_000_000
+
+        def write(text, mtime):
+            with open(p, "w") as f:
+                f.write(text)
+            os.utime(p, (mtime, mtime))
+        q = '---\nphase: 01-slugify\nstatus: "gaps_found"\n---\nquoted\n'
+        state = {"limit": 2, "per_phase": {}, "seen": {}}
+        write(q, t)
+        assert scan_gaps(td, state) == [("new", "1", rel, 1)], "a quoted gaps_found write must be counted"
+        write(q.replace("quoted", "single").replace('"', "'"), t + 600)
+        assert scan_gaps(td, state) == [("new", "1", rel, 2)]
+        # mid-read write: the second stat of the tick sees a moved mtime
+        state = {"limit": 2, "per_phase": {}, "seen": {}}
+        write("---\nphase: 01-slugify\nstatus: gaps_found\n---\nrace\n", t)
+        real_stat, seen = os.stat, []
+
+        def racing(path, *a, **k):
+            if str(path) == p:
+                seen.append(1)
+                if len(seen) == 2:                                  # the write lands before the second stat
+                    os.utime(p, (t + 700, t + 700))
+            return real_stat(path, *a, **k)
+        os.stat = racing
+        try:
+            assert scan_gaps(td, state) == [], "a changed mtime must skip the file for this tick"
+        finally:
+            os.stat = real_stat
+        assert len(seen) == 2 and state["per_phase"] == {} and state["seen"] == {}, (seen, state)
+        assert scan_gaps(td, state) == [("new", "1", rel, 1)], "the skipped write is observed on the next tick"
+        assert state["last_write"] == {"1": float(t + 700)}, "observed with its own mtime"
 
 
 def _selftest_hooks_and_exit():
