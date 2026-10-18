@@ -56,6 +56,7 @@ sys.path.insert(0, HERE)
 import driverctl as dc  # noqa: E402
 # s003:H1 begin
 sys.path.insert(1, S3_TOOLS)
+import exitclass  # noqa: E402
 import gapcount  # noqa: E402
 # s003:H1 end
 
@@ -174,6 +175,33 @@ def mentions_phase(prompt: str, phase: str) -> bool:
     return bool(re.search(rf"(?i)(phase[\s_-]*0*{ph}\b|-phase\s+0*{ph}\b|\b0*{ph}\s+--gaps)", prompt))
 
 
+# s003:H3 begin
+def add_stop_guard(cfg: str, rd: str):
+    """Append the Stop-hook keep-alive guard to the per-run settings.json, AFTER the driverctl Stop entry
+    (the heartbeat stays first). The guard only reads the run dir and writes under the config dir."""
+    import shlex
+    path = os.path.join(cfg, "settings.json")
+    with open(path) as f:
+        s = json.load(f)
+    cmd = f"python3 -I {shlex.quote(os.path.join(S3_TOOLS, 'stop_guard.py'))} --run-dir {shlex.quote(rd)}"
+    s.setdefault("hooks", {}).setdefault("Stop", []).append(
+        {"hooks": [{"type": "command", "command": cmd, "timeout": 20}]})
+    with open(path, "w") as f:
+        json.dump(s, f, indent=1)
+
+
+# s003:H3 end
+# s003:H4 begin
+def classify_run_exit(rc, tripped, ended_by_driver, result, rd):
+    """Exit label for a driver process that ended with no tripped cap and no `RUN end`: `stalled` when it
+    exited cleanly after a successful result with a dispatch still unreported, else `crashed`.
+    Returns None when the existing status stands."""
+    result_ok = bool(result) and result.get("subtype") == "success"
+    outstanding = exitclass.outstanding_item(exitclass.parse_log(os.path.join(rd, "LOG.md")))
+    return exitclass.classify_exit(rc, tripped, ended_by_driver, result_ok, outstanding)
+
+
+# s003:H4 end
 # ---------------------------------------------------------------- run
 
 class Launch:
@@ -275,6 +303,9 @@ class Launch:
         cfg = os.path.join(self.state_dir, "claude-config")
         inner_sock = "/tmp/driverctl.sock" if a.sandbox == "bwrap" else sock
         seed_config(cfg, os.path.join(cfg, "bin", "driverctl") + " hook")
+# s003:H3 begin
+        add_stop_guard(cfg, self.rd)
+# s003:H3 end
         token, exp = host_access_token()
         left_min = (exp - time.time()) / 60
         with st.lock:
@@ -393,8 +424,11 @@ class Launch:
                                          "cache_write": u.get("cacheCreationInputTokens")}
                                      for m, u in (result.get("modelUsage") or {}).items()}}
                 s["cost"].append(cost)
-            if not self.tripped and not s.get("ended_by_driver"):
-                s["status"], s["status_reason"] = "crashed", f"driver exited rc={rc} without RUN end"
+# s003:H4 begin
+            verdict = classify_run_exit(rc, self.tripped, s.get("ended_by_driver"), result, self.rd)
+            if verdict:
+                s["status"], s["status_reason"] = verdict
+# s003:H4 end
             st.append_log("RUN", "launch-end", {"rc": rc, "tripped": self.tripped,
                                                 "cost_usd": cost and cost["total_cost_usd"],
                                                 "status": s["status"]})
@@ -518,10 +552,52 @@ def _selftest_scan():
         assert not (2 >= gl + 1) and (3 >= gl + 1) and not (3 > gl + 1) and (4 > gl + 1)
 
 
+def _selftest_hooks_and_exit():
+    """H3: two Stop entries, driverctl first. H4: the Run 1b-shaped exit classifies as stalled."""
+    import shutil
+    import tempfile
+    spike3 = os.path.dirname(S3_TOOLS)
+    with tempfile.TemporaryDirectory() as td:
+        cfg, rd = os.path.join(td, "cfg"), os.path.join(td, "rd")
+        os.makedirs(cfg)
+        os.makedirs(rd)
+        hook_cmd = os.path.join(cfg, "bin", "driverctl") + " hook"
+        try:                                                            # real seed when the host settings exist
+            with open(os.path.join(HOST_CLAUDE, "settings.json")) as f:
+                host_stop = len((json.load(f).get("hooks") or {}).get("Stop", []))
+            seed_config(cfg, hook_cmd)
+        except OSError:                                                 # e.g. a bare CI runner: S2-shaped stand-in
+            host_stop = 0                                               # (one driverctl entry + the guard)
+            with open(os.path.join(cfg, "settings.json"), "w") as f:
+                json.dump({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": hook_cmd,
+                                                           "timeout": 20}]}]}}, f)
+        add_stop_guard(cfg, rd)
+        with open(os.path.join(cfg, "settings.json")) as f:
+            stops = json.load(f)["hooks"]["Stop"]
+        assert len(stops) == host_stop + 2, (len(stops), host_stop)       # stand-in case: 1 driverctl + 1 guard
+        assert stops[-2]["hooks"][0]["command"].endswith("driverctl hook"), stops[-2]
+        last = stops[-1]["hooks"][0]
+        assert "stop_guard.py --run-dir" in last["command"] and last["command"].startswith("python3 -I "), last
+        assert last["command"].endswith(rd) and last["timeout"] == 20, last
+        # H4 on the recorded Run 1b shape and its controls
+        res1b = os.path.join(spike3, "experiment", "results", "run1b")
+        shutil.copy(os.path.join(res1b, "LOG.md"), os.path.join(rd, "LOG.md"))
+        ok = {"type": "result", "subtype": "success"}
+        v = classify_run_exit(0, None, False, ok, rd)
+        assert v and v[0] == "stalled" and "I-01" in v[1], v
+        assert classify_run_exit(0, None, False, None, rd)[0] == "crashed"          # no result event
+        assert classify_run_exit(1, None, False, ok, rd)[0] == "crashed"
+        assert classify_run_exit(0, "gap_rounds", False, ok, rd) is None
+        assert classify_run_exit(0, None, True, ok, rd) is None
+        shutil.copy(os.path.join(spike3, "experiment", "results", "run1", "LOG.md"), os.path.join(rd, "LOG.md"))
+        assert classify_run_exit(0, None, False, ok, rd)[0] == "crashed"            # nothing outstanding
+
+
 def selftest():
     changed = fork_fidelity()
     print(f"FORK_DIFF_LINES={changed}")
     _selftest_scan()
+    _selftest_hooks_and_exit()
     print("selftest OK")
     return 0
 
