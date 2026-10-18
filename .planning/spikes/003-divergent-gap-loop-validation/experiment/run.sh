@@ -145,6 +145,19 @@ scratch_guard() {
   return 0
 }
 
+# allow_main_commits PROJECT (26.1-10 seed v2 fix): the scratch repo sits on `main`, which gsd-core's commit guard
+# (`git.base-branch --is-protected`) refuses; r261-seed2's executor halted there before any change and the Haiku
+# driver parked on needs-human, so no verification ever ran. Opt the scratch project in to default-branch commits
+# (a config key, the same class of declared seed config as planner.stall_detection_enabled; no feed, house-rule or
+# scratch-text change) and fold it into the scratch commit so the tree stays clean and the log keeps its shape.
+allow_main_commits() {
+  local cfg="$1/.planning/config.json"
+  [ -f "$cfg" ] || { echo "run.sh: allow_main_commits: $cfg missing" >&2; return 2; }
+  sed -i 's/"git": { "create_tag": false }/"git": { "create_tag": false, "allow_default_branch_commits": true }/' "$cfg"
+  grep -q '"allow_default_branch_commits": true' "$cfg" || { echo "run.sh: allow_main_commits: config.json patch did not apply" >&2; return 2; }
+  git -C "$1" add .planning/config.json && git -C "$1" commit -q --amend --no-edit
+}
+
 run_selftest() {
   local tmp rc root lrj got vf ts mt
   tmp="$(mktemp -d)"
@@ -217,6 +230,17 @@ run_selftest() {
   [ "$rc" != 0 ] || st_fail "prereg_gate no-such-block must refuse"
   rc=0; prereg_gate '../x' 2>/dev/null || rc=$?
   [ "$rc" != 0 ] || st_fail "prereg_gate bad block name must refuse"
+  # allow_main_commits (26.1-10): patches the scratch config and keeps the tree clean on one scratch commit
+  mkdir -p "$tmp/am/.planning"
+  printf '{\n  "git": { "create_tag": false },\n  "mode": "yolo"\n}\n' > "$tmp/am/.planning/config.json"
+  ( cd "$tmp/am" && git init -q -b main && git config user.email t@example.invalid && git config user.name t \
+    && git add -A && git commit -qm base )
+  allow_main_commits "$tmp/am" || st_fail "allow_main_commits failed on a scratch-shaped config"
+  grep -q '"allow_default_branch_commits": true' "$tmp/am/.planning/config.json" || st_fail "allow_main_commits did not set the key"
+  [ -z "$(git -C "$tmp/am" status --porcelain)" ] || st_fail "allow_main_commits left the scratch tree dirty"
+  [ "$(git -C "$tmp/am" rev-list --count HEAD)" = 1 ] || st_fail "allow_main_commits added a commit instead of amending"
+  rc=0; allow_main_commits "$tmp/no-such-project" 2>/dev/null || rc=$?
+  [ "$rc" = 2 ] || st_fail "allow_main_commits missing config want rc 2 got $rc"
   echo "run.sh selftest OK"
   exit 0
 }
@@ -363,6 +387,8 @@ if [ "${RELAUNCH:-0}" != 1 ]; then
   } > "$RES/run-env.txt"
   # (d) scratch project
   bash "$SELF/setup-scratch.sh" "$PROJECT" "$RUN_ID" "$DIRECTION" > "$SCRATCH_ROOT/setup.out"
+  # (d2) 26.1-10 seed v2 fix: the verifier-trigger kit (seed2, run2) runs with default-branch commits allowed
+  if [ "$TRIGGER" = verifier ]; then allow_main_commits "$PROJECT"; fi
 else
   { echo "RELAUNCH_STARTED_UTC=$(date -u +%FT%TZ)"; echo "RELAUNCH_CAMPAIGN_SPENT_USD=$SPENT_ALL"; } >> "$RES/run-env.txt"
 fi
