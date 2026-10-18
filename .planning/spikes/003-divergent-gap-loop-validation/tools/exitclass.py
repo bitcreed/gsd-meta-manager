@@ -5,11 +5,13 @@ Phase 26 Run 1b ended with `launch-end | rc=0 | status=crashed`: the headless dr
 `result subtype=success` while its worker was still running, so the process exited cleanly with no
 `RUN end`. Spike 002's launcher has one non-crash path (`ended_by_driver`) and labelled everything else
 `crashed` (`launcher.py:362-363`). This module is the single definition of the distinction, shared by the
-fork launcher (`classify_exit`) and the Stop guard (`outstanding_item`, so both agree on what "a dispatch
+fork launcher (`classify_exit`) and the Stop guard (`outstanding_dispatch`, so both agree on what "a dispatch
 with no report" means).
 
-  outstanding_item(events)  an item whose last `dispatched` has no later `report`, no later `status` with
-                            state done|parked|failed, no later `recovered` and no later `RUN | dispatch-denied`
+  outstanding_dispatch(events)  (item, event index) of the latest open dispatch, or None. A dispatch is open
+                            until a later `report`, `recovered` or `status` done|parked|failed for its item;
+                            a `RUN | dispatch-denied` cancels only the immediately preceding dispatch (WR-01)
+  outstanding_item(events)  the item of outstanding_dispatch
   classify_exit(...)        None when the existing status stands (cap tripped / driver logged `RUN end`);
                             ("stalled", reason) when rc == 0, the stream ended in `result success` and a
                             dispatch is outstanding; otherwise ("crashed", reason)
@@ -54,24 +56,37 @@ SKELETON_KEYS = ("type", "subtype", "task_id", "status", "spawn_depth", "parent_
                  "tasks", "blocks", "parent_tool_use_id_set")
 
 
-def outstanding_item(events):
-    """The item (latest dispatch first) whose dispatch has no report / terminal status / recovery / denial."""
-    last_dispatch = {}
+def outstanding_dispatch(events):
+    """The latest open dispatch as (item, event index), or None (WR-01).
+
+    Every item-level `dispatched` opens an entry, and a `report`, `recovered` or terminal `status` closes all
+    open entries of that item. A `RUN | dispatch-denied` cancels exactly one entry: the most recent open one,
+    and only when no item-level event (any event whose item is not RUN) lies between that dispatch and the
+    denial. RUN-level launcher lines (gap-observed, connect, launch, ...) never count as "between", so they
+    cannot shield a denied attempt. A denial therefore cannot hide a different, genuinely unreported dispatch.
+    """
+    open_entries = []            # [(event index, item)] in dispatch order
+    last_item_event = -1         # index of the latest item-level event seen so far
     for n, (_, item, ev, kv) in enumerate(events or []):
-        if item != "RUN" and ev == "dispatched":
-            last_dispatch[item] = n
-    open_items = []
-    for item, n0 in last_dispatch.items():
-        closed = False
-        for _, it, ev, kv in (events or [])[n0 + 1:]:
-            if it == item and (ev in ("report", "recovered")
-                               or (ev == "status" and kv.get("state") in DONE_STATES)):
-                closed = True
-            elif it == "RUN" and ev == "dispatch-denied":
-                closed = True
-        if not closed:
-            open_items.append((n0, item))
-    return max(open_items)[1] if open_items else None
+        if item != "RUN":
+            if ev == "dispatched":
+                open_entries.append((n, item))
+            elif ev in ("report", "recovered") or (ev == "status" and kv.get("state") in DONE_STATES):
+                open_entries = [e for e in open_entries if e[1] != item]
+            last_item_event = n
+        elif ev == "dispatch-denied":
+            if open_entries and last_item_event == open_entries[-1][0]:
+                open_entries.pop()
+    if not open_entries:
+        return None
+    n, item = max(open_entries)
+    return item, n
+
+
+def outstanding_item(events):
+    """The item of the latest open dispatch (see outstanding_dispatch), or None."""
+    found = outstanding_dispatch(events)
+    return found[0] if found else None
 
 
 def classify_exit(rc, tripped, ended_by_driver, result_ok, outstanding):
@@ -279,6 +294,18 @@ def selftest():
                              _ev("t3", "I-01", "dispatched", step="s2")]) == "I-01"          # re-dispatch reopens
     assert outstanding_item([d, _ev("t2", "I-02", "dispatched", step="s")]) == "I-02"        # latest dispatch wins
     assert outstanding_item([]) is None and outstanding_item(None) is None
+    # WR-01: a denial cancels only its own immediately preceding dispatch
+    den = _ev("t9", "RUN", "dispatch-denied", reason="x")
+    d2 = _ev("t2", "I-01", "dispatched", step="s2")
+    assert outstanding_dispatch([d, d2, den]) == ("I-01", 0)                                 # (a)
+    assert outstanding_dispatch([d, den]) is None                                            # (b)
+    assert outstanding_dispatch([d, _ev("t2", "I-02", "dispatched", step="s"), den]) == ("I-01", 0)   # (c)
+    assert outstanding_dispatch([d, _ev("t2", "RUN", "gap-observed", n=1), den]) is None     # (d)
+    assert outstanding_dispatch([d, _ev("t2", "I-01", "report", status="done")]) is None     # (e)
+    assert outstanding_dispatch([d, _ev("t2", "I-01", "report", status="done"), d2, den,
+                                 _ev("t5", "I-01", "dispatched", step="s3")]) == ("I-01", 4)  # (f)
+    assert outstanding_dispatch([d, _ev("t2", "I-01", "status", state="running"), den]) == ("I-01", 0)  # item event between
+    assert outstanding_dispatch([]) is None and outstanding_dispatch(None) is None
 
     spike = os.path.dirname(HERE)
     run1b = os.path.join(spike, "experiment", "results", "run1b")
