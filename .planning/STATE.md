@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.14.0
-current_phase: "26.1"
-current_phase_name: Driver Validation Spike 003 Re-run (INSERTED)
-status: verifying
-stopped_at: Completed 26.1-11-PLAN.md
-last_updated: "2026-10-18T04:33:53.795Z"
-last_activity: 2026-10-17
-last_activity_desc: Phase 26.1 execution started
-state_head: f75dc975f4c079606be70641e49a54e8be70ada5
+current_phase: 27
+current_phase_name: driverctl & Driver Frontmatter
+status: planning
+stopped_at: Phase 26.1 complete, ready to plan Phase 27
+last_updated: "2026-10-18T05:03:10.487Z"
+last_activity: 2026-10-18
+last_activity_desc: Phase 26.1 complete, transitioned to Phase 27
+state_head: 05330ffe5c45966dacd77c11e31204d68759249e
 progress:
   total_phases: 10
-  completed_phases: 9
+  completed_phases: 10
   total_plans: 11
   completed_plans: 112
+  percent: 53
 milestone_name: gsd-core 1.17.0 Sync
 ---
 
@@ -21,10 +22,10 @@ milestone_name: gsd-core 1.17.0 Sync
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-16)
+See: .planning/PROJECT.md (updated 2026-10-18)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 26.1 — Driver Validation Spike 003 Re-run (INSERTED)
+**Current focus:** Phase 27 — driverctl & Driver Frontmatter
 2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
@@ -32,7 +33,22 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Phase complete — ready for verification
+Status: Ready to plan Phase 27 (driverctl & Driver Frontmatter). Blocker CLEARED 2026-10-18.
+  Phase 26.1 complete 2026-10-18 (11/11 plans; verification passed after operator sign-off on the
+  human item, 26.1-UAT.md test 1). VALID-01 proven on an organic Opus driver. VALID-02 accepted by the
+  operator as ADJUST (final): launcher deny/kill is model-independent launcher code proven by the
+  scripted Haiku run r261-l7 (L7-1..L7-6 PASS); the Opus driver self-parked at gap count 2 before
+  round 3 (results/r261-run2b/LOG.md:100-101), so deny/kill were NOT-REACHED on Opus.
+  Carried risk -> Phases 28/29: they must exercise launcher deny/kill under the real driver (recorded
+  in ROADMAP.md on both phases).
+  Follow-up for Phase 27 (from 26.1 planning): the driver status list/enum (SC3 frontmatter states)
+  needs a `stalled` value.
+  Open advisories (deferred, not blocking): 26.1 review warnings WR-10 and WR-11 remain `open`
+  (26.1-REVIEW-DISPOSITION.md); IN-04 deferred.
+  Next: `/gsd-discuss-phase 27` (or `/gsd-plan-phase 27`).
+
+Earlier (2026-10-17):
+Status: Ready to plan
   revised spike 003 as decimal Phase 26.1 BEFORE Phase 27 (option (a), redesign + re-run). Scope:
   (1) count gap rounds per verifier run so one verifier re-write cannot inflate the gap count or trip
   the cap; (2) keep the headless driver alive until its dispatched worker reports, or make the
@@ -205,8 +221,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 26.1 (Driver Validation Spike 003 Re-run (INSERTED)) — READY TO EXECUTE
-Plan: 5 of 5
+Phase: 27 — driverctl & Driver Frontmatter
+Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -240,7 +256,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-17 — Phase 26.1 execution started
+Last activity: 2026-10-18 — Phase 26.1 complete, transitioned to Phase 27
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -369,7 +385,7 @@ verify-phase if the gate is fixed.
 
 **Velocity:**
 
-- Total plans completed: 54
+- Total plans completed: 65
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -385,6 +401,7 @@ verify-phase if the gate is fixed.
 | 24 | 7 | - | - |
 | 25 | 7 | - | - |
 | 26 | 3 | - | - |
+| 26.1 | 11 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -591,6 +608,8 @@ Recent decisions affecting current work:
 - [Phase 26.1]: 26.1-10: Haiku seed v2 gate PASSED on the second launch (r261-seed2b) after one run.sh fix (scratch git.allow_default_branch_commits=true); SPENT_ALL 21.98 of 60; seed and kit now frozen for the paid Run 2
 - [Phase 26.1]: [Phase 26.1] Spike 003 gap-closure verdict ADJUST: J1 held (r261-run2b A5-deny NOT-REACHED: the Opus driver parked needs-human at gap-observed count=2, before any round-3 dispatch; seed v2 worked, 2 verifier advances = gsd-verifier 2, DUP=0); organic launcher deny at L+1 and kill at L+2 still unobserved (kill covered by scripted r261-l7 L7-5); VALID-02 stays open; carried: Phase 28 keeps cap and L7 cases as acceptance cases, Phase 29 records prompt-independent self-limiting plus v0.4 D1/D3/D1c/D2/OQ-R1 wording, stall-watch path (stall_detection_enabled false), Phase 28 coalescing COALESCE_S=45; forward: Phase 27 status enum needs stalled; see .planning/spikes/003-divergent-gap-loop-validation/README.md
 
+- [2026-10-18] Operator accepted ADJUST as final for VALID-02 (26.1-UAT test 1). VALID-01 and VALID-02 marked complete; VALID-02 traceability = ADJUST (Haiku-scripted r261-l7 evidence, Opus NOT-REACHED). Risk carried to Phases 28/29: exercise launcher deny/kill under the real driver.
+
 ### Roadmap Evolution
 
 - Phase 25 added (2026-09-25): Running Agents & Live Wave View — TUI-only, read-only view of running GSD agents and executor wave progress (worktrees + `~/.claude/projects/.../subagents/*.meta.json` + transcript mtime + PLAN `wave:`); seed evidence from ttbook in ROADMAP Phase 25 details; landed in v2.0 after the v1.8.0 interim release [inferred — no new milestone, same pattern as Phase 24]; Phase 19/21 left untouched (halted by user decision)
@@ -613,6 +632,14 @@ Recent decisions affecting current work:
 - [2026-10-02] [ui] Git view should draw merges as gitk-style tracks — [todo file](.planning/todos/pending/2026-10-02-git-view-show-merges-as-gitk-style-tracks.md)
 
 ### Blockers/Concerns
+
+- [Phase 26.1] **Phase 27 blocker CLEARED 2026-10-18.** 26.1 verification passed; operator accepted
+  VALID-02 = ADJUST. Phases 27-31 may proceed.
+- [Phase 26.1 -> 28/29] **Carried risk (operator-accepted):** launcher gap-cap deny at limit+1 / kill
+  at limit+2 was never reached under a real Opus driver (scripted Haiku r261-l7 only). Phases 28 and 29
+  must exercise launcher deny/kill under the real driver, with the prompt divergence rule disabled.
+- [Phase 26.1 -> 27] Phase 27's driver status list needs a `stalled` value (exitclass.py liveness class).
+- [Phase 26.1] Advisory review warnings WR-10 and WR-11 remain open/deferred (26.1-REVIEW-DISPOSITION.md).
 
 - [Re-plan 2026-10-14] The T-19-* rows below and the open gaps from Phase 21 round 13 no longer
   block the milestone. Those phases are superseded. Phase 31 closes their ids, each with a pointer to
@@ -749,7 +776,7 @@ Recent decisions affecting current work:
 ## Session Continuity
 
 Last session: 2026-10-18T04:33:52.960Z
-Stopped at: Completed 26.1-11-PLAN.md
+Stopped at: Phase 26.1 complete, ready to plan Phase 27
 Resume file: None
 
 Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.

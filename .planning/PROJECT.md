@@ -74,6 +74,11 @@ Phases 26-31 replace them.*
   spent. Rounds 1+2, divergence parking and the Opus-tripped launcher cap were never observed
   (VALID-01 Unproven, VALID-02 Partial: launcher deny L+1 / kill L+2 shown only by a scripted run).
   Zero duplicate worker dispatches were measured where dispatches occurred.*
+  *Phase 26.1 (2026-10-18): validated with ADJUST. Seed and instruments repaired; VALID-01 proven on
+  an organic Opus driver (r261a: rounds 1+2, divergence park needs-human at count 3, DUP=0). VALID-02
+  accepted by the operator as ADJUST: divergence parking proven on Opus, launcher deny L+1 / kill L+2
+  proven only by the scripted Haiku run r261-l7 (Opus driver self-parked at count 2, so deny/kill
+  NOT-REACHED). Risk carried to Phases 28/29. Phase 27 unblocked.*
 - **Spike 003 redesign or re-plan (emerged, Phase 26).** Before Phase 27 starts, either redesign
   the seed and instruments, or re-plan Phases 27-31. A redesign needs a divergence signal that
   survives a verifier re-writing VERIFICATION.md (one gap round was counted twice), and a way to
@@ -178,8 +183,9 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | Agent observation via a facts-only `AgentAdapter` seam with `catch_unwind` per adapter and per project (Phase 25) | Runtime metadata formats are third-party and unstable; a failing adapter must degrade a row to git facts, never drop it or fail the scan | ✓ Good — Claude Code adapter added as one module + registry entry |
 | Agent-worktree git reads use `--no-optional-locks` + `GIT_OPTIONAL_LOCKS=0` (Phase 25) | Scanning must never take a lock inside a live agent's worktree (non-intrusive constraint) | ✓ Good — real-worktree test proves the live index is untouched |
 | One running predicate, `AgentLiveness::is_running` (Live/Idle); agents silent > `MAX_AGENT_AGE_SECS` read `Ended` (Phase 25, 25-07) | Orphaned worktrees from aborted runs hijacked the Status cell (CR-01); one predicate stops activation, phase vote and counts from disagreeing | ✓ Good — CR-01/WR-01 resolved; WR-06 shows `fixers.rs` still counts Finished orphans [inferred: follow-up] |
-| v2.0 re-plan (2026-10-14): safety by capability removal + launcher hard caps instead of parsing bash (Phase 19) or an LLM goal layer (Phase 21) | Both phases ran 13 gap rounds without converging. Each round found a new carrier class. Spikes 001/002 showed that a sandbox with no push credentials, a read-only run dir and caps counted from tool-written state bound the blast radius mechanically | — Pending. Phase 26 did NOT confirm gap-loop or divergence behaviour (spike 003 INCONCLUSIVE), and Phase 27 is held |
+| v2.0 re-plan (2026-10-14): safety by capability removal + launcher hard caps instead of parsing bash (Phase 19) or an LLM goal layer (Phase 21) | Both phases ran 13 gap rounds without converging. Each round found a new carrier class. Spikes 001/002 showed that a sandbox with no push credentials, a read-only run dir and caps counted from tool-written state bound the blast radius mechanically | — Pending. Phase 26 was INCONCLUSIVE; Phase 26.1 (2026-10-18) confirmed gap rounds 1+2 and divergence parking on Opus (VALID-01) and VALID-02 as ADJUST; Phase 27 unblocked, launcher-cap risk carried to 28/29 |
 | Spike 003 verdict read as INCONCLUSIVE, not NO-GO (Phase 26) `[inferred]` | The rubric's NO-GO (d)/(e) conditions hold literally on the two STALLED runs. They are judged only on a Run 1 with a VALID seed, and none exists; the literal reading would leave the INCONCLUSIVE clauses unreachable | ⚠️ Revisit. Human to confirm; a literal reading gives NO-GO. Routing is the same either way: Phase 27 is blocked until a redesign or re-plan |
+| VALID-02 accepted as ADJUST (Phase 26.1, operator decision 2026-10-18) | Launcher deny/kill is model-independent launcher code, proven by the scripted Haiku run r261-l7; the Opus driver self-limited at gap count 2, so a further paid run would test the model, not the launcher. The prereg terminal rule barred more Run 2s inside 26.1 | — Pending. Phases 28/29 must exercise launcher deny/kill under the real driver |
 | Spike 003 rubric and instruments frozen before spend; post-hoc fixes recorded only as redesign inputs (Phase 26) | Pre-registration (PREREG_SHA 4ba6195) keeps the verdict mechanical. Adapting the instruments to the results would launder it | ✓ Good. The verdict is honest, and the gap double-count was identified as a redesign input |
 | Phases 19/21/22/23 superseded, code kept until a dedicated retirement phase (31) `[inferred]` | Removing code before the launcher's push step owns SAFE-01/03/06 would leave a gap. An explicit phase keeps the removal reviewable | — Pending |
 | v2.0 restructured in place, not closed and reopened `[inferred]` | Closing would need a release tag and an audit of two phases that cannot close. v2.0 never released, and the major-bump rationale still holds | — Pending |
@@ -208,4 +214,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-16 after Phase 26 (spike 003 INCONCLUSIVE; driver not validated; Phase 27 held)*
+*Last updated: 2026-10-18 after Phase 26.1 (VALID-01 proven; VALID-02 ADJUST accepted; Phase 27 unblocked)*

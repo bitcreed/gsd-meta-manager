@@ -98,7 +98,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
 - [x] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata (completed 2026-09-25)
 - [x] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust (completed 2026-10-16)
-- [ ] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02
+- [x] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02 (completed 2026-10-18)
 - [ ] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md
 - [ ] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode
 - [ ] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation
@@ -965,7 +965,10 @@ blocker)
 27-31 exactly as Phase 26 did. `[inferred]` spend cap: $52.19 for 26.1 (the unspent remainder of
 spike 003's $60 ceiling after Phase 26's $7.81), keeping the original rubric's total — audit.
 
-**Plans**: 11/11 plans executed (26.1-06..11: gap closure for VALID-02, verification gaps_found 4/5)
+**Plans**: 11/11 plans complete (26.1-06..11: gap closure for VALID-02). Verification passed 2026-10-18
+after operator sign-off: VALID-01 proven on Opus; VALID-02 accepted as **ADJUST** (launcher deny/kill proven
+by the scripted Haiku run `r261-l7` L7-1..L7-6; NOT-REACHED on Opus, whose driver self-parked at gap
+count 2, `r261-run2b/LOG.md:100-101`). Carried risk recorded on Phases 28 and 29.
 
 Plans:
 **Wave 1**
@@ -998,7 +1001,10 @@ Plans:
 **Goal**: The single writer of a run's state is a Rust subcommand of gsd-mm. Its frontmatter on
 DIRECTION.md is format-correct by construction and never costs a human edit.
 
-**Depends on**: Phase 26.1 (go verdict; Phase 26 was INCONCLUSIVE)
+**Depends on**: Phase 26.1 (go verdict; Phase 26 was INCONCLUSIVE; 26.1 completed 2026-10-18 with VALID-01 proven and VALID-02 ADJUST)
+
+**Note (from 26.1)**: the driver status list in SC3 needs a `stalled` value (the exitclass.py
+liveness class for a headless driver ended while a dispatched worker was still outstanding).
 
 **Requirements**: DCTL-01, DCTL-02, DCTL-03, DCTL-04
 
@@ -1067,6 +1073,12 @@ default. Hosts without bwrap or systemd-run get an explicit degraded mode.
 Plans:
 - [ ] TBD (run /gsd-plan-phase 28 to break down)
 
+**Carried risk (from Phase 26.1, operator-accepted 2026-10-18)**: VALID-02's cap half (deny at
+limit+1, kill at limit+2) was proven only by the scripted Haiku stand-in `r261-l7`; on the organic
+Opus run the driver self-parked at gap count 2, so launcher deny/kill were NOT-REACHED under a real
+driver. SC2's gap-cap case must therefore be exercised under the real (Opus) driver with the prompt
+divergence rule disabled, not only by a scripted stand-in.
+
 ### Phase 29: Master Prompt & Run Templates
 
 **Goal**: The driver's contract ships with gsd-mm as a versioned prompt and file templates. A new run
@@ -1108,6 +1120,11 @@ left implicit.
 
 Plans:
 - [ ] TBD (run /gsd-plan-phase 29 to break down)
+
+**Carried risk (from Phase 26.1, operator-accepted 2026-10-18)**: launcher deny/kill was never
+reached under a real Opus driver (VALID-02 = ADJUST). SC3's "at most 2 gap rounds" stop rule must be
+tested together with the Phase 28 launcher cap under the real driver, including a run with the prompt
+rule disabled so the launcher backstop actually trips.
 
 ### Phase 30: Driver Tab on DIRECTION.md
 
@@ -1199,7 +1216,7 @@ Plans:
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
-| 26.1. Driver Validation Spike 003 Re-run | 11/11 | In Progress | - |
+| 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
