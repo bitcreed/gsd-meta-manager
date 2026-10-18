@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spike 003 runner: one scratch project + host feed watcher + the spike-003 fork of the spike-002 launcher
 # (every launch is `tools/launcher_s003.py run`, after `launcher_s003.py selftest` passes).
-# Usage: run.sh <mode>        mode: l7 | l8 | smoke1 | smoke2 | run1 | run2
+# Usage: run.sh <mode>        mode: l7 | l8 | smoke1 | smoke2 | run1 | run2 | selftest
 #   l7     scripted Haiku driver (cap test L7): feed-visibility probe, gap writes 1-4 spaced past the
 #          coalescing window, allow at the gap cap, deny at cap+1, kill at cap+2.
 #   l8     scripted Haiku driver (liveness test L8): early-ending worker, Stop-guard block, SendMessage resume.
@@ -9,6 +9,8 @@
 #   smoke2 as smoke1 with the Run-2 prompt/DIRECTION and the kill stand-in on.
 #   run1   Opus, prompt v0.4 (gap-round and divergence rules on), run-1 DIRECTION.
 #   run2   Opus, Run-2 prompt/DIRECTION (rules removed), kill stand-in on.
+#   selftest  offline harness (no claude, no systemctl, no network, nothing written under experiment/results):
+#          checks the gate functions and prints `run.sh selftest OK`.
 #   Kill stand-in (smoke2/run2): after the first `dispatch-denied` it waits for the item to park (or
 #   60 s), then until the gap-round coalescing window (gapcount.py window) + 5 s has passed since the last
 #   gap-observed / gap-coalesced LOG line, and runs spike 002's gap-writer.sh once, writing one more
@@ -23,7 +25,9 @@
 # Exit: 0 launcher ran to completion; 1 launcher failed, feed watcher dead at start, or a results copy
 #       failed; 2 bad mode, bad or existing label, ceiling above 60, scratch root inside a git work tree;
 #       5 host token too short; 6 secret gate hit; 7 kit integrity check failed (make_variant.py --check
-#       drift or launcher_s003.py selftest failure); 8 campaign ceiling would be exceeded (or unmeasurable).
+#       drift or launcher_s003.py selftest failure); 8 campaign ceiling would be exceeded (or unmeasurable),
+#       at the first launch or at an in-script auth relaunch (run-env.txt gets RELAUNCH_REFUSED=ceiling; the
+#       results are still copied and the secret gate still runs before the exit).
 # Stdout line 1 is SCRATCH_ROOT=<abs path>. On exit $SCRATCH_ROOT/DONE is touched.
 # Results (derived files only, never *.jsonl / claude-config / transcripts) go to
 # experiment/results/<label>/. Spike-002 files are executed in place and never edited.
@@ -31,10 +35,58 @@ set -euo pipefail
 SELF="$(cd "$(dirname "$0")" && pwd)"
 S3="$(cd "$SELF/.." && pwd)"
 S2="$(cd "$S3/../002-launcher-caps-and-tool-frontmatter" && pwd)"
-USAGE="Usage: run.sh <l7|l8|smoke1|smoke2|run1|run2>   (env: SCRATCH_ROOT RESULTS_LABEL MODEL RELAUNCH CAMPAIGN_CEILING_USD)"
+USAGE="Usage: run.sh <l7|l8|smoke1|smoke2|run1|run2|selftest>   (env: SCRATCH_ROOT RESULTS_LABEL MODEL RELAUNCH CAMPAIGN_CEILING_USD)"
 export PYTHONDONTWRITEBYTECODE=1
 
+# ---- D-07 campaign-ceiling helpers (defined before the mode dispatch so `selftest` can call them)
+# ceiling_ok RESULTS_ROOT CEIL NEXT: campaign_budget.py over RESULTS_ROOT; its output goes to stderr and is
+# left in CB_OUT; the return code is its own (0 OK, 1 OVER, 2 unmeasurable).
+ceiling_ok() {
+  local rc=0
+  CB_OUT="$(python3 -I "$S3/tools/campaign_budget.py" --results "$1" --ceiling "$2" --next "$3" 2>&1)" || rc=$?
+  printf '%s\n' "$CB_OUT" >&2
+  return "$rc"
+}
+# relaunch_gate RESULTS_ROOT RES_DIR LAUNCHER_RESULT CEIL BUDGET (WR-05): the finished launch's launcher-result is
+# copied into the results dir first, so the spend it incurred is measured, then the next launch's budget is gated.
+relaunch_gate() {
+  cp "$3" "$2/" 2>/dev/null || { echo "run.sh: relaunch gate could not copy $3 into $2" >&2; return 2; }
+  ceiling_ok "$1" "$4" "$5"
+}
+
+run_selftest() {
+  local tmp rc root lrj
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  st_fail() { echo "run.sh selftest FAIL: $1" >&2; exit 1; }
+  root="$tmp/results"
+  # relaunch_gate (WR-05): dir a spent 40 (stage-cost covering its one launch), cur is the in-flight label
+  mkdir -p "$root/a" "$root/cur" "$tmp/scratch"
+  printf 'MODE=run2\nMAX_BUDGET_USD=15\n' > "$root/a/run-env.txt"
+  printf 'stage_cost: sessions=1 launches=1 priced=yes rates_from=x\nTOTAL driver=0 workers=0 total=40.0000 driver_share=0%%\n' > "$root/a/stage-cost.txt"
+  printf 'MODE=run2\nMAX_BUDGET_USD=15\n' > "$root/cur/run-env.txt"
+  lrj="$tmp/scratch/launcher-result-1.json"
+  printf '{"cost": {"total_cost_usd": 3.0}}\n' > "$lrj"
+  rc=0; relaunch_gate "$root" "$root/cur" "$lrj" 60 15 2>/dev/null || rc=$?
+  [ "$rc" = 0 ] || st_fail "relaunch_gate priced 3.0 (40+3+15=58) want rc 0 got $rc"
+  [ -f "$root/cur/launcher-result-1.json" ] || st_fail "relaunch_gate did not copy the launcher-result into the results dir"
+  printf '{"cost": {"total_cost_usd": 6.0}}\n' > "$lrj"
+  rc=0; relaunch_gate "$root" "$root/cur" "$lrj" 60 15 2>/dev/null || rc=$?
+  [ "$rc" = 1 ] || st_fail "relaunch_gate priced 6.0 (40+6+15=61) want rc 1 got $rc"
+  printf '{"rc": 1, "cost": null}\n' > "$lrj"
+  rc=0; relaunch_gate "$root" "$root/cur" "$lrj" 60 15 2>/dev/null || rc=$?
+  [ "$rc" = 1 ] || st_fail "relaunch_gate unpriced result (charged 15: 40+15+15=70) want rc 1 got $rc"
+  printf '{"cost": {"total_cost_usd": 3.0}}\n' > "$lrj"
+  rc=0; relaunch_gate "$root" "$root/cur" "$lrj" 8 15 2>/dev/null || rc=$?
+  [ "$rc" = 1 ] || st_fail "relaunch_gate lowered ceiling 8 want rc 1 got $rc"
+  rc=0; relaunch_gate "$root" "$root/cur" "$tmp/scratch/no-such.json" 60 15 2>/dev/null || rc=$?
+  [ "$rc" = 2 ] || st_fail "relaunch_gate missing launcher-result want rc 2 (unmeasurable) got $rc"
+  echo "run.sh selftest OK"
+  exit 0
+}
+
 MODE="${1:-}"
+[ "$MODE" = selftest ] && run_selftest
 STANDIN=0
 case "$MODE" in
   l7)
@@ -96,8 +148,7 @@ fi
 # (5) D-07 campaign gate: measured spike-003 spend (Phase 26 + 26.1, Haiku included) + this launch's
 # budget must stay within the ceiling. Applies to RELAUNCH=1 too.
 CB_RC=0
-CB_OUT="$(python3 -I "$S3/tools/campaign_budget.py" --ceiling "$CEIL" --next "$BUDGET" 2>&1)" || CB_RC=$?
-printf '%s\n' "$CB_OUT" >&2
+ceiling_ok "$S3/experiment/results" "$CEIL" "$BUDGET" || CB_RC=$?
 if [ "$CB_RC" -ne 0 ]; then
   [ "$CB_RC" -eq 1 ] && echo "run.sh: campaign ceiling \$$CEIL would be exceeded by this launch (budget \$$BUDGET)" >&2 \
     || echo "run.sh: campaign spend could not be measured (campaign_budget.py rc=$CB_RC); refusing" >&2
@@ -114,7 +165,7 @@ FORK_OUT="$(python3 -I "$S3/tools/launcher_s003.py" selftest 2>&1)" || {
 FORK_DIFF_LINES="$(printf '%s\n' "$FORK_OUT" | sed -n 's/^FORK_DIFF_LINES=//p' | head -1)"
 [ -n "$FORK_DIFF_LINES" ] || { echo "run.sh: launcher_s003.py selftest printed no FORK_DIFF_LINES" >&2; exit 7; }
 
-RELAUNCHES=0
+RELAUNCHES=0; CEILING_STOP=0
 
 # (a) scratch root and the git-work-tree guard
 if [ "${RELAUNCH:-0}" = 1 ]; then
@@ -256,6 +307,15 @@ while :; do
     waited=0
     while [ "$(cred_expiry)" = "$EXP0" ] && [ "$waited" -lt 1800 ]; do sleep 60; waited=$((waited + 60)); done
     if [ "$(cred_expiry)" != "$EXP0" ]; then
+      # WR-05 (D-07): the relaunch is a new paid launch; copy this launch's result in and re-gate the ceiling.
+      RG_RC=0
+      relaunch_gate "$S3/experiment/results" "$RES" "$SCRATCH_ROOT/launcher-result-$N.json" "$CEIL" "$BUDGET" || RG_RC=$?
+      if [ "$RG_RC" -ne 0 ]; then
+        echo "RELAUNCH_REFUSED=ceiling rc=$RG_RC" >> "$RES/run-env.txt"
+        echo "run.sh: relaunch refused: campaign ceiling \$$CEIL (campaign_budget.py rc=$RG_RC, next launch budget \$$BUDGET)" >&2
+        CEILING_STOP=1
+        break
+      fi
       RELAUNCHES=$((RELAUNCHES + 1)); N=$((N + 1)); continue
     fi
   fi
@@ -301,6 +361,7 @@ fi
 
 # (i) close out
 { echo "ENDED_UTC=$(date -u +%FT%TZ)"; echo "LAUNCHER_RC=$LRC"; echo "RELAUNCHES=$RELAUNCHES"; } >> "$RES/run-env.txt"
+[ "$CEILING_STOP" = 0 ] || exit 8
 [ "$LRC" -eq 0 ] || exit 1
 [ "$COPY_FAILED" -eq 0 ] || exit 1
 exit 0

@@ -2,17 +2,21 @@
 """Spike 003 (Phase 26.1) D-07: measured spike-003 spend against the campaign ceiling.
 
 The $60 spike-003 ceiling used to be a README procedure. run.sh calls this tool before every launch
-(any mode, any relaunch) and refuses with exit 8 when the measured total plus the launch's
-`--max-budget-usd` would exceed the ceiling.
+and before every in-script auth relaunch (any mode) and refuses with exit 8 when the measured total plus
+the launch's `--max-budget-usd` would exceed the ceiling.
 
 Cost of one results subdirectory (first rule that applies):
   1. a dir holding only SKIPPED.txt costs 0 (a documented skipped run);
-  2. `stage-cost.txt` with a `TOTAL ... total=X` line: X (the last TOTAL line);
+  2. `stage-cost.txt` with a `TOTAL ... total=X` line (X is the last TOTAL line), whose header
+     `launches=N` covers every launcher-result (WR-04): the larger of X and the priced launcher-result sum.
+     When the header covers fewer launches than there are `launcher-result-*.json` files (a relaunch landed
+     after stage-cost.txt was written) the stage total is stale: the dir is charged the larger of X and
+     (priced launcher-result sum + each unpriced launcher-result at the dir's `MAX_BUDGET_USD`);
   3. else the sum of `cost.total_cost_usd` over `launcher-result-*.json`; a launcher-result without a
      numeric cost (a launch killed before its `result` event) is charged the dir's `MAX_BUDGET_USD`;
   4. else (a launch with neither) its `MAX_BUDGET_USD` from run-env.txt.
-Rules 3 (unpriced part) and 4 are printed as `ESTIMATED label=<l> usd=<c> reason=<why>`: the worst case,
-never a guess below it. Haiku launches count toward SPENT_ALL; only `MODE=run1|run2` launches count toward
+Rules 2 (stale part), 3 (unpriced part) and 4 are printed as `ESTIMATED label=<l> usd=<c> reason=<why>`:
+the worst case, never a guess below it. Haiku launches count toward SPENT_ALL; only `MODE=run1|run2` launches count toward
 SPENT_REAL (the figure the original rubric tracked).
 
 Usage:
@@ -42,6 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_RESULTS = os.path.normpath(os.path.join(HERE, "..", "experiment", "results"))
 REAL_MODES = ("run1", "run2")
 TOTAL_RE = re.compile(r"^TOTAL\b.*\btotal=([0-9]+(?:\.[0-9]+)?)\b")
+LAUNCHES_RE = re.compile(r"\blaunches=([0-9]+)\b")
 MICRO = 1_000_000
 
 
@@ -70,6 +75,7 @@ def read_env(path):
 
 
 def stage_total(path):
+    """(last TOTAL, launches covered by the header) or None. A missing `launches=` field counts as 0."""
     try:
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
@@ -82,7 +88,10 @@ def stage_total(path):
         m = TOTAL_RE.match(line)
         if m:
             total = float(m.group(1))
-    return total
+    if total is None:
+        return None
+    m = LAUNCHES_RE.search(lines[0]) if lines else None
+    return total, (int(m.group(1)) if m else 0)
 
 
 def launcher_costs(d):
@@ -119,10 +128,20 @@ def dir_cost(d):
             raise Unreadable("%s: MAX_BUDGET_USD %r" % (d, raw))
         return b
 
-    st = stage_total(os.path.join(d, "stage-cost.txt"))
-    if st is not None:
-        return label, mode, st, "stage-cost", None
+    stage = stage_total(os.path.join(d, "stage-cost.txt"))
     lc = launcher_costs(d)
+    if stage is not None:
+        st, covered = stage
+        priced = sum(c for c in lc if c is not None)
+        if len(lc) <= covered:
+            if priced > st:
+                return label, mode, priced, "launcher-result", None
+            return label, mode, st, "stage-cost", None
+        # WR-04: stage-cost.txt predates a relaunch; its total is stale. Unpriced results are charged the budget.
+        unpriced = sum(1 for c in lc if c is None)
+        cost = priced + (unpriced * budget() if unpriced else 0.0)
+        est = "stage-cost covers %d of %d launches" % (covered, len(lc)) if unpriced else None
+        return label, mode, max(st, cost), "max(stage-cost,launcher-result)", est
     if lc:
         priced = sum(c for c in lc if c is not None)
         unpriced = sum(1 for c in lc if c is None)
@@ -245,6 +264,62 @@ def selftest():
         assert rc == 2, rc
         rc, _ = run(td, "--ceiling", "nan")
         assert rc == 2, rc
+    # WR-04: a stage-cost.txt is trusted only when its `launches=` count covers every launcher-result
+    with tempfile.TemporaryDirectory() as td:
+        hdr = "stage_cost: sessions=1 launches=%d priced=yes rates_from=x\n"
+        tot = "TOTAL driver=0 workers=0 total=%s driver_share=0%%\n"
+
+        def lr(d, n, usd):
+            _w(os.path.join(td, d, "launcher-result-%d.json" % n),
+               json.dumps({"cost": {"total_cost_usd": usd} if usd is not None else None}))
+
+        def one(d):
+            rc, out = run(td)
+            row = [l for l in out.splitlines() if l.startswith("COST label=%s " % d)]
+            return rc, row[0] if row else "", out
+
+        # stale and priced: launches=1 covers one of two results, stage 2.0 vs launcher sum 5.0 (old rule: 2.0)
+        _w(os.path.join(td, "s1", "run-env.txt"), _env("run2", 15))
+        _w(os.path.join(td, "s1", "stage-cost.txt"), hdr % 1 + tot % "2.0000")
+        lr("s1", 1, 2.0)
+        lr("s1", 2, 3.0)
+        rc, row, out = one("s1")
+        assert rc == 0 and row == "COST label=s1 mode=run2 usd=5.0000 source=max(stage-cost,launcher-result)", (rc, row)
+        assert "ESTIMATED label=s1" not in out, out
+        # stale with an unpriced second result: priced 2.0 + budget 15 = 17.0, ESTIMATED
+        _w(os.path.join(td, "s2", "run-env.txt"), _env("run2", 15))
+        _w(os.path.join(td, "s2", "stage-cost.txt"), hdr % 1 + tot % "2.0000")
+        lr("s2", 1, 2.0)
+        lr("s2", 2, None)
+        rc, row, out = one("s2")
+        assert row == "COST label=s2 mode=run2 usd=17.0000 source=max(stage-cost,launcher-result)", row
+        assert "ESTIMATED label=s2 usd=17.0000 reason=stage-cost covers 1 of 2 launches" in out, out
+        # the l7 shape: launches=1, one unpriced launcher-result, covered by the header: the stage total stands
+        _w(os.path.join(td, "s3", "run-env.txt"), _env("l7", 1))
+        _w(os.path.join(td, "s3", "stage-cost.txt"), hdr % 1 + tot % "0.0122")
+        lr("s3", 1, None)
+        rc, row, out = one("s3")
+        assert row == "COST label=s3 mode=l7 usd=0.0122 source=stage-cost", row
+        assert "ESTIMATED label=s3" not in out, out
+        # covered, but the launcher results sum above the stage total: the larger figure is charged
+        _w(os.path.join(td, "s4", "run-env.txt"), _env("run1", 15))
+        _w(os.path.join(td, "s4", "stage-cost.txt"), hdr % 2 + tot % "1.0000")
+        lr("s4", 1, 1.0)
+        lr("s4", 2, 4.0)
+        rc, row, out = one("s4")
+        assert row == "COST label=s4 mode=run1 usd=5.0000 source=launcher-result", row
+        # a stage-cost.txt with no `launches=` field covers 0 launches
+        _w(os.path.join(td, "s5", "run-env.txt"), _env("run1", 15))
+        _w(os.path.join(td, "s5", "stage-cost.txt"), "stage_cost: sessions=1\n" + tot % "1.0000")
+        lr("s5", 1, 3.0)
+        rc, row, out = one("s5")
+        assert row == "COST label=s5 mode=run1 usd=3.0000 source=max(stage-cost,launcher-result)", row
+        # an in-flight dir (run-env.txt and one copied priced launcher-result, no stage-cost yet) costs that price
+        _w(os.path.join(td, "s6", "run-env.txt"), _env("run2", 15))
+        lr("s6", 1, 3.0)
+        rc, row, out = one("s6")
+        assert row == "COST label=s6 mode=run2 usd=3.0000 source=launcher-result", row
+        assert "ESTIMATED label=s6" not in out, out
     print("selftest OK")
     return 0
 
