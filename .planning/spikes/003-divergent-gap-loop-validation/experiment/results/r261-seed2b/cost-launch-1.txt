@@ -1,0 +1,6 @@
+session b32d77b7-dd96-4f42-b9c3-78828ca1ac2a  total_cost_usd=2.270  turns=5  duration_s=18  subagent_transcripts=5
+  driver   est $0.016
+     claude-haiku-5-5             $  0.016  in=28 out=8104 cache_read=510418 cache_write=35059
+  workers  est $2.254
+     claude-sonnet-5-5            $  0.907  in=68 out=16061 cache_read=1201183 cache_write=156557
+     claude-opus-5-5              $  1.347  in=24 out=30976 cache_read=534360 cache_write=77587

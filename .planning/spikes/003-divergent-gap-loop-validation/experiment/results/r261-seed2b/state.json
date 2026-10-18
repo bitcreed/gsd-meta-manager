@@ -1,0 +1,125 @@
+{
+ "schema": 1,
+ "run_id": "s003-r261-seed2b",
+ "project_root": "/home/blk/.local/state/gsd-meta-manager/spike-003/r261-seed2b-20261018T040537Z/project",
+ "status": "parked",
+ "status_reason": "driver:all-parked",
+ "created_at": "2026-10-18T04:05:37Z",
+ "updated_at": "2026-10-18T04:13:35Z",
+ "launches": 1,
+ "current": {
+  "item": "I-01",
+  "phase": "1",
+  "step": "/gsd-plan-phase 1 --gaps"
+ },
+ "items": {
+  "I-01": {
+   "state": "parked",
+   "outcome": "gap closure dispatch denied by launcher (dispatch cap 2/2); phase 1 verification gaps_found, + -> plus rule missing",
+   "dispatches": 3,
+   "first_dispatch_at": "2026-10-18T04:06:02Z",
+   "findings": [
+    0,
+    2
+   ]
+  }
+ },
+ "connections": [
+  {
+   "role": "launcher",
+   "state": "disconnected",
+   "pid": 810303,
+   "host": "mediabox",
+   "started_at": "2026-10-18T04:05:38Z",
+   "last_heartbeat": "2026-10-18T04:13:25Z",
+   "mode": "bwrap",
+   "scope_unit": "gsdmm-s003-r261-seed2b-1792296338.scope"
+  },
+  {
+   "role": "driver",
+   "state": "disconnected",
+   "session_id": "b32d77b7-dd96-4f42-b9c3-78828ca1ac2a",
+   "model": "haiku",
+   "mode": "headless",
+   "pid": 810307,
+   "scope_unit": "gsdmm-s003-r261-seed2b-1792296338.scope",
+   "host": "mediabox",
+   "started_at": "2026-10-18T04:05:38Z",
+   "last_heartbeat": "2026-10-18T04:13:32Z"
+  }
+ ],
+ "caps": {
+  "dispatches": {
+   "used": 2,
+   "limit": 2
+  },
+  "wall_clock_min": {
+   "used": 7.9,
+   "limit": 30
+  },
+  "gap_rounds": {
+   "limit": 2,
+   "per_phase": {
+    "1": 1
+   },
+   "seen": {
+    "3217127436dd6873": {
+     "phase": "1",
+     "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+    }
+   },
+   "last_write": {
+    "1": 1792296783.6676352
+   },
+   "coalesced": {}
+  }
+ },
+ "hook_dispatches": 2,
+ "denied_dispatches": 1,
+ "last_event": {
+  "at": "2026-10-18T04:13:35Z",
+  "item": "RUN",
+  "event": "launch-end",
+  "summary": "rc=0 cost_usd=2.2704470800000003 status=parked"
+ },
+ "cost": [
+  {
+   "launch": 1,
+   "total_cost_usd": 2.2704470800000003,
+   "subtype": "success",
+   "num_turns": 5,
+   "duration_s": 18,
+   "session_id": "b32d77b7-dd96-4f42-b9c3-78828ca1ac2a",
+   "by_model": {
+    "claude-haiku-5-5": {
+     "cost_usd": 0.016170780000000003,
+     "in": 28,
+     "out": 8104,
+     "cache_read": 510418,
+     "cache_write": 35059
+    },
+    "claude-sonnet-5-5": {
+     "cost_usd": 0.9070922999999995,
+     "in": 68,
+     "out": 16061,
+     "cache_read": 1201183,
+     "cache_write": 156557
+    },
+    "claude-opus-5-5": {
+     "cost_usd": 1.347184,
+     "in": 24,
+     "out": 30976,
+     "cache_read": 534360,
+     "cache_write": 77587
+    }
+   }
+  }
+ ],
+ "ended_by_driver": true,
+ "auth": {
+  "mode": "env-access-token",
+  "expires_at": "2026-10-18T07:00:46Z",
+  "minutes_left_at_launch": 175.1
+ },
+ "active_seconds": 476.42942905426025
+}

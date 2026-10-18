@@ -1,0 +1,3 @@
+G1 PASS verifier-trigger advance at 2026-10-18T04:12:38Z precedes the first snapshot at 2026-10-18T04:13:03Z
+G2 PASS first snapshot at 2026-10-18T04:13:03Z status=gaps_found
+RESULT PASS

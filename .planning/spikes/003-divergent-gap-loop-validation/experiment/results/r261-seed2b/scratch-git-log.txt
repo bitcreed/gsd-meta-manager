@@ -1,0 +1,36 @@
+0157a98 docs(01): phase 1 verification (gaps_found)
+ .planning/phases/01-slugify/01-VERIFICATION.md | 97 ++++++++++++++++++++++++++
+ 1 file changed, 97 insertions(+)
+23595a1 docs(01-01): complete slugify plan
+ .planning/REQUIREMENTS.md                    |  8 ++--
+ .planning/ROADMAP.md                         | 10 +++--
+ .planning/STATE.md                           | 34 +++++++++++-----
+ .planning/phases/01-slugify/01-01-SUMMARY.md | 59 ++++++++++++++++++++++++++++
+ 4 files changed, 94 insertions(+), 17 deletions(-)
+876f84f test(01-01): house-style edge-case unit tests for slugify
+ tests/test_slug.py | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+dfe73c5 test(01-01): feed conformance test reading feed/ at run time (SLUG-02)
+ tests/test_slug.py | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+1f4c14f feat(01-01): end-to-end slugify with package re-export and Hello World test
+ slugkit/__init__.py |  3 +++
+ slugkit/slug.py     | 26 ++++++++++++++++++++++++++
+ tests/__init__.py   |  0
+ tests/test_slug.py  | 12 ++++++++++++
+ 4 files changed, 41 insertions(+)
+6b5b667 docs(01): plan phase 1 slugify
+ .planning/ROADMAP.md                      |   2 +-
+ .planning/phases/01-slugify/01-01-PLAN.md | 317 ++++++++++++++++++++++++++++++
+ 2 files changed, 318 insertions(+), 1 deletion(-)
+cc990d9 chore: scratch GSD project (slugkit)
+ .gitignore                                |  2 ++
+ .planning/PROJECT.md                      | 16 +++++++++++++
+ .planning/REQUIREMENTS.md                 | 15 ++++++++++++
+ .planning/ROADMAP.md                      | 40 +++++++++++++++++++++++++++++++
+ .planning/STATE.md                        | 33 +++++++++++++++++++++++++
+ .planning/config.json                     | 25 +++++++++++++++++++
+ .planning/phases/01-slugify/01-CONTEXT.md |  8 +++++++
+ README.md                                 |  3 +++
+ slugkit/__init__.py                       |  1 +
+ 9 files changed, 143 insertions(+)
