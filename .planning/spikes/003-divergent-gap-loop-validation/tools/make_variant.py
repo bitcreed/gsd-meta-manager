@@ -91,7 +91,7 @@ def apply(text, spans):
 
 
 def read(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -109,7 +109,7 @@ def main(argv):
                 print(f"make_variant: {os.path.relpath(out, S3)} differs from the regenerated variant", file=sys.stderr)
                 rc = 1
         else:
-            with open(out, "w") as f:
+            with open(out, "w", encoding="utf-8") as f:
                 f.write(new)
             sys.stdout.writelines(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
                                                        os.path.relpath(src, S3), os.path.relpath(out, S3)))

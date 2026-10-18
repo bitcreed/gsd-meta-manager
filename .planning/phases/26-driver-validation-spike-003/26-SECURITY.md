@@ -91,4 +91,4 @@ T-26-11 was fixed in Phase 26.1 (f909f93, 26.1-02), not accepted.
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-16 (automated; threats_open: 0). Pending operator decision on non-blocking T-26-11.
+**Approval:** verified 2026-10-16 (automated; threats_open: 0). T-26-11 closed 2026-10-18 by f909f93 (26.1-02); no operator decision is pending.

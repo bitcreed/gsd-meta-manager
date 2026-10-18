@@ -1,0 +1,20 @@
+# Phase 26 run1 re-scored offline with the Phase 26.1 instrument (26.1-07). Informational: not verdict input (README 26.1 block item 10).
+A1 FAIL dispatched rounds=[0, 1]
+A2 PASS parked after gaps_found count=3, no dispatch after it
+A3 FAIL park rule=gap-rounds
+A4 PASS dispatch-denied=0 cap-tripped=0 state.denied_dispatches=0
+A6 PASS dispatched=4 logged=4 observed=4 denied=0
+A7 PASS DUP=0 workers=4
+A8 PASS mode=drift: every snapshot adds a new case (3/5 cases)
+A9 FAIL gap-observed max count=3 minus stand-in=0 vs gsd-verifier=2
+A10 PASS gaps_found snapshot gens=[1, 2]
+SEED VALID
+RESULT FAIL
+# acceptance rc=1
+OLD counts=[1, 2, 3]
+NEW counts=[1, 2]
+NEW coalesced=1
+GATE round-2 dispatch ALLOWED
+CAP tripped=no
+WRITES agents=1 writes=2 rounds=1
+# gapcount rc=0
