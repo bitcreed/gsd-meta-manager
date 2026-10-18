@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spike 003 Run-2 variant generator: the v0.3 driver prompt and the run-1 DIRECTION with the prompt-side
+"""Spike 003 Run-2 variant generator: the v0.4 driver prompt and the run-1 DIRECTION with the prompt-side
 gap-round and divergence rules REMOVED, by asserted text removal.
 
 Every target span must occur exactly once in its source; otherwise this exits 1 naming the span, so a
@@ -26,13 +26,18 @@ DIR_SRC = os.path.join(S3, "templates", "DIRECTION.run1.md")
 DIR_OUT = os.path.join(S3, "templates", "DIRECTION.run2.md")
 
 PROMPT_SPANS = [
-    ("title", "# GSD queue driver: master prompt (draft v0.3)", "# GSD queue driver: master prompt (draft v0.3-run2)"),
-    ("v0.3 comment",
+    ("title", "# GSD queue driver: master prompt (draft v0.4)", "# GSD queue driver: master prompt (draft v0.4-run2)"),
+    ("v0.4 comment",
      """     v0.3 changes vs v0.2 (spike 003): rule 5 gains gap-round semantics, finding granularity, a
      divergence-over-gap-rounds precedence and a needs-human record on those parks; an answer never
-     lifts a stop rule. The worker brief and Loop are unchanged. -->""",
-     """     v0.3-run2 (spike 003 run 2): the gap-round and divergence rules are removed on purpose; the
-     launcher gap cap is the only gap-round limit. The worker brief and Loop are unchanged. -->"""),
+     lifts a stop rule. The worker brief and Loop are unchanged.
+     v0.4 changes vs v0.3 (spike 003 / Phase 26.1): the worker brief forbids background nested agents
+     and ending a turn while one runs; Loop step 4 treats a worker completion without a `STATUS:`
+     report as an early end, answered by SendMessage to the same worker, never a new dispatch. Rule 5
+     is unchanged. -->""",
+     """     v0.4-run2 (spike 003 run 2 / Phase 26.1): the gap-round and divergence rules are removed on
+     purpose; the launcher gap cap is the only gap-round limit. The v0.4 worker brief and Loop step 4
+     are kept as in MASTER-PROMPT.md. -->"""),
     ("item-budget gap-rounds mention",
      "   - item budget exhausted: dispatches, minutes (from its first dispatch) or gap-rounds -> `budget`;\n",
      "   - item budget exhausted: dispatches or minutes (from its first dispatch) -> `budget`;\n"),

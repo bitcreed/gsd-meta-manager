@@ -13,6 +13,8 @@ S2="$S3/../002-launcher-caps-and-tool-frontmatter"
 P="$1"; RUN_ID="$2"; TEMPLATE="$(cd "$(dirname "$3")" && pwd)/$(basename "$3")"
 case "$P" in /?*) ;; *) echo "setup-scratch: project dir must be absolute" >&2; exit 2 ;; esac
 [ "$P" != "/" ] || exit 2
+# WR-09: the next line deletes $P; only a directory literally named `project` (as run.sh passes) is deleted.
+[ "$(basename "$P")" = "project" ] || { echo "setup-scratch: project dir basename must be 'project' (refusing rm -rf of $P)" >&2; exit 2; }
 rm -rf "$P"; mkdir -p "$P/.planning/phases/01-slugify" "$P/slugkit"
 cd "$P"
 git init -q -b main
@@ -138,6 +140,9 @@ Stopped at: scratch project created
 EOF
 
 # Lean, unattended config: no research/plan-check/nyquist/security/review, no worktrees, balanced workers.
+# planner.stall_detection_enabled=false (D-03 prevention, rubric J4's named cheap fix): plan-phase then
+# dispatches its planner in the foreground instead of with run_in_background, so a worker does not end its
+# turn under a backgrounded planner. A declared seed change (26.1 addendum), not part of the scratch text.
 cat > .planning/config.json <<'EOF'
 {
   "mode": "yolo",
@@ -161,7 +166,8 @@ cat > .planning/config.json <<'EOF'
   "parallelization": { "enabled": false, "plan_level": false, "task_level": false,
                        "skip_checkpoints": true, "max_concurrent_agents": 1, "min_plans_for_parallel": 2 },
   "gates": { "execute_next_plan": false, "confirm_transition": false, "confirm_milestone_scope": false },
-  "hooks": { "context_warnings": false }
+  "hooks": { "context_warnings": false },
+  "planner": { "stall_detection_enabled": false }
 }
 EOF
 
@@ -183,6 +189,6 @@ python3 -I "$S3/tools/drift.py" emit 0 --project "$P"
 if [ -n "$(git -C "$P" remote)" ]; then echo "setup-scratch: scratch repo must not have a remote" >&2; exit 1; fi
 
 DIRECTION="$(mktemp)"
+trap 'rm -f "$DIRECTION"' EXIT   # IN-03: also removed when `launcher.py init` fails
 sed "s/{run-id}/$RUN_ID/g" "$TEMPLATE" > "$DIRECTION"
 python3 -I -B "$S2/tools/launcher.py" init --project "$P" --run-id "$RUN_ID" --direction "$DIRECTION"
-rm -f "$DIRECTION"
