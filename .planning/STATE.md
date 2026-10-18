@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: "26.1"
 current_phase_name: Driver Validation Spike 003 Re-run (INSERTED)
 status: executing
-stopped_at: Completed 26.1-07-PLAN.md
-last_updated: "2026-10-18T03:46:15.643Z"
+stopped_at: Completed 26.1-08-PLAN.md
+last_updated: "2026-10-18T03:50:34.756Z"
 last_activity: 2026-10-17
 last_activity_desc: Phase 26.1 execution started
-state_head: 890cd3ea96e119660c3982f8615ab5ec6ad76afe
+state_head: 6da6f06db8bf0e5dc42f9bbe00c6f90c45171a14
 progress:
   total_phases: 10
   completed_phases: 9
@@ -445,6 +445,7 @@ verify-phase if the gate is fixed.
 | Phase 26.1 P05 | 46 min | 3 tasks | 36 files |
 | Phase 26.1 P06 | 25 min | 2 tasks | 2 files |
 | Phase 26.1 P07 | 12 min | 2 tasks | 6 files |
+| Phase 26.1 P08 | 20 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -582,6 +583,7 @@ Recent decisions affecting current work:
 - [Phase 26.1]: [Phase 26.1] 26.1-05 [inferred]: spike 003 revised verdict INCONCLUSIVE, not GO or ADJUST. r261a proved VALID-01 (rounds 0/1/2, rule=divergence at gaps_found 3, DUP=0); r261-run2 converged so A5-deny FAIL and no rubric clause covers it. Operator may accept as ADJUST (J1-equivalent). VALID-01 complete, VALID-02 open. Spend 17.9528 of 60
 - [Phase 26.1]: 26.1-06: stale stage-cost.txt (launches= below launcher-result count) is charged max(stage, priced sum + unpriced at MAX_BUDGET_USD); prereg gate (exit 9) covers run1, run2, seed2 with no bypass
 - [Phase 26.1]: 26.1-07: RUN dispatch-denied cancels only the immediately preceding dispatch (WR-01); Stop guard budget is GUARD_LIMIT=3 per outstanding dispatch with a clamped JSON counter (WR-02/IN-01)
+- [Phase 26.1]: Seed v2: Run 2 feed advances once per distinct gsd-verifier Agent/Task spawn read from transcripts (not the executor SUMMARY commit); gapcount.fm_status is the single status definition for drift and the fork H2 scan
 
 ### Roadmap Evolution
 
@@ -741,8 +743,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-18T03:46:14.865Z
-Stopped at: Completed 26.1-07-PLAN.md
+Last session: 2026-10-18T03:50:33.974Z
+Stopped at: Completed 26.1-08-PLAN.md
 Resume file: None
 
 Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.

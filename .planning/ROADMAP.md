@@ -965,7 +965,7 @@ blocker)
 27-31 exactly as Phase 26 did. `[inferred]` spend cap: $52.19 for 26.1 (the unspent remainder of
 spike 003's $60 ceiling after Phase 26's $7.81), keeping the original rubric's total — audit.
 
-**Plans**: 7/11 plans executed (26.1-06..11: gap closure for VALID-02, verification gaps_found 4/5)
+**Plans**: 8/11 plans executed (26.1-06..11: gap closure for VALID-02, verification gaps_found 4/5)
 
 Plans:
 **Wave 1**
@@ -984,7 +984,7 @@ Plans:
 **Wave 5 (gap closure)** *(blocked on Wave 4 completion)*
 - [x] 26.1-06-PLAN.md — Budget gate first (WR-04 relaunch spend counted, WR-05 relaunch re-checks the ceiling), run.sh prereg gate (exit 9), seed2 mode and verifier-trigger wiring, WR-06/08/09, `run.sh selftest` (wave 5)
 - [x] 26.1-07-PLAN.md — Liveness fixes WR-01/WR-02/IN-01, IN-03, stale T-26-11 line in 26-SECURITY.md, offline Phase 26 run1 re-score (wave 5)
-- [ ] 26.1-08-PLAN.md — Seed v2: feed advances on gsd-verifier spawn, not the executor's SUMMARY commit (diagnosed cause of the r261-run2 convergence); one status definition WR-03, WR-07, IN-02, IN-05 (wave 5)
+- [x] 26.1-08-PLAN.md — Seed v2: feed advances on gsd-verifier spawn, not the executor's SUMMARY commit (diagnosed cause of the r261-run2 convergence); one status definition WR-03, WR-07, IN-02, IN-05 (wave 5)
 - [ ] 26.1-09-PLAN.md — Pre-register rubric block 26.1-run2 (SEED CONVERGED -> retry, one paid Run 2 + one retry, terminal rule) before any spend; acceptance DISPOSITION line and seed2 gate mode (wave 5)
 
 **Wave 6 (gap closure)** *(blocked on Wave 5 completion)*
@@ -1199,7 +1199,7 @@ Plans:
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
-| 26.1. Driver Validation Spike 003 Re-run | 7/11 | In Progress | - |
+| 26.1. Driver Validation Spike 003 Re-run | 8/11 | In Progress | - |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
