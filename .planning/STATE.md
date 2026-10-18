@@ -2,13 +2,13 @@
 gsd_state_version: "1.0"
 milestone: v1.14.0
 current_phase: "26.1"
-current_phase_name: Driver Validation Spike 003 Re-run
-status: ready-to-execute
-stopped_at: Phase 26.1 planned (5 plans, 4 waves), ready to execute
-last_updated: "2026-10-18T01:14:19.650Z"
+current_phase_name: Driver Validation Spike 003 Re-run (INSERTED)
+status: executing
+stopped_at: Completed 26.1-01-PLAN.md
+last_updated: "2026-10-18T01:25:46.228Z"
 last_activity: 2026-10-17
-last_activity_desc: Inserted and planned Phase 26.1 (spike 003 re-run) after INCONCLUSIVE verdict
-state_head: 2f8246e37a5127a7e7b2f86ff2ed909163ad8c6b
+last_activity_desc: Phase 26.1 execution started
+state_head: 264c647cb793cf1ace6f2ae8c88a07846e517e54
 progress:
   total_phases: 10
   completed_phases: 9
@@ -24,7 +24,7 @@ milestone_name: gsd-core 1.17.0 Sync
 See: .planning/PROJECT.md (updated 2026-10-16)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 26.1 — Driver Validation Spike 003 Re-run (gates Phases 27-31)
+**Current focus:** Phase 26.1 — Driver Validation Spike 003 Re-run (INSERTED)
 2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
@@ -32,7 +32,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Phase 26.1 inserted and planned 2026-10-17 (5 plans / 4 waves; plan-checker PASSED), ready to execute. Resolution of the Phase 27 blocker: re-run a
+Status: Ready to execute
   revised spike 003 as decimal Phase 26.1 BEFORE Phase 27 (option (a), redesign + re-run). Scope:
   (1) count gap rounds per verifier run so one verifier re-write cannot inflate the gap count or trip
   the cap; (2) keep the headless driver alive until its dispatched worker reports, or make the
@@ -205,8 +205,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 26.1 (Driver Validation Spike 003 Re-run) — READY TO EXECUTE
-Plan: Not started
+Phase: 26.1 (Driver Validation Spike 003 Re-run (INSERTED)) — EXECUTING
+Plan: 2 of 5
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -240,7 +240,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-16 — Phase 26 complete, transitioned to Phase 27
+Last activity: 2026-10-17 — Phase 26.1 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -438,6 +438,7 @@ verify-phase if the gate is fixed.
 | Phase 25 P05 | 13 min | 3 tasks | 7 files |
 | Phase 25 P06 | 8 min | 2 tasks | 5 files |
 | Phase 25 P07 | 9 min | 3 tasks | 7 files |
+| Phase 26.1 P01 | 8 min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -567,6 +568,8 @@ Recent decisions affecting current work:
 - [Phase 26]: 26-02: rubric frozen before spend (PREREG_SHA 4ba6195). Post-hoc ideas (dedupe snapshots, count gaps per verifier run) are redesign inputs only, never applied to these results
 - [Phase 26]: 26-03 [inferred]: a launcher `crashed` with RELAUNCHES=0 counts as "could not complete after its allowed relaunches"
 - [Phase 26]: 26-03: v0.3 prompt wording (D1/D3/D1c/D2/OQ-R1) carried to Phase 29. D1 and D2 were observed as written; D1c, D3 and OQ-R1 are untested
+- [Phase 26.1]: [26.1-01] Gap rounds counted by a 45 s sliding window on VERIFICATION.md mtime (strict <, duplicate digest ignored), in gapcount.py; fork launcher_s003.py feeds S2's unchanged gate/trip [inferred - audit]
+- [Phase 26.1]: [26.1-01] New driver exit status 'stalled' (clean exit, result success, dispatch unreported) distinct from crashed; Stop guard blocks at most 3 times and fails open; Phase 27 status enum needs the variant [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -726,8 +729,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-17
-Stopped at: Phase 26.1 (spike 003 re-run) inserted and planned; resolves the Phase 27 blocker.
+Last session: 2026-10-18T01:25:45.539Z
+Stopped at: Completed 26.1-01-PLAN.md
 Resume file: None
 
 Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
