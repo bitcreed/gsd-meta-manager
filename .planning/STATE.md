@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.14.0
-current_phase: 26.1
+current_phase: "26.1"
 current_phase_name: Driver Validation Spike 003 Re-run
-status: planning
-stopped_at: Phase 26.1 inserted (resolves Phase 27 blocker), ready to plan Phase 26.1
-last_updated: "2026-10-18T00:22:14.347Z"
+status: ready-to-execute
+stopped_at: Phase 26.1 planned (5 plans, 4 waves), ready to execute
+last_updated: "2026-10-18T01:14:19.650Z"
 last_activity: 2026-10-17
-last_activity_desc: Inserted Phase 26.1 (spike 003 re-run) after INCONCLUSIVE verdict
-state_head: 6a5731377094d6350a2c0145ffa66acba28af0d2
+last_activity_desc: Inserted and planned Phase 26.1 (spike 003 re-run) after INCONCLUSIVE verdict
+state_head: 2f8246e37a5127a7e7b2f86ff2ed909163ad8c6b
 progress:
   total_phases: 10
   completed_phases: 9
-  total_plans: 3
+  total_plans: 5
   completed_plans: 112
 milestone_name: gsd-core 1.17.0 Sync
 ---
@@ -32,14 +32,19 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Phase 26.1 inserted 2026-10-17, ready to plan. Resolution of the Phase 27 blocker: re-run a
+Status: Phase 26.1 inserted and planned 2026-10-17 (5 plans / 4 waves; plan-checker PASSED), ready to execute. Resolution of the Phase 27 blocker: re-run a
   revised spike 003 as decimal Phase 26.1 BEFORE Phase 27 (option (a), redesign + re-run). Scope:
   (1) count gap rounds per verifier run so one verifier re-write cannot inflate the gap count or trip
   the cap; (2) keep the headless driver alive until its dispatched worker reports, or make the
   launcher tell that case apart from a crash; (3) close T-26-11 (acceptance.py PASS when every check
   is undetermined) and cheap 26-REVIEW warnings; (4) re-run Opus Run 1 (and Run 2 if the rubric
   allows) to prove VALID-01 / VALID-02. Spend cap `[inferred — audit]`: $52.19, the unspent remainder
-  of spike 003's $60 ceiling. 26.1 gates Phases 27-31. Next: `/gsd-plan-phase 26.1`.
+  of spike 003's $60 ceiling. 26.1 gates Phases 27-31. Next: `/gsd-execute-phase 26.1`.
+  Planner `[inferred — audit]` items (in the 26.1 plans): Run 1 retry counter restarts for 26.1;
+  NO-GO (d)/(e) evaluated only on a VALID-seed Run 1; prompt v0.4 (worker brief + Loop step 4 only);
+  per-verifier-run counting approximated by a 45 s mtime coalescing window; crashed/stalled runs
+  count as SEED STALLED; Run 2 skipped if Run 1 already settles NO-GO. Forward note: Phase 27's
+  driver status enum needs a `stalled` value.
 
 Earlier (2026-10-16):
 Status: Ready to plan Phase 27, but BLOCKED. Phase 26 completed 2026-10-16 (3/3 plans; verification
@@ -200,7 +205,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 27 — driverctl & Driver Frontmatter
+Phase: 26.1 (Driver Validation Spike 003 Re-run) — READY TO EXECUTE
 Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
@@ -722,10 +727,10 @@ Recent decisions affecting current work:
 ## Session Continuity
 
 Last session: 2026-10-17
-Stopped at: Phase 26.1 (spike 003 re-run) inserted; resolves the Phase 27 blocker.
+Stopped at: Phase 26.1 (spike 003 re-run) inserted and planned; resolves the Phase 27 blocker.
 Resume file: None
 
-Next: `/gsd-plan-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
+Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
 
 Earlier (2026-10-16): Phase 26 complete (spike 003 INCONCLUSIVE). The blocker decision recorded then:
 

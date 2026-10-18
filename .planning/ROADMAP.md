@@ -936,7 +936,9 @@ written for Phases 27-31.
 **Depends on**: Phase 26 (INCONCLUSIVE verdict; inserted 2026-10-17 as the resolution of the Phase 27
 blocker)
 
-**Requirements**: VALID-01, VALID-02 (reopened from Phase 26)
+**Requirements**: VALID-01, VALID-02
+
+(Both reopened from Phase 26, which left VALID-01 Unproven and VALID-02 Partial.)
 
 **Success Criteria** (what must be TRUE):
 
@@ -963,10 +965,21 @@ blocker)
 27-31 exactly as Phase 26 did. `[inferred]` spend cap: $52.19 for 26.1 (the unspent remainder of
 spike 003's $60 ceiling after Phase 26's $7.81), keeping the original rubric's total — audit.
 
-**Plans**: 0 plans
+**Plans**: 5 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 26.1 to break down)
+**Wave 1**
+- [ ] 26.1-01-PLAN.md — Counting and liveness core: gapcount coalescing, launcher_s003 fork, exitclass, stop_guard, replays of Run 1 / Run 1b, L7 re-spaced, L8 (wave 1)
+- [ ] 26.1-03-PLAN.md — Launch kit, seed and prompt: campaign_budget gate, run.sh WR-01/07/08/09 + l8 + fork launch, stall detection off, prompt v0.4 (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 26.1-02-PLAN.md — Verdict tooling: T-26-11 three-way RESULT, WR-03..06, burst-grouped A8/A10, l8 checks, rubric-check --block 26.1, dup_check WR-10, drift WR-02/07 (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 26.1-04-PLAN.md — Haiku gates (L8, L7, smokes), 26.1 rubric addendum pre-registered by sha, review/security dispositions (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 26.1-05-PLAN.md — Paid Opus Run 1 (+ retry), conditional Run 2, revised verdict to README/MANIFEST/STATE, VALID-01/02 status from evidence (wave 4)
 
 ### Phase 27: driverctl & Driver Frontmatter
 
