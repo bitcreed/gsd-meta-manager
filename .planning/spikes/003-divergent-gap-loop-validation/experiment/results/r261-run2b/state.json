@@ -1,0 +1,124 @@
+{
+ "schema": 1,
+ "run_id": "s003-r261-run2b",
+ "project_root": "/home/blk/.local/state/gsd-meta-manager/spike-003/r261-run2b-20261018T041615Z/project",
+ "status": "parked",
+ "status_reason": "driver:all-parked",
+ "created_at": "2026-10-18T04:16:15Z",
+ "updated_at": "2026-10-18T04:29:59Z",
+ "launches": 1,
+ "current": {
+  "item": "I-01",
+  "phase": "1",
+  "step": "/gsd-execute-phase 1 --gaps-only"
+ },
+ "items": {
+  "I-01": {
+   "state": "parked",
+   "outcome": "gap chase on moving feed; & rule contradicts SLUG-01/D-02; plus rule shipped, lines 1-27 pass",
+   "dispatches": 4,
+   "first_dispatch_at": "2026-10-18T04:16:37Z",
+   "findings": [
+    0,
+    1,
+    0,
+    1
+   ]
+  }
+ },
+ "connections": [
+  {
+   "role": "launcher",
+   "state": "disconnected",
+   "pid": 844612,
+   "host": "mediabox",
+   "started_at": "2026-10-18T04:16:17Z",
+   "last_heartbeat": "2026-10-18T04:29:55Z",
+   "mode": "bwrap",
+   "scope_unit": "gsdmm-s003-r261-run2b-1792296977.scope"
+  },
+  {
+   "role": "driver",
+   "state": "disconnected",
+   "session_id": "6665c721-3ad6-44b2-a009-9d48ea02c346",
+   "model": "opus",
+   "mode": "headless",
+   "pid": 844614,
+   "scope_unit": "gsdmm-s003-r261-run2b-1792296977.scope",
+   "host": "mediabox",
+   "started_at": "2026-10-18T04:16:17Z",
+   "last_heartbeat": "2026-10-18T04:29:58Z"
+  }
+ ],
+ "caps": {
+  "dispatches": {
+   "used": 4,
+   "limit": 10
+  },
+  "wall_clock_min": {
+   "used": 13.7,
+   "limit": 90
+  },
+  "gap_rounds": {
+   "limit": 2,
+   "per_phase": {
+    "1": 2
+   },
+   "seen": {
+    "cae451285f39460c": {
+     "phase": "1",
+     "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+    },
+    "ab5afff0a3ed4008": {
+     "phase": "1",
+     "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+    }
+   },
+   "last_write": {
+    "1": 1792297744.54478
+   },
+   "coalesced": {}
+  }
+ },
+ "hook_dispatches": 4,
+ "denied_dispatches": 0,
+ "last_event": {
+  "at": "2026-10-18T04:29:59Z",
+  "item": "RUN",
+  "event": "launch-end",
+  "summary": "rc=0 cost_usd=4.101141899999999 status=parked"
+ },
+ "cost": [
+  {
+   "launch": 1,
+   "total_cost_usd": 4.101141899999999,
+   "subtype": "success",
+   "num_turns": 19,
+   "duration_s": 820,
+   "session_id": "6665c721-3ad6-44b2-a009-9d48ea02c346",
+   "by_model": {
+    "claude-opus-5-5": {
+     "cost_usd": 2.2438545999999997,
+     "in": 66,
+     "out": 44068,
+     "cache_read": 1612593,
+     "cache_write": 129964
+    },
+    "claude-sonnet-5-5": {
+     "cost_usd": 1.8572872999999994,
+     "in": 130,
+     "out": 35977,
+     "cache_read": 2293413,
+     "cache_write": 316979
+    }
+   }
+  }
+ ],
+ "ended_by_driver": true,
+ "auth": {
+  "mode": "env-access-token",
+  "expires_at": "2026-10-18T07:00:46Z",
+  "minutes_left_at_launch": 164.5
+ },
+ "active_seconds": 822.7007174491882
+}

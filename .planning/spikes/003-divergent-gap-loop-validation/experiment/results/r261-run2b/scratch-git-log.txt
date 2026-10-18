@@ -1,0 +1,55 @@
+d829d92 docs(01): phase 1 re-verification - gaps_found (feed grew to 33 lines, ampersand rule)
+ .planning/phases/01-slugify/01-VERIFICATION.md | 77 ++++++++++++++++----------
+ 1 file changed, 47 insertions(+), 30 deletions(-)
+cae4982 docs(01-02): complete plus-sign gap closure plan
+ .planning/ROADMAP.md                         |  6 +--
+ .planning/STATE.md                           | 20 +++----
+ .planning/phases/01-slugify/01-02-SUMMARY.md | 81 ++++++++++++++++++++++++++++
+ 3 files changed, 95 insertions(+), 12 deletions(-)
+ef74c86 feat(01-02): spell plus sign as 'plus' in slugify (GREEN)
+ slugkit/slug.py | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+55745e4 test(01-02): add failing plus-sign slugify tests (RED)
+ tests/test_slug.py | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+0b3d8f6 docs(01): plan gap closure 01-02 (plus-sign rule from feed)
+ .planning/ROADMAP.md                      |  3 +-
+ .planning/phases/01-slugify/01-02-PLAN.md | 78 +++++++++++++++++++++++++++++++
+ 2 files changed, 80 insertions(+), 1 deletion(-)
+a534769 docs(01): phase 1 verification - gaps_found (feed grew to 27 lines)
+ .planning/phases/01-slugify/01-VERIFICATION.md | 100 +++++++++++++++++++++++++
+ 1 file changed, 100 insertions(+)
+42cfce8 docs(01-01): complete slugify plan
+ .planning/REQUIREMENTS.md                    |  8 +--
+ .planning/ROADMAP.md                         | 10 ++-
+ .planning/STATE.md                           | 26 ++++++--
+ .planning/phases/01-slugify/01-01-SUMMARY.md | 92 ++++++++++++++++++++++++++++
+ 4 files changed, 123 insertions(+), 13 deletions(-)
+535af51 feat(01-01): fold accented letters to ASCII in slugify
+ slugkit/slug.py | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+9ef21b5 test(01-01): add failing slugify edge-case tests (accent folding RED)
+ tests/test_slug.py | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+c384273 feat(01-01): slugify with package re-export and run-time feed test
+ slugkit/__init__.py |  4 ++++
+ slugkit/slug.py     | 19 +++++++++++++++++++
+ tests/__init__.py   |  0
+ tests/test_slug.py  | 41 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 64 insertions(+)
+891aaa1 docs(01): create phase plan
+ .planning/ROADMAP.md                      |   2 +-
+ .planning/STATE.md                        |  19 ++-
+ .planning/phases/01-slugify/01-01-PLAN.md | 239 ++++++++++++++++++++++++++++++
+ 3 files changed, 252 insertions(+), 8 deletions(-)
+337e38a chore: scratch GSD project (slugkit)
+ .gitignore                                |  2 ++
+ .planning/PROJECT.md                      | 16 +++++++++++++
+ .planning/REQUIREMENTS.md                 | 15 ++++++++++++
+ .planning/ROADMAP.md                      | 40 +++++++++++++++++++++++++++++++
+ .planning/STATE.md                        | 33 +++++++++++++++++++++++++
+ .planning/config.json                     | 25 +++++++++++++++++++
+ .planning/phases/01-slugify/01-CONTEXT.md |  8 +++++++
+ README.md                                 |  3 +++
+ slugkit/__init__.py                       |  1 +
+ 9 files changed, 143 insertions(+)

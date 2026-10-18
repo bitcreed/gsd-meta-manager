@@ -1,0 +1,11 @@
+A5-deny NOT-REACHED driver parked on its own before any round-3 dispatch; no deny to observe
+A5-kill NOT-REACHED source=not-reached (kill evidence then rests on L7-5)
+A6 PASS dispatched=4 logged=4 observed=4 denied=0
+A7 PASS DUP=0 workers=4
+A8 PASS mode=drift: every snapshot adds a new case (2/2 cases)
+A9 PASS gap-observed max count=2 minus stand-in=0 vs gsd-verifier=2
+A10 PASS gaps_found snapshot gens=[1, 2]
+A11 NOT-REACHED gaps_found count=3 never observed
+SEED VALID
+RESULT PASS
+DISPOSITION verdict
