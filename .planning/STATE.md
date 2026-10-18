@@ -5,10 +5,10 @@ current_phase: "26.1"
 current_phase_name: Driver Validation Spike 003 Re-run (INSERTED)
 status: executing
 stopped_at: Completed 26.1-04-PLAN.md
-last_updated: "2026-10-18T01:56:02.189Z"
+last_updated: "2026-10-18T02:38:25.000Z"
 last_activity: 2026-10-17
 last_activity_desc: Phase 26.1 execution started
-state_head: fccaebec8a84409ab2a234293c5549b6e033c6b9
+state_head: 4acc2ab20ad5afd7d10c3a74b649431c4d00ee4f
 progress:
   total_phases: 10
   completed_phases: 9
@@ -632,7 +632,7 @@ Recent decisions affecting current work:
   - WR-06: Finished orphan fixers still count in `N fixers`, outvote the running fixer's phase and inflate `fixed` — the CR-01 pattern left in `src/agents/fixers.rs:137-285`
   - Info IN-01..IN-07 also open (redraw every scan for aged-out rows, tests reading real `~/.claude`, relative `gitdir:` ignored, `lock_released` premise, children not counted as running, `plan_state` re-spells `is_running`, gate-ordering test) — see 25-REVIEW.md
 - [Phase 25] deferred-items.md: `.planning/WINDOWS.md` ledger table disagrees with its fenced JSON (row 19), so `gsd-tools windows append` refuses to write; `cargo clippy --all-targets` has pre-existing warnings (browser.rs, project_creator.rs, several `tests/envelope_*`); repo is not `cargo fmt --check` clean
-- [Phase 26] Spike 003 verdict INCONCLUSIVE: redesign the seed and instruments (divergence signal robust to a verifier re-write of VERIFICATION.md; headless-driver wake-up before a worker reports) or re-plan Phases 27-31 (NO-GO if the rubric's (d)/(e) are read literally) before Phase 27 starts — see .planning/spikes/003-divergent-gap-loop-validation/README.md
+- [Phase 26.1] Spike 003 revised verdict INCONCLUSIVE: re-plan Phases 27-31 (NO-GO) or redesign again (INCONCLUSIVE) before Phase 27 starts — see .planning/spikes/003-divergent-gap-loop-validation/README.md. VALID-01 proven on organic Opus (r261a A1 A2 A3 A6 PASS, divergence park at gaps_found 3); VALID-02 half open: Run 2 converged (A5-deny FAIL), launcher deny/kill organic under a prompt-rule-disabled driver unobserved, L7 scripted only. Operator may accept as ADJUST (J1-equivalent) instead. Forward: Phase 27 status enum needs stalled; Phase 28 ports gapcount coalescing (dispatch-epoch and writer-agent alternatives); Phase 29 inherits v0.4 wording with D1 D3 D1c D2 OQ-R1
 
 ### Quick Tasks Completed
 

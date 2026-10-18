@@ -36,6 +36,19 @@ plus `systemd-run --user --scope`.
 - (spike 003, observation) One verifier re-write of `VERIFICATION.md` made the launcher count a third gap after a single gap round
   (gap count 3, two verifier runs); a divergence signal must not depend on the raw file-hash count. The headless driver also ended
   its session with a worker unreported in one of two Opus launches. Both need a seed/instrument redesign before Phase 27.
+- (spike 003, 26.1) The gap round count is coalesced: a `gaps_found` VERIFICATION write counts as a new round only when more than 45 s
+  after the previous one for the phase (`tools/gapcount.py`, `COALESCE_S = 45`). Phase 28 ports this rule; the dispatch-epoch rule and
+  writer-agent keying are the recorded alternatives. Live on Opus (`r261a`): two verifier re-writes were coalesced and the launcher count
+  matched the verifier runs (A9 PASS).
+- (spike 003, 26.1) The driver status enum Phase 27 writes needs a `stalled` value (clean exit with a dispatched worker unreported and no
+  tripped cap), distinct from `crashed`.
+- (spike 003, 26.1) Phase 29 inherits prompt v0.4's worker-brief and Loop step 4 early-worker wording with the D1, D3, D1c, D2 and OQ-R1
+  clauses. On `r261a` a real Opus driver dispatched rounds 0, 1, 2 and parked `rule=divergence` at the third `gaps_found` with no launcher deny;
+  OQ-R1 was not exercised.
+- (spike 003, 26.1, verdict INCONCLUSIVE) The launcher's organic deny at L+1 and kill at L+2 under a prompt-rule-disabled Opus driver are unobserved
+  (Run 2 converged: the feed advance was absorbed before the first verification); Phase 28 keeps the cap and the L7 cases as acceptance cases.
+- (spike 003, 26.1) Stop guard (`tools/stop_guard.py`, at most 3 blocks per run) kept an early-ending Haiku worker's driver alive (L8); it never
+  fired in the two paid Opus runs. GSD's stall-watch path was off (`planner.stall_detection_enabled: false`) and is a Phase 28/29 carry.
 
 ## Spikes
 

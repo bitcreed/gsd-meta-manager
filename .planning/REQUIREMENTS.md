@@ -130,7 +130,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 ### Driver Validation (VALID): Phase 26, re-run in 26.1 (VALID-01/02)
 
-- [ ] **VALID-01**: On a real GSD scratch project seeded with a gap that looks closable but keeps
+- [x] **VALID-01**: On a real GSD scratch project seeded with a gap that looks closable but keeps
   producing new findings, the driver runs gap-closure rounds 1 and 2. It parks `needs-human` no later
   than the third `gaps_found`, and driverctl records the rule that fired.
 - [ ] **VALID-02**: Divergence detection (two consecutive rounds with new findings) parks the run on
@@ -337,8 +337,8 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | AGENT-05 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-06 | Phase 25: Running Agents & Live Wave View | Complete |
 | AGENT-07 | Phase 25: Running Agents & Live Wave View | Complete |
-| VALID-01 | Phase 26.1 | Pending — reopened from Phase 26 (spike 003 INCONCLUSIVE, see 26-VERIFICATION.md) |
-| VALID-02 | Phase 26.1 | Pending — reopened from Phase 26 (partial: divergence park unproven; deny/kill on scripted L7 only) |
+| VALID-01 | Phase 26.1 | Complete — Phase 26.1 (results/r261a/acceptance.txt A1 A2 A3 A6; I-01 needs-human in results/r261a/LOG.md) |
+| VALID-02 | Phase 26.1 | Partial — Phase 26.1 verdict INCONCLUSIVE (results/r261a/acceptance.txt A3 A4 PASS; results/r261-l7/acceptance.txt L7-4 L7-5 PASS, scripted; results/r261-run2/acceptance.txt A5-deny FAIL, A5-kill NOT-REACHED: Run 2 converged) |
 | VALID-03 | Phase 26 | Complete |
 | VALID-04 | Phase 26 | Complete |
 | DCTL-01 | Phase 27 | Pending |
