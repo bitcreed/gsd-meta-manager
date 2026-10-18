@@ -1,0 +1,8 @@
+stage_cost: sessions=1 launches=1 priced=yes rates_from=result
+stage startup window=02:25:03Z..02:25:14Z driver_usd=0.1332 workers_usd=0.0000 total_usd=0.1332 driver_msgs=2
+stage plan-r0 window=02:25:14Z..02:30:46Z driver_usd=0.1091 workers_usd=1.1239 total_usd=1.2330 driver_msgs=4
+stage execute-r0 window=02:30:46Z..02:34:46Z driver_usd=0.1577 workers_usd=1.0157 total_usd=1.1733 driver_msgs=5
+stage close window=02:34:46Z..02:34:53Z driver_usd=0.0540 workers_usd=0.0000 total_usd=0.0540 driver_msgs=2
+TOTAL driver=0.4540 workers=2.1395 total=2.5935 driver_share=17.5%
+PER_PHASE phase=1 driver=0.2668 workers=2.1395 total=2.4063
+CHECK stages_driver_sum=0.4540 driver_total=0.4540 ok

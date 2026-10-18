@@ -1,0 +1,10 @@
+A5-deny FAIL denies=0 matching=0 count3=absent round>=3 dispatches=0
+A5-kill NOT-REACHED source=not-reached (kill evidence then rests on L7-5)
+A6 PASS dispatched=2 logged=2 observed=2 denied=0
+A7 PASS DUP=0 workers=2
+A8 NOT-REACHED 0 gaps_found snapshot(s); need 2
+A9 PASS gap-observed max count=0 minus stand-in=0 vs gsd-verifier=1 (converged: the final verifier run found no gaps)
+A10 NOT-REACHED 0 gaps_found snapshot(s); need 2
+A11 NOT-REACHED gaps_found count=3 never observed
+SEED CONVERGED
+RESULT FAIL

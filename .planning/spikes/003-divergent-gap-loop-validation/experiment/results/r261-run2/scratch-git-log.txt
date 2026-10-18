@@ -1,0 +1,44 @@
+32b5654 docs(phase-01): verification passed, mark phase complete
+ .planning/ROADMAP.md                           |   4 +-
+ .planning/phases/01-slugify/01-VERIFICATION.md | 118 +++++++++++++++++++++++++
+ 2 files changed, 120 insertions(+), 2 deletions(-)
+bb62bab docs(01-01): update summary for feed re-sync fix
+ .planning/phases/01-slugify/01-01-SUMMARY.md | 44 ++++++++++++++++++++--------
+ 1 file changed, 31 insertions(+), 13 deletions(-)
+c7b489b fix(01-01): spell out '+' as 'plus' to match regenerated feed house style
+ slugkit/slug.py    |  5 ++++-
+ tests/test_slug.py | 12 ++++++++++++
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+0b9a262 docs(01-01): complete slugify plan
+ .planning/REQUIREMENTS.md                    |   8 +-
+ .planning/ROADMAP.md                         |  10 +-
+ .planning/STATE.md                           |  40 ++++++--
+ .planning/phases/01-slugify/01-01-SUMMARY.md | 133 +++++++++++++++++++++++++++
+ 4 files changed, 174 insertions(+), 17 deletions(-)
+9656c4b test(01-01): feed conformance test - every feed title slugifies to expected line
+ tests/test_slug.py | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+7669167 feat(01-01): expand slugify edge cases - separators, punctuation, accents, empty result
+ slugkit/slug.py    |  9 ++++++--
+ tests/test_slug.py | 66 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 73 insertions(+), 2 deletions(-)
+b7826aa feat(01-01): tracer slugify("Hello World") through module, package export and test discovery
+ slugkit/__init__.py |  4 ++++
+ slugkit/slug.py     | 13 +++++++++++++
+ tests/__init__.py   |  0
+ tests/test_slug.py  | 12 ++++++++++++
+ 4 files changed, 29 insertions(+)
+ee88cef docs(phase-01): create phase plan
+ .planning/phases/01-slugify/01-01-PLAN.md | 277 ++++++++++++++++++++++++++++++
+ 1 file changed, 277 insertions(+)
+e7fc84f chore: scratch GSD project (slugkit)
+ .gitignore                                |  2 ++
+ .planning/PROJECT.md                      | 16 +++++++++++++
+ .planning/REQUIREMENTS.md                 | 15 ++++++++++++
+ .planning/ROADMAP.md                      | 40 +++++++++++++++++++++++++++++++
+ .planning/STATE.md                        | 33 +++++++++++++++++++++++++
+ .planning/config.json                     | 25 +++++++++++++++++++
+ .planning/phases/01-slugify/01-CONTEXT.md |  8 +++++++
+ README.md                                 |  3 +++
+ slugkit/__init__.py                       |  1 +
+ 9 files changed, 143 insertions(+)

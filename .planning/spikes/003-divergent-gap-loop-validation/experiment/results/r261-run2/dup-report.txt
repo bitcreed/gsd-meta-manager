@@ -1,0 +1,4 @@
+dup_check: sessions=1 workers=2 DUP=0 EXECUTOR_MISSING=0 DRIVER_AGENT_CALLS=2 LOG_DISPATCHED=2 LOG_DENIED=0 SENDMESSAGE=0
+types: general-purpose=2 gsd-executor=1 gsd-planner=1 gsd-verifier=1
+worker ab09ea1c8aefeb511 desc="I-01 execute phase 1" gsd-executor=1,gsd-verifier=1
+worker ae7d05a8c456dfc38 desc="I-01 plan phase 1" gsd-planner=1
