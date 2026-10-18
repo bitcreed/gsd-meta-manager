@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: "26.1"
 current_phase_name: Driver Validation Spike 003 Re-run (INSERTED)
 status: executing
-stopped_at: Completed 26.1-09-PLAN.md
-last_updated: "2026-10-18T03:53:37.309Z"
+stopped_at: Completed 26.1-10-PLAN.md
+last_updated: "2026-10-18T04:15:07.026Z"
 last_activity: 2026-10-17
 last_activity_desc: Phase 26.1 execution started
-state_head: 4f551ca164ad988cd6ee8b6faf618608c91ca427
+state_head: ca0a47e4b635731168c6b3e361af7d2af16be721
 progress:
   total_phases: 10
   completed_phases: 9
@@ -447,6 +447,7 @@ verify-phase if the gate is fixed.
 | Phase 26.1 P07 | 12 min | 2 tasks | 6 files |
 | Phase 26.1 P08 | 20 min | 2 tasks | 4 files |
 | Phase 26.1 P09 | 20 min | 2 tasks | 3 files |
+| Phase 26.1 P10 | 20 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -586,6 +587,7 @@ Recent decisions affecting current work:
 - [Phase 26.1]: 26.1-07: RUN dispatch-denied cancels only the immediately preceding dispatch (WR-01); Stop guard budget is GUARD_LIMIT=3 per outstanding dispatch with a clamped JSON counter (WR-02/IN-01)
 - [Phase 26.1]: Seed v2: Run 2 feed advances once per distinct gsd-verifier Agent/Task spawn read from transcripts (not the executor SUMMARY commit); gapcount.fm_status is the single status definition for drift and the fork H2 scan
 - [Phase 26.1]: 26.1-09: SEED CONVERGED -> retry is mechanical (run2 DISPOSITION from SEED class alone; RESULT untouched); block 26.1-run2 frozen at 008ac90, sha recorded in a1d0cfc
+- [Phase 26.1]: 26.1-10: Haiku seed v2 gate PASSED on the second launch (r261-seed2b) after one run.sh fix (scratch git.allow_default_branch_commits=true); SPENT_ALL 21.98 of 60; seed and kit now frozen for the paid Run 2
 
 ### Roadmap Evolution
 
@@ -745,8 +747,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-18T03:53:36.526Z
-Stopped at: Completed 26.1-09-PLAN.md
+Last session: 2026-10-18T04:15:06.195Z
+Stopped at: Completed 26.1-10-PLAN.md
 Resume file: None
 
 Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
