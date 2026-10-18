@@ -153,7 +153,9 @@ def analyse(cfg, log_path, state_path=None):
             errors.append(f"session {sid[:8]} dispatched {len(ids)} worker(s) but has no agent metadata")
         for aid, n in nodes.items():
             all_nodes[(sid, aid)] = n
-            if not n["parentAgentId"]:
+            # WR-10: a node whose parent is missing from the session's node set is a top-level worker (the rule
+            # stage_cost.py already uses), so an orphan subtree is neither dropped from workers= nor hidden from DUP.
+            if not n["parentAgentId"] or n["parentAgentId"] not in nodes:
                 workers.append((sid, aid))
     if not any_data:
         return 2, ["dup_check: ERROR no transcript and no agent metadata for any session"]
@@ -324,6 +326,17 @@ def selftest():
         rc, out = _run(cfg, log)
         outs.append(out)
         assert rc == 1 and "DUP: 2 gsd-planner" in out, (rc, out)
+        # WR-10: a worker whose parent has no meta.json is still a top-level worker, and duplicates under it are flagged
+        ag = [("w0", "general-purpose", "ghost", "plan"), ("p0", "gsd-planner", "w0", "a"), ("p1", "gsd-planner", "w0", "b")]
+        cfg, log = _fixture(td, "orphandup", [D], ag)
+        rc, out = _run(cfg, log)
+        outs.append(out)
+        assert rc == 1 and "workers=1" in out.splitlines()[0] and "DUP=1" in out.splitlines()[0], (rc, out)
+        assert "DUP: 2 gsd-planner" in out and "ghost" not in out, (rc, out)
+        cfg, log = _fixture(td, "orphanok", [D], [("w0", "general-purpose", "ghost", "plan"), ("p0", "gsd-planner", "w0", "a")])
+        rc, out = _run(cfg, log)
+        outs.append(out)
+        assert rc == 0 and "workers=1" in out.splitlines()[0] and "DUP=0" in out.splitlines()[0], (rc, out)
         # verifier without executor: reported, not a duplicate
         cfg, log = _fixture(td, "inline", [D], [("w0", "general-purpose", None, "x"), ("v0", "gsd-verifier", "w0", "v")])
         rc, out = _run(cfg, log)
