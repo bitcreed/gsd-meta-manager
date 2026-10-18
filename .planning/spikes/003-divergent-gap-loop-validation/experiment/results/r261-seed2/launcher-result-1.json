@@ -1,0 +1,31 @@
+{
+ "rc": 0,
+ "status": "parked",
+ "reason": "driver:all-parked",
+ "tripped": null,
+ "cost": {
+  "launch": 1,
+  "total_cost_usd": 1.7566908399999999,
+  "subtype": "success",
+  "num_turns": 3,
+  "duration_s": 12,
+  "session_id": "82f3270b-04d2-45fe-a60a-56c50b9e4580",
+  "by_model": {
+   "claude-haiku-5-5": {
+    "cost_usd": 0.01506764,
+    "in": 28,
+    "out": 6807,
+    "cache_read": 497554,
+    "cache_write": 33429
+   },
+   "claude-sonnet-5-5": {
+    "cost_usd": 1.7416231999999996,
+    "in": 68,
+    "out": 61958,
+    "cache_read": 1648832,
+    "cache_write": 239256
+   }
+  }
+ },
+ "stream": "/home/blk/.local/state/gsd-meta-manager/spike-003/r261-seed2-20261018T035449Z/state/launch-1.jsonl"
+}

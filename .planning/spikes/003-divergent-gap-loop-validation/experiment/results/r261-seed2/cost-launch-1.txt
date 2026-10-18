@@ -1,0 +1,5 @@
+session 82f3270b-04d2-45fe-a60a-56c50b9e4580  total_cost_usd=1.757  turns=3  duration_s=12  subagent_transcripts=4
+  driver   est $0.015
+     claude-haiku-5-5             $  0.015  in=28 out=6807 cache_read=497554 cache_write=33429
+  workers  est $1.742
+     claude-sonnet-5-5            $  1.742  in=68 out=61958 cache_read=1648832 cache_write=239256

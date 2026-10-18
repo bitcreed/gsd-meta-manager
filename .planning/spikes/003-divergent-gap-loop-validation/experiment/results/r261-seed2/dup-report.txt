@@ -1,0 +1,4 @@
+dup_check: sessions=1 workers=2 DUP=0 EXECUTOR_MISSING=0 DRIVER_AGENT_CALLS=2 LOG_DISPATCHED=2 LOG_DENIED=0 SENDMESSAGE=0
+types: general-purpose=2 gsd-executor=1 gsd-planner=1
+worker a4666d800e659961d desc="Worker: plan phase 1 slugify" gsd-planner=1
+worker af7ae184b49ee0722 desc="Worker: execute phase 1 slugify" gsd-executor=1
