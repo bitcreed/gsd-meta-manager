@@ -965,7 +965,7 @@ blocker)
 27-31 exactly as Phase 26 did. `[inferred]` spend cap: $52.19 for 26.1 (the unspent remainder of
 spike 003's $60 ceiling after Phase 26's $7.81), keeping the original rubric's total — audit.
 
-**Plans**: 10/11 plans executed (26.1-06..11: gap closure for VALID-02, verification gaps_found 4/5)
+**Plans**: 11/11 plans executed (26.1-06..11: gap closure for VALID-02, verification gaps_found 4/5)
 
 Plans:
 **Wave 1**
@@ -991,7 +991,7 @@ Plans:
 - [x] 26.1-10-PLAN.md — Haiku seed gate r261-seed2 (first verification must be gaps_found; one pre-registered fix + re-gate), review dispositions (wave 6)
 
 **Wave 7 (gap closure)** *(blocked on Wave 6 completion)*
-- [ ] 26.1-11-PLAN.md — Paid Opus Run 2 r261-run2b (+ at most one retry r261-run2c) through the fixed gates, gap-closure verdict to README/MANIFEST/STATE, VALID-02 from evidence (wave 7)
+- [x] 26.1-11-PLAN.md — Paid Opus Run 2 r261-run2b (+ at most one retry r261-run2c) through the fixed gates, gap-closure verdict to README/MANIFEST/STATE, VALID-02 from evidence (wave 7)
 
 ### Phase 27: driverctl & Driver Frontmatter
 
@@ -1199,7 +1199,7 @@ Plans:
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
-| 26.1. Driver Validation Spike 003 Re-run | 10/11 | In Progress | - |
+| 26.1. Driver Validation Spike 003 Re-run | 11/11 | In Progress | - |
 | 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
