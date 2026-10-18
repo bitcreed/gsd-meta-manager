@@ -1,0 +1,78 @@
+1a7938c docs(01): re-verification report (gaps_found: feed lines 34-39 need leading-article drop)
+ .planning/phases/01-slugify/01-VERIFICATION.md | 71 ++++++++++++++------------
+ 1 file changed, 38 insertions(+), 33 deletions(-)
+216bbce docs(01-03): complete '&' -> 'n' gap-closure plan
+ .planning/STATE.md                           | 17 +++---
+ .planning/phases/01-slugify/01-03-SUMMARY.md | 80 ++++++++++++++++++++++++++++
+ 2 files changed, 90 insertions(+), 7 deletions(-)
+6479b28 docs(01-03): trace SLUG-02 to gap-closure plan 01-03, ROADMAP Phase 1 at 3/3
+ .planning/REQUIREMENTS.md | 2 +-
+ .planning/ROADMAP.md      | 6 +++---
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+4e2ae3a test(01-03): feed-independent unit tests pinning the '&' -> 'n' rule
+ tests/test_slug.py | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+3c4be13 feat(01-03): map '&' to the letter 'n' in place in slugify
+ slugkit/slug.py    | 15 ++++++++++-----
+ tests/test_slug.py |  2 +-
+ 2 files changed, 11 insertions(+), 6 deletions(-)
+969b8e6 docs(01-03): plan gap closure for '&' -> 'n' house-style rule
+ .planning/ROADMAP.md                      |   5 +-
+ .planning/phases/01-slugify/01-03-PLAN.md | 367 ++++++++++++++++++++++++++++++
+ 2 files changed, 370 insertions(+), 2 deletions(-)
+cdb4521 docs(01): re-verification report (gaps_found: feed lines 28-33 need '&' -> 'n')
+ .planning/phases/01-slugify/01-VERIFICATION.md | 77 +++++++++++++++++---------
+ 1 file changed, 50 insertions(+), 27 deletions(-)
+c63ab90 docs(01-02): complete '+' -> plus gap-closure plan
+ .planning/STATE.md                           | 22 ++++----
+ .planning/phases/01-slugify/01-02-SUMMARY.md | 79 ++++++++++++++++++++++++++++
+ 2 files changed, 92 insertions(+), 9 deletions(-)
+d901cc4 docs(01-02): trace SLUG-02 to gap-closure plan 01-02, ROADMAP Phase 1 at 2/2
+ .planning/REQUIREMENTS.md | 2 ++
+ .planning/ROADMAP.md      | 5 +++--
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+d1f690d test(01-02): feed-independent unit tests pinning the '+' -> plus rule
+ tests/test_slug.py | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+1054eb1 feat(01-02): map '+' to the word 'plus' in slugify
+ slugkit/slug.py | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+f0ef913 docs(01): plan gap closure 01-02 ('+' -> plus)
+ .planning/phases/01-slugify/01-02-PLAN.md | 327 ++++++++++++++++++++++++++++++
+ 1 file changed, 327 insertions(+)
+77cc0ef docs(01): phase verification report (gaps_found: feed lines 22-27 need '+' -> plus)
+ .planning/phases/01-slugify/01-VERIFICATION.md | 97 ++++++++++++++++++++++++++
+ 1 file changed, 97 insertions(+)
+81dc1f8 docs(01-01): complete slugify plan
+ .planning/REQUIREMENTS.md                    |  8 +--
+ .planning/ROADMAP.md                         | 10 +++-
+ .planning/STATE.md                           | 27 +++++++--
+ .planning/phases/01-slugify/01-01-SUMMARY.md | 85 ++++++++++++++++++++++++++++
+ 4 files changed, 117 insertions(+), 13 deletions(-)
+224f173 test(01-01): edge-case unit tests pinning the slug rule independent of the feed
+ tests/test_slug.py | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+9f05834 test(01-01): feed parity test reading synced feed at run time
+ tests/test_slug.py | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+afba3e4 feat(01-01): slugify tracer through slug.py, package re-export, unittest discovery
+ slugkit/__init__.py |  3 +++
+ slugkit/slug.py     | 14 ++++++++++++++
+ tests/__init__.py   |  0
+ tests/test_slug.py  | 12 ++++++++++++
+ 4 files changed, 29 insertions(+)
+4aab88f docs(01): create phase plan
+ .planning/STATE.md                        |  19 +-
+ .planning/phases/01-slugify/01-01-PLAN.md | 318 ++++++++++++++++++++++++++++++
+ 2 files changed, 330 insertions(+), 7 deletions(-)
+b56b8ec chore: scratch GSD project (slugkit)
+ .gitignore                                |  2 ++
+ .planning/PROJECT.md                      | 16 +++++++++++++
+ .planning/REQUIREMENTS.md                 | 15 ++++++++++++
+ .planning/ROADMAP.md                      | 40 +++++++++++++++++++++++++++++++
+ .planning/STATE.md                        | 33 +++++++++++++++++++++++++
+ .planning/config.json                     | 25 +++++++++++++++++++
+ .planning/phases/01-slugify/01-CONTEXT.md |  8 +++++++
+ README.md                                 |  3 +++
+ slugkit/__init__.py                       |  1 +
+ 9 files changed, 143 insertions(+)

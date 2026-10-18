@@ -1,0 +1,6 @@
+session 6dfa322c-9856-4dad-a289-22d756d6baf3  total_cost_usd=7.505  turns=20  duration_s=1620  subagent_transcripts=15
+  driver   est $0.860
+     claude-opus-5-5              $  0.860  in=40 out=14977 cache_read=815738 cache_write=46101
+  workers  est $6.646
+     claude-sonnet-5-5            $  4.914  in=272 out=160161 cache_read=6496314 cache_write=665448
+     claude-opus-5-5              $  1.732  in=40 out=37509 cache_read=1246217 cache_write=95059

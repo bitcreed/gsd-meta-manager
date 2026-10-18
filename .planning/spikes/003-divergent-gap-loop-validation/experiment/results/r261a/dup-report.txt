@@ -1,0 +1,8 @@
+dup_check: sessions=1 workers=6 DUP=0 EXECUTOR_MISSING=0 DRIVER_AGENT_CALLS=6 LOG_DISPATCHED=6 LOG_DENIED=0 SENDMESSAGE=0
+types: general-purpose=6 gsd-executor=3 gsd-planner=3 gsd-verifier=3
+worker a048613ce8b26bb10 desc="I-01 gap plan round 1" gsd-planner=1
+worker a3e7489957dd8c2c0 desc="I-01 gap execute round 2" gsd-executor=1,gsd-verifier=1
+worker a8de4a91d8bbc6e0e desc="I-01 gap plan round 2" gsd-planner=1
+worker aac6a050b71fce4c8 desc="I-01 plan phase 1" gsd-planner=1
+worker ace65ff30eeef2c90 desc="I-01 execute phase 1" gsd-executor=1,gsd-verifier=1
+worker aff5274dc73b5f894 desc="I-01 gap execute round 1" gsd-executor=1,gsd-verifier=1

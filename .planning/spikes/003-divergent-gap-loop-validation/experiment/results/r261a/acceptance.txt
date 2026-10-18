@@ -1,0 +1,11 @@
+A1 PASS dispatched rounds=[0, 1, 2]
+A2 PASS parked after gaps_found count=3, no dispatch after it
+A3 PASS rule=divergence, needs-human logged
+A4 PASS dispatch-denied=0 cap-tripped=0 state.denied_dispatches=0
+A6 PASS dispatched=6 logged=6 observed=6 denied=0
+A7 PASS DUP=0 workers=6
+A8 PASS mode=drift: every snapshot adds a new case (14/16/4 cases)
+A9 PASS gap-observed max count=3 minus stand-in=0 vs gsd-verifier=3
+A10 PASS gaps_found snapshot gens=[1, 2, 3]
+SEED VALID
+RESULT PASS
