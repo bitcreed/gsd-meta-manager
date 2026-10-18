@@ -4,7 +4,7 @@ slug: "driver-validation-spike-003"
 status: verified
 # threats_open = count of OPEN threats at or above workflow.security_block_on severity (the blocking gate)
 threats_open: 0
-threats_open_nonblocking: 1
+threats_open_nonblocking: 0
 asvs_level: 1
 block_on: high
 created: "2026-10-16"
@@ -45,7 +45,7 @@ created: "2026-10-16"
 | T-26-08 | Information disclosure | dup_check, stage_cost, acceptance | high | mitigate | metadata/usage/tool_use-name reads only (`dup_check.py:65-121`, `stage_cost.py:114-134`); planted-marker assertions `dup_check.py:380`, `stage_cost.py:496`, `acceptance.py:1102`; all selftests pass | closed |
 | T-26-09 | Repudiation | acceptance A6 | medium | mitigate | A6 grammar/`base=`/`dispatch=k/n`/`generated_by: driverctl`/dispatch audit `acceptance.py:214-245`; read-only | closed |
 | T-26-10 | Repudiation (HARKing) | README rubric | medium | mitigate | rubric committed in 4ba6195 before prereg and runs; `rubric-check` prints `RUBRIC-UNCHANGED` vs `PREREG_SHA=4ba6195` | closed |
-| T-26-11 | Tampering (vacuous green) | acceptance.py aggregate | medium | mitigate | dup_check/stage_cost exit 2 on empty/missing input (holds). **Gap:** `acceptance.py:606-607` `ok = FAIL not in res.values()` → all-UNDETERMINED (empty or nonexistent results dir) prints `RESULT PASS`, exit 0; selftest (`:1050`, `:1098`) asserts per-check UNDET but never the RESULT line/rc. No committed verdict affected (all committed `acceptance.txt` have 0 UNDETERMINED; verdict INCONCLUSIVE) | open — below high threshold (non-blocking); needs human: accept or fix |
+| T-26-11 | Tampering (vacuous green) | acceptance.py aggregate | medium | mitigate | dup_check/stage_cost exit 2 on empty/missing input (holds). Fixed in Phase 26.1 by f909f93 (26.1-02): `acceptance.py` RESULT is three-way (PASS needs zero FAIL, zero UNDETERMINED and at least one PASS; FAIL exit 1; INCONCLUSIVE exit 2), so an empty or nonexistent results dir prints `RESULT INCONCLUSIVE` and exits 2; the selftest asserts the RESULT line and rc for l7, l8, run1 and run2 over both inputs and pins the pure aggregate | closed |
 | T-26-12 | Information disclosure | results, README, MANIFEST commits | high | mitigate | as T-26-01; wider secret-shape scan (sk-, oat01, ghp_, AKIA, Bearer, private-key headers) over spike dir and MANIFEST: no hits | closed |
 | T-26-13 | DoS (quota) | Opus runs | medium | mitigate | budget 15 / 90 min `run.sh:43,46`; `RuntimeMaxSec` `launcher.py:281`; 2 Run-1 attempts, Run 2 skipped, `RELAUNCHES=0` everywhere; measured $7.81 of $60 ceiling | closed |
 | T-26-14 | Repudiation (forged evidence) | results dirs, verdict | high | mitigate | `cmp` LOG.md/state.json/DIRECTION.md vs scratch RUN_DIR: identical for l7, smoke1, smoke2, run1, run1b; README cites committed files; rubric unchanged | closed |
@@ -60,7 +60,7 @@ created: "2026-10-16"
 ### Informational (auditor notes, not counted)
 
 - T-26-06 residual: `drift.py:_atomic_write` (`:186`) opens `.{name}.tmp` inside agent-writable `feed/` without `O_NOFOLLOW`/`O_EXCL`; a pre-planted symlink at the temp name would be followed by the host watcher. Declared mitigation present, so closed at L1.
-- T-26-13: the $60 campaign ceiling is a README procedure (`README.md:150-152`), not enforced in `run.sh`; per-launch caps are enforced.
+- T-26-13: the $60 campaign ceiling was a README procedure (`README.md:150-152`), not enforced in `run.sh`; per-launch caps are enforced. Since Phase 26.1 the ceiling is enforced mechanically by `tools/campaign_budget.py` in `run.sh` (exit 8; 26.1-03 commit 2cc903c).
 - T-26-01/12: "no `*.jsonl` in results" is guaranteed by the explicit copy list, not a runtime find check in `run.sh`.
 
 ---
@@ -71,7 +71,7 @@ created: "2026-10-16"
 |---------|------------|-----------|-------------|------|
 | AR-26-01 | T-26-SC | No packages installed; stdlib and system binaries only (26-RESEARCH § Package Legitimacy Audit) | plan-time disposition (26-01/02/03-PLAN.md) | 2026-10-16 |
 
-T-26-11 is **not** accepted: the human was unavailable during this automated run, so the accept-or-fix decision is left open for the operator. Suggested fix: treat any UNDETERMINED as not-ok (or exit 2) in `run_mode()` and add a RESULT/rc assertion for the missing-input case to the selftest.
+T-26-11 was fixed in Phase 26.1 (f909f93, 26.1-02), not accepted.
 
 ---
 
@@ -80,6 +80,7 @@ T-26-11 is **not** accepted: the human was unavailable during this automated run
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-16 | 17 | 16 | 1 (non-blocking, T-26-11) | /gsd-secure-phase orchestrator (L1 grep) + gsd-security-auditor |
+| 2026-10-18 | 17 | 17 | 0 | 26.1-04 (T-26-11 closed by f909f93) |
 
 ---
 
