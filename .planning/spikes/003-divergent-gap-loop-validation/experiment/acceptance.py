@@ -9,11 +9,18 @@ Modes and check ids (the README pre-registers them verbatim):
   l7    L7-1 L7-2 L7-3 L7-4 L7-5 L7-6                      scripted misbehaving driver (gap-round cap)
   l8    L8-1 L8-2 L8-3 L8-4                                scripted early-worker probe (Stop guard, SendMessage)
   run1  A1 A2 A3 A4 A6 A7 A8 A9 A10   then `SEED {VALID|RECOGNISED|CONVERGED|STALLED}`
-  run2  A5-deny A5-kill A11 A6 A7 A8 A9 A10   then `SEED ...` (prompt divergence rule disabled)
+  run2  A5-deny A5-kill A11 A6 A7 A8 A9 A10   then `SEED ...` (prompt divergence rule disabled), then RESULT, then
+        `DISPOSITION ...` derived from the SEED class alone (26.1-run2 block item 5; RESULT is untouched, D-04):
+          SEED CONVERGED -> DISPOSITION retry (SEED CONVERGED: not verdict input)
+          SEED STALLED   -> DISPOSITION retry (SEED STALLED: not verdict input)
+          SEED VALID|RECOGNISED -> DISPOSITION verdict
+  seed2 G1 G2                                                Haiku seed gate (26.1-run2 block item 4); no SEED, no DISPOSITION
+          G1 a drift.log advance line with ` trigger=verifier ` precedes the first `snapshot` line
+          G2 that first snapshot has status=gaps_found
 
 Usage:
-  acceptance.py l7|l8|run1|run2 <results-dir> [--dup-report FILE]
-  acceptance.py rubric-check [--sha S] [--block 26.1]
+  acceptance.py l7|l8|run1|run2|seed2 <results-dir> [--dup-report FILE]
+  acceptance.py rubric-check [--sha S] [--block 26.1|26.1-run2]
   acceptance.py selftest
 
 Each check prints `{ID} {PASS|FAIL|NOT-REACHED|UNDETERMINED} {evidence}`; then `RESULT {PASS|FAIL|INCONCLUSIVE}`.
@@ -26,6 +33,8 @@ Each check prints `{ID} {PASS|FAIL|NOT-REACHED|UNDETERMINED} {evidence}`; then `
   (no --block)   `<!-- rubric:start -->`..`<!-- rubric:end -->` against results/prereg.txt (the Phase 26 rubric)
   --block 26.1   `<!-- rubric-26.1:start -->`..`<!-- rubric-26.1:end -->` against results/prereg-26.1.txt;
                  fail-closed: RUBRIC-MISSING (exit 2) while the prereg file or either block is absent
+  --block 26.1-run2  `<!-- rubric-26.1-run2:start -->`..`<!-- rubric-26.1-run2:end -->` against results/prereg-26.1-run2.txt
+                 (the gap-closure block); fail-closed in the same way
   RUBRIC-UNCHANGED exit 0, RUBRIC-CHANGED exit 1, RUBRIC-MISSING exit 2.
 """
 import contextlib
@@ -623,7 +632,8 @@ def check_a10(ctx):
 RUBRIC_START, RUBRIC_END = b"<!-- rubric:start -->", b"<!-- rubric:end -->"
 # `--block NAME` -> (start marker, end marker, prereg file). The default (no --block) is the Phase 26 block above,
 # untouched (T-26-10). Named blocks are fail-closed: anything absent is RUBRIC-MISSING, never RUBRIC-UNCHANGED.
-RUBRIC_BLOCKS = {"26.1": (b"<!-- rubric-26.1:start -->", b"<!-- rubric-26.1:end -->", "prereg-26.1.txt")}
+RUBRIC_BLOCKS = {"26.1": (b"<!-- rubric-26.1:start -->", b"<!-- rubric-26.1:end -->", "prereg-26.1.txt"),
+                 "26.1-run2": (b"<!-- rubric-26.1-run2:start -->", b"<!-- rubric-26.1-run2:end -->", "prereg-26.1-run2.txt")}
 
 
 def _rubric(data, start=RUBRIC_START, end=RUBRIC_END):
@@ -716,9 +726,45 @@ def seed_class(ctx, a10):
     return "STALLED"
 
 
+# ---------------------------------------------------------------- seed2 gate checks (26.1-run2 block item 4)
+
+def _first_snap_index(ctx):
+    for i, l in enumerate(ctx.drift_lines or []):
+        if SNAP_RE.match(l):
+            return i
+    return None
+
+
+def check_g1(ctx):
+    if ctx.drift_lines is None:
+        return missing("drift.log")
+    first = _first_snap_index(ctx)
+    if first is None:
+        return NOTREACHED, "no snapshot line in drift.log"
+    snap_utc = SNAP_RE.match(ctx.drift_lines[first]).group(1)
+    for l in ctx.drift_lines[:first]:
+        m = GEN_RE.match(l)
+        if m and " trigger=verifier " in l:
+            return PASS, f"verifier-trigger advance at {m.group(1)} precedes the first snapshot at {snap_utc}"
+    return FAIL, f"no ` trigger=verifier ` advance line before the first snapshot at {snap_utc}"
+
+
+def check_g2(ctx):
+    if ctx.drift_lines is None:
+        return missing("drift.log")
+    first = _first_snap_index(ctx)
+    if first is None:
+        return NOTREACHED, "no snapshot line in drift.log"
+    m = SNAP_RE.match(ctx.drift_lines[first])
+    st = m.group(4)
+    return (PASS if st == "gaps_found" else FAIL), f"first snapshot at {m.group(1)} status={st}"
+
+
 # ---------------------------------------------------------------- modes
 
 def checks_for(mode):
+    if mode == "seed2":
+        return [("G1", check_g1), ("G2", check_g2)]
     if mode == "l8":
         return [("L8-1", check_l8_1), ("L8-2", check_l8_2), ("L8-3", check_l8_3), ("L8-4", check_l8_4)]
     if mode == "l7":
@@ -742,8 +788,15 @@ def aggregate(statuses):
     return "PASS", 0
 
 
+def disposition(seed):
+    """The run2 DISPOSITION line from the SEED class alone (26.1-run2 block item 5)."""
+    if seed in ("CONVERGED", "STALLED"):
+        return f"DISPOSITION retry (SEED {seed}: not verdict input)"
+    return "DISPOSITION verdict"
+
+
 def run_mode(mode, results, dup_report=None):
-    """(lines, rc). One line per check, then SEED (run1/run2), then RESULT; rc 0 PASS / 1 FAIL / 2 INCONCLUSIVE."""
+    """(lines, rc). One line per check, then SEED (run1/run2), then RESULT (then DISPOSITION for run2); rc 0 PASS / 1 FAIL / 2 INCONCLUSIVE."""
     ctx = Ctx(results, dup_report)
     table = checks_for(mode)
     if table is None:
@@ -754,10 +807,14 @@ def run_mode(mode, results, dup_report=None):
         st, ev = fn(ctx)
         res[cid] = st
         lines.append(f"{cid} {st} {ev}")
+    seed = None
     if mode in ("run1", "run2"):
-        lines.append("SEED " + seed_class(ctx, res.get("A10")))
+        seed = seed_class(ctx, res.get("A10"))
+        lines.append("SEED " + seed)
     result, rc = aggregate(res.values())
     lines.append("RESULT " + result)
+    if mode == "run2":              # block item 5: derived from the SEED class alone; RESULT and rc are not touched
+        lines.append(disposition(seed))
     return lines, rc
 
 
@@ -795,7 +852,7 @@ def main(argv=None):
         dup = argv[i + 1]
         del argv[i:i + 2]
     if len(argv) != 2:
-        print("Usage: acceptance.py l7|l8|run1|run2 <results-dir> [--dup-report FILE] | rubric-check [--sha S] [--block 26.1] | selftest")
+        print("Usage: acceptance.py l7|l8|run1|run2|seed2 <results-dir> [--dup-report FILE] | rubric-check [--sha S] [--block 26.1|26.1-run2] | selftest")
         return 2
     lines, rc = run_mode(argv[0], argv[1], dup)
     print("\n".join(lines))
@@ -1066,6 +1123,12 @@ def a8_case(td, name, per_snapshot, gens=(1, 2, 3), secs=None):
     return d
 
 
+def empty_dir(td):
+    dd = os.path.join(td, "emptyseed2")
+    os.makedirs(dd, exist_ok=True)
+    return dd
+
+
 def selftest_modes(td, outs):
     # ---------------- l7
     st = {"items": {}, "hook_dispatches": 1, "denied_dispatches": 1}
@@ -1189,7 +1252,7 @@ def selftest_modes(td, outs):
     # ---------------- three-way RESULT through the CLI: PASS with NOT-REACHED, FAIL outranks UNDETERMINED
     rc, out = r2("selfpark")
     assert status_of(out, "A5-deny") == NOTREACHED and status_of(out, "A10") == NOTREACHED, out
-    assert rc == 0 and out.rstrip().endswith("RESULT PASS") and "UNDETERMINED" not in out, (rc, out)
+    assert rc == 0 and "RESULT PASS" in out.splitlines() and "UNDETERMINED" not in out, (rc, out)
     # ---------------- D-01 in scoring: A8 / A10 score the last snapshot of each burst (committed results/run1 shape)
     burst = [gaps_for(1), gaps_for(2), gaps_for(2)]            # a verifier re-write: same findings, seconds later
     d = a8_case(td, "burst", burst, gens=(1, 2, 2), secs=(100, 700, 706))
@@ -1214,6 +1277,69 @@ def selftest_modes(td, outs):
               standin=[at(705)], drift=lines, snaps=snaps, dup=DUP_OK.format(v=3))
     _, out = run_on(d, "run2")
     assert status_of(out, "A10") == PASS and "gens=[1, 2]" in out, out
+    assert "SEED VALID" in out and out.rstrip().splitlines()[-1] == "DISPOSITION verdict", out
+    # ---------------- 26.1-run2 block item 5: DISPOSITION is derived from the SEED class alone, RESULT/rc untouched
+    lines, snaps = drift_for((1, 2, 3), statuses={2: "passed"})
+    for n, gl in zip(snaps, (gaps_for(1), gaps_for(2), gaps_for(3))):
+        snaps[n] = snap_text("gaps_found", gl)
+    d = mkres(td, "r2conv", run2_events("full"), state=run2_state("full"), standin=[at(743)], drift=lines, snaps=snaps,
+              dup=DUP_OK.format(v=3))
+    rc, out = run_on(d, "run2")
+    outs.append(out)
+    tail = out.rstrip().splitlines()
+    assert "SEED CONVERGED" in tail and tail[-1] == "DISPOSITION retry (SEED CONVERGED: not verdict input)", out
+    assert {"RESULT PASS": 0, "RESULT FAIL": 1, "RESULT INCONCLUSIVE": 2}[tail[-2]] == rc, (rc, out)
+    done = [e for e in run2_events("full")]
+    d = mkres(td, "r2convdone", done + [line(747, "I-01", "status", state="done", outcome="closed")],
+              state=run2_state("full"), standin=[at(743)], drift=L7_DRIFT[:1], dup=DUP_OK.format(v=3))
+    rc, out = run_on(d, "run2")
+    assert "SEED CONVERGED" in out and out.rstrip().splitlines()[-1] == "DISPOSITION retry (SEED CONVERGED: not verdict input)", out
+    d = mkres(td, "r2stalled", run2_events("full"), state=run2_state("full"), standin=[at(743)], drift=L7_DRIFT[:1],
+              dup=DUP_OK.format(v=3))
+    rc, out = run_on(d, "run2")
+    assert "SEED STALLED" in out and out.rstrip().splitlines()[-1] == "DISPOSITION retry (SEED STALLED: not verdict input)", out
+    d = mkres(td, "r2recog", tracer_head()[:5] + tracer_tail(), state=json.loads(tracer_state()), drift=L7_DRIFT[:1])
+    rc, out = run_on(d, "run2")
+    assert "SEED RECOGNISED" in out and out.rstrip().splitlines()[-1] == "DISPOSITION verdict", out
+    assert disposition("VALID") == "DISPOSITION verdict" and disposition("RECOGNISED") == "DISPOSITION verdict"
+    # run1, l7 and l8 carry no DISPOSITION line
+    d = a8_case(td, "r1nodisp", [gaps_for(1), gaps_for(2), gaps_for(3)])
+    _, out = run_on(d, "run1")
+    assert "DISPOSITION" not in out, out
+    for name, mode in (("l7ok", "l7"),):
+        _, out = run_on(os.path.join(td, name), mode)
+        assert "DISPOSITION" not in out, out
+    # ---------------- seed2 gate (block item 4): G1 verifier-trigger advance before the first snapshot, G2 gaps_found
+    def seed2_dir(name, lines):
+        dd = os.path.join(td, name)
+        wr(os.path.join(dd, "drift.log"), "\n".join(lines) + "\n")
+        return dd
+    adv_v = f"{at(60)} gen=1 summaries=2 head=abc1234 titles=3 trigger=verifier spawn=a1b2c3d4 spawn_at={at(59)}"
+    adv_s = f"{at(60)} gen=1 summaries=2 head=abc1234 titles=3"
+    snap = lambda sec, st: f"{at(sec)} snapshot file={GAP_PATH} hash=h0000001 status={st} gen=1 -> 01-x.md"
+    start = f"{at(0)} start gen=0"
+    rc, out = run_cli(["seed2", seed2_dir("s2pass", [start, adv_v, snap(90, "gaps_found")])])
+    outs.append(out)
+    assert status_of(out, "G1") == PASS and status_of(out, "G2") == PASS and rc == 0, (rc, out)
+    assert out.rstrip().splitlines()[-1] == "RESULT PASS" and "SEED" not in out and "DISPOSITION" not in out, out
+    rc, out = run_cli(["seed2", seed2_dir("s2passed", [start, adv_v, snap(90, "passed")])])
+    assert status_of(out, "G1") == PASS and status_of(out, "G2") == FAIL and "status=passed" in out, out
+    assert rc == 1 and out.rstrip().endswith("RESULT FAIL"), (rc, out)
+    rc, out = run_cli(["seed2", seed2_dir("s2summary", [start, adv_s, snap(90, "gaps_found")])])
+    assert status_of(out, "G1") == FAIL and rc == 1, (rc, out)
+    rc, out = run_cli(["seed2", seed2_dir("s2late", [start, snap(90, "gaps_found"), adv_v.replace(at(60), at(100), 1)])])
+    assert status_of(out, "G1") == FAIL and rc == 1, (rc, out)
+    rc, out = run_cli(["seed2", seed2_dir("s2nosnap", [start, adv_v])])
+    assert status_of(out, "G1") == NOTREACHED and status_of(out, "G2") == NOTREACHED, out
+    assert rc == 2 and out.rstrip().endswith("RESULT INCONCLUSIVE"), (rc, out)
+    for target in (os.path.join(td, "nowhere-seed2"), empty_dir(td)):
+        rc, out = run_cli(["seed2", target])
+        assert status_of(out, "G1") == UNDET and status_of(out, "G2") == UNDET, out
+        assert rc == 2 and out.rstrip().endswith("RESULT INCONCLUSIVE") and "RESULT PASS" not in out, (rc, out)
+    # ---------------- rubric-check --block 26.1-run2 against the real repo: fail-closed until the prereg file exists
+    if not os.path.exists(os.path.join(S3, "experiment", "results", "prereg-26.1-run2.txt")):
+        rc, out = rubric_check(S3, block="26.1-run2")
+        assert rc == 2 and out.splitlines()[0] == "RUBRIC-MISSING" and "RUBRIC-UNCHANGED" not in out, (rc, out)
     # ---------------- WR-03: a converged run (gaps, gaps, passed) has verifier runs = gaps_found + 1
     two_gaps = [e for e in tracer_head() if "count=3" not in e]
     lines, snaps = drift_for((1, 2, 3), statuses={2: "passed"})
@@ -1457,7 +1583,8 @@ def selftest():
             for target in (os.path.join(td, "nowhere"), empty):
                 rc, out = run_cli([mode, target])
                 outs.append(out)
-                assert rc == 2 and out.rstrip().endswith("RESULT INCONCLUSIVE"), (mode, target, rc, out)
+                body = "\n".join(l for l in out.rstrip().splitlines() if not l.startswith("DISPOSITION "))   # run2 ends with it
+                assert rc == 2 and body.endswith("RESULT INCONCLUSIVE"), (mode, target, rc, out)
                 assert "RESULT PASS" not in out, (mode, target, out)
         assert run_mode("bogus", empty)[1] == 2
         # three-way aggregate, pure
