@@ -384,8 +384,7 @@ pub enum Commands {
     // refusal must be a typed error from the handler, not "unknown subcommand"
     // from the parser. One build, one version (Phase 17 D-01).
     //
-    // `serve` is added to `DriverctlAction` by 27-06; the launcher-side server is
-    // not part of this variant's contract with the sandbox.
+    // `serve` (27-06) is the launcher-side server; the sandbox never runs it.
     /// Internal: the driver's control channel (log events, show status, hook gate)
     #[command(hide = true)]
     Driverctl {
@@ -409,6 +408,18 @@ pub enum DriverctlAction {
     Show,
     /// Claude hook entry point: read one hook payload on stdin
     Hook,
+    /// Launcher side: serve one run's store on a unix socket until SIGTERM/SIGINT
+    Serve {
+        /// The run directory: `<project>/.planning/meta-manager/drivers/<run-id>`
+        #[arg(long)]
+        run_dir: PathBuf,
+        /// The project root the run belongs to
+        #[arg(long)]
+        project: PathBuf,
+        /// Socket path (default: `$XDG_RUNTIME_DIR/gsdmm-driverctl/<run-id>-<hash>.sock`)
+        #[arg(long)]
+        sock: Option<PathBuf>,
+    },
 }
 
 // The 17 flags below are spike 002's argparse surface verbatim, and every value
