@@ -6,10 +6,14 @@
 //! file masked) inside the sandbox. [`seed`] ports the spike's `seed_config`:
 //!
 //! * symlinks to the host's `agents`, `commands`, `skills`, `gsd-core`,
-//!   `get-shit-done` and `hooks` (read-only inside);
-//! * a copy of the host `settings.json` minus `statusLine`, `enabledPlugins`,
-//!   `remoteControlAtStartup` and `agentPushNotifEnabled`, with the driverctl
-//!   hooks added. The PreToolUse `Agent|Task` entry goes FIRST and carries
+//!   `get-shit-done` and `hooks` (read-only inside) -- each only when the host has
+//!   it and the config dir does not. **The global `CLAUDE.md` is deliberately not
+//!   linked** (OQ-R2, `[inferred]`): the driver follows the master prompt and the
+//!   project's own `CLAUDE.md`, not the operator's personal rules;
+//! * [`settings_transform`] of the host `settings.json`: minus `statusLine`,
+//!   `enabledPlugins`, `remoteControlAtStartup`, `agentPushNotifEnabled` and
+//!   `apiKeyHelper`, minus any `env` entry the process scrub strips, with the
+//!   driverctl hooks added around the user's own. The PreToolUse `Agent|Task` entry goes FIRST and carries
 //!   `"onFailure": "block"` (hand-off 1), so a dead socket or a missing binary
 //!   fails closed;
 //! * a minimal `.claude.json` (`hasCompletedOnboarding`), only when absent;
@@ -31,6 +35,8 @@ use serde_json::{json, Map, Value};
 
 use crate::driverctl::serve::hash8;
 
+use super::sandbox::{EXTRA_STRIP_ENV, STRIP_ENV};
+
 /// The application's directory under the data dir.
 const APP_SUBDIR: &str = "gsd-meta-manager";
 
@@ -47,12 +53,14 @@ pub const LINK_FROM_HOST: &[&str] = &[
     "hooks",
 ];
 
-/// Host settings keys that never reach the driver.
+/// Host settings keys that never reach the driver: UI and plugin keys, and
+/// `apiKeyHelper`, which outranks `CLAUDE_CODE_OAUTH_TOKEN` (RESEARCH §3).
 pub const DROPPED_SETTINGS_KEYS: &[&str] = &[
     "statusLine",
     "enabledPlugins",
     "remoteControlAtStartup",
     "agentPushNotifEnabled",
+    "apiKeyHelper",
 ];
 
 /// The timeout of every driverctl hook entry, in seconds (spike value).
@@ -155,9 +163,49 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
-/// The per-run settings from the host's (RED-phase stub: not implemented yet).
-pub fn settings_transform(host: Value, _hook_command: &str) -> Value {
-    host
+/// The per-run settings from the host's: a pure function of the host settings
+/// value and the quoted `<cfg>/bin/driverctl hook` command line.
+///
+/// * a non-object input is an empty object;
+/// * [`DROPPED_SETTINGS_KEYS`] are removed, and so is every `env` entry named in
+///   `sandbox::STRIP_ENV` or `sandbox::EXTRA_STRIP_ENV` (the settings `env` block
+///   would otherwise re-inject what the process environment scrub removed
+///   `[inferred — audit]`);
+/// * the dispatch gate (`PreToolUse`, `Agent|Task`, `onFailure: block`) goes
+///   FIRST, so it runs before any host `PreToolUse` hook; the `SessionStart`,
+///   `SessionEnd`, `Stop` and `PostToolUse` entries go last. User entries (GSD,
+///   rtk) keep their relative order.
+pub fn settings_transform(host: Value, hook_command: &str) -> Value {
+    let mut settings = match host {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    for key in DROPPED_SETTINGS_KEYS {
+        settings.remove(*key);
+    }
+    if let Some(Value::Object(env)) = settings.get_mut("env") {
+        env.retain(|name, _| {
+            !STRIP_ENV
+                .iter()
+                .chain(EXTRA_STRIP_ENV)
+                .any(|stripped| name == stripped)
+        });
+    }
+    let hooks = settings
+        .entry("hooks".to_owned())
+        .or_insert_with(|| json!({}));
+    if !hooks.is_object() {
+        *hooks = json!({});
+    }
+    if let Value::Object(hooks) = hooks {
+        hook_list(hooks, "PreToolUse")
+            .insert(0, hook_entry(Some("Agent|Task"), hook_command, true));
+        for event in ["SessionStart", "SessionEnd", "Stop"] {
+            hook_list(hooks, event).push(hook_entry(None, hook_command, false));
+        }
+        hook_list(hooks, "PostToolUse").push(hook_entry(Some("*"), hook_command, false));
+    }
+    Value::Object(settings)
 }
 
 /// Create and fill the per-run config directory. Idempotent: `settings.json` and
@@ -178,25 +226,11 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
     let shim = bin.join("driverctl");
     let command = hook_command(&shim, "hook");
 
-    let mut settings = read_host_settings(&spec.host_claude_dir);
-    for key in DROPPED_SETTINGS_KEYS {
-        settings.remove(*key);
-    }
-    let hooks = settings
-        .entry("hooks".to_owned())
-        .or_insert_with(|| json!({}));
-    if !hooks.is_object() {
-        *hooks = json!({});
-    }
-    if let Value::Object(hooks) = hooks {
-        // First, so the dispatch gate runs before any host PreToolUse hook.
-        hook_list(hooks, "PreToolUse").insert(0, hook_entry(Some("Agent|Task"), &command, true));
-        for event in ["SessionStart", "SessionEnd", "Stop"] {
-            hook_list(hooks, event).push(hook_entry(None, &command, false));
-        }
-        hook_list(hooks, "PostToolUse").push(hook_entry(Some("*"), &command, false));
-    }
-    let rendered = serde_json::to_vec_pretty(&Value::Object(settings))
+    let settings = settings_transform(
+        Value::Object(read_host_settings(&spec.host_claude_dir)),
+        &command,
+    );
+    let rendered = serde_json::to_vec_pretty(&settings)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     write_atomic(&spec.config_dir.join("settings.json"), &rendered, 0o600)?;
 
