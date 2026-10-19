@@ -43,8 +43,9 @@
 //!    A panic while handling one request is answered `internal: panic` and never
 //!    ends the server; a poisoned mutex is recovered.
 //! 7. **A 2 s ticker drives the launcher-side bookkeeping (D-26, D-11).** Every
-//!    [`TICK`] it calls `scan_tick` (gap rounds from `*-VERIFICATION.md` on disk)
-//!    and `flush_heartbeat` (the trailing heartbeat flush) under the store mutex.
+//!    [`TICK`] it scans `*-VERIFICATION.md` on disk WITHOUT the store mutex (CR-01),
+//!    then feeds the result to `observe_verifications` and calls `flush_heartbeat`
+//!    (the trailing heartbeat flush) under the store mutex.
 //! 8. **SIGTERM and SIGINT stop it gracefully.** The terminal status `stopped`
 //!    (reason `serve:signal`, unless the driver logged `RUN end`) is written and the
 //!    frontmatter regenerated, then the listener stops, the socket is unlinked and
@@ -66,6 +67,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 
 use super::protocol::{Response, MAX_REQUEST_BYTES};
+use super::scan::scan_verifications;
 use super::store::{DriverSpec, LaunchSpec, RunStore, StoreError, TerminalOutcome, TerminalStatus};
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
 use crate::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
@@ -535,7 +537,7 @@ fn accept_loop(
 
 // ---------------------------------------------------------------- ticker
 
-fn ticker(store: Arc<Mutex<RunStore>>, stop: Arc<AtomicBool>) {
+fn ticker(store: Arc<Mutex<RunStore>>, stop: Arc<AtomicBool>, project: PathBuf) {
     'outer: loop {
         let started = Instant::now();
         while started.elapsed() < TICK {
@@ -544,8 +546,11 @@ fn ticker(store: Arc<Mutex<RunStore>>, stop: Arc<AtomicBool>) {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+        // CR-01: the file scan runs BEFORE the store mutex is taken, so a slow
+        // read of a driver-plantable file can never stall `handle_json`.
+        let writes = scan_verifications(&project);
         let mut guard = lock_store(&store);
-        if let Err(e) = guard.scan_tick() {
+        if let Err(e) = guard.observe_verifications(&writes) {
             eprintln!("driverctl serve: gap scan failed: {e}");
         }
         guard.flush_heartbeat();
@@ -621,13 +626,14 @@ pub fn serve(opts: ServeOptions) -> Result<(), DriverctlError> {
         }
     };
 
+    let scan_root = store.project().to_owned();
     let store = Arc::new(Mutex::new(store));
     let ticker_handle: JoinHandle<()> = {
         let store = Arc::clone(&store);
         let stop = Arc::clone(&stop);
         std::thread::Builder::new()
             .name("driverctl-ticker".to_owned())
-            .spawn(move || ticker(store, stop))
+            .spawn(move || ticker(store, stop, scan_root))
             .map_err(|e| io_error("spawn the ticker", e))?
     };
 

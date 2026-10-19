@@ -1276,6 +1276,40 @@ fn scan_tick_observes_gap_rounds_from_disk_and_coalesces_rewrites() {
 }
 
 #[test]
+fn cr01_scan_tick_survives_a_fifo_planted_as_a_verification() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(standalone()).unwrap();
+    let dir = fx.project.join(".planning/phases/02-planted");
+    fs::create_dir_all(&dir).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        dir.join("02-VERIFICATION.md"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    put_verification(
+        &fx.project,
+        "---\nstatus: gaps_found\n---\nbody\n",
+        1_000_000.0,
+    );
+
+    // A blocked read would hang here forever; run it on a thread so the failure
+    // is a timeout, not a wedged suite.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(store.scan_tick());
+    });
+    let changed = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("scan_tick blocked on a planted FIFO")
+        .unwrap();
+    assert_eq!(changed, 1, "only the regular file is observed");
+}
+
+#[test]
 fn set_terminal_records_the_launcher_verdict() {
     let fx = Fixture::new();
     let mut store = fx.open();

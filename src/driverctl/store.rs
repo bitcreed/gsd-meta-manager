@@ -973,9 +973,30 @@ impl RunStore {
     /// [`observe_verification`](Self::observe_verification); returns how many
     /// observations changed the counter state (new or coalesced).
     pub fn scan_tick(&mut self) -> Result<usize, StoreError> {
+        let writes = scan_verifications(&self.project);
+        self.observe_verifications(&writes)
+    }
+
+    /// The project root this store scans for `*-VERIFICATION.md` files.
+    ///
+    /// A caller that holds the store behind a mutex scans with
+    /// [`scan_verifications`] on this path *before* taking the lock and hands the
+    /// result to [`observe_verifications`](Self::observe_verifications), so file
+    /// I/O never runs under the single-writer lock (CR-01).
+    pub fn project(&self) -> &Path {
+        &self.project
+    }
+
+    /// Feed already-scanned writes to
+    /// [`observe_verification`](Self::observe_verification); returns how many
+    /// changed the counter state (new or coalesced).
+    pub fn observe_verifications(
+        &mut self,
+        writes: &[VerificationWrite],
+    ) -> Result<usize, StoreError> {
         let mut changed = 0;
-        for write in scan_verifications(&self.project) {
-            if self.observe_verification(&write)? != GapKind::Duplicate {
+        for write in writes {
+            if self.observe_verification(write)? != GapKind::Duplicate {
                 changed += 1;
             }
         }

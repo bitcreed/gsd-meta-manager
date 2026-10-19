@@ -6,13 +6,58 @@
 //! disk, never from a value the driver sends.
 
 use std::fs;
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::counters::{digest16, fm_status, phase_key};
 
 /// The longest project-relative path that may be written into a LOG header.
 const MAX_PATH_CHARS: usize = 200;
+
+/// The most bytes of one VERIFICATION.md the scan will read (CR-01). A larger file
+/// is skipped, not truncated: a truncated read would hash differently from the
+/// bytes on disk.
+pub const MAX_VERIFICATION_BYTES: u64 = 1 << 20;
+
+/// Read one candidate safely: the sandboxed driver can plant anything at this path.
+///
+/// Only a regular, non-symlink file no larger than [`MAX_VERIFICATION_BYTES`] is
+/// read. The open is `O_NONBLOCK | O_NOFOLLOW`, so a FIFO with no writer cannot hang
+/// it; the type is re-checked on the open handle (`fstat`), so a swap between the
+/// `lstat` and the open is caught; and the read itself is bounded by `take`, so a
+/// `/dev/zero`-like file cannot grow the buffer without limit. Returns the bytes
+/// with the mtime before and after the read (`None` for anything skipped).
+fn read_regular_bounded(path: &Path) -> Option<(Vec<u8>, SystemTime, SystemTime)> {
+    let lmeta = fs::symlink_metadata(path).ok()?;
+    if !lmeta.file_type().is_file() || lmeta.len() > MAX_VERIFICATION_BYTES {
+        return None;
+    }
+    let flags = rustix::fs::OFlags::NONBLOCK.bits() | rustix::fs::OFlags::NOFOLLOW.bits();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(i32::try_from(flags).ok()?)
+        .open(path)
+        .ok()?;
+    let before = file.metadata().ok()?;
+    if !before.file_type().is_file() || before.len() > MAX_VERIFICATION_BYTES {
+        return None;
+    }
+    let mut raw = Vec::new();
+    // One byte over the cap proves the file outgrew it while it was read.
+    file.take(MAX_VERIFICATION_BYTES + 1)
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > MAX_VERIFICATION_BYTES {
+        return None;
+    }
+    let after = fs::symlink_metadata(path).ok()?;
+    if !after.file_type().is_file() {
+        return None;
+    }
+    Some((raw, before.modified().ok()?, after.modified().ok()?))
+}
 
 /// One `gaps_found` VERIFICATION.md as observed on disk.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +90,8 @@ fn visible_children(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
 
 /// Scan `<project>/.planning/phases/*/*-VERIFICATION.md`, in sorted order.
 ///
-/// A file is skipped (never fatal) when it cannot be read, when its mtime moved
+/// A file is skipped (never fatal) when it is not a regular file (a FIFO, a
+/// device, a symlink: CR-01), is over [`MAX_VERIFICATION_BYTES`], cannot be read, when its mtime moved
 /// while it was read (WR-07: stat, read, stat; the next tick retries), when its
 /// frontmatter status is not `gaps_found`, when its phase directory has no
 /// numeric key, or when its path could not be written as one LOG header value
@@ -54,7 +100,8 @@ pub fn scan_verifications(project: &Path) -> Vec<VerificationWrite> {
     let phases = project.join(".planning").join("phases");
     let mut candidates: Vec<(String, std::path::PathBuf, String)> = Vec::new();
     for (dir_name, dir) in visible_children(&phases) {
-        if !dir.is_dir() {
+        // `symlink_metadata`: a symlinked phase directory is not followed.
+        if !fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_dir()) {
             continue;
         }
         for (file_name, path) in visible_children(&dir) {
@@ -73,14 +120,7 @@ pub fn scan_verifications(project: &Path) -> Vec<VerificationWrite> {
 
     let mut out = Vec::new();
     for (rel, path, dir_name) in candidates {
-        let Ok(st1) = fs::metadata(&path) else {
-            continue;
-        };
-        let Ok(raw) = fs::read(&path) else { continue };
-        let Ok(st2) = fs::metadata(&path) else {
-            continue;
-        };
-        let (Ok(m1), Ok(m2)) = (st1.modified(), st2.modified()) else {
+        let Some((raw, m1, m2)) = read_regular_bounded(&path) else {
             continue;
         };
         if m1 != m2 {
@@ -282,6 +322,92 @@ mod tests {
         let phases: Vec<&str> = ws.iter().map(|w| w.phase.as_str()).collect();
         assert_eq!(phases, ["1", "2"]);
         assert!((ws[1].mtime - (T + 5.25)).abs() < 1e-6, "{}", ws[1].mtime);
+    }
+
+    /// Run `f` on a thread and fail (rather than hang the suite) if it never returns.
+    fn within_a_generous_bound<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(30))
+            .expect("the scan blocked on a planted file")
+    }
+
+    #[test]
+    fn cr01_a_fifo_named_like_a_verification_does_not_hang_the_scan() {
+        let td = TempDir::new().unwrap();
+        let p = td.path().to_path_buf();
+        put(&p, "01-a", "01-VERIFICATION.md", GAPS, T);
+        let fifo = p.join(".planning/phases/02-b/02-VERIFICATION.md");
+        fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let scan_root = p.clone();
+        let ws = within_a_generous_bound(move || scan_verifications(&scan_root));
+        let phases: Vec<&str> = ws.iter().map(|w| w.phase.as_str()).collect();
+        assert_eq!(phases, ["1"], "the FIFO is skipped, the regular file kept");
+    }
+
+    #[test]
+    fn cr01_a_symlinked_verification_is_not_followed() {
+        let td = TempDir::new().unwrap();
+        let p = td.path();
+        let outside = td.path().join("outside.md");
+        fs::write(&outside, GAPS).unwrap();
+        let dir = p.join(".planning/phases/01-a");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("01-VERIFICATION.md")).unwrap();
+        assert!(scan_verifications(p).is_empty());
+    }
+
+    #[test]
+    fn cr01_a_symlinked_phase_directory_is_not_followed() {
+        let td = TempDir::new().unwrap();
+        let p = td.path();
+        let real = td.path().join("elsewhere");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("01-VERIFICATION.md"), GAPS).unwrap();
+        let phases = p.join(".planning/phases");
+        fs::create_dir_all(&phases).unwrap();
+        std::os::unix::fs::symlink(&real, phases.join("01-a")).unwrap();
+        assert!(scan_verifications(p).is_empty());
+    }
+
+    #[test]
+    fn cr01_an_oversize_verification_is_skipped_not_read() {
+        let td = TempDir::new().unwrap();
+        let p = td.path();
+        put(p, "01-a", "01-VERIFICATION.md", GAPS, T);
+        // Sparse: the frontmatter says gaps_found, the length is one over the cap.
+        let big = p.join(".planning/phases/02-b/02-VERIFICATION.md");
+        fs::create_dir_all(big.parent().unwrap()).unwrap();
+        fs::write(&big, GAPS).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&big)
+            .unwrap()
+            .set_len(MAX_VERIFICATION_BYTES + 1)
+            .unwrap();
+        let ws = scan_verifications(p);
+        let phases: Vec<&str> = ws.iter().map(|w| w.phase.as_str()).collect();
+        assert_eq!(phases, ["1"]);
+
+        // Exactly at the cap is still read.
+        OpenOptions::new()
+            .write(true)
+            .open(&big)
+            .unwrap()
+            .set_len(MAX_VERIFICATION_BYTES)
+            .unwrap();
+        let ws = scan_verifications(p);
+        assert_eq!(ws.len(), 2, "{ws:?}");
     }
 
     #[test]
