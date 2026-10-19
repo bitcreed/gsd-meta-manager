@@ -26,8 +26,11 @@
 //!    The last two are deviations from the spike, which failed closed only on an
 //!    `OSError` (`[inferred — audit]` 27-RESEARCH A8): launcher caps must not be
 //!    bypassable by breaking the transport or by a server-side internal error.
-//!    A server `deny` is relayed. Non-gate hooks and unparsable stdin exit `0`
-//!    silently, and the exit code is `0` in every case: the decision is the JSON.
+//!    A server `deny` is relayed. Unreadable or non-object stdin ALSO prints the deny
+//!    JSON (SEC-01 `[inferred — audit]`): without a parsed payload the client cannot
+//!    tell a gate from any other hook, and "silent exit 0" would let a mangled
+//!    dispatch through. Non-gate hooks with a parsed payload exit `0` silently, and
+//!    the exit code is `0` in every case: the decision is the JSON.
 //! 5. **Phase 28 hand-off.** Phase 28's launcher seeds the PreToolUse `Agent|Task`
 //!    hook with `"onFailure": "block"`, so even a non-zero exit of this binary (a
 //!    crash this module could not prevent: a missing binary, a killed process)
@@ -416,14 +419,29 @@ fn hook_payload(p: &Map<String, Value>) -> Value {
 /// the server cannot be reached: denying those would brick the driver for a
 /// transport blip, and they gate nothing.
 ///
+/// SEC-01 `[inferred — audit]`: stdin that cannot be read, or that is not a JSON
+/// object, is denied as well. The gate predicate needs the parsed payload, so with
+/// none the only fail-closed answer is the deny JSON (exit code still `0`: the
+/// channel Claude Code reads is stdout, and the `onFailure: block` hand-off does not
+/// cover an exit-0 hook). Claude Code always sends an object, so this costs nothing
+/// in a healthy run.
+///
 /// The exit code is always `0`: the decision travels as JSON on stdout, which is
 /// the channel Claude Code reads a `deny` from.
 fn hook_main() -> i32 {
     let mut raw = Vec::new();
     if std::io::stdin().read_to_end(&mut raw).is_err() {
+        out(&format!(
+            "{}\n",
+            deny_json("hook payload unreadable on stdin; launcher-side caps cannot be checked")
+        ));
         return 0;
     }
     let Ok(Value::Object(p)) = serde_json::from_slice::<Value>(&raw) else {
+        out(&format!(
+            "{}\n",
+            deny_json("hook payload is not a JSON object; launcher-side caps cannot be checked")
+        ));
         return 0;
     };
 

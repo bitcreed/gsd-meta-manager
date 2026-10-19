@@ -484,11 +484,24 @@ fn nested_and_non_gate_hooks_are_silent_when_unreachable() {
 }
 
 #[test]
-fn invalid_hook_stdin_is_silent() {
+fn invalid_hook_stdin_fails_closed() {
+    // SEC-01: no parsed payload means no way to tell a dispatch from any other
+    // hook, so the answer is the deny JSON (exit 0), not silence.
     let server = Recorder::start(&[r#"{"ok": true}"#]);
-    for stdin in ["not json at all", "", "[1, 2, 3]", "\"a string\"", "42"] {
+    for stdin in [
+        "not json at all",
+        "",
+        "[1, 2, 3]",
+        "\"a string\"",
+        "42",
+        "null",
+    ] {
         let out = run(driverctl(Some(&server.sock)).arg("hook"), Some(stdin));
-        assert_silent(&out);
+        let reason = deny_reason(&out);
+        assert!(
+            reason.starts_with("LAUNCHER CAP: hook payload"),
+            "{stdin:?}: {reason}"
+        );
     }
     assert!(
         server.requests().is_empty(),
