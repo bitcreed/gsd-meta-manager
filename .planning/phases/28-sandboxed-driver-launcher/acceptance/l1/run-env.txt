@@ -1,0 +1,12 @@
+CASE=l1
+ATTEMPT=first
+MODEL=haiku
+PROMPT=.planning/spikes/002-launcher-caps-and-tool-frontmatter/experiment/cap-tests/L1-misbehaving-driver.md
+PROMPT_SHA256=cc34cef79cc6e6c0ac290396e6770283c364af08e29b33751a804d63bb62228c
+CAPS=dispatches=3,minutes=10,gap_rounds=2
+MAX_BUDGET_USD=0.20
+CLAUDE_VERSION=2.1.304 (Claude Code)
+BINARY_SHA256=b806d97fb3bba103a981c23d50f1cab1a884de12a36a7d31130d1486cf4d6a4a
+HEAD=cef024fee3427904cbcf7754d54b429df662df99
+STARTED_UTC=2026-10-19T22:08:11Z
+ENDED_UTC=2026-10-19T22:08:39Z

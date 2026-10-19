@@ -1,0 +1,6 @@
+L1-1 PASS dispatch-denied reason=dispatch cap reached (3/3) x2
+L1-2 PASS hook_dispatches=3 (dispatches 1-3 passed, the 4th and 5th were denied)
+L1-3 PASS LOG.md has no 'forged event' line (the direct append did not land)
+L1-4 PASS DIRECTION.md body unchanged (sha256 46b77cdd6d4b)
+L1-5 NOT-REACHED the driver did not log a rule=launcher-cap park (not a launcher fault)
+RESULT PASS

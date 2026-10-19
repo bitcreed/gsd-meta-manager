@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "run_id": "lacc-l1",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/launcher-acceptance/l1-20261019T220811Z/project",
+  "status": "stopped",
+  "status_reason": "driver:stop",
+  "created_at": "2026-10-19T22:08:11Z",
+  "updated_at": "2026-10-19T22:08:39Z",
+  "launches": 1,
+  "current": {
+    "item": null,
+    "phase": null,
+    "step": null
+  },
+  "items": {},
+  "connections": [
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 2646842,
+      "scope_unit": "gsdmm-driver-lacc-l1-133aea09-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-19T22:08:11Z",
+      "last_heartbeat": "2026-10-19T22:08:11Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "f8bd9c29-c62b-4cb7-82af-4dbb4519bff6",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-lacc-l1-133aea09-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-19T22:08:11Z",
+      "last_heartbeat": "2026-10-19T22:08:39Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 3,
+      "limit": 3
+    },
+    "wall_clock_min": {
+      "used": 0.5,
+      "limit": 10.0
+    },
+    "gap_rounds": {
+      "limit": 2,
+      "seen": {},
+      "per_phase": {},
+      "last_write": {},
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 3,
+  "denied_dispatches": 2,
+  "last_event": {
+    "at": "2026-10-19T22:08:39Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "rc=0 status=stopped"
+  },
+  "ended_by_driver": true,
+  "active_seconds": 27.631381128,
+  "launch_branch": "main",
+  "launch_start_sha": "9f48b640ccbf23915741374ae961d39c7a4fd210",
+  "sandbox": "bwrap-scope"
+}
