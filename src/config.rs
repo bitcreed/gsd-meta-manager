@@ -385,9 +385,19 @@ impl Preferences {
 
 impl Preferences {
     /// Whether the push step may open a pull request after a push
-    /// (`preferences.driver.open_pr`, D-26). Stub until the GREEN commit.
+    /// (`preferences.driver.open_pr`, D-26).
+    ///
+    /// **Off unless the key is a real JSON `true`:** an absent key, `false`, a string
+    /// (`"true"`), a number or a misplaced key all read `false`, because opening a
+    /// pull request on a remote is the act the user has to ask for. The key lives in
+    /// the flattened [`Preferences::extra`] map like `default_runtime`, so it
+    /// round-trips through a load-and-save untouched `[inferred — audit]`.
     pub fn driver_open_pr(&self) -> bool {
-        false
+        self.extra
+            .get("driver")
+            .and_then(|driver| driver.get("open_pr"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 }
 

@@ -88,7 +88,9 @@ use crate::driverctl::store::{
     CapLimits, DriverSpec, LaunchSpec, RunState, RunStore, TerminalOutcome, TerminalStatus,
     EXTRA_ACTIVE_SECONDS, LOG_FILE, STATE_FILE,
 };
+use crate::envelope::policy::EnvelopePolicy;
 use crate::error::LockError;
+use crate::state_reader::driver_frontmatter::RunStatus;
 
 /// The launcher connection's mode for a sandboxed launch (`RUN | launch | mode=`).
 /// A degraded launch records `degraded` instead ([`Posture::as_str`]).
@@ -167,6 +169,12 @@ pub struct LaunchOptions {
     /// `--unsandboxed` (D-29): run the driver as a supervised process group with no
     /// `bwrap` and no scope. Per launch; there is no config default.
     pub unsandboxed: bool,
+    /// `preferences.driver.open_pr` (D-26): the end-of-run push may open a pull
+    /// request. Read from the registry by the caller (the detached launcher loads it
+    /// again for itself); off unless the user turned it on.
+    pub open_pr: bool,
+    /// The PR caps the end-of-run push checks a pull request against (SAFE-06).
+    pub pr_policy: EnvelopePolicy,
 }
 
 /// How the run stands when [`launch`] returns.
@@ -265,6 +273,8 @@ struct LaunchContext {
     config_dir: PathBuf,
     sock: PathBuf,
     home: PathBuf,
+    /// The launcher's per-user data root (the push mirror lives under it).
+    driver_root: PathBuf,
     /// Set by `SIGTERM`/`SIGINT` (`driver stop`): the user wants the run stopped.
     user_stop: Arc<AtomicBool>,
     /// How the driver is contained, decided once from the host probes (D-28).
@@ -516,6 +526,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         config_dir,
         sock,
         home,
+        driver_root: root,
         user_stop,
         posture,
         tripped,
@@ -525,12 +536,50 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     loop {
         match run_one_launch(&mut session, &mut ctx) {
             Ok(AfterLaunch::Relaunch) => {}
-            Ok(AfterLaunch::Finished) => return Ok(session.close()),
+            Ok(AfterLaunch::Finished) => {
+                // D-24: once, with the lock still held and the final status on record.
+                push_at_run_end(&session, &ctx);
+                return Ok(session.close());
+            }
             Err(e) => {
                 session.close();
                 return Err(e);
             }
         }
+    }
+}
+
+/// The end-of-run push (D-24): when the run's final status is `done`, `parked` or
+/// `stopped`, send its work through [`push::push_run`] once, still holding the run
+/// lock, and say what happened on stderr (the launch log of a detached launcher).
+///
+/// Never after `crashed`, `stalled` or a relaunch verdict (those never reach here
+/// with such a status), and never between launches. A push that is refused or fails
+/// does not change how the launch ends: the run stays as it was recorded, and
+/// `driver push` can be run again.
+fn push_at_run_end(session: &Session, ctx: &LaunchContext) {
+    let finished = matches!(
+        lock_store(&session.store).state().status,
+        RunStatus::Done | RunStatus::Parked | RunStatus::Stopped
+    );
+    if !finished {
+        return;
+    }
+    let push_ctx = push::PushContext {
+        project: ctx.project.clone(),
+        alias: ctx.opts.alias.clone(),
+        run_id: ctx.run_id.clone(),
+        driver_root: ctx.driver_root.clone(),
+        open_pr: ctx.opts.open_pr,
+        policy: ctx.opts.pr_policy.clone(),
+    };
+    let outcome = push::push_run(&push_ctx, &mut lock_store(&session.store));
+    // A run with nothing new to send is the ordinary case; say nothing.
+    if !matches!(
+        outcome,
+        push::PushOutcome::NothingToPush | push::PushOutcome::AlreadyPushed
+    ) {
+        eprintln!("driver launch: push: {outcome}");
     }
 }
 
@@ -1440,6 +1489,8 @@ mod tests {
                 gap_rounds: Some(0),
             },
             unsandboxed: false,
+            open_pr: false,
+            pr_policy: crate::launcher::push::policy_for("p", None),
         }
     }
 

@@ -244,6 +244,7 @@ fn resolve_project(
 fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::cli::DriverLoopMode;
     use gsd_meta_manager::driverctl::store::CapLimits;
+    use gsd_meta_manager::launcher::push::policy_for;
     use gsd_meta_manager::launcher::run::{
         detached_log_path, launch, launch_detached, LaunchOptions, LoopMode,
     };
@@ -256,13 +257,20 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             return 1;
         }
     }
-    let (alias, project, _registry) = match resolve_project(&args.project, config.clone()) {
+    let (alias, project, registry) = match resolve_project(&args.project, config.clone()) {
         Ok(resolved) => resolved,
         Err(message) => {
             err_line(&format!("driver launch: {message}"));
             return 1;
         }
     };
+    let pr_policy = policy_for(
+        &alias,
+        registry
+            .projects
+            .get(&alias)
+            .and_then(|p| p.driver_opt_in.as_ref()),
+    );
     let options = LaunchOptions {
         project,
         alias,
@@ -280,6 +288,10 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             gap_rounds: Some(args.cap_gap_rounds),
         },
         unsandboxed: args.unsandboxed,
+        // D-26: read from the registry here, and again by the detached child, which
+        // runs this same function with the same `--config`.
+        open_pr: registry.preferences.driver_open_pr(),
+        pr_policy,
     };
     if !args.foreground {
         return match launch_detached(&options, config.as_deref()) {
@@ -361,7 +373,7 @@ fn push_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
         alias,
         run_id: run_id.to_owned(),
         driver_root,
-        open_pr: false,
+        open_pr: registry.preferences.driver_open_pr(),
     };
     match push_finished_run(&ctx) {
         Ok(outcome) => {

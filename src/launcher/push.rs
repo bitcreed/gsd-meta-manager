@@ -46,6 +46,7 @@ use crate::driver::lock::ACQUIRE_RETRY_BUDGET;
 use crate::driver::lock::{acquire_at_with_retry, probe_at, run_lock_path, LockProbe};
 use crate::driverctl::serve::{hash8, valid_run_id, validate_run_dir, DRIVERS_REL};
 use crate::driverctl::store::{PushRecord, RunStore, EXTRA_PUSH, STATE_FILE};
+use crate::envelope::ledger::{record_and_check, CapVerdict, LedgerEntry};
 use crate::envelope::policy::{
     classify_push_ref, default_namespace, validate_namespace, EnvelopePolicy, PushVerdict,
     DEFAULT_NAMESPACE_ROOT, DEFAULT_PR_CAP_PER_24H, DEFAULT_PR_CAP_PER_RUN,
@@ -78,6 +79,9 @@ const GIT_FETCH: Duration = Duration::from_secs(120);
 
 /// The push to the remote (D-25: 300 s).
 const GIT_PUSH: Duration = Duration::from_secs(300);
+
+/// `gh pr create` (D-26).
+const GH_BUDGET: Duration = Duration::from_secs(120);
 
 /// What the push step did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -648,7 +652,126 @@ pub fn push_run(ctx: &PushContext, store: &mut RunStore) -> PushOutcome {
     if let Err(e) = store.record_push(&record) {
         eprintln!("driver push: the push succeeded but could not be recorded: {e}");
     }
+    if ctx.open_pr {
+        open_pull_request(ctx, store, &url, &dest, &branch);
+    }
     PushOutcome::Pushed { dest, sha: tip }
+}
+
+/// A pull-request URL as `gh pr create` prints it: one `https://` word.
+fn pr_url(stdout: &str) -> Option<String> {
+    let line = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    (line.starts_with("https://")
+        && line.len() <= 300
+        && !line.chars().any(|c| c.is_whitespace() || c.is_control()))
+    .then(|| line.to_owned())
+}
+
+/// Open at most one pull request for a push, with `gh` on the host (D-26).
+///
+/// Only called with `driver.open_pr` on. A remote that is not GitHub is skipped
+/// (`pr-skipped`). The attempt is recorded in the SAFE-06 ledger BEFORE
+/// `gh` starts and the cap's verdict decides whether it does: over the per-run or
+/// the rolling-window cap the PR is refused (`pr-refused`) and `gh` never starts.
+/// A ledger that cannot be used refuses too (fail closed). Every outcome is a LOG
+/// line; none of them changes whether the push itself succeeded.
+fn open_pull_request(
+    ctx: &PushContext,
+    store: &mut RunStore,
+    url: &str,
+    dest: &str,
+    base_branch: &str,
+) {
+    let Some(repo) = github_repo(url) else {
+        log_event(
+            store,
+            "pr-skipped",
+            vec![("reason", Some("not-github".to_owned()))],
+        );
+        return;
+    };
+    let entry = LedgerEntry {
+        at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        run_id: ctx.run_id.clone(),
+        command: "gh pr create".to_owned(),
+        platform: "github".to_owned(),
+    };
+    match record_and_check(&ctx.alias, &entry, &ctx.policy) {
+        Ok(CapVerdict::Permit { .. }) => {}
+        Ok(refusal @ CapVerdict::Refuse { reason, .. }) => {
+            log_event(
+                store,
+                "pr-refused",
+                vec![("reason", Some(reason.as_str().to_owned()))],
+            );
+            if let Some(detail) = refusal.refusal_detail() {
+                eprintln!("driver push: {detail}");
+            }
+            return;
+        }
+        Err(e) => {
+            log_event(
+                store,
+                "pr-refused",
+                vec![("reason", Some("ledger_unavailable".to_owned()))],
+            );
+            eprintln!("driver push: no pull request: the PR ledger is unusable: {e}");
+            return;
+        }
+    }
+
+    let head = dest.strip_prefix("refs/heads/").unwrap_or(dest);
+    let args: Vec<OsString> = [
+        "pr",
+        "create",
+        "--repo",
+        repo.as_str(),
+        "--head",
+        head,
+        "--base",
+        base_branch,
+        "--title",
+        &format!("gsd-mm driver run {}", ctx.run_id),
+        "--body",
+        &format!(
+            "Pushed by gsd-meta-manager driver run {} ({}).",
+            ctx.run_id, ctx.alias
+        ),
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
+    // From the launcher's own directory, never the driven checkout.
+    let ran = run_bounded_with_stderr(
+        "gh",
+        &args,
+        Some(&ctx.driver_root),
+        &[("GH_PROMPT_DISABLED", "1"), ("NO_COLOR", "1")],
+        GH_BUDGET,
+    );
+    let (created, detail) = match ran {
+        Some((out, _)) if out.status.success() => (
+            pr_url(&String::from_utf8_lossy(&out.stdout)),
+            "gh printed no pull-request URL".to_owned(),
+        ),
+        Some((_, line)) => (None, redact_urls(&line)),
+        None => (
+            None,
+            format!("gh did not start or did not finish within {GH_BUDGET:?}"),
+        ),
+    };
+    match created {
+        Some(pr) => {
+            if let Err(e) = store.record_pr(&pr) {
+                eprintln!("driver push: the pull request was opened but not recorded: {e}");
+            }
+        }
+        None => log_event(store, "pr-failed", vec![("detail", Some(detail))]),
+    }
 }
 
 /// `driver push`: the same step for a run whose launcher is gone.
@@ -867,6 +990,24 @@ mod tests {
         let mirror = prepare_mirror(root.path(), project.path()).expect("mirror");
         let pinned = git_mirror(&mirror, &["config", "--get", PUSH_URL_KEY], GIT_QUICK);
         assert!(!pinned.success, "{}", pinned.stdout);
+    }
+
+    #[test]
+    fn only_a_single_https_word_is_taken_for_a_pull_request_url() {
+        assert_eq!(
+            pr_url("Creating pull request...\nhttps://github.com/o/r/pull/7\n").as_deref(),
+            Some("https://github.com/o/r/pull/7")
+        );
+        for bad in [
+            "",
+            "\n",
+            "pull request created",
+            "http://x/1",
+            "https://a b",
+            "ftp://x",
+        ] {
+            assert_eq!(pr_url(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
