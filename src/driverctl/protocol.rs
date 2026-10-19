@@ -101,10 +101,14 @@ impl From<String> for Invalid {
 /// The `args` of a `log` request: the 17 argparse dests plus the report `body`.
 ///
 /// Every value is `Option<String>`: the spike client sent strings only, so a JSON
-/// number, bool or array is refused at the parse, and an unknown key is refused
-/// by `deny_unknown_fields`.
+/// number, bool or array is refused at the parse. An unknown key is refused too,
+/// by [`strict_object_or_null`] against [`LOG_ARG_KEYS`] and not by serde's
+/// `deny_unknown_fields`: the repository-wide guard
+/// `spawn_seam_guard::no_executable_line_in_src_opts_into_strict_unknown_field_rejection`
+/// (D-30) forbids that attribute anywhere under `src/`, and an explicit key list
+/// gives the same refusal without carving an exception into the guard.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct LogArgs {
     pub item: Option<String>,
     pub step: Option<String>,
@@ -127,10 +131,12 @@ pub struct LogArgs {
     pub body: Option<String>,
 }
 
-/// The eight fields the spike's hook client forwards from a Claude Code hook
-/// payload, plus the (truncated) dispatch prompt.
+/// The fields the spike's hook client forwards from a Claude Code hook payload:
+/// seven scalars plus the (truncated) dispatch prompt. Any other key is refused
+/// ([`HOOK_PAYLOAD_KEYS`]); the real payload's remaining fields are dropped by the
+/// hook client before they reach the socket.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct HookPayload {
     pub hook_event_name: Option<String>,
     pub session_id: Option<String>,
@@ -153,33 +159,92 @@ impl HookPayload {
     }
 }
 
-/// `null` or an object, else an error; `null` is the type's default (the spike's
-/// `r.get("args") or {}`). A bare array would otherwise deserialize as a tuple
-/// struct, which is not a thing this protocol allows.
-fn object_or_null<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+/// The keys `args` may carry: the argparse dests plus the report `body`.
+pub const LOG_ARG_KEYS: &[&str] = &[
+    "item",
+    "step",
+    "round",
+    "phase",
+    "status",
+    "done_when",
+    "evidence",
+    "state",
+    "rule",
+    "outcome",
+    "question",
+    "action",
+    "reason",
+    "found",
+    "mode",
+    "loop_mode",
+    "session",
+    "body",
+];
+
+/// The keys a hook `payload` may carry.
+pub const HOOK_PAYLOAD_KEYS: &[&str] = &[
+    "hook_event_name",
+    "session_id",
+    "agent_id",
+    "agent_type",
+    "tool_name",
+    "source",
+    "reason",
+    "prompt",
+];
+
+/// `null` or an object whose keys are all in `allowed`, else an error; `null` is
+/// the type's default (the spike's `r.get("args") or {}`). A bare array would
+/// otherwise deserialize as a tuple struct, which this protocol does not allow.
+fn strict_object_or_null<'de, D, T>(deserializer: D, allowed: &[&str]) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Default + DeserializeOwned,
 {
+    use serde::de::Error as _;
     match Value::deserialize(deserializer)? {
         Value::Null => Ok(T::default()),
-        object @ Value::Object(_) => serde_json::from_value(object).map_err(serde::de::Error::custom),
-        _ => Err(serde::de::Error::custom("expected an object or null")),
+        Value::Object(map) => {
+            if let Some(key) = map.keys().find(|k| !allowed.contains(&k.as_str())) {
+                return Err(D::Error::custom(format!(
+                    "unknown field `{}`, expected one of {}",
+                    key.escape_debug(),
+                    allowed.join(", ")
+                )));
+            }
+            serde_json::from_value(Value::Object(map)).map_err(D::Error::custom)
+        }
+        _ => Err(D::Error::custom("expected an object or null")),
     }
+}
+
+fn log_args_or_null<'de, D: Deserializer<'de>>(deserializer: D) -> Result<LogArgs, D::Error> {
+    strict_object_or_null(deserializer, LOG_ARG_KEYS)
+}
+
+fn hook_payload_or_null<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HookPayload, D::Error> {
+    strict_object_or_null(deserializer, HOOK_PAYLOAD_KEYS)
 }
 
 /// One request. An unknown `op` is a serde error, so it is refused like any other
 /// malformed request.
+///
+/// A request is parsed, handled and dropped on the same call, so the size gap
+/// between `Log` and `Show` costs nothing; boxing `LogArgs` would only make the
+/// public variant shape harder to match on.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
+#[allow(clippy::large_enum_variant)]
 pub enum Request {
     Log {
         event: String,
-        #[serde(default, deserialize_with = "object_or_null")]
+        #[serde(default, deserialize_with = "log_args_or_null")]
         args: LogArgs,
     },
     Hook {
-        #[serde(default, deserialize_with = "object_or_null")]
+        #[serde(default, deserialize_with = "hook_payload_or_null")]
         payload: HookPayload,
     },
     Show,
@@ -309,7 +374,11 @@ pub enum ValidatedEvent {
 
 /// A header value that is optional: absent or blank is `None`, anything else must
 /// pass [`one_line`].
-fn optional_line(name: &str, value: Option<&String>, limit: usize) -> Result<Option<String>, Invalid> {
+fn optional_line(
+    name: &str,
+    value: Option<&String>,
+    limit: usize,
+) -> Result<Option<String>, Invalid> {
     match value {
         Some(v) if !v.trim().is_empty() => Ok(Some(one_line(name, Some(v), limit)?)),
         _ => Ok(None),
@@ -723,7 +792,11 @@ mod tests {
         rejected("report", &[("item", "I-01"), ("status", "done")]);
         rejected(
             "report",
-            &[("item", "I-01"), ("status", "done"), ("body", "ok\u{1b}[31m")],
+            &[
+                ("item", "I-01"),
+                ("status", "done"),
+                ("body", "ok\u{1b}[31m"),
+            ],
         );
         // A tab is the one control character a report may carry.
         ok(

@@ -17,12 +17,20 @@
 use std::fs;
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
+use gsd_meta_manager::driver::direction::direction_lock;
 use gsd_meta_manager::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
 use gsd_meta_manager::driverctl::protocol::Response;
-use gsd_meta_manager::driverctl::store::{DriverSpec, LaunchSpec, RunStore, StoreError};
+use gsd_meta_manager::driverctl::store::{
+    CapLimits, DriverSpec, GateDecision, LaunchSpec, RunStore, StoreError, TerminalOutcome,
+    TerminalStatus,
+};
 use gsd_meta_manager::state_reader::driver_frontmatter::{
     parse_driver_frontmatter, ItemState, RunStatus,
 };
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
 use tempfile::TempDir;
 
 /// The human-owned DIRECTION body: two items, I-01 with a dispatch budget of 3.
@@ -112,7 +120,7 @@ fn expect_ok(r: &Response) {
 fn log_events(log: &str) -> Vec<String> {
     log.lines()
         .filter(|l| l.starts_with("- "))
-        .map(|l| l.splitn(2, " | ").nth(1).unwrap_or("").to_owned())
+        .map(|l| l.split_once(" | ").map_or("", |x| x.1).to_owned())
         .collect()
 }
 
@@ -530,7 +538,10 @@ fn dispatched_records_the_base_only_inside_a_repository() {
     );
 
     run_git(&fx.project, &["init", "-q"]);
-    run_git(&fx.project, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    run_git(
+        &fx.project,
+        &["commit", "-q", "--allow-empty", "-m", "base"],
+    );
     let head = run_git(&fx.project, &["rev-parse", "--short", "HEAD"]);
     log_ok(
         &mut store,
@@ -808,7 +819,10 @@ fn launcher_written_state_keys_survive_a_store_rewrite() {
     for key in ["auth", "cost", "active_seconds", "hook_dispatches"] {
         assert_eq!(after[key], before[key], "launcher key `{key}` changed");
     }
-    assert_eq!(after["items"]["I-01"]["findings"], before["items"]["I-01"]["findings"]);
+    assert_eq!(
+        after["items"]["I-01"]["findings"],
+        before["items"]["I-01"]["findings"]
+    );
     assert_eq!(after["caps"]["gap_rounds"], before["caps"]["gap_rounds"]);
     // The typed `Connection` writes its absent fields as explicit nulls where the
     // spike omitted them; every value that was present is unchanged.
@@ -888,4 +902,526 @@ fn show_returns_a_frontmatter_the_reader_parses() {
     let fm = parse_driver_frontmatter(&text).expect("show output parses");
     assert_eq!(fm.run_id, "r27");
     assert_eq!(fm.launches, 1);
+}
+
+// ---------------------------------------------------------------- hooks, gate, heartbeat, gaps, terminal
+
+/// 2026-09-21T06:13:20Z; any fixed instant would do.
+const T0: i64 = 1_790_000_000;
+
+const GATE_REQ: &str = r#"{"op":"hook","payload":{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s1","prompt":"do the thing"}}"#;
+const TASK_REQ: &str = r#"{"op":"hook","payload":{"hook_event_name":"PreToolUse","tool_name":"Task","session_id":"s1"}}"#;
+const NESTED_REQ: &str = r#"{"op":"hook","payload":{"hook_event_name":"PreToolUse","tool_name":"Task","agent_id":"sub-1","agent_type":"worker"}}"#;
+const HEARTBEAT_REQ: &str =
+    r#"{"op":"hook","payload":{"hook_event_name":"PostToolUse","tool_name":"Bash"}}"#;
+
+fn stamp(secs: i64) -> String {
+    DateTime::<Utc>::from_timestamp(secs, 0)
+        .unwrap()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
+fn open_clocked(fx: &Fixture, clock: &Arc<AtomicI64>) -> RunStore {
+    let lock = acquire_at_with_retry(
+        &run_lock_path(&fx.run_dir),
+        "r27",
+        std::process::id(),
+        ACQUIRE_RETRY_BUDGET,
+    )
+    .expect("run lock");
+    let c = Arc::clone(clock);
+    RunStore::open_with_clock(
+        &fx.run_dir,
+        &fx.project,
+        lock,
+        Box::new(move || DateTime::<Utc>::from_timestamp(c.load(Ordering::SeqCst), 0).unwrap()),
+    )
+    .expect("open store")
+}
+
+fn advance(clock: &Arc<AtomicI64>, to: i64) {
+    clock.store(to, Ordering::SeqCst);
+}
+
+#[test]
+fn only_driver_level_agent_dispatches_the_gate_allows_are_counted() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    // Three driver-logged dispatches must not move the cap counter (integrity).
+    for n in 0..3 {
+        log_ok(
+            &mut store,
+            "dispatched",
+            &[("item", "I-02"), ("step", &format!("step {n}"))],
+        );
+    }
+    assert_eq!(fx.state_json()["caps"]["dispatches"]["used"], 0);
+
+    let r = send(&mut store, GATE_REQ);
+    assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"ok":true}"#);
+    assert_eq!(fx.state_json()["hook_dispatches"], 1);
+    assert_eq!(fx.state_json()["caps"]["dispatches"]["used"], 1);
+
+    // A nested (subagent) payload never counts.
+    expect_ok(&send(&mut store, NESTED_REQ));
+    assert_eq!(fx.state_json()["hook_dispatches"], 1);
+
+    // `Task` counts like `Agent`.
+    expect_ok(&send(&mut store, TASK_REQ));
+    assert_eq!(fx.state_json()["hook_dispatches"], 2);
+    assert_eq!(fx.state_json()["caps"]["dispatches"]["used"], 2);
+
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.dispatch_audit.logged, 3, "driver-logged dispatches");
+    assert_eq!(fm.dispatch_audit.observed, 2, "hook-observed dispatches");
+    assert_eq!(fm.dispatch_audit.denied, 0);
+    assert_eq!(fm.caps.dispatches.used, 2);
+}
+
+#[test]
+fn a_denying_gate_counts_the_denial_logs_it_and_replies_deny() {
+    let fx = Fixture::new();
+    fs::write(
+        fx.run_dir.join("state.json"),
+        r#"{"run_id":"r27","caps":{"gap_rounds":{"limit":2,"per_phase":{"1":3}}}}"#,
+    )
+    .unwrap();
+    let mut store = fx.open();
+    type Seen = Vec<(Option<String>, u32)>;
+    let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    store.set_gate(Box::new(move |payload, state| {
+        let rounds = state
+            .caps
+            .gap_rounds
+            .per_phase
+            .get("1")
+            .copied()
+            .unwrap_or(0);
+        sink.lock()
+            .unwrap()
+            .push((payload.tool_name.clone(), rounds));
+        if rounds >= 3 {
+            GateDecision::Deny("cap".to_owned())
+        } else {
+            GateDecision::Allow
+        }
+    }));
+
+    let r = send(&mut store, GATE_REQ);
+    assert_eq!(
+        serde_json::to_string(&r).unwrap(),
+        r#"{"ok":true,"deny":"cap"}"#
+    );
+    // The gate was shown the run state, including the gap-round counts.
+    assert_eq!(*seen.lock().unwrap(), vec![(Some("Agent".to_owned()), 3)]);
+
+    let state = fx.state_json();
+    assert_eq!(state["denied_dispatches"], 1);
+    assert_eq!(state["hook_dispatches"], 0);
+    assert_eq!(state["caps"]["dispatches"]["used"], 0);
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        "RUN | dispatch-denied | reason=cap"
+    );
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.dispatch_audit.denied, 1);
+    assert_eq!(fm.dispatch_audit.observed, 0);
+
+    // A nested payload never reaches the gate.
+    expect_ok(&send(&mut store, NESTED_REQ));
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn session_start_and_end_maintain_the_driver_connection() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    expect_ok(&send(
+        &mut store,
+        r#"{"op":"hook","payload":{"hook_event_name":"SessionStart","session_id":"sess-1","source":"startup"}}"#,
+    ));
+    let driver = |s: &RunStore| {
+        s.state()
+            .connections
+            .iter()
+            .rev()
+            .find(|c| c.role == "driver")
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(driver(&store).session_id.as_deref(), Some("sess-1"));
+    assert!(driver(&store).last_heartbeat.is_some());
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        "RUN | connect | session=sess-1 | source=startup"
+    );
+
+    expect_ok(&send(
+        &mut store,
+        r#"{"op":"hook","payload":{"hook_event_name":"SessionEnd","session_id":"sess-1","reason":"other"}}"#,
+    ));
+    assert_eq!(driver(&store).state, "disconnected");
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        "RUN | disconnect | session=sess-1 | reason=other"
+    );
+}
+
+#[test]
+fn a_heartbeat_refreshes_the_driver_connection() {
+    let fx = Fixture::new();
+    let clock = Arc::new(AtomicI64::new(T0));
+    let mut store = open_clocked(&fx, &clock);
+    store.begin_launch(with_driver()).unwrap();
+    advance(&clock, T0 + 7);
+    expect_ok(&send(&mut store, HEARTBEAT_REQ));
+    let hb = store
+        .state()
+        .connections
+        .iter()
+        .find(|c| c.role == "driver")
+        .and_then(|c| c.last_heartbeat.clone());
+    assert_eq!(hb, Some(stamp(T0 + 7)));
+}
+
+#[test]
+fn heartbeats_rewrite_state_every_time_but_regenerate_direction_every_120_s() {
+    let fx = Fixture::new();
+    let clock = Arc::new(AtomicI64::new(T0));
+    let mut store = open_clocked(&fx, &clock);
+
+    // The first heartbeat has nothing to coalesce into: it regenerates.
+    expect_ok(&send(&mut store, HEARTBEAT_REQ));
+    let first = fx.read("DIRECTION.md");
+    assert!(first.starts_with("---\ngenerated_by: driverctl"), "{first}");
+
+    let mut previous_state = fx.read("state.json");
+    for offset in [1, 2, 30, 60, 119] {
+        advance(&clock, T0 + offset);
+        expect_ok(&send(&mut store, HEARTBEAT_REQ));
+        assert_eq!(
+            fx.read("DIRECTION.md"),
+            first,
+            "DIRECTION.md must not be regenerated at +{offset}s"
+        );
+        let state = fx.read("state.json");
+        assert_ne!(
+            state, previous_state,
+            "state.json must be rewritten at +{offset}s"
+        );
+        previous_state = state;
+    }
+
+    advance(&clock, T0 + 120);
+    expect_ok(&send(&mut store, HEARTBEAT_REQ));
+    let second = fx.read("DIRECTION.md");
+    assert_ne!(
+        second, first,
+        "a heartbeat 120 s after the last regen regenerates"
+    );
+
+    // Any other event regenerates immediately, however recently the last one was.
+    advance(&clock, T0 + 125);
+    log_ok(
+        &mut store,
+        "verified",
+        &[("item", "I-01"), ("done_when", "met"), ("evidence", "ok")],
+    );
+    let third = fx.read("DIRECTION.md");
+    assert_ne!(third, second);
+    assert!(third.contains("event: \"verified\""), "{third}");
+}
+
+#[test]
+fn a_heartbeat_at_119_s_is_coalesced_and_one_at_exactly_120_s_is_not() {
+    for (offset, regenerates) in [(119, false), (120, true)] {
+        let fx = Fixture::new();
+        let clock = Arc::new(AtomicI64::new(T0));
+        let mut store = open_clocked(&fx, &clock);
+        expect_ok(&send(&mut store, HEARTBEAT_REQ));
+        let first = fx.read("DIRECTION.md");
+        advance(&clock, T0 + offset);
+        expect_ok(&send(&mut store, HEARTBEAT_REQ));
+        assert_eq!(
+            fx.read("DIRECTION.md") != first,
+            regenerates,
+            "heartbeat at +{offset}s"
+        );
+    }
+}
+
+#[test]
+fn a_suppressed_heartbeat_is_flushed_once_the_window_has_passed() {
+    let fx = Fixture::new();
+    let clock = Arc::new(AtomicI64::new(T0));
+    let mut store = open_clocked(&fx, &clock);
+    assert!(!store.flush_heartbeat(), "nothing pending yet");
+
+    expect_ok(&send(&mut store, HEARTBEAT_REQ));
+    let first = fx.read("DIRECTION.md");
+    advance(&clock, T0 + 30);
+    expect_ok(&send(&mut store, HEARTBEAT_REQ));
+    assert_eq!(
+        fx.read("DIRECTION.md"),
+        first,
+        "the +30s heartbeat is coalesced"
+    );
+
+    advance(&clock, T0 + 100);
+    assert!(
+        !store.flush_heartbeat(),
+        "the window has not passed at +100s"
+    );
+    assert_eq!(fx.read("DIRECTION.md"), first);
+
+    advance(&clock, T0 + 150);
+    assert!(
+        store.flush_heartbeat(),
+        "the trailing flush regenerates once"
+    );
+    let flushed = fx.read("DIRECTION.md");
+    assert_ne!(flushed, first);
+    assert!(
+        flushed.contains(&format!("updated_at: \"{}\"", stamp(T0 + 30))),
+        "the flush carries the suppressed heartbeat's state:\n{flushed}"
+    );
+    assert!(!store.flush_heartbeat(), "a second flush has nothing to do");
+}
+
+fn put_verification(project: &std::path::Path, content: &str, mtime_secs: f64) {
+    let dir = project.join(".planning/phases/01-slugify");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("01-VERIFICATION.md");
+    fs::write(&path, content).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(UNIX_EPOCH + Duration::from_secs_f64(mtime_secs))
+        .unwrap();
+}
+
+#[test]
+fn scan_tick_observes_gap_rounds_from_disk_and_coalesces_rewrites() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store
+        .begin_launch(LaunchSpec {
+            launcher_mode: "standalone".to_owned(),
+            limits: CapLimits {
+                gap_rounds: Some(2),
+                ..CapLimits::default()
+            },
+            ..LaunchSpec::default()
+        })
+        .unwrap();
+    let file = ".planning/phases/01-slugify/01-VERIFICATION.md";
+    let base = 1_000_000.0;
+
+    put_verification(&fx.project, "---\nstatus: gaps_found\n---\nbody v1\n", base);
+    assert_eq!(store.scan_tick().unwrap(), 1);
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        &format!("RUN | gap-observed | phase=1 | count=1 | file={file} | source=driverctl-scan")
+    );
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.caps.gap_rounds.used, 1);
+    assert_eq!(fm.caps.gap_rounds.limit, Some(2));
+    assert_eq!(fm.caps.gap_rounds.phase.as_deref(), Some("1"));
+
+    // The verifier patches the file 6.5 s later: still one round.
+    put_verification(
+        &fx.project,
+        "---\nstatus: gaps_found\n---\nbody v2\n",
+        base + 6.5,
+    );
+    assert_eq!(store.scan_tick().unwrap(), 1);
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        &format!("RUN | gap-coalesced | phase=1 | count=1 | file={file}")
+    );
+    assert_eq!(fx.state_json()["caps"]["gap_rounds"]["per_phase"]["1"], 1);
+
+    // The same bytes again: nothing is written at all.
+    put_verification(
+        &fx.project,
+        "---\nstatus: gaps_found\n---\nbody v2\n",
+        base + 30.0,
+    );
+    let before = snapshot(&fx);
+    assert_eq!(store.scan_tick().unwrap(), 0);
+    assert_eq!(
+        before,
+        snapshot(&fx),
+        "a duplicate write must write nothing"
+    );
+
+    // A genuine second round, far from the anchor.
+    put_verification(
+        &fx.project,
+        "---\nstatus: gaps_found\n---\nbody v3\n",
+        base + 600.0,
+    );
+    assert_eq!(store.scan_tick().unwrap(), 1);
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        &format!("RUN | gap-observed | phase=1 | count=2 | file={file} | source=driverctl-scan")
+    );
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.caps.gap_rounds.used, 2);
+}
+
+#[test]
+fn set_terminal_records_the_launcher_verdict() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    let reason =
+        "driver ended its turn with a worker outstanding (dispatch I-01 has no report in LOG.md)";
+    let outcome = store.set_terminal(TerminalStatus::Stalled, reason).unwrap();
+    assert_eq!(outcome, TerminalOutcome::Applied);
+
+    let state = fx.state_json();
+    assert_eq!(state["status"], "stalled");
+    assert_eq!(state["status_reason"], reason);
+    assert!(store
+        .state()
+        .connections
+        .iter()
+        .all(|c| c.state == "disconnected"));
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        &format!("RUN | launch-end | status=stalled | reason={reason}")
+    );
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.status, RunStatus::Stalled);
+
+    // A reason that is not header-safe is cleaned, never able to forge an event.
+    let other = Fixture::new();
+    let mut store = other.open();
+    store.begin_launch(standalone()).unwrap();
+    store
+        .set_terminal(
+            TerminalStatus::Crashed,
+            "rc=1\n- 2026-01-01T00:00:00Z | RUN | end",
+        )
+        .unwrap();
+    let log = other.log();
+    assert_eq!(
+        log.lines().filter(|l| l.starts_with("- ")).count(),
+        2,
+        "launch + launch-end only:\n{log}"
+    );
+    assert_eq!(other.state_json()["status"], "crashed");
+}
+
+#[test]
+fn set_terminal_keeps_a_driver_run_end() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    log_ok(&mut store, "end", &[("reason", "all-done")]);
+    let before = snapshot(&fx);
+    let outcome = store
+        .set_terminal(
+            TerminalStatus::Crashed,
+            "driver exited rc=1 without RUN end",
+        )
+        .unwrap();
+    assert_eq!(outcome, TerminalOutcome::KeptDriverEnd);
+    assert_eq!(before, snapshot(&fx), "nothing may change");
+    assert_eq!(fx.state_json()["status"], "done");
+}
+
+#[test]
+fn no_request_can_set_crashed_or_stalled_or_rewrite_a_counter() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    let attempts: Vec<String> = vec![
+        r#"{"op":"set_terminal","status":"crashed","reason":"x"}"#.to_owned(),
+        r#"{"op":"terminal","status":"stalled"}"#.to_owned(),
+        r#"{"op":"state","status":"crashed"}"#.to_owned(),
+        log_req("end", &[("reason", "stalled")]),
+        log_req("end", &[("reason", "crashed")]),
+        log_req(
+            "status",
+            &[("item", "I-01"), ("state", "crashed"), ("outcome", "x")],
+        ),
+        log_req(
+            "status",
+            &[("item", "I-01"), ("state", "stalled"), ("outcome", "x")],
+        ),
+        log_req("start", &[("mode", "crashed")]),
+        log_req(
+            "recovered",
+            &[("item", "I-01"), ("action", "stalled"), ("reason", "x")],
+        ),
+        r#"{"op":"log","event":"start","args":{"mode":"headless","status":"crashed"}}"#.to_owned(),
+        r#"{"op":"log","event":"start","args":{"mode":"headless","hook_dispatches":"99"}}"#
+            .to_owned(),
+        r#"{"op":"log","event":"start","args":{"mode":"headless","caps":"x"}}"#.to_owned(),
+        r#"{"op":"hook","payload":{"hook_event_name":"crashed","reason":"stalled"}}"#.to_owned(),
+    ];
+    for request in &attempts {
+        // Some are refused and a few (a hook with a made-up event name) are plain
+        // heartbeats; none may change the status or a counter.
+        let _ = send(&mut store, request);
+        let state = store.state();
+        assert_eq!(state.status, RunStatus::Running, "after {request}");
+        assert!(!state.ended_by_driver, "after {request}");
+        assert_eq!(state.hook_dispatches, 0, "after {request}");
+        assert_eq!(state.denied_dispatches, 0, "after {request}");
+        assert_eq!(state.caps.dispatches.used, 0, "after {request}");
+    }
+}
+
+#[test]
+fn an_insane_body_is_logged_once_not_once_per_event() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(standalone()).unwrap();
+    fs::write(fx.run_dir.join("DIRECTION.md"), "# half saved\n").unwrap();
+    for found in ["1", "2", "3"] {
+        log_ok(&mut store, "reconcile", &[("found", found)]);
+    }
+    let count = |fx: &Fixture| {
+        log_events(&fx.log())
+            .iter()
+            .filter(|e| *e == "RUN | skipped-insane-body")
+            .count()
+    };
+    assert_eq!(count(&fx), 1, "{}", fx.log());
+    // The tool-health line did not become the run's last event.
+    assert_eq!(fx.state_json()["last_event"]["event"], "reconcile");
+
+    // The body is saved properly, then breaks again: a new transition, a new line.
+    fs::write(fx.run_dir.join("DIRECTION.md"), BODY).unwrap();
+    log_ok(&mut store, "reconcile", &[("found", "4")]);
+    assert_eq!(count(&fx), 1);
+    fs::write(fx.run_dir.join("DIRECTION.md"), "# half saved\n").unwrap();
+    log_ok(&mut store, "reconcile", &[("found", "5")]);
+    assert_eq!(count(&fx), 2);
+}
+
+#[test]
+fn a_held_direction_lock_is_logged_and_the_splice_proceeds() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    let _held = direction_lock(&fx.run_dir).expect("take DIRECTION.lock");
+    log_ok(&mut store, "reconcile", &[]);
+    assert!(
+        log_events(&fx.log()).contains(&"RUN | direction-lock-timeout".to_owned()),
+        "{}",
+        fx.log()
+    );
+    // The lock only serialises gsd-mm's own writers; the exchange-verify protects
+    // the human's bytes, so the frontmatter was still written.
+    assert!(fx
+        .read("DIRECTION.md")
+        .starts_with("---\ngenerated_by: driverctl"));
 }

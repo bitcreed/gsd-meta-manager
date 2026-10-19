@@ -47,13 +47,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tempfile::NamedTempFile;
 
-use super::counters::{worst_phase, GapRoundsState};
+use super::counters::{observe_gap, worst_phase, GapKind, GapRoundsState};
 use super::log;
-use super::protocol::{
-    self, HookPayload, Invalid, LogArgs, Request, Response, ValidatedEvent,
-};
+use super::protocol::{self, HookPayload, Invalid, LogArgs, Request, Response, ValidatedEvent};
+use super::scan::{scan_verifications, VerificationWrite};
 use crate::driver::direction::{
-    parse_direction, split_frontmatter, splice_frontmatter, DirectionInfo, DIRECTION_FILE,
+    parse_direction, splice_frontmatter, split_frontmatter, DirectionInfo, SpliceOutcome,
+    DIRECTION_FILE,
 };
 use crate::driver::lock::{LockHolder, RunLock};
 use crate::state_reader::driver_frontmatter::{
@@ -249,6 +249,16 @@ pub enum TerminalStatus {
     Stopped,
 }
 
+impl TerminalStatus {
+    fn run_status(self) -> RunStatus {
+        match self {
+            TerminalStatus::Crashed => RunStatus::Crashed,
+            TerminalStatus::Stalled => RunStatus::Stalled,
+            TerminalStatus::Stopped => RunStatus::Stopped,
+        }
+    }
+}
+
 /// What [`RunStore::set_terminal`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalOutcome {
@@ -260,10 +270,14 @@ pub enum TerminalOutcome {
 /// Why the store could not open or write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
-    Io { detail: String },
+    Io {
+        detail: String,
+    },
     /// `state.json` exists but does not parse. The store refuses to open rather
     /// than overwrite what it cannot read.
-    CorruptState { detail: String },
+    CorruptState {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for StoreError {
@@ -271,7 +285,10 @@ impl std::fmt::Display for StoreError {
         match self {
             StoreError::Io { detail } => write!(f, "run store I/O failed: {detail}"),
             StoreError::CorruptState { detail } => {
-                write!(f, "state.json is corrupt, refusing to overwrite it: {detail}")
+                write!(
+                    f,
+                    "state.json is corrupt, refusing to overwrite it: {detail}"
+                )
             }
         }
     }
@@ -312,10 +329,25 @@ impl LogEntry {
 fn header_safe(value: &str) -> String {
     let cleaned: String = value
         .chars()
-        .map(|c| if matches!(c, '\n' | '\r' | '|') || c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '|') || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
         .take(200)
         .collect();
     cleaned.trim().to_owned()
+}
+
+/// The latest connected driver connection, if any (spike `driver_conn`).
+fn driver_connection(state: &mut RunState) -> Option<&mut Connection> {
+    state
+        .connections
+        .iter_mut()
+        .rev()
+        .find(|c| c.role == "driver" && c.state == "connected")
 }
 
 fn host_name() -> Option<String> {
@@ -333,7 +365,24 @@ pub struct RunStore {
     /// Held for the store's whole life: dropping it releases the run lock.
     lock: RunLock,
     clock: Clock,
+    /// The Phase 28 dispatch gate; allows everything until one is installed.
+    gate: Gate,
     last_regen: Option<DateTime<Utc>>,
+    /// A heartbeat rewrote `state.json` but its regeneration was coalesced away.
+    heartbeat_pending: bool,
+    /// How the last splice ended, so a tool-health line is written once per
+    /// transition and not once per event.
+    last_splice: Option<SpliceOutcome>,
+}
+
+/// How a commit regenerates the DIRECTION.md frontmatter (D-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Regen {
+    /// Regenerate now.
+    Always,
+    /// A heartbeat: regenerate only when [`HEARTBEAT_REGEN_MIN_S`] has passed
+    /// since the last regeneration (or there has been none).
+    HeartbeatOnly,
 }
 
 impl RunStore {
@@ -378,8 +427,18 @@ impl RunStore {
             state,
             lock,
             clock,
+            gate: Box::new(|_, _| GateDecision::Allow),
             last_regen: None,
+            heartbeat_pending: false,
+            last_splice: None,
         })
+    }
+
+    /// Install the dispatch gate (D-26). Phase 28 installs its cap gate here; it
+    /// receives the hook payload and the run state, including
+    /// `caps.gap_rounds.per_phase`. The default allows every dispatch.
+    pub fn set_gate(&mut self, gate: Gate) {
+        self.gate = gate;
     }
 
     /// The run state as the store holds it.
@@ -428,7 +487,9 @@ impl RunStore {
                 .set_permissions(fs::Permissions::from_mode(0o644))
                 .map_err(io_err("chmod state temp"))?;
         }
-        tmp.as_file().sync_all().map_err(io_err("fsync state temp"))?;
+        tmp.as_file()
+            .sync_all()
+            .map_err(io_err("fsync state temp"))?;
         tmp.persist(self.run_dir.join(STATE_FILE))
             .map_err(|e| io_err("persist state.json")(e.error))?;
         Ok(())
@@ -437,7 +498,12 @@ impl RunStore {
     /// Append `entries` to LOG.md, commit `next` as the new state and regenerate
     /// the frontmatter. On an I/O failure before the commit the in-memory state is
     /// unchanged.
-    fn commit(&mut self, mut next: RunState, entries: &[LogEntry]) -> Result<(), StoreError> {
+    fn commit(
+        &mut self,
+        mut next: RunState,
+        entries: &[LogEntry],
+        regen: Regen,
+    ) -> Result<(), StoreError> {
         let now = self.now_string();
         if let Some(last) = entries.last() {
             let mut data = String::new();
@@ -455,8 +521,46 @@ impl RunStore {
         next.updated_at = now;
         self.write_state(&next)?;
         self.state = next;
-        self.regen();
+        match regen {
+            Regen::Always => {
+                self.regen();
+                self.heartbeat_pending = false;
+            }
+            Regen::HeartbeatOnly => {
+                if self.regen_due() {
+                    self.regen();
+                    self.heartbeat_pending = false;
+                } else {
+                    self.heartbeat_pending = true;
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Whether [`HEARTBEAT_REGEN_MIN_S`] has passed since the last regeneration
+    /// (or there has been none). `>=`, as in the spike: exactly 120 s regenerates.
+    fn regen_due(&self) -> bool {
+        let now = (self.clock)();
+        self.last_regen
+            .is_none_or(|last| (now - last).num_milliseconds() >= HEARTBEAT_REGEN_MIN_S * 1000)
+    }
+
+    /// The trailing flush of a coalesced heartbeat (Pitfall 6 `[inferred - audit]`).
+    ///
+    /// A heartbeat that rewrote `state.json` but not `DIRECTION.md` would leave the
+    /// frontmatter's heartbeat age growing past `heartbeat_stale_after_s` while the
+    /// real heartbeat is fresh. The launcher's ticker calls this: when a heartbeat
+    /// was suppressed and [`HEARTBEAT_REGEN_MIN_S`] has passed since the last
+    /// regeneration, it regenerates once. Returns whether it regenerated, so the
+    /// "at most one regeneration per 120 s" rule still holds.
+    pub fn flush_heartbeat(&mut self) -> bool {
+        if !self.heartbeat_pending || !self.regen_due() {
+            return false;
+        }
+        self.regen();
+        self.heartbeat_pending = false;
+        true
     }
 
     // -- frontmatter
@@ -557,9 +661,44 @@ impl RunStore {
         }
         let text = self.frontmatter_text();
         // A lost race or an insane body is not this request's failure: the event
-        // is already durable in LOG.md and state.json.
-        let _report = splice_frontmatter(&self.run_dir, &text);
+        // is already durable in LOG.md and state.json. It is surfaced as a
+        // tool-health line instead (below).
+        let report = splice_frontmatter(&self.run_dir, &text);
         self.last_regen = Some((self.clock)());
+
+        // An I/O fault in the splice is treated like a lost race: the human's
+        // bytes stand and the next event retries.
+        let (outcome, lock_timed_out) = match report {
+            Ok(r) => (r.outcome, r.lock_timed_out),
+            Err(_) => (SpliceOutcome::GaveUp, false),
+        };
+        let mut health = Vec::new();
+        if lock_timed_out {
+            health.push(LogEntry::run("direction-lock-timeout", Vec::new()));
+        }
+        // `[inferred - audit]` once per transition into a bad outcome, so a
+        // heartbeat flood against a half-saved body cannot spam LOG.md.
+        if self.last_splice != Some(outcome) {
+            match outcome {
+                SpliceOutcome::SkippedInsaneBody => {
+                    health.push(LogEntry::run("skipped-insane-body", Vec::new()));
+                }
+                SpliceOutcome::GaveUp => {
+                    health.push(LogEntry::run("splice-gave-up", Vec::new()));
+                }
+                SpliceOutcome::Ok | SpliceOutcome::NoDirection => {}
+            }
+        }
+        self.last_splice = Some(outcome);
+        if !health.is_empty() {
+            let now = self.now_string();
+            let data: String = health
+                .iter()
+                .map(|e| log::format_line(&now, &e.item, e.event, &e.kv, &e.detail))
+                .collect();
+            // Tool-health lines are best effort and do not update `last_event`.
+            let _ = log::append(&self.log_path(), &data);
+        }
     }
 
     // -- launch
@@ -646,7 +785,7 @@ impl RunStore {
                 ("model", model),
             ],
         ));
-        self.commit(next, &entries)
+        self.commit(next, &entries, Regen::Always)
     }
 
     // -- requests
@@ -657,7 +796,7 @@ impl RunStore {
         match request {
             Request::Show => Response::frontmatter(self.frontmatter_text()),
             Request::Log { event, args } => self.handle_log(&event, &args),
-            Request::Hook { .. } => Response::rejected("hook is not supported yet"),
+            Request::Hook { payload } => self.handle_hook(&payload),
         }
     }
 
@@ -692,10 +831,202 @@ impl RunStore {
         let now = self.now_string();
         let mut next = self.state.clone();
         let entry = apply_event(&mut next, validated, &now, budget, base);
-        match self.commit(next, &[entry]) {
+        match self.commit(next, &[entry], Regen::Always) {
             Ok(()) => Response::ok(),
             Err(e) => Response::rejected(format!("internal: {e}")),
         }
+    }
+
+    /// A Claude Code hook payload (spike `op_hook`).
+    ///
+    /// A driver-level dispatch (`PreToolUse` of `Agent`/`Task` without an
+    /// `agent_id`, D-10) is put to the Gate: allowed, it counts toward
+    /// `hook_dispatches` and `caps.dispatches.used`; denied, it counts toward
+    /// `denied_dispatches`, logs `dispatch-denied` and is answered with `deny`.
+    /// `SessionStart`/`SessionEnd` maintain the driver connection. Everything else
+    /// is a heartbeat: `state.json` is rewritten, `DIRECTION.md` at most once per
+    /// [`HEARTBEAT_REGEN_MIN_S`] (D-11).
+    fn handle_hook(&mut self, payload: &HookPayload) -> Response {
+        if let Err(Invalid(message)) = protocol::validate_hook(payload) {
+            return Response::rejected(message);
+        }
+        let now = self.now_string();
+        let mut next = self.state.clone();
+        let mut entries = Vec::new();
+        let mut regen = Regen::HeartbeatOnly;
+        let mut reply = Response::ok();
+
+        let has_driver = driver_connection(&mut next).is_some_and(|c| {
+            c.last_heartbeat = Some(now.clone());
+            true
+        });
+        let session = payload
+            .session_id
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_owned());
+        let optional = |v: &Option<String>| {
+            v.as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_owned())
+        };
+
+        match payload.hook_event_name.as_deref() {
+            Some("SessionStart") if has_driver => {
+                if let Some(c) = driver_connection(&mut next) {
+                    c.session_id = payload.session_id.clone();
+                }
+                entries.push(LogEntry::run(
+                    "connect",
+                    vec![("session", session), ("source", optional(&payload.source))],
+                ));
+                regen = Regen::Always;
+            }
+            Some("SessionEnd") => {
+                if let Some(c) = driver_connection(&mut next) {
+                    c.state = "disconnected".to_owned();
+                }
+                entries.push(LogEntry::run(
+                    "disconnect",
+                    vec![("session", session), ("reason", optional(&payload.reason))],
+                ));
+                regen = Regen::Always;
+            }
+            _ if payload.is_gate() => {
+                match (self.gate)(payload, &self.state) {
+                    GateDecision::Allow => {
+                        next.hook_dispatches = next.hook_dispatches.saturating_add(1);
+                        next.caps.dispatches.used = next.hook_dispatches;
+                    }
+                    GateDecision::Deny(reason) => {
+                        next.denied_dispatches = next.denied_dispatches.saturating_add(1);
+                        let logged = log::one_line("reason", Some(&reason), 200)
+                            .unwrap_or_else(|_| "launcher cap".to_owned());
+                        entries.push(LogEntry::run(
+                            "dispatch-denied",
+                            vec![("reason", Some(logged))],
+                        ));
+                        reply = Response::deny(reason);
+                    }
+                }
+                regen = Regen::Always;
+            }
+            _ => {}
+        }
+
+        match self.commit(next, &entries, regen) {
+            Ok(()) => reply,
+            // A denial is enforced even if it could not be recorded.
+            Err(_) if reply.deny.is_some() => reply,
+            Err(e) => Response::rejected(format!("internal: {e}")),
+        }
+    }
+
+    // -- launcher-side observation (no wire op reaches these)
+
+    /// Feed one on-disk `gaps_found` VERIFICATION.md write to the gap-round
+    /// counter (D-09, D-26).
+    ///
+    /// A new round logs `RUN | gap-observed | phase | count | file |
+    /// source=driverctl-scan`, a coalesced re-write logs `RUN | gap-coalesced`, and
+    /// an already-seen digest writes nothing. Launcher-side only: a count is never
+    /// derived from anything the driver sends.
+    pub fn observe_verification(
+        &mut self,
+        write: &VerificationWrite,
+    ) -> Result<GapKind, StoreError> {
+        let mut next = self.state.clone();
+        let (kind, count) = observe_gap(
+            &mut next.caps.gap_rounds,
+            &write.phase,
+            write.mtime,
+            &write.digest,
+            Some(&write.file),
+        );
+        let phase = Some(header_safe(&write.phase));
+        let file = Some(header_safe(&write.file));
+        let entry = match kind {
+            GapKind::Duplicate => return Ok(kind),
+            GapKind::New => LogEntry::run(
+                "gap-observed",
+                vec![
+                    ("phase", phase),
+                    ("count", Some(count.to_string())),
+                    ("file", file),
+                    ("source", Some("driverctl-scan".to_owned())),
+                ],
+            ),
+            GapKind::Coalesced => LogEntry::run(
+                "gap-coalesced",
+                vec![
+                    ("phase", phase),
+                    ("count", Some(count.to_string())),
+                    ("file", file),
+                ],
+            ),
+        };
+        self.commit(next, &[entry], Regen::Always)?;
+        Ok(kind)
+    }
+
+    /// One scan of the project's VERIFICATION.md files through
+    /// [`observe_verification`](Self::observe_verification); returns how many
+    /// observations changed the counter state (new or coalesced).
+    pub fn scan_tick(&mut self) -> Result<usize, StoreError> {
+        let mut changed = 0;
+        for write in scan_verifications(&self.project) {
+            if self.observe_verification(&write)? != GapKind::Duplicate {
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Record the launcher's verdict on how a launch ended (D-06, D-17).
+    ///
+    /// **Launcher-side only; there is no op, event or argument that reaches this
+    /// from the socket**, so the sandboxed driver cannot forge a `crashed` or
+    /// `stalled` classification. Phase 28 calls it at launch end after
+    /// [`counters::classify_exit`](super::counters::classify_exit) returns `Some`,
+    /// which already yields `None` for a tripped cap or a driver `RUN end`. As a
+    /// second line of defence, a driver `RUN end` on record is kept untouched
+    /// ([`TerminalOutcome::KeptDriverEnd`]).
+    ///
+    /// Marks connected connections `disconnected` and logs `RUN | launch-end |
+    /// status | reason`.
+    pub fn set_terminal(
+        &mut self,
+        status: TerminalStatus,
+        reason: &str,
+    ) -> Result<TerminalOutcome, StoreError> {
+        if self.state.ended_by_driver {
+            return Ok(TerminalOutcome::KeptDriverEnd);
+        }
+        let reason = log::one_line("reason", Some(reason), 200).unwrap_or_else(|_| {
+            let cleaned = header_safe(reason);
+            if cleaned.is_empty() {
+                "unspecified".to_owned()
+            } else {
+                cleaned
+            }
+        });
+        let mut next = self.state.clone();
+        next.status = status.run_status();
+        next.status_reason = Some(reason.clone());
+        for c in &mut next.connections {
+            if c.state == "connected" {
+                c.state = "disconnected".to_owned();
+            }
+        }
+        let entry = LogEntry::run(
+            "launch-end",
+            vec![
+                ("status", Some(next.status.as_str().to_owned())),
+                ("reason", Some(reason)),
+            ],
+        );
+        self.commit(next, &[entry], Regen::Always)?;
+        Ok(TerminalOutcome::Applied)
     }
 
     /// `git rev-parse --short HEAD` in the project, or `None` (not a repo, a
@@ -801,10 +1132,7 @@ fn apply_event(
         } => LogEntry {
             item,
             event: "verified",
-            kv: vec![
-                ("done-when", Some(done_when)),
-                ("evidence", Some(evidence)),
-            ],
+            kv: vec![("done-when", Some(done_when)), ("evidence", Some(evidence))],
             detail: Vec::new(),
         },
         ValidatedEvent::Status {
