@@ -78,11 +78,17 @@ pub fn observe_gap(
     file: Option<&str>,
 ) -> (GapKind, u32) {
     let count = state.per_phase.get(phase).copied().unwrap_or(0);
-    if state.seen.contains_key(digest) {
+    // WR-07 `[inferred - audit]`: a digest is "seen" per phase. Two phases whose
+    // VERIFICATION.md bytes are identical (a stub, a template) hash identically, and
+    // keying by digest alone counted only the first phase's round. Keys are
+    // `<phase>:<digest>`; a spike-layout key (the bare digest) still counts as seen
+    // for the phase it records, so an older `state.json` is not double counted.
+    let key = format!("{phase}:{digest}");
+    if state.seen.contains_key(&key) || state.seen.get(digest).is_some_and(|w| w.phase == phase) {
         return (GapKind::Duplicate, count);
     }
     state.seen.insert(
-        digest.to_owned(),
+        key,
         SeenWrite {
             phase: phase.to_owned(),
             file: file.map(str::to_owned),
@@ -476,6 +482,49 @@ mod tests {
         assert_eq!(old, [1, 2, 3]);
         assert_eq!(new, [1, 2]);
         assert_eq!(coalesced, 1);
+    }
+
+    #[test]
+    fn wr07_identical_bytes_in_two_phases_are_two_rounds() {
+        let mut st = GapRoundsState::default();
+        // Phase 1 and phase 2 each carry the same stub, far apart in time.
+        assert_eq!(
+            observe_gap(&mut st, "1", 1000.0, "stubdigest", Some("a")),
+            (GapKind::New, 1)
+        );
+        assert_eq!(
+            observe_gap(&mut st, "2", 2000.0, "stubdigest", Some("b")),
+            (GapKind::New, 1),
+            "phase 2's round must not collapse into phase 1's"
+        );
+        // Re-scanning both on the next tick moves nothing, in either order.
+        assert_eq!(
+            observe_gap(&mut st, "1", 1000.0, "stubdigest", Some("a")),
+            (GapKind::Duplicate, 1)
+        );
+        assert_eq!(
+            observe_gap(&mut st, "2", 2000.0, "stubdigest", Some("b")),
+            (GapKind::Duplicate, 1)
+        );
+        assert_eq!(st.per_phase.get("1"), Some(&1));
+        assert_eq!(st.per_phase.get("2"), Some(&1));
+    }
+
+    #[test]
+    fn wr07_a_spike_layout_seen_key_is_still_a_duplicate_for_its_phase() {
+        let mut st: GapRoundsState = serde_json::from_str(
+            r#"{"per_phase":{"1":1},"seen":{"abc":{"phase":"1","file":"f"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            observe_gap(&mut st, "1", 5000.0, "abc", Some("f")),
+            (GapKind::Duplicate, 1)
+        );
+        // The same digest under another phase is a fresh observation.
+        assert_eq!(
+            observe_gap(&mut st, "2", 5000.0, "abc", Some("g")),
+            (GapKind::New, 1)
+        );
     }
 
     #[test]
