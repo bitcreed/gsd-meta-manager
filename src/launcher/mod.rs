@@ -48,8 +48,12 @@
 //!
 //! # What this module root leaves to later plans
 //!
-//! The caps' enforcement (28-05), auth onboarding (28-06), the push step (28-07)
-//! and the TUI (28-08).
+//! Auth onboarding (28-06), the push step (28-07) and the TUI (28-08).
+//!
+//! 11. **The hard caps are enforced from outside the sandbox (28-05, D-12..D-16).**
+//!     [`gate`] is the pure dispatch/gap-round decision installed on the embedded
+//!     store; the monitor in [`run`] trips and kills (wall clock, gap rounds) and
+//!     persists the active seconds.
 
 pub mod sandbox;
 
@@ -57,6 +61,8 @@ pub mod sandbox;
 pub mod auth;
 #[cfg(target_os = "linux")]
 pub mod config_dir;
+#[cfg(target_os = "linux")]
+pub mod gate;
 #[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(target_os = "linux")]
@@ -98,6 +104,9 @@ pub enum LauncherError {
     /// `claude` is absent or older than the hook `onFailure` minimum (D-28); refused
     /// in both modes.
     ClaudeVersion { detail: String },
+    /// The run's active wall-clock cap is already used up (D-13): nothing was
+    /// written and no driver was started.
+    CapExhausted { detail: String },
 }
 
 impl LauncherError {
@@ -132,6 +141,7 @@ impl std::fmt::Display for LauncherError {
                 missing.join(", ")
             ),
             LauncherError::ClaudeVersion { detail } => write!(f, "claude version: {detail}"),
+            LauncherError::CapExhausted { detail } => write!(f, "cap exhausted: {detail}"),
             LauncherError::DaemonExited { code, detail } => {
                 write!(
                     f,
@@ -208,6 +218,9 @@ mod tests {
                 missing: vec!["bwrap".to_owned()],
             },
             LauncherError::ClaudeVersion {
+                detail: "x".to_owned(),
+            },
+            LauncherError::CapExhausted {
                 detail: "x".to_owned(),
             },
         ] {

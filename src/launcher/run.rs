@@ -30,9 +30,16 @@
 //!
 //! [`launch`] runs in the foreground of the caller; [`launch_detached`] (the
 //! default of `driver launch`, D-04) re-executes this binary as a daemon in its
-//! own session and returns once that daemon holds the run lock. The caps'
-//! enforcement is 28-05; the limits are recorded here, through
-//! [`LaunchSpec::limits`], so `caps.*.limit` already shows them.
+//! own session and returns once that daemon holds the run lock.
+//!
+//! The hard caps (28-05, D-12..D-14) are enforced from here, outside the sandbox:
+//! the dispatch / gap-round [`CapGate`] is installed on the store before the first
+//! launch, and [`CapMonitor`] runs after every tick of [`wait_ticking`]. It sums the
+//! scope-alive seconds across launches (`extra.active_seconds`, shown as
+//! `caps.wall_clock_min.used`), and on `active > limit * 60` or a gap count of
+//! `limit + 2` it marks the cap tripped (so the gate denies from that instant),
+//! commits `cap-tripped` and only then stops the containment. Each sandboxed launch
+//! also carries `RuntimeMaxSec = ceil(remaining) + 300` as the backstop.
 
 use std::ffi::OsString;
 use std::fs;
@@ -51,6 +58,7 @@ use serde_json::Value;
 
 use super::auth::resolve_launch_token;
 use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec};
+use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::host::{decide, detect, Posture};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::sandbox::{
@@ -70,7 +78,8 @@ use crate::driverctl::serve::{
     tick_once, valid_run_id, validate_run_dir, EmbeddedServer, DRIVERS_REL, STALE_TEMP_AGE, TICK,
 };
 use crate::driverctl::store::{
-    CapLimits, DriverSpec, LaunchSpec, RunStore, TerminalOutcome, TerminalStatus, LOG_FILE,
+    CapLimits, DriverSpec, LaunchSpec, RunState, RunStore, TerminalOutcome, TerminalStatus,
+    EXTRA_ACTIVE_SECONDS, LOG_FILE, STATE_FILE,
 };
 use crate::error::LockError;
 use crate::state_reader::driver_frontmatter::RunStatus;
@@ -101,6 +110,13 @@ const DETACH_POLL: Duration = Duration::from_millis(100);
 
 /// How many lines of `launcher.log` a failed detach reports.
 const DETACH_LOG_LINES: usize = 20;
+
+/// `RuntimeMaxSec` is the remaining active wall clock plus this grace (spike value,
+/// D-13): the monitor trips first, the systemd backstop only matters if it died.
+const RUNTIME_MAX_GRACE_S: u64 = 300;
+
+/// The monitor writes the summed active seconds at most this often (D-13).
+const ACTIVE_PERSIST_EVERY: Duration = Duration::from_secs(15);
 
 /// A stream-json line longer than this is skipped when looking for the result.
 const MAX_STREAM_LINE: u64 = 4 * 1024 * 1024;
@@ -136,7 +152,8 @@ pub struct LaunchOptions {
     pub model: String,
     pub loop_mode: LoopMode,
     pub max_budget_usd: f64,
-    /// The caps to record on the run (D-12..D-14); enforcement is 28-05's.
+    /// The hard caps (D-12..D-14): recorded on the run, enforced by [`CapGate`] and
+    /// [`CapMonitor`].
     pub limits: CapLimits,
     /// `--unsandboxed` (D-29): run the driver as a supervised process group with no
     /// `bwrap` and no scope. Per launch; there is no config default.
@@ -243,6 +260,8 @@ struct LaunchContext {
     user_stop: Arc<AtomicBool>,
     /// How the driver is contained, decided once from the host probes (D-28).
     posture: Posture,
+    /// The cap the monitor has tripped, shared with the store's gate (D-12, T-28-15).
+    tripped: Tripped,
 }
 
 /// What holds a launch's processes together, and so what stopping it means.
@@ -364,12 +383,16 @@ struct Exited {
     result_ok: bool,
     /// The launcher stopped it because the user asked (`driver stop`).
     user_stopped: bool,
+    /// The cap the monitor tripped (and so killed the driver for), if any.
+    tripped: Option<String>,
 }
 
 /// How the wait on the driver child ended.
 struct Waited {
     status: std::process::ExitStatus,
     user_stopped: bool,
+    /// The monitor tripped this cap and stopped the containment.
+    tripped: Option<String>,
 }
 
 /// Run one headless driver for `opts.run_id` and block until it ends.
@@ -404,6 +427,9 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     // D-28: the host probes, after every refusal that needs no process and before
     // the lock, so a host that cannot sandbox writes nothing.
     let posture = decide(&detect(), opts.unsandboxed)?;
+    // D-13: a run whose active wall clock is used up is refused before anything is
+    // written, the lock file included.
+    check_wall_clock_budget(&run_dir, &opts.limits)?;
 
     // D-07: the run lock first. Nothing below writes before this.
     let lock = acquire_at_with_retry(
@@ -459,6 +485,12 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         return Err(io_error("seed the per-run config directory", e));
     }
 
+    // D-12, D-14: the gate is installed before the first spawn, so no dispatch is ever
+    // decided by the default allow-all gate. The marker is shared with the monitor.
+    let tripped = new_tripped();
+    lock_store(&session.store)
+        .set_gate(CapGate::new(opts.limits.clone(), Tripped::clone(&tripped)).into_gate());
+
     let ctx = LaunchContext {
         opts,
         template,
@@ -472,6 +504,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         home,
         user_stop,
         posture,
+        tripped,
     };
     let mut session = session;
     loop {
@@ -517,6 +550,14 @@ fn run_one_launch(
     let unit = scope_unit_name(&ctx.run_id, &hash8(&ctx.run_dir), n);
     let scope = format!("{unit}.scope");
 
+    // D-13: the active seconds the earlier launches used, and what is left of the
+    // cap. A relaunch that finds nothing left is the cap tripping between launches.
+    let prior_active = active_seconds(lock_store(&session.store).state());
+    let remaining = wall_clock_remaining(ctx.opts.limits.wall_clock_min, prior_active);
+    if exhausted(remaining) {
+        return trip_between_launches(session, ctx, prior_active);
+    }
+
     // A degraded launch has no scope to name.
     let scope_unit = match ctx.posture {
         Posture::BwrapScope => Some(scope.clone()),
@@ -534,7 +575,11 @@ fn run_one_launch(
         sandbox_missing: ctx.posture.missing().to_vec(),
     })?;
 
-    match supervise(session, ctx, n, &unit, &scope) {
+    let budget = Budget {
+        prior_active,
+        remaining,
+    };
+    match supervise(session, ctx, n, &unit, &scope, &budget) {
         Ok(exited) => finish_launch(session, ctx, &exited),
         Err(e) => {
             // No request writes to the store past this point.
@@ -577,6 +622,202 @@ fn finish_launch(
     // No request writes to the store past this point.
     session.stop_serving();
     record_end(session, ctx, exited)?;
+    Ok(AfterLaunch::Finished)
+}
+
+// ---------------------------------------------------------------- hard caps (28-05)
+
+/// What one launch knows about the active wall clock when it starts (D-13).
+struct Budget {
+    /// Active seconds the earlier launches of the run used.
+    prior_active: f64,
+    /// What is left of the wall-clock cap, or `None` without one.
+    remaining: Option<f64>,
+}
+
+/// The active seconds the run has used so far (`extra.active_seconds`): `0` when
+/// absent, negative or not a finite number.
+fn active_seconds(state: &RunState) -> f64 {
+    state
+        .extra
+        .get(EXTRA_ACTIVE_SECONDS)
+        .and_then(Value::as_f64)
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+        .unwrap_or(0.0)
+}
+
+/// Seconds of wall clock left under `limit_min` after `prior_active` seconds, or
+/// `None` without a limit. May be zero, negative or NaN: a caller refuses on
+/// `is_nan() || <= 0`.
+fn wall_clock_remaining(limit_min: Option<f64>, prior_active: f64) -> Option<f64> {
+    limit_min.map(|minutes| minutes * 60.0 - prior_active)
+}
+
+fn exhausted(remaining: Option<f64>) -> bool {
+    remaining.is_some_and(|left| left.is_nan() || left <= 0.0)
+}
+
+/// `RuntimeMaxSec` for a scope with `remaining` seconds of wall clock left: the
+/// seconds rounded UP, plus [`RUNTIME_MAX_GRACE_S`] (D-13).
+fn runtime_max_sec(remaining: f64) -> u64 {
+    // `as` saturates, and a NaN is 0.
+    (remaining.ceil() as u64).saturating_add(RUNTIME_MAX_GRACE_S)
+}
+
+/// The wall-clock minutes as `caps.wall_clock_min.used` shows them: one decimal,
+/// half away from zero. Display only; the cap compares unrounded seconds.
+fn display_minutes(active_secs: f64) -> f64 {
+    (active_secs / 60.0 * 10.0).round() / 10.0
+}
+
+/// Refuse a launch whose run has no active wall clock left, before anything is
+/// written (D-13): reads `state.json` directly, without the lock or the store.
+fn check_wall_clock_budget(run_dir: &Path, limits: &CapLimits) -> Result<(), LauncherError> {
+    let Some(minutes) = limits.wall_clock_min else {
+        return Ok(());
+    };
+    let used = fs::read(run_dir.join(STATE_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|state| state.get(EXTRA_ACTIVE_SECONDS).and_then(Value::as_f64))
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+        .unwrap_or(0.0);
+    if exhausted(wall_clock_remaining(Some(minutes), used)) {
+        return Err(LauncherError::CapExhausted {
+            detail: format!(
+                "the run has used {} of its {minutes} active wall-clock minutes; raise \
+                 --cap-minutes to continue it",
+                display_minutes(used)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Which cap the run has crossed, if any: `(cap, used, limit)` as the
+/// `cap-tripped` line prints them. Pure; the wall clock is decided first (spike
+/// order), on unrounded seconds, and only one cap is ever returned.
+///
+/// * `wall_clock_min`: `active > limit * 60` (exactly the limit does not trip);
+/// * `gap_rounds`: the worst phase's count `>= limit + 2` (the deny at `limit + 1`
+///   is the gate's, D-14).
+fn decide_trip(
+    limits: &CapLimits,
+    active_secs: f64,
+    worst_gap: u32,
+) -> Option<(&'static str, String, String)> {
+    if let Some(minutes) = limits.wall_clock_min {
+        if active_secs > minutes * 60.0 {
+            return Some((
+                "wall_clock_min",
+                display_minutes(active_secs).to_string(),
+                minutes.to_string(),
+            ));
+        }
+    }
+    if let Some(gl) = limits.gap_rounds {
+        if worst_gap >= gl.saturating_add(2) {
+            return Some(("gap_rounds", worst_gap.to_string(), gl.to_string()));
+        }
+    }
+    None
+}
+
+/// The highest gap-round count of any phase (the Phase 27 counter), or `0`.
+fn worst_gap_count(state: &RunState) -> u32 {
+    state
+        .caps
+        .gap_rounds
+        .per_phase
+        .values()
+        .copied()
+        .max()
+        .unwrap_or(0)
+}
+
+/// The cap monitor of one launch (D-13, D-14): sums the active seconds, persists
+/// them, and trips a cap at most once.
+struct CapMonitor {
+    limits: CapLimits,
+    tripped: Tripped,
+    prior_active: f64,
+    started: Instant,
+    last_persist: Instant,
+}
+
+impl CapMonitor {
+    fn new(limits: CapLimits, tripped: Tripped, prior_active: f64) -> Self {
+        let now = Instant::now();
+        CapMonitor {
+            limits,
+            tripped,
+            prior_active,
+            started: now,
+            last_persist: now,
+        }
+    }
+
+    /// Active seconds so far: the earlier launches' plus this launch's scope-alive time.
+    fn active_seconds(&self) -> f64 {
+        self.prior_active + self.started.elapsed().as_secs_f64()
+    }
+
+    /// Write the active seconds to the store (best effort: a failed write is
+    /// reported and the next one retries).
+    fn persist(&mut self, session: &Session) {
+        let secs = self.active_seconds();
+        if let Err(e) = lock_store(&session.store).record_active_seconds(secs) {
+            eprintln!("driver launch: could not record the active seconds: {e}");
+        }
+        self.last_persist = Instant::now();
+    }
+
+    /// Persist when due, then look at the caps. On a trip the order is the
+    /// decision: the marker first (the gate denies from that instant), then
+    /// `cap-tripped` under the store mutex; the CALLER stops the containment. A
+    /// second trip in the same run is a no-op, so several caps crossing on one
+    /// tick produce one line and one stop.
+    fn after_tick(&mut self, session: &Session) -> Option<String> {
+        if self.last_persist.elapsed() >= ACTIVE_PERSIST_EVERY {
+            self.persist(session);
+        }
+        if tripped_cap(&self.tripped).is_some() {
+            return None;
+        }
+        let active = self.active_seconds();
+        let worst = worst_gap_count(lock_store(&session.store).state());
+        let (cap, used, limit) = decide_trip(&self.limits, active, worst)?;
+        if !trip(&self.tripped, cap) {
+            return None;
+        }
+        let mut store = lock_store(&session.store);
+        if let Err(e) = store.record_active_seconds(active) {
+            eprintln!("driver launch: could not record the active seconds: {e}");
+        }
+        // The kill is enforced even if the record could not be written.
+        if let Err(e) = store.trip_cap(cap, &used, &limit) {
+            eprintln!("driver launch: could not record cap-tripped: {e}");
+        }
+        Some(cap.to_owned())
+    }
+}
+
+/// A relaunch that finds no active wall clock left is the cap tripping between two
+/// launches: record it, start nothing.
+fn trip_between_launches(
+    session: &mut Session,
+    ctx: &LaunchContext,
+    prior_active: f64,
+) -> Result<AfterLaunch, LauncherError> {
+    let limit = ctx.opts.limits.wall_clock_min.unwrap_or(0.0);
+    if trip(&ctx.tripped, "wall_clock_min") {
+        session.stop_serving();
+        lock_store(&session.store).trip_cap(
+            "wall_clock_min",
+            &display_minutes(prior_active).to_string(),
+            &limit.to_string(),
+        )?;
+    }
     Ok(AfterLaunch::Finished)
 }
 
@@ -690,6 +931,7 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
     // D-28: refuse here, in the caller's terminal, before any state directory or
     // log exists. The daemon decides again for itself.
     decide(&detect(), opts.unsandboxed)?;
+    check_wall_clock_budget(&run_dir, &opts.limits)?;
 
     let log_path = detached_log_path(&project, &run_id)?;
     let state_dir = log_path.parent().ok_or_else(|| LauncherError::Io {
@@ -759,6 +1001,7 @@ fn supervise(
     n: u32,
     unit: &str,
     scope: &str,
+    budget: &Budget,
 ) -> Result<Exited, LauncherError> {
     let paths = LaunchPaths {
         project: ctx.project.clone(),
@@ -778,7 +1021,9 @@ fn supervise(
     let argv = match ctx.posture {
         Posture::BwrapScope => {
             let spec = SandboxSpec::from_host(paths, &ctx.home);
-            systemd_run_argv(unit, None, &bwrap_argv(&spec, &driver_argv))
+            // D-13: the backstop behind the monitor. A degraded launch has none (D-29).
+            let runtime_max = budget.remaining.map(runtime_max_sec);
+            systemd_run_argv(unit, runtime_max, &bwrap_argv(&spec, &driver_argv))
         }
         Posture::Degraded { .. } => driver_argv,
     };
@@ -827,24 +1072,32 @@ fn supervise(
         // `spawn_launch_child` made the child a group leader: its pid is the pgid.
         Posture::Degraded { .. } => Containment::Group { pgid: child.id() },
     };
+    let mut monitor = CapMonitor::new(
+        ctx.opts.limits.clone(),
+        Tripped::clone(&ctx.tripped),
+        budget.prior_active,
+    );
     let Waited {
         status,
         user_stopped,
+        tripped,
     } = wait_ticking(
         session,
         &mut child,
         &ctx.project,
         &ctx.user_stop,
         &containment,
+        &mut monitor,
     )?;
     // One last look: a verification written just before the exit still counts.
     tick_once(&session.store, &ctx.project);
+    monitor.persist(session);
 
     // The scope normally ended with its last process; this is the belt to
     // `--die-with-parent`'s braces, and it is best effort. A degraded run has no
-    // other containment, so the group is killed here. A user stop has already
-    // stopped it.
-    if !user_stopped {
+    // other containment, so the group is killed here. A user stop or a cap kill has
+    // already stopped it.
+    if !user_stopped && tripped.is_none() {
         containment.stop_leftovers();
     }
 
@@ -856,17 +1109,20 @@ fn supervise(
         rc,
         result_ok: last_result_ok(&out_path),
         user_stopped,
+        tripped: tripped.or_else(|| tripped_cap(&ctx.tripped)),
     })
 }
 
-/// Wait for `child`, running [`tick_once`] about every [`TICK`], and stop it
-/// through `containment` as soon as `user_stop` is set.
+/// Wait for `child`, running [`tick_once`] and then [`CapMonitor::after_tick`] about
+/// every [`TICK`], and stop it through `containment` as soon as `user_stop` is set
+/// or a cap trips.
 fn wait_ticking(
     session: &Session,
     child: &mut Child,
     project: &Path,
     user_stop: &AtomicBool,
     containment: &Containment,
+    monitor: &mut CapMonitor,
 ) -> Result<Waited, LauncherError> {
     loop {
         let slice_started = Instant::now();
@@ -877,6 +1133,7 @@ fn wait_ticking(
                     Ok(status) => Ok(Waited {
                         status,
                         user_stopped: true,
+                        tripped: None,
                     }),
                     Err(e) => Err(io_error("wait for the stopped driver", e)),
                 };
@@ -886,6 +1143,7 @@ fn wait_ticking(
                     return Ok(Waited {
                         status,
                         user_stopped: false,
+                        tripped: None,
                     })
                 }
                 Ok(None) => std::thread::sleep(CHILD_POLL),
@@ -897,6 +1155,19 @@ fn wait_ticking(
             }
         }
         tick_once(&session.store, project);
+        // A trip is already marked and committed when this returns: the gate denies
+        // from that instant, and only now is the containment stopped (T-28-15/17).
+        if let Some(cap) = monitor.after_tick(session) {
+            containment.stop(child);
+            return match child.wait() {
+                Ok(status) => Ok(Waited {
+                    status,
+                    user_stopped: false,
+                    tripped: Some(cap),
+                }),
+                Err(e) => Err(io_error("wait for the capped driver", e)),
+            };
+        }
     }
 }
 
@@ -924,7 +1195,7 @@ fn record_end(
     let ended_by_driver = lock_store(&session.store).state().ended_by_driver;
     let verdict = classify_exit(
         exited.rc,
-        false,
+        exited.tripped.is_some(),
         ended_by_driver,
         exited.result_ok,
         outstanding.as_deref(),
@@ -1165,6 +1436,123 @@ mod tests {
             panic!("not a driver launch");
         };
         assert!(args.unsandboxed);
+    }
+
+    fn limits(wall: Option<f64>, gap: Option<u32>) -> CapLimits {
+        CapLimits {
+            dispatches: None,
+            wall_clock_min: wall,
+            gap_rounds: gap,
+        }
+    }
+
+    #[test]
+    fn the_wall_clock_trips_one_second_past_the_limit_and_not_at_it() {
+        let lim = limits(Some(10.0), None);
+        assert_eq!(decide_trip(&lim, 599.0, 0), None);
+        assert_eq!(decide_trip(&lim, 600.0, 0), None, "exactly the limit");
+        assert_eq!(
+            decide_trip(&lim, 601.0, 0),
+            Some(("wall_clock_min", "10".to_owned(), "10".to_owned()))
+        );
+        assert!(decide_trip(&lim, 600.000_000_1, 0).is_some(), "unrounded");
+    }
+
+    #[test]
+    fn the_wall_clock_compares_unrounded_seconds_and_displays_rounded_minutes() {
+        // 0.05 min = 3 s. 3.0 s displays as 0.1 (half away from zero) yet does not trip.
+        let lim = limits(Some(0.05), None);
+        assert_eq!(display_minutes(3.0), 0.1);
+        assert_eq!(decide_trip(&lim, 3.0, 0), None);
+        assert_eq!(
+            decide_trip(&lim, 4.2, 0),
+            Some(("wall_clock_min", "0.1".to_owned(), "0.05".to_owned()))
+        );
+        assert_eq!(display_minutes(2.9), 0.0);
+        assert_eq!(display_minutes(0.0), 0.0);
+        assert_eq!(display_minutes(754.0), 12.6);
+    }
+
+    #[test]
+    fn the_gap_cap_kills_at_limit_plus_two_and_not_before() {
+        let lim = limits(None, Some(2));
+        assert_eq!(decide_trip(&lim, 0.0, 3), None, "L + 1 is only a deny");
+        assert_eq!(
+            decide_trip(&lim, 0.0, 4),
+            Some(("gap_rounds", "4".to_owned(), "2".to_owned()))
+        );
+        // Limit 0: the deny is at count 1, the kill at count 2.
+        let zero = limits(None, Some(0));
+        assert_eq!(decide_trip(&zero, 0.0, 1), None);
+        assert!(decide_trip(&zero, 0.0, 2).is_some());
+        // No limit never trips; the largest limit does not overflow.
+        assert_eq!(decide_trip(&limits(None, None), 1e9, 1_000), None);
+        assert_eq!(
+            decide_trip(&limits(None, Some(u32::MAX)), 0.0, u32::MAX),
+            Some(("gap_rounds", u32::MAX.to_string(), u32::MAX.to_string()))
+        );
+    }
+
+    #[test]
+    fn two_caps_crossing_on_one_tick_trip_exactly_one_and_the_wall_clock_wins() {
+        let lim = limits(Some(1.0), Some(0));
+        let tripped = decide_trip(&lim, 120.0, 9).expect("both are crossed");
+        assert_eq!(tripped.0, "wall_clock_min");
+        let marker = new_tripped();
+        assert!(trip(&marker, tripped.0));
+        assert!(!trip(&marker, "gap_rounds"), "a cap trips at most once");
+        assert_eq!(tripped_cap(&marker).as_deref(), Some("wall_clock_min"));
+    }
+
+    #[test]
+    fn runtime_max_sec_rounds_the_remaining_seconds_up_and_adds_the_grace() {
+        assert_eq!(runtime_max_sec(3.0), 303);
+        assert_eq!(runtime_max_sec(3.000_000_1), 304);
+        assert_eq!(runtime_max_sec(0.4), 301);
+        assert_eq!(runtime_max_sec(3600.0), 3900);
+        assert_eq!(runtime_max_sec(f64::INFINITY), u64::MAX);
+    }
+
+    #[test]
+    fn remaining_wall_clock_is_the_limit_less_the_active_seconds() {
+        assert_eq!(wall_clock_remaining(None, 99.0), None);
+        assert_eq!(wall_clock_remaining(Some(10.0), 0.0), Some(600.0));
+        assert_eq!(wall_clock_remaining(Some(10.0), 590.5), Some(9.5));
+        assert!(!exhausted(None));
+        assert!(!exhausted(Some(0.001)));
+        assert!(exhausted(Some(0.0)), "nothing left");
+        assert!(exhausted(Some(-1.0)));
+        assert!(exhausted(Some(f64::NAN)), "a NaN limit refuses");
+        assert!(exhausted(wall_clock_remaining(Some(0.0), 0.0)), "limit 0");
+        assert!(exhausted(wall_clock_remaining(Some(f64::NAN), 0.0)));
+    }
+
+    #[test]
+    fn active_seconds_reads_the_launcher_key_and_ignores_garbage() {
+        let mut state = RunState::default();
+        assert_eq!(active_seconds(&state), 0.0);
+        state
+            .extra
+            .insert(EXTRA_ACTIVE_SECONDS.to_owned(), serde_json::json!(12.5));
+        assert_eq!(active_seconds(&state), 12.5);
+        state
+            .extra
+            .insert(EXTRA_ACTIVE_SECONDS.to_owned(), serde_json::json!("many"));
+        assert_eq!(active_seconds(&state), 0.0);
+        state
+            .extra
+            .insert(EXTRA_ACTIVE_SECONDS.to_owned(), serde_json::json!(-4.0));
+        assert_eq!(active_seconds(&state), 0.0);
+    }
+
+    #[test]
+    fn the_worst_gap_count_is_the_maximum_over_phases() {
+        let mut state = RunState::default();
+        assert_eq!(worst_gap_count(&state), 0);
+        state.caps.gap_rounds.per_phase.insert("1".to_owned(), 2);
+        state.caps.gap_rounds.per_phase.insert("2".to_owned(), 5);
+        state.caps.gap_rounds.per_phase.insert("3".to_owned(), 1);
+        assert_eq!(worst_gap_count(&state), 5);
     }
 
     #[test]

@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use tempfile::NamedTempFile;
 
 use super::counters::{observe_gap, worst_phase, GapKind, GapRoundsState};
@@ -210,6 +210,30 @@ pub struct CapLimits {
 /// forward-compatible `extra` map, so a build that predates them round-trips them.
 const EXTRA_SANDBOX: &str = "sandbox";
 const EXTRA_SANDBOX_MISSING: &str = "sandbox_missing";
+
+/// The `state.json` key holding the summed active wall-clock seconds (D-13).
+pub const EXTRA_ACTIVE_SECONDS: &str = "active_seconds";
+
+/// The typed [`RunState`] fields (serialized names): the launcher-key writer
+/// ([`RunStore::set_launcher_key`]) refuses every one of them.
+const RUN_STATE_FIELDS: [&str; 16] = [
+    "schema",
+    "run_id",
+    "project_root",
+    "status",
+    "status_reason",
+    "created_at",
+    "updated_at",
+    "launches",
+    "current",
+    "items",
+    "connections",
+    "caps",
+    "hook_dispatches",
+    "denied_dispatches",
+    "last_event",
+    "ended_by_driver",
+];
 
 /// The driver process a launch starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1153,6 +1177,73 @@ impl RunStore {
         self.commit(next, &[entry], Regen::Always)
     }
 
+    // -- launcher-side caps (Phase 28, 28-05; no wire op reaches these)
+
+    /// Record that the launcher tripped a hard cap and is killing the scope (D-14,
+    /// T-28-17): logs `RUN | cap-tripped | cap=<cap> | used=<used> | limit=<limit> |
+    /// action=kill-scope` and sets the status to `stopped` with reason
+    /// `launcher-cap:<cap>`.
+    ///
+    /// **Launcher-side only; no op, event or argument reaches this from the
+    /// socket**, so the driver cannot stop itself with a forged cap, and the line
+    /// is committed *before* the launcher stops the scope. `used` and `limit` are
+    /// already formatted by the caller (the wall clock's are minutes). Connections
+    /// stay as they are until the launch end is recorded.
+    pub fn trip_cap(&mut self, cap: &str, used: &str, limit: &str) -> Result<(), StoreError> {
+        let cap = header_safe(cap);
+        let mut next = self.state.clone();
+        next.status = RunStatus::Stopped;
+        next.status_reason = Some(format!("launcher-cap:{cap}"));
+        let entry = LogEntry::run(
+            "cap-tripped",
+            vec![
+                ("cap", Some(cap)),
+                ("used", Some(header_safe(used))),
+                ("limit", Some(header_safe(limit))),
+                ("action", Some("kill-scope".to_owned())),
+            ],
+        );
+        self.commit(next, &[entry], Regen::Always)
+    }
+
+    /// Write one launcher-owned key of `state.json`'s forward-compatible `extra`
+    /// map (`active_seconds`, `auth_relaunches`, ...).
+    ///
+    /// Launcher-side only. A name that is a typed [`RunState`] field is refused
+    /// with [`StoreError::Io`], so this cannot be used to write `status`, `caps`,
+    /// `launches` or any other state the store owns through its own methods. The
+    /// frontmatter does not depend on `extra`, so it is regenerated on the
+    /// heartbeat schedule only.
+    pub fn set_launcher_key(&mut self, key: &'static str, value: Value) -> Result<(), StoreError> {
+        if RUN_STATE_FIELDS.contains(&key) {
+            return Err(StoreError::Io {
+                detail: format!("{key:?} is a typed run-state field, not a launcher key"),
+            });
+        }
+        let mut next = self.state.clone();
+        next.extra.insert(key.to_owned(), value);
+        self.commit(next, &[], Regen::HeartbeatOnly)
+    }
+
+    /// Persist the run's summed active wall-clock seconds (D-13): `extra.active_seconds`
+    /// is the exact value, `caps.wall_clock_min.used` its display form in minutes,
+    /// `(secs / 60 * 10).round() / 10` (half away from zero). Cap comparisons use
+    /// the unrounded seconds, never the displayed minutes.
+    ///
+    /// Launcher-side only. A non-finite or negative value is clamped to `0`.
+    pub fn record_active_seconds(&mut self, secs: f64) -> Result<(), StoreError> {
+        let secs = if secs.is_finite() && secs > 0.0 {
+            secs
+        } else {
+            0.0
+        };
+        let mut next = self.state.clone();
+        next.extra
+            .insert(EXTRA_ACTIVE_SECONDS.to_owned(), json!(secs));
+        next.caps.wall_clock_min.used = (secs / 60.0 * 10.0).round() / 10.0;
+        self.commit(next, &[], Regen::HeartbeatOnly)
+    }
+
     /// `git rev-parse --short HEAD` in the project, or `None` (not a repo, a
     /// failure, or output that is not a hex hash). The value reaches a LOG header,
     /// so it is held to hex digits (T-27-15, T-27-18).
@@ -1354,5 +1445,112 @@ mod tests {
                 .ends_with("RUN | launch-end | rc=143 | status=running"),
             "{log}"
         );
+    }
+
+    #[test]
+    fn trip_cap_logs_the_kill_line_and_stops_the_run_with_the_cap_as_reason() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        store.begin_launch(LaunchSpec::default()).unwrap();
+
+        store.trip_cap("gap_rounds", "4", "2").unwrap();
+
+        assert_eq!(store.state().status, RunStatus::Stopped);
+        assert_eq!(
+            store.state().status_reason.as_deref(),
+            Some("launcher-cap:gap_rounds")
+        );
+        let log = fs::read_to_string(store.log_path()).unwrap();
+        assert!(
+            log.trim_end().ends_with(
+                "RUN | cap-tripped | cap=gap_rounds | used=4 | limit=2 | action=kill-scope"
+            ),
+            "{log}"
+        );
+        let state: Value =
+            serde_json::from_slice(&fs::read(store.run_dir.join(STATE_FILE)).unwrap()).unwrap();
+        assert_eq!(state["status"], "stopped");
+    }
+
+    #[test]
+    fn trip_cap_cleans_values_that_would_break_a_log_header() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        store.trip_cap("wall|clock", "1\n2", "3").unwrap();
+        let log = fs::read_to_string(store.log_path()).unwrap();
+        let line = log.lines().find(|l| l.contains("cap-tripped")).unwrap();
+        assert!(
+            line.contains("cap=wall clock | used=1 2 | limit=3"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn the_launcher_key_writer_refuses_every_typed_run_state_field() {
+        // The refusal list must cover exactly the serialized fields of `RunState`.
+        let serialized = serde_json::to_value(RunState::default()).unwrap();
+        let mut fields: Vec<&str> = serialized
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut listed = RUN_STATE_FIELDS.to_vec();
+        fields.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(fields, listed);
+
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        for field in RUN_STATE_FIELDS {
+            let err = store.set_launcher_key(field, Value::Null).unwrap_err();
+            assert!(matches!(err, StoreError::Io { .. }), "{field}: {err}");
+        }
+        assert_eq!(store.state().status, RunStatus::Starting, "nothing changed");
+    }
+
+    #[test]
+    fn a_launcher_key_is_written_and_survives_a_reopen() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        store.set_launcher_key("auth_relaunches", json!(2)).unwrap();
+        assert_eq!(store.state().extra["auth_relaunches"], json!(2));
+        let on_disk: Value =
+            serde_json::from_slice(&fs::read(store.run_dir.join(STATE_FILE)).unwrap()).unwrap();
+        assert_eq!(on_disk["auth_relaunches"], json!(2));
+    }
+
+    #[test]
+    fn record_active_seconds_keeps_exact_seconds_and_shows_rounded_minutes() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+
+        store.record_active_seconds(3.0).unwrap();
+        assert_eq!(store.state().extra[EXTRA_ACTIVE_SECONDS], json!(3.0));
+        // 3 s = 0.05 min; one decimal, half away from zero -> 0.1.
+        assert_eq!(store.state().caps.wall_clock_min.used, 0.1);
+
+        store.record_active_seconds(2.9).unwrap();
+        assert_eq!(store.state().caps.wall_clock_min.used, 0.0);
+        assert_eq!(store.state().extra[EXTRA_ACTIVE_SECONDS], json!(2.9));
+
+        store.record_active_seconds(754.0).unwrap();
+        assert_eq!(store.state().caps.wall_clock_min.used, 12.6);
+
+        // Garbage never poisons the state.
+        store.record_active_seconds(f64::NAN).unwrap();
+        assert_eq!(store.state().extra[EXTRA_ACTIVE_SECONDS], json!(0.0));
+        store.record_active_seconds(-5.0).unwrap();
+        assert_eq!(store.state().caps.wall_clock_min.used, 0.0);
+    }
+
+    #[test]
+    fn record_active_seconds_writes_no_log_line() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        store.begin_launch(LaunchSpec::default()).unwrap();
+        let before = fs::read_to_string(store.log_path()).unwrap();
+        store.record_active_seconds(30.0).unwrap();
+        assert_eq!(fs::read_to_string(store.log_path()).unwrap(), before);
     }
 }
