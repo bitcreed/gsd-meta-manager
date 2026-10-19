@@ -26,9 +26,12 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
+use gsd_meta_manager::driver::lock::{read_holder_at, run_lock_path};
 use gsd_meta_manager::launcher::config_dir::run_state_dir_in;
+use rustix::process::{kill_process, kill_process_group, Pid, Signal};
 use tempfile::TempDir;
 
 /// The run id every launcher test uses.
@@ -296,21 +299,13 @@ impl Fixture {
         fs::read_to_string(self.rec_dir().join(name)).unwrap_or_default()
     }
 
-    /// The `driver launch` command, not yet run: the real binary under a
-    /// hermetic environment, with the fake tools first on `PATH`.
-    pub fn launch_command(&self, run_id: &str, extra_args: &[&str]) -> Command {
-        self.launch_command_for(ALIAS, run_id, extra_args)
-    }
-
-    /// [`launch_command`](Self::launch_command) with an explicit project target.
-    pub fn launch_command_for(&self, target: &str, run_id: &str, extra_args: &[&str]) -> Command {
+    /// The binary under a hermetic environment with the fake tools first on
+    /// `PATH`, `--config` already given; the caller appends the verb.
+    fn hermetic_command(&self) -> Command {
         let scratch = self.scratch.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"));
         cmd.arg("--config")
             .arg(self.registry())
-            .args(["driver", "launch", target, run_id, "--prompt-file"])
-            .arg(self.prompt_file())
-            .args(extra_args)
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.shims().display()))
             .env("HOME", self.home())
@@ -329,13 +324,146 @@ impl Fixture {
         cmd
     }
 
+    /// The `driver launch` command, not yet run: the real binary under a
+    /// hermetic environment, with the fake tools first on `PATH`.
+    pub fn launch_command(&self, run_id: &str, extra_args: &[&str]) -> Command {
+        self.launch_command_for(ALIAS, run_id, extra_args)
+    }
+
+    /// [`launch_command`](Self::launch_command) with an explicit project target.
+    pub fn launch_command_for(&self, target: &str, run_id: &str, extra_args: &[&str]) -> Command {
+        let cmd = self.launch_command_raw(target, run_id, extra_args);
+        cmd
+    }
+
+    /// `driver launch` exactly as given: no `--foreground`, so it detaches.
+    pub fn launch_command_raw(&self, target: &str, run_id: &str, extra_args: &[&str]) -> Command {
+        let mut cmd = self.hermetic_command();
+        cmd.args(["driver", "launch", target, run_id, "--prompt-file"])
+            .arg(self.prompt_file())
+            .args(extra_args);
+        cmd
+    }
+
     /// Run `driver launch` for [`RUN_ID`] to completion.
     pub fn launch(&self, extra_args: &[&str]) -> Output {
         self.launch_command(RUN_ID, extra_args)
             .output()
             .expect("the binary is built and spawnable")
     }
+
+    /// Start a foreground `driver launch` for [`RUN_ID`] and return at once.
+    pub fn spawn_launch(&self, extra_args: &[&str]) -> Child {
+        self.launch_command(RUN_ID, extra_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary is built and spawnable")
+    }
+
+    /// `driver stop <alias> <run-id>`, not yet run.
+    pub fn stop_command(&self, run_id: &str, extra_args: &[&str]) -> Command {
+        let mut cmd = self.hermetic_command();
+        cmd.args(["driver", "stop", ALIAS, run_id]).args(extra_args);
+        cmd
+    }
+
+    /// Whether `pid` is a process this fixture started: its environment carries
+    /// this fixture's `FAKE_SHIM_LOG`. A pid file can outlive its process, and a
+    /// recycled pid must never be signalled.
+    fn is_ours(&self, pid: u32) -> bool {
+        let marker = format!("FAKE_SHIM_LOG={}", self.shim_log_path().display());
+        fs::read(format!("/proc/{pid}/environ")).is_ok_and(|raw| {
+            raw.split(|byte| *byte == 0)
+                .any(|entry| entry == marker.as_bytes())
+        })
+    }
+
+    /// The fake driver process groups the shims recorded (`<unit>.pid`).
+    pub fn driver_pids(&self) -> Vec<u32> {
+        let Ok(entries) = fs::read_dir(self.shims()) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "pid"))
+            .filter_map(|e| fs::read_to_string(e.path()).ok())
+            .filter_map(|text| text.trim().parse::<u32>().ok())
+            .collect()
+    }
+
+    /// Whether any fake driver process group member is still alive.
+    pub fn any_driver_alive(&self) -> bool {
+        self.driver_pids()
+            .into_iter()
+            .any(|pid| fs::metadata(format!("/proc/{pid}")).is_ok() && self.is_ours(pid))
+    }
+
+    /// SIGKILL every fake driver group and the launcher this fixture started.
+    pub fn kill_fixture_processes(&self) {
+        for pid in self.driver_pids() {
+            if self.is_ours(pid) {
+                if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+                    let _ = kill_process_group(pid, Signal::KILL);
+                }
+            }
+        }
+        if let Some(holder) = read_holder_at(&run_lock_path(&self.run_dir)) {
+            if self.is_ours(holder.pgid) {
+                if let Some(pid) = i32::try_from(holder.pgid).ok().and_then(Pid::from_raw) {
+                    let _ = kill_process(pid, Signal::KILL);
+                }
+            }
+        }
+    }
+
+    /// Let a scenario that waits for [`RELEASE_FILE`] go on.
+    pub fn release(&self) {
+        fs::create_dir_all(self.rec_dir()).expect("rec dir");
+        fs::write(self.rec_dir().join(RELEASE_FILE), "go").expect("release file");
+    }
+
+    /// Whether the scenario has started (it created [`STARTED_FILE`]).
+    pub fn scenario_started(&self) -> bool {
+        self.rec_dir().join(STARTED_FILE).exists()
+    }
 }
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.kill_fixture_processes();
+    }
+}
+
+/// Poll `cond` every 50 ms until it holds or `timeout` passes.
+pub fn wait_until(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cond() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The file a scenario creates once the driver has logged its start.
+pub const STARTED_FILE: &str = "started";
+
+/// The file a scenario waits for before it goes on.
+pub const RELEASE_FILE: &str = "release";
+
+/// A driver that starts, announces itself and then waits for [`Fixture::release`],
+/// ending the way a well-mannered one does.
+pub const WAITING_SCENARIO: &str = r#"
+driverctl log start --mode headless --loop-mode loop
+touch "$FAKE_CLAUDE_DIR/started"
+while [ ! -f "$FAKE_CLAUDE_DIR/release" ]; do sleep 0.1; done
+driverctl log end --reason stop
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#;
 
 /// A scenario that behaves like a well-mannered driver: start, one allowed
 /// dispatch gate, end with `stop`, and a successful result line.

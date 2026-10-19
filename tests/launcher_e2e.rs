@@ -13,12 +13,18 @@
 mod launcher_support;
 
 use std::fs;
+use std::process::Child;
+use std::time::{Duration, Instant};
 
-use gsd_meta_manager::driver::lock::{acquire_at, probe_at, run_lock_path, LockProbe};
+use gsd_meta_manager::driver::lock::{
+    acquire_at, probe_at, read_holder_at, run_lock_path, LockProbe,
+};
 use gsd_meta_manager::state_reader::driver_frontmatter::{
     read_driver_run, DerivedStatus, RunStatus,
 };
-use launcher_support::{Fixture, RUN_ID, TOKEN, WELL_MANNERED_SCENARIO};
+use launcher_support::{
+    wait_until, Fixture, RUN_ID, TOKEN, WAITING_SCENARIO, WELL_MANNERED_SCENARIO,
+};
 
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
@@ -354,4 +360,315 @@ fn an_unknown_project_is_refused_through_the_registry() {
         stderr(&out)
     );
     assert!(fx.shim_log().is_empty());
+}
+
+// ----------------------------------------------------------------------------
+// Plan 28-02: the run lifecycle (LNCH-02, DRIVE-01 launcher half; D-04, D-05,
+// D-07, D-16). Every test here goes through the real binary.
+// ----------------------------------------------------------------------------
+
+/// Wait for a spawned launcher, failing the test if it hangs.
+fn finish(mut child: Child, within: Duration) -> std::process::Output {
+    assert!(
+        wait_until(within, || child.try_wait().expect("try_wait").is_some()),
+        "the launcher did not finish within {within:?}"
+    );
+    child.wait_with_output().expect("collect the launcher output")
+}
+
+/// `state.json` without the fields a running launcher rewrites on its own tick.
+fn quiescent_state(fx: &Fixture) -> serde_json::Value {
+    let mut state = fx.state_json();
+    state.as_object_mut().unwrap().remove("updated_at");
+    if let Some(connections) = state["connections"].as_array_mut() {
+        for c in connections {
+            c.as_object_mut().unwrap().remove("last_heartbeat");
+        }
+    }
+    state
+}
+
+#[test]
+fn second_launch_is_refused_with_rc_3() {
+    let fx = Fixture::new();
+    fx.write_scenario(WAITING_SCENARIO);
+    let first = fx.spawn_launch(&[]);
+    assert!(
+        wait_until(Duration::from_secs(10), || fx.scenario_started()),
+        "launcher A never reached its driver"
+    );
+
+    let log_before = fx.log();
+    let state_before = quiescent_state(&fx);
+    let started = Instant::now();
+    let refused = fx.launch(&[]);
+    assert_eq!(refused.status.code(), Some(3), "{}", stderr(&refused));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the refusal took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(fx.log(), log_before, "a refused launcher writes no LOG line");
+    assert_eq!(
+        quiescent_state(&fx),
+        state_before,
+        "a refused launcher writes nothing to state.json"
+    );
+
+    fx.release();
+    let out = finish(first, Duration::from_secs(20));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(fx.log().matches("RUN | launch | n=1").count(), 1);
+}
+
+#[test]
+fn simultaneous_launches_leave_exactly_one_launch() {
+    let fx = Fixture::new();
+    fx.write_scenario(WAITING_SCENARIO);
+    // Back to back, with no wait between the spawns: the lock decides.
+    let mut a = fx.spawn_launch(&[]);
+    let mut b = fx.spawn_launch(&[]);
+
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            a.try_wait().unwrap().is_some() || b.try_wait().unwrap().is_some()
+        }),
+        "neither launcher gave up the race"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || fx.scenario_started()),
+        "the winner never reached its driver"
+    );
+    fx.release();
+    let out_a = finish(a, Duration::from_secs(20));
+    let out_b = finish(b, Duration::from_secs(20));
+    let mut codes = [out_a.status.code(), out_b.status.code()];
+    codes.sort();
+    assert_eq!(
+        codes,
+        [Some(0), Some(3)],
+        "exactly one launcher wins: {} / {}",
+        String::from_utf8_lossy(&out_a.stderr),
+        String::from_utf8_lossy(&out_b.stderr)
+    );
+    let log = fx.log();
+    assert_eq!(log.matches("RUN | launch | n=1").count(), 1, "{log}");
+    assert_eq!(log.matches("RUN | launch |").count(), 1, "{log}");
+}
+
+#[test]
+fn sigkill_then_relaunch_logs_crash_detected() {
+    let fx = Fixture::new();
+    fx.write_scenario(WAITING_SCENARIO);
+    let mut first = fx.spawn_launch(&[]);
+    assert!(
+        wait_until(Duration::from_secs(10), || fx.scenario_started()),
+        "the launcher never reached its driver"
+    );
+    first.kill().expect("SIGKILL the launcher");
+    first.wait().expect("reap the launcher");
+    // The fake driver is not tied to its parent; the real one is (die-with-parent).
+    fx.kill_fixture_processes();
+
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert!(
+        matches!(
+            view.derived,
+            DerivedStatus::Crashed {
+                written: RunStatus::Running
+            }
+        ),
+        "{:?}",
+        view.derived
+    );
+    assert_eq!(probe_at(&run_lock_path(&fx.run_dir)), LockProbe::Free);
+
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let second = fx.launch(&[]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let log = fx.log();
+    let crash = log
+        .find("RUN | crash-detected | previous_launch=1")
+        .unwrap_or_else(|| panic!("no crash-detected line:\n{log}"));
+    let relaunch = log
+        .find("RUN | launch | n=2")
+        .unwrap_or_else(|| panic!("no second launch line:\n{log}"));
+    assert!(crash < relaunch, "crash-detected precedes the launch:\n{log}");
+}
+
+#[test]
+fn fresh_exit_relaunches_under_one_lock() {
+    let fx = Fixture::new();
+    fx.write_scenario(
+        r#"
+n=$(cat "$FAKE_CLAUDE_DIR/count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$FAKE_CLAUDE_DIR/count"
+echo "$PPID" >> "$FAKE_CLAUDE_DIR/launcher-pids"
+driverctl log start --mode headless --loop-mode fresh-per-item
+if [ "$n" = 1 ]; then
+  driverctl log end --reason fresh-exit
+else
+  driverctl log end --reason all-done
+fi
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#,
+    );
+    let child = fx.spawn_launch(&["--loop-mode", "fresh-per-item"]);
+    let launcher_pid = child.id().to_string();
+    let out = finish(child, Duration::from_secs(30));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let log = fx.log();
+    assert!(log.contains("RUN | launch | n=1"), "{log}");
+    assert!(log.contains("RUN | launch | n=2"), "{log}");
+    assert!(!log.contains("crash-detected"), "no crash between launches:\n{log}");
+    assert_eq!(
+        log.matches("RUN | launch-end |").count(),
+        2,
+        "one launch-end per launch:\n{log}"
+    );
+
+    // One process was the launcher of both drivers: the lock never changed hands.
+    let pids = fx.recorded("launcher-pids");
+    let pids: Vec<&str> = pids.lines().collect();
+    assert_eq!(pids, [launcher_pid.as_str(); 2], "{pids:?}");
+
+    let state = fx.state_json();
+    assert_eq!(state["status"], "done");
+    assert_eq!(state["launches"], 2);
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(view.derived, DerivedStatus::AsWritten(RunStatus::Done));
+    assert_eq!(probe_at(&run_lock_path(&fx.run_dir)), LockProbe::Free);
+}
+
+#[test]
+fn launch_end_is_recorded_when_the_driver_ended_the_run() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let log = fx.log();
+    let last = log.lines().last().unwrap_or_default();
+    assert!(
+        last.contains("RUN | launch-end | rc=0 | status=stopped"),
+        "the LOG ends with the launch end:\n{log}"
+    );
+    let state = fx.state_json();
+    assert_eq!(state["status"], "stopped", "the status is unchanged");
+    assert_eq!(state["status_reason"], "driver:stop");
+    for c in state["connections"].as_array().unwrap() {
+        assert_ne!(c["state"], "connected", "{c}");
+    }
+}
+
+/// The session id of `pid` (`/proc/<pid>/stat` field 6).
+fn session_of(pid: &str) -> u32 {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).expect("read /proc stat");
+    // The command name may contain spaces and parentheses: count after the last ')'.
+    let rest = &stat[stat.rfind(')').expect("comm ends with ')'") + 1..];
+    rest.split_whitespace()
+        .nth(3)
+        .expect("the session field")
+        .parse()
+        .expect("a numeric session id")
+}
+
+#[test]
+fn detached_launch_returns_once_the_child_holds_the_lock() {
+    let fx = Fixture::new();
+    fx.write_scenario(WAITING_SCENARIO);
+    let started = Instant::now();
+    let mut parent = fx
+        .launch_command_raw(launcher_support::ALIAS, RUN_ID, &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the command");
+    let parent_pid = parent.id();
+    assert!(
+        wait_until(Duration::from_secs(10), || parent
+            .try_wait()
+            .unwrap()
+            .is_some()),
+        "driver launch did not return"
+    );
+    let out = parent.wait_with_output().expect("collect output");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("started (pid "), "{stdout}");
+    assert!(stdout.contains("launcher.log"), "{stdout}");
+
+    // The run is live: the child holds the lock, and it is not the command we ran.
+    assert_eq!(probe_at(&run_lock_path(&fx.run_dir)), LockProbe::Held);
+    let holder = read_holder_at(&run_lock_path(&fx.run_dir)).expect("holder record");
+    assert_ne!(holder.pgid, parent_pid, "the lock holder is the detached child");
+    let own_session = session_of("self");
+    let holder_session = session_of(&holder.pgid.to_string());
+    assert_ne!(holder_session, own_session, "the child has its own session");
+    assert_eq!(holder_session, holder.pgid, "it leads that session (setsid)");
+    assert!(
+        fx.state_dir().join("launcher.log").is_file(),
+        "launcher.log under the run state dir"
+    );
+
+    // The run goes on to a terminal status without anybody attached.
+    assert!(
+        wait_until(Duration::from_secs(10), || fx.scenario_started()),
+        "the detached launcher never reached its driver"
+    );
+    fx.release();
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            matches!(
+                read_driver_run(&fx.run_dir).map(|v| v.derived),
+                Ok(DerivedStatus::AsWritten(RunStatus::Stopped))
+            )
+        }),
+        "the detached run never reached a terminal status:\n{}",
+        fx.log()
+    );
+}
+
+/// A detached `driver launch` (no `--foreground`), bounded so a launcher that
+/// never detaches fails the test instead of hanging it.
+fn detached(fx: &Fixture) -> std::process::Output {
+    let child = fx
+        .launch_command_raw(launcher_support::ALIAS, RUN_ID, &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the command");
+    finish(child, Duration::from_secs(15))
+}
+
+#[test]
+fn detached_second_launch_returns_3() {
+    let fx = Fixture::new();
+    fx.write_scenario(WAITING_SCENARIO);
+    let first = detached(&fx);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || fx.scenario_started()),
+        "the first launcher never reached its driver"
+    );
+
+    let log_before = fx.log();
+    let second = detached(&fx);
+    assert_eq!(second.status.code(), Some(3), "{}", stderr(&second));
+    assert_eq!(fx.log(), log_before, "the refused detached launch wrote no LOG line");
+    fx.release();
+    assert!(wait_until(Duration::from_secs(20), || {
+        probe_at(&run_lock_path(&fx.run_dir)) == LockProbe::Free
+    }));
 }
