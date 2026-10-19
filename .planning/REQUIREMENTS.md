@@ -192,7 +192,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 - [x] **LNCH-05**: Auth is passed as `CLAUDE_CODE_OAUTH_TOKEN` from a stored long-lived
   `claude setup-token` token, set up by a guided onboarding step. A host-token fallback detects
   `OAuth token revoked` and relaunches. No refresh token ever enters the sandbox.
-- [ ] **LNCH-06**: A driven run's commits leave the machine only through gsd-mm's push step outside
+- [x] **LNCH-06**: A driven run's commits leave the machine only through gsd-mm's push step outside
   the sandbox. That step uses a fixed refspec into the reserved namespace and reuses the namespace
   refusal, secret scan and PR cap (SAFE-01/03/06).
 - [x] **LNCH-07**: Without bwrap or systemd-run (macOS), the launcher refuses by default. An explicit
@@ -354,7 +354,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-03 | Phase 28 | Pending |
 | LNCH-04 | Phase 28 | Pending |
 | LNCH-05 | Phase 28 | Complete |
-| LNCH-06 | Phase 28 | Pending |
+| LNCH-06 | Phase 28 | Complete |
 | LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |
 | PRMT-01 | Phase 29 | Pending |
