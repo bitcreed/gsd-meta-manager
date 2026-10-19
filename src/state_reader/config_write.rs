@@ -271,7 +271,8 @@ fn body_pid(body: &[u8]) -> Option<i64> {
 /// `kill(pid, 0)`: `Some(true)` alive, `Some(false)` ESRCH, `None` for a pid
 /// that does not fit a `pid_t` (or is not positive).
 fn probe_pid(pid: i64) -> Option<Result<(), Errno>> {
-    let raw = i32::try_from(pid).ok()?;
+    // `Pid::from_raw` panics on a negative value, so reject it here.
+    let raw = i32::try_from(pid).ok().filter(|r| *r > 0)?;
     let p = rustix::process::Pid::from_raw(raw)?;
     Some(rustix::process::test_kill_process(p))
 }
@@ -579,4 +580,507 @@ pub fn update_gsd_config(
     let json = serialize_gsd_config(&fresh).map_err(|_| ConfigWriteError::Serialize)?;
     atomic_write(path, json.as_bytes()).map_err(|e| ConfigWriteError::Io { kind: e.kind() })?;
     Ok(Some(fresh))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    const DEAD_PID: i64 = i32::MAX as i64;
+
+    fn policy(timeout_ms: u64) -> LockPolicy {
+        LockPolicy {
+            timeout: Duration::from_millis(timeout_ms),
+            poll: Duration::from_millis(20),
+        }
+    }
+
+    fn project(td: &TempDir) -> ConfigWriteTarget {
+        fs::create_dir_all(td.path().join(".planning")).unwrap();
+        ConfigWriteTarget::Project {
+            config_path: td.path().join(".planning/config.json"),
+            project_root: td.path().to_path_buf(),
+        }
+    }
+
+    fn global(td: &TempDir) -> ConfigWriteTarget {
+        fs::create_dir_all(td.path().join(".gsd")).unwrap();
+        ConfigWriteTarget::GlobalDefaults {
+            path: td.path().join(".gsd/defaults.json"),
+        }
+    }
+
+    fn set_commit_docs(c: &mut GsdConfig) -> bool {
+        c.commit_docs = Some(false);
+        true
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn atomic_write_never_exposes_a_partial_file() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("config.json");
+        let a = vec![b'a'; 512 * 1024];
+        let b = vec![b'b'; 300 * 1024];
+        atomic_write(&path, &a).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (path, a, b, done) = (path.clone(), a.clone(), b.clone(), done.clone());
+            std::thread::spawn(move || {
+                for i in 0..200 {
+                    atomic_write(&path, if i % 2 == 0 { &b } else { &a }).unwrap();
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        let mut reads = 0;
+        while reads < 2000 || !done.load(Ordering::SeqCst) {
+            let got = fs::read(&path).unwrap();
+            assert!(
+                got == a || got == b,
+                "a reader saw a partial file ({} bytes)",
+                got.len()
+            );
+            reads += 1;
+        }
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn atomic_write_preserves_existing_permission_bits() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("config.json");
+        for mode in [0o600, 0o640] {
+            fs::write(&path, b"old").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            atomic_write(&path, b"new").unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+            assert_eq!(
+                fs::metadata(&path).unwrap().mode() & 0o7777,
+                mode,
+                "mode {mode:o} must survive the save"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_file_behind() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("config.json");
+        for i in 0..50 {
+            atomic_write(&path, format!("v{i}").as_bytes()).unwrap();
+        }
+        assert_eq!(names(td.path()), vec!["config.json".to_string()]);
+    }
+
+    #[test]
+    fn atomic_write_never_touches_a_foreign_file_at_a_temp_name() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("config.json");
+        // Plant a symlink at every name the next write could pick.
+        let next = TEMP_COUNTER.load(Ordering::Relaxed);
+        let victim = td.path().join("victim");
+        fs::write(&victim, b"precious").unwrap();
+        for n in next..next + 4 {
+            let planted = td
+                .path()
+                .join(format!("config.json.tmp-{}-{n}", std::process::id()));
+            let _ = symlink(&victim, planted);
+        }
+        atomic_write(&path, b"data").unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(fs::read(&path).unwrap(), b"data");
+    }
+
+    #[test]
+    fn planning_lock_live_holder_times_out_without_stealing() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        let lock = target.lock_path();
+        fs::write(
+            &lock,
+            r#"{"pid":1,"cwd":"/x","acquired":"2026-10-19T00:00:00.000Z"}"#,
+        )
+        .unwrap();
+        fs::write(target.config_path(), r#"{"mode":"yolo"}"#).unwrap();
+        let lock_before = fs::read(&lock).unwrap();
+        let started = Instant::now();
+        let err = update_gsd_config(&target, policy(300), &GsdConfig::default(), set_commit_docs)
+            .unwrap_err();
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        match err {
+            ConfigWriteError::LockTimeout { holder_pid, .. } => assert_eq!(holder_pid, Some(1)),
+            other => panic!("expected LockTimeout, got {other:?}"),
+        }
+        assert_eq!(
+            fs::read(&lock).unwrap(),
+            lock_before,
+            "a live lock is never stolen"
+        );
+        assert_eq!(
+            fs::read(target.config_path()).unwrap(),
+            br#"{"mode":"yolo"}"#
+        );
+    }
+
+    #[test]
+    fn planning_lock_released_mid_wait_is_acquired() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        let lock = target.lock_path();
+        fs::write(&lock, r#"{"pid":1}"#).unwrap();
+        let remover = {
+            let lock = lock.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                fs::remove_file(lock).unwrap();
+            })
+        };
+        let started = Instant::now();
+        let got = update_gsd_config(
+            &target,
+            policy(2000),
+            &GsdConfig::default(),
+            set_commit_docs,
+        )
+        .unwrap();
+        remover.join().unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert!(got.is_some());
+        let on_disk = parse_gsd_config(&fs::read_to_string(target.config_path()).unwrap()).unwrap();
+        assert_eq!(on_disk.commit_docs, Some(false));
+        assert!(!lock.exists());
+    }
+
+    #[test]
+    fn planning_lock_dead_holder_is_stolen() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        fs::write(
+            target.lock_path(),
+            format!(r#"{{"pid":{DEAD_PID},"cwd":"/x","acquired":"2026-10-19T00:00:00.000Z"}}"#),
+        )
+        .unwrap();
+        let started = Instant::now();
+        update_gsd_config(
+            &target,
+            policy(2000),
+            &GsdConfig::default(),
+            set_commit_docs,
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(1000),
+            "stolen at once"
+        );
+        assert_eq!(
+            names(&td.path().join(".planning")),
+            vec!["config.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn planning_lock_garbage_empty_or_pidless_body_is_stolen() {
+        for body in [
+            "not json",
+            "",
+            r#"{"cwd":"x"}"#,
+            r#"{"pid":0}"#,
+            r#"{"pid":-5}"#,
+            r#"{"pid":"12"}"#,
+        ] {
+            let td = TempDir::new().unwrap();
+            let target = project(&td);
+            fs::write(target.lock_path(), body).unwrap();
+            update_gsd_config(
+                &target,
+                policy(1000),
+                &GsdConfig::default(),
+                set_commit_docs,
+            )
+            .unwrap_or_else(|e| panic!("body {body:?} must be stolen, got {e:?}"));
+            assert_eq!(
+                names(&td.path().join(".planning")),
+                vec!["config.json".to_string()],
+                "body {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn planning_lock_unreadable_body_is_never_stolen() {
+        // A symlink at .lock.
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        let real = td.path().join("real-lock");
+        fs::write(&real, format!(r#"{{"pid":{DEAD_PID}}}"#)).unwrap();
+        symlink(&real, target.lock_path()).unwrap();
+        let err = update_gsd_config(&target, policy(300), &GsdConfig::default(), set_commit_docs)
+            .unwrap_err();
+        assert!(
+            matches!(err, ConfigWriteError::LockTimeout { .. }),
+            "{err:?}"
+        );
+        assert!(fs::symlink_metadata(target.lock_path())
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        // A lock larger than the 4 KiB cap.
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        let big = format!(r#"{{"pid":{DEAD_PID},"pad":"{}"}}"#, "x".repeat(5000));
+        fs::write(target.lock_path(), &big).unwrap();
+        let err = update_gsd_config(&target, policy(300), &GsdConfig::default(), set_commit_docs)
+            .unwrap_err();
+        assert!(
+            matches!(err, ConfigWriteError::LockTimeout { .. }),
+            "{err:?}"
+        );
+        assert_eq!(fs::read_to_string(target.lock_path()).unwrap(), big);
+    }
+
+    #[test]
+    fn planning_lock_body_matches_gsd_core_shape() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        let lock = target.lock_path();
+        let mut seen = String::new();
+        update_gsd_config(&target, policy(1000), &GsdConfig::default(), |c| {
+            seen = fs::read_to_string(&lock).unwrap();
+            set_commit_docs(c)
+        })
+        .unwrap();
+        let prefix = format!(
+            r#"{{"pid":{},"cwd":"{}","acquired":""#,
+            std::process::id(),
+            td.path().display()
+        );
+        assert!(seen.starts_with(&prefix), "{seen}");
+        assert!(
+            seen.ends_with(r#"Z"}"#),
+            "compact, no trailing newline: {seen:?}"
+        );
+        let acquired = &seen[prefix.len()..seen.len() - 2];
+        assert_eq!(acquired.len(), 24, "ISO-8601 with milliseconds: {acquired}");
+        assert!(chrono::DateTime::parse_from_rfc3339(acquired).is_ok());
+        let v: serde_json::Value = serde_json::from_str(&seen).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 3);
+        assert!(!lock.exists());
+    }
+
+    #[test]
+    fn install_lock_rules() {
+        // A dead pid and our own pid are reclaimed.
+        for pid in [DEAD_PID, i64::from(std::process::id())] {
+            let td = TempDir::new().unwrap();
+            let target = global(&td);
+            fs::write(
+                target.lock_path(),
+                format!("{{\"pid\":{pid},\"acquiredAt\":\"2026-10-19T00:00:00.000Z\"}}\n"),
+            )
+            .unwrap();
+            update_gsd_config(
+                &target,
+                policy(1000),
+                &GsdConfig::default(),
+                set_commit_docs,
+            )
+            .unwrap_or_else(|e| panic!("pid {pid} must be reclaimed, got {e:?}"));
+            assert_eq!(
+                names(&td.path().join(".gsd")),
+                vec!["defaults.json".to_string()]
+            );
+        }
+
+        // An unparseable body is never reclaimed.
+        let td = TempDir::new().unwrap();
+        let target = global(&td);
+        fs::write(target.lock_path(), "garbage").unwrap();
+        let err = update_gsd_config(&target, policy(300), &GsdConfig::default(), set_commit_docs)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigWriteError::LockTimeout {
+                    holder_pid: None,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(fs::read_to_string(target.lock_path()).unwrap(), "garbage");
+        assert!(!target.config_path().exists());
+
+        // A live pid is waited on.
+        let td = TempDir::new().unwrap();
+        let target = global(&td);
+        let live = "{\"pid\":1,\"acquiredAt\":\"2026-10-19T00:00:00.000Z\"}\n";
+        fs::write(target.lock_path(), live).unwrap();
+        let err = update_gsd_config(&target, policy(300), &GsdConfig::default(), set_commit_docs)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigWriteError::LockTimeout {
+                    holder_pid: Some(1),
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(fs::read_to_string(target.lock_path()).unwrap(), live);
+
+        // The body we write.
+        let td = TempDir::new().unwrap();
+        let target = global(&td);
+        let lock = target.lock_path();
+        let mut seen = String::new();
+        update_gsd_config(&target, policy(1000), &GsdConfig::default(), |c| {
+            seen = fs::read_to_string(&lock).unwrap();
+            set_commit_docs(c)
+        })
+        .unwrap();
+        let prefix = format!("{{\"pid\":{},\"acquiredAt\":\"", std::process::id());
+        assert!(seen.starts_with(&prefix), "{seen}");
+        assert!(seen.ends_with("Z\"}\n"), "{seen:?}");
+        assert!(!lock.exists());
+    }
+
+    #[test]
+    fn update_applies_the_edit_to_the_on_disk_config_not_the_cached_snapshot() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        fs::write(
+            target.config_path(),
+            r#"{"mode":"interactive","brand_new_gsd_key":{"a":1}}"#,
+        )
+        .unwrap();
+        let fallback = parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap();
+        let fresh = update_gsd_config(&target, policy(1000), &fallback, set_commit_docs)
+            .unwrap()
+            .expect("written");
+        assert_eq!(fresh.mode, "interactive");
+        let text = fs::read_to_string(target.config_path()).unwrap();
+        let on_disk = parse_gsd_config(&text).unwrap();
+        assert_eq!(
+            on_disk.mode, "interactive",
+            "the disk mode wins over the snapshot"
+        );
+        assert_eq!(on_disk.commit_docs, Some(false));
+        assert!(
+            text.contains("brand_new_gsd_key"),
+            "unknown keys survive: {text}"
+        );
+    }
+
+    #[test]
+    fn update_refuses_an_unparseable_config_on_disk() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        fs::write(target.config_path(), "{not json").unwrap();
+        let err = update_gsd_config(
+            &target,
+            policy(1000),
+            &GsdConfig::default(),
+            set_commit_docs,
+        )
+        .unwrap_err();
+        assert_eq!(err, ConfigWriteError::Unparseable);
+        assert_eq!(fs::read(target.config_path()).unwrap(), b"{not json");
+        assert!(
+            !target.lock_path().exists(),
+            "the lock is released on refusal"
+        );
+    }
+
+    #[test]
+    fn update_creates_an_absent_file_from_the_fallback() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        assert!(!target.config_path().exists());
+        let fallback = parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap();
+        update_gsd_config(&target, policy(1000), &fallback, set_commit_docs).unwrap();
+        let on_disk = parse_gsd_config(&fs::read_to_string(target.config_path()).unwrap()).unwrap();
+        assert_eq!(on_disk.mode, "yolo");
+        assert_eq!(on_disk.commit_docs, Some(false));
+    }
+
+    #[test]
+    fn release_does_not_delete_a_lock_it_no_longer_owns() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        let lock = target.lock_path();
+        let foreign = r#"{"pid":1,"cwd":"/other","acquired":"2026-10-19T00:00:00.000Z"}"#;
+        update_gsd_config(&target, policy(1000), &GsdConfig::default(), |c| {
+            fs::remove_file(&lock).unwrap();
+            fs::write(&lock, foreign).unwrap();
+            set_commit_docs(c)
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(&lock).unwrap(), foreign);
+    }
+
+    #[test]
+    fn update_without_a_mutation_writes_nothing() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        fs::write(target.config_path(), r#"{"mode":"yolo"}"#).unwrap();
+        let before = fs::metadata(target.config_path())
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let got =
+            update_gsd_config(&target, policy(1000), &GsdConfig::default(), |_| false).unwrap();
+        assert!(got.is_none());
+        assert_eq!(
+            fs::read(target.config_path()).unwrap(),
+            br#"{"mode":"yolo"}"#
+        );
+        assert_eq!(
+            fs::metadata(target.config_path())
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before
+        );
+        assert!(!target.lock_path().exists());
+    }
+
+    #[test]
+    fn status_text_carries_no_path_and_names_only_the_pid() {
+        let timeout = ConfigWriteError::LockTimeout {
+            holder_pid: Some(4242),
+            waited: Duration::from_secs(2),
+        };
+        let t = timeout.status_text(LockFlavor::Planning);
+        assert!(
+            t.starts_with("Config NOT saved") && t.contains("pid 4242"),
+            "{t}"
+        );
+        let unknown = ConfigWriteError::LockTimeout {
+            holder_pid: None,
+            waited: Duration::ZERO,
+        };
+        assert!(unknown
+            .status_text(LockFlavor::InstallMigration)
+            .contains("another process"));
+        let io = ConfigWriteError::Io {
+            kind: std::io::ErrorKind::PermissionDenied,
+        };
+        assert!(!io.status_text(LockFlavor::Planning).contains('/'));
+    }
 }
