@@ -1085,7 +1085,7 @@ default. Hosts without bwrap or systemd-run get an explicit degraded mode.
      degraded mode then runs unsandboxed, with caps enforced by process supervision, and the posture
      is recorded on the run and shown in the TUI. Headless operation never needs tmux.
 
-**Plans**: 4/9 plans executed
+**Plans**: 5/9 plans executed
 
 Plans:
 **Wave 1**
@@ -1099,7 +1099,7 @@ Plans:
 - [x] 28-04-PLAN.md — host detection and refusal, `--unsandboxed` degraded supervision, `sandbox` posture keys (LNCH-07)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 28-05-PLAN.md — hard caps (dispatch / gap L+1 deny, L+2 kill / wall clock + RuntimeMaxSec) and launch-end verdicts (rate-limit park, auth relaunch, stalled) (LNCH-03/05)
+- [x] 28-05-PLAN.md — hard caps (dispatch / gap L+1 deny, L+2 kill / wall clock + RuntimeMaxSec) and launch-end verdicts (rate-limit park, auth relaunch, stalled) (LNCH-03/05)
 - [ ] 28-06-PLAN.md — `driver auth setup|status` onboarding and the ported Stop guard (LNCH-05/03)
 - [ ] 28-07-PLAN.md — TUI: launcher runs on the Driver tab, UNSANDBOXED badge, stop via the shared function (LNCH-01/07)
 
@@ -1319,7 +1319,7 @@ Plans:
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
-| 28. Sandboxed Driver Launcher | 4/9 | In Progress | - |
+| 28. Sandboxed Driver Launcher | 5/9 | In Progress | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
 | 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
