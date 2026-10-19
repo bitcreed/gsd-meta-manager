@@ -323,15 +323,76 @@ fn one_of(name: &str, value: Option<&String>, allowed: &[&str]) -> Result<String
     }
 }
 
+/// An item id that is in DIRECTION.md. `RUN` is the run-level pseudo item and is
+/// not valid on an item-level event (the A7 tightening).
+fn known_item(item: Option<&String>, items: &[String]) -> Result<String, Invalid> {
+    match item {
+        None => Err(Invalid("--item is required".to_owned())),
+        Some(id) if id != "RUN" && items.iter().any(|i| i == id) => Ok(id.clone()),
+        Some(id) => Err(Invalid(format!(
+            "--item '{}' is not an item in DIRECTION.md",
+            id.escape_debug()
+        ))),
+    }
+}
+
+/// An integer argument; absent counts as 0 (the spike's `int(a.get(k, 0))`).
+fn integer(name: &str, value: Option<&String>) -> Result<i64, Invalid> {
+    match value {
+        None => Ok(0),
+        Some(v) => v
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| Invalid(format!("--{name} must be an integer"))),
+    }
+}
+
+/// The kept lines of a report body, whether it was cut, and its `FINDINGS: N`.
+///
+/// Only the lines that are written are checked for control characters: a dropped
+/// line never reaches the LOG.
+fn report_body(body: Option<&String>) -> Result<(Vec<String>, bool, Option<i64>), Invalid> {
+    let text = body.map_or("", String::as_str).trim_end_matches('\n');
+    if text.is_empty() {
+        return Err(Invalid(
+            "report body (stdin) is empty; pipe the worker report verbatim".to_owned(),
+        ));
+    }
+    let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+    let truncated = lines.len() > MAX_REPORT_LINES;
+    lines.truncate(MAX_REPORT_LINES);
+    if lines
+        .iter()
+        .any(|l| l.chars().any(|c| c.is_control() && c != '\t'))
+    {
+        return Err(Invalid(
+            "report body must not contain control characters".to_owned(),
+        ));
+    }
+    // The first `FINDINGS:` line decides; if it carries no number there is none.
+    let findings = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("FINDINGS:"))
+        .and_then(|rest| {
+            let digits: String = rest
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse::<i64>().ok()
+        });
+    Ok((lines, truncated, findings))
+}
+
 /// Validate the whole `log` request against the current DIRECTION item ids.
 ///
 /// Pure: the caller applies the returned event only after this returns `Ok`.
+/// A port of the spike's `op_log` checks with the module's tightenings.
 pub fn validate_log(
     event: &str,
     args: &LogArgs,
     items: &[String],
 ) -> Result<ValidatedEvent, Invalid> {
-    let _ = items;
     match event {
         "start" => {
             let mode = one_of("mode", args.mode.as_ref(), MODES)?;
@@ -341,7 +402,111 @@ pub fn validate_log(
                 session: optional_line("session", args.session.as_ref(), 200)?,
             })
         }
-        other => Err(Invalid(format!("unknown event {other:?}"))),
+        "reconcile" => Ok(ValidatedEvent::Reconcile {
+            found: integer("found", args.found.as_ref())?,
+        }),
+        "dispatched" => {
+            let item = known_item(args.item.as_ref(), items)?;
+            let step = one_line("step", args.step.as_deref(), 200)?;
+            let round = integer("round", args.round.as_ref())?;
+            let phase = optional_line("phase", args.phase.as_ref(), 200)?;
+            Ok(ValidatedEvent::Dispatched {
+                item,
+                step,
+                round,
+                phase,
+            })
+        }
+        "report" => {
+            let item = known_item(args.item.as_ref(), items)?;
+            let status = one_of("status", args.status.as_ref(), REPORT_STATUSES)?;
+            let (body, truncated, findings) = report_body(args.body.as_ref())?;
+            Ok(ValidatedEvent::Report {
+                item,
+                status,
+                body,
+                truncated,
+                findings,
+            })
+        }
+        "verified" => {
+            let item = known_item(args.item.as_ref(), items)?;
+            let done_when = one_of("done-when", args.done_when.as_ref(), DONE_WHEN)?;
+            let evidence = one_line("evidence", args.evidence.as_deref(), 200)?;
+            Ok(ValidatedEvent::Verified {
+                item,
+                done_when,
+                evidence,
+            })
+        }
+        "status" => {
+            let item = known_item(args.item.as_ref(), items)?;
+            let state = args
+                .state
+                .as_deref()
+                .and_then(|word| ItemState::ALL.into_iter().find(|s| s.as_str() == word))
+                .ok_or_else(|| {
+                    let words: Vec<&str> = ItemState::ALL.iter().map(|s| s.as_str()).collect();
+                    Invalid(format!("--state must be one of {}", words.join("|")))
+                })?;
+            let rule = args.rule.as_ref().filter(|r| !r.trim().is_empty());
+            match rule {
+                Some(r) if !RULE_ENUM.contains(&r.as_str()) => {
+                    return Err(Invalid(format!(
+                        "--rule must be one of {}",
+                        RULE_ENUM.join("|")
+                    )))
+                }
+                None if state == ItemState::Parked => {
+                    return Err(Invalid(format!(
+                        "--rule is required for parked and must be one of {}",
+                        RULE_ENUM.join("|")
+                    )))
+                }
+                _ => {}
+            }
+            let outcome = if state == ItemState::Running {
+                optional_line("outcome", args.outcome.as_ref(), 200)?
+            } else {
+                Some(one_line("outcome", args.outcome.as_deref(), 200)?)
+            };
+            Ok(ValidatedEvent::Status {
+                item,
+                state,
+                rule: rule.cloned(),
+                outcome,
+            })
+        }
+        "needs-human" => {
+            let item = known_item(args.item.as_ref(), items)?;
+            let question = one_line("question", args.question.as_deref(), 300)?;
+            Ok(ValidatedEvent::NeedsHuman { item, question })
+        }
+        "recovered" => {
+            let item = known_item(args.item.as_ref(), items)?;
+            let action = one_of("action", args.action.as_ref(), RECOVER_ACTIONS)?;
+            let reason = one_line("reason", args.reason.as_deref(), 200)?;
+            Ok(ValidatedEvent::Recovered {
+                item,
+                action,
+                reason,
+            })
+        }
+        "end" => {
+            let status = args
+                .reason
+                .as_deref()
+                .and_then(|word| END_REASONS.iter().find(|(r, _)| *r == word))
+                .ok_or_else(|| {
+                    let words: Vec<&str> = END_REASONS.iter().map(|(r, _)| *r).collect();
+                    Invalid(format!("--reason must be one of {}", words.join("|")))
+                })?;
+            Ok(ValidatedEvent::End {
+                reason: status.0.to_owned(),
+                status: status.1.clone(),
+            })
+        }
+        other => Err(Invalid(format!("unknown event {}", other.escape_debug()))),
     }
 }
 

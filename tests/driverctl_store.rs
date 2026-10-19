@@ -775,6 +775,21 @@ fn a_relaunch_after_a_driver_end_is_not_a_crash() {
     assert!(!store.state().ended_by_driver, "a new launch clears it");
 }
 
+/// `value` with every `null` object member removed, recursively.
+fn without_nulls(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k.clone(), without_nulls(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_nulls).collect()),
+        other => other.clone(),
+    }
+}
+
 #[test]
 fn launcher_written_state_keys_survive_a_store_rewrite() {
     let fx = Fixture::new();
@@ -795,7 +810,12 @@ fn launcher_written_state_keys_survive_a_store_rewrite() {
     }
     assert_eq!(after["items"]["I-01"]["findings"], before["items"]["I-01"]["findings"]);
     assert_eq!(after["caps"]["gap_rounds"], before["caps"]["gap_rounds"]);
-    assert_eq!(after["connections"], before["connections"]);
+    // The typed `Connection` writes its absent fields as explicit nulls where the
+    // spike omitted them; every value that was present is unchanged.
+    assert_eq!(
+        without_nulls(&after["connections"]),
+        without_nulls(&before["connections"])
+    );
     assert_eq!(after["run_id"], before["run_id"]);
     assert_eq!(after["last_event"]["event"], "reconcile");
 }
