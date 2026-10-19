@@ -1,0 +1,12 @@
+CASE=l3
+ATTEMPT=first
+MODEL=haiku
+PROMPT=.planning/spikes/002-launcher-caps-and-tool-frontmatter/experiment/cap-tests/L3-gap-rounds.md
+PROMPT_SHA256=45516a98bfc5c48867b55fa45b9b8ac1726d2e8d8f273f0a4dd5e74d651bc2e1
+CAPS=dispatches=10,minutes=10,gap_rounds=2
+MAX_BUDGET_USD=0.20
+CLAUDE_VERSION=2.1.304 (Claude Code)
+BINARY_SHA256=b806d97fb3bba103a981c23d50f1cab1a884de12a36a7d31130d1486cf4d6a4a
+HEAD=f90d7481c4dd4e3eadf4cd622ef9a50edfa9ac37
+STARTED_UTC=2026-10-19T22:09:41Z
+ENDED_UTC=2026-10-19T22:12:12Z
