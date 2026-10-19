@@ -11,6 +11,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::log::LogEvent;
+
 /// Two `gaps_found` writes of one phase less than this many seconds apart are
 /// one gap round. Strict `<`, float seconds, no rounding or truncation.
 ///
@@ -166,6 +168,45 @@ pub fn digest16(raw: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+/// Item states that close a dispatch (exitclass.py `DONE_STATES`).
+pub const DONE_STATES: [&str; 3] = ["done", "parked", "failed"];
+
+/// The latest open dispatch as `(item, event index)`, or `None` (WR-01).
+pub fn outstanding_dispatch(events: &[LogEvent]) -> Option<(String, usize)> {
+    let _ = events;
+    unimplemented!("RED: outstanding_dispatch")
+}
+
+/// How a driver exit that is neither a cap trip nor a `RUN end` is classified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitClass {
+    /// The process exited cleanly with a worker still outstanding.
+    Stalled,
+    /// Anything else.
+    Crashed,
+}
+
+impl ExitClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExitClass::Stalled => "stalled",
+            ExitClass::Crashed => "crashed",
+        }
+    }
+}
+
+/// `None` keeps the existing status; otherwise the class and its reason (D-17).
+pub fn classify_exit(
+    rc: i32,
+    tripped: bool,
+    ended_by_driver: bool,
+    result_ok: bool,
+    outstanding: Option<&str>,
+) -> Option<(ExitClass, String)> {
+    let _ = (rc, tripped, ended_by_driver, result_ok, outstanding);
+    unimplemented!("RED: classify_exit")
 }
 
 #[cfg(test)]
@@ -416,5 +457,266 @@ mod tests {
         assert_eq!(keys, want);
         let again: GapRoundsState = serde_json::from_value(back).unwrap();
         assert_eq!(again, st);
+    }
+
+    // -- outstanding_dispatch: the exitclass.py WR-01 cases ---------------------------
+
+    fn ev(item: &str, event: &str, kv: &[(&str, &str)]) -> LogEvent {
+        LogEvent {
+            at: "2026-10-17T03:00:00Z".to_owned(),
+            item: item.to_owned(),
+            event: event.to_owned(),
+            kv: kv
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            detail: Vec::new(),
+        }
+    }
+
+    fn dispatched(item: &str) -> LogEvent {
+        ev(item, "dispatched", &[("step", "s")])
+    }
+
+    fn denied() -> LogEvent {
+        ev("RUN", "dispatch-denied", &[("reason", "x")])
+    }
+
+    fn item_of(events: &[LogEvent]) -> Option<String> {
+        outstanding_dispatch(events).map(|(item, _)| item)
+    }
+
+    fn open(item: &str, n: usize) -> Option<(String, usize)> {
+        Some((item.to_owned(), n))
+    }
+
+    #[test]
+    fn outstanding_item_open_and_close_rules() {
+        let d = dispatched("I-01");
+        assert_eq!(item_of(&[d.clone()]).as_deref(), Some("I-01"));
+        let close = |e: LogEvent| item_of(&[d.clone(), e]);
+        assert_eq!(close(ev("I-01", "report", &[("status", "done")])), None);
+        assert_eq!(close(ev("I-01", "status", &[("state", "done")])), None);
+        assert_eq!(close(ev("I-01", "status", &[("state", "parked")])), None);
+        assert_eq!(close(ev("I-01", "status", &[("state", "failed")])), None);
+        assert_eq!(
+            close(ev("I-01", "status", &[("state", "running")])).as_deref(),
+            Some("I-01")
+        );
+        assert_eq!(close(ev("I-01", "recovered", &[("action", "park")])), None);
+        assert_eq!(close(denied()), None);
+    }
+
+    #[test]
+    fn denial_before_the_dispatch_does_not_cancel_it() {
+        assert_eq!(
+            item_of(&[denied(), dispatched("I-01")]).as_deref(),
+            Some("I-01")
+        );
+    }
+
+    #[test]
+    fn a_redispatch_reopens_and_the_latest_dispatch_wins() {
+        let d = dispatched("I-01");
+        let rep = ev("I-01", "report", &[("status", "done")]);
+        assert_eq!(
+            item_of(&[d.clone(), rep, dispatched("I-01")]).as_deref(),
+            Some("I-01")
+        );
+        assert_eq!(
+            outstanding_dispatch(&[d, dispatched("I-02")]),
+            open("I-02", 1)
+        );
+    }
+
+    #[test]
+    fn empty_event_list_has_nothing_outstanding() {
+        assert_eq!(outstanding_dispatch(&[]), None);
+    }
+
+    #[test]
+    fn wr01_a_denial_cancels_only_its_own_immediately_preceding_dispatch() {
+        let d = dispatched("I-01");
+        let d2 = ev("I-01", "dispatched", &[("step", "s2")]);
+        // (a) two dispatches of one item, one denial: the first stays open.
+        assert_eq!(
+            outstanding_dispatch(&[d.clone(), d2.clone(), denied()]),
+            open("I-01", 0)
+        );
+        // (b) one dispatch, one denial: nothing outstanding.
+        assert_eq!(outstanding_dispatch(&[d.clone(), denied()]), None);
+        // (c) a denial cannot hide a different item's unreported dispatch.
+        assert_eq!(
+            outstanding_dispatch(&[d.clone(), dispatched("I-02"), denied()]),
+            open("I-01", 0)
+        );
+        // (d) a RUN-level line between dispatch and denial does not shield the denial.
+        assert_eq!(
+            outstanding_dispatch(&[
+                d.clone(),
+                ev("RUN", "gap-observed", &[("n", "1")]),
+                denied()
+            ]),
+            None
+        );
+        // (e) a report closes the dispatch.
+        assert_eq!(
+            outstanding_dispatch(&[d.clone(), ev("I-01", "report", &[("status", "done")])]),
+            None
+        );
+        // (f) report, re-dispatch, denial, re-dispatch: the last dispatch is the open one.
+        assert_eq!(
+            outstanding_dispatch(&[
+                d.clone(),
+                ev("I-01", "report", &[("status", "done")]),
+                d2,
+                denied(),
+                ev("I-01", "dispatched", &[("step", "s3")]),
+            ]),
+            open("I-01", 4)
+        );
+        // An item-level event between the dispatch and the denial protects the dispatch.
+        assert_eq!(
+            outstanding_dispatch(&[d, ev("I-01", "status", &[("state", "running")]), denied()]),
+            open("I-01", 0)
+        );
+    }
+
+    // -- classify_exit ----------------------------------------------------------------
+
+    #[test]
+    fn classify_exit_matrix() {
+        let class = |r: Option<(ExitClass, String)>| r.map(|(c, _)| c);
+        // A tripped cap or a driver-logged `RUN end` keeps the existing status.
+        assert_eq!(classify_exit(0, true, false, true, Some("I-01")), None);
+        assert_eq!(classify_exit(0, false, true, true, None), None);
+        assert_eq!(classify_exit(1, true, true, false, None), None);
+        // Clean exit, result success, dispatch outstanding: stalled, naming the item.
+        let (c, reason) = classify_exit(0, false, false, true, Some("I-01")).unwrap();
+        assert_eq!(c, ExitClass::Stalled);
+        assert_eq!(
+            reason,
+            "driver ended its turn with a worker outstanding (dispatch I-01 has no report in \
+             LOG.md); the process exited cleanly, so this is not a crash"
+        );
+        // Everything else is a crash.
+        let (c, reason) = classify_exit(0, false, false, false, Some("I-01")).unwrap();
+        assert_eq!(c, ExitClass::Crashed);
+        assert_eq!(reason, "driver exited rc=0 without RUN end");
+        assert_eq!(
+            class(classify_exit(1, false, false, true, Some("I-01"))),
+            Some(ExitClass::Crashed)
+        );
+        assert_eq!(
+            class(classify_exit(0, false, false, true, None)),
+            Some(ExitClass::Crashed)
+        );
+        assert_eq!(
+            class(classify_exit(-9, false, false, true, Some("I-01"))),
+            Some(ExitClass::Crashed)
+        );
+        assert_eq!(
+            classify_exit(137, false, false, true, None).unwrap().1,
+            "driver exited rc=137 without RUN end"
+        );
+        assert_eq!(ExitClass::Stalled.as_str(), "stalled");
+        assert_eq!(ExitClass::Crashed.as_str(), "crashed");
+    }
+
+    // -- the five exitclass replays over the committed spike-003 results ---------------
+
+    const RUN1B_LOG: &str = include_str!("../../tests/fixtures/driverctl/spike003/run1b/LOG.md");
+    const RUN1B_RES: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/run1b/launcher-result-1.json");
+    const RUN1_RES: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/run1/launcher-result-1.json");
+    const R261A_LOG: &str = include_str!("../../tests/fixtures/driverctl/spike003/r261a/LOG.md");
+    const R261A_RES: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/r261a/launcher-result-1.json");
+    const R261_RUN2_LOG: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/r261-run2/LOG.md");
+    const R261_RUN2_RES: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/r261-run2/launcher-result-1.json");
+    const R261_L8_LOG: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/r261-l8/LOG.md");
+    const R261_L8_RES: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/r261-l8/launcher-result-1.json");
+
+    /// `exitclass.py replay` without a stream skeleton: (EXIT_CLASS, OUTSTANDING, RESULT_OK).
+    fn exit_class_replay(
+        log_text: &str,
+        launcher_result: &serde_json::Value,
+    ) -> (String, Option<String>, bool) {
+        let events = parse_log(log_text);
+        let recorded = launcher_result["status"].as_str().unwrap_or("").to_owned();
+        let tripped = launcher_result.get("tripped").is_some_and(|t| {
+            !(t.is_null() || t.as_bool() == Some(false) || t.as_str() == Some(""))
+        });
+        let result_ok = launcher_result["cost"]["subtype"].as_str() == Some("success");
+        let ended = events.iter().any(|e| e.item == "RUN" && e.event == "end");
+        if ended || tripped {
+            return (recorded, None, result_ok);
+        }
+        let item = outstanding_dispatch(&events).map(|(i, _)| i);
+        let rc = launcher_result["rc"].as_i64().unwrap() as i32;
+        let verdict = classify_exit(rc, false, false, result_ok, item.as_deref());
+        let status = verdict.map_or(recorded, |(c, _)| c.as_str().to_owned());
+        (status, item, result_ok)
+    }
+
+    fn replay(log: &str, res: &str) -> (String, Option<String>, bool) {
+        exit_class_replay(log, &serde_json::from_str(res).unwrap())
+    }
+
+    #[test]
+    fn run1b_replay_classifies_stalled_with_i01_outstanding() {
+        let (class, item, ok) = replay(RUN1B_LOG, RUN1B_RES);
+        assert_eq!(class, "stalled");
+        assert_eq!(item.as_deref(), Some("I-01"));
+        assert!(ok);
+    }
+
+    #[test]
+    fn run1_replay_keeps_the_recorded_parked_status() {
+        let run1_log = include_str!("../../tests/fixtures/driverctl/spike003/run1/LOG.md");
+        assert_eq!(replay(run1_log, RUN1_RES).0, "parked");
+    }
+
+    #[test]
+    fn r261a_r261_run2_and_r261_l8_replays_keep_their_recorded_status() {
+        assert_eq!(replay(R261A_LOG, R261A_RES).0, "parked");
+        assert_eq!(replay(R261_RUN2_LOG, R261_RUN2_RES).0, "done");
+        assert_eq!(replay(R261_L8_LOG, R261_L8_RES).0, "stopped");
+    }
+
+    #[test]
+    fn run1b_shape_controls_are_never_stalled() {
+        let base: serde_json::Value = serde_json::from_str(RUN1B_RES).unwrap();
+        let with = |f: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = base.clone();
+            f(&mut v);
+            v
+        };
+        // rc != 0
+        let v = with(&|v| v["rc"] = serde_json::json!(1));
+        assert_eq!(exit_class_replay(RUN1B_LOG, &v).0, "crashed");
+        // a tripped cap keeps the recorded status
+        let v = with(&|v| v["tripped"] = serde_json::json!("gap_rounds"));
+        assert_eq!(
+            exit_class_replay(RUN1B_LOG, &v).0,
+            base["status"].as_str().unwrap()
+        );
+        // the worker reported after all
+        let reported = format!("{RUN1B_LOG}- 2026-10-17T03:07:00Z | I-01 | report | status=done\n");
+        let (class, item, _) = exit_class_replay(&reported, &base);
+        assert_eq!((class.as_str(), item), ("crashed", None));
+        // the last dispatch was denied
+        let denied_log =
+            format!("{RUN1B_LOG}- 2026-10-17T03:07:00Z | RUN | dispatch-denied | reason=x\n");
+        assert_eq!(exit_class_replay(&denied_log, &base).0, "crashed");
+        // the stream did not end in success
+        let v = with(&|v| v["cost"]["subtype"] = serde_json::json!("error_max_turns"));
+        let (class, _, ok) = exit_class_replay(RUN1B_LOG, &v);
+        assert_eq!((class.as_str(), ok), ("crashed", false));
     }
 }
