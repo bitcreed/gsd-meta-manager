@@ -22,6 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use gsd_meta_manager::driver::lock::{probe_at, run_lock_path, LockProbe};
+use gsd_meta_manager::state_reader::driver_frontmatter::read_driver_run;
 use launcher_support::{
     wait_until, write_executable, Fixture, RUN_ID, WAITING_SCENARIO, WELL_MANNERED_SCENARIO,
 };
@@ -444,4 +445,71 @@ fn unsandboxed_run_holds_the_lock_like_a_sandboxed_one() {
     fx.release();
     let out = launcher.wait_with_output().expect("the launcher ends");
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+// ---------------------------------------------------------------- the recorded posture (D-30)
+
+#[test]
+fn unsandboxed_launch_records_degraded_posture() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    break_bwrap(&fx);
+
+    let out = fx.launch(&["--unsandboxed"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(view.frontmatter.sandbox.as_deref(), Some("degraded"));
+    assert_eq!(
+        view.frontmatter.sandbox_missing,
+        Some(vec!["bwrap".to_owned()])
+    );
+    let state = fx.state_json();
+    assert_eq!(state["sandbox"], "degraded");
+    assert_eq!(state["sandbox_missing"], serde_json::json!(["bwrap"]));
+    let direction = fx.run_file("DIRECTION.md");
+    assert!(
+        direction.contains("\nsandbox: \"degraded\"\n"),
+        "{direction}"
+    );
+    assert!(
+        direction.contains("\nsandbox_missing: [\"bwrap\"]\n"),
+        "{direction}"
+    );
+}
+
+#[test]
+fn unsandboxed_on_a_complete_host_is_degraded_with_nothing_missing() {
+    // The flag is the operator's choice (D-29): it degrades a host that could sandbox,
+    // and the run says so without a misleading missing list.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    let out = fx.launch(&["--unsandboxed"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(launch_lines(&fx), Vec::<String>::new(), "{}", fx.shim_log());
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(view.frontmatter.sandbox.as_deref(), Some("degraded"));
+    assert_eq!(view.frontmatter.sandbox_missing, None);
+    assert!(fx.log().contains("RUN | launch | n=1 | mode=degraded"));
+}
+
+#[test]
+fn sandboxed_launch_records_bwrap_scope_posture() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(view.frontmatter.sandbox.as_deref(), Some("bwrap-scope"));
+    assert_eq!(view.frontmatter.sandbox_missing, None);
+    let direction = fx.run_file("DIRECTION.md");
+    assert!(
+        direction.contains("\nsandbox: \"bwrap-scope\"\n"),
+        "{direction}"
+    );
+    assert!(!direction.contains("sandbox_missing"), "{direction}");
+    assert_eq!(fx.state_json()["sandbox"], "bwrap-scope");
 }

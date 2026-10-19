@@ -222,6 +222,11 @@ pub struct LaunchSpec {
     pub limits: CapLimits,
     pub driver: Option<DriverSpec>,
     pub scope_unit: Option<String>,
+    /// The posture word recorded as `sandbox` (`bwrap-scope` | `degraded`, D-30);
+    /// `None` for a launch that is not the sandbox launcher's (`driverctl serve`).
+    pub sandbox: Option<String>,
+    /// What the host probes found missing, for a degraded launch.
+    pub sandbox_missing: Vec<String>,
 }
 
 // ---------------------------------------------------------------- hooks
@@ -656,6 +661,8 @@ impl RunStore {
                 denied: self.state.denied_dispatches,
             },
             launches: self.state.launches,
+            sandbox: None,
+            sandbox_missing: None,
             connected: self.state.connections.clone(),
             heartbeat_stale_after_s: HEARTBEAT_STALE_AFTER_S,
             last_event: self.state.last_event.clone().unwrap_or_default(),

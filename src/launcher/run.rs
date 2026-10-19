@@ -530,6 +530,8 @@ fn run_one_launch(
             mode: "headless".to_owned(),
         }),
         scope_unit,
+        sandbox: Some(ctx.posture.as_str().to_owned()),
+        sandbox_missing: ctx.posture.missing().to_vec(),
     })?;
 
     match supervise(session, ctx, n, &unit, &scope) {

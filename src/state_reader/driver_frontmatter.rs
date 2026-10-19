@@ -373,6 +373,14 @@ pub struct DriverFrontmatter {
     pub dispatch_audit: DispatchAudit,
     #[serde(default)]
     pub launches: u32,
+    /// How the launcher contained the driver: `bwrap-scope` or `degraded` (28-04,
+    /// D-30). Additive: absent from every frontmatter written before the launcher
+    /// existed, and emitted only when set so those stay byte-identical.
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    /// What the host probes found missing when `sandbox` is `degraded`.
+    #[serde(default)]
+    pub sandbox_missing: Option<Vec<String>>,
     #[serde(default)]
     pub connected: Vec<Connection>,
     #[serde(default = "default_stale_after")]
@@ -783,6 +791,48 @@ mod tests {
         assert!(emitted.ends_with("\n---\n"));
         let again = parse_driver_frontmatter(&emitted).expect("emitted block parses");
         assert_eq!(again, parsed);
+    }
+
+    #[test]
+    fn the_sandbox_keys_round_trip_and_sit_right_after_launches() {
+        let mut fm = parse_driver_frontmatter(RUN1B).unwrap();
+        assert_eq!((&fm.sandbox, &fm.sandbox_missing), (&None, &None));
+        let plain = fm.emit();
+        assert!(
+            !plain.contains("sandbox"),
+            "emitted only when set:\n{plain}"
+        );
+
+        fm.sandbox = Some("degraded".to_owned());
+        fm.sandbox_missing = Some(vec!["bwrap".to_owned(), "user-systemd".to_owned()]);
+        let text = fm.emit();
+        assert!(
+            text.contains(
+                "launches: 1\nsandbox: \"degraded\"\n\
+                 sandbox_missing: [\"bwrap\", \"user-systemd\"]\nconnected:"
+            ),
+            "{text}"
+        );
+        assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm);
+
+        fm.sandbox = Some("bwrap-scope".to_owned());
+        fm.sandbox_missing = None;
+        let text = fm.emit();
+        assert!(
+            text.contains("launches: 1\nsandbox: \"bwrap-scope\"\nconnected:"),
+            "{text}"
+        );
+        assert!(!text.contains("sandbox_missing"), "{text}");
+        assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm);
+    }
+
+    #[test]
+    fn a_hostile_sandbox_value_cannot_span_lines() {
+        let mut fm = parse_driver_frontmatter(RUN1B).unwrap();
+        fm.sandbox = Some("a\nstatus: done".to_owned());
+        fm.sandbox_missing = Some(vec!["x\"]\nlaunches: 9".to_owned()]);
+        let text = fm.emit();
+        assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm);
     }
 
     #[test]

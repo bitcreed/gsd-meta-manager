@@ -1603,3 +1603,76 @@ fn a_held_direction_lock_is_logged_and_the_splice_proceeds() {
         .read("DIRECTION.md")
         .starts_with("---\ngenerated_by: driverctl"));
 }
+
+// ---------------------------------------------------------------- the launch posture (28-04, D-30)
+
+#[test]
+fn begin_launch_records_the_posture_in_state_and_frontmatter() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store
+        .begin_launch(LaunchSpec {
+            sandbox: Some("degraded".to_owned()),
+            sandbox_missing: vec!["bwrap".to_owned(), "user-systemd".to_owned()],
+            ..standalone()
+        })
+        .unwrap();
+
+    let state = fx.state_json();
+    assert_eq!(state["sandbox"], "degraded");
+    assert_eq!(
+        state["sandbox_missing"],
+        serde_json::json!(["bwrap", "user-systemd"])
+    );
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.sandbox.as_deref(), Some("degraded"));
+    assert_eq!(
+        fm.sandbox_missing,
+        Some(vec!["bwrap".to_owned(), "user-systemd".to_owned()])
+    );
+}
+
+#[test]
+fn a_launch_without_a_posture_writes_neither_key_and_clears_a_stale_one() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store
+            .begin_launch(LaunchSpec {
+                sandbox: Some("degraded".to_owned()),
+                sandbox_missing: vec!["bwrap".to_owned()],
+                ..standalone()
+            })
+            .unwrap();
+        store.end_launch(Some(0)).unwrap();
+    }
+    // A later launch that is not the sandbox launcher's (`driverctl serve`) must not
+    // inherit the previous posture.
+    let mut store = fx.open();
+    store.begin_launch(standalone()).unwrap();
+    let state = fx.state_json();
+    assert!(state.get("sandbox").is_none(), "{state}");
+    assert!(state.get("sandbox_missing").is_none(), "{state}");
+    let text = fx.read("DIRECTION.md");
+    assert!(!text.contains("sandbox"), "{text}");
+    let fm = parse_driver_frontmatter(&text).unwrap();
+    assert_eq!((fm.sandbox, fm.sandbox_missing), (None, None));
+}
+
+#[test]
+fn a_sandboxed_launch_has_no_missing_list() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store
+        .begin_launch(LaunchSpec {
+            sandbox: Some("bwrap-scope".to_owned()),
+            ..standalone()
+        })
+        .unwrap();
+    let state = fx.state_json();
+    assert_eq!(state["sandbox"], "bwrap-scope");
+    assert!(state.get("sandbox_missing").is_none(), "{state}");
+    let text = fx.read("DIRECTION.md");
+    assert!(text.contains("\nsandbox: \"bwrap-scope\"\n"), "{text}");
+    assert!(!text.contains("sandbox_missing"), "{text}");
+}
