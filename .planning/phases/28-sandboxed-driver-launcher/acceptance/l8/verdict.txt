@@ -1,0 +1,5 @@
+L8-1 PASS stop-guard.log: block item=I-01 attempt=1
+L8-2 PASS LOG.md has a report for I-01
+L8-3 PASS the driver ended the run (RUN | end)
+L8-4 PASS final status=stopped, not stalled
+RESULT PASS

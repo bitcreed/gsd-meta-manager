@@ -1,0 +1,12 @@
+CASE=l8
+ATTEMPT=first
+MODEL=haiku
+PROMPT=.planning/spikes/003-divergent-gap-loop-validation/experiment/cap-tests/L8-early-worker.md
+PROMPT_SHA256=3bb8d57a2db793b2a1617e8f0b20cd7ce922c8a0760dd930b895cb01df778882
+CAPS=dispatches=3,minutes=10,gap_rounds=2
+MAX_BUDGET_USD=0.40
+CLAUDE_VERSION=2.1.304 (Claude Code)
+BINARY_SHA256=b806d97fb3bba103a981c23d50f1cab1a884de12a36a7d31130d1486cf4d6a4a
+HEAD=b949f64a822827a647b0a2e6db6ea2afcf63713f
+STARTED_UTC=2026-10-19T22:18:35Z
+ENDED_UTC=2026-10-19T22:19:45Z
