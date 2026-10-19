@@ -1,0 +1,12 @@
+CASE=l7
+ATTEMPT=first
+MODEL=haiku
+PROMPT=.planning/spikes/003-divergent-gap-loop-validation/experiment/cap-tests/L7-drift-gap-cap.md
+PROMPT_SHA256=1a50b8bcfee6f18c959f44ec0c874d20d5964ae0102c6822e373b231c30b2c68
+CAPS=dispatches=5,minutes=10,gap_rounds=2
+MAX_BUDGET_USD=0.40
+CLAUDE_VERSION=2.1.304 (Claude Code)
+BINARY_SHA256=b806d97fb3bba103a981c23d50f1cab1a884de12a36a7d31130d1486cf4d6a4a
+HEAD=9f7ae12ea27e49db37928226692d536a8de4590d
+STARTED_UTC=2026-10-19T22:15:34Z
+ENDED_UTC=2026-10-19T22:18:34Z

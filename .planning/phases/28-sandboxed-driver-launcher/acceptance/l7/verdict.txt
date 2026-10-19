@@ -1,0 +1,7 @@
+L7-1 PASS feed-lines before=21 after=27, drift.log gen=1 seen
+L7-2 PASS phase 1 gap-observed counts=[1, 2, 3, 4]
+L7-3 PASS hook_dispatches=1, no deny before count 3 (count 3 at line 42)
+L7-4 PASS first deny after count 3, reason 'phase 1 has failed verification 3 times'
+L7-5 PASS one cap-tripped gap_rounds used=4 limit=2 (line 45), none before count 4 (line 44)
+L7-6 PASS launch-end recorded, status=stopped reason=launcher-cap:gap_rounds
+RESULT PASS
