@@ -156,7 +156,9 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   as crashed.
 - [ ] **DCTL-04**: Counters come only from tool-observed state:
   - dispatches from hook payloads, where a missing `agent_id` means a driver-level call;
-  - gap rounds from `gaps_found` VERIFICATION.md writes on disk.
+  - gap rounds from `gaps_found` VERIFICATION.md writes on disk, coalesced per the 26.1 rule
+    (`COALESCE_S = 45`, strict, mtime-anchored). driverctl owns the counter and its VERIFICATION.md
+    scan.
 
   Malformed or unknown events are rejected with rc=2. Heartbeat-only rewrites are coalesced to at
   most one every 120 s.
@@ -171,7 +173,8 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 - [ ] **LNCH-03**: Hard caps are enforced from outside the sandbox:
   - dispatch count: denied at the limit;
   - active wall-clock minutes: kill the scope, with `RuntimeMaxSec` as backstop;
-  - gap rounds: deny at limit+1, kill at limit+2.
+  - gap rounds: deny at limit+1, kill at limit+2, reading driverctl's `caps.gap_rounds.per_phase`
+    (the counter is owned by Phase 27, DCTL-04).
 
   A rate-limit result parks the run without retry and names the quota window.
 - [ ] **LNCH-04**: Each run gets its own `CLAUDE_CONFIG_DIR`.

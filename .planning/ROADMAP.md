@@ -1020,8 +1020,10 @@ liveness class for a headless driver ended while a dispatched worker was still o
      written back.
   4. Malformed events and unknown items are rejected with rc=2. Dispatches are counted from hook
      payloads (no `agent_id` means a driver-level dispatch). Gap rounds come from `gaps_found`
-     VERIFICATION.md writes on disk, never from the driver's own account. Heartbeat-only rewrites
-     are coalesced to at most one every 120 s.
+     VERIFICATION.md writes on disk, never from the driver's own account. Gap rounds are coalesced
+     per the 26.1 rule (`COALESCE_S = 45`, strict, mtime-anchored); driverctl owns the counter, its
+     VERIFICATION.md scan and the `caps.gap_rounds.per_phase` state, and exposes a cap hook point
+     for Phase 28. Heartbeat-only rewrites are coalesced to at most one every 120 s.
 
 **Plans**: 0 plans
 
@@ -1046,7 +1048,8 @@ default. Hosts without bwrap or systemd-run get an explicit degraded mode.
   2. The spike-002 L1-L5 misbehaving-driver cases pass against the Rust launcher:
      - the dispatch cap denies at the limit;
      - the wall clock kills the scope, with `RuntimeMaxSec` as backstop;
-     - the gap cap denies at limit+1 and kills at limit+2;
+     - the gap cap denies at limit+1 and kills at limit+2 (gap count source: the Phase 27 store's
+       `caps.gap_rounds.per_phase`, via its cap hook point; Phase 28 owns only the gate/trip/kill);
      - a rate-limit result parks without retry.
   3. Inside the sandbox:
      - host `~/.claude` is read-only;

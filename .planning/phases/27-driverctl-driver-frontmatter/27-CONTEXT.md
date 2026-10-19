@@ -67,7 +67,8 @@ Out of scope, owned by later phases:
   for `crashed` / `stalled`, which records the reason. The `classify_exit(rc, result_ok, events)` decision itself
   is called by Phase 28's launcher. Rationale: `outstanding_dispatch` reads driverctl-owned events, and one
   definition of "a dispatch with no report" must be shared by the launcher and the Stop guard (26.1 D-03 lesson).
-- **D-07:** Reader liveness (DCTL-03):
+- **D-07:** Reader liveness (DCTL-03). *Corrected by D-20 (lock files, SH probe + acquirer retry) and D-22
+  (`paused` / never-launched `starting` are not crashed) — those win where they conflict.*
   - `running`, `starting` or `paused` with the run flock free reads as **crashed**. This is derived at read time and
     never written by the reader.
   - Terminal statuses (`stopped | done | crashed | stalled | parked`) are shown as written; a free lock is expected
@@ -112,7 +113,7 @@ Out of scope, owned by later phases:
   heartbeat. Any non-heartbeat event regenerates immediately. — from DCTL-04 / spike 002 finding 7.
 
 ### Frontmatter write path (DCTL-02, SC2)
-- **D-12:** Exchange-verify splice via `rustix::fs::renameat_with(…, RenameFlags::EXCHANGE)`. The steps:
+- **D-12:** *(Step 3 corrected by D-23: compare body bytes, not inodes alone.)* Exchange-verify splice via `rustix::fs::renameat_with(…, RenameFlags::EXCHANGE)`. The steps:
   1. write the new file (new frontmatter plus the current body, byte-for-byte) to a temp file in the same dir;
   2. exchange it with DIRECTION.md;
   3. compare the displaced inode with the one read;
@@ -139,7 +140,7 @@ Out of scope, owned by later phases:
     smoke variant runs in the default `cargo test`.
 
 ### Schema & reader (DCTL-03, SC3)
-- **D-15:** Frontmatter schema v1 is a typed `DriverFrontmatter` (serde, `serde_yml` 0.0.13, already a dependency)
+- **D-15:** *(Key names corrected by D-24; `item_states` added by D-19.)* Frontmatter schema v1 is a typed `DriverFrontmatter` (serde, `serde_yml` 0.0.13, already a dependency)
   in `state_reader`. Its fields follow spike 002's generator:
   - `schema`, `run_id`, `status`, `control`, `heartbeat`;
   - `connected[]` and `items{state, outcome, …}`;
@@ -162,6 +163,87 @@ Out of scope, owned by later phases:
 - **D-18:** Counters stay replay-testable offline. Every counting rule (dispatch audit, gap coalescing, outstanding
   dispatch) is a pure function with fixture tests built from recorded spike LOGs and timestamps. This is the
   26.1 D-02 lesson: prove counting offline before any paid run.
+
+### Operator decisions (2026-10-18, post-research — NOT inferred)
+- **D-19:** Open question A4 (27-RESEARCH §Schema v1, Open Question 1) is resolved by the operator:
+  - Add **`item_states` inline in the v1 frontmatter**: one single-line flow map per DIRECTION item, for example
+    `  "I-01": {state: "running", dispatches: 1, outcome: null}`. The reader field is `#[serde(default)]`, so the
+    17 spike-generated DIRECTION.md fixtures (which lack the key) still parse.
+  - The full per-item record lives in the existing tool-owned `state.json`. The frontmatter stays a **derived
+    view** of it. **No new sidecar file.**
+  - The item state vocabulary is a **CLOSED enum** reusing the existing `items` count keys:
+    `pending | running | done | parked | failed` (= spike `STATE_ENUM`).
+  - The schema documentation (module doc on `DriverFrontmatter` and the emitter) must state: **adding a value is
+    additive; renaming or removing one is a major-version change** (`driver_frontmatter_version` bump).
+  — **Reversibility:** costly — run dirs on disk and Phase 30 read it.
+
+### Research corrections adopted (2026-10-18, from 27-RESEARCH.md; supersede the named decisions where they conflict)
+- **D-20 (corrects D-07, D-13 lock detail):** Two lock files with two meanings, never shared:
+  - **run lock** `<run-dir>/launcher.lock` = liveness ("the single writer of this run is alive"), held `LOCK_EX`
+    for the whole life of the `RunStore` (standalone `serve` in Phase 27; the Phase 28 launcher embedding the
+    library). `RunStore::open` takes the `RunLock` guard by value, so a store without the lock is unrepresentable.
+  - **`<run-dir>/DIRECTION.lock`** = edits; short hold around one splice or one body write, bounded retry ~2 s;
+    on timeout the splice proceeds without it and logs `direction-lock-timeout`.
+  - `src/driver/lock.rs` gains `acquire_at(path, holder)`, `acquire_at_with_retry(path, holder, budget)` and
+    `probe_at(path) -> LockProbe {Held, Free, Absent, Unknown(errno)}`. The existing per-project `run.lock` /
+    `acquire` for `drive` stays untouched.
+  - Probe = `open(O_RDONLY, no O_CREAT)` → `flock(LOCK_SH|LOCK_NB)` → drop. Acquirer = `LOCK_EX|LOCK_NB` with
+    exponential backoff from 1 ms, capped 50 ms per sleep, total budget **≤ 500 ms** `[inferred — audit]` (63 ms
+    worst measured), then `HeldBy`.
+  - **Ordering invariant:** the run lock is taken **before** the socket is unlinked/bound and before `status` is
+    written; the final (terminal) status is written and regenerated **before** the lock is released (released
+    LAST). This closes the probe race (R4).
+  - Lock order: run lock (long) before `DIRECTION.lock` (short); nobody waits on the run lock while holding
+    `DIRECTION.lock`.
+  - Race tests (`tests/driverctl_lock_race.rs`), per 27-RESEARCH Answer A §Test 1–8: negative control (single
+    attempt refused under a 30 ms SH hold); closed (retry succeeds); stress (2 probers, 2 000 cycles, 0 false
+    refusals with retry AND > 0 without, non-vacuous); mutual exclusion kept (returns `HeldBy` within
+    budget + 100 ms); probe-vs-probe both `Free`; second serve refused; SIGKILL → reader derives crashed, restart
+    logs `crash-detected`; reader table R1–R6.
+  - Editor-race pass rule (corrects D-14 wording): `lost_rename == 0` exact; `lost_inplace ≤
+    poisson_q99(7.4e-5 × saves_inplace)` (one-sided, 1 % false-fail); observed rate printed. Naive strategy kept
+    test-only as a positive control (must show LOST > 0).
+- **D-21:** A second `serve` for the same run must **not steal a live run's socket**: it acquires the run lock
+  first and exits non-zero on `HeldBy` without touching the socket path; only the lock holder unlinks a stale
+  socket. Default socket path `$XDG_RUNTIME_DIR/gsdmm-driverctl/<run-id>-<sha256(canonical run dir)[:8]>.sock`
+  (dir 0700, uid-owned check, `sun_path` ≤ 107 bytes, no `/tmp` fallback) `[inferred — audit]`; `--sock` stays an
+  override.
+- **D-22 (corrects D-07):** `paused` and never-launched `starting` must **not** read as crashed:
+  - derived `crashed` only for `running` with the lock free/absent, or `starting` with `launches > 0` and the lock
+    free/absent;
+  - `paused` is shown as written (a clean `end --reason pause`);
+  - `starting` with `launches == 0` shows as not-launched;
+  - a probe errno other than `EWOULDBLOCK` yields `LivenessUnknown`, never crashed.
+- **D-23 (corrects D-12):** The exchange-verify check compares the displaced file's **body bytes** with the body
+  read (inode may be compared additionally, never alone). Plus `[inferred — audit]`: fsync the temp file before the
+  exchange, tolerate a CRLF leading block, fixed temp prefix `.DIRECTION.md.fm.<pid>.<n>` swept at `serve` start.
+- **D-24 (corrects D-15 field names):** Schema v1 keys are those of the actual generator (27-RESEARCH §Schema v1
+  field map), in emission order: `generated_by`, `driver_frontmatter_version`, `run_id`, `status`, `status_reason`,
+  `control`, `current_item`, `current_phase`, `current_step`, `items{total,pending,running,done,parked,failed}`,
+  `caps{dispatches{used,limit}, wall_clock_min{used,limit}, gap_rounds{used,limit,phase}}`,
+  `dispatch_audit{logged,observed,denied}`, `launches`, `connected[]`, `heartbeat_stale_after_s`,
+  `last_event{at,item,event,summary}`, `updated_at` — plus the additive `item_states` (D-19). An unknown
+  `driver_frontmatter_version` major is rejected (`UnsupportedVersion`); `status` has a tolerant `Unknown(String)`.
+  Emission is a hand-written emitter; `serde_yml` is used to parse only.
+- **D-25:** The `driverctl` subcommand is dispatched **before** tracing / color-eyre / config init, so an
+  in-sandbox invocation (unwritable data dir) never panics with rc 101. The hook gate is **fail-closed**: transport
+  error or a server `{"ok": false}` on a gate payload prints the deny JSON and exits 0. Tracing init is also made
+  fallible (no file logging on error). Regression test without bwrap: `XDG_DATA_HOME=/proc/nonexistent-gsdmm`.
+  **Phase 28 hand-off:** seed the PreToolUse `Agent|Task` hook with `"onFailure": "block"`, and mask
+  `<run-dir>/launcher.lock` and `<run-dir>/DIRECTION.lock` inside bwrap (`--ro-bind /dev/null …`); `serve` creates
+  both files before the launcher builds the bwrap argv. Also hand off: hold the run lock across `fresh-exit`
+  relaunches (R3).
+- **D-26 (confirms and extends D-09; research Answer B ENDORSE-WITH-CHANGES):** The gap-round counter moves into
+  Phase 27 together with its **observation trigger**: the standalone `serve` runs a 2 s scan tick over
+  `<project>/.planning/phases/*/*-VERIFICATION.md` (WR-07 stat-read-stat, `fm_status` port, `st_mtime` float, phase
+  key `0*(\d+(?:\.\d+)?)` with non-matching dirs skipped, `sha256(raw)[:16]` digest). `RunStore` carries a `Gate`
+  hook point (default allow) that is the **cap hook point for Phase 28**. Phase 28 owns only the
+  deny-at-L+1 / kill-at-L+2 policy reading `caps.gap_rounds.per_phase`. ROADMAP Phase 27/28, MANIFEST and the
+  DCTL-04 / LNCH-03 wording were updated accordingly on 2026-10-18; no requirement IDs changed.
+- **D-27:** The dashboard quote divergence (quoted `status: "gaps_found"` counts as a gap round via `fm_status` but
+  the dashboard's `VerificationStatus::from_raw` renders `Unknown`) is out of scope and filed as
+  `.planning/todos/pending/2026-10-18-dashboard-verification-status-quote-divergence.md` `[informational]`. The
+  counter must use the `fm_status` port, not the dashboard reader.
 
 ### Musk pass (discuss:pre)
 - No scope cuts. DCTL-01..04 all have owners: the spike-002 user requirement for a tool-written frontmatter, and

@@ -37,7 +37,8 @@ plus `systemd-run --user --scope`.
   (gap count 3, two verifier runs); a divergence signal must not depend on the raw file-hash count. The headless driver also ended
   its session with a worker unreported in one of two Opus launches. Both need a seed/instrument redesign before Phase 27.
 - (spike 003, 26.1) The gap round count is coalesced: a `gaps_found` VERIFICATION write counts as a new round only when more than 45 s
-  after the previous one for the phase (`tools/gapcount.py`, `COALESCE_S = 45`). Phase 28 ports this rule; the dispatch-epoch rule and
+  after the previous one for the phase (`tools/gapcount.py`, `COALESCE_S = 45`). Phase 27 ports the counter (DCTL-04); Phase 28 consumes `per_phase` in its gate/trip
+  (re-homed 2026-10-18, 27-RESEARCH Answer B). The dispatch-epoch rule and
   writer-agent keying are the recorded alternatives. Live on Opus (`r261a`): two verifier re-writes were coalesced and the launcher count
   matched the verifier runs (A9 PASS).
 - (spike 003, 26.1) The driver status enum Phase 27 writes needs a `stalled` value (clean exit with a dispatched worker unreported and no
@@ -56,7 +57,7 @@ plus `systemd-run --user --scope`.
 - (spike 003, 26.1 gap closure) Seed v2 for the Phase 28/29 test harness: the moving target must advance after the executor ends; the verifier spawn is
   the earliest host-visible point (the feed advanced under 1 s after each `gsd-verifier` spawn and before its first read). Advancing on the executor's
   SUMMARY commit lets the executor absorb the change before verification (`r261-run2` converged).
-- (spike 003, 26.1 gap closure) The Phase 27 driver status enum needs `stalled`, and Phase 28 ports the coalescing gap count (`COALESCE_S = 45`); both
+- (spike 003, 26.1 gap closure) The Phase 27 driver status enum needs `stalled`, and Phase 27 ports the coalescing gap count (`COALESCE_S = 45`; Phase 28 consumes `per_phase`); both
   carry unchanged. `planner.stall_detection_enabled: false` was set in every paid run, so the stall-watch path stays a Phase 28/29 carry.
 
 ## Spikes
