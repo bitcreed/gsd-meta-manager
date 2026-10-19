@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.14.0
 current_phase: 27
 current_phase_name: driverctl & Driver Frontmatter
-status: planning
+status: executing
 stopped_at: Phase 27 context gathered
-last_updated: "2026-10-19T04:25:10.997Z"
+last_updated: "2026-10-19T04:51:58.333Z"
 last_activity: 2026-10-18
-last_activity_desc: Phase 26.1 complete, transitioned to Phase 27
-state_head: 1841629900a8f1713f0463e9379da6996ed81bb0
+last_activity_desc: Phase 27 execution started
+state_head: f2ddf5eddf71358bbe58ecb46e37c27dae126899
 progress:
   total_phases: 10
   completed_phases: 10
@@ -32,7 +32,7 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
-Status: Ready to plan Phase 27 (driverctl & Driver Frontmatter). Blocker CLEARED 2026-10-18.
+Status: Executing Phase 27
   Phase 26.1 complete 2026-10-18 (11/11 plans; verification passed after operator sign-off on the
   human item, 26.1-UAT.md test 1). VALID-01 proven on an organic Opus driver. VALID-02 accepted by the
   operator as ADJUST (final): launcher deny/kill is model-independent launcher code proven by the
@@ -220,8 +220,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 27 (driverctl & Driver Frontmatter) — READY TO EXECUTE
-Plan: Not started
+Phase: 27 (driverctl & Driver Frontmatter) — EXECUTING
+Plan: 1 of 6
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -255,7 +255,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-18 — Phase 26.1 complete, transitioned to Phase 27
+Last activity: 2026-10-18 — Phase 27 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
