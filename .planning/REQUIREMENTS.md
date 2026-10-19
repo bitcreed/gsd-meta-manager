@@ -189,7 +189,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   - `~/.ssh` is empty;
   - `SSH_AUTH_SOCK`, `GH_TOKEN` and `ANTHROPIC_API_KEY` are stripped;
   - the run dir is read-only.
-- [ ] **LNCH-05**: Auth is passed as `CLAUDE_CODE_OAUTH_TOKEN` from a stored long-lived
+- [x] **LNCH-05**: Auth is passed as `CLAUDE_CODE_OAUTH_TOKEN` from a stored long-lived
   `claude setup-token` token, set up by a guided onboarding step. A host-token fallback detects
   `OAuth token revoked` and relaunches. No refresh token ever enters the sandbox.
 - [ ] **LNCH-06**: A driven run's commits leave the machine only through gsd-mm's push step outside
@@ -353,7 +353,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-02 | Phase 28 | Pending |
 | LNCH-03 | Phase 28 | Pending |
 | LNCH-04 | Phase 28 | Pending |
-| LNCH-05 | Phase 28 | Pending |
+| LNCH-05 | Phase 28 | Complete |
 | LNCH-06 | Phase 28 | Pending |
 | LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |

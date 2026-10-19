@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: executing
-stopped_at: Completed 28-05-PLAN.md
-last_updated: "2026-10-19T20:29:09.982Z"
+stopped_at: Completed 28-06-PLAN.md
+last_updated: "2026-10-19T20:48:39.742Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 28 execution started
-state_head: 9ddc42c0792b8ea0c332312af5a0e3ae8f04e9bc
+state_head: a6eb87aeb70c66efec765825eef36bce0ccdfe52
 progress:
   total_phases: 10
   completed_phases: 11
@@ -228,7 +228,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 28 (Sandboxed Driver Launcher) — EXECUTING
-Plan: 6 of 9
+Plan: 7 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -478,6 +478,7 @@ verify-phase if the gate is fixed.
 | Phase 28 P03 | 11 min | 3 tasks | 5 files |
 | Phase 28 P04 | 40 min | 2 tasks | 11 files |
 | Phase 28 P05 | 20 min | 2 tasks | 6 files |
+| Phase 28 P06 | 18 min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -638,6 +639,8 @@ Recent decisions affecting current work:
 - [Phase 28]: 28-04 D-31 narrowing: SC6 macOS example satisfied only as a refusal on macOS this phase; degraded mode is functional on Linux hosts without bwrap/systemd
 - [Phase 28]: Hard caps are enforced from outside the sandbox by a gate (deny at L / L+1) and a monitor (kill at L+2 or past limit*60 active seconds); every launch end is one decide() table [28-05] — Hard caps are enforced from outside the sandbox by a gate (deny at L / L+1) and a monitor (kill at L+2 or past limit*60 active seconds); every launch end is one decide() table [28-05]
 - [Phase 28]: Wall clock is checked at the 2 s tick; cap-minutes 0/NaN is refused; host token re-read precedes the auth-relaunch line; is_auth_failure needs an error result [inferred - audit, 28-05] — Wall clock is checked at the 2 s tick; cap-minutes 0/NaN is refused; host token re-read precedes the auth-relaunch line; is_auth_failure needs an error result [inferred - audit, 28-05]
+- [Phase 28]: 28-06: token shape check is advisory (sk-ant-oat01- prefix warns, does not refuse); guard budget is 3 blocks per outstanding dispatch [inferred — audit]
+- [Phase 28]: 28-06: an existing token directory is tightened (group/other write removed), not refused, and store_token pins 0600 at open instead of a process-wide umask [inferred — audit]
 
 ### Roadmap Evolution
 
@@ -811,8 +814,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-19T20:29:08.995Z
-Stopped at: Completed 28-05-PLAN.md
+Last session: 2026-10-19T20:48:38.743Z
+Stopped at: Completed 28-06-PLAN.md
 Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
