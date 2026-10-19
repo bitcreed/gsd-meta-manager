@@ -38,7 +38,8 @@
 //! 6. **A stalled connection never blocks a gate hook (T-27-24).** Each connection
 //!    gets its own thread (at most [`MAX_CONNECTIONS`]; beyond that the reply is
 //!    `{ok:false,error:busy}`, which a gate client turns into a deny), with
-//!    [`CONN_TIMEOUT`] read and write timeouts and a 1 MiB request cap. Reading
+//!    a [`CONN_TIMEOUT`] TOTAL read deadline (WR-01), a write timeout and a 1 MiB
+//!    request cap. Reading
 //!    happens before the store mutex is taken, so a trickling client holds no lock.
 //!    A panic while handling one request is answered `internal: panic` and never
 //!    ends the server; a poisoned mutex is recovered.
@@ -421,11 +422,25 @@ enum ReadError {
     TimedOut,
 }
 
-/// Read one request: up to the first `\n` or EOF, at most [`MAX_REQUEST_BYTES`].
-fn read_request(stream: &mut UnixStream) -> Result<Vec<u8>, ReadError> {
+/// Read one request: up to the first `\n` or EOF, at most [`MAX_REQUEST_BYTES`],
+/// within `total` of wall time.
+///
+/// WR-01: the bound is a TOTAL deadline, not a per-`read` socket timeout. Each read
+/// is given only the time that is left, so a client that trickles one byte every few
+/// seconds is timed out at the deadline instead of holding its handler slot for
+/// `MAX_REQUEST_BYTES` reads.
+fn read_request(stream: &mut UnixStream, total: Duration) -> Result<Vec<u8>, ReadError> {
+    let deadline = Instant::now() + total;
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ReadError::TimedOut);
+        }
+        if stream.set_read_timeout(Some(left)).is_err() {
+            return Err(ReadError::Closed);
+        }
         match stream.read(&mut chunk) {
             Ok(0) => {
                 return if buf.is_empty() {
@@ -472,9 +487,8 @@ fn write_reply(stream: &mut UnixStream, reply: &Response) {
 
 fn handle_connection(mut stream: UnixStream, store: &Mutex<RunStore>) {
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(CONN_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONN_TIMEOUT));
-    let reply = match read_request(&mut stream) {
+    let reply = match read_request(&mut stream, CONN_TIMEOUT) {
         Ok(bytes) => answer(|| lock_store(store).handle_json(&bytes)),
         Err(ReadError::TooLarge) => Response::rejected("request too large"),
         Err(ReadError::TimedOut) => Response::rejected("timed out reading the request"),
@@ -909,6 +923,34 @@ mod tests {
         let reply = answer(|| panic!("boom"));
         assert_eq!(reply, Response::rejected("internal: panic"));
         assert_eq!(answer(Response::ok), Response::ok());
+    }
+
+    #[test]
+    fn wr01_a_trickling_client_hits_the_total_deadline() {
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        // One byte every 20 ms for up to ~3 s, never a newline. A per-read timeout
+        // of 200 ms is reset by every byte and would never fire; the writer then
+        // closes and the read would return Ok. Only a total deadline times out.
+        let writer = std::thread::spawn(move || {
+            for _ in 0..150 {
+                if client.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let out = read_request(&mut server, Duration::from_millis(200));
+        drop(server);
+        let _ = writer.join();
+        assert!(matches!(out, Err(ReadError::TimedOut)));
+    }
+
+    #[test]
+    fn wr01_a_prompt_request_is_still_read() {
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        client.write_all(b"{\"op\":\"x\"}\nrest").unwrap();
+        let got = read_request(&mut server, Duration::from_secs(30));
+        assert!(matches!(got, Ok(ref b) if b == br#"{"op":"x"}"#));
     }
 
     #[test]
