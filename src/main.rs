@@ -1,3 +1,4 @@
+mod driverctl_cli;
 mod event;
 mod tui;
 
@@ -61,22 +62,65 @@ fn judged_alias_or_exit(raw: &str, refusal_code: i32) -> gsd_meta_manager::regis
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize tracing subscriber with file appender before anything else
+/// Install the file-logging subscriber, or install nothing.
+///
+/// **Fallible on purpose (D-25, T-27-11).** This used to be
+/// `tracing_appender::rolling::daily`, which PANICS (rc 101) when the log
+/// directory cannot be created. Under an unwritable data dir that turned every
+/// invocation of the binary into a crash, and an in-sandbox `driverctl hook`
+/// that crashes is a PreToolUse gate that fails open. The builder returns a
+/// `Result`; on `Err` no subscriber is installed and the `tracing` macros become
+/// no-ops, so logging is lost and nothing else is. The TUI still starts; a
+/// missing log file is a smaller harm than a refused launch.
+fn init_tracing() {
+    use tracing_appender::rolling::{RollingFileAppender, Rotation};
+
     let log_dir = dirs::data_local_dir()
         .map(|d| d.join("gsd-meta-manager"))
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "gsd-meta-manager.log");
+    let Ok(file_appender) = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("gsd-meta-manager.log")
+        .build(&log_dir)
+    else {
+        return;
+    };
     tracing_subscriber::fmt()
         .with_writer(file_appender)
         .with_ansi(false)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+}
+
+/// A synchronous entry point, so `driverctl` runs before anything that can fail
+/// in the environment it is spawned into (D-25).
+///
+/// `driverctl log|show|hook` is re-entered by the sandboxed driver and by the
+/// Claude hooks, where the data dir may be unwritable and no tokio runtime is
+/// needed. It is therefore dispatched here, FIRST: before tracing init,
+/// `color_eyre::install`, config loading and the runtime. The exit code is the
+/// control, so `driverctl_cli::run` returns it and this function exits with it.
+fn main() -> anyhow::Result<()> {
+    let mut cli = Cli::parse_checked();
+    match cli.command.take() {
+        Some(Commands::Driverctl { action }) => std::process::exit(driverctl_cli::run(action)),
+        other => cli.command = other,
+    }
+
+    // Initialize tracing subscriber with file appender before anything else
+    init_tracing();
 
     color_eyre::install().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let cli = Cli::parse_checked();
+    // Built explicitly, with every driver enabled and the multi-thread flavour,
+    // so the runtime is exactly what `#[tokio::main]` used to build.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main(cli))
+}
+
+async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let config_path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.command {
@@ -364,6 +408,14 @@ async fn main() -> anyhow::Result<()> {
         // Each refusal NAMES THE RECOVERY ROUTE, because the first user to meet
         // this meets it as `exit 1` on `git push`, and a refusal a user cannot
         // act on is a bug report rather than an error message.
+        // Never reached: `main` dispatches `driverctl` before this runtime
+        // exists (D-25). The arm exists so the match stays exhaustive, and it
+        // returns an error rather than panicking.
+        Some(Commands::Driverctl { .. }) => {
+            return Err(anyhow::anyhow!(
+                "driverctl is dispatched in `main` before the async runtime exists"
+            ));
+        }
         Some(Commands::Envelope { action }) => match action {
             EnvelopeAction::PrePush { alias, hook_path } => {
                 let alias = judged_alias_or_exit(&alias, 1);
