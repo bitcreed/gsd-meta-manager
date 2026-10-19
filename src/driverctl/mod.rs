@@ -27,7 +27,19 @@
 //!    does blocking file I/O (the scan) and, in later plans, `flock`; the
 //!    mechanical guard in `tests/async_blocking_guard.rs` walks `src/` for the
 //!    shape this would take.
+//! 6. **The store is gated by the run lock by type.** `RunStore::open` takes the
+//!    `RunLock` by value (D-20, Pattern 2), so a store without the lock cannot be
+//!    built and the lock is released only when the store is dropped.
+//! 7. **Every request is validated in full before anything is written**, so a
+//!    rejection writes nothing (D-04): the event is applied to a clone of the
+//!    state and committed only after LOG.md and `state.json` are written.
+//! 8. **The frontmatter is a derived view regenerated from `state.json`**, never
+//!    LLM-written (D-19); the store emits it through the typed
+//!    `DriverFrontmatter::emit` and splices it into `DIRECTION.md`.
 
 pub mod counters;
 pub mod log;
+pub mod protocol;
 pub mod scan;
+#[cfg(target_os = "linux")]
+pub mod store;
