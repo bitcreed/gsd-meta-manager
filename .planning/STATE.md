@@ -5,10 +5,10 @@ current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: planning
 stopped_at: Phase 27 complete, ready to plan Phase 28
-last_updated: "2026-10-19T06:05:37.864Z"
+last_updated: "2026-10-19T16:29:08.481Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 27 complete, transitioned to Phase 28
-state_head: 02912c9f9358e4756f91da394a5ed21b69d1f4ee
+state_head: 8c3dea2bb380030de1fc3e160d6482442cc08fa6
 progress:
   total_phases: 10
   completed_phases: 11
@@ -267,7 +267,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-19 — Phase 27 complete, transitioned to Phase 28
+Last activity: 2026-10-19 - Completed quick task 261019-foc: gsd-core v1.18.0 sync baseline
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -792,6 +792,7 @@ Recent decisions affecting current work:
 | 261016-dx3 | Sync baseline to gsd-core v1.17.0: set GSD_CORE_SYNCED_VERSION/COMMIT/TREE_VERSION in src/state_reader/config_json.rs to 1.17.0 / v1.17.0 / 1.17.0; in docs/GSD-CORE-SYNC.md add a v1.17.0 delta section (no config key or default changes; schema/defaults manifests unchanged; capability manifests only changed runtime-only fields), add the templated review.effort.<slug> family (new upstream key review.effort.opencode) to the pass-through table next to review.models.<cli>, bump the re-measure recipe to REF=v1.18.0 / PREV=v1.17.0; update the README.md "synced against gsd-core X" note; DEFAULTS_OPTION_COUNT stays 135; doc/README/constants are tied by tests (the_gsd_core_sync_baseline_is_recorded and sync-record/README tests in detail.rs) so keep them in one commit. Upstream clone at ~/projects/node/gsd-core (tags v1.16.0, v1.17.0). | 2026-10-16 | a254c32 | .planning/quick/261016-dx3-sync-baseline-to-gsd-core-v1-17-0-set-gs |
 | 261016-dx4 | Emit /gsd-<name> instead of /gsd:<name> (upstream gsd-core e288f4ab2, #4859: colon form is now unregistered): change app-generated colon-form commands in src/state_reader/queue_md.rs fallback suggestions (~314-333) and doc comments (~36-38, ~284-289), backlog enqueue at src/ui/screens/detail.rs ~5621, on-screen hints at detail.rs ~7128 and ~8756-8779; update tests asserting the colon form (detail.rs ~26107-26131, queue_md tests); add a send-time compat rewrite /gsd:<name> -> /gsd-<name> when dispatching to Claude (analogous to codex_command's rewrite for Codex; src/executor/runtime.rs / src/executor/claude.rs) so colon entries already in users' QUEUE.md keep working (INFERRED decision, record it); keep GSD_COMMAND_PREFIXES accepting both forms; do NOT add /gsd-core:gsd-<name> plugin support; also update README/docs/* mentions of the /gsd: form for app-emitted commands. | 2026-10-16 | 21085da | .planning/quick/261016-dx4-emit-gsd-name-instead-of-gsd-name-upstre |
 | 261016-dx5 | Fix status misclassification in classify_status (src/app.rs): it matches the word "complete", so a STATE body status like "Phase complete — ready for verification" (written by gsd-core 1.17.0 `phase complete`, upstream fde7d4e80, for the next phase) is likely shown as Complete. First confirm with a failing test; if real, fix so that string classifies as awaiting verification / not complete (closest existing status variant; check upstream status vocabulary in ~/projects/node/gsd-core), plus a test for "Ready to execute". If not a bug, record that and make no code change. | 2026-10-16 | e45c571 | .planning/quick/261016-dx5-fix-status-misclassification-in-classify |
+| 261019-foc | gsd-core v1.18.0 sync baseline | 2026-10-19 | 8c3dea2 | [261019-foc-gsd-core-v1-18-0-sync-baseline](./quick/261019-foc-gsd-core-v1-18-0-sync-baseline/) |
 
 ## Session Continuity
 
