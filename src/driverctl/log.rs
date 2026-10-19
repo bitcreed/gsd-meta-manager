@@ -146,17 +146,24 @@ pub fn parse_log(text: &str) -> Vec<LogEvent> {
     out
 }
 
-/// Validate one header value: required, a single line, no `|`, at most `limit`
-/// characters; returns it trimmed. The error text names the flag as `--<name>`.
+/// Validate one header value: required, a single line, no `|`, no control
+/// character other than tab, at most `limit` characters; returns it trimmed. The
+/// error text names the flag as `--<name>`.
 ///
 /// CR is rejected as well as LF `[inferred - audit]`: the spike rejected only
 /// LF, but a bare CR is a line break to some readers and would forge an event.
+/// WR-06 `[inferred - audit]`: every other control character is rejected too (ESC
+/// would inject terminal escapes when a human `cat`s the log; NUL, VT, FF, FS-RS and
+/// U+0085 are line breaks to some readers, as are U+2028 and U+2029), matching the
+/// launcher-side `header_safe` and the report-body rule. Tab stays allowed.
 pub fn one_line(name: &str, value: Option<&str>, limit: usize) -> Result<String, String> {
     let v = match value {
         Some(v) if !v.trim().is_empty() => v,
         _ => return Err(format!("--{name} is required")),
     };
-    if v.contains(['\n', '\r', '|']) || v.chars().count() > limit {
+    let unsafe_char =
+        |c: char| c == '|' || c == '\u{2028}' || c == '\u{2029}' || (c.is_control() && c != '\t');
+    if v.chars().any(unsafe_char) || v.chars().count() > limit {
         return Err(format!(
             "--{name} must be one line, no '|', <= {limit} chars"
         ));
@@ -252,6 +259,22 @@ mod tests {
         assert!(one_line("step", Some("a|b"), 200).is_err());
         assert!(one_line("step", Some("a\nb"), 200).is_err());
         assert!(one_line("step", Some("a\rb"), 200).is_err());
+        // WR-06: any control character or Unicode line separator, not just CR/LF.
+        for bad in [
+            "a\u{1b}[31mb",
+            "a\0b",
+            "a\u{0b}b",
+            "a\u{0c}b",
+            "a\u{1c}b",
+            "a\u{85}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{7f}b",
+        ] {
+            assert!(one_line("step", Some(bad), 200).is_err(), "{bad:?}");
+        }
+        assert_eq!(one_line("step", Some("a\tb"), 200).unwrap(), "a\tb");
+        assert_eq!(one_line("step", Some("déjà vu"), 200).unwrap(), "déjà vu");
         assert!(one_line("step", None, 200).is_err());
         assert!(one_line("step", Some("   "), 200).is_err());
         assert!(one_line("step", Some(&"x".repeat(201)), 200).is_err());
