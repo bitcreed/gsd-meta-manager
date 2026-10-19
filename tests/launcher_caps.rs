@@ -17,7 +17,9 @@ mod launcher_support;
 
 use std::fs;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use chrono::{DateTime, SecondsFormat};
 
 use gsd_meta_manager::driver::lock::run_lock_path;
 use launcher_support::{wait_until, Fixture, RUN_ID, STARTED_FILE};
@@ -413,4 +415,290 @@ fn a_tripped_run_denies_every_later_dispatch_before_the_scope_has_exited() {
         fx.state_json()["status_reason"],
         "launcher-cap:wall_clock_min"
     );
+}
+
+// ---------------------------------------------------------------- launch-end verdicts
+
+fn epoch_now() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs(),
+    )
+    .expect("fits")
+}
+
+fn launch_lines(log: &str) -> usize {
+    log.lines().filter(|l| l.contains("RUN | launch |")).count()
+}
+
+/// The host `~/.claude/.credentials.json` the host-token path reads, expiring in
+/// `expires_in_s` seconds. The refresh token is a decoy no code may ever read.
+fn write_host_credentials(fx: &Fixture, access: &str, expires_in_s: i64) {
+    let dir = fx.home().join(".claude");
+    fs::create_dir_all(&dir).expect("host claude dir");
+    fs::write(
+        dir.join(".credentials.json"),
+        serde_json::json!({"claudeAiOauth": {
+            "accessToken": access,
+            "refreshToken": "rt-decoy-must-never-appear",
+            "expiresAt": (epoch_now() + expires_in_s) * 1000,
+        }})
+        .to_string(),
+    )
+    .expect("host credentials");
+}
+
+/// A driver that records the token it was given, rewrites the host credentials the
+/// way a host refresh would (`at-host-<n+1>`, valid for `next_expiry_s` more
+/// seconds) and ends with an authentication-failure result.
+fn revoked_scenario(next_expiry_s: i64) -> String {
+    format!(
+        r#"
+n=$(cat "$FAKE_CLAUDE_DIR/count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$FAKE_CLAUDE_DIR/count"
+printf '%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" >> "$FAKE_CLAUDE_DIR/tokens.txt"
+exp=$((($(date +%s) + {next_expiry_s}) * 1000))
+printf '{{"claudeAiOauth":{{"accessToken":"at-host-%s","refreshToken":"rt-decoy-must-never-appear","expiresAt":%s}}}}' "$((n + 1))" "$exp" > "$HOME/.claude/.credentials.json"
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate: OAuth token revoked"}}'
+exit 1
+"#
+    )
+}
+
+#[test]
+fn rate_limited_launch_parks_without_retry() {
+    let fx = Fixture::new();
+    let reset = epoch_now() + 3600;
+    fx.write_scenario(&format!(
+        r#"
+driverctl log start --mode headless --loop-mode loop
+printf '%s\n' '{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour","resetsAt":{reset}}}}}'
+printf '%s\n' '{{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"api_error","result":"usage limit reached"}}'
+exit 1
+"#
+    ));
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let resets_at = DateTime::from_timestamp(reset, 0)
+        .expect("a timestamp")
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
+    let want = format!("rate-limit: window=five_hour resets_at={resets_at}");
+    let state = fx.state_json();
+    assert_eq!(state["status"], "parked");
+    assert_eq!(state["status_reason"], want.as_str());
+    assert!(
+        stdout(&out).contains(&format!("ended status=parked reason={want}")),
+        "{}",
+        stdout(&out)
+    );
+    let log = fx.log();
+    assert_eq!(launch_lines(&log), 1, "a parked run is not retried:\n{log}");
+    assert!(
+        log.contains(&format!("RUN | launch-end | status=parked | reason={want}")),
+        "{log}"
+    );
+    assert!(!log.contains("auth-relaunch"), "{log}");
+}
+
+#[test]
+fn a_terminal_reason_naming_a_rate_limit_parks_with_an_unknown_window() {
+    let fx = Fixture::new();
+    fx.write_scenario(
+        r#"
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"api_error: rate_limit","result":"x"}'
+exit 1
+"#,
+    );
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let state = fx.state_json();
+    assert_eq!(state["status"], "parked");
+    assert_eq!(
+        state["status_reason"],
+        "rate-limit: window=unknown resets_at=unknown"
+    );
+}
+
+#[test]
+fn an_allowed_quota_event_does_not_park_a_crash() {
+    let fx = Fixture::new();
+    fx.write_scenario(
+        r#"
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","resetsAt":1900000000}}'
+exit 1
+"#,
+    );
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.state_json()["status"], "crashed");
+}
+
+#[test]
+fn revoked_host_token_relaunches_twice_then_parks() {
+    let fx = Fixture::new();
+    fx.write_token(None);
+    write_host_credentials(&fx, "at-host-1", 3600);
+    fx.write_scenario(&revoked_scenario(3600));
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let log = fx.log();
+    assert!(
+        log.contains("RUN | auth-relaunch | attempt=1 | source=host"),
+        "{log}"
+    );
+    assert!(
+        log.contains("RUN | auth-relaunch | attempt=2 | source=host"),
+        "{log}"
+    );
+    assert!(!log.contains("attempt=3"), "{log}");
+    assert_eq!(launch_lines(&log), 3, "{log}");
+    let state = fx.state_json();
+    assert_eq!(state["status"], "parked", "never crashed:\n{log}");
+    assert_eq!(
+        state["status_reason"],
+        "auth: host token rejected after 2 relaunches"
+    );
+    assert_eq!(state["auth_relaunches"], 2);
+    assert_eq!(state["launches"], 3);
+
+    // Every relaunch re-read the host's CURRENT access token ...
+    assert_eq!(
+        fx.recorded("tokens.txt"),
+        "at-host-1\nat-host-2\nat-host-3\n"
+    );
+    // ... and neither it nor the refresh token reached any record.
+    for secret in ["at-host", "rt-decoy"] {
+        assert!(!log.contains(secret), "{log}");
+        assert!(!fx.run_file("state.json").contains(secret));
+        assert!(!fx.run_file("DIRECTION.md").contains(secret));
+    }
+    assert!(!fx.any_driver_alive());
+}
+
+#[test]
+fn a_host_token_about_to_expire_is_not_relaunched_with() {
+    let fx = Fixture::new();
+    fx.write_token(None);
+    write_host_credentials(&fx, "at-host-1", 3600);
+    // The "refreshed" host token has 60 s left: under the 5 minute floor.
+    fx.write_scenario(&revoked_scenario(60));
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let state = fx.state_json();
+    assert_eq!(state["status"], "parked");
+    assert_eq!(
+        state["status_reason"],
+        "auth: host token expires within 5 minutes; refresh the host login"
+    );
+    assert_eq!(launch_lines(&fx.log()), 1, "{}", fx.log());
+}
+
+#[test]
+fn revoked_stored_token_parks_without_relaunch() {
+    let fx = Fixture::new();
+    // The default fixture stores a token; the same scenario rewrites the host file
+    // too, which a stored-token run must ignore.
+    write_host_credentials(&fx, "at-host-1", 3600);
+    fx.write_scenario(&revoked_scenario(3600));
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let log = fx.log();
+    assert_eq!(launch_lines(&log), 1, "{log}");
+    assert!(!log.contains("auth-relaunch"), "{log}");
+    let state = fx.state_json();
+    assert_eq!(state["status"], "parked");
+    assert_eq!(
+        state["status_reason"],
+        "auth: stored token rejected \u{2014} rerun driver auth setup"
+    );
+    assert_eq!(
+        fx.recorded("tokens.txt"),
+        format!("{}\n", launcher_support::TOKEN)
+    );
+}
+
+#[test]
+fn clean_exit_with_unreported_dispatch_is_stalled() {
+    let fx = Fixture::new();
+    // run1b-shaped: the driver dispatches a worker, never sees its report, ends its
+    // turn cleanly with a successful result.
+    fx.write_scenario(
+        r#"
+driverctl log start --mode headless --loop-mode loop
+driverctl log dispatched --item I-01 --step plan
+printf '%s\n' '{"type":"result","subtype":"success"}'
+exit 0
+"#,
+    );
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let state = fx.state_json();
+    assert_eq!(state["status"], "stalled");
+    let reason = state["status_reason"].as_str().expect("a reason");
+    assert!(
+        reason.contains("I-01") && reason.contains("not a crash"),
+        "{reason}"
+    );
+    assert_eq!(launch_lines(&fx.log()), 1);
+}
+
+#[test]
+fn a_dying_driver_without_run_end_is_crashed() {
+    let fx = Fixture::new();
+    fx.write_scenario(
+        r#"
+driverctl log start --mode headless --loop-mode loop
+exit 3
+"#,
+    );
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let state = fx.state_json();
+    assert_eq!(state["status"], "crashed");
+    assert_eq!(state["status_reason"], "driver exited rc=3 without RUN end");
+}
+
+#[test]
+fn a_fresh_exit_relaunches_and_a_user_stop_still_beats_it() {
+    let fx = Fixture::new();
+    fx.write_scenario(
+        r#"
+driverctl log start --mode headless --loop-mode fresh-per-item
+n=$(cat "$FAKE_CLAUDE_DIR/count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$FAKE_CLAUDE_DIR/count"
+if [ "$n" -lt 2 ]; then
+  driverctl log end --reason fresh-exit
+  printf '%s\n' '{"type":"result","subtype":"success"}'
+  exit 0
+fi
+touch "$FAKE_CLAUDE_DIR/started"
+sleep 60
+"#,
+    );
+    let launcher = fx.spawn_launch(&["--loop-mode", "fresh-per-item"]);
+    assert!(
+        wait_until(Duration::from_secs(15), || fx.scenario_started()),
+        "the second launch never started:\n{}",
+        fx.log()
+    );
+    assert_eq!(launch_lines(&fx.log()), 2, "{}", fx.log());
+    let stop = fx
+        .stop_command(RUN_ID, &[])
+        .output()
+        .expect("spawn driver stop");
+    assert!(stop.status.success(), "{}", stderr(&stop));
+    let out = launcher.wait_with_output().expect("the launcher ends");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.state_json()["status_reason"], "stop:user");
 }

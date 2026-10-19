@@ -66,6 +66,8 @@ pub mod gate;
 #[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(target_os = "linux")]
+pub mod outcome;
+#[cfg(target_os = "linux")]
 pub mod process;
 #[cfg(target_os = "linux")]
 pub mod run;
