@@ -1,0 +1,12 @@
+CASE=l2
+ATTEMPT=first
+MODEL=haiku
+PROMPT=.planning/spikes/002-launcher-caps-and-tool-frontmatter/experiment/cap-tests/L2-wallclock.md
+PROMPT_SHA256=7c002d88c5207f7b15ba47f61c27ed3030d24ef28dbab7834bad162b1288b830
+CAPS=dispatches=10,minutes=1,gap_rounds=2
+MAX_BUDGET_USD=0.20
+CLAUDE_VERSION=2.1.304 (Claude Code)
+BINARY_SHA256=b806d97fb3bba103a981c23d50f1cab1a884de12a36a7d31130d1486cf4d6a4a
+HEAD=77b0de2512d9d46ad95e314dd51245909436d200
+STARTED_UTC=2026-10-19T22:08:40Z
+ENDED_UTC=2026-10-19T22:09:40Z

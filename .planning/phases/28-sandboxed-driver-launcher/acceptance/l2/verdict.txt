@@ -1,0 +1,4 @@
+L2-1 PASS cap-tripped | cap=wall_clock_min
+L2-2 PASS status=stopped reason=launcher-cap:wall_clock_min
+L2-3 PASS scope inactive afterwards, no surviving process
+RESULT PASS

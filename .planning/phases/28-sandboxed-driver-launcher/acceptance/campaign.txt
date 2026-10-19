@@ -2,3 +2,4 @@
 2026-10-19T22:07:53Z l5 1 0.15 budget-charged
 2026-10-19T22:08:01Z l5 2 0.0033 result
 2026-10-19T22:08:39Z l1 1 0.0107 result
+2026-10-19T22:09:40Z l2 1 0.20 budget-charged
