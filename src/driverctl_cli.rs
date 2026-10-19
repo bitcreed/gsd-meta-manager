@@ -20,7 +20,19 @@
 //!    for a server `REJECTED` reply and for a usage error (argparse parity), `1`
 //!    for a transport failure or an unset `DRIVERCTL_SOCK`. A caller can tell "fix
 //!    your arguments" (2) from "the launcher is not there" (1).
-//! 4. **The gate fails closed** (filled in by the `hook` section below).
+//! 4. **The dispatch gate fails closed** (T-27-12). For a PreToolUse `Agent|Task`
+//!    payload with no `agent_id`, `driverctl hook` prints the deny JSON on a
+//!    transport error, an unset socket AND a server reply whose `ok` is not true.
+//!    The last two are deviations from the spike, which failed closed only on an
+//!    `OSError` (`[inferred — audit]` 27-RESEARCH A8): launcher caps must not be
+//!    bypassable by breaking the transport or by a server-side internal error.
+//!    A server `deny` is relayed. Non-gate hooks and unparsable stdin exit `0`
+//!    silently, and the exit code is `0` in every case: the decision is the JSON.
+//! 5. **Phase 28 hand-off.** Phase 28's launcher seeds the PreToolUse `Agent|Task`
+//!    hook with `"onFailure": "block"`, so even a non-zero exit of this binary (a
+//!    crash this module could not prevent: a missing binary, a killed process)
+//!    cannot open the gate. This module closes the failures it can see; that
+//!    setting closes the ones it cannot (D-25, T-27-11).
 //!
 //! # Wire format
 //!
@@ -99,12 +111,8 @@ fn err_line(text: &str) {
 pub fn run(action: DriverctlAction) -> i32 {
     match action {
         DriverctlAction::Log(log) => log_main(&log),
-        // Filled in by the next task of this plan; a gate that is not written yet
-        // must not look like a gate that passes.
-        DriverctlAction::Show | DriverctlAction::Hook => {
-            err_line("driverctl: this verb is not available in this build");
-            1
-        }
+        DriverctlAction::Show => show_main(),
+        DriverctlAction::Hook => hook_main(),
     }
 }
 
@@ -284,4 +292,140 @@ fn log_main(log: &DriverctlLog) -> i32 {
             1
         }
     }
+}
+
+/// `driverctl show`: print the run's current status block, exactly as the server
+/// rendered it (no added newline: the block already ends with its own).
+fn show_main() -> i32 {
+    match request(&json!({"op": "show"})) {
+        Ok(reply) if reply_ok(&reply) => match reply.get("frontmatter").and_then(Value::as_str) {
+            Some(block) => {
+                out(block);
+                0
+            }
+            None => {
+                err_line("driverctl: unreadable reply from the launcher: no frontmatter");
+                1
+            }
+        },
+        Ok(reply) => {
+            err_line(&format!("driverctl: REJECTED: {}", reply_error(&reply)));
+            2
+        }
+        Err(e) => {
+            err_line(&format!("driverctl: {e}"));
+            1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- hook
+
+/// The seven payload keys forwarded to the server, copied as-is (null when
+/// absent). Everything else in a Claude hook payload stays in the sandbox.
+pub const HOOK_FIELDS: [&str; 7] = [
+    "hook_event_name",
+    "session_id",
+    "agent_id",
+    "agent_type",
+    "tool_name",
+    "source",
+    "reason",
+];
+
+/// The dispatch prompt is cut to this many CHARACTERS (not bytes) before it is
+/// forwarded, so a multi-byte prompt is never split mid-codepoint and the cap
+/// means the same thing as the spike's Python `[:4000]`.
+pub const HOOK_PROMPT_CHARS: usize = 4000;
+
+/// The deny decision Claude Code reads from a PreToolUse hook's stdout: one line.
+fn deny_json(reason: &str) -> String {
+    json!({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": format!("LAUNCHER CAP: {reason}"),
+    }})
+    .to_string()
+}
+
+/// The payload forwarded to the server: the seven fields plus a cut prompt.
+fn hook_payload(p: &Map<String, Value>) -> Value {
+    let mut payload = Map::new();
+    for key in HOOK_FIELDS {
+        payload.insert(key.to_string(), p.get(key).cloned().unwrap_or(Value::Null));
+    }
+    let prompt: String = p
+        .get("tool_input")
+        .and_then(|input| input.get("prompt"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .take(HOOK_PROMPT_CHARS)
+        .collect();
+    payload.insert("prompt".to_string(), Value::String(prompt));
+    Value::Object(payload)
+}
+
+/// `driverctl hook`: the PreToolUse / lifecycle hook entry point.
+///
+/// A port of spike 002's `hook_main` with ONE deviation, and it is the point of
+/// this function (D-25, `[inferred — audit]` 27-RESEARCH A8): the spike failed
+/// closed only on an `OSError`. Here the dispatch gate (a PreToolUse `Agent` or
+/// `Task` call with no `agent_id`, i.e. made by the top-level driver) is denied on
+/// EVERY failure to get an affirmative answer: an unreachable server, an unset
+/// `DRIVERCTL_SOCK` (the spike exited through `SystemExit`, which is not an
+/// `OSError`, so it failed open), and a server reply that is not `ok: true`. Any
+/// other hook (nested agents, PostToolUse, SessionStart, ...) stays silent when
+/// the server cannot be reached: denying those would brick the driver for a
+/// transport blip, and they gate nothing.
+///
+/// The exit code is always `0`: the decision travels as JSON on stdout, which is
+/// the channel Claude Code reads a `deny` from.
+fn hook_main() -> i32 {
+    let mut raw = Vec::new();
+    if std::io::stdin().read_to_end(&mut raw).is_err() {
+        return 0;
+    }
+    let Ok(Value::Object(p)) = serde_json::from_slice::<Value>(&raw) else {
+        return 0;
+    };
+
+    let is_gate = p.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
+        && matches!(
+            p.get("tool_name").and_then(Value::as_str),
+            Some("Agent" | "Task")
+        )
+        && p.get("agent_id").is_none_or(Value::is_null);
+
+    let reply = match request(&json!({"op": "hook", "payload": hook_payload(&p)})) {
+        Ok(reply) => reply,
+        Err(e) => {
+            if is_gate {
+                out(&format!(
+                    "{}\n",
+                    deny_json(&format!(
+                        "driverctl unreachable ({e}); launcher-side caps cannot be checked"
+                    ))
+                ));
+            }
+            return 0;
+        }
+    };
+
+    match reply.get("deny").and_then(Value::as_str) {
+        Some(reason) if !reason.is_empty() => {
+            out(&format!("{}\n", deny_json(reason)));
+        }
+        _ if is_gate && !reply_ok(&reply) => {
+            out(&format!(
+                "{}\n",
+                deny_json(&format!(
+                    "driverctl refused the gate request ({}); launcher-side caps cannot be checked",
+                    reply_error(&reply)
+                ))
+            ));
+        }
+        _ => {}
+    }
+    0
 }
