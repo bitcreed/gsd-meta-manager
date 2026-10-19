@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 // Only the debug-only `claude_args` field names it, so the import carries the
 // same gate the field does; an ungated one would be an unused import in release.
 #[cfg(debug_assertions)]
@@ -370,6 +370,92 @@ pub enum Commands {
         #[command(subcommand)]
         action: EnvelopeAction,
     },
+    // The sandbox-side half of the driver's control channel (Phase 27, D-01,
+    // D-02). The driver's unchanged prompt calls `driverctl log|show` and the
+    // Claude hooks call `driverctl hook`, so the binary re-enters itself the same
+    // way the envelope's git hooks do.
+    //
+    // **Hidden, because users never type it** (D-02): `hide = true` removes the
+    // entry from `--help` and from nothing else, the general rule the
+    // `Commands::Envelope` block above states at length.
+    //
+    // **Deliberately NOT `#[cfg]`-gated.** The sandboxed driver and the hook
+    // settings reach this through the released binary on every platform, and a
+    // refusal must be a typed error from the handler, not "unknown subcommand"
+    // from the parser. One build, one version (Phase 17 D-01).
+    //
+    // `serve` is added to `DriverctlAction` by 27-06; the launcher-side server is
+    // not part of this variant's contract with the sandbox.
+    /// Internal: the driver's control channel (log events, show status, hook gate)
+    #[command(hide = true)]
+    Driverctl {
+        #[command(subcommand)]
+        action: DriverctlAction,
+    },
+}
+
+/// The sandbox-side verbs of `driverctl`.
+///
+/// Each returns a process exit code, because the Claude hook protocol and the
+/// driver's prompt both read it as control (`driverctl_cli::run`).
+#[derive(Subcommand)]
+pub enum DriverctlAction {
+    // Boxed: `DriverctlLog` is 17 optional strings, and unboxed it makes this
+    // enum (and through it `Commands`) the size of that struct for the sake of two
+    // unit variants (`clippy::large_enum_variant`).
+    /// Record one event on the run's log
+    Log(Box<DriverctlLog>),
+    /// Print the run's current status block
+    Show,
+    /// Claude hook entry point: read one hook payload on stdin
+    Hook,
+}
+
+// The 17 flags below are spike 002's argparse surface verbatim, and every value
+// stays a string. The client validates nothing a server would not: the one
+// parser that judges a value is the store (D-01), so adding a `value_parser`
+// here would be a second judge of the same property. The wire keys are the
+// underscored field names (`done_when`, `loop_mode`); clap derives the dashed
+// long flags (`--done-when`, `--loop-mode`) from the same names.
+/// Arguments of `driverctl log <event>`
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct DriverctlLog {
+    /// The event name, e.g. `start`, `dispatched`, `report`
+    pub event: String,
+    #[arg(long)]
+    pub item: Option<String>,
+    #[arg(long)]
+    pub step: Option<String>,
+    #[arg(long)]
+    pub round: Option<String>,
+    #[arg(long)]
+    pub phase: Option<String>,
+    #[arg(long)]
+    pub status: Option<String>,
+    #[arg(long)]
+    pub done_when: Option<String>,
+    #[arg(long)]
+    pub evidence: Option<String>,
+    #[arg(long)]
+    pub state: Option<String>,
+    #[arg(long)]
+    pub rule: Option<String>,
+    #[arg(long)]
+    pub outcome: Option<String>,
+    #[arg(long)]
+    pub question: Option<String>,
+    #[arg(long)]
+    pub action: Option<String>,
+    #[arg(long)]
+    pub reason: Option<String>,
+    #[arg(long)]
+    pub found: Option<String>,
+    #[arg(long)]
+    pub mode: Option<String>,
+    #[arg(long)]
+    pub loop_mode: Option<String>,
+    #[arg(long)]
+    pub session: Option<String>,
 }
 
 /// The enforcement points a generated hook stub re-enters this binary through.
@@ -664,6 +750,114 @@ mod tests {
             long.contains("must be") && long.contains("`list`") && long.contains("path"),
             "the long help must carry the open-by-path collision note (D-04): {long}"
         );
+    }
+
+    // ── The hidden `driverctl` client (Phase 27, D-01, D-02) ─────────────
+
+    fn driverctl(args: &[&str]) -> Result<DriverctlAction, clap::Error> {
+        let argv: Vec<&str> = ["driverctl"].iter().chain(args.iter()).copied().collect();
+        match checked(&argv)?.command {
+            Some(Commands::Driverctl { action }) => Ok(action),
+            _ => panic!("{argv:?} did not resolve to Commands::Driverctl"),
+        }
+    }
+
+    fn driverctl_log(args: &[&str]) -> DriverctlLog {
+        let mut full = vec!["log"];
+        full.extend_from_slice(args);
+        match driverctl(&full).unwrap_or_else(|e| panic!("{full:?} did not parse: {e}")) {
+            DriverctlAction::Log(log) => *log,
+            _ => panic!("{full:?} did not resolve to DriverctlAction::Log"),
+        }
+    }
+
+    #[test]
+    fn driverctl_log_parses_the_master_prompt_shapes() {
+        let start = driverctl_log(&["start", "--mode", "headless", "--loop-mode", "loop"]);
+        assert_eq!(start.event, "start");
+        assert_eq!(start.mode.as_deref(), Some("headless"));
+        assert_eq!(start.loop_mode.as_deref(), Some("loop"));
+        assert_eq!(start.item, None);
+
+        let dispatched = driverctl_log(&[
+            "dispatched",
+            "--item",
+            "I-01",
+            "--step",
+            "/gsd-plan-phase 3",
+            "--round",
+            "0",
+            "--phase",
+            "3",
+        ]);
+        assert_eq!(dispatched.event, "dispatched");
+        assert_eq!(dispatched.step.as_deref(), Some("/gsd-plan-phase 3"));
+        assert_eq!(dispatched.round.as_deref(), Some("0"));
+        assert_eq!(dispatched.phase.as_deref(), Some("3"));
+
+        let verified = driverctl_log(&[
+            "verified",
+            "--item",
+            "I-01",
+            "--done-when",
+            "met",
+            "--evidence",
+            "tests green",
+        ]);
+        assert_eq!(verified.done_when.as_deref(), Some("met"));
+        assert_eq!(verified.evidence.as_deref(), Some("tests green"));
+
+        let status = driverctl_log(&[
+            "status",
+            "--item",
+            "I-01",
+            "--state",
+            "parked",
+            "--outcome",
+            "gaps",
+            "--rule",
+            "budget",
+        ]);
+        assert_eq!(status.state.as_deref(), Some("parked"));
+        assert_eq!(status.rule.as_deref(), Some("budget"));
+    }
+
+    #[test]
+    fn driverctl_show_and_hook_parse() {
+        assert!(matches!(driverctl(&["show"]), Ok(DriverctlAction::Show)));
+        assert!(matches!(driverctl(&["hook"]), Ok(DriverctlAction::Hook)));
+    }
+
+    #[test]
+    fn driverctl_unknown_flag_is_a_usage_error() {
+        let err = match driverctl(&["log", "start", "--bogus", "x"]) {
+            Err(err) => err,
+            Ok(_) => panic!("an unknown flag must be refused"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
+    }
+
+    #[test]
+    fn driverctl_is_absent_from_rendered_help() {
+        let mut cmd = Cli::command();
+        for (form, rendered) in [
+            ("render_help", cmd.render_help().to_string()),
+            ("render_long_help", cmd.render_long_help().to_string()),
+        ] {
+            assert!(
+                rendered
+                    .lines()
+                    .any(|line| is_subcommand_entry(line, "list")),
+                "{form}: positive control missing, the absence check certifies nothing"
+            );
+            assert!(
+                !rendered
+                    .lines()
+                    .any(|line| is_subcommand_entry(line, "driverctl")),
+                "{form} advertises `driverctl`, which users never type (D-02)"
+            );
+        }
     }
 
     type OsStringArg = std::ffi::OsString;
