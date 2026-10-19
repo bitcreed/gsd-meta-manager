@@ -657,3 +657,271 @@ pub fn serve(opts: ServeOptions) -> Result<(), DriverctlError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A project with `drivers/<id>` for each id, returned with the project root.
+    fn project_with_runs(ids: &[&str]) -> (TempDir, PathBuf) {
+        let td = TempDir::new().unwrap();
+        let drivers = td.path().join(DRIVERS_REL);
+        fs::create_dir_all(&drivers).unwrap();
+        for id in ids {
+            fs::create_dir_all(drivers.join(id)).unwrap();
+        }
+        let project = td.path().to_path_buf();
+        (td, project)
+    }
+
+    fn runtime_dir() -> TempDir {
+        TempDir::new().unwrap()
+    }
+
+    // ---------------------------------------------------------------- run ids
+
+    #[test]
+    fn run_id_pattern_accepts_ordinary_ids() {
+        for id in ["r27", "s003-r261a", "a", "run_1.b", &"a".repeat(80)] {
+            assert!(valid_run_id(id), "{id:?} should be valid");
+        }
+    }
+
+    #[test]
+    fn run_id_pattern_refuses_path_shaped_and_oversized_ids() {
+        for id in [
+            "..",
+            ".",
+            "a b",
+            "-x",
+            ".hidden",
+            "a/b",
+            "",
+            "a\nb",
+            &"a".repeat(81),
+        ] {
+            assert!(!valid_run_id(id), "{id:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn validate_run_dir_accepts_a_run_directly_under_drivers() {
+        let (_td, project) = project_with_runs(&["r27"]);
+        let run_dir = project.join(DRIVERS_REL).join("r27");
+        let (canonical, id) = validate_run_dir(&project, &run_dir).unwrap();
+        assert_eq!(id, "r27");
+        assert_eq!(canonical, fs::canonicalize(&run_dir).unwrap());
+    }
+
+    #[test]
+    fn validate_run_dir_refuses_bad_ids_before_looking_at_the_filesystem() {
+        let (_td, project) = project_with_runs(&["a b", "-x"]);
+        let drivers = project.join(DRIVERS_REL);
+        let long = "a".repeat(81);
+        fs::create_dir_all(drivers.join(&long)).unwrap();
+        for id in ["..", "a b", "-x", long.as_str()] {
+            let err = validate_run_dir(&project, &drivers.join(id)).unwrap_err();
+            assert!(
+                matches!(err, DriverctlError::InvalidRunDir { .. }),
+                "{id:?}: {err:?}"
+            );
+            assert_eq!(err.exit_code(), 1);
+        }
+    }
+
+    #[test]
+    fn validate_run_dir_refuses_a_directory_outside_drivers() {
+        let (td, project) = project_with_runs(&["r27"]);
+        let outside = td.path().join("elsewhere/r27");
+        fs::create_dir_all(&outside).unwrap();
+        let err = validate_run_dir(&project, &outside).unwrap_err();
+        assert!(err.to_string().contains("not directly under"), "{err}");
+
+        // Two levels down is not "directly under" either.
+        let nested = project.join(DRIVERS_REL).join("r27").join("inner");
+        fs::create_dir_all(&nested).unwrap();
+        assert!(validate_run_dir(&project, &nested).is_err());
+    }
+
+    #[test]
+    fn validate_run_dir_refuses_a_symlink_that_leaves_drivers() {
+        let (td, project) = project_with_runs(&[]);
+        let outside = td.path().join("elsewhere/r99");
+        fs::create_dir_all(&outside).unwrap();
+        let link = project.join(DRIVERS_REL).join("linked");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(validate_run_dir(&project, &link).is_err());
+    }
+
+    #[test]
+    fn validate_run_dir_refuses_a_missing_run_dir_and_a_missing_project() {
+        let (_td, project) = project_with_runs(&[]);
+        let missing = project.join(DRIVERS_REL).join("nope");
+        assert!(validate_run_dir(&project, &missing).is_err());
+        let (_td2, project2) = project_with_runs(&["r27"]);
+        let run_dir = project2.join(DRIVERS_REL).join("r27");
+        assert!(validate_run_dir(&project2.join("absent"), &run_dir).is_err());
+    }
+
+    // ---------------------------------------------------------------- socket path
+
+    #[test]
+    fn socket_path_names_the_run_and_a_stable_hash_of_the_run_dir() {
+        let rt = runtime_dir();
+        let run_dir = Path::new("/projects/a/.planning/meta-manager/drivers/r27");
+        let first = socket_path_in(Some(rt.path()), "r27", run_dir).unwrap();
+        let again = socket_path_in(Some(rt.path()), "r27", run_dir).unwrap();
+        assert_eq!(first, again, "the hash is stable");
+
+        let name = first.file_name().unwrap().to_str().unwrap();
+        let (id, rest) = name.split_once('-').unwrap();
+        assert_eq!(id, "r27");
+        let hash = rest.strip_suffix(".sock").expect("a .sock suffix");
+        assert_eq!(hash.len(), 8);
+        assert!(hash.bytes().all(|b| b.is_ascii_hexdigit()), "{hash}");
+        assert_eq!(first.parent().unwrap(), rt.path().join(SOCKET_DIR_NAME));
+
+        // The same run id in another project gets another socket (T-27-25).
+        let other = socket_path_in(
+            Some(rt.path()),
+            "r27",
+            Path::new("/projects/b/.planning/meta-manager/drivers/r27"),
+        )
+        .unwrap();
+        assert_ne!(first, other);
+    }
+
+    #[test]
+    fn socket_path_creates_the_directory_0700() {
+        let rt = runtime_dir();
+        socket_path_in(Some(rt.path()), "r27", Path::new("/p/r27")).unwrap();
+        let meta = fs::metadata(rt.path().join(SOCKET_DIR_NAME)).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn socket_path_without_a_runtime_dir_is_a_typed_refusal_naming_the_variable() {
+        let err = socket_path_in(None, "r27", Path::new("/p/r27")).unwrap_err();
+        assert!(matches!(err, DriverctlError::SocketPath { .. }));
+        let text = err.to_string();
+        assert!(text.contains("XDG_RUNTIME_DIR"), "{text}");
+        assert!(text.contains("/tmp"), "{text}");
+    }
+
+    #[test]
+    fn socket_path_refuses_a_relative_runtime_dir() {
+        let err =
+            socket_path_in(Some(Path::new("run/user")), "r27", Path::new("/p/r27")).unwrap_err();
+        assert!(err.to_string().contains("absolute"), "{err}");
+    }
+
+    #[test]
+    fn socket_path_refuses_a_group_or_other_accessible_directory() {
+        for mode in [0o770, 0o750, 0o705, 0o707] {
+            let rt = runtime_dir();
+            let dir = rt.path().join(SOCKET_DIR_NAME);
+            fs::create_dir(&dir).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            let err = socket_path_in(Some(rt.path()), "r27", Path::new("/p/r27")).unwrap_err();
+            assert!(
+                err.to_string().contains("group or others"),
+                "mode {mode:o}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn socket_path_accepts_a_pre_existing_private_directory() {
+        let rt = runtime_dir();
+        let dir = rt.path().join(SOCKET_DIR_NAME);
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(socket_path_in(Some(rt.path()), "r27", Path::new("/p/r27")).is_ok());
+    }
+
+    #[test]
+    fn socket_path_refuses_a_symlink_in_place_of_the_directory() {
+        let rt = runtime_dir();
+        let real = rt.path().join("real");
+        fs::create_dir(&real).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&real, rt.path().join(SOCKET_DIR_NAME)).unwrap();
+        let err = socket_path_in(Some(rt.path()), "r27", Path::new("/p/r27")).unwrap_err();
+        assert!(err.to_string().contains("not a real directory"), "{err}");
+    }
+
+    #[test]
+    fn socket_path_refuses_a_path_over_the_unix_limit() {
+        let rt = runtime_dir();
+        let long_id = "r".repeat(80);
+        let nested = rt.path().join("x".repeat(60));
+        fs::create_dir(&nested).unwrap();
+        let err = socket_path_in(Some(&nested), &long_id, Path::new("/p/r")).unwrap_err();
+        assert!(err.to_string().contains("107"), "{err}");
+        // Refused before the directory was created.
+        assert!(!nested.join(SOCKET_DIR_NAME).exists());
+    }
+
+    #[test]
+    fn a_path_of_exactly_107_bytes_passes_the_length_check() {
+        let exact = PathBuf::from(format!("/{}", "a".repeat(MAX_SUN_PATH - 1)));
+        assert_eq!(exact.as_os_str().len(), MAX_SUN_PATH);
+        assert!(check_sun_len(&exact).is_ok());
+        let over = PathBuf::from(format!("/{}", "a".repeat(MAX_SUN_PATH)));
+        assert!(check_sun_len(&over).is_err());
+    }
+
+    // ---------------------------------------------------------------- misc
+
+    #[test]
+    fn only_a_held_lock_exits_3() {
+        let locked = DriverctlError::Locked {
+            detail: String::new(),
+        };
+        assert_eq!(locked.exit_code(), 3);
+        for other in [
+            DriverctlError::InvalidRunDir {
+                detail: String::new(),
+            },
+            DriverctlError::SocketPath {
+                detail: String::new(),
+            },
+            DriverctlError::Io {
+                detail: String::new(),
+            },
+            DriverctlError::Store {
+                detail: String::new(),
+            },
+        ] {
+            assert_eq!(other.exit_code(), 1, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_panic_while_handling_a_request_is_answered_internal() {
+        let reply = answer(|| panic!("boom"));
+        assert_eq!(reply, Response::rejected("internal: panic"));
+        assert_eq!(answer(Response::ok), Response::ok());
+    }
+
+    #[test]
+    fn existing_socket_only_replaces_a_real_socket() {
+        let td = TempDir::new().unwrap();
+        let missing = td.path().join("none");
+        assert!(!existing_socket(&missing).unwrap());
+
+        let file = td.path().join("file");
+        fs::write(&file, "x").unwrap();
+        assert!(existing_socket(&file).is_err());
+        assert!(file.exists(), "a refused path is left alone");
+
+        let sock = td.path().join("s.sock");
+        drop(UnixListener::bind(&sock).unwrap());
+        assert!(existing_socket(&sock).unwrap());
+
+        let link = td.path().join("link");
+        std::os::unix::fs::symlink(&sock, &link).unwrap();
+        assert!(existing_socket(&link).is_err(), "a symlink is not a socket");
+    }
+}
