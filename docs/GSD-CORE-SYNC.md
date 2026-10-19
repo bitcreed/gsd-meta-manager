@@ -424,8 +424,8 @@ rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
 measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
 260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
 `since` measured when quick task 260926-jnf promoted them, **2** carry
-`v1.16.0` (261012-jqb), and the **73** without one predate this record and were
-not retro-measured.
+`v1.16.0` (261012-jqb), **1** carries `v1.6.0`, measured at 261019-guw, and the
+**72** without one predate this record and were not retro-measured.
 
 `DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 135
 (132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb), `RESYNCED_KEYS` /
@@ -615,8 +615,14 @@ coverage assertions refuse a row with no `ConfigHelp`.
 
 | Key | since |
 |---|---|
-| `capabilities.strict_known_registries` | |
+| `capabilities.strict_known_registries` | v1.6.0 |
 | `capabilities.auto_update` | |
+
+`capabilities.strict_known_registries` is read-only because upstream types it
+`array | null` (CONFIGURATION.md:1035; `null` permits any source, `[]` blocks
+every external install). Since 261019-guw a bool written by an earlier build is
+preserved verbatim and flagged as malformed rather than making the whole
+`config.json` unreadable.
 
 ### Review
 

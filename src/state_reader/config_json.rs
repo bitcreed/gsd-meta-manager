@@ -422,10 +422,52 @@ pub struct ExternalJobConfig {
     pub extra: ExtraKeys,
 }
 
+/// The value of `capabilities.strict_known_registries`, which upstream types
+/// `array | null` (CONFIGURATION.md:1035): a list of hosts third-party
+/// capabilities may be installed from, where `null` permits any source and an
+/// empty list (`[]`) blocks every external install (quick 261019-guw).
+///
+/// **The bug this fixes.** The slot was `Option<bool>`. Toggling it wrote a
+/// bool, which gsd-core treats as a malformed policy and fails closed on
+/// (refusing every external install), and a real array made
+/// [`parse_gsd_config`] fail, so the whole Defaults tab went dark.
+///
+/// - `Hosts(v)` — upstream's allowlist; `[]` is lockdown.
+/// - `Malformed(value)` — any other non-null shape (for example a bool written
+///   by a pre-fix build), preserved verbatim so a save round-trips it instead
+///   of making `config.json` unreadable. gsd-core fails closed on these.
+///
+/// `Hosts` is listed first so an untagged JSON array of strings is never
+/// captured by the catch-all. JSON `null` and an absent key are told apart one
+/// level up, by the `Option<Option<_>>` on the field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RegistryAllowlist {
+    Hosts(Vec<String>),
+    Malformed(serde_json::Value),
+}
+
+/// Wrap ANY present value, JSON `null` included, in `Some`, so that with
+/// `#[serde(default)]` an absent key is `None`, `null` is `Some(None)` and a
+/// value is `Some(Some(..))`.
+fn some_even_if_null<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct CapabilitiesConfig {
-    #[serde(default)]
-    pub strict_known_registries: Option<bool>,
+    /// Tri-state: absent (`None`), explicit `null` (`Some(None)`), or a value.
+    /// Read-only in the TUI; see [`RegistryAllowlist`].
+    #[serde(
+        default,
+        deserialize_with = "some_even_if_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub strict_known_registries: Option<Option<RegistryAllowlist>>,
     #[serde(default)]
     pub auto_update: Option<bool>,
     /// See [`ExtraKeys`].
@@ -895,7 +937,7 @@ mod tests {
                 "artifact_dir": ".planning/jobs"
             },
             "capabilities": {
-                "strict_known_registries": true,
+                "strict_known_registries": ["github.com", "npm"],
                 "auto_update": false
             },
             "phase_id_convention": "zero-padded",
@@ -927,12 +969,106 @@ mod tests {
         assert_eq!(ej.artifact_dir, Some(".planning/jobs".to_string()));
 
         let cap = config.capabilities.as_ref().unwrap();
-        assert_eq!(cap.strict_known_registries, Some(true));
+        assert_eq!(
+            cap.strict_known_registries,
+            Some(Some(RegistryAllowlist::Hosts(vec![
+                "github.com".to_string(),
+                "npm".to_string()
+            ])))
+        );
         assert_eq!(cap.auto_update, Some(false));
 
         assert_eq!(config.phase_id_convention, Some("zero-padded".to_string()));
         assert_eq!(config.claude_md_path, Some("./CLAUDE.md".to_string()));
         assert!(config.sub_repos.as_ref().unwrap().is_array());
+    }
+
+    // --- quick 261019-guw: capabilities.strict_known_registries is array|null ---
+
+    fn registries(raw: &str) -> Option<Option<RegistryAllowlist>> {
+        parse_gsd_config(raw)
+            .expect("the config parses")
+            .capabilities
+            .expect("a capabilities block")
+            .strict_known_registries
+    }
+
+    fn hosts(h: &[&str]) -> Option<Option<RegistryAllowlist>> {
+        Some(Some(RegistryAllowlist::Hosts(
+            h.iter().map(|s| s.to_string()).collect(),
+        )))
+    }
+
+    #[test]
+    fn strict_known_registries_array_parses() {
+        assert_eq!(
+            registries(r#"{"capabilities":{"strict_known_registries":["github.com","npm"]}}"#),
+            hosts(&["github.com", "npm"])
+        );
+        assert_eq!(
+            registries(r#"{"capabilities":{"strict_known_registries":[]}}"#),
+            hosts(&[])
+        );
+    }
+
+    #[test]
+    fn strict_known_registries_null_parses_and_saves_as_null() {
+        let raw = r#"{"capabilities":{"strict_known_registries":null}}"#;
+        assert_eq!(registries(raw), Some(None), "null is not absent");
+        let out = serialize_gsd_config(&parse_gsd_config(raw).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["capabilities"].get("strict_known_registries"),
+            Some(&serde_json::Value::Null),
+            "{out}"
+        );
+        assert_eq!(registries(&out), Some(None));
+    }
+
+    #[test]
+    fn strict_known_registries_absent_stays_absent_on_save() {
+        let raw = r#"{"capabilities":{"auto_update":true}}"#;
+        assert_eq!(registries(raw), None);
+        let out = serialize_gsd_config(&parse_gsd_config(raw).unwrap()).unwrap();
+        assert!(!out.contains("strict_known_registries"), "{out}");
+    }
+
+    #[test]
+    fn strict_known_registries_save_preserves_the_array() {
+        for want in [&["b.example", "a.example", "npm"][..], &[][..]] {
+            let raw =
+                serde_json::json!({"capabilities": {"strict_known_registries": want}}).to_string();
+            let out = serialize_gsd_config(&parse_gsd_config(&raw).unwrap()).unwrap();
+            assert_eq!(registries(&out), hosts(want), "{out}");
+        }
+    }
+
+    #[test]
+    fn strict_known_registries_legacy_bool_does_not_fail_the_whole_config() {
+        for (raw_value, as_json) in [
+            ("true", serde_json::json!(true)),
+            ("[1,\"a\"]", serde_json::json!([1, "a"])),
+        ] {
+            let raw = format!(
+                r#"{{"mode":"yolo","capabilities":{{"strict_known_registries":{raw_value}}}}}"#
+            );
+            let config = parse_gsd_config(&raw).expect("an odd value must not sink the config");
+            assert_eq!(config.mode, "yolo");
+            assert_eq!(
+                config
+                    .capabilities
+                    .as_ref()
+                    .unwrap()
+                    .strict_known_registries,
+                Some(Some(RegistryAllowlist::Malformed(as_json.clone())))
+            );
+            let out = serialize_gsd_config(&config).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(
+                v["capabilities"]["strict_known_registries"], as_json,
+                "round-trips verbatim: {out}"
+            );
+        }
     }
 
     #[test]

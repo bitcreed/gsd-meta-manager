@@ -11105,6 +11105,40 @@ fn opt_json_readonly(path: &str, project: Option<&serde_json::Value>) -> (String
     }
 }
 
+/// The Defaults row for `capabilities.strict_known_registries`, which upstream
+/// types `array | null` (quick 261019-guw, I-guw-8).
+///
+/// Always read-only: removing a `[]` lockdown with one keypress would downgrade
+/// security, and a bool toggle is the defect that made gsd-core fail closed. An
+/// absent key is `(unset)`; an explicit `null` is shown as `null`; a value of
+/// the wrong shape is shown with a static malformed flag (no other text is
+/// added, so the file's own content is the only untrusted part).
+fn opt_registry_allowlist(
+    project: Option<&Option<crate::state_reader::config_json::RegistryAllowlist>>,
+) -> (String, ConfigValueKind) {
+    use crate::state_reader::config_json::RegistryAllowlist;
+    use crate::state_reader::config_secrets::display_config_value;
+    const PATH: &str = "capabilities.strict_known_registries";
+    match project {
+        None => ("(unset)".to_string(), ConfigValueKind::Null),
+        Some(None) => (
+            display_config_value(PATH, &serde_json::Value::Null),
+            ConfigValueKind::ReadOnly,
+        ),
+        Some(Some(RegistryAllowlist::Hosts(hosts))) => (
+            display_config_value(PATH, &serde_json::json!(hosts)),
+            ConfigValueKind::ReadOnly,
+        ),
+        Some(Some(RegistryAllowlist::Malformed(v))) => (
+            format!(
+                "{} (malformed: GSD blocks every external install)",
+                display_config_value(PATH, v)
+            ),
+            ConfigValueKind::ReadOnly,
+        ),
+    }
+}
+
 fn build_defaults_entries(
     config: &crate::state_reader::config_json::GsdConfig,
 ) -> Vec<ConfigEntry> {
@@ -11902,10 +11936,18 @@ fn build_defaults_entries(
     // ── Capabilities ──────────────────────────────────────────
     let cat = "Capabilities";
     let pcap = config.capabilities.as_ref();
-    let (v, k) = opt_bool(pcap.and_then(|c| c.strict_known_registries));
-    push(cat, "capabilities.strict_known_registries", v, k, true, ConfigHelp::new(
-        "Restricts which registries a capability pack may be installed from; an empty allowlist refuses them all.",
-    ));
+    let (v, k) = opt_registry_allowlist(pcap.and_then(|c| c.strict_known_registries.as_ref()));
+    push(
+        cat,
+        "capabilities.strict_known_registries",
+        v,
+        k,
+        true,
+        ConfigHelp::new(
+            "Host allowlist for third-party capability installs: null permits any source, [] blocks every external install. Read-only here; set it with gsd config-set.",
+        )
+        .since("v1.6.0"),
+    );
     let (v, k) = opt_bool(pcap.and_then(|c| c.auto_update));
     push(cat, "capabilities.auto_update", v, k, false, ConfigHelp::new(
         "Refreshes installed capability packs to their latest published version instead of pinning what is there.",
@@ -13076,13 +13118,6 @@ fn set_config_value(
                     .provider_escalation = Some(b);
                 return true;
             }
-            "capabilities.strict_known_registries" => {
-                config
-                    .capabilities
-                    .get_or_insert_with(CapabilitiesConfig::default)
-                    .strict_known_registries = Some(b);
-                return true;
-            }
             "capabilities.auto_update" => {
                 config
                     .capabilities
@@ -14189,13 +14224,6 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
                 .artifact_dir = None;
             true
         }
-        "capabilities.strict_known_registries" => {
-            config
-                .capabilities
-                .get_or_insert_with(CapabilitiesConfig::default)
-                .strict_known_registries = None;
-            true
-        }
         "capabilities.auto_update" => {
             config
                 .capabilities
@@ -14588,13 +14616,6 @@ fn mutate_config_entry(
                         .dynamic_routing
                         .get_or_insert_with(DynamicRoutingConfig::default);
                     r.provider_escalation = Some(!r.provider_escalation.unwrap_or(false));
-                    true
-                }
-                "capabilities.strict_known_registries" => {
-                    let c = config
-                        .capabilities
-                        .get_or_insert_with(CapabilitiesConfig::default);
-                    c.strict_known_registries = Some(!c.strict_known_registries.unwrap_or(false));
                     true
                 }
                 "capabilities.auto_update" => {
@@ -15023,7 +15044,7 @@ mod tests {
                 "artifact_dir": "Artifacts/jobs"
             },
             "capabilities": {
-                "strict_known_registries": false,
+                "strict_known_registries": ["github.com", "npm"],
                 "auto_update": false
             }
         }"#;
@@ -22232,6 +22253,79 @@ mod tests {
     fn sparse_gsd_config() -> crate::state_reader::config_json::GsdConfig {
         crate::state_reader::config_json::parse_gsd_config(r#"{"mode":"yolo"}"#)
             .expect("the sparse fixture parses")
+    }
+
+    #[test]
+    fn strict_known_registries_row_is_read_only_and_no_mutation_path_writes_it() {
+        use crate::state_reader::config_json::{parse_gsd_config, RegistryAllowlist};
+        const KEY: &str = "capabilities.strict_known_registries";
+        let config_of = |raw: &str| parse_gsd_config(raw).expect("the fixture parses");
+        let row_of = |cfg: &crate::state_reader::config_json::GsdConfig| {
+            build_defaults_entries(cfg)
+                .into_iter()
+                .find(|e| e.key.as_ref() == KEY)
+                .expect("the strict_known_registries row exists")
+        };
+
+        // Absent: `(unset)`, Null. Set (array, null, malformed): ReadOnly.
+        let absent = row_of(&config_of("{}"));
+        assert!(matches!(absent.kind, ConfigValueKind::Null));
+        assert_eq!(absent.value, "(unset)");
+
+        let array = row_of(&config_of(
+            r#"{"capabilities":{"strict_known_registries":["github.com","npm"]}}"#,
+        ));
+        assert!(matches!(array.kind, ConfigValueKind::ReadOnly));
+        assert!(array.value.contains("github.com"), "{}", array.value);
+        assert!(!array.value.contains("malformed"), "{}", array.value);
+
+        let null = row_of(&config_of(
+            r#"{"capabilities":{"strict_known_registries":null}}"#,
+        ));
+        assert!(matches!(null.kind, ConfigValueKind::ReadOnly));
+        assert_eq!(null.value, "null");
+
+        let malformed = row_of(&config_of(
+            r#"{"capabilities":{"strict_known_registries":true}}"#,
+        ));
+        assert!(matches!(malformed.kind, ConfigValueKind::ReadOnly));
+        assert!(malformed.value.contains("malformed"), "{}", malformed.value);
+
+        // The help text.
+        assert!(array.help.summary.len() <= 160, "{}", array.help.summary);
+        assert_eq!(array.help.since, "v1.6.0");
+
+        // No set, clear or toggle path writes it, for any starting value.
+        for raw in [
+            r#"{"capabilities":{"strict_known_registries":["a"]}}"#,
+            r#"{"capabilities":{"strict_known_registries":[]}}"#,
+            r#"{"capabilities":{"strict_known_registries":true}}"#,
+            r#"{"capabilities":{"strict_known_registries":null}}"#,
+            r#"{"capabilities":{"auto_update":true}}"#,
+        ] {
+            let mut cfg = config_of(raw);
+            let before = cfg
+                .capabilities
+                .as_ref()
+                .unwrap()
+                .strict_known_registries
+                .clone();
+            assert!(!set_config_value(&mut cfg, KEY, "true"), "{raw}");
+            assert!(!clear_config_value(&mut cfg, KEY), "{raw}");
+            for kind in [ConfigValueKind::ReadOnly, ConfigValueKind::Bool] {
+                assert!(!mutate_config_entry(&mut cfg, KEY, &kind), "{raw}");
+            }
+            assert_eq!(
+                cfg.capabilities.as_ref().unwrap().strict_known_registries,
+                before,
+                "{raw}"
+            );
+        }
+        // A sanity check that the comparison above can tell values apart.
+        assert_ne!(
+            Some(Some(RegistryAllowlist::Hosts(vec![]))),
+            Some(Some(RegistryAllowlist::Malformed(serde_json::json!(true))))
+        );
     }
 
     // --- quick 261019-guw: lock-aware atomic Defaults saves ---------------
