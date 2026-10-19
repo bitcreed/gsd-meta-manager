@@ -195,7 +195,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 - [ ] **LNCH-06**: A driven run's commits leave the machine only through gsd-mm's push step outside
   the sandbox. That step uses a fixed refspec into the reserved namespace and reuses the namespace
   refusal, secret scan and PR cap (SAFE-01/03/06).
-- [ ] **LNCH-07**: Without bwrap or systemd-run (macOS), the launcher refuses by default. An explicit
+- [x] **LNCH-07**: Without bwrap or systemd-run (macOS), the launcher refuses by default. An explicit
   opt-in degraded mode runs unsandboxed, with caps enforced by process supervision, and the posture
   is recorded on the run and shown in the TUI `[inferred]`.
 - [x] **LNCH-08**: Headless operation needs no tmux. An interactive or tmux attach is optional and
@@ -355,7 +355,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-04 | Phase 28 | Pending |
 | LNCH-05 | Phase 28 | Pending |
 | LNCH-06 | Phase 28 | Pending |
-| LNCH-07 | Phase 28 | Pending |
+| LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |
 | PRMT-01 | Phase 29 | Pending |
 | PRMT-02 | Phase 29 | Pending |
