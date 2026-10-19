@@ -5,10 +5,10 @@ current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: planning
 stopped_at: Phase 28 context gathered
-last_updated: "2026-10-19T17:33:12.806Z"
+last_updated: "2026-10-19T17:59:49.985Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 27 complete, transitioned to Phase 28
-state_head: 76bbac14ae72af7350ca22a0a425fcc249c74c1b
+state_head: 8c022ad975dd9195f3d2db1ec80a89e91af7ccad
 progress:
   total_phases: 10
   completed_phases: 11
@@ -266,7 +266,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-19 - Completed quick task 261019-guw: Fix two config.json defects: strict_known_registries type, and unlocked non-atomic writes
+Last activity: 2026-10-19 - Completed quick task 261019-hqu: README: Where it fits in the GSD ecosystem
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -794,6 +794,7 @@ Recent decisions affecting current work:
 | 261016-dx5 | Fix status misclassification in classify_status (src/app.rs): it matches the word "complete", so a STATE body status like "Phase complete — ready for verification" (written by gsd-core 1.17.0 `phase complete`, upstream fde7d4e80, for the next phase) is likely shown as Complete. First confirm with a failing test; if real, fix so that string classifies as awaiting verification / not complete (closest existing status variant; check upstream status vocabulary in ~/projects/node/gsd-core), plus a test for "Ready to execute". If not a bug, record that and make no code change. | 2026-10-16 | e45c571 | .planning/quick/261016-dx5-fix-status-misclassification-in-classify |
 | 261019-foc | gsd-core v1.18.0 sync baseline | 2026-10-19 | 8c3dea2 | [261019-foc-gsd-core-v1-18-0-sync-baseline](./quick/261019-foc-gsd-core-v1-18-0-sync-baseline/) |
 | 261019-guw | Fix two config.json defects: strict_known_registries type, and unlocked non-atomic writes | 2026-10-19 | 76bbac1 | [261019-guw-fix-two-config-json-defects-strict-known](./quick/261019-guw-fix-two-config-json-defects-strict-known/) |
+| 261019-hqu | README: Where it fits in the GSD ecosystem | 2026-10-19 | 8c022ad | [261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste](./quick/261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste/) |
 
 ## Session Continuity
 
