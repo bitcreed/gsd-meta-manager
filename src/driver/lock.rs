@@ -7,7 +7,7 @@
 //! It is the **first and only file locking in this repository**. There is no
 //! `nix`, no `libc`, no `fs4`, no `fs2` and no other `flock` anywhere in `src/`;
 //! `NamedTempFile` + `persist` was the only on-disk concurrency primitive that
-//! existed before this file. So there is no local idiom to follow, and the five
+//! existed before this file. So there is no local idiom to follow, and the seven
 //! facts below are each a way the naive version silently fails.
 //!
 //! 1. **It is `flock(2)`, never a PID file and never an in-memory flag (D-19).**
@@ -36,11 +36,25 @@
 //! 5. **The acquire is non-blocking (D-20.4).** A blocking acquire turns a
 //!    duplicate start into a hang, and a hang is the failure mode a user cannot
 //!    diagnose. There is exactly one operation used here and it is
-//!    [`FlockOperation::NonBlockingLockExclusive`].
+//!    [`FlockOperation::NonBlockingLockExclusive`] per *attempt* — see fact 7 for
+//!    why an acquirer may nonetheless make several bounded attempts.
+//! 6. **Readers probe with `LOCK_SH` (D-20, 27-RESEARCH E3).** A liveness probe
+//!    that took `LOCK_EX` would make two concurrent readers see each other as a
+//!    holder. [`probe_at`] opens read-only (never creating the file) and takes
+//!    [`FlockOperation::NonBlockingLockShared`], so any number of readers agree
+//!    the file is free while an exclusive holder still shows as held.
+//! 7. **The acquirer retries for a bounded budget (D-20, 27-RESEARCH E6).** A
+//!    probe's shared hold is momentary but real: an acquirer that happens to land
+//!    inside it would be refused and report a false "already running" naming a
+//!    stale pgid. [`acquire_at_with_retry`] therefore re-attempts with a
+//!    doubling, capped backoff until a budget elapses. Each attempt is still
+//!    non-blocking and the loop is bounded, so it never hangs; a real holder is
+//!    still refused, just after the budget instead of instantly.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use rustix::fs::{flock, FlockOperation};
 use serde::{Deserialize, Serialize};
@@ -50,6 +64,24 @@ use crate::journal::{runs_root, writer};
 
 /// The lock file's name inside the runs root.
 const LOCK_FILE_NAME: &str = "run.lock";
+
+/// The per-RUN lock file's name inside a run directory (D-20).
+///
+/// Distinct from the per-project [`lock_path`] (`run.lock`): a run directory's
+/// `launcher.lock` guards one launcher, the project lock guards one `drive`.
+pub const RUN_LOCK_FILE: &str = "launcher.lock";
+
+/// How long [`acquire_at_with_retry`] keeps trying before it reports the refusal.
+///
+/// `[inferred — audit]`: 500 ms. The worst measured probe-induced refusal window
+/// was 63 ms (27-RESEARCH E6), so 500 ms covers it by a wide margin while a real
+/// holder is still reported within half a second.
+pub const ACQUIRE_RETRY_BUDGET: Duration = Duration::from_millis(500);
+
+/// Where a run directory's launcher lock lives (D-20).
+pub fn run_lock_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(RUN_LOCK_FILE)
+}
 
 /// Where a project's run lock lives.
 ///
@@ -152,8 +184,16 @@ pub fn acquire(planning_dir: &Path, run_id: &str, pgid: u32) -> Result<RunLock, 
     let root = writer::ensure_runs_root(planning_dir).map_err(|err| LockError::Unavailable {
         detail: format!("{err:#}"),
     })?;
-    let path = root.join(LOCK_FILE_NAME);
+    acquire_at(&root.join(LOCK_FILE_NAME), run_id, pgid)
+}
 
+/// [`acquire`] for an explicit lock path: one non-blocking attempt, no retry.
+///
+/// The body is `acquire`'s steps 2-5 unchanged — create-never-truncate open,
+/// `NonBlockingLockExclusive`, losing path reads the holder, winning path writes
+/// the record in place. The caller owns making sure the directory exists (and,
+/// for the per-project lock, that its ignore file landed first).
+pub fn acquire_at(path: &Path, run_id: &str, pgid: u32) -> Result<RunLock, LockError> {
     // `.truncate(false)` is written out rather than omitted: it is the explicit
     // form of "never `.truncate(true)` here" (step 2 above), and clippy's
     // `suspicious_open_options` asks for a truncate decision beside `create`
@@ -163,7 +203,7 @@ pub fn acquire(planning_dir: &Path, run_id: &str, pgid: u32) -> Result<RunLock, 
         .read(true)
         .write(true)
         .truncate(false)
-        .open(&path)
+        .open(path)
         .map_err(|err| LockError::Unavailable {
             detail: format!("could not open {}: {err}", path.display()),
         })?;
@@ -174,7 +214,7 @@ pub fn acquire(planning_dir: &Path, run_id: &str, pgid: u32) -> Result<RunLock, 
         // value as `EWOULDBLOCK` on every platform this binary targets; rustix
         // spells the constant the way `flock(2)` documents it.
         Err(errno) if errno == rustix::io::Errno::WOULDBLOCK => {
-            return Err(match read_holder(planning_dir) {
+            return Err(match read_holder_at(path) {
                 Some(holder) => LockError::HeldBy {
                     run_id: holder.run_id,
                     pgid: holder.pgid,
@@ -254,13 +294,91 @@ fn write_holder(file: &mut File, holder: &LockHolder) -> std::io::Result<()> {
 /// [`LockError::HeldByUnknownRun`], never into "not held": this function
 /// answers "who", and the kernel has already answered "whether".
 pub fn read_holder(planning_dir: &Path) -> Option<LockHolder> {
-    let mut file = File::open(lock_path(planning_dir)).ok()?;
+    read_holder_at(&lock_path(planning_dir))
+}
+
+/// [`read_holder`] for an explicit lock path. Read-only, never truncates.
+pub fn read_holder_at(path: &Path) -> Option<LockHolder> {
+    let mut file = File::open(path).ok()?;
     let mut raw = String::new();
     file.read_to_string(&mut raw).ok()?;
     if raw.trim().is_empty() {
         return None;
     }
     serde_json::from_str(&raw).ok()
+}
+
+/// [`acquire_at`] with a bounded retry (fact 7, D-20).
+///
+/// Re-attempts on `HeldBy` / `HeldByUnknownRun` with a sleep that starts at 1 ms,
+/// doubles, and is capped at 50 ms per sleep, until `budget` has elapsed; the
+/// last refusal is then returned. `Unavailable` is a real fault and returns
+/// immediately. Always makes at least one attempt, even for a zero budget.
+pub fn acquire_at_with_retry(
+    path: &Path,
+    run_id: &str,
+    pgid: u32,
+    budget: Duration,
+) -> Result<RunLock, LockError> {
+    const MAX_SLEEP: Duration = Duration::from_millis(50);
+    let started = Instant::now();
+    let mut sleep = Duration::from_millis(1);
+    loop {
+        match acquire_at(path, run_id, pgid) {
+            Ok(lock) => return Ok(lock),
+            Err(refusal @ (LockError::HeldBy { .. } | LockError::HeldByUnknownRun)) => {
+                let elapsed = started.elapsed();
+                if elapsed >= budget {
+                    return Err(refusal);
+                }
+                // Never sleep past the budget: the caller's bound is a bound.
+                std::thread::sleep(sleep.min(budget - elapsed));
+                sleep = (sleep * 2).min(MAX_SLEEP);
+            }
+            Err(other) => return Err(other),
+        }
+    }
+}
+
+/// What a read-only probe of a lock file found.
+///
+/// Carries the same posture as [`crate::driver::liveness::Liveness`]: `Unknown`
+/// is an honest "could not tell" and **is never a synonym for `Free`**. A caller
+/// that cannot distinguish `Unknown` from `Free` has converted an I/O fault into
+/// a claim that nothing is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockProbe {
+    /// An exclusive holder is alive.
+    Held,
+    /// The file exists and nothing holds it exclusively.
+    Free,
+    /// The file does not exist (the probe never creates it).
+    Absent,
+    /// The probe could not tell; carries the errno that stopped it.
+    Unknown(rustix::io::Errno),
+}
+
+/// Probe whether `path` is exclusively held, without ever disturbing it (fact 6).
+///
+/// `File::open` is `O_RDONLY` and so never creates the file; `NotFound` is
+/// `Absent`. A `LOCK_SH | LOCK_NB` that succeeds means `Free` (the shared lock is
+/// released when the `File` drops at the end of this function); `EWOULDBLOCK`
+/// means `Held`; any other errno means `Unknown`.
+pub fn probe_at(path: &Path) -> LockProbe {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LockProbe::Absent,
+        Err(err) => {
+            return LockProbe::Unknown(
+                rustix::io::Errno::from_io_error(&err).unwrap_or(rustix::io::Errno::IO),
+            )
+        }
+    };
+    match flock(&file, FlockOperation::NonBlockingLockShared) {
+        Ok(()) => LockProbe::Free,
+        Err(errno) if errno == rustix::io::Errno::WOULDBLOCK => LockProbe::Held,
+        Err(errno) => LockProbe::Unknown(errno),
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +488,71 @@ mod tests {
             None,
             "a partial record parses as no holder, and the caller reports it as held \
              by an unknown run (D-20.3)"
+        );
+    }
+
+    #[test]
+    fn probe_at_reports_absent_free_and_held() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
+
+        assert_eq!(
+            probe_at(&path),
+            LockProbe::Absent,
+            "a probe must report a missing file as Absent and must not create it"
+        );
+        assert!(!path.exists(), "probing never creates the lock file");
+
+        std::fs::write(&path, b"").expect("an unheld lock file");
+        assert_eq!(probe_at(&path), LockProbe::Free, "an unheld file is Free");
+
+        let guard = acquire_at(&path, "r1", 1).expect("uncontended acquire");
+        assert_eq!(
+            probe_at(&path),
+            LockProbe::Held,
+            "a live exclusive holder must show as Held"
+        );
+        drop(guard);
+        assert_eq!(
+            probe_at(&path),
+            LockProbe::Free,
+            "dropping the guard releases the lock"
+        );
+    }
+
+    #[test]
+    fn acquire_still_writes_the_per_project_run_lock() {
+        let dir = planning();
+        let planning_dir = dir.path().join(".planning");
+
+        let lock = acquire(&planning_dir, "r-proj", 77).expect("acquire");
+        assert!(
+            lock_path(&planning_dir).is_file(),
+            "the per-project lock still lives at {}",
+            lock_path(&planning_dir).display()
+        );
+        assert_eq!(
+            lock_path(&planning_dir)
+                .file_name()
+                .and_then(|n| n.to_str()),
+            Some("run.lock"),
+            "the per-project lock keeps its name"
+        );
+        assert!(
+            matches!(
+                acquire(&planning_dir, "r-2", 78),
+                Err(LockError::HeldBy { .. })
+            ),
+            "a second acquire is refused naming the first"
+        );
+        drop(lock);
+    }
+
+    #[test]
+    fn run_lock_path_names_launcher_lock() {
+        assert_eq!(
+            run_lock_path(Path::new("/r/run-1")),
+            Path::new("/r/run-1/launcher.lock")
         );
     }
 }

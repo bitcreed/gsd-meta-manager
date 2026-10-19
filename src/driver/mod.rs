@@ -64,6 +64,11 @@
 // make the one mode that needs no platform facility the one mode a Windows
 // build could not even check.
 pub mod dry_run;
+// Outside the `#[cfg(unix)]` block as well: the portable helpers of
+// [`direction`] (frontmatter split, body sanity, parse) compile everywhere, and
+// the `renameat2(RENAME_EXCHANGE)` functions are gated inside the module itself
+// (D-12, D-13). Shared by the driverctl writer and Phase 30's steering edits.
+pub mod direction;
 // Outside the block for a third reason, and the plainest one: both modules are
 // **pure**. They open no file, spawn no process and read no clock — the caller
 // captures the state and hands it in (D-11) — so there is nothing platform-
