@@ -632,6 +632,40 @@ fn stale_socket_is_replaced_only_by_the_lock_holder() {
     );
 }
 
+#[test]
+fn wr05_another_runs_live_socket_is_not_stolen_through_a_shared_sock() {
+    // Two DIFFERENT runs (two projects, two run locks) pointed at one --sock. The
+    // run lock cannot protect the path; the live-socket probe must.
+    use std::os::unix::fs::MetadataExt;
+    let fx_a = Fixture::new();
+    let sock = fx_a.sock("shared.sock");
+    let served_a = spawn_serve(&fx_a, &sock, "a");
+    let inode_before = fs::metadata(&sock).expect("A's socket").ino();
+
+    let fx_b = Fixture::new();
+    let mut b = spawn_captured(&fx_b, serve_command(&fx_b, Some(&sock)), "b");
+    let status = b.wait_exit(Duration::from_secs(15));
+    assert_eq!(status.code(), Some(1), "stderr: {}", b.stderr_text());
+    assert!(
+        b.stderr_text().contains("live socket"),
+        "stderr names the refusal: {}",
+        b.stderr_text()
+    );
+    assert_eq!(
+        fs::metadata(&sock).expect("A's socket survives").ino(),
+        inode_before,
+        "B neither unlinked nor rebound A's socket"
+    );
+    let show = client(&sock, &["show"], None);
+    assert_eq!(
+        show.status.code(),
+        Some(0),
+        "A still answers: {}",
+        stderr(&show)
+    );
+    drop(served_a);
+}
+
 // ---------------------------------------------------------------- concurrency
 
 #[test]

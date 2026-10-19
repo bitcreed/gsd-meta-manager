@@ -21,9 +21,10 @@
 //!    having touched nothing it did not create. On shutdown the terminal status is
 //!    written and the socket is unlinked while the lock is still held; the lock is
 //!    released LAST, when the store drops.
-//! 3. **No socket theft (D-21).** Only the lock holder unlinks a stale socket, and
-//!    only a path that `symlink_metadata` says is a socket; any other file type at
-//!    the path is refused and left alone.
+//! 3. **No socket theft (D-21).** Only the lock holder unlinks a stale socket, only
+//!    a path that `symlink_metadata` says is a socket, and only after a probe
+//!    `connect` is refused (WR-05): a socket someone is listening on is refused and
+//!    left alone, as is any other file type at the path.
 //! 4. **The default socket path is private (D-21, T-27-22).** Without `--sock` it is
 //!    `$XDG_RUNTIME_DIR/gsdmm-driverctl/<run-id>-<sha256(canonical run dir)[:8]>.sock`.
 //!    That directory is created 0700 and must be a real directory owned by the
@@ -328,12 +329,63 @@ fn existing_socket(path: &Path) -> Result<bool, DriverctlError> {
     }
 }
 
+/// How long the stale-socket probe waits for `connect(2)` before it calls the
+/// socket live (a full backlog blocks a connect; a dead socket refuses at once).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Whether something is listening on the socket file at `path` (WR-05).
+///
+/// Only an `ECONNREFUSED` (nobody is listening) or `ENOENT` (already gone) proves
+/// the file stale. A successful connect, a connect that does not finish in
+/// [`PROBE_TIMEOUT`], and any other error all count as live: when in doubt the
+/// socket is left alone.
+fn socket_is_live(path: &Path) -> bool {
+    let (tx, rx) = mpsc::channel();
+    let target = path.to_owned();
+    let spawned = std::thread::Builder::new()
+        .name("driverctl-probe".to_owned())
+        .spawn(move || {
+            let _ = tx.send(UnixStream::connect(&target).map(drop));
+        });
+    if spawned.is_err() {
+        return true;
+    }
+    match rx.recv_timeout(PROBE_TIMEOUT) {
+        Ok(Ok(())) | Err(_) => true,
+        Ok(Err(e)) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+        ),
+    }
+}
+
 /// Bind `path` with a private mode: the umask is 0o177 around the bind, then the
 /// mode is set explicitly (T-27-26).
+///
+/// A socket file already at `path` is replaced only when no one is listening on it
+/// (WR-05). Holding THIS run's lock does not make the path this run's: an explicit
+/// `--sock` can name another live run's socket, and two runs can collide on the
+/// 32-bit default-path hash.
 fn replace_and_bind(sock: &Path, stale: bool) -> Result<UnixListener, DriverctlError> {
     if stale {
-        fs::remove_file(sock)
-            .map_err(|e| io_error(&format!("remove stale socket {}", sock.display()), e))?;
+        if socket_is_live(sock) {
+            return Err(DriverctlError::SocketPath {
+                detail: format!(
+                    "{} is a live socket (another server is listening); refusing to replace it",
+                    sock.display()
+                ),
+            });
+        }
+        match fs::remove_file(sock) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(io_error(
+                    &format!("remove stale socket {}", sock.display()),
+                    e,
+                ))
+            }
+        }
     }
     bind_private(sock)
 }
@@ -951,6 +1003,32 @@ mod tests {
         client.write_all(b"{\"op\":\"x\"}\nrest").unwrap();
         let got = read_request(&mut server, Duration::from_secs(30));
         assert!(matches!(got, Ok(ref b) if b == br#"{"op":"x"}"#));
+    }
+
+    #[test]
+    fn wr05_a_live_socket_is_never_replaced() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("live.sock");
+        let live = UnixListener::bind(&sock).unwrap();
+        let stale = existing_socket(&sock).unwrap();
+        assert!(stale, "the path holds a socket file");
+        let err = replace_and_bind(&sock, stale).unwrap_err();
+        assert!(matches!(err, DriverctlError::SocketPath { .. }), "{err:?}");
+        assert!(err.to_string().contains("live"), "{err}");
+        // The original server still owns the path: a client can still connect.
+        assert!(UnixStream::connect(&sock).is_ok());
+        drop(live);
+    }
+
+    #[test]
+    fn wr05_a_dead_socket_file_is_replaced() {
+        let td = TempDir::new().unwrap();
+        let sock = td.path().join("dead.sock");
+        drop(UnixListener::bind(&sock).unwrap());
+        assert!(!socket_is_live(&sock));
+        let listener = replace_and_bind(&sock, true).unwrap();
+        assert!(UnixStream::connect(&sock).is_ok());
+        drop(listener);
     }
 
     #[test]
