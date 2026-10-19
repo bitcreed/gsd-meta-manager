@@ -19292,6 +19292,131 @@ mod tests {
         }
     }
 
+    // ── 28-07: selecting and stopping a launcher run ──────────────────────
+
+    /// The Driver tab with `n` launcher runs (`20261019-run0`, `-run1`, ...).
+    fn launcher_fixture(
+        n: usize,
+    ) -> (
+        DetailScreen,
+        AppContext,
+        tokio::sync::mpsc::UnboundedReceiver<crate::action::Action>,
+    ) {
+        let (screen, mut ctx, rx) = driver_action_fixture();
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.launcher_runs = (0..n)
+            .map(|i| {
+                (
+                    format!("20261019-run{i}"),
+                    Err(
+                        crate::state_reader::driver_frontmatter::FrontmatterError::Io {
+                            detail: "x".to_string(),
+                        },
+                    ),
+                )
+            })
+            .collect();
+        (screen, ctx, rx)
+    }
+
+    fn launcher_selected(ctx: &AppContext) -> usize {
+        ctx.view_cache[TEST_ALIAS].launcher_selected
+    }
+
+    #[test]
+    fn launcher_stop_braces_move_the_highlight_and_clamp_at_both_ends() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(3);
+        assert_eq!(launcher_selected(&ctx), 0);
+
+        // `{` at the top stays at the top.
+        press(&mut screen, &mut ctx, KeyCode::Char('{'));
+        assert_eq!(launcher_selected(&ctx), 0);
+
+        // `}` twice then `{` leaves the highlight on the second row.
+        press(&mut screen, &mut ctx, KeyCode::Char('}'));
+        press(&mut screen, &mut ctx, KeyCode::Char('}'));
+        assert_eq!(launcher_selected(&ctx), 2);
+        press(&mut screen, &mut ctx, KeyCode::Char('{'));
+        assert_eq!(launcher_selected(&ctx), 1);
+
+        // `}` past the end stays on the last row.
+        for _ in 0..5 {
+            press(&mut screen, &mut ctx, KeyCode::Char('}'));
+        }
+        assert_eq!(launcher_selected(&ctx), 2);
+    }
+
+    #[test]
+    fn launcher_stop_braces_do_nothing_with_no_rows_and_leave_the_run_selection_alone() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(0);
+        press(&mut screen, &mut ctx, KeyCode::Char('}'));
+        press(&mut screen, &mut ctx, KeyCode::Char('{'));
+        assert_eq!(launcher_selected(&ctx), 0);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+
+        // And with rows they never touch the legacy run selection either.
+        let (mut screen, mut ctx, _rx) = launcher_fixture(3);
+        press(&mut screen, &mut ctx, KeyCode::Char('}'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+    }
+
+    #[test]
+    fn launcher_stop_capital_x_confirms_the_highlighted_run_and_the_request_names_it() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(3);
+        press(&mut screen, &mut ctx, KeyCode::Char('}'));
+
+        let action = screen.handle_key(KeyCode::Char('X'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_confirm"),
+            "X opens the existing driver confirmation"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "opening the prompt dispatches nothing"
+        );
+
+        // Confirming it sends the id of the highlighted row, not another.
+        let ScreenAction::Push(mut prompt) = action else {
+            unreachable!("checked above");
+        };
+        prompt.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        let sent = rx.try_recv().expect("a confirmed stop dispatches");
+        let crate::action::Action::LauncherStopRequested { alias, run_id } = sent else {
+            panic!("expected LauncherStopRequested, got {sent:?}");
+        };
+        assert_eq!(
+            (alias.as_str(), run_id.as_str()),
+            (TEST_ALIAS, "20261019-run1")
+        );
+    }
+
+    #[test]
+    fn launcher_stop_capital_x_with_no_rows_does_nothing() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(0);
+        let action = screen.handle_key(KeyCode::Char('X'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_stop_keys_exist_only_on_the_driver_tab() {
+        // The Queue tab binds `x` (delete) and none of these three; off the Driver
+        // tab they must stay inert, whatever the cache holds.
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(3);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        for key in ['{', '}', 'X'] {
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+            assert!(
+                pushed_screen_name(&action).is_none(),
+                "{key} must not open a screen off the Driver tab"
+            );
+        }
+        assert_eq!(launcher_selected(&ctx), 0);
+        assert!(rx.try_recv().is_err());
+    }
+
     /// CTRL-03 at the affordance layer, in the shape `driver_confirm.rs`
     /// records: the **second** assertion is the load-bearing one. A binding that
     /// set the message and opened the screen anyway would pass a test that

@@ -1914,6 +1914,8 @@ impl App {
                     Some((format!("{alias}: {outcome}"), std::time::Instant::now()));
                 self.needs_redraw = true;
             }
+            Action::LauncherStopRequested { .. } => {}
+            Action::LauncherStopped { .. } => {}
             // ── The Driver surface's four messages ────────────────────
             //
             // Four explicit arms rather than a catch-all: a `_ =>` would let a
@@ -4665,6 +4667,205 @@ mod tests {
             .map(|(id, _)| id.as_str())
             .collect();
         assert_eq!(ids, ["20261019-a"], "a run gone from disk must disappear");
+    }
+
+    // ── 28-07: stopping a launcher run from the Driver tab ───────────────
+
+    const LAUNCHER_RUN: &str = "20261019-0042-abcd";
+
+    /// A project with a launcher run dir `LAUNCHER_RUN` holding nothing, so the lock
+    /// probe reads it as free and `stop_run` reports `NotRunning` without touching
+    /// systemd.
+    fn launcher_project(root: &std::path::Path) {
+        std::fs::create_dir_all(
+            root.join(".planning/meta-manager/drivers")
+                .join(LAUNCHER_RUN),
+        )
+        .expect("run dir");
+    }
+
+    async fn next_action(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) -> Option<Action> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_stop_requested_runs_the_shared_stop_and_reports_through_launcher_stopped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = obs_app(dir.path());
+
+        app.update(Action::LauncherStopRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+        });
+
+        let Some(Action::LauncherStopped {
+            alias,
+            run_id,
+            report,
+        }) = next_action(&mut rx).await
+        else {
+            panic!("the stop must report through LauncherStopped");
+        };
+        assert_eq!((alias.as_str(), run_id.as_str()), (OBS_ALIAS, LAUNCHER_RUN));
+        assert_eq!(report, "the run is not running");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_stop_of_a_run_that_is_not_there_reports_the_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = obs_app(dir.path());
+
+        app.update(Action::LauncherStopRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "20261019-missing".to_string(),
+        });
+
+        let Some(Action::LauncherStopped { report, .. }) = next_action(&mut rx).await else {
+            panic!("a failed stop is still reported");
+        };
+        assert!(
+            report.starts_with("invalid run") || report.contains("run"),
+            "{report}"
+        );
+        assert_ne!(report, "the run is not running");
+    }
+
+    #[tokio::test]
+    async fn launcher_stop_requested_for_an_unregistered_alias_refuses_visibly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.needs_redraw = false;
+
+        app.update(Action::LauncherStopRequested {
+            alias: "nobody".to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+        });
+
+        let message = app.ctx.error_message.clone().expect("a visible refusal");
+        assert!(message.contains("nobody"), "{message}");
+        assert!(app.needs_redraw);
+        assert!(rx.try_recv().is_err(), "nothing is dispatched");
+    }
+
+    #[tokio::test]
+    async fn launcher_stop_requested_without_an_event_channel_refuses_visibly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.event_tx = None;
+
+        app.update(Action::LauncherStopRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+        });
+
+        let message = app.ctx.error_message.clone().expect("a visible refusal");
+        assert!(message.contains("event channel"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn launcher_stop_does_nothing_where_the_driver_tab_does_not_exist() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx.experimental = false;
+
+        app.update(Action::LauncherStopRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+        });
+
+        assert!(app.ctx.error_message.is_none());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(rx.try_recv().is_err(), "no stop was started");
+    }
+
+    #[tokio::test]
+    async fn launcher_stop_stopped_sets_the_status_line_and_relists_the_driver_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.needs_redraw = false;
+
+        app.update(Action::LauncherStopped {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+            report: "stopped the launcher (pid 7); the run is now stopped".to_string(),
+        });
+
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert_eq!(
+            text,
+            format!("{OBS_ALIAS}: stopped the launcher (pid 7); the run is now stopped")
+        );
+        assert!(app.needs_redraw);
+
+        let Some(Action::DriverRunsListed {
+            alias,
+            launcher_runs,
+            ..
+        }) = next_action(&mut rx).await
+        else {
+            panic!("a re-list of the Driver runs must follow");
+        };
+        assert_eq!(alias, OBS_ALIAS);
+        assert_eq!(launcher_runs.len(), 1);
+        assert_eq!(launcher_runs[0].0, LAUNCHER_RUN);
+    }
+
+    #[test]
+    fn launcher_stop_stopped_strips_terminal_controls_from_the_report() {
+        let mut app = App::new_for_test();
+        app.update(Action::LauncherStopped {
+            alias: "p".to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+            report: "bad\u{1b}[2Jreport".to_string(),
+        });
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+    }
+
+    #[tokio::test]
+    async fn launcher_stop_a_shorter_launcher_list_clamps_the_highlight() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .view_cache
+            .entry(OBS_ALIAS.to_string())
+            .or_default()
+            .launcher_selected = 5;
+
+        app.update(Action::DriverRunsListed {
+            alias: OBS_ALIAS.to_string(),
+            runs: Vec::new(),
+            inbox: Vec::new(),
+            journal: None,
+            launcher_runs: vec![(
+                "20261019-a".to_string(),
+                Err(
+                    crate::state_reader::driver_frontmatter::FrontmatterError::Io {
+                        detail: "x".to_string(),
+                    },
+                ),
+            )],
+        });
+        assert_eq!(app.ctx.view_cache[OBS_ALIAS].launcher_selected, 0);
+
+        app.update(Action::DriverRunsListed {
+            alias: OBS_ALIAS.to_string(),
+            runs: Vec::new(),
+            inbox: Vec::new(),
+            journal: None,
+            launcher_runs: Vec::new(),
+        });
+        assert_eq!(app.ctx.view_cache[OBS_ALIAS].launcher_selected, 0);
     }
 
     /// A shortened list clamps the selection rather than leaving it dangling.

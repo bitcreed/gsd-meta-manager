@@ -4801,6 +4801,39 @@ mod tests {
     }
 
     #[test]
+    fn launcher_stop_highlight_marks_exactly_the_selected_row_with_a_chevron() {
+        let rows: Vec<DriverRunEntry> = (0..3)
+            .map(|i| launcher_entry(&format!("2026101{i}-run"), None, done()))
+            .collect();
+        let mut cache = launcher_cache(rows);
+        cache.launcher_selected = 1;
+        let scraped = scrape_driver_tab(cache, 80, 12);
+        let row = |needle: &str| scraped.iter().find(|row| row.contains(needle)).unwrap();
+        assert!(
+            row("20261011-run").starts_with("> "),
+            "{:?}",
+            row("20261011-run")
+        );
+        assert!(
+            row("20261010-run").starts_with("  2026"),
+            "{:?}",
+            row("20261010-run")
+        );
+        assert!(
+            row("20261012-run").starts_with("  2026"),
+            "{:?}",
+            row("20261012-run")
+        );
+        assert_eq!(
+            scraped
+                .iter()
+                .filter(|row| row.starts_with("> 2026"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn launcher_a_short_pane_shows_a_window_that_keeps_the_highlight_in_view() {
         let rows: Vec<DriverRunEntry> = (0..8)
             .map(|i| launcher_entry(&format!("2026101{i}-run"), None, done()))

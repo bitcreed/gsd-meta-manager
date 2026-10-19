@@ -373,6 +373,25 @@ pub enum Action {
         command: String,
         report: String,
     },
+    /// The user confirmed stopping launcher run `run_id` of `alias` from the Driver
+    /// tab (28-07, D-11).
+    ///
+    /// Two `String`s, plain data. The handler runs `launcher::stop::stop_run` on
+    /// `spawn_blocking` (it waits on a lock and on `systemctl`, so never on the
+    /// render thread) and answers with [`Action::LauncherStopped`]. The run id
+    /// travels from the confirmation screen, which is the id it named to the user
+    /// (T-28-18).
+    LauncherStopRequested {
+        alias: String,
+        run_id: String,
+    },
+    /// A launcher stop finished. `report` is the already-rendered outcome: the
+    /// `StopReport` display, or the error's.
+    LauncherStopped {
+        alias: String,
+        run_id: String,
+        report: String,
+    },
 }
 
 #[cfg(test)]

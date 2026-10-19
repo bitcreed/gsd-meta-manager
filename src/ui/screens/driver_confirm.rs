@@ -199,6 +199,9 @@ pub enum DriverAction {
     Stop,
     /// Toggle the driver opt-in record for the selected project.
     ToggleOptIn,
+    /// Stop a launcher run (28-07, D-11). The run id lives on the screen so this
+    /// enum stays `Copy`.
+    StopLauncher,
 }
 
 /// One confirmation screen serving all three driver actions.
@@ -227,6 +230,10 @@ pub struct DriverConfirmScreen {
     /// the user had said something. [`super::driver_start`] is what enforces
     /// that mapping.
     goal: Option<String>,
+    /// The launcher run a [`DriverAction::StopLauncher`] will stop; empty for every
+    /// other action. One field feeds both the prompt and the dispatch, as `command`
+    /// does for `Start` (T-18-41, T-28-18).
+    run_id: String,
     popup: ConfirmPopup,
 }
 
@@ -241,7 +248,16 @@ impl DriverConfirmScreen {
             action,
             command: DEFAULT_DRIVE_COMMAND.to_string(),
             goal: None,
+            run_id: String::new(),
             popup: ConfirmPopup::default(),
+        }
+    }
+
+    /// A confirmation for stopping launcher run `run_id` of `alias` (28-07, D-11).
+    pub fn new_launcher_stop(alias: String, run_id: String) -> Self {
+        Self {
+            run_id,
+            ..Self::new(alias, DriverAction::StopLauncher)
         }
     }
 
@@ -256,6 +272,7 @@ impl DriverConfirmScreen {
             action: DriverAction::Start,
             command,
             goal,
+            run_id: String::new(),
             popup: ConfirmPopup::default(),
         }
     }
@@ -289,7 +306,13 @@ impl DriverConfirmScreen {
 /// `Default_Ignorable_Code_Point`). The two compose; neither replaces the other.
 /// Nothing dispatched changes: `do_start_run`, `do_stop_run` and
 /// `do_toggle_opt_in` all receive `&self.alias` raw.
-fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, command: &str) -> String {
+fn prompt_text(
+    alias: &str,
+    action: DriverAction,
+    opted_in: bool,
+    command: &str,
+    run_id: &str,
+) -> String {
     // `render_for_terminal`, not a bare `display_identity` (21-28 T3, WR-05).
     // This was the one BARE invisible-class call left in either of this plan's
     // render files: it answered `Cf`/`Default_Ignorable` and said nothing about
@@ -318,6 +341,10 @@ fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, command: &str)
             "Withdraw the driver opt-in for \"{alias}\"? No NEW run can start afterwards; a run \
              already live keeps going. [y/n]"
         ),
+        DriverAction::StopLauncher => {
+            let _ = run_id;
+            String::new()
+        }
         DriverAction::ToggleOptIn => format!(
             "Allow \"{alias}\" to be driven? This is the record the spawn gate checks before any \
              agent is started against it. [y/n]"
@@ -355,7 +382,7 @@ fn goal_row(goal: Option<&str>) -> Option<String> {
 /// following `delete_confirm.rs`'s use of red for a destructive action.
 fn prompt_color(action: DriverAction, opted_in: bool) -> Color {
     match action {
-        DriverAction::Stop => Color::Red,
+        DriverAction::Stop | DriverAction::StopLauncher => Color::Red,
         DriverAction::ToggleOptIn if opted_in => Color::Red,
         _ => Color::Reset,
     }
@@ -385,6 +412,7 @@ impl Screen for DriverConfirmScreen {
                         do_start_run(ctx, &self.alias, &self.command, self.goal.as_deref())
                     }
                     DriverAction::Stop => do_stop_run(ctx, &self.alias),
+                    DriverAction::StopLauncher => {}
                     DriverAction::ToggleOptIn => do_toggle_opt_in(ctx, &self.alias),
                 }
                 ScreenAction::Pop
@@ -442,7 +470,13 @@ impl Screen for DriverConfirmScreen {
         // toggle itself performs — so the prompt cannot describe a direction
         // other than the one `y` will take.
         let opted_in = registry::is_opted_in(&ctx.config, &self.alias);
-        let prompt = prompt_text(&self.alias, self.action, opted_in, &self.command);
+        let prompt = prompt_text(
+            &self.alias,
+            self.action,
+            opted_in,
+            &self.command,
+            &self.run_id,
+        );
         let color = prompt_color(self.action, opted_in);
         body.push(Line::from(Span::styled(
             super::confirm_popup::strip_key_hint(&prompt).to_string(),
@@ -460,6 +494,7 @@ impl Screen for DriverConfirmScreen {
         let (title, accent) = match self.action {
             DriverAction::Start => ("Start driver run", Color::Yellow),
             DriverAction::Stop => ("Stop driver run", Color::Red),
+            DriverAction::StopLauncher => ("Stop launcher run", Color::Red),
             DriverAction::ToggleOptIn if opted_in => ("Withdraw driver opt-in", Color::Red),
             DriverAction::ToggleOptIn => ("Allow driver", Color::Yellow),
         };
@@ -1335,6 +1370,9 @@ pub(crate) mod tests {
         }
     }
 
+    /// A launcher run id for the 28-07 tests.
+    const RUN: &str = "20261019-0042-abcd";
+
     #[test]
     fn every_prompt_names_the_alias_and_offers_the_same_two_keys() {
         let cases = [
@@ -1344,10 +1382,12 @@ pub(crate) mod tests {
             (DriverAction::Stop, true),
             (DriverAction::ToggleOptIn, false),
             (DriverAction::ToggleOptIn, true),
+            (DriverAction::StopLauncher, false),
+            (DriverAction::StopLauncher, true),
         ];
 
         for (action, opted_in) in cases {
-            let prompt = prompt_text(ALIAS, action, opted_in, DEFAULT_DRIVE_COMMAND);
+            let prompt = prompt_text(ALIAS, action, opted_in, DEFAULT_DRIVE_COMMAND, RUN);
             assert!(
                 prompt.contains(ALIAS),
                 "{action:?}/{opted_in} must name the alias, got: {prompt}"
@@ -1363,6 +1403,7 @@ pub(crate) mod tests {
         // grant something are not. A prompt that warned in the wrong direction
         // would be worse than an unstyled one.
         assert_eq!(prompt_color(DriverAction::Stop, false), Color::Red);
+        assert_eq!(prompt_color(DriverAction::StopLauncher, false), Color::Red);
         assert_eq!(prompt_color(DriverAction::ToggleOptIn, true), Color::Red);
         assert_eq!(prompt_color(DriverAction::ToggleOptIn, false), Color::Reset);
         assert_eq!(prompt_color(DriverAction::Start, true), Color::Reset);
@@ -1374,11 +1415,89 @@ pub(crate) mod tests {
             DriverAction::ToggleOptIn,
             true,
             DEFAULT_DRIVE_COMMAND,
+            "",
         );
         assert!(
             withdraw.contains("NEW"),
             "the withdraw prompt must not claim to stop a live run, got: {withdraw}"
         );
+    }
+
+    // ── 28-07: the launcher stop confirmation ────────────────────────────
+
+    #[test]
+    fn launcher_stop_prompt_names_the_run_the_alias_and_the_whole_scope() {
+        let prompt = prompt_text(
+            ALIAS,
+            DriverAction::StopLauncher,
+            false,
+            DEFAULT_DRIVE_COMMAND,
+            RUN,
+        );
+        assert_eq!(
+            prompt,
+            format!(
+                "Stop launcher run {RUN} on \"{ALIAS}\"? This stops its whole sandbox scope. [y/n]"
+            )
+        );
+    }
+
+    #[test]
+    fn launcher_stop_prompt_escapes_a_hostile_alias_and_run_id() {
+        let hostile = "x\u{1b}[2J\u{202e}y\u{200b}z";
+        let prompt = prompt_text(
+            hostile,
+            DriverAction::StopLauncher,
+            false,
+            DEFAULT_DRIVE_COMMAND,
+            hostile,
+        );
+        assert!(
+            prompt.starts_with("Stop launcher run "),
+            "the prompt was not built at all: {prompt:?}"
+        );
+        assert!(
+            !prompt.chars().any(|c| c.is_control() && c != '\n'),
+            "a control character reached the prompt: {prompt:?}"
+        );
+        assert!(
+            !prompt.contains('\u{202e}') && !prompt.contains('\u{200b}'),
+            "an invisible formatting character reached the prompt: {prompt:?}"
+        );
+    }
+
+    #[test]
+    fn launcher_stop_confirming_sends_the_confirmed_run_id_and_cancelling_sends_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+
+        for key in [KeyCode::Char('n'), KeyCode::Esc] {
+            let mut screen = DriverConfirmScreen::new_launcher_stop(ALIAS.to_string(), RUN.into());
+            let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::Pop), "{key:?} must pop");
+            assert!(rx.try_recv().is_err(), "{key:?} must dispatch nothing");
+        }
+
+        let mut screen = DriverConfirmScreen::new_launcher_stop(ALIAS.to_string(), RUN.into());
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        let sent = rx.try_recv().expect("a confirmed stop must dispatch");
+        let Action::LauncherStopRequested { alias, run_id } = sent else {
+            panic!("expected LauncherStopRequested, got {sent:?}");
+        };
+        assert_eq!((alias.as_str(), run_id.as_str()), (ALIAS, RUN));
+        assert!(rx.try_recv().is_err(), "exactly one request");
+    }
+
+    #[test]
+    fn launcher_stop_is_not_gated_on_the_driver_opt_in() {
+        // Withdrawing an opt-in must never strand a live sandboxed run.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        assert!(!registry::is_opted_in(&ctx.config, ALIAS));
+        let mut screen = DriverConfirmScreen::new_launcher_stop(ALIAS.to_string(), RUN.into());
+        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]
@@ -1431,7 +1550,7 @@ pub(crate) mod tests {
     /// repo has to name the exact command (T-18-41).
     #[test]
     fn the_start_prompt_names_the_chosen_command_and_not_the_default() {
-        let prompt = prompt_text(ALIAS, DriverAction::Start, true, CHOSEN);
+        let prompt = prompt_text(ALIAS, DriverAction::Start, true, CHOSEN, "");
         assert!(prompt.contains(CHOSEN), "got: {prompt}");
         assert!(
             !prompt.contains(DEFAULT_DRIVE_COMMAND),
@@ -1446,7 +1565,7 @@ pub(crate) mod tests {
 
         // And the default path still says the default, so the assertion above
         // is not passing because the prompt named nothing at all.
-        let defaulted = prompt_text(ALIAS, DriverAction::Start, true, DEFAULT_DRIVE_COMMAND);
+        let defaulted = prompt_text(ALIAS, DriverAction::Start, true, DEFAULT_DRIVE_COMMAND, "");
         assert!(
             defaulted.contains(DEFAULT_DRIVE_COMMAND),
             "got: {defaulted}"
@@ -1480,7 +1599,7 @@ pub(crate) mod tests {
              deleting everything is not a sanitiser. Got: {row:?}"
         );
 
-        let prompt = prompt_text(ALIAS, DriverAction::Start, true, nasty);
+        let prompt = prompt_text(ALIAS, DriverAction::Start, true, nasty, "");
         assert!(
             !prompt.contains('\u{1b}'),
             "the command is interpolated into the prompt too, got: {prompt:?}"
@@ -1538,8 +1657,14 @@ pub(crate) mod tests {
             (DriverAction::Start, "Start driver run"),
             (DriverAction::Stop, "Stop driver run"),
             (DriverAction::ToggleOptIn, "Allow driver"),
+            (DriverAction::StopLauncher, "Stop launcher run"),
         ] {
-            let screen = DriverConfirmScreen::new(ALIAS.to_string(), action);
+            let screen = DriverConfirmScreen::new_launcher_stop(ALIAS.to_string(), RUN.to_string());
+            let screen = if action == DriverAction::StopLauncher {
+                screen
+            } else {
+                DriverConfirmScreen::new(ALIAS.to_string(), action)
+            };
             let mut t = Terminal::new(TestBackend::new(110, 40)).unwrap();
             t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
             let buf = t.backend().buffer();

@@ -838,7 +838,7 @@ fn zero_width_only_identity() -> String {
 ///
 /// A screen is not one picture. `DetailScreen` has nine tabs, one of which
 /// (Docs) has two sub-views, so ten sub-view renders;
-/// `DriverStartScreen` has two steps; `DriverConfirmScreen` has four prompts.
+/// `DriverStartScreen` has two steps; `DriverConfirmScreen` has five prompts.
 /// The probe renders EACH, and the `label` is what a failure names — so a
 /// failure says which state leaked rather than only which screen.
 struct ProbeState {
@@ -1199,6 +1199,27 @@ fn probe_ctx(identity: &str) -> AppContext {
         outcome: None,
     }];
     cache.driver_selected_run = 0;
+
+    // The Driver tab's LAUNCHER RUNS section (28-07). The row key is a directory
+    // name and the status word comes out of a `DIRECTION.md` the driver's own
+    // tooling wrote, so both are third-party text; `sandbox: degraded` takes the
+    // badge branch as well.
+    let mut launcher_frontmatter =
+        crate::state_reader::driver_frontmatter::parse_driver_frontmatter(include_str!(
+            "../../../tests/fixtures/driverctl/direction/s003-run1b.md"
+        ))
+        .expect("the spike fixture parses");
+    launcher_frontmatter.sandbox = Some("degraded".to_string());
+    cache.launcher_runs = vec![(
+        identity.to_string(),
+        Ok(crate::state_reader::driver_frontmatter::DriverRunView {
+            frontmatter: launcher_frontmatter,
+            derived: crate::state_reader::driver_frontmatter::DerivedStatus::AsWritten(
+                crate::state_reader::driver_frontmatter::RunStatus::Unknown(identity.to_string()),
+            ),
+        }),
+    )];
+    cache.launcher_selected = 0;
 
     // The Driver tab's LIVE OUTPUT PANE — the pane that displays the agent's own
     // prose, and the one this whole phase is named for (21-28 T1).
@@ -2180,8 +2201,9 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             states
         }),
 
-        // All four prompts: start (with and without a goal), stop, and both
-        // directions of the opt-in toggle. Each names the alias.
+        // All five prompts: start (with a goal), stop, the launcher stop (which
+        // also names a run id), and both directions of the opt-in toggle. Each
+        // names the alias.
         "DriverConfirmScreen" => Some(|identity| {
             use super::driver_confirm::{DriverAction, DriverConfirmScreen};
             let opted_in = {
@@ -2205,6 +2227,14 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     Box::new(DriverConfirmScreen::new(
                         identity.to_string(),
                         DriverAction::Stop,
+                    )),
+                ),
+                one_state(
+                    "launcher stop prompt",
+                    probe_ctx(identity),
+                    Box::new(DriverConfirmScreen::new_launcher_stop(
+                        identity.to_string(),
+                        identity.to_string(),
                     )),
                 ),
                 one_state(
