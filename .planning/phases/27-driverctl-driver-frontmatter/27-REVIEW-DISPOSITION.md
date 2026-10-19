@@ -5,78 +5,78 @@ titles: json
 findings:
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: fixed
     title: "Gap scan reads driver-plantable files with no type or size guard, under the store mutex"
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Connection timeout is per-read, so trickling clients hold all 32 slots indefinitely"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`end --reason fresh-exit` followed by shutdown leaves status `running`, so the reader derives a false `crashed`"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "LOG.md line is appended before `state.json` is durable, so a failed save leaves them diverged"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Early returns after `begin_launch` leave status `running` and a stale socket file"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Stale-socket replacement never checks that the socket is actually stale"
   - id: WR-06
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Driver-supplied header values may carry control characters other than CR/LF"
   - id: WR-07
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Gap-round `seen` is keyed by digest alone, so identical files in different phases collapse"
   - id: WR-08
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Client `connect` has no timeout, contradicting the documented total deadline"
   - id: WR-09
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Wall-clock assertions in default-run tests are flake-prone"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: deferred
     title: "Orphaned `state.json` temp files are never swept"
   - id: IN-02
     severity: info
-    disposition: open
+    disposition: deferred
     title: "A panic in the ticker thread is silent and permanent"
   - id: IN-03
     severity: info
-    disposition: open
+    disposition: deferred
     title: "Replay test silently accepts a changed dispatch budget"
-open: 13
+open: 0
 total: 13
-recorded: 2026-10-19T06:02:40.141Z
+recorded: 2026-10-19T06:20:57.409Z
 ---
 
 # Phase 27: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
-| WR-06 | warning | open | - |
-| WR-07 | warning | open | - |
-| WR-08 | warning | open | - |
-| WR-09 | warning | open | - |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
-| IN-03 | info | open | - |
+| CR-01 | critical | fixed | 27-REVIEW-FIX.md |
+| WR-01 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-03 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-04 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-05 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-06 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-07 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-08 | warning | fixed | 27-REVIEW-FIX.md |
+| WR-09 | warning | fixed | 27-REVIEW-FIX.md |
+| IN-01 | info | deferred | info severity, outside --fix critical_warning scope [inferred] |
+| IN-02 | info | deferred | info severity, outside --fix critical_warning scope [inferred] |
+| IN-03 | info | deferred | info severity, outside --fix critical_warning scope [inferred] |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.

@@ -32,59 +32,59 @@ status: all_fixed
 **Applied fix:** `scan_verifications` now goes through `read_regular_bounded`. It runs `lstat`, requires a regular non-symlink file of at most 1 MiB, and opens with `O_NONBLOCK | O_NOFOLLOW`. It re-checks `fstat` on the open handle and reads through `take(MAX+1)`, skipping anything that outgrew the cap. A symlinked phase directory is no longer followed (`symlink_metadata`). The serve ticker scans before taking the store mutex and calls the new `RunStore::observe_verifications` under the lock; `scan_tick` is kept and composes the two. Tests: FIFO, symlinked file, symlinked phase dir, over/at-cap sizes (unit), and a FIFO through `scan_tick` (integration). The two FIFO tests run on a thread with a 30 s join bound so a regression is a failure, not a hung suite.
 **Notes:** the "scan outside the mutex" half has no failing-without-the-fix test, because it needs a deterministically slow read. It is covered by construction (the ticker calls `scan_verifications` before `lock_store`).
 
-### WR-01: Connection timeout is per-read
+### WR-01: Connection timeout is per-read, so trickling clients hold all 32 slots indefinitely
 
 **Files modified:** `src/driverctl/serve.rs`
 **Commit:** 630b149
 **Applied fix:** `read_request(stream, total)` computes a deadline once and sets the read timeout to the time remaining before each read. Test: a socketpair client trickles a byte every 20 ms with a 200 ms deadline. The per-read behaviour would return `Ok` after the writer closes; only a total deadline yields `TimedOut`. The assertion is on the variant, not on elapsed time.
 
-### WR-02: `end --reason fresh-exit` then shutdown leaves status `running`
+### WR-02: `end --reason fresh-exit` followed by shutdown leaves status `running`, so the reader derives a false `crashed`
 
 **Files modified:** `src/driverctl/store.rs`, `tests/driverctl_store.rs`
 **Commit:** a76e1ae
 **Applied fix:** `set_terminal` returns `KeptDriverEnd` only when `ended_by_driver && status.is_terminal()`. Test: `fresh-exit` followed by `set_terminal(Stopped)` records `stopped`.
 **Status:** fixed: requires human verification (logic change; see the Phase 28 note below).
 
-### WR-03: LOG line appended before `state.json` is durable
+### WR-03: LOG.md line is appended before `state.json` is durable, so a failed save leaves them diverged
 
 **Files modified:** `src/driverctl/store.rs`, `tests/driverctl_store.rs`
 **Commit:** 6e0af6d
 **Applied fix:** `commit` writes `state.json` first, then appends the LOG. If the append fails, the previous `state.json` is written back best-effort, so the module-doc promise holds in both directions. Tests: a directory in place of `state.json` leaves no new LOG line, and a retry logs exactly one (this one fails without the fix). A directory in place of `LOG.md` leaves `state.json` unchanged (guard for the rollback path; it passes on the old code too, since the old order never wrote state first).
 **Status:** fixed: requires human verification (ordering choice [inferred]: a missing LOG line was judged less harmful than a duplicate `dispatched` line, since the LOG is the audit source).
 
-### WR-04: Early return after `begin_launch` leaves `running` and a stale socket
+### WR-04: Early returns after `begin_launch` leave status `running` and a stale socket file
 
 **Files modified:** `src/driverctl/serve.rs`
 **Commit:** 0ab97c8
 **Applied fix:** New `abort_startup(store, sock, reason)` records `Stopped` with reason `serve:startup-failed` and unlinks the socket. It is called when the ticker thread cannot spawn, after the listener is dropped. Test: `abort_startup` on a real `RunStore` sets `stopped` and removes the socket. The spawn failure itself cannot be injected, so the test exercises the extracted helper.
 
-### WR-05: Stale-socket replacement never checks the socket is stale
+### WR-05: Stale-socket replacement never checks that the socket is actually stale
 
 **Files modified:** `src/driverctl/serve.rs`, `tests/driverctl_serve.rs`
 **Commit:** 14bdca5
 **Applied fix:** `replace_and_bind` probes with `connect` before unlinking (`socket_is_live`). Only `ECONNREFUSED` or `ENOENT` proves the file stale. A successful connect, a probe that does not finish in 2 s, and any other error all count as live and produce a typed `SocketPath` "live socket" refusal. The probe runs on a helper thread so a full backlog cannot block startup. Tests: unit (live is refused and still connectable, dead is replaced) and an end-to-end test in which two different runs share one `--sock` (the second exits 1, the inode is unchanged and the first still answers).
 **Status:** fixed: requires human verification (logic change).
 
-### WR-06: Header values may carry control characters other than CR/LF
+### WR-06: Driver-supplied header values may carry control characters other than CR/LF
 
 **Files modified:** `src/driverctl/log.rs`
 **Commit:** 7ef6820
 **Applied fix:** `one_line` rejects `|`, U+2028, U+2029 and every control character except tab. Tab stays allowed [inferred]. Table test: ESC, NUL, VT, FF, FS, U+0085, U+2028, U+2029 and DEL are rejected; tab and non-ASCII letters are accepted.
 
-### WR-07: Gap-round `seen` is keyed by digest alone
+### WR-07: Gap-round `seen` is keyed by digest alone, so identical files in different phases collapse
 
 **Files modified:** `src/driverctl/counters.rs`
 **Commit:** ce65379
 **Applied fix:** `seen` is keyed `"{phase}:{digest}"`. A legacy bare-digest key still counts as seen, but only for the phase it records, so spike-layout `state.json` files load and are not double counted. A first attempt to keep the bare key and compare the phase was rejected: it would ping-pong between two phases and count a new round on every tick. Tests: identical bytes in two phases are two rounds, and re-scanning both in either order is a duplicate; the legacy key is handled.
 **Status:** fixed: requires human verification. The reviewer's "revert to earlier bytes (v1, v2, v1)" case is deliberately unchanged: within one phase an identical digest remains a duplicate, as in the spike and as `scan_then_observe_counts_coalesces_and_dedups` asserts.
 
-### WR-08: Client `connect` has no timeout
+### WR-08: Client `connect` has no timeout, contradicting the documented total deadline
 
 **Files modified:** `src/driverctl_cli.rs`
 **Commit:** b3b7fcd
 **Applied fix:** `connect_within(path, limit)` connects on a helper thread and waits with `recv_timeout`. The write timeout now takes the time left in the total deadline. Tests (new `#[cfg(test)]` module in the bin): connecting to a listener whose backlog is full times out (filled by looping `connect_within(300 ms)`, no wall-clock upper-bound assert); live and missing paths behave as before.
 
-### WR-09: Wall-clock assertions in default-run tests
+### WR-09: Wall-clock assertions in default-run tests are flake-prone
 
 **Files modified:** `tests/driverctl_lock_race.rs`, `tests/driverctl_race.rs`, `tests/driverctl_serve.rs`
 **Commit:** d3e7362
