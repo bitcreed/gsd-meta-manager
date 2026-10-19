@@ -1025,10 +1025,21 @@ liveness class for a headless driver ended while a dispatched worker was still o
      VERIFICATION.md scan and the `caps.gap_rounds.per_phase` state, and exposes a cap hook point
      for Phase 28. Heartbeat-only rewrites are coalesced to at most one every 120 s.
 
-**Plans**: 0 plans
+**Plans**: 6 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 27 to break down)
+
+**Wave 1**
+- [ ] 27-01-PLAN.md — Run-lock primitives (acquire_at/_with_retry, probe_at) and the exchange-verify DIRECTION.md splice + write_body under DIRECTION.lock; editor-race port and lock race tests 1-5 (DCTL-02)
+- [ ] 27-02-PLAN.md — driverctl module root; 26.1 coalesced gap counter with its VERIFICATION.md scan, LOG grammar, outstanding_dispatch / classify_exit, replayed from spike-003 evidence (DCTL-04)
+- [ ] 27-03-PLAN.md — Frontmatter schema v1: typed DriverFrontmatter reader + hand emitter, `stalled`, inline item_states, golden + 18 spike fixtures (DCTL-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 27-04-PLAN.md — Hidden `driverctl log|show|hook` client dispatched before tracing, fail-closed gate, MASTER-PROMPT parse; reader liveness table R1-R6 (DCTL-01, DCTL-03)
+- [ ] 27-05-PLAN.md — Library RunStore: request validation (rc=2, nothing written), hook dispatch counting + Gate hook point, 120 s heartbeat coalescing, gap observation, launcher-only terminal setter (DCTL-01, DCTL-04)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 27-06-PLAN.md — `driverctl serve` (lock before socket, no socket theft, XDG socket path, 2 s ticker), SIGKILL/crash-detected e2e, SC1 LOG replay, Phase 28/30 hand-offs (DCTL-01)
 
 ### Phase 28: Sandboxed Driver Launcher
 

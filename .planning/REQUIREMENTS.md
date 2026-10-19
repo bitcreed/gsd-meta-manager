@@ -147,7 +147,8 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   `state.json`, `LOG.md` and DIRECTION.md frontmatter. It speaks the spike-002 socket protocol and
   runs on the launcher side, outside the sandbox.
 - [ ] **DCTL-02**: The frontmatter is rewritten by exchange-verify splice: `renameat2(RENAME_EXCHANGE)`,
-  a check of the displaced inode, and a swap back on mismatch.
+  a check of the displaced file's body bytes (27-CONTEXT D-23; inode alone misses in-place saves),
+  and a swap back on mismatch.
   - The human body is preserved byte-for-byte.
   - A body missing `## Direction` or `## Items` is never written back.
   - gsd-mm's own DIRECTION writes share a flock with driverctl.

@@ -806,13 +806,13 @@ renameat_with(&dir_fd, tmp_name, &dir_fd, "DIRECTION.md", RenameFlags::EXCHANGE)
 | A10 | fsync tmp before exchange; CRLF tolerance; trailing heartbeat flush | Patterns/Pitfalls | Minor perf cost |
 | A11 | `dirs::data_local_dir` honors `XDG_DATA_HOME` (the reproduction relied on it and did panic, so it holds on this box) | Pitfall 1 | None for the fix |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Per-item state in the frontmatter (A4).** Phase 30 SC1 needs it from the frontmatter; the spike has counts only. Recommendation: add `item_states` now (additive, `serde(default)`).
-2. **Run lock scope (A2).** Per-run vs per-project. Recommendation: per-run `launcher.lock`, which is spike-proven (L5). Phase 28 confirms.
-3. **Standalone `serve` launch bookkeeping.** Recommendation: `serve` calls the same `begin_launch` the launcher will (lock → crash-detected → `running`, `launches+1`, a `launcher` connection with `mode: "standalone"`). On SIGTERM/SIGINT it records `stopped` with reason `serve:signal` unless the driver logged `RUN end`. Phase 28 replaces this with `classify_exit` `[inferred — audit]`.
-4. **`fresh-exit` → `running` (R3).** Phase 28 must hold the lock across relaunches, or the reader false-crashes. Record it in the Phase 28 hand-off.
-5. **Dashboard quote divergence on `status: "gaps_found"`** (Answer B, item 4). Out of scope. File as a todo.
+1. **RESOLVED (D-19, operator 2026-10-18; 27-03).** **Per-item state in the frontmatter (A4).** Phase 30 SC1 needs it from the frontmatter; the spike has counts only. Recommendation: add `item_states` now (additive, `serde(default)`).
+2. **RESOLVED (D-20; 27-01).** **Run lock scope (A2).** Per-run vs per-project. Recommendation: per-run `launcher.lock`, which is spike-proven (L5). Phase 28 confirms.
+3. **RESOLVED (27-06 Task 1).** **Standalone `serve` launch bookkeeping.** Recommendation: `serve` calls the same `begin_launch` the launcher will (lock → crash-detected → `running`, `launches+1`, a `launcher` connection with `mode: "standalone"`). On SIGTERM/SIGINT it records `stopped` with reason `serve:signal` unless the driver logged `RUN end`. Phase 28 replaces this with `classify_exit` `[inferred — audit]`.
+4. **RESOLVED (D-25 Phase 28 hand-off; 27-06 Task 3).** **`fresh-exit` → `running` (R3).** Phase 28 must hold the lock across relaunches, or the reader false-crashes. Record it in the Phase 28 hand-off.
+5. **RESOLVED (D-27; todo filed).** **Dashboard quote divergence on `status: "gaps_found"`** (Answer B, item 4). Out of scope. File as a todo.
 
 ## Environment Availability
 
