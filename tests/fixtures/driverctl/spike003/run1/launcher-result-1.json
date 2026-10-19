@@ -1,0 +1,31 @@
+{
+ "rc": 0,
+ "status": "parked",
+ "reason": "driver:all-parked",
+ "tripped": null,
+ "cost": {
+  "launch": 1,
+  "total_cost_usd": 5.166720300000001,
+  "subtype": "success",
+  "num_turns": 4,
+  "duration_s": 31,
+  "session_id": "1ab92467-2e25-429e-8039-65b9b400386a",
+  "by_model": {
+   "claude-opus-5-5": {
+    "cost_usd": 0.7545373999999999,
+    "in": 42,
+    "out": 11494,
+    "cache_read": 845687,
+    "cache_write": 44419
+   },
+   "claude-sonnet-5-5": {
+    "cost_usd": 4.4121829,
+    "in": 254,
+    "out": 129681,
+    "cache_read": 6621569,
+    "cache_write": 613177
+   }
+  }
+ },
+ "stream": "/home/blk/.local/state/gsd-meta-manager/spike-003/run1-20261017T023945Z/state/launch-1.jsonl"
+}
