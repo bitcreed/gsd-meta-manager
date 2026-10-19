@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.17.0`**
-(`962c1192e062b5278281cd3a7bfd671a67a4db44`, `package.json` 1.17.0, tagged
-2026-10-14) **on 2026-10-16. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.17.0`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.18.0`**
+(`35f5a452239b897b8d6352c973e1e4efd683370f`, `package.json` 1.18.0, tagged
+2026-10-19) **on 2026-10-19. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.18.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.17.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.17.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.17.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.18.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.18.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.18.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -33,7 +33,10 @@ tasks: 261012-jqb (the key delta — six `gates.*` keys retired, `audit.enabled`
 added), 261012-jqc (`$GSD_HOME` for the global defaults file) and 261012-kee
 (the v1.16.0 baseline). The v1.17.0 sync (quick task 261016-dx3) was
 baseline-only, with no config key, default or loader change — see
-[The v1.17.0 delta](#the-v1170-delta-quick-task-261016-dx3).
+[The v1.17.0 delta](#the-v1170-delta-quick-task-261016-dx3). The v1.18.0 sync
+(quick task 261019-foc) was baseline-only as well, with no config key or default
+change and a loader refactor that keeps the `GSD_HOME` rule — see
+[The v1.18.0 delta](#the-v1180-delta-quick-task-261019-foc).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -65,14 +68,14 @@ it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
 whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.17.0-75-g46a119f06` with `package.json` 1.17.0) — not the sync target. A
+`v1.18.0-6-g8d3d29c46` with `package.json` 1.18.0) — not the sync target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=v1.18.0                          # the sync target: the next release tag
-PREV=v1.17.0                         # the previous GSD_CORE_SYNCED_COMMIT
+REF=v1.19.0                          # the sync target: the next release tag
+PREV=v1.18.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -123,6 +126,72 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.18.0 delta (quick task 261019-foc)
+
+Measured on 2026-10-19 between `v1.17.0` and `v1.18.0`
+(`35f5a452239b897b8d6352c973e1e4efd683370f`), against the tags, not the
+working tree:
+
+| Measurement | v1.17.0 | v1.18.0 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 255 | 255 | **+0 / -0** |
+| `config-schema.manifest.json` | — | — | unchanged (no diff) |
+| `config-defaults.manifest.json` | — | — | unchanged |
+| `src/config.cts`, `src/secrets.cts` | — | — | unchanged |
+| `src/config-loader.cts` | — | — | global-defaults home lookup now `resolveGsdHome()` (#5017), same rule |
+| Existing keys whose default changed | | | **none** |
+| `capabilities/*/capability.json` | | | 45 files bump `version` 1.17.0 -> 1.18.0; 3 also gain a runtime-only `hostBehaviors` field |
+
+The sorted key-cell sets are identical, so the Modelled count stays 135 and
+`DEFAULTS_OPTION_COUNT` stays 135.
+
+**`GSD_HOME` and `resolveGsdHome()` (#5017).** The config loader's two inline
+`process.env['GSD_HOME'] || os.homedir()` lookups became calls to the new
+`resolveGsdHome()` in `src/runtime-homes.cts`. Its body is the same `||` rule,
+now shared by every reader and writer of the store. `GSD_HOME` moves only
+`$GSD_HOME/.gsd/`: capability overlays (`capabilities/<id>/capability.json`),
+`consent.json`, `defaults.json` and the `*_api_key` files. It does not move the
+install root. This build's `user_defaults_path` already implements that rule,
+so only its docstring citation moved. The install detection in
+`src/state_reader/gsd_install.rs` never consulted `GSD_HOME`.
+
+**Config-adjacent diffs in the range that are NOT new keys:**
+
+- The 45 capability `version` bumps.
+- `runtime.hostBehaviors.defaultHomeIncludeRoot` was added to antigravity
+  (`.gemini/antigravity`) and copilot (`.copilot`) (#5123).
+- kimi gained `runtime.hostBehaviors.retargetsGsdCoreProsePath: true`, another
+  runtime-only field.
+- `.planning` writer-side changes this build does not read:
+  - the ROADMAP Plans line pending-tail reconcile in `update-plan-progress`
+    (#4947);
+  - the STATE body Completed Phases counter ratchet in `phase complete`
+    (#4901). This build reads the frontmatter `progress.completed_phases`;
+  - `phase add` writing `Depends on: Nothing` (or the nearest declared lower
+    phase) instead of `N-1` (#5113). No `Depends on` parser exists here;
+  - `/gsd-pause-work` handoff commits typed `docs(pause):` instead of `wip:`
+    (#4943).
+- smart-entry's `situation` text fix (#4890). Only the summary wording changed
+  (`phaseSummary` replaces `phasePosition`); the JSON shape is unchanged, and
+  `parse_smart_entry_json` reads only `actions`.
+- The Community Capability Registry (`docs/registries/`) gained its
+  `ponytail-everywhere` entry (#5380). It is docs-only and ships no code.
+
+**Third-party capability keys.** `ponytail.*` (that registry entry's
+`configKeys`: `ponytail.enabled`, `ponytail.enforcement`, `ponytail.level`) and
+`musk.*` (the `config` block of a locally installed third-party capability, not
+part of gsd-core) are not gsd-core keys. When a project's config.json carries
+them they land in the top-level `extra` map and show as read-only `Not modelled`
+pass-through rows that round-trip on save, with no code change. They are
+recorded under Pass-through.
+
+The secret-bearing re-diff found no change: `src/secrets.cts` is unchanged and
+the heuristic still matches only the four exempt budget keys.
+`gsd-core/references/gsd-run-resolver.md` is unchanged, so the resolver-order
+comments in `src/state_reader/queue_md.rs` stay accurate.
 
 ---
 
@@ -610,6 +679,7 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 | `executor.stall_*`, `planner.stall_detect_interval_minutes`, `planner.stall_threshold_minutes`, `manager.flags.*` | Runtime tuning knobs, rarely edited by hand. Since 260926-gtk `planner` is a TYPED block (`planner.stall_detection_enabled` is modelled), so its two remaining knobs render as separate `planner.<key>` rows; before it, the whole `planner` object was a single top-level `planner` row. |
 | `context` | The one undotted top-level key still pass-through: upstream's docs call it a free-form string, its `config-set` an enum. See "Still pass-through at the top level". |
 | `claude_md_assembly.mode`, `learnings.max_inject` | Singletons that did not fit an existing category. |
+| `ponytail.*`, `musk.*` (third-party capability `configKeys`) | Owned by community or locally installed capabilities rather than by gsd-core; open-ended by capability name, so a typed row is not expressible. They reach the tab through the top-level extra map. |
 
 ### Known inconsistency — unprefixed row labels
 
@@ -641,7 +711,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.18.0`, `PREV=v1.17.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.19.0`, `PREV=v1.18.0`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run
