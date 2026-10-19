@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: executing
-stopped_at: Completed 28-02-PLAN.md
-last_updated: "2026-10-19T19:34:33.562Z"
+stopped_at: Completed 28-03-PLAN.md
+last_updated: "2026-10-19T19:47:33.260Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 28 execution started
-state_head: e0675411a2bb8978821f7b9e1d3581821c14e357
+state_head: d0f3b8060ba3ae8d879ae3cbc5b4e23c18d73879
 progress:
   total_phases: 10
   completed_phases: 11
@@ -228,7 +228,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 28 (Sandboxed Driver Launcher) — EXECUTING
-Plan: 3 of 9
+Plan: 4 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -475,6 +475,7 @@ verify-phase if the gate is fixed.
 | Phase 26.1 P11 | 30 min | 3 tasks | 5 files |
 | Phase 28 P01 | 55min | 1 tasks | 14 files |
 | Phase 28 P02 | 30 min | 2 tasks | 13 files |
+| Phase 28 P03 | 11 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -629,6 +630,8 @@ Recent decisions affecting current work:
 - [Phase 28]: [28-02] fresh-exit relaunches in-process under one run lock; user stop (SIGTERM) beats a pending relaunch and records stop:user [inferred - audit]
 - [Phase 28]: [28-02] Containment::stop runs systemctl stop on a helper thread while the launcher reaps its child (zombie keeps the cgroup populated) [inferred - audit]
 - [Phase 28]: [28-02] Detached launch: parent creates state dir and launcher.log before the child takes the lock; child exit 0 before the poll is success; no lock in 10s kills the child [inferred - audit]
+- [Phase 28]: 28-03: runtime-dir tmpfs re-binds the run socket only when it lies under the runtime dir; settings.json and bin/ are read-only inside the config dir [inferred - audit]
+- [Phase 28]: 28-03: live probe pins GIT_SSH_COMMAND (accept-new, BatchMode) so an inside ssh failure means no credential; https host control fails on this host, ssh control succeeds [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -802,8 +805,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-19T19:34:32.588Z
-Stopped at: Completed 28-02-PLAN.md
+Last session: 2026-10-19T19:47:32.278Z
+Stopped at: Completed 28-03-PLAN.md
 Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
