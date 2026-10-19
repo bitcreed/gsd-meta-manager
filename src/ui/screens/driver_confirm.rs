@@ -342,8 +342,13 @@ fn prompt_text(
              already live keeps going. [y/n]"
         ),
         DriverAction::StopLauncher => {
-            let _ = run_id;
-            String::new()
+            // The run id is a directory name and so third-party text: both classes
+            // are escaped, through the one composition.
+            let run_id = crate::text::render_for_terminal(run_id);
+            format!(
+                "Stop launcher run {run_id} on \"{alias}\"? This stops its whole sandbox \
+                 scope. [y/n]"
+            )
         }
         DriverAction::ToggleOptIn => format!(
             "Allow \"{alias}\" to be driven? This is the record the spawn gate checks before any \
@@ -412,7 +417,7 @@ impl Screen for DriverConfirmScreen {
                         do_start_run(ctx, &self.alias, &self.command, self.goal.as_deref())
                     }
                     DriverAction::Stop => do_stop_run(ctx, &self.alias),
-                    DriverAction::StopLauncher => {}
+                    DriverAction::StopLauncher => do_stop_launcher(ctx, &self.alias, &self.run_id),
                     DriverAction::ToggleOptIn => do_toggle_opt_in(ctx, &self.alias),
                 }
                 ScreenAction::Pop
@@ -596,6 +601,22 @@ fn do_stop_run(ctx: &mut AppContext, alias: &str) {
         ctx,
         Action::DriverStopRequested {
             alias: alias.to_string(),
+        },
+        alias,
+    );
+}
+
+/// Ask the app to stop launcher run `run_id` of `alias` (28-07, D-11).
+///
+/// Unlike [`do_stop_run`] the message carries the run id: a launcher project can
+/// hold many runs, and the id sent is the same `String` the prompt named
+/// (T-28-18). `launcher::stop::stop_run` re-validates it against the project.
+fn do_stop_launcher(ctx: &mut AppContext, alias: &str, run_id: &str) {
+    dispatch(
+        ctx,
+        Action::LauncherStopRequested {
+            alias: alias.to_string(),
+            run_id: run_id.to_string(),
         },
         alias,
     );

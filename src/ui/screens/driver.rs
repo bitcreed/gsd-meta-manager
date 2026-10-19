@@ -1174,6 +1174,10 @@ pub const LAUNCHER_LEGACY_MIN_HEIGHT: u16 = 15;
 /// bordered "no runs" block is two border rows and two message lines.
 pub const LAUNCHER_LEGACY_EMPTY_MIN_HEIGHT: u16 = 4;
 
+/// Pane width at or above which the section header also names its keys:
+/// `Launcher runs (20)` is 18 cells and the hint another 22.
+pub const LAUNCHER_HINT_MIN_CELLS: usize = 44;
+
 /// The badge on a run whose frontmatter says `sandbox: degraded` (D-30). One
 /// constant so the row and the collapsed line spell it the same.
 pub const UNSANDBOXED_BADGE: &str = "UNSANDBOXED";
@@ -1223,8 +1227,8 @@ fn is_unsandboxed(entry: &DriverRunEntry) -> bool {
 /// One launcher-run row: `  <run id>  <status>[  UNSANDBOXED]`, or
 /// `  <run id>  unreadable`. The run id gives way (ellipsised) before the status
 /// word or the badge do, so a narrow pane can never clip the posture off.
-fn launcher_run_line(entry: &DriverRunEntry, width: usize) -> Line<'static> {
-    let prefix = "  ";
+fn launcher_run_line(entry: &DriverRunEntry, width: usize, selected: bool) -> Line<'static> {
+    let prefix = if selected { "> " } else { "  " };
     let (word, badge) = match &entry.1 {
         Ok(view) => (launcher_status_word(&view.derived), is_unsandboxed(entry)),
         Err(_) => ("unreadable".to_owned(), false),
@@ -1246,7 +1250,17 @@ fn launcher_run_line(entry: &DriverRunEntry, width: usize) -> Line<'static> {
         id
     };
 
-    let mut spans = vec![Span::raw(format!("{prefix}{id}  {word}"))];
+    let text = format!("{prefix}{id}  {word}");
+    let mut spans = vec![if selected {
+        Span::styled(
+            text,
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )
+    } else {
+        Span::raw(text)
+    }];
     if badge {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(UNSANDBOXED_BADGE, unsandboxed_style()));
@@ -1288,15 +1302,23 @@ fn render_launcher_runs(frame: &mut Frame, area: Rect, runs: &[DriverRunEntry], 
         selected + 1 - rows_room
     };
     let mut lines: Vec<Line> = Vec::with_capacity(usize::from(area.height));
+    // The keys are named where the rows are, because the footer's measured
+    // width tiers have no room for three more hints.
+    let hint = if width >= LAUNCHER_HINT_MIN_CELLS {
+        "  [{/}]select  [X]stop"
+    } else {
+        ""
+    };
     lines.push(Line::from(Span::styled(
-        format!("Launcher runs ({})", runs.len()),
+        format!("Launcher runs ({}){hint}", runs.len()),
         label_style(),
     )));
     lines.extend(
         runs.iter()
+            .enumerate()
             .skip(first)
             .take(rows_room)
-            .map(|entry| launcher_run_line(entry, width)),
+            .map(|(index, entry)| launcher_run_line(entry, width, index == selected)),
     );
     frame.render_widget(Paragraph::new(lines), area);
 }

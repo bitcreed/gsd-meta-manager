@@ -5420,6 +5420,50 @@ impl Screen for DetailScreen {
                     DriverAction::Stop,
                 )))
             }
+            // `{` / `}`: move the highlight over the launcher runs listed under the
+            // Driver tab's run view (28-07, D-11). Tab-scoped like every key in this
+            // run, and chosen because all three of `{`, `}` and `X` are unbound on
+            // every other screen (`normal.rs`, `driver.rs` and the rest of this
+            // file), so no existing key was displaced. The legacy run selection
+            // (`j`/`k`) is untouched. Clamped at both ends; with no rows, inert.
+            KeyCode::Char('}') if current_view == DetailSubView::Driver => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if let Some(last) = cache.launcher_runs.len().checked_sub(1) {
+                    cache.launcher_selected = (cache.launcher_selected + 1).min(last);
+                }
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            KeyCode::Char('{') if current_view == DetailSubView::Driver => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                cache.launcher_selected = cache.launcher_selected.saturating_sub(1);
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            // `X`: stop the highlighted launcher run, **through the existing driver
+            // confirmation** and never directly. Capital, because lower-case `x`
+            // is the legacy run stop two arms up and the two must not be confused.
+            // The confirmation names the run id it will send; with no rows there
+            // is nothing to name, so nothing opens.
+            KeyCode::Char('X') if current_view == DetailSubView::Driver => {
+                let target = ctx.view_cache.get(&self.alias).and_then(|cache| {
+                    let last = cache.launcher_runs.len().checked_sub(1)?;
+                    cache
+                        .launcher_runs
+                        .get(cache.launcher_selected.min(last))
+                        .map(|(run_id, _)| run_id.clone())
+                });
+                match target {
+                    Some(run_id) => {
+                        ctx.needs_redraw = true;
+                        ScreenAction::Push(Box::new(DriverConfirmScreen::new_launcher_stop(
+                            self.alias.clone(),
+                            run_id,
+                        )))
+                    }
+                    None => ScreenAction::None,
+                }
+            }
             // `o`: opt in, **through the same confirmation the dashboard's `o`
             // opens** and never by writing the registry from here.
             //

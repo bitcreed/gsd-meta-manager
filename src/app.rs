@@ -957,14 +957,74 @@ impl App {
     /// `return`. Sharing it is what stops the refusals drifting into several
     /// different wordings for one condition.
     fn planning_dir_for(&mut self, alias: &str) -> Option<PathBuf> {
+        self.project_path_for(alias)
+            .map(|path| path.join(".planning"))
+    }
+
+    /// Resolve one alias's project root, or refuse visibly (S4). The lookup
+    /// [`Self::planning_dir_for`] is built on, shared so the refusal has one wording.
+    fn project_path_for(&mut self, alias: &str) -> Option<PathBuf> {
         match self.ctx.config.projects.get(alias) {
-            Some(project) => Some(project.path.join(".planning")),
+            Some(project) => Some(project.path.clone()),
             None => {
                 self.ctx.error_message = Some(format!("No registered project named '{alias}'"));
                 self.needs_redraw = true;
                 None
             }
         }
+    }
+
+    /// Stop launcher run `run_id` of `alias` (28-07, D-11).
+    ///
+    /// The same `launcher::stop::stop_run` the `driver stop` CLI calls, on
+    /// `spawn_blocking`: it probes the run lock, signals the launcher and waits up to
+    /// a minute for the lock to clear, so it must never run on the render thread
+    /// (WR-10). The outcome returns as [`Action::LauncherStopped`]. Gated on the
+    /// experimental surfaces like `stop_driver_run`: the key that reaches this exists
+    /// only on the Driver tab.
+    #[cfg(target_os = "linux")]
+    fn stop_launcher_run(&mut self, alias: &str, run_id: &str) {
+        if !self.ctx.experimental {
+            return;
+        }
+        let Some(path) = self.project_path_for(alias) else {
+            return;
+        };
+        // Refuse visibly, never silently (S4): a stop whose result cannot be
+        // reported is a stop the user cannot tell happened.
+        let Some(tx) = &self.ctx.event_tx else {
+            self.ctx.error_message = Some(format!(
+                "Could not stop the launcher run on '{alias}': this session has no event channel."
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let alias_for_task = alias.to_string();
+        let run_id_for_task = run_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let report = match crate::launcher::stop::stop_run(
+                &path,
+                &run_id_for_task,
+                std::time::Duration::from_secs(60),
+            ) {
+                Ok(report) => report.to_string(),
+                Err(error) => error.to_string(),
+            };
+            let _ = tx.send(Action::LauncherStopped {
+                alias: alias_for_task,
+                run_id: run_id_for_task,
+                report,
+            });
+        });
+
+        self.ctx.status_message = Some((
+            crate::text::render_for_terminal(&format!("Stopping launcher run {run_id} on {alias}"))
+                .to_string(),
+            std::time::Instant::now(),
+        ));
+        self.needs_redraw = true;
     }
 
     /// Schedule the durable append of one injected message (STEER-01, STEER-03).
@@ -1914,8 +1974,37 @@ impl App {
                     Some((format!("{alias}: {outcome}"), std::time::Instant::now()));
                 self.needs_redraw = true;
             }
-            Action::LauncherStopRequested { .. } => {}
-            Action::LauncherStopped { .. } => {}
+            // 28-07, D-11: stop a launcher run through the library function the
+            // `driver stop` CLI calls. Linux-only like the launcher itself.
+            Action::LauncherStopRequested { alias, run_id } => {
+                #[cfg(target_os = "linux")]
+                self.stop_launcher_run(&alias, &run_id);
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = (alias, run_id);
+                    self.ctx.error_message =
+                        Some(crate::launcher::LauncherError::UnsupportedPlatform.to_string());
+                    self.needs_redraw = true;
+                }
+            }
+            // The stop already happened; `report` is its outcome. It is shown on the
+            // status line, and the Driver runs are re-listed so the row's derived
+            // status catches up without waiting for the next event.
+            Action::LauncherStopped {
+                alias,
+                run_id: _,
+                report,
+            } => {
+                // `render_for_terminal`: the report embeds the final status word the
+                // launcher read back out of `state.json`, which is run-dir content.
+                let line =
+                    crate::text::render_for_terminal(&format!("{alias}: {report}")).to_string();
+                self.ctx.status_message = Some((line, std::time::Instant::now()));
+                if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
+                    self.ctx.schedule_run_list_scan(&alias, &path);
+                }
+                self.needs_redraw = true;
+            }
             // ── The Driver surface's four messages ────────────────────
             //
             // Four explicit arms rather than a catch-all: a `_ =>` would let a
@@ -2016,6 +2105,11 @@ impl App {
                 cache.driver_journal = journal;
                 // Replaced, never merged, like `driver_runs`: a run directory no
                 // longer on disk is expressed by its absence.
+                // Clamped, like the run selection above: a list that shrank under
+                // the highlight must not leave it dangling.
+                cache.launcher_selected = cache
+                    .launcher_selected
+                    .min(launcher_runs.len().saturating_sub(1));
                 cache.launcher_runs = launcher_runs;
                 self.needs_redraw = true;
             }
