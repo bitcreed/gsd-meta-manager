@@ -400,8 +400,11 @@ pub enum Commands {
 /// driver's prompt both read it as control (`driverctl_cli::run`).
 #[derive(Subcommand)]
 pub enum DriverctlAction {
+    // Boxed: `DriverctlLog` is 17 optional strings, and unboxed it makes this
+    // enum (and through it `Commands`) the size of that struct for the sake of two
+    // unit variants (`clippy::large_enum_variant`).
     /// Record one event on the run's log
-    Log(DriverctlLog),
+    Log(Box<DriverctlLog>),
     /// Print the run's current status block
     Show,
     /// Claude hook entry point: read one hook payload on stdin
@@ -763,7 +766,7 @@ mod tests {
         let mut full = vec!["log"];
         full.extend_from_slice(args);
         match driverctl(&full).unwrap_or_else(|e| panic!("{full:?} did not parse: {e}")) {
-            DriverctlAction::Log(log) => log,
+            DriverctlAction::Log(log) => *log,
             _ => panic!("{full:?} did not resolve to DriverctlAction::Log"),
         }
     }
