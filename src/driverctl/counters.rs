@@ -173,10 +173,37 @@ pub fn digest16(raw: &[u8]) -> String {
 /// Item states that close a dispatch (exitclass.py `DONE_STATES`).
 pub const DONE_STATES: [&str; 3] = ["done", "parked", "failed"];
 
-/// The latest open dispatch as `(item, event index)`, or `None` (WR-01).
+/// The latest open dispatch as `(item, event index)`, or `None` (D-06, WR-01).
+///
+/// Every item-level `dispatched` opens an entry, and a `report`, `recovered` or
+/// terminal `status` (see [`DONE_STATES`]) closes all open entries of that
+/// item. A `RUN | dispatch-denied` cancels exactly one entry: the most recent
+/// open one, and only when no item-level event (any event whose item is not
+/// `RUN`) lies between that dispatch and the denial. RUN-level launcher lines
+/// (`gap-observed`, `connect`, `launch`, ...) never count as "between", so they
+/// cannot shield a denied attempt; a denial cannot hide a different, genuinely
+/// unreported dispatch.
 pub fn outstanding_dispatch(events: &[LogEvent]) -> Option<(String, usize)> {
-    let _ = events;
-    unimplemented!("RED: outstanding_dispatch")
+    // (event index, item) in dispatch order.
+    let mut open: Vec<(usize, &str)> = Vec::new();
+    // Index of the latest item-level event seen so far.
+    let mut last_item_event: Option<usize> = None;
+    for (n, e) in events.iter().enumerate() {
+        if e.item != "RUN" {
+            match e.event.as_str() {
+                "dispatched" => open.push((n, e.item.as_str())),
+                "report" | "recovered" => open.retain(|(_, item)| *item != e.item),
+                "status" if e.get("state").is_some_and(|s| DONE_STATES.contains(&s)) => {
+                    open.retain(|(_, item)| *item != e.item);
+                }
+                _ => {}
+            }
+            last_item_event = Some(n);
+        } else if e.event == "dispatch-denied" && open.last().map(|(i, _)| *i) == last_item_event {
+            open.pop();
+        }
+    }
+    open.last().map(|&(n, item)| (item.to_owned(), n))
 }
 
 /// How a driver exit that is neither a cap trip nor a `RUN end` is classified.
@@ -198,6 +225,12 @@ impl ExitClass {
 }
 
 /// `None` keeps the existing status; otherwise the class and its reason (D-17).
+///
+/// A tripped cap or a driver-logged `RUN end` takes precedence. Otherwise a
+/// clean exit (`rc == 0`) whose stream ended in `result success` with a
+/// dispatch still outstanding is [`ExitClass::Stalled`] (never collapsed into
+/// crashed: the process did not die, the driver ended its turn early); anything
+/// else is [`ExitClass::Crashed`].
 pub fn classify_exit(
     rc: i32,
     tripped: bool,
@@ -205,8 +238,22 @@ pub fn classify_exit(
     result_ok: bool,
     outstanding: Option<&str>,
 ) -> Option<(ExitClass, String)> {
-    let _ = (rc, tripped, ended_by_driver, result_ok, outstanding);
-    unimplemented!("RED: classify_exit")
+    if tripped || ended_by_driver {
+        return None;
+    }
+    if let (0, true, Some(item)) = (rc, result_ok, outstanding) {
+        return Some((
+            ExitClass::Stalled,
+            format!(
+                "driver ended its turn with a worker outstanding (dispatch {item} has no \
+                 report in LOG.md); the process exited cleanly, so this is not a crash"
+            ),
+        ));
+    }
+    Some((
+        ExitClass::Crashed,
+        format!("driver exited rc={rc} without RUN end"),
+    ))
 }
 
 #[cfg(test)]
@@ -493,7 +540,7 @@ mod tests {
     #[test]
     fn outstanding_item_open_and_close_rules() {
         let d = dispatched("I-01");
-        assert_eq!(item_of(&[d.clone()]).as_deref(), Some("I-01"));
+        assert_eq!(item_of(std::slice::from_ref(&d)).as_deref(), Some("I-01"));
         let close = |e: LogEvent| item_of(&[d.clone(), e]);
         assert_eq!(close(ev("I-01", "report", &[("status", "done")])), None);
         assert_eq!(close(ev("I-01", "status", &[("state", "done")])), None);
