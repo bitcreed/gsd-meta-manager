@@ -206,6 +206,11 @@ pub struct CapLimits {
     pub gap_rounds: Option<u32>,
 }
 
+/// The `state.json` keys that carry the launch posture (D-30). They live in the
+/// forward-compatible `extra` map, so a build that predates them round-trips them.
+const EXTRA_SANDBOX: &str = "sandbox";
+const EXTRA_SANDBOX_MISSING: &str = "sandbox_missing";
+
 /// The driver process a launch starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverSpec {
@@ -661,8 +666,23 @@ impl RunStore {
                 denied: self.state.denied_dispatches,
             },
             launches: self.state.launches,
-            sandbox: None,
-            sandbox_missing: None,
+            sandbox: self
+                .state
+                .extra
+                .get(EXTRA_SANDBOX)
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            sandbox_missing: self
+                .state
+                .extra
+                .get(EXTRA_SANDBOX_MISSING)
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_owned))
+                        .collect()
+                }),
             connected: self.state.connections.clone(),
             heartbeat_stale_after_s: HEARTBEAT_STALE_AFTER_S,
             last_event: self.state.last_event.clone().unwrap_or_default(),
@@ -768,6 +788,32 @@ impl RunStore {
         next.caps.dispatches.limit = spec.limits.dispatches;
         next.caps.wall_clock_min.limit = spec.limits.wall_clock_min;
         next.caps.gap_rounds.limit = spec.limits.gap_rounds;
+        // D-30: the posture belongs to THIS launch. A key left by an earlier launch
+        // (a degraded one, then a standalone `driverctl serve`) must not describe it.
+        match &spec.sandbox {
+            Some(sandbox) => {
+                next.extra.insert(
+                    EXTRA_SANDBOX.to_owned(),
+                    Value::String(header_safe(sandbox)),
+                );
+            }
+            None => {
+                next.extra.remove(EXTRA_SANDBOX);
+            }
+        }
+        if spec.sandbox_missing.is_empty() {
+            next.extra.remove(EXTRA_SANDBOX_MISSING);
+        } else {
+            next.extra.insert(
+                EXTRA_SANDBOX_MISSING.to_owned(),
+                Value::Array(
+                    spec.sandbox_missing
+                        .iter()
+                        .map(|m| Value::String(header_safe(m)))
+                        .collect(),
+                ),
+            );
+        }
 
         let host = host_name();
         let launcher_mode = header_safe(&spec.launcher_mode);

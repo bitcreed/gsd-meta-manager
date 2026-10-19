@@ -22,6 +22,9 @@
 //! `items`, `item_states`, `caps`, `dispatch_audit`, `launches`, `connected`,
 //! `heartbeat_stale_after_s`, `last_event`, `updated_at`. `item_states` (D-19) is
 //! the one addition over the spike's generator; it sits right after `items`.
+//! `sandbox` (`bwrap-scope` | `degraded`) and `sandbox_missing` (D-30, Phase 28)
+//! are the second: emitted right after `launches`, **only when set**, so a block
+//! that predates the launcher keeps its bytes.
 //!
 //! # Reading is tolerant, with one exception
 //!
@@ -591,6 +594,15 @@ impl DriverFrontmatter {
             a.logged, a.observed, a.denied
         ));
         lines.push(format!("launches: {}", self.launches));
+        // D-30: additive keys, written only when set so every frontmatter that
+        // predates the launcher stays byte-identical.
+        if let Some(sandbox) = &self.sandbox {
+            lines.push(format!("sandbox: {}", quote(sandbox)));
+        }
+        if let Some(missing) = &self.sandbox_missing {
+            let items: Vec<String> = missing.iter().map(|m| quote(m)).collect();
+            lines.push(format!("sandbox_missing: [{}]", items.join(", ")));
+        }
         if self.connected.is_empty() {
             lines.push("connected: []".to_string());
         } else {
