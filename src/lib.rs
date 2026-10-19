@@ -18,6 +18,8 @@ pub mod experimental;
 pub mod journal;
 /// Resolve the CLI's positional `<alias|path>` launch target (quick 260930-vvk).
 pub mod launch_target;
+/// The sandboxed driver launcher: `driver launch` and what it owns (Phase 28).
+pub mod launcher;
 pub mod main_loop;
 pub mod project_creator;
 pub mod registry;

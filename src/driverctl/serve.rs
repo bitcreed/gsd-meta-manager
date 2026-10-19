@@ -98,7 +98,7 @@ pub const STALE_TEMP_AGE: Duration = Duration::from_secs(60);
 pub const RUN_ID_RE: &str = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$";
 
 /// Where run directories live, relative to the project root.
-const DRIVERS_REL: &str = ".planning/meta-manager/drivers";
+pub(crate) const DRIVERS_REL: &str = ".planning/meta-manager/drivers";
 
 /// How long the accept loop and the ticker sleep between checks of the stop flag.
 const POLL: Duration = Duration::from_millis(50);
@@ -239,6 +239,17 @@ pub fn validate_run_dir(
 
 // ---------------------------------------------------------------- socket path
 
+/// The first four bytes of `sha256(path)` as eight lowercase hex digits.
+///
+/// The one digest behind the default socket name ([`socket_path_in`]) and the
+/// Phase 28 launcher's scope unit and data-dir names (D-08, D-18): two projects
+/// that use the same run id never collide on any of them. `canonical` must
+/// already be canonical for the hash to be stable.
+pub fn hash8(canonical: &Path) -> String {
+    let digest = Sha256::digest(canonical.as_os_str().as_bytes());
+    digest.iter().take(4).map(|b| format!("{b:02x}")).collect()
+}
+
 /// The default socket path for a run (D-21), from `XDG_RUNTIME_DIR`.
 ///
 /// `canonical_run_dir` must already be canonical: its hash keeps two projects
@@ -269,10 +280,8 @@ pub fn socket_path_in(
         )));
     }
 
-    let digest = Sha256::digest(canonical_run_dir.as_os_str().as_bytes());
-    let hash8: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
     let dir = runtime.join(SOCKET_DIR_NAME);
-    let path = dir.join(format!("{run_id}-{hash8}.sock"));
+    let path = dir.join(format!("{run_id}-{}.sock", hash8(canonical_run_dir)));
     check_sun_len(&path)?;
 
     match fs::DirBuilder::new().mode(0o700).create(&dir) {
@@ -403,6 +412,20 @@ fn bind_private(path: &Path) -> Result<UnixListener, DriverctlError> {
     Ok(listener)
 }
 
+/// Vet and bind the run's socket (Phase 28 embed entry, hand-off 4).
+///
+/// Length check, then refusal of anything at `sock` that is not a socket, then
+/// replacement of a stale socket nobody is listening on ([`replace_and_bind`]).
+/// **Call only while holding the run lock**: holding it is what makes unlinking a
+/// stale socket safe (D-21). [`serve`] splits these steps around `begin_launch`;
+/// the launcher binds first and records the launch afterwards, so a refusal here
+/// writes nothing.
+pub(crate) fn bind_run_socket(sock: &Path) -> Result<UnixListener, DriverctlError> {
+    check_sun_len(sock)?;
+    let stale = existing_socket(sock)?;
+    replace_and_bind(sock, stale)
+}
+
 // ---------------------------------------------------------------- signals
 
 /// Wait for SIGTERM or SIGINT, then set `stop`. An `async fn` with no blocking
@@ -457,7 +480,7 @@ fn install_signal_handlers(stop: &Arc<AtomicBool>) -> Result<(), DriverctlError>
 
 /// Take the store mutex, recovering a poisoned one: a panic while handling one
 /// request must not end the server.
-fn lock_store(store: &Mutex<RunStore>) -> MutexGuard<'_, RunStore> {
+pub(crate) fn lock_store(store: &Mutex<RunStore>) -> MutexGuard<'_, RunStore> {
     store.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -603,6 +626,21 @@ fn accept_loop(
 
 // ---------------------------------------------------------------- ticker
 
+/// One tick of the launcher-side bookkeeping (D-26, D-11): scan the on-disk
+/// `*-VERIFICATION.md` writes, feed them to the store, flush a trailing
+/// heartbeat. [`serve`]'s ticker thread and the Phase 28 launcher's monitor loop
+/// both call it, about every [`TICK`].
+pub(crate) fn tick_once(store: &Mutex<RunStore>, project: &Path) {
+    // CR-01: the file scan runs BEFORE the store mutex is taken, so a slow
+    // read of a driver-plantable file can never stall `handle_json`.
+    let writes = scan_verifications(project);
+    let mut guard = lock_store(store);
+    if let Err(e) = guard.observe_verifications(&writes) {
+        eprintln!("driverctl serve: gap scan failed: {e}");
+    }
+    guard.flush_heartbeat();
+}
+
 fn ticker(store: Arc<Mutex<RunStore>>, stop: Arc<AtomicBool>, project: PathBuf) {
     'outer: loop {
         let started = Instant::now();
@@ -612,15 +650,52 @@ fn ticker(store: Arc<Mutex<RunStore>>, stop: Arc<AtomicBool>, project: PathBuf) 
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        // CR-01: the file scan runs BEFORE the store mutex is taken, so a slow
-        // read of a driver-plantable file can never stall `handle_json`.
-        let writes = scan_verifications(&project);
-        let mut guard = lock_store(&store);
-        if let Err(e) = guard.observe_verifications(&writes) {
-            eprintln!("driverctl serve: gap scan failed: {e}");
-        }
-        guard.flush_heartbeat();
+        tick_once(&store, &project);
     }
+}
+
+/// Wait up to [`CONN_TIMEOUT`] + 1 s for the in-flight handlers to finish.
+fn drain_in_flight(in_flight: &AtomicUsize) {
+    let deadline = Instant::now() + CONN_TIMEOUT + Duration::from_secs(1);
+    while in_flight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        std::thread::sleep(POLL);
+    }
+}
+
+/// An accept loop running on its own thread, for a process that embeds the store
+/// (the Phase 28 launcher, D-06). Built by [`spawn_accept_loop`].
+pub(crate) struct EmbeddedServer {
+    accept: JoinHandle<()>,
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl EmbeddedServer {
+    /// Wait for the accept thread (the caller has set the stop flag), then let the
+    /// handlers in flight finish, as [`serve`] does at shutdown.
+    pub(crate) fn shutdown(self) {
+        let _ = self.accept.join();
+        drain_in_flight(&self.in_flight);
+    }
+}
+
+/// Run [`accept_loop`] over `listener` on a thread named `driverctl-accept`.
+///
+/// The listener moves into the thread and is dropped when the loop sees `stop`.
+/// Hand-off 4: the launcher embeds the store instead of spawning `serve`, which
+/// its own run lock would refuse.
+pub(crate) fn spawn_accept_loop(
+    listener: UnixListener,
+    store: Arc<Mutex<RunStore>>,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<EmbeddedServer> {
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let accept = {
+        let in_flight = Arc::clone(&in_flight);
+        std::thread::Builder::new()
+            .name("driverctl-accept".to_owned())
+            .spawn(move || accept_loop(&listener, &store, &stop, &in_flight))?
+    };
+    Ok(EmbeddedServer { accept, in_flight })
 }
 
 // ---------------------------------------------------------------- serve
@@ -731,10 +806,7 @@ pub fn serve(opts: ServeOptions) -> Result<(), DriverctlError> {
     // status, unlink the socket, and release the lock LAST.
     drop(listener);
     let _ = ticker_handle.join();
-    let deadline = Instant::now() + CONN_TIMEOUT + Duration::from_secs(1);
-    while in_flight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
-        std::thread::sleep(POLL);
-    }
+    drain_in_flight(&in_flight);
     let terminal = lock_store(&store).set_terminal(TerminalStatus::Stopped, "serve:signal");
     match terminal {
         Ok(TerminalOutcome::Applied | TerminalOutcome::KeptDriverEnd) => {}

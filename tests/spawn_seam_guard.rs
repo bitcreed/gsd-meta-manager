@@ -106,6 +106,12 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     "src/terminal_switch.rs",
     // `which` plus the terminal launch for "open in terminal". No agent.
     "src/ui/screens/detail.rs",
+    // The Phase 28 launcher: `systemd-run` (which runs `bwrap`, which runs the
+    // agent), `systemctl`, `git` for the push mirror, `claude setup-token` and
+    // `gh`. Every launcher spawn lives in this one file, so this is the one
+    // entry. The agent is reached only through `bwrap`, or through the explicit
+    // degraded spawn of 28-04; nothing else in `src/launcher/` may spawn.
+    "src/launcher/process.rs",
 ];
 
 /// The three shapes a process spawn takes in this tree.

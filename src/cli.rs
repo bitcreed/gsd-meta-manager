@@ -391,6 +391,69 @@ pub enum Commands {
         #[command(subcommand)]
         action: DriverctlAction,
     },
+    // The launcher half of the autonomous driver (Phase 28, D-01): the host-side
+    // owner of the run lock, the embedded store, the per-run Claude config, auth
+    // and the sandbox. Unlike `driverctl`, users type this one, so it is NOT
+    // hidden. It is not `#[cfg]`-gated either: on a platform without the launcher
+    // the handler returns a typed `UnsupportedPlatform`, not "unknown subcommand".
+    //
+    // Distinct from `Drive` (Phase 17), which stays untouched until Phase 31.
+    /// Launch and control sandboxed driver runs
+    Driver {
+        #[command(subcommand)]
+        action: DriverAction,
+    },
+}
+
+/// The verbs of `driver`.
+#[derive(Subcommand)]
+pub enum DriverAction {
+    // Boxed for the reason `DriverctlAction::Log` is: the argument struct would
+    // otherwise size the whole enum (`clippy::large_enum_variant`).
+    /// Run the headless driver for an existing run inside the sandbox
+    Launch(Box<LaunchArgs>),
+}
+
+/// The master prompt's loop mode (`{MODE}` in the prompt).
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverLoopMode {
+    /// One driver context for the whole run
+    Loop,
+    /// A fresh driver context per item
+    FreshPerItem,
+}
+
+/// Arguments of `driver launch <project> <run-id>`.
+///
+/// The run directory must already exist (D-02): minting one is `driver new`
+/// (Phase 29).
+#[derive(Args, Debug, Clone)]
+pub struct LaunchArgs {
+    /// Alias or path of a registered project
+    pub project: String,
+    /// The run id: `.planning/meta-manager/drivers/<run-id>` must exist
+    pub run_id: String,
+    /// The master prompt template; `{RUN_DIR}`, `{PROJECT_ROOT}` and `{MODE}` are filled in
+    #[arg(long)]
+    pub prompt_file: PathBuf,
+    /// The driver's model
+    #[arg(long, default_value = "opus")]
+    pub model: String,
+    /// One context for the run, or a fresh one per item
+    #[arg(long, value_enum, default_value_t = DriverLoopMode::Loop)]
+    pub loop_mode: DriverLoopMode,
+    /// The driver's spend ceiling, passed to `claude --max-budget-usd`
+    #[arg(long, default_value_t = 10.0)]
+    pub max_budget_usd: f64,
+    /// Dispatch cap recorded on the run
+    #[arg(long, default_value_t = 10)]
+    pub cap_dispatches: u32,
+    /// Active wall-clock cap in minutes, recorded on the run
+    #[arg(long, default_value_t = 60.0)]
+    pub cap_minutes: f64,
+    /// Gap-round cap per phase, recorded on the run
+    #[arg(long, default_value_t = 2)]
+    pub cap_gap_rounds: u32,
 }
 
 /// The sandbox-side verbs of `driverctl`.

@@ -1,0 +1,357 @@
+#![cfg(target_os = "linux")]
+// ============================================================================
+// `gsd-meta-manager driver launch` end to end, through the REAL binary
+// (Phase 28, plan 28-01; LNCH-01, LNCH-08, D-01..D-08, D-16, D-18, D-22).
+//
+// `systemd-run`, `bwrap`, `systemctl` and `claude` are fake executables first on
+// `PATH` (`tests/launcher_support/mod.rs`), so this runs on any runner. It proves
+// the launcher's architecture, not the kernel's isolation: the real-bwrap
+// probes are 28-03's opt-in live tests.
+// ============================================================================
+
+#[path = "launcher_support/mod.rs"]
+mod launcher_support;
+
+use std::fs;
+
+use gsd_meta_manager::driver::lock::{acquire_at, probe_at, run_lock_path, LockProbe};
+use gsd_meta_manager::state_reader::driver_frontmatter::{
+    read_driver_run, DerivedStatus, RunStatus,
+};
+use launcher_support::{Fixture, RUN_ID, TOKEN, WELL_MANNERED_SCENARIO};
+
+fn stderr(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn launch_runs_the_driver_in_the_scope_and_records_its_end() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    let out = fx.launch(&[]);
+    assert!(
+        out.status.success(),
+        "driver launch failed ({}): {}",
+        out.status,
+        stderr(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ended status=stopped reason=driver:stop"),
+        "stdout: {stdout}"
+    );
+
+    // The run log: the launch (with the scope mode), the driver's start and end.
+    let log = fx.log();
+    assert!(
+        log.contains("RUN | launch | n=1 | mode=bwrap-scope"),
+        "{log}"
+    );
+    assert!(log.contains("RUN | start"), "{log}");
+    assert!(log.contains("RUN | end"), "{log}");
+
+    // The argv the shims captured: systemd-run > bwrap > claude.
+    let shim = fx.shim_log();
+    let unit_line = shim
+        .lines()
+        .find(|l| l.starts_with("systemd-run "))
+        .unwrap_or_else(|| panic!("no systemd-run line in:\n{shim}"));
+    let prefix = "systemd-run --user --scope --quiet --collect --unit=gsdmm-driver-r28-";
+    assert!(unit_line.starts_with(prefix), "{unit_line}");
+    let hash = &unit_line[prefix.len()..prefix.len() + 8];
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{unit_line}");
+    assert!(
+        unit_line[prefix.len() + 8..].starts_with("-1 "),
+        "launch number 1: {unit_line}"
+    );
+    let canonical_run = fs::canonicalize(&fx.run_dir).unwrap();
+    let run = canonical_run.display().to_string();
+    assert!(shim.contains("--die-with-parent"), "{shim}");
+    assert!(shim.contains("--unshare-pid"), "{shim}");
+    assert!(
+        shim.contains(&format!("--ro-bind {run} {run}")),
+        "run dir read-only: {shim}"
+    );
+    for lock in ["launcher.lock", "DIRECTION.lock"] {
+        assert!(
+            shim.contains(&format!("--ro-bind /dev/null {run}/{lock}")),
+            "{lock} masked: {shim}"
+        );
+    }
+    assert!(shim.contains("claude -p "), "{shim}");
+    assert!(
+        shim.contains("--permission-mode bypassPermissions"),
+        "{shim}"
+    );
+
+    // The scope unit is recorded on the run with its `.scope` suffix.
+    let state = fx.state_json();
+    let scope = state["connections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|c| c["scope_unit"].as_str())
+        .expect("a connection carries the scope unit");
+    assert!(
+        scope.starts_with("gsdmm-driver-r28-") && scope.ends_with("-1.scope"),
+        "{scope}"
+    );
+
+    // The environment the driver saw: scrubbed, plus the launcher's own keys.
+    let env = fx.recorded("env.txt");
+    for key in [
+        "CLAUDE_CONFIG_DIR=",
+        "DRIVERCTL_SOCK=",
+        "CLAUDE_CODE_OAUTH_TOKEN=",
+        "DRIVER_LOCK_HELD=1",
+    ] {
+        assert!(env.lines().any(|l| l.starts_with(key)), "{key} in:\n{env}");
+    }
+    for stripped in ["SSH_AUTH_SOCK=", "GH_TOKEN=", "ANTHROPIC_API_KEY="] {
+        assert!(
+            !env.lines().any(|l| l.starts_with(stripped)),
+            "{stripped} must be stripped:\n{env}"
+        );
+    }
+    let config_dir = fx.config_dir();
+    assert!(
+        env.lines()
+            .any(|l| l == format!("CLAUDE_CONFIG_DIR={}", config_dir.display())),
+        "{env}"
+    );
+    assert!(
+        env.lines()
+            .find(|l| l.starts_with("PATH="))
+            .is_some_and(|l| l.starts_with(&format!("PATH={}/bin:", config_dir.display()))),
+        "the shim dir leads PATH:\n{env}"
+    );
+    assert_eq!(
+        fx.recorded("token.txt"),
+        TOKEN,
+        "the stored token reaches the child"
+    );
+
+    // The token is in the environment only: no argv, no file the launcher wrote.
+    assert!(!shim.contains(TOKEN), "token in a shim argv line");
+    for name in ["LOG.md", "state.json", "DIRECTION.md"] {
+        assert!(!fx.run_file(name).contains(TOKEN), "token in {name}");
+    }
+    assert!(
+        !fs::read_to_string(config_dir.join("settings.json"))
+            .unwrap()
+            .contains(TOKEN),
+        "token in settings.json"
+    );
+    assert!(
+        !fs::read_to_string(fx.state_dir().join("launch-1.jsonl"))
+            .unwrap()
+            .contains(TOKEN),
+        "token in the launch log"
+    );
+
+    // The prompt was rendered from the template (D-03).
+    let prompt = fx.recorded("prompt.txt");
+    assert!(prompt.contains(&format!("RUN_DIR={run}")), "{prompt}");
+    assert!(
+        prompt.contains(&format!(
+            "PROJECT_ROOT={}",
+            fs::canonicalize(fx.project()).unwrap().display()
+        )),
+        "{prompt}"
+    );
+    assert!(prompt.contains("MODE=loop"), "{prompt}");
+    assert!(
+        prompt.contains(&format!(
+            "Begin now: run Startup, then the Loop, for RUN_DIR={run}."
+        )),
+        "{prompt}"
+    );
+
+    // The dispatch gate allowed the dispatch: an empty hook answer.
+    assert_eq!(
+        fx.recorded("hook_out.txt"),
+        "",
+        "an allowed dispatch prints nothing"
+    );
+
+    // How the run stands: stopped by the driver, lock released.
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(view.derived, DerivedStatus::AsWritten(RunStatus::Stopped));
+    assert_eq!(probe_at(&run_lock_path(&fx.run_dir)), LockProbe::Free);
+
+    // The seeded gate: PreToolUse[0] blocks on failure (hand-off 1).
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_dir.join("settings.json")).unwrap())
+            .unwrap();
+    let gate = &settings["hooks"]["PreToolUse"][0];
+    assert_eq!(gate["matcher"], "Agent|Task");
+    assert_eq!(gate["hooks"][0]["onFailure"], "block");
+    assert!(config_dir.join("bin/driverctl").is_file());
+
+    // The cap limits are recorded (D-12..D-14); enforcement is 28-05.
+    assert_eq!(state["caps"]["dispatches"]["limit"], 10);
+    assert_eq!(state["caps"]["wall_clock_min"]["limit"], 60.0);
+    assert_eq!(state["caps"]["gap_rounds"]["limit"], 2);
+
+    // LNCH-08: headless, no tmux anywhere, stdin is /dev/null.
+    assert!(!shim.contains("tmux"), "tmux on the launch path: {shim}");
+    assert_eq!(fx.recorded("stdin.txt").trim(), "/dev/null");
+
+    // The socket was removed at shutdown.
+    let socket_dir = fx.scratch.path().join("run/gsdmm-driverctl");
+    let leftover: Vec<_> = fs::read_dir(&socket_dir)
+        .map(|d| d.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    assert!(leftover.is_empty(), "sockets left behind: {leftover:?}");
+}
+
+#[test]
+fn the_cap_flags_are_recorded_on_the_run() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let out = fx.launch(&[
+        "--cap-dispatches",
+        "3",
+        "--cap-minutes",
+        "12.5",
+        "--cap-gap-rounds",
+        "0",
+        "--model",
+        "haiku",
+        "--max-budget-usd",
+        "1.5",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let state = fx.state_json();
+    assert_eq!(state["caps"]["dispatches"]["limit"], 3);
+    assert_eq!(state["caps"]["wall_clock_min"]["limit"], 12.5);
+    assert_eq!(state["caps"]["gap_rounds"]["limit"], 0);
+    let argv = fx.recorded("argv.txt");
+    assert!(argv.lines().any(|l| l == "haiku"), "{argv}");
+    assert!(argv.lines().any(|l| l == "1.5"), "{argv}");
+}
+
+#[test]
+fn a_driver_that_dies_without_ending_is_recorded_crashed() {
+    let fx = Fixture::new();
+    fx.write_scenario("driverctl log start --mode headless --loop-mode loop\nexit 7\n");
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("status=crashed"), "{stdout}");
+    assert!(
+        fx.log().contains("driver exited rc=7 without RUN end"),
+        "{}",
+        fx.log()
+    );
+    assert_eq!(probe_at(&run_lock_path(&fx.run_dir)), LockProbe::Free);
+}
+
+#[test]
+fn a_clean_exit_with_a_worker_outstanding_is_recorded_stalled() {
+    let fx = Fixture::new();
+    fx.write_scenario(
+        "driverctl log start --mode headless --loop-mode loop\n\
+         driverctl log dispatched --item I-01 --step plan\n\
+         printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\"}'\n",
+    );
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("status=stalled"), "{stdout}\n{}", fx.log());
+}
+
+#[test]
+fn a_held_run_lock_is_refused_with_exit_3_before_anything_is_written() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let _held = acquire_at(&run_lock_path(&fx.run_dir), RUN_ID, std::process::id())
+        .expect("the test takes the lock first");
+
+    let out = fx.launch(&[]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("already launched"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fx.log(), "", "a refused launch writes no LOG");
+    assert!(!fx.run_dir.join("state.json").exists(), "or state.json");
+    assert!(fx.shim_log().is_empty(), "or starts a process");
+    assert!(!fx.state_dir().exists(), "or a state directory");
+}
+
+#[test]
+fn a_missing_token_is_refused_before_anything_is_written() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    fx.write_token(None);
+
+    let out = fx.launch(&[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("gsd-meta-manager driver auth setup"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!fx.run_dir.join("state.json").exists());
+    assert!(
+        !fx.run_dir.join("launcher.lock").exists(),
+        "the lock is taken after the token"
+    );
+    assert!(fx.shim_log().is_empty());
+}
+
+#[test]
+fn a_stored_token_open_to_others_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    fs::set_permissions(fx.token_path(), fs::Permissions::from_mode(0o644)).unwrap();
+
+    let out = fx.launch(&[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("must not be accessible"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(fx.shim_log().is_empty());
+}
+
+#[test]
+fn a_run_id_that_is_not_a_plain_component_is_refused() {
+    let fx = Fixture::new();
+    for bad in ["../r28", "a/b", ".hidden", "bad id"] {
+        let out = fx.launch_command(bad, &[]).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{bad}: {}", stderr(&out));
+    }
+    assert!(fx.shim_log().is_empty());
+}
+
+#[test]
+fn a_run_dir_that_does_not_exist_is_refused() {
+    let fx = Fixture::new();
+    let out = fx.launch_command("nope", &[]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("invalid run"), "{}", stderr(&out));
+    assert!(fx.shim_log().is_empty());
+}
+
+#[test]
+fn an_unknown_project_is_refused_through_the_registry() {
+    let fx = Fixture::new();
+    let out = fx
+        .launch_command_for("nosuch", RUN_ID, &[])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("is not a registered project alias"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(fx.shim_log().is_empty());
+}

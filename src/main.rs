@@ -1,3 +1,4 @@
+mod driver_cli;
 mod driverctl_cli;
 mod event;
 mod tui;
@@ -109,6 +110,16 @@ fn main() -> anyhow::Result<()> {
 
     // Initialize tracing subscriber with file appender before anything else
     init_tracing();
+
+    // `driver` is synchronous too (the launcher is std threads, never an `async
+    // fn`), so it runs here, after tracing is up and before the runtime exists.
+    // Its exit code is the control.
+    match cli.command.take() {
+        Some(Commands::Driver { action }) => {
+            std::process::exit(driver_cli::run(action, cli.config.clone()))
+        }
+        other => cli.command = other,
+    }
 
     color_eyre::install().map_err(|e| anyhow::anyhow!("{}", e))?;
 
@@ -414,6 +425,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Driverctl { .. }) => {
             return Err(anyhow::anyhow!(
                 "driverctl is dispatched in `main` before the async runtime exists"
+            ));
+        }
+        // Never reached either: `main` runs `driver` synchronously, before this
+        // runtime exists, so the launcher never lives inside an `async fn`.
+        Some(Commands::Driver { .. }) => {
+            return Err(anyhow::anyhow!(
+                "driver is dispatched in `main` before the async runtime exists"
             ));
         }
         Some(Commands::Envelope { action }) => match action {
