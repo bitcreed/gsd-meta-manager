@@ -625,6 +625,16 @@ fn ticker(store: Arc<Mutex<RunStore>>, stop: Arc<AtomicBool>, project: PathBuf) 
 
 // ---------------------------------------------------------------- serve
 
+/// Undo a start that got past `begin_launch` and the bind but cannot serve: record
+/// the stop with `reason` and unlink the socket this process bound (WR-04). Called
+/// while the run lock is still held (it is released when the store drops).
+fn abort_startup(store: &Mutex<RunStore>, sock: &Path, reason: &str) {
+    if let Err(e) = lock_store(store).set_terminal(TerminalStatus::Stopped, reason) {
+        eprintln!("driverctl serve: could not record the failed start: {e}");
+    }
+    let _ = fs::remove_file(sock);
+}
+
 /// Serve one run until SIGTERM or SIGINT. See the module header for the order.
 pub fn serve(opts: ServeOptions) -> Result<(), DriverctlError> {
     let (run_dir, run_id) = validate_run_dir(&opts.project, &opts.run_dir)?;
@@ -694,13 +704,23 @@ pub fn serve(opts: ServeOptions) -> Result<(), DriverctlError> {
 
     let scan_root = store.project().to_owned();
     let store = Arc::new(Mutex::new(store));
-    let ticker_handle: JoinHandle<()> = {
+    let spawned = {
         let store = Arc::clone(&store);
         let stop = Arc::clone(&stop);
         std::thread::Builder::new()
             .name("driverctl-ticker".to_owned())
             .spawn(move || ticker(store, stop, scan_root))
-            .map_err(|e| io_error("spawn the ticker", e))?
+    };
+    let ticker_handle: JoinHandle<()> = match spawned {
+        Ok(handle) => handle,
+        Err(e) => {
+            // WR-04: `running` is already written and the socket is bound; undo
+            // both before returning so a run that never served is not left
+            // `running` (reader: `crashed`) with a stale socket file.
+            drop(listener);
+            abort_startup(&store, &sock, "serve:startup-failed");
+            return Err(io_error("spawn the ticker", e));
+        }
     };
 
     eprintln!("driverctl serve: listening on {}", sock.display());
@@ -1003,6 +1023,38 @@ mod tests {
         client.write_all(b"{\"op\":\"x\"}\nrest").unwrap();
         let got = read_request(&mut server, Duration::from_secs(30));
         assert!(matches!(got, Ok(ref b) if b == br#"{"op":"x"}"#));
+    }
+
+    #[test]
+    fn wr04_an_aborted_start_records_the_stop_and_unlinks_the_socket() {
+        use crate::state_reader::driver_frontmatter::RunStatus;
+
+        let (_td, project) = project_with_runs(&["r27"]);
+        let run_dir = project.join(DRIVERS_REL).join("r27");
+        let lock = acquire_at_with_retry(
+            &run_lock_path(&run_dir),
+            "r27",
+            std::process::id(),
+            ACQUIRE_RETRY_BUDGET,
+        )
+        .unwrap();
+        let mut store = RunStore::open(&run_dir, &project, lock).unwrap();
+        store.begin_launch(LaunchSpec::default()).unwrap();
+        assert_eq!(store.state().status, RunStatus::Running);
+        let sock = project.join("w.sock");
+        drop(bind_private(&sock).unwrap());
+        assert!(sock.exists());
+
+        let store = Mutex::new(store);
+        abort_startup(&store, &sock, "serve:startup-failed");
+
+        assert!(!sock.exists(), "the bound socket is unlinked");
+        let guard = lock_store(&store);
+        assert_eq!(guard.state().status, RunStatus::Stopped);
+        assert_eq!(
+            guard.state().status_reason.as_deref(),
+            Some("serve:startup-failed")
+        );
     }
 
     #[test]
