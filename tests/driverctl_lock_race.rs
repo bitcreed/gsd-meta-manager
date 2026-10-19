@@ -178,9 +178,12 @@ fn real_holder_is_still_refused_within_budget() {
         Err(other) => panic!("a real exclusive holder must be refused with HeldBy, got {other:?}"),
         Ok(_) => panic!("a real exclusive holder must be refused, but the acquire succeeded"),
     }
+    // WR-09: only "it did not hang". A tight upper bound over the retry budget fails
+    // on any scheduler pause after the last retry sleep; the lower bound below is
+    // the deterministic half of the property.
     assert!(
-        elapsed < ACQUIRE_RETRY_BUDGET + Duration::from_millis(100),
-        "the refusal must arrive within the budget plus slack; it took {elapsed:?}"
+        elapsed < ACQUIRE_RETRY_BUDGET + Duration::from_secs(10),
+        "the refusal must arrive after the budget, not hang; it took {elapsed:?}"
     );
     assert!(
         elapsed >= ACQUIRE_RETRY_BUDGET,

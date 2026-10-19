@@ -709,14 +709,17 @@ fn stalled_connection_does_not_block_the_gate() {
     let _stalled = UnixStream::connect(&sock).expect("connect the stalled client");
     std::thread::sleep(Duration::from_millis(200));
 
-    let started = Instant::now();
     let out = client(&sock, &["hook"], Some(GATE_PAYLOAD));
     assert_eq!(out.status.code(), Some(0), "hook: {}", stderr(&out));
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "the gate answered in {:?}, behind a stalled connection",
-        started.elapsed()
-    );
+    // WR-09: no wall-clock ceiling. The property is that the gate was answered
+    // WHILE the stalled connection still occupied its handler slot, i.e. before the
+    // server's read deadline closed it; a still-open peer shows as WouldBlock.
+    _stalled.set_nonblocking(true).expect("non-blocking probe");
+    let mut probe = [0u8; 1];
+    match std::io::Read::read(&mut &_stalled, &mut probe) {
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("the stalled connection was already closed ({other:?}): the gate did not answer behind it"),
+    }
     assert!(
         !stdout(&out).contains("deny"),
         "the gate allows the dispatch: {}",
