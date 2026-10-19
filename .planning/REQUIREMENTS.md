@@ -143,19 +143,19 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 ### driverctl & Frontmatter (DCTL): Phase 27
 
-- [ ] **DCTL-01**: `gsd-meta-manager driverctl serve|log|hook|show` is the single writer of a run's
+- [x] **DCTL-01**: `gsd-meta-manager driverctl serve|log|hook|show` is the single writer of a run's
   `state.json`, `LOG.md` and DIRECTION.md frontmatter. It speaks the spike-002 socket protocol and
   runs on the launcher side, outside the sandbox.
-- [ ] **DCTL-02**: The frontmatter is rewritten by exchange-verify splice: `renameat2(RENAME_EXCHANGE)`,
+- [x] **DCTL-02**: The frontmatter is rewritten by exchange-verify splice: `renameat2(RENAME_EXCHANGE)`,
   a check of the displaced file's body bytes (27-CONTEXT D-23; inode alone misses in-place saves),
   and a swap back on mismatch.
   - The human body is preserved byte-for-byte.
   - A body missing `## Direction` or `## Items` is never written back.
   - gsd-mm's own DIRECTION writes share a flock with driverctl.
-- [ ] **DCTL-03**: Frontmatter schema v1 is a typed `DriverFrontmatter` in `state_reader`. Liveness is
+- [x] **DCTL-03**: Frontmatter schema v1 is a typed `DriverFrontmatter` in `state_reader`. Liveness is
   derived from a non-blocking probe of the launcher's run flock, so `running` with a free lock reads
   as crashed.
-- [ ] **DCTL-04**: Counters come only from tool-observed state:
+- [x] **DCTL-04**: Counters come only from tool-observed state:
   - dispatches from hook payloads, where a missing `agent_id` means a driver-level call;
   - gap rounds from `gaps_found` VERIFICATION.md writes on disk, coalesced per the 26.1 rule
     (`COALESCE_S = 45`, strict, mtime-anchored). driverctl owns the counter and its VERIFICATION.md
@@ -345,10 +345,10 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | VALID-02 | Phase 26.1 | Complete (ADJUST, operator-accepted 2026-10-18) — divergence parking proven on Opus (results/r261a/acceptance.txt A3 A4 PASS); launcher deny/kill proven by Haiku-scripted evidence only (results/r261-l7/acceptance.txt L7-1..L7-6 PASS); Opus NOT-REACHED (results/r261-run2b/acceptance.txt A5-deny, A5-kill, A11 NOT-REACHED: driver parked needs-human at gap-observed count=2, LOG.md:100-101, J1). Carried risk: Phases 28/29 must exercise deny/kill under the real driver |
 | VALID-03 | Phase 26 | Complete |
 | VALID-04 | Phase 26 | Complete |
-| DCTL-01 | Phase 27 | Pending |
-| DCTL-02 | Phase 27 | Pending |
-| DCTL-03 | Phase 27 | Pending |
-| DCTL-04 | Phase 27 | Pending |
+| DCTL-01 | Phase 27 | Complete |
+| DCTL-02 | Phase 27 | Complete |
+| DCTL-03 | Phase 27 | Complete |
+| DCTL-04 | Phase 27 | Complete |
 | LNCH-01 | Phase 28 | Pending |
 | LNCH-02 | Phase 28 | Pending |
 | LNCH-03 | Phase 28 | Pending |
