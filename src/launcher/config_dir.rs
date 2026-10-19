@@ -89,7 +89,7 @@ pub struct SeedSpec {
     pub host_claude_dir: PathBuf,
     /// The binary the `driverctl` shim execs.
     pub binary: PathBuf,
-    /// The run directory (the Stop-guard entry of 28-06 names it).
+    /// The run directory the Stop-guard entry (`driverctl stop-guard --run-dir`) names.
     pub run_dir: PathBuf,
 }
 
@@ -164,7 +164,7 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// The per-run settings from the host's: a pure function of the host settings
-/// value and the quoted `<cfg>/bin/driverctl hook` command line.
+/// value and the quoted `<cfg>/bin/driverctl hook` and `stop-guard` command lines.
 ///
 /// * a non-object input is an empty object;
 /// * [`DROPPED_SETTINGS_KEYS`] are removed, and so is every `env` entry named in
@@ -173,9 +173,11 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 ///   `[inferred — audit]`);
 /// * the dispatch gate (`PreToolUse`, `Agent|Task`, `onFailure: block`) goes
 ///   FIRST, so it runs before any host `PreToolUse` hook; the `SessionStart`,
-///   `SessionEnd`, `Stop` and `PostToolUse` entries go last. User entries (GSD,
-///   rtk) keep their relative order.
-pub fn settings_transform(host: Value, hook_command: &str, _stop_guard_command: &str) -> Value {
+///   `SessionEnd`, `Stop` and `PostToolUse` entries go last, and
+///   `stop_guard_command` (`driverctl stop-guard --run-dir <rd>`, 28-06, D-17) is
+///   the very last `Stop` entry. User entries (GSD, rtk) keep their relative
+///   order.
+pub fn settings_transform(host: Value, hook_command: &str, stop_guard_command: &str) -> Value {
     let mut settings = match host {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -203,6 +205,9 @@ pub fn settings_transform(host: Value, hook_command: &str, _stop_guard_command: 
         for event in ["SessionStart", "SessionEnd", "Stop"] {
             hook_list(hooks, event).push(hook_entry(None, hook_command, false));
         }
+        // D-17: the Stop guard is the LAST Stop entry, after the heartbeat. It is
+        // not fail-closed: a broken guard must never wedge the driver.
+        hook_list(hooks, "Stop").push(hook_entry(None, stop_guard_command, false));
         hook_list(hooks, "PostToolUse").push(hook_entry(Some("*"), hook_command, false));
     }
     Value::Object(settings)
@@ -357,7 +362,13 @@ mod tests {
         seed(&spec).unwrap();
         let settings = settings_of(&spec);
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
+        // The heartbeat and the Stop guard (28-06): two entries, however many seeds.
+        let stop = settings["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert!(stop[1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("stop-guard --run-dir"));
         let onboarding = fs::read_to_string(spec.config_dir.join(".claude.json")).unwrap();
         assert!(
             onboarding.contains("mine"),

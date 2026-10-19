@@ -182,14 +182,69 @@ pub fn guard(
 }
 
 fn decide(
-    _stdin: &str,
-    _run_dir: Option<&Path>,
-    _cfg_dir: Option<&Path>,
-    _pre: &mut Vec<String>,
-    _stdout: &mut String,
+    stdin: &str,
+    run_dir: Option<&Path>,
+    cfg_dir: Option<&Path>,
+    pre: &mut Vec<String>,
+    stdout: &mut String,
 ) -> String {
-    // RED scaffold: the decision order is not implemented yet.
-    "allow reason=not-implemented".to_owned()
+    let payload = match serde_json::from_str::<Value>(stdin) {
+        Ok(Value::Object(map)) => map,
+        _ => return "allow reason=bad-input".to_owned(),
+    };
+    let Some(run_dir) = run_dir.filter(|d| !d.as_os_str().is_empty()) else {
+        return "allow reason=bad-input".to_owned();
+    };
+    if payload.get("hook_event_name").and_then(Value::as_str) != Some("Stop")
+        || truthy(payload.get("agent_id"))
+    {
+        return "allow reason=not-top-level".to_owned();
+    }
+    if truthy(payload.get("background_tasks")) {
+        return "allow reason=background".to_owned();
+    }
+    let events = parse_log(&read_log(run_dir));
+    if events.iter().any(|e| e.item == "RUN" && e.event == "end") {
+        return "allow reason=run-end".to_owned();
+    }
+    let count_path = cfg_dir.map(|d| d.join(COUNT_FILE));
+    match outstanding_dispatch(&events) {
+        None => {
+            if let Some(path) = &count_path {
+                let (old, n0) = read_count(path);
+                if n0 > 0 {
+                    let from = if old.is_empty() { "-" } else { old.as_str() };
+                    pre.push(format!("reset from={from} to=-"));
+                    let _ = fs::remove_file(path);
+                }
+            }
+            "allow reason=no-outstanding".to_owned()
+        }
+        Some(_) if count_path.is_none() => "allow reason=no-config-dir".to_owned(),
+        Some((item, index)) => {
+            let Some(path) = count_path else {
+                return "allow reason=no-config-dir".to_owned();
+            };
+            let key = format!("{item}@{index}");
+            let (old, mut n) = read_count(&path);
+            if old != key {
+                let from = if old.is_empty() { "-" } else { old.as_str() };
+                pre.push(format!("reset from={from} to={key}"));
+                n = 0;
+            }
+            // Past the limit the value no longer matters.
+            n = n.saturating_add(1).min(u64::from(GUARD_LIMIT) + 1);
+            if write_count(&path, &key, n).is_err() {
+                return "allow reason=counter-unwritable".to_owned();
+            }
+            if n <= u64::from(GUARD_LIMIT) {
+                *stdout = json!({"decision": "block", "reason": block_reason(&item)}).to_string();
+                format!("block item={item} attempt={n}")
+            } else {
+                "allow reason=limit".to_owned()
+            }
+        }
+    }
 }
 
 /// Append `lines` to `<cfg_dir>/stop-guard.log` in one write.
@@ -378,8 +433,8 @@ mod tests {
 
     #[test]
     fn a_falsy_agent_id_does_not_make_a_stop_a_subagent_stop() {
-        let fx = Fx::new(DISPATCH);
         for falsy in [json!(""), json!(null), json!(0), json!(false), json!([])] {
+            let fx = Fx::new(DISPATCH);
             let mut payload: Value = serde_json::from_str(STOP).unwrap();
             payload["agent_id"] = falsy.clone();
             let (blocked, line) = fx.call(&payload.to_string());
