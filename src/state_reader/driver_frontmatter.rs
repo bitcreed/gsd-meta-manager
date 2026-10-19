@@ -397,6 +397,8 @@ pub enum FrontmatterError {
     Yaml { detail: String },
     /// `driver_frontmatter_version` names a major this build does not read.
     UnsupportedVersion { found: u32 },
+    /// The run directory's `DIRECTION.md` could not be read ([`read_driver_run`]).
+    Io { detail: String },
 }
 
 impl fmt::Display for FrontmatterError {
@@ -411,6 +413,7 @@ impl fmt::Display for FrontmatterError {
                 f,
                 "unsupported driver_frontmatter_version {found} (this build reads {DRIVER_FRONTMATTER_VERSION})"
             ),
+            FrontmatterError::Io { detail } => write!(f, "cannot read DIRECTION.md: {detail}"),
         }
     }
 }
@@ -618,6 +621,144 @@ impl DriverFrontmatter {
         lines.push(String::new());
         lines.join("\n")
     }
+}
+
+// ---------------------------------------------------------------- liveness
+
+/// A run's status as the TUI should show it: the written status, corrected by what
+/// the run lock says about the process (D-07, corrected by D-20/D-22).
+///
+/// **Never persisted.** `Crashed` here is a reading, not a record: nothing in this
+/// module writes it back to `DIRECTION.md` or `state.json`, so a run that was merely
+/// between launches, or whose lock was momentarily unreadable, is never marked
+/// crashed on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedStatus {
+    /// The written status is the answer: it is a status a lock cannot contradict
+    /// (`paused`, any terminal one, an unknown word), or the lock agrees with it
+    /// (`running` or `starting` with the run lock held).
+    AsWritten(RunStatus),
+    /// `starting` and the driver has never been launched (`launches == 0`): a fresh
+    /// run directory, not a crash.
+    NotLaunched,
+    /// `running`, or `starting` after at least one launch, but the run lock is free
+    /// or absent: the launcher is gone without having written a terminal status.
+    Crashed { written: RunStatus },
+    /// The lock probe could not tell (an errno other than `EWOULDBLOCK`). Neither
+    /// crashed nor alive: `Unknown` is never a synonym for `Free` (the
+    /// `driver::liveness` posture). The operator deciding whether to relaunch must
+    /// be told that liveness is unestablished, not given a guess.
+    LivenessUnknown { written: RunStatus },
+}
+
+/// A run directory read into its frontmatter plus the honestly derived status.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DriverRunView {
+    /// The parsed block, exactly as written.
+    pub frontmatter: DriverFrontmatter,
+    /// What to show, given the lock ([`derive_status`]).
+    pub derived: DerivedStatus,
+}
+
+/// What the lock probe established, reduced to what the rule needs.
+#[cfg_attr(not(unix), allow(dead_code))]
+enum Seen {
+    Held,
+    Free,
+    Unknown,
+}
+
+/// The D-22 table, platform-independent: only the probe is unix-specific.
+fn derive(fm: &DriverFrontmatter, seen: Seen) -> DerivedStatus {
+    let from_probe = |written: RunStatus| match seen {
+        Seen::Held => DerivedStatus::AsWritten(written),
+        Seen::Free => DerivedStatus::Crashed { written },
+        Seen::Unknown => DerivedStatus::LivenessUnknown { written },
+    };
+    match &fm.status {
+        RunStatus::Running => from_probe(RunStatus::Running),
+        // R1: a fresh run directory is `starting` with zero launches. A free lock
+        // there is the normal state of something not yet launched.
+        RunStatus::Starting if fm.launches == 0 => match seen {
+            Seen::Held => DerivedStatus::AsWritten(RunStatus::Starting),
+            Seen::Free | Seen::Unknown => DerivedStatus::NotLaunched,
+        },
+        RunStatus::Starting => from_probe(RunStatus::Starting),
+        // R2: `paused` is a clean end (the launcher has exited and the lock is
+        // free by design), and the terminal statuses and an unknown word are
+        // shown as written. D-07 named only `running` for the crash rule.
+        other => DerivedStatus::AsWritten(other.clone()),
+    }
+}
+
+/// Derive the shown status from the written one and a probe of the run lock.
+///
+/// The rule (D-22, 27-RESEARCH Answer A, table R1-R6):
+///
+/// | written | lock held | lock free / absent | probe errno |
+/// |---|---|---|---|
+/// | `running` | as written | **crashed** | liveness unknown |
+/// | `starting`, `launches > 0` | as written | **crashed** | liveness unknown |
+/// | `starting`, `launches == 0` | as written | not launched | not launched |
+/// | `paused`, terminal, unknown word | as written | as written | as written |
+///
+/// The probe MUST be `LOCK_SH | LOCK_NB` ([`crate::driver::lock::probe_at`] is):
+/// two readers probing with `LOCK_EX` would each see the other's probe as a holder
+/// and read a dead run as live (R6). The result is derived at read time and never
+/// written anywhere (D-07).
+///
+/// # Phase 28 obligations this rule relies on
+///
+/// * **R3:** `end --reason fresh-exit` records `running`, so the launcher must hold
+///   the run lock ACROSS `fresh-exit` relaunches. Releasing it between launches
+///   makes every fresh-per-item run read as crashed in the gap.
+/// * **R4:** acquire the lock BEFORE writing `running`, and write the terminal
+///   status BEFORE releasing it. The reverse orders leave a window in which a
+///   healthy run reads as crashed.
+#[cfg(unix)]
+pub fn derive_status(
+    fm: &DriverFrontmatter,
+    probe: crate::driver::lock::LockProbe,
+) -> DerivedStatus {
+    use crate::driver::lock::LockProbe;
+    derive(
+        fm,
+        match probe {
+            LockProbe::Held => Seen::Held,
+            LockProbe::Free | LockProbe::Absent => Seen::Free,
+            LockProbe::Unknown(_) => Seen::Unknown,
+        },
+    )
+}
+
+/// Read a run directory: its `DIRECTION.md` frontmatter and the derived status.
+///
+/// Reads `<run_dir>/DIRECTION.md` and, on unix, probes `<run_dir>/launcher.lock`
+/// with [`crate::driver::lock::probe_at`], which opens read-only and so never
+/// creates the file. Nothing is written: the run directory is byte-identical
+/// afterwards (D-07). On a platform without `flock` liveness cannot be probed, so
+/// `running` and a launched `starting` derive [`DerivedStatus::LivenessUnknown`]
+/// rather than a guess.
+pub fn read_driver_run(run_dir: &std::path::Path) -> Result<DriverRunView, FrontmatterError> {
+    let text = std::fs::read_to_string(run_dir.join("DIRECTION.md")).map_err(|e| {
+        FrontmatterError::Io {
+            detail: format!("{}: {e}", run_dir.join("DIRECTION.md").display()),
+        }
+    })?;
+    let frontmatter = parse_driver_frontmatter(&text)?;
+
+    #[cfg(unix)]
+    let derived = {
+        use crate::driver::lock::{probe_at, run_lock_path};
+        derive_status(&frontmatter, probe_at(&run_lock_path(run_dir)))
+    };
+    #[cfg(not(unix))]
+    let derived = derive(&frontmatter, Seen::Unknown);
+
+    Ok(DriverRunView {
+        frontmatter,
+        derived,
+    })
 }
 
 #[cfg(test)]
