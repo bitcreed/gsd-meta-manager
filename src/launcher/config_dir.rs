@@ -48,7 +48,7 @@ pub const LINK_FROM_HOST: &[&str] = &[
 ];
 
 /// Host settings keys that never reach the driver.
-const DROPPED_SETTINGS: &[&str] = &[
+pub const DROPPED_SETTINGS_KEYS: &[&str] = &[
     "statusLine",
     "enabledPlugins",
     "remoteControlAtStartup",
@@ -155,6 +155,11 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
+/// The per-run settings from the host's (RED-phase stub: not implemented yet).
+pub fn settings_transform(host: Value, _hook_command: &str) -> Value {
+    host
+}
+
 /// Create and fill the per-run config directory. Idempotent: `settings.json` and
 /// the shim are rewritten on every launch, the links and `.claude.json` only when
 /// absent.
@@ -174,7 +179,7 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
     let command = hook_command(&shim, "hook");
 
     let mut settings = read_host_settings(&spec.host_claude_dir);
-    for key in DROPPED_SETTINGS {
+    for key in DROPPED_SETTINGS_KEYS {
         settings.remove(*key);
     }
     let hooks = settings
@@ -288,7 +293,7 @@ mod tests {
         .unwrap();
         seed(&spec).unwrap();
         let settings = settings_of(&spec);
-        for key in DROPPED_SETTINGS {
+        for key in DROPPED_SETTINGS_KEYS {
             assert!(settings.get(*key).is_none(), "{key}");
         }
         assert_eq!(settings["model"], "opus");
