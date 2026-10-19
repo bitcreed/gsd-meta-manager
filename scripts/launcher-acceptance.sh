@@ -382,7 +382,7 @@ eval_d33() {
     else
       v D33-kill PASS "cap-tripped gap_rounds action=kill-scope, no process of the scope survives ($sampled pids sampled), source=$src"
     fi
-    v D33-source PASS "second gaps_found source=$src (injection.txt: ${inj_ep:+injected at epoch $inj_ep}${inj_ep:-not written})"
+    v D33-source PASS "second gaps_found source=$src ($([ -n "$inj_ep" ] && echo "injection.txt: injected at epoch $inj_ep" || echo "no injection.txt"))"
   fi
   cost="$(awk '{ s += $2 } END { printf "%.4f", s }' "$ev/cost.txt")"
   v D33-cost PASS "launch cost recorded in cost.txt: \$$cost"
@@ -732,7 +732,7 @@ injector_loop() {
   last="$(jget "$RUN_DIR/state.json" caps.gap_rounds.last_write.1)"
   now="$(date +%s.%N)"
   [ -n "$last" ] || last="$now"
-  target="$(awk -v l="$last" -v n="$now" 'BEGIN { t = (l > n ? l : n); printf "%.3f", t + 46 }')"
+  target="$(awk -v l="$last" 'BEGIN { printf "%.3f", l + 46 }')"      # the counter reads only the mtime delta (> COALESCE_S)
   printf -- '---\nphase: 01-slugify\nverified: %s\nstatus: gaps_found\nscore: 2/3\n---\nharness-injected gaps_found (D-33, RESEARCH 7)\n' "$(date -u +%FT%TZ)" > "$f"
   touch -d "@$target" "$f"
   { printf 'injected_epoch=%s\n' "$(date +%s)"; printf 'previous_last_write=%s\n' "$last"; printf 'mtime_epoch=%s\n' "$target"
