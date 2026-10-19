@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 
 const HOOK: &str = "'/cfg/bin/driverctl' hook";
+const GUARD: &str = "'/cfg/bin/driverctl' stop-guard --run-dir '/runs/r1'";
 
 /// Serialises the one test that points `HOME` / `XDG_CONFIG_HOME` at a fixture.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -51,7 +52,7 @@ fn host_fixture() -> Value {
 
 #[test]
 fn settings_transform_keeps_user_hooks_in_order_and_drops_the_auth_keys() {
-    let out = settings_transform(host_fixture(), HOOK);
+    let out = settings_transform(host_fixture(), HOOK, GUARD);
 
     for key in [
         "statusLine",
@@ -74,10 +75,18 @@ fn settings_transform_keeps_user_hooks_in_order_and_drops_the_auth_keys() {
     assert_eq!(command_of(&pre[1]), "gsd-guard");
     assert_eq!(command_of(&pre[2]), "rtk-rewrite");
 
+    // D-17: the user's entry, then the heartbeat, then the Stop guard LAST.
     let stop = out["hooks"]["Stop"].as_array().unwrap();
-    assert_eq!(stop.len(), 2);
+    assert_eq!(stop.len(), 3);
     assert_eq!(command_of(&stop[0]), "user-stop");
     assert_eq!(command_of(&stop[1]), HOOK);
+    assert_eq!(command_of(&stop[2]), GUARD);
+    assert!(stop[2].get("matcher").is_none());
+    assert_eq!(stop[2]["hooks"][0]["timeout"], 20);
+    assert!(
+        stop[2]["hooks"][0].get("onFailure").is_none(),
+        "a broken guard must fail open, never block the driver"
+    );
     for event in ["SessionStart", "SessionEnd"] {
         let list = out["hooks"][event].as_array().unwrap();
         assert_eq!(list.len(), 1, "{event}");
@@ -89,9 +98,9 @@ fn settings_transform_keeps_user_hooks_in_order_and_drops_the_auth_keys() {
 }
 
 #[test]
-fn settings_transform_of_nothing_is_exactly_the_five_driverctl_entries() {
+fn settings_transform_of_nothing_is_exactly_the_driverctl_entries() {
     for host in [json!({}), json!([1, 2]), json!("text"), Value::Null] {
-        let out = settings_transform(host.clone(), HOOK);
+        let out = settings_transform(host.clone(), HOOK, GUARD);
         let hooks = out["hooks"].as_object().expect("a hooks object");
         let mut events: Vec<&str> = hooks.keys().map(String::as_str).collect();
         events.sort_unstable();
@@ -106,10 +115,17 @@ fn settings_transform_of_nothing_is_exactly_the_five_driverctl_entries() {
             ],
             "{host}"
         );
-        for list in hooks.values() {
+        for (event, list) in hooks {
             let list = list.as_array().unwrap();
-            assert_eq!(list.len(), 1);
-            assert_eq!(command_of(&list[0]), HOOK);
+            if event == "Stop" {
+                // The heartbeat, then the Stop guard: exactly two driverctl entries.
+                assert_eq!(list.len(), 2);
+                assert_eq!(command_of(&list[0]), HOOK);
+                assert_eq!(command_of(&list[1]), GUARD);
+            } else {
+                assert_eq!(list.len(), 1, "{event}");
+                assert_eq!(command_of(&list[0]), HOOK);
+            }
         }
         assert_eq!(out.as_object().unwrap().len(), 1, "only hooks: {out}");
     }
@@ -117,7 +133,7 @@ fn settings_transform_of_nothing_is_exactly_the_five_driverctl_entries() {
 
 #[test]
 fn settings_transform_replaces_a_hooks_value_that_is_not_an_object() {
-    let out = settings_transform(json!({"hooks": "nope", "env": 3}), HOOK);
+    let out = settings_transform(json!({"hooks": "nope", "env": 3}), HOOK, GUARD);
     assert_eq!(out["hooks"]["PreToolUse"][0]["matcher"], "Agent|Task");
     assert_eq!(out["env"], 3, "a non-object env is left alone");
 }
@@ -266,6 +282,39 @@ fn seed_without_a_host_settings_file_holds_only_the_driverctl_hooks() {
         command_of(&settings["hooks"]["PreToolUse"][0]),
         hook_command(&shim, "hook")
     );
+}
+
+#[test]
+fn seed_adds_the_stop_guard_as_the_last_stop_entry_naming_the_quoted_run_dir() {
+    let root = TempDir::new().unwrap();
+    let mut spec = spec_in(root.path());
+    spec.run_dir = root.path().join("it's a run");
+    fs::create_dir_all(&spec.host_claude_dir).unwrap();
+    fs::write(
+        spec.host_claude_dir.join("settings.json"),
+        host_fixture().to_string(),
+    )
+    .unwrap();
+    seed(&spec).unwrap();
+    seed(&spec).unwrap();
+
+    let settings = read_json(&spec.config_dir.join("settings.json"));
+    let shim = spec.config_dir.join("bin/driverctl");
+    let stop = settings["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(stop.len(), 3, "idempotent: two seeds do not stack entries");
+    assert_eq!(command_of(&stop[0]), "user-stop");
+    assert_eq!(command_of(&stop[1]), hook_command(&shim, "hook"));
+    let quoted = format!(
+        "'{}'",
+        spec.run_dir.display().to_string().replace('\'', "'\\''")
+    );
+    assert_eq!(
+        command_of(&stop[2]),
+        hook_command(&shim, &format!("stop-guard --run-dir {quoted}"))
+    );
+    // Only the Stop event carries the guard.
+    let text = settings.to_string();
+    assert_eq!(text.matches("stop-guard").count(), 1, "{text}");
 }
 
 #[test]

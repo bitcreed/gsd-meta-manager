@@ -508,6 +508,15 @@ pub enum DriverctlAction {
     Show,
     /// Claude hook entry point: read one hook payload on stdin
     Hook,
+    /// Stop hook entry point: keep the driver alive while a dispatch is unreported
+    // Hidden: only the seeded settings.json calls it (D-17), with the run dir it
+    // was built for. It always exits 0.
+    #[command(hide = true)]
+    StopGuard {
+        /// The run directory whose LOG.md is read
+        #[arg(long)]
+        run_dir: Option<PathBuf>,
+    },
     /// Launcher side: serve one run's store on a unix socket until SIGTERM/SIGINT
     Serve {
         /// The run directory: `<project>/.planning/meta-manager/drivers/<run-id>`
@@ -937,6 +946,27 @@ mod tests {
     fn driverctl_show_and_hook_parse() {
         assert!(matches!(driverctl(&["show"]), Ok(DriverctlAction::Show)));
         assert!(matches!(driverctl(&["hook"]), Ok(DriverctlAction::Hook)));
+    }
+
+    #[test]
+    fn driverctl_stop_guard_takes_a_run_dir_and_is_hidden() {
+        match driverctl(&["stop-guard", "--run-dir", "/r/d"]).expect("parses") {
+            DriverctlAction::StopGuard { run_dir } => {
+                assert_eq!(run_dir, Some(PathBuf::from("/r/d")));
+            }
+            _ => panic!("not a stop-guard"),
+        }
+        assert!(matches!(
+            driverctl(&["stop-guard"]),
+            Ok(DriverctlAction::StopGuard { run_dir: None })
+        ));
+        let mut cmd = Cli::command();
+        let help = cmd
+            .find_subcommand_mut("driverctl")
+            .expect("driverctl exists")
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("stop-guard"), "hidden: {help}");
     }
 
     #[test]

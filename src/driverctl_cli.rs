@@ -117,12 +117,51 @@ pub fn run(action: DriverctlAction) -> i32 {
         DriverctlAction::Log(log) => log_main(&log),
         DriverctlAction::Show => show_main(),
         DriverctlAction::Hook => hook_main(),
+        DriverctlAction::StopGuard { run_dir } => stop_guard_main(run_dir.as_deref()),
         DriverctlAction::Serve {
             run_dir,
             project,
             sock,
         } => serve_main(run_dir, project, sock),
     }
+}
+
+/// The most of a Stop payload that is read (it carries the last assistant message).
+const MAX_STOP_PAYLOAD_BYTES: u64 = 1024 * 1024;
+
+/// `driverctl stop-guard --run-dir <rd>` (D-17): the Stop hook that keeps a
+/// driver alive while a dispatched worker is unreported.
+///
+/// Unlike the other verbs this one reads the run directory and writes under
+/// `CLAUDE_CONFIG_DIR` (the module docs of `driverctl::stop_guard` say why that
+/// is safe). **It returns 0 on every path**, a panic and an unreadable stdin
+/// included: a broken guard must never wedge the driver. It runs before tracing
+/// init like the rest of this module (fact 2).
+fn stop_guard_main(run_dir: Option<&std::path::Path>) -> i32 {
+    use gsd_meta_manager::driverctl::stop_guard::{append_log, guard};
+
+    let mut raw = Vec::new();
+    let _ = std::io::stdin()
+        .lock()
+        .take(MAX_STOP_PAYLOAD_BYTES)
+        .read_to_end(&mut raw);
+    let stdin = String::from_utf8_lossy(&raw).into_owned();
+    let cfg_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+
+    let decided = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        guard(&stdin, run_dir, cfg_dir.as_deref(), chrono::Utc::now())
+    }));
+    if let Ok(outcome) = decided {
+        if let Some(cfg_dir) = cfg_dir.as_deref() {
+            let _ = append_log(cfg_dir, &outcome.lines);
+        }
+        if !outcome.stdout.is_empty() {
+            out(&format!("{}\n", outcome.stdout));
+        }
+    }
+    0
 }
 
 /// `driverctl serve`: run the launcher-side server until a signal (D-03).

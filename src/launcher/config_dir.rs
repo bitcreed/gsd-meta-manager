@@ -175,7 +175,7 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 ///   FIRST, so it runs before any host `PreToolUse` hook; the `SessionStart`,
 ///   `SessionEnd`, `Stop` and `PostToolUse` entries go last. User entries (GSD,
 ///   rtk) keep their relative order.
-pub fn settings_transform(host: Value, hook_command: &str) -> Value {
+pub fn settings_transform(host: Value, hook_command: &str, _stop_guard_command: &str) -> Value {
     let mut settings = match host {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -225,10 +225,18 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
 
     let shim = bin.join("driverctl");
     let command = hook_command(&shim, "hook");
+    let stop_guard = hook_command(
+        &shim,
+        &format!(
+            "stop-guard --run-dir {}",
+            shell_quote(spec.run_dir.as_os_str())
+        ),
+    );
 
     let settings = settings_transform(
         Value::Object(read_host_settings(&spec.host_claude_dir)),
         &command,
+        &stop_guard,
     );
     let rendered = serde_json::to_vec_pretty(&settings)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

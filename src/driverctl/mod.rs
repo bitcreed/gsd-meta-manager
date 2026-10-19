@@ -84,6 +84,15 @@
 //!    [`store::RunStore::flush_heartbeat`] about every 2 s** (D-26, D-11), as
 //!    `serve`'s ticker does.
 //!
+//! 10. **The Stop guard is served by this module's binary too (28-06, D-17).**
+//!     [`stop_guard`] is the ported spike-003 keep-alive: a second `Stop` hook
+//!     entry (`driverctl stop-guard --run-dir <rd>`, after the heartbeat entry)
+//!     that blocks a premature end of the top-level driver's turn while LOG.md
+//!     shows an unreported dispatch, at most [`stop_guard::GUARD_LIMIT`] times
+//!     per outstanding dispatch, using the same [`counters::outstanding_dispatch`]
+//!     the exit classifier uses. It is ungated (reads LOG.md, writes only under
+//!     `CLAUDE_CONFIG_DIR`) and always exits 0.
+//!
 //! # Phase 30 hand-off
 //!
 //! What the driver tab (Phase 30) must respect:
@@ -108,5 +117,6 @@ pub mod protocol;
 pub mod scan;
 #[cfg(target_os = "linux")]
 pub mod serve;
+pub mod stop_guard;
 #[cfg(target_os = "linux")]
 pub mod store;
