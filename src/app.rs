@@ -1998,6 +1998,7 @@ impl App {
                 runs,
                 inbox,
                 journal,
+                launcher_runs,
             } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 // Clamped rather than reset: a scan that lands while the user is
@@ -2011,6 +2012,9 @@ impl App {
                 // The journal carries its own run id, so the renderer can refuse
                 // to show it under a run it is not about.
                 cache.driver_journal = journal;
+                // Replaced, never merged, like `driver_runs`: a run directory no
+                // longer on disk is expressed by its absence.
+                cache.launcher_runs = launcher_runs;
                 self.needs_redraw = true;
             }
             // The report was built off the render thread and arrived (D-26).
@@ -4610,6 +4614,7 @@ mod tests {
                 text: "steer".to_string(),
             }],
             journal: None,
+            launcher_runs: Vec::new(),
         });
 
         let cache = app
@@ -4624,6 +4629,42 @@ mod tests {
             app.needs_redraw,
             "a run list that changed under the pane must be painted"
         );
+    }
+
+    /// `DriverRunsListed` replaces the launcher rows wholesale (28-07, D-30).
+    #[tokio::test]
+    async fn a_run_list_result_replaces_the_launcher_runs_never_merges() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let listed = |ids: &[&str]| Action::DriverRunsListed {
+            alias: OBS_ALIAS.to_string(),
+            runs: Vec::new(),
+            inbox: Vec::new(),
+            journal: None,
+            launcher_runs: ids
+                .iter()
+                .map(|id| {
+                    (
+                        (*id).to_string(),
+                        Err(
+                            crate::state_reader::driver_frontmatter::FrontmatterError::Io {
+                                detail: "x".to_string(),
+                            },
+                        ),
+                    )
+                })
+                .collect(),
+        };
+
+        app.update(listed(&["20261019-a", "20261018-b"]));
+        assert_eq!(app.ctx.view_cache[OBS_ALIAS].launcher_runs.len(), 2);
+        app.update(listed(&["20261019-a"]));
+        let ids: Vec<&str> = app.ctx.view_cache[OBS_ALIAS]
+            .launcher_runs
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ids, ["20261019-a"], "a run gone from disk must disappear");
     }
 
     /// A shortened list clamps the selection rather than leaving it dangling.
@@ -4643,6 +4684,7 @@ mod tests {
             runs: vec![run_summary("2026-07-29T12-02-00Z-a1b2")],
             inbox: Vec::new(),
             journal: None,
+            launcher_runs: Vec::new(),
         });
 
         assert_eq!(

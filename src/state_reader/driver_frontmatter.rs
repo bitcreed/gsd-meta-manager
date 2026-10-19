@@ -781,6 +781,58 @@ pub fn read_driver_run(run_dir: &std::path::Path) -> Result<DriverRunView, Front
     })
 }
 
+/// Where a project's launcher run directories live, relative to the project root
+/// (the same place `driverctl::serve::DRIVERS_REL` names; that constant is
+/// Linux-only, and a listing must compile everywhere).
+pub const DRIVER_RUNS_REL: &str = ".planning/meta-manager/drivers";
+
+/// The shape of a run id the launcher will touch: one plain path component. A
+/// second spelling of `driverctl::serve::RUN_ID_RE` (that module is Linux-only),
+/// pinned equal to it by a test.
+const PLAIN_RUN_ID_RE: &str = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$";
+
+static PLAIN_RUN_ID: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(PLAIN_RUN_ID_RE).expect("static regex"));
+
+/// One row of [`list_driver_runs`]: the run id (its directory name) and what
+/// [`read_driver_run`] made of it. An unreadable `DIRECTION.md` is that row's
+/// `Err`, never a reason to drop the other rows.
+pub type DriverRunEntry = (String, Result<DriverRunView, FrontmatterError>);
+
+/// List a project's launcher runs, **newest first**, at most `limit` of them (D-30).
+///
+/// Reads `<project_root>/.planning/meta-manager/drivers/`, keeps the directory
+/// entries whose name is a plain run id, sorts the names descending (a run id starts
+/// with `yyyymmdd`, so byte order is time order) and runs [`read_driver_run`] on each
+/// of the first `limit`. A missing drivers directory is an empty list.
+///
+/// Read-only and blocking: it must run on `spawn_blocking`, never inside a render
+/// function. A symlink named like a run id is skipped (`DirEntry::file_type` does not
+/// follow it), so a link cannot point the listing at a directory outside the project.
+/// Cross-platform: on a platform without `flock` every `running` run derives
+/// [`DerivedStatus::LivenessUnknown`] rather than a guess.
+pub fn list_driver_runs(project_root: &std::path::Path, limit: usize) -> Vec<DriverRunEntry> {
+    let dir = project_root.join(DRIVER_RUNS_REL);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| PLAIN_RUN_ID.is_match(name))
+        .collect();
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    names.truncate(limit);
+    names
+        .into_iter()
+        .map(|name| {
+            let view = read_driver_run(&dir.join(&name));
+            (name, view)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,6 +855,110 @@ mod tests {
         assert!(emitted.ends_with("\n---\n"));
         let again = parse_driver_frontmatter(&emitted).expect("emitted block parses");
         assert_eq!(again, parsed);
+    }
+
+    /// Build `<root>/.planning/meta-manager/drivers/<id>/DIRECTION.md` from the spike
+    /// fixture with `run_id` and `launches` replaced.
+    fn write_run(root: &std::path::Path, id: &str) {
+        let dir = root.join(DRIVER_RUNS_REL).join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = RUN1B.replace("s003-run1b", id);
+        std::fs::write(dir.join("DIRECTION.md"), text).unwrap();
+    }
+
+    #[test]
+    fn list_driver_runs_orders_newest_first_and_honours_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        for id in ["20261017-aaaa", "20261019-bbbb", "20261018-cccc"] {
+            write_run(tmp.path(), id);
+        }
+        let all: Vec<String> = list_driver_runs(tmp.path(), 20)
+            .into_iter()
+            .map(|(id, view)| {
+                assert!(view.is_ok(), "{id} should parse");
+                id
+            })
+            .collect();
+        assert_eq!(all, ["20261019-bbbb", "20261018-cccc", "20261017-aaaa"]);
+
+        let two: Vec<String> = list_driver_runs(tmp.path(), 2)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(two, ["20261019-bbbb", "20261018-cccc"]);
+        assert!(list_driver_runs(tmp.path(), 0).is_empty());
+    }
+
+    #[test]
+    fn list_driver_runs_skips_names_that_are_not_plain_run_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_run(tmp.path(), "20261019-ok");
+        let drivers = tmp.path().join(DRIVER_RUNS_REL);
+        // A stray file, a dot-name, a name with a space and an over-long name.
+        std::fs::write(drivers.join("20261020-file"), "x").unwrap();
+        std::fs::create_dir_all(drivers.join(".hidden")).unwrap();
+        std::fs::create_dir_all(drivers.join("has space")).unwrap();
+        std::fs::create_dir_all(drivers.join("x".repeat(81))).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(tmp.path(), drivers.join("20261021-link")).unwrap();
+
+        let ids: Vec<String> = list_driver_runs(tmp.path(), 20)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["20261019-ok"]);
+    }
+
+    #[test]
+    fn list_driver_runs_of_a_missing_drivers_dir_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(list_driver_runs(tmp.path(), 20).is_empty());
+        std::fs::create_dir_all(tmp.path().join(".planning")).unwrap();
+        assert!(list_driver_runs(tmp.path(), 20).is_empty());
+    }
+
+    #[test]
+    fn list_driver_runs_keeps_an_unreadable_run_beside_the_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_run(tmp.path(), "20261019-good");
+        let bad = tmp.path().join(DRIVER_RUNS_REL).join("20261020-bad");
+        std::fs::create_dir_all(&bad).unwrap(); // no DIRECTION.md at all
+        let rows = list_driver_runs(tmp.path(), 20);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "20261020-bad");
+        assert!(rows[0].1.is_err());
+        assert_eq!(rows[1].0, "20261019-good");
+        assert!(rows[1].1.is_ok());
+    }
+
+    #[test]
+    fn list_driver_runs_derives_the_status_from_the_lock_not_the_written_word() {
+        // The fixture says `crashed`; a `running` file with no lock must read as
+        // crashed, never as the written `running`.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(DRIVER_RUNS_REL).join("20261019-run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = RUN1B
+            .replace("s003-run1b", "20261019-run")
+            .replace("status: crashed", "status: running");
+        assert!(text.contains("status: running"));
+        std::fs::write(dir.join("DIRECTION.md"), &text).unwrap();
+        let rows = list_driver_runs(tmp.path(), 20);
+        let view = rows[0].1.as_ref().unwrap();
+        assert_eq!(view.frontmatter.status, RunStatus::Running);
+        #[cfg(unix)]
+        assert_eq!(
+            view.derived,
+            DerivedStatus::Crashed {
+                written: RunStatus::Running
+            }
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_plain_run_id_pattern_is_the_one_serve_uses() {
+        assert_eq!(PLAIN_RUN_ID_RE, crate::driverctl::serve::RUN_ID_RE);
     }
 
     #[test]

@@ -64,6 +64,7 @@ use crate::driver::reconcile::RunVerdict;
 use crate::journal::inbox::InboxMessage;
 use crate::journal::reader::JournalRecord;
 use crate::journal::RunSummary;
+use crate::state_reader::driver_frontmatter::{DerivedStatus, DriverRunEntry};
 
 // ── Measured layout constants (the `STATUS_COLUMN_MIN_CELLS` discipline) ────
 
@@ -1013,6 +1014,42 @@ pub(super) fn render_driver_tab(
     viewport: &Cell<ViewportMetrics>,
     list_offset: &Cell<usize>,
 ) -> DriverTabRegions {
+    // The launcher section (28-07, D-30) takes only rows the legacy tiers can
+    // spare, from the bottom of the pane; every region the legacy render reports
+    // (list rows, output pane) lies in the part it was given.
+    let launcher: &[DriverRunEntry] = cache.map_or(&[], |c| c.launcher_runs.as_slice());
+    let legacy_empty = cache.is_none_or(|c| c.driver_runs.is_empty() && c.driver_dry_run.is_none());
+    let legacy_min = if legacy_empty {
+        LAUNCHER_LEGACY_EMPTY_MIN_HEIGHT
+    } else {
+        LAUNCHER_LEGACY_MIN_HEIGHT
+    };
+    let section = launcher_section_height(area.height, legacy_min, launcher.len());
+    let (top, bottom) = if section == 0 {
+        (area, None)
+    } else {
+        let split = Layout::vertical([Constraint::Min(0), Constraint::Length(section)]).split(area);
+        (split[0], Some(split[1]))
+    };
+    let regions = render_legacy_driver_tab(frame, top, ctx, alias, cache, viewport, list_offset);
+    if let Some(bottom) = bottom {
+        let selected = cache.map_or(0, |c| c.launcher_selected);
+        render_launcher_runs(frame, bottom, launcher, selected);
+    }
+    regions
+}
+
+/// The Driver tab as it was before the launcher section existed: the run list, the
+/// run detail and the dry-run preview.
+fn render_legacy_driver_tab(
+    frame: &mut Frame,
+    area: Rect,
+    ctx: &AppContext,
+    alias: &str,
+    cache: Option<&ProjectViewCache>,
+    viewport: &Cell<ViewportMetrics>,
+    list_offset: &Cell<usize>,
+) -> DriverTabRegions {
     let mut regions = DriverTabRegions::default();
     let runs: &[RunSummary] = cache.map_or(&[], |c| c.driver_runs.as_slice());
 
@@ -1123,6 +1160,145 @@ pub(super) fn render_driver_tab(
         }
     }
     regions
+}
+
+// ── The launcher runs section (28-07, D-30) ─────────────────────────────────
+
+/// The height the legacy Driver tab keeps for itself before the launcher section
+/// may take a row: the run detail's full height tier (`>= 14` rows, the first arm
+/// of the vertical split in `render_run_detail`) plus the one row its title takes
+/// off the top of the pane, so the section never pushes the detail down a tier.
+pub const LAUNCHER_LEGACY_MIN_HEIGHT: u16 = 15;
+
+/// The same floor when the legacy tab has no run and no preview to show: its
+/// bordered "no runs" block is two border rows and two message lines.
+pub const LAUNCHER_LEGACY_EMPTY_MIN_HEIGHT: u16 = 4;
+
+/// The badge on a run whose frontmatter says `sandbox: degraded` (D-30). One
+/// constant so the row and the collapsed line spell it the same.
+pub const UNSANDBOXED_BADGE: &str = "UNSANDBOXED";
+
+/// The badge's style: the warning yellow the rest of the pane uses, bold so it is
+/// not read as a status word.
+fn unsandboxed_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Rows the launcher section gets out of an `area_height`-row pane, given that the
+/// legacy tab keeps `legacy_min` and there are `runs` launcher runs.
+///
+/// Everything (a header and every run) when it fits; a window of rows when only
+/// part fits; one collapsed line when a single row is spare; nothing otherwise, so
+/// the legacy tiers keep their measured minimums.
+fn launcher_section_height(area_height: u16, legacy_min: u16, runs: usize) -> u16 {
+    if runs == 0 {
+        return 0;
+    }
+    let spare = area_height.saturating_sub(legacy_min);
+    let wanted = u16::try_from(runs.saturating_add(1)).unwrap_or(u16::MAX);
+    spare.min(wanted)
+}
+
+/// The status word shown for a launcher run: the one `read_driver_run` derived from
+/// the run lock, never the raw `status:` line (the Phase 30 hand-off).
+fn launcher_status_word(derived: &DerivedStatus) -> String {
+    match derived {
+        DerivedStatus::AsWritten(status) => shown_capped(status.as_str()),
+        DerivedStatus::Crashed { .. } => "crashed".to_owned(),
+        DerivedStatus::LivenessUnknown { .. } => "liveness unknown".to_owned(),
+        DerivedStatus::NotLaunched => "not launched".to_owned(),
+    }
+}
+
+/// Whether the run's frontmatter records the degraded (unsandboxed) posture.
+fn is_unsandboxed(entry: &DriverRunEntry) -> bool {
+    entry
+        .1
+        .as_ref()
+        .is_ok_and(|view| view.frontmatter.sandbox.as_deref() == Some("degraded"))
+}
+
+/// One launcher-run row: `  <run id>  <status>[  UNSANDBOXED]`, or
+/// `  <run id>  unreadable`. The run id gives way (ellipsised) before the status
+/// word or the badge do, so a narrow pane can never clip the posture off.
+fn launcher_run_line(entry: &DriverRunEntry, width: usize) -> Line<'static> {
+    let prefix = "  ";
+    let (word, badge) = match &entry.1 {
+        Ok(view) => (launcher_status_word(&view.derived), is_unsandboxed(entry)),
+        Err(_) => ("unreadable".to_owned(), false),
+    };
+    let tail_cells = 2
+        + word.chars().count()
+        + if badge {
+            2 + UNSANDBOXED_BADGE.chars().count()
+        } else {
+            0
+        };
+    let id_budget = width.saturating_sub(prefix.len() + tail_cells).max(1);
+    let id = shown_capped(&entry.0);
+    let id = if id.chars().count() > id_budget {
+        let mut cut: String = id.chars().take(id_budget.saturating_sub(1)).collect();
+        cut.push('\u{2026}');
+        cut
+    } else {
+        id
+    };
+
+    let mut spans = vec![Span::raw(format!("{prefix}{id}  {word}"))];
+    if badge {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(UNSANDBOXED_BADGE, unsandboxed_style()));
+    }
+    Line::from(spans)
+}
+
+/// Render the launcher section into `area`: a `Launcher runs` header and one line
+/// per run, a window of them when the pane is short, or the single collapsed line
+/// `launcher runs: <n>` when only one row is spare.
+fn render_launcher_runs(frame: &mut Frame, area: Rect, runs: &[DriverRunEntry], selected: usize) {
+    if area.height == 0 || runs.is_empty() {
+        return;
+    }
+    let width = usize::from(area.width);
+    let unsandboxed = runs.iter().filter(|entry| is_unsandboxed(entry)).count();
+    if area.height == 1 {
+        let mut spans = vec![Span::styled(
+            format!("launcher runs: {}", runs.len()),
+            label_style(),
+        )];
+        if unsandboxed > 0 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("({unsandboxed} {UNSANDBOXED_BADGE})"),
+                unsandboxed_style(),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
+
+    let rows_room = usize::from(area.height).saturating_sub(1);
+    let selected = selected.min(runs.len() - 1);
+    // A window that keeps the highlighted row on screen.
+    let first = if selected < rows_room {
+        0
+    } else {
+        selected + 1 - rows_room
+    };
+    let mut lines: Vec<Line> = Vec::with_capacity(usize::from(area.height));
+    lines.push(Line::from(Span::styled(
+        format!("Launcher runs ({})", runs.len()),
+        label_style(),
+    )));
+    lines.extend(
+        runs.iter()
+            .skip(first)
+            .take(rows_room)
+            .map(|entry| launcher_run_line(entry, width)),
+    );
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// Render the dry-run preview in place of the run detail (D-26).
@@ -4404,5 +4580,241 @@ mod tests {
             before,
             "leaving Step B must restore the normal run detail exactly"
         );
+    }
+
+    // ── 28-07: the launcher runs section ─────────────────────────────────
+
+    const LAUNCHER_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/driverctl/direction/s003-run1b.md");
+
+    /// A launcher-run row as `list_driver_runs` would have produced it.
+    fn launcher_entry(id: &str, sandbox: Option<&str>, derived: DerivedStatus) -> DriverRunEntry {
+        let mut frontmatter =
+            crate::state_reader::driver_frontmatter::parse_driver_frontmatter(LAUNCHER_FIXTURE)
+                .expect("the spike fixture parses");
+        frontmatter.sandbox = sandbox.map(str::to_owned);
+        (
+            id.to_owned(),
+            Ok(crate::state_reader::driver_frontmatter::DriverRunView {
+                frontmatter,
+                derived,
+            }),
+        )
+    }
+
+    fn done() -> DerivedStatus {
+        DerivedStatus::AsWritten(crate::state_reader::driver_frontmatter::RunStatus::Done)
+    }
+
+    /// Render the Driver tab for `cache` into a `width` x `height` buffer and scrape
+    /// it back, one `String` per row.
+    fn scrape_driver_tab(cache: ProjectViewCache, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let alias = super::super::driver_confirm::tests::ALIAS;
+        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
+        ctx.view_cache.insert(alias.to_string(), cache);
+        let viewport = Cell::default();
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_driver_tab(
+                    frame,
+                    area,
+                    &ctx,
+                    alias,
+                    ctx.view_cache.get(alias),
+                    &viewport,
+                    &Cell::new(0),
+                );
+            })
+            .expect("draw the driver tab");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn launcher_cache(rows: Vec<DriverRunEntry>) -> ProjectViewCache {
+        ProjectViewCache {
+            launcher_runs: rows,
+            ..ProjectViewCache::default()
+        }
+    }
+
+    #[test]
+    fn launcher_rows_badge_a_degraded_run_and_not_a_sandboxed_one() {
+        let rows = vec![
+            launcher_entry("20261019-degraded", Some("degraded"), done()),
+            launcher_entry("20261018-sandboxed", Some("bwrap-scope"), done()),
+            launcher_entry("20261017-unknown", None, done()),
+        ];
+        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
+        println!("{}", scraped.join("\n"));
+
+        let row = |needle: &str| {
+            scraped
+                .iter()
+                .find(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("no row for {needle}: {scraped:#?}"))
+        };
+        assert!(row("Launcher runs (3)").contains("Launcher runs"));
+        assert!(row("20261019-degraded").contains("UNSANDBOXED"));
+        assert!(row("20261019-degraded").contains("done"));
+        assert!(!row("20261018-sandboxed").contains("UNSANDBOXED"));
+        assert!(!row("20261017-unknown").contains("UNSANDBOXED"));
+    }
+
+    #[test]
+    fn launcher_rows_use_the_derived_status_not_the_written_one() {
+        use crate::state_reader::driver_frontmatter::RunStatus;
+        let rows = vec![
+            launcher_entry(
+                "20261019-a",
+                None,
+                DerivedStatus::Crashed {
+                    written: RunStatus::Running,
+                },
+            ),
+            launcher_entry(
+                "20261018-b",
+                None,
+                DerivedStatus::LivenessUnknown {
+                    written: RunStatus::Running,
+                },
+            ),
+            launcher_entry("20261017-c", None, DerivedStatus::NotLaunched),
+        ];
+        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
+        let row = |needle: &str| scraped.iter().find(|row| row.contains(needle)).unwrap();
+        // The fixture's raw `status:` is `crashed`; the derived word is what shows.
+        assert!(row("20261019-a").contains("crashed"));
+        assert!(row("20261018-b").contains("liveness unknown"));
+        assert!(!row("20261018-b").contains("running"));
+        assert!(row("20261017-c").contains("not launched"));
+    }
+
+    #[test]
+    fn launcher_an_unreadable_run_reads_unreadable_and_hides_no_other_row() {
+        let rows = vec![
+            launcher_entry("20261019-ok", None, done()),
+            (
+                "20261018-bad".to_owned(),
+                Err(
+                    crate::state_reader::driver_frontmatter::FrontmatterError::Io {
+                        detail: "denied".to_owned(),
+                    },
+                ),
+            ),
+        ];
+        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
+        assert!(scraped
+            .iter()
+            .any(|row| row.contains("20261018-bad") && row.contains("unreadable")));
+        assert!(scraped
+            .iter()
+            .any(|row| row.contains("20261019-ok") && row.contains("done")));
+        assert!(
+            !scraped.iter().any(|row| row.contains("denied")),
+            "the error detail is not painted"
+        );
+    }
+
+    #[test]
+    fn launcher_a_hostile_run_id_and_status_word_reach_the_terminal_sanitized() {
+        use crate::state_reader::driver_frontmatter::RunStatus;
+        let rows = vec![launcher_entry(
+            "evil\u{1b}]0;pwned\u{7}\u{1b}[31mid",
+            Some("degraded"),
+            DerivedStatus::AsWritten(RunStatus::Unknown("up\u{1b}[2Jword".to_owned())),
+        )];
+        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
+        for row in &scraped {
+            assert!(
+                !row.chars().any(char::is_control),
+                "a control character reached the buffer: {row:?}"
+            );
+        }
+        assert!(scraped
+            .iter()
+            .any(|row| row.contains("evil") && row.contains("UNSANDBOXED")));
+    }
+
+    #[test]
+    fn launcher_a_narrow_pane_shortens_the_run_id_before_it_clips_the_badge() {
+        let long = "20261019-an-extremely-long-run-identifier-that-cannot-fit-on-one-row";
+        let rows = vec![launcher_entry(long, Some("degraded"), done())];
+        let scraped = scrape_driver_tab(launcher_cache(rows), 40, 12);
+        let row = scraped
+            .iter()
+            .find(|row| row.contains("20261019-an"))
+            .expect("the row is drawn");
+        assert!(row.contains("UNSANDBOXED"), "{row:?}");
+        assert!(row.contains("done"), "{row:?}");
+        assert!(row.contains('\u{2026}'), "the id is ellipsised: {row:?}");
+    }
+
+    #[test]
+    fn launcher_a_project_with_only_launcher_runs_still_lists_them() {
+        // No legacy run at all: the early "no runs" block must not swallow them.
+        let rows = vec![launcher_entry("20261019-only", None, done())];
+        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 10);
+        assert!(scraped.iter().any(|row| row.contains("20261019-only")));
+    }
+
+    #[test]
+    fn launcher_one_spare_row_collapses_the_section_to_a_count() {
+        let mut cache = launcher_cache(vec![
+            launcher_entry("20261019-a", Some("degraded"), done()),
+            launcher_entry("20261018-b", None, done()),
+            launcher_entry("20261017-c", None, done()),
+        ]);
+        cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
+        let scraped = scrape_driver_tab(cache, 80, LAUNCHER_LEGACY_MIN_HEIGHT + 1);
+        let last = scraped.last().unwrap();
+        assert!(last.starts_with("launcher runs: 3"), "{last:?}");
+        assert!(last.contains("(1 UNSANDBOXED)"), "{last:?}");
+        assert!(!scraped.iter().any(|row| row.contains("20261019-a")));
+    }
+
+    #[test]
+    fn launcher_a_pane_with_no_spare_row_renders_exactly_the_legacy_tab() {
+        let legacy = |launcher: Vec<DriverRunEntry>| {
+            let mut cache = launcher_cache(launcher);
+            cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
+            scrape_driver_tab(cache, 80, LAUNCHER_LEGACY_MIN_HEIGHT)
+        };
+        let without = legacy(Vec::new());
+        let with = legacy(vec![launcher_entry("20261019-a", Some("degraded"), done())]);
+        assert_eq!(
+            without, with,
+            "the legacy tiers keep their measured minimum"
+        );
+    }
+
+    #[test]
+    fn launcher_a_short_pane_shows_a_window_that_keeps_the_highlight_in_view() {
+        let rows: Vec<DriverRunEntry> = (0..8)
+            .map(|i| launcher_entry(&format!("2026101{i}-run"), None, done()))
+            .collect();
+        let mut cache = launcher_cache(rows);
+        cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
+        cache.launcher_selected = 7;
+        // 3 spare rows: the header and two run rows.
+        let scraped = scrape_driver_tab(cache, 80, LAUNCHER_LEGACY_MIN_HEIGHT + 3);
+        assert!(scraped.iter().any(|row| row.contains("Launcher runs (8)")));
+        assert!(
+            scraped.iter().any(|row| row.contains("20261017-run")),
+            "the highlighted (last) row is on screen: {scraped:#?}"
+        );
+        assert!(!scraped.iter().any(|row| row.contains("20261010-run")));
     }
 }

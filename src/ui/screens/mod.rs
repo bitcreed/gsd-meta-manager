@@ -389,6 +389,10 @@ pub enum DefaultsEditTarget {
 /// tuning is a one-line change.
 pub const DRIVER_OUTPUT_RING_LINES: usize = 2_000;
 
+/// How many launcher runs the Driver tab lists (28-07, D-30): the newest twenty.
+/// A bound on the blocking read, not a paging scheme.
+pub const LAUNCHER_RUNS_LISTED: usize = 20;
+
 /// The hard per-line truncation applied at append time, by **character** count.
 ///
 /// A line longer than this is cut and suffixed with a single ellipsis. The count
@@ -1159,6 +1163,19 @@ pub struct ProjectViewCache {
     /// churn, while an `AppContext` field costs an edit at five construction
     /// sites.
     pub driver_runs: Vec<crate::journal::RunSummary>,
+    /// The project's **launcher** runs (`.planning/meta-manager/drivers/<run-id>/`),
+    /// newest first, at most 20 (28-07, D-30).
+    ///
+    /// Filled by the same off-thread listing that fills `driver_runs`
+    /// ([`AppContext::schedule_run_list_scan`]) from
+    /// [`crate::state_reader::driver_frontmatter::list_driver_runs`], and replaced
+    /// wholesale by `Action::DriverRunsListed`. Each row carries the status
+    /// `read_driver_run` derived from the run lock, never the raw `status:` word.
+    /// An unreadable `DIRECTION.md` is that row's `Err`.
+    pub launcher_runs: Vec<crate::state_reader::driver_frontmatter::DriverRunEntry>,
+    /// Index into `launcher_runs` of the highlighted row (28-07, D-11); clamped
+    /// whenever `Action::DriverRunsListed` replaces the rows.
+    pub launcher_selected: usize,
     /// The running tally for the run whose journal is currently being tailed.
     ///
     /// Two facts the Driver tab's header and step timeline need are carried by
@@ -1827,6 +1844,7 @@ impl AppContext {
         };
         let tx = tx.clone();
         let planning_dir = project_path.join(".planning");
+        let project_for_task = project_path.to_path_buf();
         let alias_for_task = alias.to_string();
         let selected = self
             .view_cache
@@ -1915,11 +1933,19 @@ impl AppContext {
                 })
             });
 
+            // The launcher's runs ride the same task: one more blocking read, off
+            // the render thread, replaced wholesale by the handler (28-07, D-30).
+            let launcher_runs = crate::state_reader::driver_frontmatter::list_driver_runs(
+                &project_for_task,
+                LAUNCHER_RUNS_LISTED,
+            );
+
             let _ = tx.send(crate::action::Action::DriverRunsListed {
                 alias: alias_for_task,
                 runs,
                 inbox,
                 journal,
+                launcher_runs,
             });
         });
     }

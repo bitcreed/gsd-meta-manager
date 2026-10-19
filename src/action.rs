@@ -350,6 +350,8 @@ pub enum Action {
         runs: Vec<crate::journal::RunSummary>,
         inbox: Vec<crate::journal::inbox::InboxMessage>,
         journal: Option<Box<crate::ui::screens::DriverRunJournal>>,
+        /// The project's launcher runs with their derived status (28-07, D-30).
+        launcher_runs: Vec<crate::state_reader::driver_frontmatter::DriverRunEntry>,
     },
     /// A dry-run report was built for `alias` and is ready to show (D-26).
     ///
@@ -427,6 +429,7 @@ mod tests {
             runs: Vec::new(),
             inbox: Vec::new(),
             journal: None,
+            launcher_runs: Vec::new(),
         };
         assert!(matches!(listed.clone(), Action::DriverRunsListed { .. }));
 
