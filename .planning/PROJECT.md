@@ -58,6 +58,7 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Roadmap tab redesign — dependency list with git-log lanes, transitive reduction (implied deps shown dim), milestone bands with folds, master-detail pane (side-by-side ≥100 cols, stacked below), build phases and goals read from ROADMAP.md — Phase 24
 - ✓ Detail-tab consolidation — eight tabs plus Driver (`1:Roadmap 2:Phases … 8:Docs`, `D:Drive`); PhaseList removed, Archive folded into Docs › Milestones; Roadmap/Phases share the selected phase — Phase 24
 - ✓ Running agents & live wave view — lock-free scan of agent worktrees (commits ahead, dirty count), pluggable runtime-adapter seam with a Claude Code adapter (subagent meta, transcript-mtime liveness, worktree-less subagents), plans grouped by PLAN `wave:` with done/finished/running/stalled/queued states, width-fitted dashboard Status summary, Sessions › Agents sub-view, and an estimated `~fixed/total` for code-fixer runs (AGENT-01..07) — Phase 25
+- ✓ driverctl & driver frontmatter — `gsd-meta-manager driverctl serve|log|hook|show` is the single writer of a run's `state.json`, LOG.md and the DIRECTION.md frontmatter (exchange-verify splice via `renameat2(RENAME_EXCHANGE)`, 0 lost rename-saves under an editor race); typed `DriverFrontmatter` schema v1 with `stalled`/`crashed` terminal states set only by the launcher; counters (dispatches, coalesced 45 s gap rounds, heartbeat) from tool-observed state only; three recorded spike runs replay with identical LOG lines and counts (DCTL-01..04) — Phase 27
 
 ### Active
 
@@ -79,13 +80,15 @@ Phases 26-31 replace them.*
   accepted by the operator as ADJUST: divergence parking proven on Opus, launcher deny L+1 / kill L+2
   proven only by the scripted Haiku run r261-l7 (Opus driver self-parked at count 2, so deny/kill
   NOT-REACHED). Risk carried to Phases 28/29. Phase 27 unblocked.*
-- **Spike 003 redesign or re-plan (emerged, Phase 26).** Before Phase 27 starts, either redesign
+- **Spike 003 redesign or re-plan (emerged, Phase 26).** *Resolved by Phase 26.1 (redesign + re-run chosen) `[inferred — audit]`.* Before Phase 27 starts, either redesign
   the seed and instruments, or re-plan Phases 27-31. A redesign needs a divergence signal that
   survives a verifier re-writing VERIFICATION.md (one gap round was counted twice), and a way to
   wake the headless driver before a worker reports. See
   `.planning/spikes/003-divergent-gap-loop-validation/README.md`.
-- **driverctl.** A Rust single writer of the run state and the tool-written frontmatter on
-  DIRECTION.md.
+- **driverctl hardening (emerged, Phase 27).** 27-REVIEW.md left CR-01 (gap scan reads
+  driver-plantable files with no type/size guard, under the store mutex) and WR-01..09 open
+  (27-REVIEW-DISPOSITION.md). Close or explicitly defer them before Phase 28's launcher relies on
+  `driverctl serve` `[inferred — audit]`.
 - **Sandboxed launcher.** It provides:
   - bwrap under `systemd-run --user --scope`;
   - an outside-sandbox flock and hard caps;
@@ -135,6 +138,7 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 
 - Shipped v1.6.0; ~7,000 LOC Rust across 7 milestones, distributed via crates.io
 - Tech stack: Rust, ratatui 0.30, crossterm 0.29, tokio, notify-debouncer-full
+- `src/driverctl/` + `src/driver/direction.rs` (Phase 27): run-store, unix-socket server, client/hook, DIRECTION.md splice and run lock
 - Screen trait architecture; detail view is 8 tabs + Driver since Phase 24 (Archive lives under Docs › Milestones; Sessions › Agents since Phase 25)
 - Running-agent scan (`src/agents/`) rides the 5 s session poll in `spawn_blocking`; read-only, no locks taken in agent worktrees
 - Disk-based phase inference via /proc-like directory scanning
@@ -190,7 +194,9 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | Phases 19/21/22/23 superseded, code kept until a dedicated retirement phase (31) `[inferred]` | Removing code before the launcher's push step owns SAFE-01/03/06 would leave a gap. An explicit phase keeps the removal reviewable | — Pending |
 | v2.0 restructured in place, not closed and reopened `[inferred]` | Closing would need a release tag and an audit of two phases that cannot close. v2.0 never released, and the major-bump rationale still holds | — Pending |
 | Containers (Phase 22) replaced by bwrap + `systemd-run --user --scope` on Linux, with a recorded degraded mode on macOS `[inferred]` | Verified with auth in spikes 001/002, with no new dependency (bollard never added). Containers move to Future Requirements | — Pending |
-| Status frontmatter on DIRECTION.md is tool-written by driverctl (single writer, exchange-verify splice), never by the model | Spike 002 measured 0 lost rename-saves in 12,943. The driver made 18 driverctl calls with 0 hand-edits. The Rust reader already parses it | — Pending (Phase 27) |
+| Status frontmatter on DIRECTION.md is tool-written by driverctl (single writer, exchange-verify splice), never by the model | Spike 002 measured 0 lost rename-saves in 12,943. The driver made 18 driverctl calls with 0 hand-edits. The Rust reader already parses it | ✓ Good — Phase 27 shipped it (verification 4/4; ported editor race 0 lost saves; SC1 replay identical); CR-01 + WR-01..09 review findings open |
+| driverctl Gate denies on transport error, unset socket, unreadable reply and server `ok:false` (Phase 27, D-25 deviation from the spike) | A sandboxed driver must fail closed when the single writer is unreachable | — Pending (Phase 28 wires the Gate) |
+| `crashed` and `stalled` are set only by the launcher via `RunStore::set_terminal`; no driver op reaches them; `caps.dispatches.used` counts only hook-observed, Gate-allowed dispatches (Phase 27) | Terminal and cap state must come from tool-observed facts, never the model's own claims | ✓ Good — mutation-checked: each single-writer guard fails its test when removed |
 | Auth through a long-lived `claude setup-token` token passed as an env var; no refresh token in the sandbox | Spike 002 measured that a host refresh rotates the refresh token and revokes the previous access token, so copied credentials would log the host out | — Pending (Phase 28) |
 | OQ-R1: driver stop rules outrank a human `answer:`; only a budget edit lifts them `[inferred]` | Spike 002 finding 5 default. Open human call | ⚠️ Revisit — human to confirm |
 | OQ-R2: driven runs do not see the user's global CLAUDE.md; GSD + rtk hooks kept `[inferred]` | Spike 002 A2.1 default. The driver's rules come from its prompt | ⚠️ Revisit — human to confirm |
@@ -214,4 +220,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-18 after Phase 26.1 (VALID-01 proven; VALID-02 ADJUST accepted; Phase 27 unblocked)*
+*Last updated: 2026-10-19 after Phase 27 (driverctl & driver frontmatter shipped, DCTL-01..04; review CR-01 + WR-01..09 open)*

@@ -22,10 +22,10 @@ milestone_name: gsd-core 1.17.0 Sync
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-18)
+See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 27 — driverctl & Driver Frontmatter
+**Current focus:** Phase 28 — Sandboxed Driver Launcher
 2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
 Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
 **Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
@@ -33,6 +33,17 @@ cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-ta
 
 ## Current Position
 
+Status: Ready to plan
+  Phase 27 (driverctl & Driver Frontmatter) complete 2026-10-19: 6/6 plans, verification passed 4/4,
+  security SECURED (0 open threats). DCTL-01..04 complete. The `stalled` status value carried from
+  26.1 shipped (RunStatus::is_terminal covers stopped|done|crashed|stalled|parked).
+  Open advisories: 27-REVIEW-DISPOSITION.md has CR-01 (critical: gap scan reads driver-plantable
+  files with no type/size guard, under the store mutex), WR-01..09 and IN-01..03 all `open`.
+  Progress: 146/150 plans (progress.bar).
+  Next: `/gsd-discuss-phase 28` (no 28-CONTEXT.md yet). Consider `/gsd-code-review 27 --fix` for
+  CR-01 first, since Phase 28's launcher runs `driverctl serve` `[inferred — audit]`.
+
+Earlier (2026-10-18):
 Status: Ready to plan
   Phase 26.1 complete 2026-10-18 (11/11 plans; verification passed after operator sign-off on the
   human item, 26.1-UAT.md test 1). VALID-01 proven on an organic Opus driver. VALID-02 accepted by the
@@ -609,6 +620,11 @@ Recent decisions affecting current work:
 - [Phase 26.1]: 26.1-10: Haiku seed v2 gate PASSED on the second launch (r261-seed2b) after one run.sh fix (scratch git.allow_default_branch_commits=true); SPENT_ALL 21.98 of 60; seed and kit now frozen for the paid Run 2
 - [Phase 26.1]: [Phase 26.1] Spike 003 gap-closure verdict ADJUST: J1 held (r261-run2b A5-deny NOT-REACHED: the Opus driver parked needs-human at gap-observed count=2, before any round-3 dispatch; seed v2 worked, 2 verifier advances = gsd-verifier 2, DUP=0); organic launcher deny at L+1 and kill at L+2 still unobserved (kill covered by scripted r261-l7 L7-5); VALID-02 stays open; carried: Phase 28 keeps cap and L7 cases as acceptance cases, Phase 29 records prompt-independent self-limiting plus v0.4 D1/D3/D1c/D2/OQ-R1 wording, stall-watch path (stall_detection_enabled false), Phase 28 coalescing COALESCE_S=45; forward: Phase 27 status enum needs stalled; see .planning/spikes/003-divergent-gap-loop-validation/README.md
 
+- [Phase 27]: driverctl Gate fails closed (transport error, unset socket, unreadable reply, server ok:false) — D-25 deviation from the spike; Phase 28 wires it
+- [Phase 27]: `crashed`/`stalled` set only by RunStore::set_terminal (launcher-only); caps.dispatches.used counts only hook-observed Gate-allowed dispatches
+- [Phase 27]: serve vets the socket path and run id (raw basename + canonical child of drivers dir) BEFORE begin_launch; DIRECTION.md primitives live in src/driver/direction.rs [inferred - audit]
+- [Phase 27]: COALESCE_S = 45.0 strict <, fm_status is the single status definition (not VerificationStatus::from_raw)
+
 - [2026-10-18] Operator accepted ADJUST as final for VALID-02 (26.1-UAT test 1). VALID-01 and VALID-02 marked complete; VALID-02 traceability = ADJUST (Haiku-scripted r261-l7 evidence, Opus NOT-REACHED). Risk carried to Phases 28/29: exercise launcher deny/kill under the real driver.
 
 ### Roadmap Evolution
@@ -639,7 +655,10 @@ Recent decisions affecting current work:
 - [Phase 26.1 -> 28/29] **Carried risk (operator-accepted):** launcher gap-cap deny at limit+1 / kill
   at limit+2 was never reached under a real Opus driver (scripted Haiku r261-l7 only). Phases 28 and 29
   must exercise launcher deny/kill under the real driver, with the prompt divergence rule disabled.
-- [Phase 26.1 -> 27] Phase 27's driver status list needs a `stalled` value (exitclass.py liveness class).
+- [Phase 27] Advisory, not blocking: 27-REVIEW.md CR-01 (critical — gap scan has no type/size guard on
+  driver-plantable files, a FIFO can hang the store mutex) and WR-01..09 open (27-REVIEW-DISPOSITION.md).
+  Phase 28 runs `driverctl serve` under the launcher, so fix or defer before relying on it
+  (`/gsd-code-review 27 --fix`) `[inferred — audit]`.
 - [Phase 26.1] Advisory review warnings WR-10 and WR-11 remain open/deferred (26.1-REVIEW-DISPOSITION.md).
 
 - [Re-plan 2026-10-14] The T-19-* rows below and the open gaps from Phase 21 round 13 no longer
@@ -776,11 +795,13 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-18T05:08:35.586Z
+Last session: 2026-10-19
 Stopped at: Phase 27 complete, ready to plan Phase 28
-Resume file: .planning/phases/27-driverctl-driver-frontmatter/27-CONTEXT.md
+Resume file: None
 
-Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
+Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
+
+Earlier (2026-10-17): Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
 
 Earlier (2026-10-16): Phase 26 complete (spike 003 INCONCLUSIVE). The blocker decision recorded then:
 
