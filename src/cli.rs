@@ -422,6 +422,21 @@ pub enum DriverAction {
         #[arg(long, default_value_t = 60)]
         wait_secs: u64,
     },
+    /// The driver's long-lived OAuth token: store one, or see what is stored
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+}
+
+/// The verbs of `driver auth` (D-21).
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthAction {
+    /// Run `claude setup-token`, then store the long-lived token you paste (0600)
+    Setup,
+    /// Report whether a token is stored, where, and when the host token expires
+    /// (never a token value)
+    Status,
 }
 
 /// The master prompt's loop mode (`{MODE}` in the prompt).
@@ -969,6 +984,27 @@ mod tests {
             .to_string();
         assert!(help.contains("--foreground"), "{help}");
         assert!(!help.contains("daemon-child"), "{help}");
+    }
+
+    #[test]
+    fn driver_auth_takes_setup_or_status_and_nothing_else() {
+        assert!(matches!(
+            driver_action(&["auth", "setup"]),
+            Ok(DriverAction::Auth {
+                action: AuthAction::Setup
+            })
+        ));
+        assert!(matches!(
+            driver_action(&["auth", "status"]),
+            Ok(DriverAction::Auth {
+                action: AuthAction::Status
+            })
+        ));
+        assert!(driver_action(&["auth"]).is_err(), "a verb is required");
+        assert!(
+            driver_action(&["auth", "setup", "--token", "x"]).is_err(),
+            "a token is never an argument (argv is world-readable)"
+        );
     }
 
     #[test]

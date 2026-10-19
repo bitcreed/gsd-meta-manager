@@ -16,7 +16,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use gsd_meta_manager::cli::{DriverAction, LaunchArgs};
+use gsd_meta_manager::cli::{AuthAction, DriverAction, LaunchArgs};
 use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::launch_target::resolve_launch_target;
 use gsd_meta_manager::launcher::LauncherError;
@@ -43,7 +43,180 @@ pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
             run_id,
             wait_secs,
         } => stop_main(&project, &run_id, wait_secs, config),
+        DriverAction::Auth { action } => auth_main(action),
     }
+}
+
+/// `driver auth setup|status` (D-21).
+#[cfg(target_os = "linux")]
+fn auth_main(action: AuthAction) -> i32 {
+    match action {
+        AuthAction::Setup => auth_setup(),
+        AuthAction::Status => auth_status_main(),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn auth_main(_action: AuthAction) -> i32 {
+    report("auth", &LauncherError::UnsupportedPlatform)
+}
+
+/// Explain, run `claude setup-token` on the user's terminal, read the pasted
+/// token from one line of stdin and store it. The value is never printed.
+#[cfg(target_os = "linux")]
+fn auth_setup() -> i32 {
+    use gsd_meta_manager::launcher::auth::{
+        has_expected_prefix, store_token, token_path, validate_pasted_token, EXPECTED_TOKEN_PREFIX,
+        MAX_PASTED_LEN,
+    };
+    use gsd_meta_manager::launcher::process::run_interactive;
+    use std::io::{BufRead, Read};
+
+    let Some(path) = token_path() else {
+        err_line(
+            "driver auth setup: this platform has no user config directory to store a token in",
+        );
+        return 1;
+    };
+    out_line(
+        "driver auth setup: a long-lived token from `claude setup-token` keeps driver runs \
+         independent of your host login.\n\
+         Copying the host's own token instead would log the host out the first time either side \
+         refreshes it.\n\
+         `claude setup-token` runs now on this terminal; follow its instructions.",
+    );
+    match run_interactive("claude", &["setup-token"]) {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            err_line(&format!(
+                "driver auth setup: `claude setup-token` did not succeed ({status}); nothing was stored"
+            ));
+            return 1;
+        }
+        Err(e) => {
+            err_line(&format!(
+                "driver auth setup: could not run `claude setup-token`: {e}; nothing was stored"
+            ));
+            return 1;
+        }
+    }
+    {
+        let mut stdout = std::io::stdout().lock();
+        let _ = write!(stdout, "Paste the token printed above, then press Enter: ");
+        let _ = stdout.flush();
+    }
+    let mut line = String::new();
+    // One line, bounded: a stray file piped in cannot grow this without limit.
+    let stdin = std::io::stdin();
+    let read = (&mut stdin.lock())
+        .take(MAX_PASTED_LEN as u64 * 2)
+        .read_line(&mut line);
+    match read {
+        Ok(0) => {
+            err_line("driver auth setup: nothing was pasted (end of input); nothing was stored");
+            return 1;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            err_line(&format!(
+                "driver auth setup: could not read the pasted token: {e}; nothing was stored"
+            ));
+            return 1;
+        }
+    }
+    if more_input_pending(&stdin) {
+        err_line(
+            "driver auth setup: more than one line was pasted; paste only the token; \
+             nothing was stored",
+        );
+        return 1;
+    }
+    let token = match validate_pasted_token(&line) {
+        Ok(token) => token,
+        Err(e) => {
+            err_line(&format!("driver auth setup: {e}; nothing was stored"));
+            return 1;
+        }
+    };
+    if !has_expected_prefix(&token) {
+        err_line(&format!(
+            "driver auth setup: warning: the token does not start with `{EXPECTED_TOKEN_PREFIX}`; \
+             storing it anyway"
+        ));
+    }
+    match store_token(&path, &token) {
+        Ok(()) => {
+            out_line(&format!("stored at {} (0600)", path.display()));
+            0
+        }
+        Err(e) => {
+            err_line(&format!("driver auth setup: {e}; nothing was stored"));
+            1
+        }
+    }
+}
+
+/// Whether stdin already holds more than whitespace after the line just read.
+///
+/// A multi-line paste arrives as several lines, and `read_line` takes only the
+/// first; storing that first line silently would store half of whatever was
+/// pasted. The check must not block (a terminal has nothing more to give until
+/// the user types), so stdin goes non-blocking for the one `fill_buf` and its
+/// flags are restored on every path.
+#[cfg(target_os = "linux")]
+fn more_input_pending(stdin: &std::io::Stdin) -> bool {
+    use std::io::BufRead;
+
+    let Ok(flags) = rustix::fs::fcntl_getfl(stdin) else {
+        return false;
+    };
+    if rustix::fs::fcntl_setfl(stdin, flags | rustix::fs::OFlags::NONBLOCK).is_err() {
+        return false;
+    }
+    let pending = {
+        let mut lock = stdin.lock();
+        match lock.fill_buf() {
+            Ok(buf) => buf.iter().any(|b| !b.is_ascii_whitespace()),
+            Err(_) => false,
+        }
+    };
+    let _ = rustix::fs::fcntl_setfl(stdin, flags);
+    pending
+}
+
+/// Report presence, path, mode and the host token's expiry. Never a value.
+#[cfg(target_os = "linux")]
+fn auth_status_main() -> i32 {
+    use gsd_meta_manager::launcher::auth::auth_status;
+
+    let now = chrono::Utc::now();
+    let status = auth_status(now);
+    let path = status.path.as_ref().map_or_else(
+        || "<no config directory>".to_owned(),
+        |p| p.display().to_string(),
+    );
+    match (&status.stored, &status.stored_problem) {
+        (Some((_, mode)), None) => out_line(&format!(
+            "stored token: present at {path} (mode {mode:04o})"
+        )),
+        (Some((_, mode)), Some(problem)) => out_line(&format!(
+            "stored token: present at {path} (mode {mode:04o}) but REFUSED at launch: {problem}"
+        )),
+        (None, _) => out_line(&format!("stored token: none (would be stored at {path})")),
+    }
+    match (status.host_expires_at, status.host_minutes_left) {
+        (Some(at), Some(minutes)) if minutes >= 0 => out_line(&format!(
+            "host token: expires {} (in {minutes} min)",
+            at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        )),
+        (Some(at), _) => out_line(&format!(
+            "host token: expired {}",
+            at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        )),
+        (None, _) => out_line("host token: none found"),
+    }
+    out_line(&format!("next launch uses: {}", status.next_launch()));
+    0
 }
 
 /// The project root a `driver launch` target names, through the registry.

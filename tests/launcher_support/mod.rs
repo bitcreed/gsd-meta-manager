@@ -318,7 +318,7 @@ impl Fixture {
 
     /// The binary under a hermetic environment with the fake tools first on
     /// `PATH`, `--config` already given; the caller appends the verb.
-    fn hermetic_command(&self) -> Command {
+    pub fn hermetic_command(&self) -> Command {
         let scratch = self.scratch.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"));
         cmd.arg("--config")

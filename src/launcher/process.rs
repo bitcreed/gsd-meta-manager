@@ -16,13 +16,15 @@
 //! * [`run_bounded`], a short host command whose stdout is read within a budget
 //!   ([`crate::bounded_output::stdout_within`]).
 //! * [`respawn_detached`], this binary again as the detached launcher (D-04).
+//! * [`run_interactive`], a host command that talks to the user's terminal
+//!   (`claude setup-token`, 28-06).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 use crate::bounded_output::{stdout_within, BoundedOutput};
@@ -104,4 +106,15 @@ pub fn respawn_detached(args: &[OsString], log: File) -> std::io::Result<Child> 
         .stdout(log)
         .stderr(err);
     cmd.spawn()
+}
+
+/// Run `program args` with the caller's own stdin, stdout and stderr, and wait
+/// for it (28-06: `claude setup-token` asks the user to open a browser and
+/// prints the token for them to copy).
+///
+/// Nothing is captured, so the launcher never holds what the program prints; the
+/// user pastes the token back themselves (D-21). The environment is inherited:
+/// this is the user's own login on the host, not a sandboxed run.
+pub fn run_interactive(program: &str, args: &[&str]) -> std::io::Result<ExitStatus> {
+    Command::new(program).args(args).status()
 }
