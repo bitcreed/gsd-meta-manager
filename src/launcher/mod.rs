@@ -48,12 +48,18 @@
 //!
 //! # What this module root leaves to later plans
 //!
-//! Auth onboarding (28-06), the push step (28-07) and the TUI (28-08).
+//! The TUI run selection (28-07) and the acceptance harness (28-09).
 //!
 //! 11. **The hard caps are enforced from outside the sandbox (28-05, D-12..D-16).**
 //!     [`gate`] is the pure dispatch/gap-round decision installed on the embedded
 //!     store; the monitor in [`run`] trips and kills (wall clock, gap rounds) and
 //!     persists the active seconds.
+//!
+//! 12. **A run's commits leave the machine only through [`push`] (28-08, D-24..D-26).**
+//!     The step runs on the host from a launcher-owned bare mirror whose push URL was
+//!     pinned before any sandbox existed, sends one refspec into
+//!     `refs/heads/gsd-auto/<alias>/<run-id>` after the SAFE-03 scan of the tip's
+//!     tree, and opens a pull request only when the user enabled `driver.open_pr`.
 
 pub mod sandbox;
 
@@ -69,6 +75,8 @@ pub mod host;
 pub mod outcome;
 #[cfg(target_os = "linux")]
 pub mod process;
+#[cfg(target_os = "linux")]
+pub mod push;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]

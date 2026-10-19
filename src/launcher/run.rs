@@ -67,6 +67,7 @@ use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::host::{decide, detect, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
+use super::push;
 use super::sandbox::{
     bwrap_argv, child_env, claude_argv, render_prompt, scope_unit_name, systemd_run_argv,
     LaunchPaths, SandboxSpec,
@@ -494,6 +495,10 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         return Err(io_error("seed the per-run config directory", e));
     }
 
+    // D-24, D-25 (RESEARCH §4): pin the push mirror and record the branch and start
+    // commit of the run, host side, before any sandbox of this launch exists.
+    record_push_basis(&session, &project, &root);
+
     // D-12, D-14: the gate is installed before the first spawn, so no dispatch is ever
     // decided by the default allow-all gate. The marker is shared with the monitor.
     let tripped = new_tripped();
@@ -526,6 +531,40 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
                 return Err(e);
             }
         }
+    }
+}
+
+/// Prepare the project's push mirror (its URL is pinned here when the mirror is first
+/// created) and, at the run's first launch only, record the branch and commit the
+/// run starts from (`launch_branch`, `launch_start_sha`; D-25).
+///
+/// The first launch is told by `launch_start_sha` being present, not by
+/// `launch_branch`: a detached `HEAD` records no branch, and a later launch must not
+/// then record whatever branch the driver left checked out. Failures are reported
+/// and leave the keys unset: the push step then refuses (`no_recorded_branch`,
+/// `no_push_remote`) rather than guessing. `[inferred — audit]`
+fn record_push_basis(session: &Session, project: &Path, root: &Path) {
+    if let Err(e) = push::prepare_mirror(root, project) {
+        eprintln!("driver launch: the push mirror is unavailable ({e}); a push of this run will be refused");
+    }
+    if lock_store(&session.store)
+        .state()
+        .extra
+        .contains_key(push::KEY_LAUNCH_START_SHA)
+    {
+        return;
+    }
+    let Some((branch, sha)) = push::current_branch_and_sha(project) else {
+        return;
+    };
+    let mut store = lock_store(&session.store);
+    if let Some(branch) = branch {
+        if let Err(e) = store.set_launcher_key(push::KEY_LAUNCH_BRANCH, Value::String(branch)) {
+            eprintln!("driver launch: could not record the launch branch: {e}");
+        }
+    }
+    if let Err(e) = store.set_launcher_key(push::KEY_LAUNCH_START_SHA, Value::String(sha)) {
+        eprintln!("driver launch: could not record the launch commit: {e}");
     }
 }
 

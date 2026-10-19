@@ -235,6 +235,24 @@ const RUN_STATE_FIELDS: [&str; 16] = [
     "ended_by_driver",
 ];
 
+/// The `state.json` key holding the last push of the run (28-08, D-24).
+pub const EXTRA_PUSH: &str = "push";
+
+/// What the launcher's push step records about a push (`state.json` `push`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushRecord {
+    /// RFC3339 UTC at second precision.
+    pub at: String,
+    /// The destination ref, `refs/heads/gsd-auto/<alias>/<run-id>`.
+    pub dest: String,
+    /// The full sha of the tip that was sent.
+    pub sha: String,
+    /// `pushed`.
+    pub outcome: String,
+    /// The pull request the push step opened for this push, if any.
+    pub pr: Option<String>,
+}
+
 /// The driver process a launch starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverSpec {
@@ -1272,6 +1290,63 @@ impl RunStore {
         self.commit(next, &[], Regen::HeartbeatOnly)
     }
 
+    /// Record a push (28-08, D-24): `state.json` `push = {at, dest, sha, outcome[, pr]}`
+    /// replaces any earlier record, and `RUN | push | dest=<dest> | sha=<short> |
+    /// outcome=<outcome>` is logged.
+    ///
+    /// Launcher-side only; no op, event or argument reaches this from the socket.
+    pub fn record_push(&mut self, record: &PushRecord) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        next.extra.insert(EXTRA_PUSH.to_owned(), push_value(record));
+        let short: String = record.sha.chars().take(12).collect();
+        let entry = LogEntry::run(
+            "push",
+            vec![
+                ("dest", Some(header_safe(&record.dest))),
+                ("sha", Some(header_safe(&short))),
+                ("outcome", Some(header_safe(&record.outcome))),
+            ],
+        );
+        self.commit(next, &[entry], Regen::Always)
+    }
+
+    /// Record the pull request opened for the last push (28-08, D-26): `push.pr` is
+    /// set on the existing `push` record and `RUN | pr | url=<url>` is logged.
+    /// A run with no `push` record gets nothing written (there is no push to hang
+    /// it on). Launcher-side only.
+    pub fn record_pr(&mut self, url: &str) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        let Some(Value::Object(push)) = next.extra.get_mut(EXTRA_PUSH) else {
+            return Ok(());
+        };
+        push.insert("pr".to_owned(), json!(url));
+        let entry = LogEntry::run("pr", vec![("url", Some(header_safe(url)))]);
+        self.commit(next, &[entry], Regen::Always)
+    }
+
+    /// Park the run because the push step refused to send its work (28-08, D-25):
+    /// the status becomes `parked` with `reason`, **even when the driver had ended
+    /// the run itself** (`done`, say). That is the one difference from
+    /// [`set_terminal`](Self::set_terminal), which keeps a driver `RUN end`: a run
+    /// whose work was held back must not keep reading as plainly finished.
+    ///
+    /// Writes no LOG line (the caller logs the refusal with its own fields).
+    /// Launcher-side only.
+    pub fn park_after_push(&mut self, reason: &str) -> Result<(), StoreError> {
+        let reason = log::one_line("reason", Some(reason), 200).unwrap_or_else(|_| {
+            let cleaned = header_safe(reason);
+            if cleaned.is_empty() {
+                "unspecified".to_owned()
+            } else {
+                cleaned
+            }
+        });
+        let mut next = self.state.clone();
+        next.status = RunStatus::Parked;
+        next.status_reason = Some(reason);
+        self.commit(next, &[], Regen::Always)
+    }
+
     /// `git rev-parse --short HEAD` in the project, or `None` (not a repo, a
     /// failure, or output that is not a hex hash). The value reaches a LOG header,
     /// so it is held to hex digits (T-27-15, T-27-18).
@@ -1285,6 +1360,19 @@ impl RunStore {
         (!hash.is_empty() && hash.len() <= 40 && hash.chars().all(|c| c.is_ascii_hexdigit()))
             .then(|| hash.to_owned())
     }
+}
+
+/// A [`PushRecord`] as the `push` object of `state.json`.
+fn push_value(record: &PushRecord) -> Value {
+    let mut object = Map::new();
+    object.insert("at".to_owned(), json!(record.at));
+    object.insert("dest".to_owned(), json!(record.dest));
+    object.insert("sha".to_owned(), json!(record.sha));
+    object.insert("outcome".to_owned(), json!(record.outcome));
+    if let Some(pr) = &record.pr {
+        object.insert("pr".to_owned(), json!(pr));
+    }
+    Value::Object(object)
 }
 
 /// Apply one validated event to `next` and describe its LOG line.

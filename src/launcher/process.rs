@@ -18,6 +18,8 @@
 //! * [`respawn_detached`], this binary again as the detached launcher (D-04).
 //! * [`run_interactive`], a host command that talks to the user's terminal
 //!   (`claude setup-token`, 28-06).
+//! * [`run_bounded_with_stderr`], [`run_bounded`] that also keeps the last line of
+//!   the command's stderr (the push step's `git` and `gh`, 28-08).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -27,7 +29,7 @@ use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-use crate::bounded_output::{stdout_within, BoundedOutput};
+use crate::bounded_output::{stdout_within, stdout_within_with_stderr, BoundedOutput};
 
 /// Start the driver command `argv` in `cwd`, headless.
 ///
@@ -117,4 +119,69 @@ pub fn respawn_detached(args: &[OsString], log: File) -> std::io::Result<Child> 
 /// this is the user's own login on the host, not a sandboxed run.
 pub fn run_interactive(program: &str, args: &[&str]) -> std::io::Result<ExitStatus> {
     Command::new(program).args(args).status()
+}
+
+/// How much of the end of a command's stderr is read back.
+const STDERR_TAIL_BYTES: u64 = 4096;
+
+/// The `GIT_*` variables that would point a host `git` at a repository other than
+/// the one the argv names. Removed from every `git` this module starts: the push
+/// step names its repositories explicitly (`--git-dir`, `-C`), and an inherited
+/// `GIT_DIR` would silently override both.
+const GIT_REPO_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+];
+
+/// [`run_bounded`], plus the last non-empty line of the command's stderr.
+///
+/// stderr goes to a private temporary file (never a pipe, so it cannot fill and
+/// block the child), and only its final [`STDERR_TAIL_BYTES`] are read back. The
+/// caller decides what to do with the line: it can carry a URL with credentials in
+/// it, so it must be redacted before it is printed or logged. For `git`, the
+/// repository-selecting `GIT_*` variables are removed from the inherited
+/// environment first.
+pub fn run_bounded_with_stderr(
+    program: &str,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    extra_env: &[(&str, &str)],
+    budget: Duration,
+) -> Option<(BoundedOutput, String)> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut sink = tempfile::tempfile().ok()?;
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    if program == "git" {
+        for key in GIT_REPO_ENV {
+            cmd.env_remove(key);
+        }
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    let output = stdout_within_with_stderr(&mut cmd, budget, Stdio::from(sink.try_clone().ok()?))?;
+
+    let len = sink.seek(SeekFrom::End(0)).ok()?;
+    sink.seek(SeekFrom::Start(len.saturating_sub(STDERR_TAIL_BYTES)))
+        .ok()?;
+    let mut tail = Vec::new();
+    sink.take(STDERR_TAIL_BYTES).read_to_end(&mut tail).ok()?;
+    let line = String::from_utf8_lossy(&tail)
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    Some((output, line))
 }

@@ -18,7 +18,8 @@
 //! exits, and would be killed at the deadline for no fault of its own — a large
 //! `git log` or `git status` would read as a timeout.
 //!
-//! Stdin is null and stderr is discarded: both callers read stdout only, and an
+//! Stdin is null and stderr is discarded (or, for [`stdout_within_with_stderr`],
+//! sent to a file the caller owns): the callers read stdout only, and an
 //! undrained stderr pipe would be the same deadlock over again.
 
 use std::io::Read;
@@ -59,11 +60,25 @@ pub struct BoundedOutput {
 /// Blocking; call it from a blocking context (`spawn_blocking`), never from an
 /// `async fn`.
 pub fn stdout_within(command: &mut Command, budget: Duration) -> Option<BoundedOutput> {
+    stdout_within_with_stderr(command, budget, Stdio::null())
+}
+
+/// [`stdout_within`] with the child's stderr sent to `stderr` instead of being
+/// discarded (28-08: the push step keeps the last line of `git`'s stderr to say
+/// WHY a push failed).
+///
+/// The caller hands in a file, never a pipe: an undrained stderr pipe is the same
+/// deadlock this module's header describes for stdout, and a file cannot fill.
+pub fn stdout_within_with_stderr(
+    command: &mut Command,
+    budget: Duration,
+    stderr: Stdio,
+) -> Option<BoundedOutput> {
     let deadline = Instant::now() + budget;
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()
         .ok()?;
 

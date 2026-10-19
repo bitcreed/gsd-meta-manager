@@ -43,6 +43,7 @@ pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
             run_id,
             wait_secs,
         } => stop_main(&project, &run_id, wait_secs, config),
+        DriverAction::Push { project, run_id } => push_main(&project, &run_id, config),
         DriverAction::Auth { action } => auth_main(action),
     }
 }
@@ -219,9 +220,12 @@ fn auth_status_main() -> i32 {
     0
 }
 
-/// The project root a `driver launch` target names, through the registry.
+/// The alias, project root and loaded registry a `driver` target names.
 #[cfg(target_os = "linux")]
-fn resolve_project(target: &str, config: Option<PathBuf>) -> Result<(String, PathBuf), String> {
+fn resolve_project(
+    target: &str,
+    config: Option<PathBuf>,
+) -> Result<(String, PathBuf, Config), String> {
     let config_path = config.unwrap_or_else(Config::default_path);
     let config = load_config(&config_path).map_err(|e| format!("{e:#}"))?;
     let cwd =
@@ -233,7 +237,7 @@ fn resolve_project(target: &str, config: Option<PathBuf>) -> Result<(String, Pat
         .get(&alias)
         .map(|p| p.path.clone())
         .ok_or_else(|| format!("project {alias:?} is not in the registry"))?;
-    Ok((alias, project))
+    Ok((alias, project, config))
 }
 
 #[cfg(target_os = "linux")]
@@ -252,7 +256,7 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             return 1;
         }
     }
-    let (alias, project) = match resolve_project(&args.project, config.clone()) {
+    let (alias, project, _registry) = match resolve_project(&args.project, config.clone()) {
         Ok(resolved) => resolved,
         Err(message) => {
             err_line(&format!("driver launch: {message}"));
@@ -312,7 +316,7 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
 fn stop_main(target: &str, run_id: &str, wait_secs: u64, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::launcher::stop::{stop_run, StopReport};
 
-    let (_alias, project) = match resolve_project(target, config) {
+    let (_alias, project, _registry) = match resolve_project(target, config) {
         Ok(resolved) => resolved,
         Err(message) => {
             err_line(&format!("driver stop: {message}"));
@@ -326,6 +330,56 @@ fn stop_main(target: &str, run_id: &str, wait_secs: u64, config: Option<PathBuf>
         }
         Err(error) => report("stop", &error),
     }
+}
+
+/// `driver push`: the push step for a finished run whose launcher is gone.
+/// `0` for a push, an already-done push or nothing to push; `1` for a refusal or
+/// a failure.
+#[cfg(target_os = "linux")]
+fn push_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
+    use gsd_meta_manager::launcher::config_dir::driver_root;
+    use gsd_meta_manager::launcher::push::{policy_for, push_finished_run, PushContext};
+
+    let (alias, project, registry) = match resolve_project(target, config) {
+        Ok(resolved) => resolved,
+        Err(message) => {
+            err_line(&format!("driver push: {message}"));
+            return 1;
+        }
+    };
+    let Some(driver_root) = driver_root() else {
+        err_line("driver push: no per-user data directory is available for the launcher state");
+        return 1;
+    };
+    let opt_in = registry
+        .projects
+        .get(&alias)
+        .and_then(|p| p.driver_opt_in.as_ref());
+    let ctx = PushContext {
+        project,
+        policy: policy_for(&alias, opt_in),
+        alias,
+        run_id: run_id.to_owned(),
+        driver_root,
+        open_pr: false,
+    };
+    match push_finished_run(&ctx) {
+        Ok(outcome) => {
+            if outcome.is_success() {
+                out_line(&format!("driver push: run {run_id}: {outcome}"));
+                0
+            } else {
+                err_line(&format!("driver push: run {run_id}: {outcome}"));
+                1
+            }
+        }
+        Err(error) => report("push", &error),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn push_main(_target: &str, _run_id: &str, _config: Option<PathBuf>) -> i32 {
+    report("push", &LauncherError::UnsupportedPlatform)
 }
 
 #[cfg(not(target_os = "linux"))]

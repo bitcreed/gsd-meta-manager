@@ -422,6 +422,14 @@ pub enum DriverAction {
         #[arg(long, default_value_t = 60)]
         wait_secs: u64,
     },
+    /// Push a finished run's work: its recorded branch tip, scanned, from the
+    /// launcher's own mirror into `refs/heads/gsd-auto/<alias>/<run-id>`
+    Push {
+        /// Alias or path of a registered project
+        project: String,
+        /// The run id: `.planning/meta-manager/drivers/<run-id>`
+        run_id: String,
+    },
     /// The driver's long-lived OAuth token: store one, or see what is stored
     Auth {
         #[command(subcommand)]
@@ -1056,6 +1064,20 @@ mod tests {
         }
         assert!(
             driver_action(&["stop", "p"]).is_err(),
+            "the run id is required"
+        );
+    }
+
+    #[test]
+    fn driver_push_takes_a_project_and_a_run_id() {
+        match driver_action(&["push", "p", "r1"]).expect("parses") {
+            DriverAction::Push { project, run_id } => {
+                assert_eq!((project.as_str(), run_id.as_str()), ("p", "r1"));
+            }
+            _ => panic!("not a push"),
+        }
+        assert!(
+            driver_action(&["push", "p"]).is_err(),
             "the run id is required"
         );
     }
