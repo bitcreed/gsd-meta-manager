@@ -20,8 +20,16 @@
 //! * the per-run config directory read-write;
 //! * `--unshare-pid --die-with-parent`.
 //!
-//! 28-03 hardens this profile (the `$XDG_RUNTIME_DIR` tmpfs, `--setting-sources`,
-//! `GIT_TERMINAL_PROMPT`) without changing a signature in this file.
+//! 28-03 hardened this profile without changing a signature in this file:
+//!
+//! * `$XDG_RUNTIME_DIR` is replaced by an empty tmpfs and only the run's own
+//!   driverctl socket is re-bound into it, so the SSH agent, the D-Bus session
+//!   bus and the user systemd manager are unreachable (RESEARCH §1, D-19);
+//! * the per-run `settings.json` (the gate hooks) and `bin/` (the shim they call)
+//!   are read-only inside the writable config dir;
+//! * git's other credential stores are masked as well as `~/.ssh` (D-27);
+//! * `claude` reads user settings only (`--setting-sources user`), and
+//!   `ANTHROPIC_AUTH_TOKEN`, which outranks the run token, is stripped.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -50,14 +58,23 @@ pub const STRIP_ENV: &[&str] = &[
     "CLAUDE_ENV_FILE",
 ];
 
-/// Directories under `$HOME` the sandbox replaces with an empty tmpfs.
-const TMPFS_MASK_DIRS: &[&str] = &[".ssh", ".gnupg", ".config/gh", ".aws", ".docker"];
+/// Environment variables stripped in addition to [`STRIP_ENV`] (RESEARCH §3):
+/// `ANTHROPIC_AUTH_TOKEN` outranks `CLAUDE_CODE_OAUTH_TOKEN`, so a host value
+/// would silently replace the run token.
+pub const EXTRA_STRIP_ENV: &[&str] = &["ANTHROPIC_AUTH_TOKEN"];
 
-/// Files under `$HOME` the sandbox masks with `/dev/null`.
-const NULL_MASK_FILES: &[&str] = &[
+/// Directories under `$HOME` the sandbox replaces with an empty tmpfs.
+pub const TMPFS_MASK_DIRS: &[&str] = &[".ssh", ".gnupg", ".config/gh", ".aws", ".docker"];
+
+/// Files under `$HOME` the sandbox masks with `/dev/null`. The last two close
+/// git's own credential stores for D-27 (a push from inside must find no
+/// credential) `[inferred — audit]`.
+pub const NULL_MASK_FILES: &[&str] = &[
     ".claude/.credentials.json",
     ".claude.json",
     ".git-credentials",
+    ".config/git/credentials",
+    ".netrc",
 ];
 
 /// The scope unit name of launch `launch_n` of a run (D-08):
@@ -80,7 +97,7 @@ pub struct LaunchPaths {
     pub run_dir: PathBuf,
     /// The per-run `CLAUDE_CONFIG_DIR`: read-write inside.
     pub config_dir: PathBuf,
-    /// The run's driverctl socket (reachable through the read-only root).
+    /// The run's driverctl socket: re-bound inside the runtime-dir tmpfs.
     pub socket: PathBuf,
 }
 
@@ -94,11 +111,15 @@ pub struct SandboxSpec {
     pub tmpfs_masks: Vec<PathBuf>,
     /// Files masked with `/dev/null` (every one exists on the host).
     pub null_masks: Vec<PathBuf>,
+    /// The host's `$XDG_RUNTIME_DIR`, replaced by an empty tmpfs inside with only
+    /// [`LaunchPaths::socket`] re-bound. `None` leaves it unmasked (no such dir).
+    pub runtime_dir: Option<PathBuf>,
 }
 
 impl SandboxSpec {
     /// The spec for this host: the mask candidates under `home`, kept only when
-    /// they exist. **The one function here that reads the file system.**
+    /// they exist, and `$XDG_RUNTIME_DIR` when it is an absolute path. **The one
+    /// function here that reads the file system and the environment.**
     pub fn from_host(paths: LaunchPaths, home: &Path) -> Self {
         let tmpfs_masks = TMPFS_MASK_DIRS
             .iter()
@@ -110,11 +131,15 @@ impl SandboxSpec {
             .map(|rel| home.join(rel))
             .filter(|p| p.exists())
             .collect();
+        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute());
         SandboxSpec {
             home: home.to_owned(),
             paths,
             tmpfs_masks,
             null_masks,
+            runtime_dir,
         }
     }
 }
@@ -154,6 +179,20 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         argv.push(paths.run_dir.join(lock).into_os_string());
     }
     bind(&mut argv, "--bind", &paths.config_dir);
+    // The gate's settings and the shim its hooks call stay unwritable for the driver.
+    bind(
+        &mut argv,
+        "--ro-bind",
+        &paths.config_dir.join("settings.json"),
+    );
+    bind(&mut argv, "--ro-bind", &paths.config_dir.join("bin"));
+    if let Some(runtime) = &spec.runtime_dir {
+        argv.push(os("--tmpfs"));
+        argv.push(runtime.as_os_str().to_owned());
+        if paths.socket.starts_with(runtime) {
+            bind(&mut argv, "--bind", &paths.socket);
+        }
+    }
     argv.push(os("--unshare-pid"));
     argv.push(os("--die-with-parent"));
     argv.push(os("--chdir"));
@@ -194,6 +233,9 @@ pub fn systemd_run_argv(
 /// The headless driver's own command line (spike `claude` list).
 pub fn claude_argv(prompt: &str, model: &str, max_budget_usd: f64) -> Vec<OsString> {
     let mut driver_argv: Vec<OsString> = vec![os("claude"), os("-p"), os(prompt)];
+    // Project settings are reloaded mid-session; only the per-run user settings
+    // (the gate hooks) may apply (RESEARCH §3, T-28-11).
+    driver_argv.extend(["--setting-sources", "user"].iter().map(|s| os(s)));
     driver_argv.extend(["--model", model].iter().map(|s| os(s)));
     driver_argv.extend(
         [
@@ -226,8 +268,10 @@ pub fn render_prompt(template: &str, run_dir: &Path, project: &Path, mode: &str)
     prompt
 }
 
-/// The child's whole environment: `host` minus [`STRIP_ENV`], then each of
-/// `sets` applied in order (a later set of the same key wins).
+/// The child's whole environment: `host` minus [`STRIP_ENV`] and
+/// [`EXTRA_STRIP_ENV`], then `GIT_TERMINAL_PROMPT=0` (a push from inside must
+/// fail, not wait on a prompt, D-27), then each of `sets` applied in order (a
+/// later set of the same key wins).
 ///
 /// The child is started with `env_clear()` and exactly this map
 /// ([`super::process::spawn_launch_child`]), so the scrub is decided here, by a
@@ -238,8 +282,14 @@ pub fn child_env(
 ) -> BTreeMap<OsString, OsString> {
     let mut env: BTreeMap<OsString, OsString> = host
         .into_iter()
-        .filter(|(key, _)| !STRIP_ENV.iter().any(|stripped| key == stripped))
+        .filter(|(key, _)| {
+            !STRIP_ENV
+                .iter()
+                .chain(EXTRA_STRIP_ENV)
+                .any(|stripped| key == stripped)
+        })
         .collect();
+    env.insert(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"));
     for (key, value) in sets {
         env.insert(OsString::from(key), value.clone());
     }
@@ -265,6 +315,7 @@ mod tests {
             paths: paths(),
             tmpfs_masks: vec![PathBuf::from("/home/u/.ssh")],
             null_masks: vec![PathBuf::from("/home/u/.claude/.credentials.json")],
+            runtime_dir: Some(PathBuf::from("/run/user/1000")),
         }
     }
 
@@ -319,7 +370,10 @@ mod tests {
             .keys()
             .map(|k| k.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(keys, ["CLAUDE_CONFIG_DIR", "KEEP", "PATH"]);
+        assert_eq!(
+            keys,
+            ["CLAUDE_CONFIG_DIR", "GIT_TERMINAL_PROMPT", "KEEP", "PATH"]
+        );
         assert_eq!(env[&OsString::from("CLAUDE_CONFIG_DIR")], "/run-cfg");
         assert_eq!(env[&OsString::from("PATH")], "/cfg/bin:/usr/bin");
     }
@@ -373,6 +427,17 @@ mod tests {
             "--bind",
             "/data/driver/ab12cd34/r1/claude-config",
             "/data/driver/ab12cd34/r1/claude-config",
+            "--ro-bind",
+            "/data/driver/ab12cd34/r1/claude-config/settings.json",
+            "/data/driver/ab12cd34/r1/claude-config/settings.json",
+            "--ro-bind",
+            "/data/driver/ab12cd34/r1/claude-config/bin",
+            "/data/driver/ab12cd34/r1/claude-config/bin",
+            "--tmpfs",
+            "/run/user/1000",
+            "--bind",
+            "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock",
+            "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock",
             "--unshare-pid",
             "--die-with-parent",
             "--chdir",
@@ -423,6 +488,8 @@ mod tests {
                 "claude",
                 "-p",
                 "do it",
+                "--setting-sources",
+                "user",
                 "--model",
                 "opus",
                 "--output-format",
