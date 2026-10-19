@@ -8,13 +8,14 @@
 //! outside its sandbox. The agent is reached only through `bwrap` (or, in 28-04,
 //! the explicit degraded spawn).
 //!
-//! Two shapes:
+//! Three shapes:
 //!
 //! * [`spawn_launch_child`], the long-lived driver child: a process-group leader
 //!   with stdin `/dev/null` (no TTY, no `tmux`), stdout and stderr to a file, and
 //!   EXACTLY the environment it is given.
 //! * [`run_bounded`], a short host command whose stdout is read within a budget
 //!   ([`crate::bounded_output::stdout_within`]).
+//! * [`respawn_detached`], this binary again as the detached launcher (D-04).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -80,4 +81,27 @@ pub fn run_bounded(
         cmd.env(key, value);
     }
     stdout_within(&mut cmd, budget)
+}
+
+/// Start this binary again with `args` as the detached launcher (D-04).
+///
+/// * `stdin` is `/dev/null`, `stdout` and `stderr` are `log`, and the working
+///   directory is `/`, so nothing of the caller's terminal or directory is kept
+///   alive by the daemon.
+/// * **No `process_group(0)`, deliberately:** a process-group leader cannot call
+///   `setsid(2)` (`EPERM`), and the child's first act is `setsid` (the hidden
+///   `--daemon-child` flag of `driver launch`). A fresh child that stays in the
+///   caller's group is not a leader, so it can.
+/// * The environment is inherited: the daemon is the same launcher the caller
+///   would have run in the foreground.
+pub fn respawn_detached(args: &[OsString], log: File) -> std::io::Result<Child> {
+    let program = std::env::current_exe()?;
+    let err = log.try_clone()?;
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir("/")
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(err);
+    cmd.spawn()
 }

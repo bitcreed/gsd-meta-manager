@@ -13,16 +13,25 @@
 //! 4. record the launch (`RUN | launch | n=<n> | mode=bwrap-scope`, the scope unit
 //!    and the cap limits), start the driver, tick the store every [`TICK`] until
 //!    it exits;
-//! 5. stop the (empty) scope, stop serving, classify how the launch ended
-//!    ([`classify_exit`], D-16) and record it with `set_terminal`, remove the
-//!    socket, and drop the store LAST so the lock is released after the terminal
-//!    status is on disk (R4).
+//! 5. stop the (empty) scope and look at how the launch ended (D-16):
+//!    * the driver ended its context with `fresh-exit` (status still `running`):
+//!      record `launch-end` with [`RunStore::end_launch`] and go back to step 4
+//!      **in the same process, with the lock and the socket still held** (D-05,
+//!      R3); that is what keeps every fresh-per-item run from reading as
+//!      `crashed` between its launches;
+//!    * otherwise stop serving, classify ([`classify_exit`]) and record the
+//!      verdict with `set_terminal`, or `launch-end` when the driver's own end
+//!      stands;
+//! 6. remove the socket and drop the store LAST so the lock is released after the
+//!    terminal status is on disk (R4).
 //!
-//! This plan runs one launch in the foreground of the caller. The relaunch loop,
-//! `crash-detected` evidence across launches, stop and the detached default are
-//! 28-02; the caps' enforcement is 28-05. The limits are recorded here, through
+//! [`launch`] runs in the foreground of the caller; [`launch_detached`] (the
+//! default of `driver launch`, D-04) re-executes this binary as a daemon in its
+//! own session and returns once that daemon holds the run lock. The caps'
+//! enforcement is 28-05; the limits are recorded here, through
 //! [`LaunchSpec::limits`], so `caps.*.limit` already shows them.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, Read};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -38,14 +47,16 @@ use serde_json::Value;
 
 use super::auth::resolve_launch_token;
 use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec};
-use super::process::{run_bounded, spawn_launch_child};
+use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::sandbox::{
     bwrap_argv, child_env, claude_argv, render_prompt, scope_unit_name, systemd_run_argv,
     LaunchPaths, SandboxSpec,
 };
 use super::LauncherError;
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
-use crate::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
+use crate::driver::lock::{
+    acquire_at_with_retry, probe_at, read_holder_at, run_lock_path, LockProbe, ACQUIRE_RETRY_BUDGET,
+};
 use crate::driverctl::counters::{classify_exit, outstanding_dispatch, ExitClass};
 use crate::driverctl::log::parse_log;
 use crate::driverctl::serve::{
@@ -56,6 +67,7 @@ use crate::driverctl::store::{
     CapLimits, DriverSpec, LaunchSpec, RunStore, TerminalStatus, LOG_FILE,
 };
 use crate::error::LockError;
+use crate::state_reader::driver_frontmatter::RunStatus;
 
 /// The launcher connection's mode for a sandboxed launch (`RUN | launch | mode=`).
 pub const LAUNCHER_MODE: &str = "bwrap-scope";
@@ -65,6 +77,15 @@ const SCOPE_STOP_BUDGET: Duration = Duration::from_secs(30);
 
 /// How often the monitor loop looks at the child between ticks.
 const CHILD_POLL: Duration = Duration::from_millis(100);
+
+/// How long [`launch_detached`] waits for the daemon to hold the run lock.
+const DETACH_BUDGET: Duration = Duration::from_secs(10);
+
+/// How often [`launch_detached`] looks at the daemon while it waits.
+const DETACH_POLL: Duration = Duration::from_millis(100);
+
+/// How many lines of `launcher.log` a failed detach reports.
+const DETACH_LOG_LINES: usize = 20;
 
 /// A stream-json line longer than this is skipped when looking for the result.
 const MAX_STREAM_LINE: u64 = 4 * 1024 * 1024;
@@ -297,14 +318,37 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         sock,
         home,
     };
-    run_one_launch(session, &ctx)
+    let mut session = session;
+    loop {
+        match run_one_launch(&mut session, &ctx) {
+            Ok(AfterLaunch::Relaunch) => {}
+            Ok(AfterLaunch::Finished) => return Ok(session.close()),
+            Err(e) => {
+                session.close();
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// What the run loop does after a launch ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterLaunch {
+    /// The driver ended its context (`fresh-exit`): start the next launch under
+    /// the same lock.
+    Relaunch,
+    /// The run is over; the caller closes the session.
+    Finished,
 }
 
 /// One launch: record it, run the driver, record how it ended.
+///
+/// An `Err` leaves the session open for the caller to close; the failed launch's
+/// verdict has already been recorded where one could be.
 fn run_one_launch(
-    mut session: Session,
+    session: &mut Session,
     ctx: &LaunchContext,
-) -> Result<LaunchSummary, LauncherError> {
+) -> Result<AfterLaunch, LauncherError> {
     let n = lock_store(&session.store)
         .state()
         .launches
@@ -312,7 +356,7 @@ fn run_one_launch(
     let unit = scope_unit_name(&ctx.run_id, &hash8(&ctx.run_dir), n);
     let scope = format!("{unit}.scope");
 
-    let begun = lock_store(&session.store).begin_launch(LaunchSpec {
+    lock_store(&session.store).begin_launch(LaunchSpec {
         launcher_mode: LAUNCHER_MODE.to_owned(),
         limits: ctx.opts.limits.clone(),
         driver: Some(DriverSpec {
@@ -320,19 +364,13 @@ fn run_one_launch(
             mode: "headless".to_owned(),
         }),
         scope_unit: Some(scope.clone()),
-    });
-    if let Err(e) = begun {
-        session.close();
-        return Err(e.into());
-    }
+    })?;
 
-    let ended = supervise(&session, ctx, n, &unit, &scope);
-
-    // No request writes to the store past this point.
-    session.stop_serving();
-    let outcome = match ended {
-        Ok(exited) => record_end(&session, ctx, &exited),
+    match supervise(session, ctx, n, &unit, &scope) {
+        Ok(exited) => finish_launch(session, ctx, &exited),
         Err(e) => {
+            // No request writes to the store past this point.
+            session.stop_serving();
             if let Err(store_err) = lock_store(&session.store)
                 .set_terminal(TerminalStatus::Stopped, "launcher:startup-failed")
             {
@@ -340,9 +378,196 @@ fn run_one_launch(
             }
             Err(e)
         }
+    }
+}
+
+/// Decide what follows a launch that ran to its end (D-05, D-16).
+fn finish_launch(
+    session: &mut Session,
+    ctx: &LaunchContext,
+    exited: &Exited,
+) -> Result<AfterLaunch, LauncherError> {
+    let fresh_exit = {
+        let guard = lock_store(&session.store);
+        let state = guard.state();
+        state.status == RunStatus::Running && state.ended_by_driver
     };
-    let summary = session.close();
-    outcome.map(|()| summary)
+    if fresh_exit {
+        // The driver is gone (its scope was stopped and it was reaped), so the
+        // socket can keep serving: nothing can write between here and the next
+        // `begin_launch`.
+        lock_store(&session.store).end_launch(Some(exited.rc))?;
+        return Ok(AfterLaunch::Relaunch);
+    }
+    // No request writes to the store past this point.
+    session.stop_serving();
+    record_end(session, ctx, exited)?;
+    Ok(AfterLaunch::Finished)
+}
+
+// ---------------------------------------------------------------- detached mode
+
+/// The command line the detached launcher is re-executed with (D-04): every
+/// `driver launch` flag the caller gave, then `--foreground --daemon-child`.
+///
+/// Pure. The paths are taken as they are in `opts`: the daemon's working
+/// directory is `/`, so [`launch_detached`] hands this absolute ones. A cap that
+/// is `None` is left off (the daemon's defaults then apply; the command line
+/// always supplies all three).
+pub fn launch_argv(opts: &LaunchOptions, config: Option<&Path>) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = Vec::new();
+    if let Some(config) = config {
+        argv.push("--config".into());
+        argv.push(config.as_os_str().to_owned());
+    }
+    argv.extend(["driver", "launch"].map(OsString::from));
+    argv.push(opts.project.as_os_str().to_owned());
+    argv.push(OsString::from(&opts.run_id));
+    argv.push("--prompt-file".into());
+    argv.push(opts.prompt_file.as_os_str().to_owned());
+    argv.extend(["--model".into(), OsString::from(&opts.model)]);
+    argv.extend(["--loop-mode".into(), opts.loop_mode.as_str().into()]);
+    argv.extend([
+        "--max-budget-usd".into(),
+        opts.max_budget_usd.to_string().into(),
+    ]);
+    if let Some(dispatches) = opts.limits.dispatches {
+        argv.extend(["--cap-dispatches".into(), dispatches.to_string().into()]);
+    }
+    if let Some(minutes) = opts.limits.wall_clock_min {
+        argv.extend(["--cap-minutes".into(), minutes.to_string().into()]);
+    }
+    if let Some(rounds) = opts.limits.gap_rounds {
+        argv.extend(["--cap-gap-rounds".into(), rounds.to_string().into()]);
+    }
+    argv.extend(["--foreground", "--daemon-child"].map(OsString::from));
+    argv
+}
+
+/// Where the detached launcher's stdout and stderr go:
+/// `<driver-root>/<hash8(project)>/<run-id>/launcher.log`.
+pub fn detached_log_path(project: &Path, run_id: &str) -> Result<PathBuf, LauncherError> {
+    let root = driver_root().ok_or_else(|| LauncherError::Io {
+        detail: "no per-user data directory is available for the launcher state".to_owned(),
+    })?;
+    let project = fs::canonicalize(project)
+        .map_err(|e| io_error(&format!("project {}", project.display()), e))?;
+    Ok(run_state_dir_in(&root, &project, run_id).join("launcher.log"))
+}
+
+/// The last [`DETACH_LOG_LINES`] lines `launcher.log` gained past `offset`.
+fn log_tail(path: &Path, offset: u64) -> String {
+    let Ok(bytes) = fs::read(path) else {
+        return String::new();
+    };
+    let start = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(bytes.len());
+    let text = String::from_utf8_lossy(&bytes[start..]);
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(DETACH_LOG_LINES)..].join("\n")
+}
+
+/// Start the launcher as a daemon in its own session and return its pid once it
+/// holds the run lock (D-04).
+///
+/// Validates the run directory and the prompt file, creates the run's state
+/// directory and opens `launcher.log` for append, then re-executes this binary
+/// with [`launch_argv`]. The daemon's first act is `setsid`, then the ordinary
+/// foreground [`launch`]; this function polls every [`DETACH_POLL`] for up to
+/// [`DETACH_BUDGET`]:
+///
+/// * the daemon exited first: [`LauncherError::DaemonExited`] with its exit code
+///   and what it appended to `launcher.log` (a refusal such as "already
+///   launched", exit code 3, is passed through unchanged); an exit code of `0`
+///   means the whole run fit inside one poll, which is a success;
+/// * the run lock is held and its holder record names the daemon: `Ok(pid)`. The
+///   liveness test is the lock and the pid is only compared with the process we
+///   started, never used to decide that anything is alive;
+/// * neither within the budget: the daemon is killed (it has not taken the lock,
+///   so no run is lost) and the call fails.
+pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u32, LauncherError> {
+    if !valid_run_id(&opts.run_id) {
+        return Err(LauncherError::InvalidRun {
+            detail: format!("run id {:?} is not a plain run id", opts.run_id),
+        });
+    }
+    let requested = opts.project.join(DRIVERS_REL).join(&opts.run_id);
+    let (run_dir, run_id) = validate_run_dir(&opts.project, &requested)?;
+    let project = fs::canonicalize(&opts.project)
+        .map_err(|e| io_error(&format!("project {}", opts.project.display()), e))?;
+    let prompt_file = fs::canonicalize(&opts.prompt_file)
+        .map_err(|e| io_error(&format!("prompt file {}", opts.prompt_file.display()), e))?;
+    if !prompt_file.is_file() {
+        return Err(io_error(
+            &format!("prompt file {}", prompt_file.display()),
+            "not a regular file",
+        ));
+    }
+    let config = config
+        .map(std::path::absolute)
+        .transpose()
+        .map_err(|e| io_error("resolve --config", e))?;
+
+    let log_path = detached_log_path(&project, &run_id)?;
+    let state_dir = log_path.parent().ok_or_else(|| LauncherError::Io {
+        detail: "the launcher log has no directory".to_owned(),
+    })?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(state_dir)
+        .map_err(|e| io_error(&format!("create {}", state_dir.display()), e))?;
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&log_path)
+        .map_err(|e| io_error(&format!("open {}", log_path.display()), e))?;
+    let offset = log.metadata().map(|m| m.len()).unwrap_or(0);
+
+    let absolute = LaunchOptions {
+        project,
+        prompt_file,
+        ..opts.clone()
+    };
+    let argv = launch_argv(&absolute, config.as_deref());
+    let mut child = respawn_detached(&argv, log).map_err(|e| LauncherError::Spawn {
+        detail: format!("the detached launcher: {e}"),
+    })?;
+
+    let lock_path = run_lock_path(&run_dir);
+    let deadline = Instant::now() + DETACH_BUDGET;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(child.id()),
+            Ok(Some(status)) => {
+                return Err(LauncherError::DaemonExited {
+                    code: status.code().unwrap_or(1),
+                    detail: log_tail(&log_path, offset),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => return Err(io_error("wait for the detached launcher", e)),
+        }
+        if probe_at(&lock_path) == LockProbe::Held
+            && read_holder_at(&lock_path).is_some_and(|h| h.pgid == child.id())
+        {
+            return Ok(child.id());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(LauncherError::Io {
+                detail: format!(
+                    "the detached launcher did not take the run lock within {}s:\n{}",
+                    DETACH_BUDGET.as_secs(),
+                    log_tail(&log_path, offset)
+                ),
+            });
+        }
+        std::thread::sleep(DETACH_POLL);
+    }
 }
 
 /// Start the driver and wait for it, ticking the store.
@@ -448,7 +673,8 @@ fn wait_ticking(
 }
 
 /// Record how the launch ended (D-16): a driver `RUN end` keeps the status the
-/// driver set; otherwise [`classify_exit`] says `stalled` or `crashed`.
+/// driver set (`launch-end` is logged without a status change); otherwise
+/// [`classify_exit`] says `stalled` or `crashed`.
 fn record_end(
     session: &Session,
     ctx: &LaunchContext,
@@ -464,12 +690,17 @@ fn record_end(
         exited.result_ok,
         outstanding.as_deref(),
     );
-    if let Some((class, reason)) = verdict {
-        let status = match class {
-            ExitClass::Stalled => TerminalStatus::Stalled,
-            ExitClass::Crashed => TerminalStatus::Crashed,
-        };
-        lock_store(&session.store).set_terminal(status, &reason)?;
+    match verdict {
+        Some((class, reason)) => {
+            let status = match class {
+                ExitClass::Stalled => TerminalStatus::Stalled,
+                ExitClass::Crashed => TerminalStatus::Crashed,
+            };
+            lock_store(&session.store).set_terminal(status, &reason)?;
+        }
+        // The driver's own end (or a tripped cap) stands: the status is kept and
+        // the launch end is recorded without changing it (D-16).
+        None => lock_store(&session.store).end_launch(Some(exited.rc))?,
     }
     Ok(())
 }
@@ -582,6 +813,92 @@ mod tests {
             last_result_ok(&path),
             "the line after the giant one is still seen"
         );
+    }
+
+    fn options() -> LaunchOptions {
+        LaunchOptions {
+            project: PathBuf::from("/work/proj"),
+            alias: "p".to_owned(),
+            run_id: "r28".to_owned(),
+            prompt_file: PathBuf::from("/work/prompt.md"),
+            model: "haiku".to_owned(),
+            loop_mode: LoopMode::FreshPerItem,
+            max_budget_usd: 1.5,
+            limits: CapLimits {
+                dispatches: Some(3),
+                wall_clock_min: Some(12.5),
+                gap_rounds: Some(0),
+            },
+        }
+    }
+
+    fn words(argv: &[OsString]) -> Vec<String> {
+        argv.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn launch_argv_carries_every_flag_and_the_daemon_markers() {
+        let argv = words(&launch_argv(&options(), None));
+        assert_eq!(
+            argv,
+            [
+                "driver",
+                "launch",
+                "/work/proj",
+                "r28",
+                "--prompt-file",
+                "/work/prompt.md",
+                "--model",
+                "haiku",
+                "--loop-mode",
+                "fresh-per-item",
+                "--max-budget-usd",
+                "1.5",
+                "--cap-dispatches",
+                "3",
+                "--cap-minutes",
+                "12.5",
+                "--cap-gap-rounds",
+                "0",
+                "--foreground",
+                "--daemon-child",
+            ]
+        );
+    }
+
+    #[test]
+    fn launch_argv_puts_the_config_first_and_omits_unset_caps() {
+        let mut opts = options();
+        opts.limits = CapLimits::default();
+        let argv = words(&launch_argv(&opts, Some(Path::new("/etc/gmm.json"))));
+        assert_eq!(&argv[..3], ["--config", "/etc/gmm.json", "driver"]);
+        assert!(!argv.iter().any(|a| a.starts_with("--cap-")), "{argv:?}");
+        assert_eq!(&argv[argv.len() - 2..], ["--foreground", "--daemon-child"]);
+    }
+
+    #[test]
+    fn launch_argv_round_trips_through_the_real_parser() {
+        use crate::cli::{Cli, Commands, DriverAction, DriverLoopMode};
+        use clap::Parser;
+
+        let mut argv = vec![OsString::from("gsd-meta-manager")];
+        argv.extend(launch_argv(&options(), Some(Path::new("/etc/gmm.json"))));
+        let cli = Cli::try_parse_from(argv).expect("the daemon's own command line parses");
+        let Some(Commands::Driver {
+            action: DriverAction::Launch(args),
+        }) = cli.command
+        else {
+            panic!("not a driver launch");
+        };
+        assert_eq!(args.project, "/work/proj");
+        assert_eq!(args.run_id, "r28");
+        assert_eq!(args.loop_mode, DriverLoopMode::FreshPerItem);
+        assert_eq!(args.cap_dispatches, 3);
+        assert_eq!(args.cap_minutes, 12.5);
+        assert_eq!(args.cap_gap_rounds, 0);
+        assert!(args.foreground && args.daemon_child);
     }
 
     #[test]

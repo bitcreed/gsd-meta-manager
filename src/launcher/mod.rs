@@ -75,14 +75,20 @@ pub enum LauncherError {
     Store { detail: String },
     /// The launcher needs Linux (`flock`, `renameat2`, `bwrap`, `systemd-run`).
     UnsupportedPlatform,
+    /// The detached launcher exited before it held the run lock (D-04). `code` is
+    /// its own exit code (`3` for a run that is already launched); `detail` is
+    /// what it wrote to `launcher.log`.
+    DaemonExited { code: i32, detail: String },
 }
 
 impl LauncherError {
     /// The process exit code: `3` for a held lock (the spike launcher's refusal
-    /// code), `1` for everything else.
+    /// code), the detached launcher's own code for [`DaemonExited`](Self::DaemonExited),
+    /// `1` for everything else.
     pub fn exit_code(&self) -> i32 {
         match self {
             LauncherError::Locked { .. } => 3,
+            LauncherError::DaemonExited { code, .. } => *code,
             _ => 1,
         }
     }
@@ -99,6 +105,16 @@ impl std::fmt::Display for LauncherError {
             LauncherError::Store { detail } => write!(f, "run store: {detail}"),
             LauncherError::UnsupportedPlatform => {
                 f.write_str("unsupported platform (the launcher needs Linux)")
+            }
+            LauncherError::DaemonExited { code, detail } => {
+                write!(
+                    f,
+                    "the detached launcher exited with code {code} before it held the run lock"
+                )?;
+                if !detail.is_empty() {
+                    write!(f, ":\n{detail}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -164,6 +180,18 @@ mod tests {
             LauncherError::UnsupportedPlatform,
         ] {
             assert_eq!(other.exit_code(), 1, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_detached_launcher_that_exited_passes_its_own_code_through() {
+        for code in [1, 3, 17] {
+            let error = LauncherError::DaemonExited {
+                code,
+                detail: "boom".to_owned(),
+            };
+            assert_eq!(error.exit_code(), code);
+            assert!(error.to_string().contains("boom"), "{error}");
         }
     }
 

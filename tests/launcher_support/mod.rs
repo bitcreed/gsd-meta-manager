@@ -332,7 +332,8 @@ impl Fixture {
 
     /// [`launch_command`](Self::launch_command) with an explicit project target.
     pub fn launch_command_for(&self, target: &str, run_id: &str, extra_args: &[&str]) -> Command {
-        let cmd = self.launch_command_raw(target, run_id, extra_args);
+        let mut cmd = self.launch_command_raw(target, run_id, extra_args);
+        cmd.arg("--foreground");
         cmd
     }
 

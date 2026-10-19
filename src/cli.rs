@@ -454,6 +454,13 @@ pub struct LaunchArgs {
     /// Gap-round cap per phase, recorded on the run
     #[arg(long, default_value_t = 2)]
     pub cap_gap_rounds: u32,
+    /// Stay in this terminal for the run's life; without it the launcher detaches
+    /// into its own session and logs to `launcher.log` under the run's state dir
+    #[arg(long)]
+    pub foreground: bool,
+    /// Internal: this process is the re-executed detached launcher (D-04)
+    #[arg(long, hide = true)]
+    pub daemon_child: bool,
 }
 
 /// The sandbox-side verbs of `driverctl`.

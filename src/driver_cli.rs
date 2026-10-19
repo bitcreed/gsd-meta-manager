@@ -4,8 +4,9 @@
 //! through the registry exactly as the positional launch target does
 //! ([`launch_target::resolve_launch_target`](gsd_meta_manager::launch_target)),
 //! then hands the project root to [`gsd_meta_manager::launcher::run::launch`],
-//! which blocks for the run's life. In this plan the launch runs in the foreground
-//! of the calling shell; the detached default arrives with 28-02.
+//! which blocks for the run's life when `--foreground` is given. Without it the
+//! launcher re-executes itself as a daemon (D-04): the hidden `--daemon-child`
+//! flag marks that re-executed process, whose first act is `setsid`.
 //!
 //! It runs synchronously in `main`, after tracing is initialised and before the
 //! tokio runtime exists: the launcher is std threads and blocking I/O, and must
@@ -64,9 +65,19 @@ fn resolve_project(
 fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::cli::DriverLoopMode;
     use gsd_meta_manager::driverctl::store::CapLimits;
-    use gsd_meta_manager::launcher::run::{launch, LaunchOptions, LoopMode};
+    use gsd_meta_manager::launcher::run::{
+        detached_log_path, launch, launch_detached, LaunchOptions, LoopMode,
+    };
 
-    let (alias, project) = match resolve_project(args, config) {
+    if args.daemon_child {
+        // First, before anything is opened or written: the daemon leaves the
+        // caller's session so a closed terminal cannot reach it.
+        if let Err(e) = rustix::process::setsid() {
+            err_line(&format!("driver launch: setsid failed: {e}"));
+            return 1;
+        }
+    }
+    let (alias, project) = match resolve_project(args, config.clone()) {
         Ok(resolved) => resolved,
         Err(message) => {
             err_line(&format!("driver launch: {message}"));
@@ -90,6 +101,21 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             gap_rounds: Some(args.cap_gap_rounds),
         },
     };
+    if !args.foreground {
+        return match launch_detached(&options, config.as_deref()) {
+            Ok(pid) => {
+                let log = detached_log_path(&options.project, &args.run_id)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                out_line(&format!(
+                    "driver launch: run {} started (pid {pid}); log: {log}",
+                    args.run_id
+                ));
+                0
+            }
+            Err(error) => report(&error),
+        };
+    }
     match launch(options) {
         Ok(summary) => {
             out_line(&format!(

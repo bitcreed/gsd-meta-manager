@@ -1069,6 +1069,37 @@ impl RunStore {
         Ok(TerminalOutcome::Applied)
     }
 
+    /// Record that a launch ended without changing the run's status (D-16, D-05).
+    ///
+    /// The other half of [`set_terminal`](Self::set_terminal): the launcher calls
+    /// this when the driver ended the run itself (a terminal `RUN end`, whose
+    /// status stays as the driver set it) or ended only its context
+    /// (`fresh-exit`, which keeps the run `running` so the launcher can start the
+    /// next launch under the same lock). Marks connected connections
+    /// `disconnected` and logs `RUN | launch-end | rc=<rc> | status=<current>`;
+    /// `rc` is `None` when the launcher has no exit code to report.
+    ///
+    /// **Launcher-side only; no op, event or argument reaches this from the
+    /// socket.** It never touches `status`, `status_reason` or `ended_by_driver`,
+    /// so [`begin_launch`](Self::begin_launch)'s crash rule keeps reading the
+    /// driver's own end.
+    pub fn end_launch(&mut self, rc: Option<i32>) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        for c in &mut next.connections {
+            if c.state == "connected" {
+                c.state = "disconnected".to_owned();
+            }
+        }
+        let entry = LogEntry::run(
+            "launch-end",
+            vec![
+                ("rc", rc.map(|rc| rc.to_string())),
+                ("status", Some(next.status.as_str().to_owned())),
+            ],
+        );
+        self.commit(next, &[entry], Regen::Always)
+    }
+
     /// `git rev-parse --short HEAD` in the project, or `None` (not a repo, a
     /// failure, or output that is not a hex hash). The value reaches a LOG header,
     /// so it is held to hex digits (T-27-15, T-27-18).
@@ -1217,5 +1248,58 @@ fn apply_event(
             next.ended_by_driver = true;
             LogEntry::run("end", vec![("reason", Some(reason))])
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
+
+    fn open(dir: &Path) -> RunStore {
+        let run_dir = dir.join(".planning/meta-manager/drivers/r28");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(run_dir.join("DIRECTION.md"), "# Driver direction: t\n").unwrap();
+        let lock = acquire_at_with_retry(
+            &run_lock_path(&run_dir),
+            "r28",
+            std::process::id(),
+            ACQUIRE_RETRY_BUDGET,
+        )
+        .unwrap();
+        RunStore::open(&run_dir, dir, lock).unwrap()
+    }
+
+    #[test]
+    fn end_launch_keeps_the_status_and_disconnects_the_connections() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        store
+            .begin_launch(LaunchSpec {
+                launcher_mode: "bwrap-scope".to_owned(),
+                ..LaunchSpec::default()
+            })
+            .unwrap();
+        assert!(store
+            .state()
+            .connections
+            .iter()
+            .any(|c| c.state == "connected"));
+        let status = store.state().status.clone();
+
+        store.end_launch(Some(143)).unwrap();
+
+        assert_eq!(store.state().status, status);
+        assert!(store
+            .state()
+            .connections
+            .iter()
+            .all(|c| c.state != "connected"));
+        let log = fs::read_to_string(store.log_path()).unwrap();
+        assert!(
+            log.trim_end()
+                .ends_with("RUN | launch-end | rc=143 | status=running"),
+            "{log}"
+        );
     }
 }

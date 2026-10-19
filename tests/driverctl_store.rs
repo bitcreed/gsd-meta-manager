@@ -1372,6 +1372,63 @@ fn set_terminal_keeps_a_driver_run_end() {
 }
 
 #[test]
+fn end_launch_records_the_launch_end_without_changing_the_status() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    log_ok(&mut store, "end", &[("reason", "stop")]);
+    assert_eq!(fx.state_json()["status"], "stopped");
+
+    store.end_launch(Some(0)).unwrap();
+
+    let state = fx.state_json();
+    assert_eq!(state["status"], "stopped", "the driver's status is kept");
+    assert_eq!(state["status_reason"], "driver:stop");
+    assert_eq!(state["ended_by_driver"], true);
+    assert!(store
+        .state()
+        .connections
+        .iter()
+        .all(|c| c.state == "disconnected"));
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        "RUN | launch-end | rc=0 | status=stopped"
+    );
+}
+
+#[test]
+fn end_launch_after_a_fresh_exit_lets_the_next_launch_follow_without_a_crash() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    log_ok(&mut store, "end", &[("reason", "fresh-exit")]);
+    store.end_launch(Some(0)).unwrap();
+    assert_eq!(fx.state_json()["status"], "running");
+
+    store.begin_launch(with_driver()).unwrap();
+
+    let events = log_events(&fx.log());
+    assert!(
+        !events.iter().any(|e| e.contains("crash-detected")),
+        "a fresh-exit end is not a crash: {events:?}"
+    );
+    assert!(events.last().unwrap().starts_with("RUN | launch | n=2"));
+    assert_eq!(fx.state_json()["launches"], 2);
+}
+
+#[test]
+fn end_launch_without_a_code_omits_the_rc_and_never_forges_a_header() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(standalone()).unwrap();
+    store.end_launch(None).unwrap();
+    assert_eq!(
+        log_events(&fx.log()).last().unwrap(),
+        "RUN | launch-end | status=running"
+    );
+}
+
+#[test]
 fn wr02_set_terminal_after_a_fresh_exit_records_the_stop() {
     let fx = Fixture::new();
     let mut store = fx.open();

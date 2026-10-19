@@ -373,7 +373,9 @@ fn finish(mut child: Child, within: Duration) -> std::process::Output {
         wait_until(within, || child.try_wait().expect("try_wait").is_some()),
         "the launcher did not finish within {within:?}"
     );
-    child.wait_with_output().expect("collect the launcher output")
+    child
+        .wait_with_output()
+        .expect("collect the launcher output")
 }
 
 /// `state.json` without the fields a running launcher rewrites on its own tick.
@@ -408,7 +410,11 @@ fn second_launch_is_refused_with_rc_3() {
         "the refusal took {:?}",
         started.elapsed()
     );
-    assert_eq!(fx.log(), log_before, "a refused launcher writes no LOG line");
+    assert_eq!(
+        fx.log(),
+        log_before,
+        "a refused launcher writes no LOG line"
+    );
     assert_eq!(
         quiescent_state(&fx),
         state_before,
@@ -417,7 +423,11 @@ fn second_launch_is_refused_with_rc_3() {
 
     fx.release();
     let out = finish(first, Duration::from_secs(20));
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(fx.log().matches("RUN | launch | n=1").count(), 1);
 }
 
@@ -493,7 +503,10 @@ fn sigkill_then_relaunch_logs_crash_detected() {
     let relaunch = log
         .find("RUN | launch | n=2")
         .unwrap_or_else(|| panic!("no second launch line:\n{log}"));
-    assert!(crash < relaunch, "crash-detected precedes the launch:\n{log}");
+    assert!(
+        crash < relaunch,
+        "crash-detected precedes the launch:\n{log}"
+    );
 }
 
 #[test]
@@ -517,12 +530,19 @@ printf '%s\n' '{"type":"result","subtype":"success"}'
     let child = fx.spawn_launch(&["--loop-mode", "fresh-per-item"]);
     let launcher_pid = child.id().to_string();
     let out = finish(child, Duration::from_secs(30));
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let log = fx.log();
     assert!(log.contains("RUN | launch | n=1"), "{log}");
     assert!(log.contains("RUN | launch | n=2"), "{log}");
-    assert!(!log.contains("crash-detected"), "no crash between launches:\n{log}");
+    assert!(
+        !log.contains("crash-detected"),
+        "no crash between launches:\n{log}"
+    );
     assert_eq!(
         log.matches("RUN | launch-end |").count(),
         2,
@@ -608,11 +628,17 @@ fn detached_launch_returns_once_the_child_holds_the_lock() {
     // The run is live: the child holds the lock, and it is not the command we ran.
     assert_eq!(probe_at(&run_lock_path(&fx.run_dir)), LockProbe::Held);
     let holder = read_holder_at(&run_lock_path(&fx.run_dir)).expect("holder record");
-    assert_ne!(holder.pgid, parent_pid, "the lock holder is the detached child");
+    assert_ne!(
+        holder.pgid, parent_pid,
+        "the lock holder is the detached child"
+    );
     let own_session = session_of("self");
     let holder_session = session_of(&holder.pgid.to_string());
     assert_ne!(holder_session, own_session, "the child has its own session");
-    assert_eq!(holder_session, holder.pgid, "it leads that session (setsid)");
+    assert_eq!(
+        holder_session, holder.pgid,
+        "it leads that session (setsid)"
+    );
     assert!(
         fx.state_dir().join("launcher.log").is_file(),
         "launcher.log under the run state dir"
@@ -666,7 +692,11 @@ fn detached_second_launch_returns_3() {
     let log_before = fx.log();
     let second = detached(&fx);
     assert_eq!(second.status.code(), Some(3), "{}", stderr(&second));
-    assert_eq!(fx.log(), log_before, "the refused detached launch wrote no LOG line");
+    assert_eq!(
+        fx.log(),
+        log_before,
+        "the refused detached launch wrote no LOG line"
+    );
     fx.release();
     assert!(wait_until(Duration::from_secs(20), || {
         probe_at(&run_lock_path(&fx.run_dir)) == LockProbe::Free
