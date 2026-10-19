@@ -1,0 +1,12 @@
+CASE=l4
+ATTEMPT=first
+MODEL=haiku
+PROMPT=.planning/spikes/002-launcher-caps-and-tool-frontmatter/experiment/cap-tests/L4-sleeper.md
+PROMPT_SHA256=3329387dc50e29b5e5d9aae1bbcc33791371dc75003aac7c6d1102c21d3077c3
+CAPS=dispatches=10,minutes=10,gap_rounds=2
+MAX_BUDGET_USD=0.20
+CLAUDE_VERSION=2.1.304 (Claude Code)
+BINARY_SHA256=b806d97fb3bba103a981c23d50f1cab1a884de12a36a7d31130d1486cf4d6a4a
+HEAD=1415f96ac939ed846c75ac45271ce44784bb2389
+STARTED_UTC=2026-10-19T22:12:13Z
+ENDED_UTC=2026-10-19T22:15:34Z

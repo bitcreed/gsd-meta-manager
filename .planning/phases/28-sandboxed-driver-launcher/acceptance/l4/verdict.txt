@@ -1,0 +1,4 @@
+L4-1 PASS gap-observed phase=1 count=4 (line 41)
+L4-2 PASS exactly one cap-tripped | cap=gap_rounds | used=4 | limit=2 | action=kill-scope
+L4-3 PASS no process of the scope survives (11 pids sampled)
+RESULT PASS
