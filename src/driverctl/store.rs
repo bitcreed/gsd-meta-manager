@@ -281,6 +281,9 @@ pub enum TerminalStatus {
     Crashed,
     Stalled,
     Stopped,
+    /// The launcher parked the run without relaunching (D-15 quota exhausted,
+    /// D-23 token rejected).
+    Parked,
 }
 
 impl TerminalStatus {
@@ -289,6 +292,7 @@ impl TerminalStatus {
             TerminalStatus::Crashed => RunStatus::Crashed,
             TerminalStatus::Stalled => RunStatus::Stalled,
             TerminalStatus::Stopped => RunStatus::Stopped,
+            TerminalStatus::Parked => RunStatus::Parked,
         }
     }
 }
@@ -1225,6 +1229,30 @@ impl RunStore {
         self.commit(next, &[], Regen::HeartbeatOnly)
     }
 
+    /// Log one launcher-side `RUN | <event> | k=v ...` line that changes no state
+    /// (`auth-relaunch`, ...). `event` is a static name, so nothing the driver sends
+    /// can name an event; each value is made header-safe (one line, no `|`, at most
+    /// 200 characters) and a `None` value is omitted.
+    ///
+    /// Launcher-side only; no op, event or argument reaches this from the socket.
+    pub fn log_launcher_event(
+        &mut self,
+        event: &'static str,
+        kv: Vec<(&'static str, Option<String>)>,
+    ) -> Result<(), StoreError> {
+        let kv = kv
+            .into_iter()
+            .map(|(key, value)| {
+                (
+                    key,
+                    value.map(|v| header_safe(&v)).filter(|v| !v.is_empty()),
+                )
+            })
+            .collect();
+        let entry = LogEntry::run(event, kv);
+        self.commit(self.state.clone(), &[entry], Regen::Always)
+    }
+
     /// Persist the run's summed active wall-clock seconds (D-13): `extra.active_seconds`
     /// is the exact value, `caps.wall_clock_min.used` its display form in minutes,
     /// `(secs / 60 * 10).round() / 10` (half away from zero). Cap comparisons use
@@ -1542,6 +1570,58 @@ mod tests {
         assert_eq!(store.state().extra[EXTRA_ACTIVE_SECONDS], json!(0.0));
         store.record_active_seconds(-5.0).unwrap();
         assert_eq!(store.state().caps.wall_clock_min.used, 0.0);
+    }
+
+    #[test]
+    fn log_launcher_event_writes_one_clean_line_and_changes_no_state() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        store.begin_launch(LaunchSpec::default()).unwrap();
+        let before = store.state().clone();
+
+        store
+            .log_launcher_event(
+                "auth-relaunch",
+                vec![
+                    ("attempt", Some("1".to_owned())),
+                    ("source", Some("ho|st\nx".to_owned())),
+                    ("gone", None),
+                ],
+            )
+            .unwrap();
+
+        let log = fs::read_to_string(store.log_path()).unwrap();
+        assert!(
+            log.lines()
+                .any(|l| l.ends_with("RUN | auth-relaunch | attempt=1 | source=ho st x")),
+            "{log}"
+        );
+        assert_eq!(store.state().status, before.status);
+        assert_eq!(store.state().launches, before.launches);
+        assert_eq!(store.state().caps, before.caps);
+    }
+
+    #[test]
+    fn a_parked_terminal_status_is_recorded_with_its_reason() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut store = open(td.path());
+        store.begin_launch(LaunchSpec::default()).unwrap();
+
+        let outcome = store
+            .set_terminal(
+                TerminalStatus::Parked,
+                "rate-limit: window=five_hour resets_at=unknown",
+            )
+            .unwrap();
+
+        assert_eq!(outcome, TerminalOutcome::Applied);
+        assert_eq!(store.state().status, RunStatus::Parked);
+        assert!(store.state().status.is_terminal());
+        let log = fs::read_to_string(store.log_path()).unwrap();
+        assert!(
+            log.contains("RUN | launch-end | status=parked | reason=rate-limit: window=five_hour"),
+            "{log}"
+        );
     }
 
     #[test]

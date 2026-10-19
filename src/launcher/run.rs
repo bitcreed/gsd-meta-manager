@@ -13,18 +13,23 @@
 //! 4. record the launch (`RUN | launch | n=<n> | mode=bwrap-scope`, the scope unit
 //!    and the cap limits), start the driver, tick the store every [`TICK`] until
 //!    it exits;
-//! 5. stop the (empty) scope and look at how the launch ended (D-16). A `SIGTERM`
-//!    or `SIGINT` to the launcher (`driver stop`, D-09) is the user stop: the
-//!    monitor stops the scope through [`Containment::stop`], the run is recorded
-//!    `stopped` with reason `stop:user`, and nothing relaunches:
+//! 5. stop the (empty) scope and look at how the launch ended (D-16): one pure
+//!    decision, [`outcome::decide`], first match wins. A `SIGTERM` or `SIGINT` to
+//!    the launcher (`driver stop`, D-09) is the user stop: the monitor stops the
+//!    scope through [`Containment::stop`], the run is recorded `stopped` with
+//!    reason `stop:user`, and nothing relaunches. Otherwise:
+//!    * a tripped cap or the driver's own terminal `RUN end` stands (`launch-end`
+//!      is recorded without a status change);
 //!    * the driver ended its context with `fresh-exit` (status still `running`):
 //!      record `launch-end` with [`RunStore::end_launch`] and go back to step 4
 //!      **in the same process, with the lock and the socket still held** (D-05,
 //!      R3); that is what keeps every fresh-per-item run from reading as
 //!      `crashed` between its launches;
-//!    * otherwise stop serving, classify ([`classify_exit`]) and record the
-//!      verdict with `set_terminal`, or `launch-end` when the driver's own end
-//!      stands;
+//!    * an authentication failure (D-23) relaunches with the host's current token
+//!      at most twice, or parks when the stored token was the one rejected;
+//!    * an exhausted quota (D-15) parks the run, never retried;
+//!    * anything else is classified ([`classify_exit`](crate::driverctl::counters::classify_exit))
+//!      `stalled` or `crashed`;
 //! 6. remove the socket and drop the store LAST so the lock is released after the
 //!    terminal status is on disk (R4).
 //!
@@ -56,10 +61,11 @@ use chrono::Utc;
 use rustix::process::Signal;
 use serde_json::Value;
 
-use super::auth::resolve_launch_token;
+use super::auth::{host_access_token, resolve_launch_token, AuthError};
 use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec};
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::host::{decide, detect, Posture};
+use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::sandbox::{
     bwrap_argv, child_env, claude_argv, render_prompt, scope_unit_name, systemd_run_argv,
@@ -71,7 +77,7 @@ use crate::driver::kill::{signal_group, DRIVER_TEARDOWN_GRACE};
 use crate::driver::lock::{
     acquire_at_with_retry, probe_at, read_holder_at, run_lock_path, LockProbe, ACQUIRE_RETRY_BUDGET,
 };
-use crate::driverctl::counters::{classify_exit, outstanding_dispatch, ExitClass};
+use crate::driverctl::counters::outstanding_dispatch;
 use crate::driverctl::log::parse_log;
 use crate::driverctl::serve::{
     bind_run_socket, hash8, install_signal_handlers, lock_store, socket_path, spawn_accept_loop,
@@ -82,7 +88,6 @@ use crate::driverctl::store::{
     EXTRA_ACTIVE_SECONDS, LOG_FILE, STATE_FILE,
 };
 use crate::error::LockError;
-use crate::state_reader::driver_frontmatter::RunStatus;
 
 /// The launcher connection's mode for a sandboxed launch (`RUN | launch | mode=`).
 /// A degraded launch records `degraded` instead ([`Posture::as_str`]).
@@ -117,6 +122,9 @@ const RUNTIME_MAX_GRACE_S: u64 = 300;
 
 /// The monitor writes the summed active seconds at most this often (D-13).
 const ACTIVE_PERSIST_EVERY: Duration = Duration::from_secs(15);
+
+/// The `state.json` key counting auth relaunches (D-23).
+const EXTRA_AUTH_RELAUNCHES: &str = "auth_relaunches";
 
 /// A stream-json line longer than this is skipped when looking for the result.
 const MAX_STREAM_LINE: u64 = 4 * 1024 * 1024;
@@ -380,7 +388,8 @@ fn stop_group(pgid: u32, child: &mut Child) {
 /// How the driver process ended.
 struct Exited {
     rc: i32,
-    result_ok: bool,
+    /// What the launch's stream-json file says (last result, quota verdict).
+    stream: StreamSummary,
     /// The launcher stopped it because the user asked (`driver stop`).
     user_stopped: bool,
     /// The cap the monitor tripped (and so killed the driver for), if any.
@@ -507,8 +516,9 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         tripped,
     };
     let mut session = session;
+    let mut ctx = ctx;
     loop {
-        match run_one_launch(&mut session, &ctx) {
+        match run_one_launch(&mut session, &mut ctx) {
             Ok(AfterLaunch::Relaunch) => {}
             Ok(AfterLaunch::Finished) => return Ok(session.close()),
             Err(e) => {
@@ -535,7 +545,7 @@ enum AfterLaunch {
 /// verdict has already been recorded where one could be.
 fn run_one_launch(
     session: &mut Session,
-    ctx: &LaunchContext,
+    ctx: &mut LaunchContext,
 ) -> Result<AfterLaunch, LauncherError> {
     if ctx.user_stop.load(Ordering::SeqCst) {
         // Asked to stop before this launch began (or between two): start nothing.
@@ -594,35 +604,106 @@ fn run_one_launch(
     }
 }
 
-/// Decide what follows a launch that ran to its end (D-05, D-16).
+/// Decide what follows a launch that ran to its end (D-05, D-15, D-16, D-23): build
+/// the facts, ask [`outcome::decide`], apply the verdict.
 fn finish_launch(
     session: &mut Session,
-    ctx: &LaunchContext,
+    ctx: &mut LaunchContext,
     exited: &Exited,
 ) -> Result<AfterLaunch, LauncherError> {
-    if exited.user_stopped || ctx.user_stop.load(Ordering::SeqCst) {
-        // The driver is gone and so is its scope. A stop that arrives while the
-        // driver is exiting by itself is still the user's stop: nothing relaunches.
-        session.stop_serving();
-        record_user_stop(session, Some(exited.rc))?;
-        return Ok(AfterLaunch::Finished);
-    }
-    let fresh_exit = {
+    let end = {
         let guard = lock_store(&session.store);
         let state = guard.state();
-        state.status == RunStatus::Running && state.ended_by_driver
+        let log_text = fs::read_to_string(ctx.run_dir.join(LOG_FILE)).unwrap_or_default();
+        LaunchEnd {
+            rc: Some(exited.rc),
+            // A stop that arrives while the driver is exiting by itself is still the
+            // user's stop: nothing relaunches.
+            stop_requested: exited.user_stopped || ctx.user_stop.load(Ordering::SeqCst),
+            tripped: exited.tripped.clone(),
+            status: state.status.clone(),
+            ended_by_driver: state.ended_by_driver,
+            stream: exited.stream.clone(),
+            token_source: ctx.token.source,
+            auth_relaunches: auth_relaunches(state),
+            outstanding: outstanding_dispatch(&parse_log(&log_text)).map(|(item, _)| item),
+        }
     };
-    if fresh_exit {
+    match outcome::decide(&end) {
         // The driver is gone (its scope was stopped and it was reaped), so the
         // socket can keep serving: nothing can write between here and the next
         // `begin_launch`.
-        lock_store(&session.store).end_launch(Some(exited.rc))?;
-        return Ok(AfterLaunch::Relaunch);
+        Verdict::FreshRelaunch => {
+            lock_store(&session.store).end_launch(Some(exited.rc))?;
+            Ok(AfterLaunch::Relaunch)
+        }
+        Verdict::AuthRelaunch => auth_relaunch(session, ctx, exited, end.auth_relaunches),
+        // No request writes to the store past this point.
+        Verdict::Keep => {
+            session.stop_serving();
+            lock_store(&session.store).end_launch(Some(exited.rc))?;
+            Ok(AfterLaunch::Finished)
+        }
+        Verdict::Park(reason) => {
+            session.stop_serving();
+            record_terminal(session, TerminalStatus::Parked, &reason, Some(exited.rc))?;
+            Ok(AfterLaunch::Finished)
+        }
+        Verdict::Terminal(status, reason) => {
+            session.stop_serving();
+            record_terminal(session, status, &reason, Some(exited.rc))?;
+            Ok(AfterLaunch::Finished)
+        }
     }
-    // No request writes to the store past this point.
-    session.stop_serving();
-    record_end(session, ctx, exited)?;
-    Ok(AfterLaunch::Finished)
+}
+
+/// How many auth relaunches the run has made (`extra.auth_relaunches`).
+fn auth_relaunches(state: &RunState) -> u32 {
+    state
+        .extra
+        .get(EXTRA_AUTH_RELAUNCHES)
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// The rejected host token is replaced by the host's current one and the run goes on
+/// (D-23). The re-read comes first: a host token that cannot be used parks the run
+/// without an `auth-relaunch` line for a relaunch that never happened.
+fn auth_relaunch(
+    session: &mut Session,
+    ctx: &mut LaunchContext,
+    exited: &Exited,
+    made: u32,
+) -> Result<AfterLaunch, LauncherError> {
+    match host_access_token(&ctx.home.join(".claude"), Utc::now()) {
+        Ok(token) => {
+            ctx.token = token;
+            let attempt = made.saturating_add(1);
+            let mut store = lock_store(&session.store);
+            store.end_launch(Some(exited.rc))?;
+            store.log_launcher_event(
+                "auth-relaunch",
+                vec![
+                    ("attempt", Some(attempt.to_string())),
+                    ("source", Some("host".to_owned())),
+                ],
+            )?;
+            store.set_launcher_key(EXTRA_AUTH_RELAUNCHES, serde_json::json!(attempt))?;
+            Ok(AfterLaunch::Relaunch)
+        }
+        Err(e) => {
+            let reason = match e {
+                AuthError::Expiring { .. } => {
+                    "auth: host token expires within 5 minutes; refresh the host login".to_owned()
+                }
+                other => format!("auth: {other}"),
+            };
+            session.stop_serving();
+            record_terminal(session, TerminalStatus::Parked, &reason, Some(exited.rc))?;
+            Ok(AfterLaunch::Finished)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- hard caps (28-05)
@@ -1107,7 +1188,7 @@ fn supervise(
         .unwrap_or(-1);
     Ok(Exited {
         rc,
-        result_ok: last_result_ok(&out_path),
+        stream: summarize_stream_file(&out_path, Utc::now()),
         user_stopped,
         tripped: tripped.or_else(|| tripped_cap(&ctx.tripped)),
     })
@@ -1171,46 +1252,25 @@ fn wait_ticking(
     }
 }
 
-/// Record the user's stop (D-09): `stopped` with reason `stop:user`. A terminal
-/// status the driver had already recorded is kept, and then the launch end is
-/// logged without a status change like any other driver-ended launch.
+/// Record the user's stop (D-09): `stopped` with reason `stop:user`, for a stop that
+/// arrived before a launch began.
 fn record_user_stop(session: &Session, rc: Option<i32>) -> Result<(), LauncherError> {
-    let mut store = lock_store(&session.store);
-    if store.set_terminal(TerminalStatus::Stopped, "stop:user")? == TerminalOutcome::KeptDriverEnd {
-        store.end_launch(rc)?;
-    }
-    Ok(())
+    record_terminal(session, TerminalStatus::Stopped, "stop:user", rc)
 }
 
-/// Record how the launch ended (D-16): a driver `RUN end` keeps the status the
-/// driver set (`launch-end` is logged without a status change); otherwise
-/// [`classify_exit`] says `stalled` or `crashed`.
-fn record_end(
+/// Record a terminal verdict with [`RunStore::set_terminal`]. A terminal status the
+/// driver had already recorded is kept (`RUN end` is the driver's word), and then
+/// the launch end is logged without a status change like any other driver-ended
+/// launch.
+fn record_terminal(
     session: &Session,
-    ctx: &LaunchContext,
-    exited: &Exited,
+    status: TerminalStatus,
+    reason: &str,
+    rc: Option<i32>,
 ) -> Result<(), LauncherError> {
-    let log_text = fs::read_to_string(ctx.run_dir.join(LOG_FILE)).unwrap_or_default();
-    let outstanding = outstanding_dispatch(&parse_log(&log_text)).map(|(item, _)| item);
-    let ended_by_driver = lock_store(&session.store).state().ended_by_driver;
-    let verdict = classify_exit(
-        exited.rc,
-        exited.tripped.is_some(),
-        ended_by_driver,
-        exited.result_ok,
-        outstanding.as_deref(),
-    );
-    match verdict {
-        Some((class, reason)) => {
-            let status = match class {
-                ExitClass::Stalled => TerminalStatus::Stalled,
-                ExitClass::Crashed => TerminalStatus::Crashed,
-            };
-            lock_store(&session.store).set_terminal(status, &reason)?;
-        }
-        // The driver's own end (or a tripped cap) stands: the status is kept and
-        // the launch end is recorded without changing it (D-16).
-        None => lock_store(&session.store).end_launch(Some(exited.rc))?,
+    let mut store = lock_store(&session.store);
+    if store.set_terminal(status, reason)? == TerminalOutcome::KeptDriverEnd {
+        store.end_launch(rc)?;
     }
     Ok(())
 }
@@ -1232,20 +1292,21 @@ fn skip_line(reader: &mut impl BufRead) {
     }
 }
 
-/// Whether the LAST `"type":"result"` line of a stream-json file has subtype
-/// `success`. No result line, or an unreadable file, is `false` (spike
-/// `classify_run_exit`).
+/// Summarize a launch's stream-json file (see [`StreamAccumulator`]): the last
+/// result, the quota verdict judged at `now`, the terminal reason. An unreadable
+/// file is an empty summary (no result, quota allowed), as in the spike's
+/// `classify_run_exit`.
 ///
 /// Reads line by line with a bound per line: the file is written by the model's
 /// process, so a single enormous line must not become a single enormous
-/// allocation.
-fn last_result_ok(path: &Path) -> bool {
+/// allocation. A line over [`MAX_STREAM_LINE`] is skipped.
+fn summarize_stream_file(path: &Path, now: chrono::DateTime<Utc>) -> StreamSummary {
+    let mut acc = StreamAccumulator::default();
     let Ok(file) = fs::File::open(path) else {
-        return false;
+        return acc.into_summary(now);
     };
     let mut reader = std::io::BufReader::new(file);
     let mut line = Vec::new();
-    let mut ok = false;
     loop {
         line.clear();
         let Ok(read) = reader
@@ -1262,21 +1323,21 @@ fn last_result_ok(path: &Path) -> bool {
             skip_line(&mut reader);
             continue;
         }
-        if line.first() != Some(&b'{') {
-            continue;
-        }
-        if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(&line) {
-            if map.get("type").and_then(Value::as_str) == Some("result") {
-                ok = map.get("subtype").and_then(Value::as_str) == Some("success");
-            }
+        if let Ok(text) = std::str::from_utf8(&line) {
+            acc.push(text);
         }
     }
-    ok
+    acc.into_summary(now)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether the stream file's last result is a success.
+    fn result_ok(path: &Path) -> bool {
+        summarize_stream_file(path, Utc::now()).result_ok()
+    }
 
     fn stream(lines: &[&str]) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1293,19 +1354,19 @@ mod tests {
             "not json",
             r#"{"type":"result","subtype":"success"}"#,
         ]);
-        assert!(last_result_ok(&ok));
+        assert!(result_ok(&ok));
         let (_d, bad) = stream(&[
             r#"{"type":"result","subtype":"success"}"#,
             r#"{"type":"result","subtype":"error_during_execution"}"#,
         ]);
-        assert!(!last_result_ok(&bad));
+        assert!(!result_ok(&bad));
     }
 
     #[test]
     fn no_result_or_no_file_is_not_ok() {
         let (_d, none) = stream(&[r#"{"type":"assistant"}"#]);
-        assert!(!last_result_ok(&none));
-        assert!(!last_result_ok(Path::new("/nonexistent/launch-9.jsonl")));
+        assert!(!result_ok(&none));
+        assert!(!result_ok(Path::new("/nonexistent/launch-9.jsonl")));
     }
 
     #[test]
@@ -1320,7 +1381,7 @@ mod tests {
         ));
         fs::write(&path, body).unwrap();
         assert!(
-            last_result_ok(&path),
+            result_ok(&path),
             "the line after the giant one is still seen"
         );
     }

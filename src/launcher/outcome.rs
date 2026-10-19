@@ -24,7 +24,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use super::auth::TokenSource;
-use crate::driver::rate_limit::QuotaVerdict;
+use crate::driver::rate_limit::{self, QuotaVerdict, QuotaWindow};
+use crate::driverctl::counters::{classify_exit, ExitClass};
 use crate::driverctl::store::TerminalStatus;
 use crate::state_reader::driver_frontmatter::RunStatus;
 
@@ -79,29 +80,177 @@ pub enum Verdict {
 /// How many times a run relaunches after a rejected host token (D-23).
 pub const MAX_AUTH_RELAUNCHES: u32 = 2;
 
-/// Read a launch's stream-json lines. RED stub: nothing is recognised yet.
+/// The strings that make an error result an authentication failure (D-23, spike
+/// `run.sh`): a token the host's own refresh revoked, or a login that failed.
+const AUTH_FAILURE_MARKERS: [&str; 2] = ["OAuth token revoked", "Failed to authenticate"];
+
+/// Only a line that could be one of the two kinds the summary reads is parsed, so a
+/// long stream of assistant turns costs a substring search each, not a JSON parse.
+fn worth_parsing(line: &str) -> bool {
+    line.contains("\"result\"") || line.contains("rate_limit_event")
+}
+
+/// Reads a launch's stream-json one line at a time, keeping only what
+/// [`StreamSummary`] needs: the stream can be megabytes and is written by the
+/// sandboxed model's process, so nothing else is retained. Every field is untrusted.
+#[derive(Default)]
+pub struct StreamAccumulator {
+    result: Option<Value>,
+    /// The first rejected `rate_limit_event` (latched: a later `allowed` event does
+    /// not erase it, WR-02 of the Phase 20 driver).
+    rejected: Option<Value>,
+    latest_quota: Option<Value>,
+}
+
+impl StreamAccumulator {
+    /// Take one line. Anything that is not a JSON object is ignored.
+    pub fn push(&mut self, line: &str) {
+        let line = line.trim();
+        if !line.starts_with('{') || !worth_parsing(line) {
+            return;
+        }
+        let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        match value.get("type").and_then(Value::as_str) {
+            Some("result") => self.result = Some(value),
+            Some("rate_limit_event") => {
+                if self.rejected.is_none() && rate_limit::is_rejection(Some(&value)) {
+                    self.rejected = Some(value.clone());
+                }
+                self.latest_quota = Some(value);
+            }
+            _ => {}
+        }
+    }
+
+    /// The summary, with reset times judged against `now`. One classification: the
+    /// latched rejection if there was one, else the latest event (as the Phase 20
+    /// driver does it).
+    pub fn into_summary(self, now: DateTime<Utc>) -> StreamSummary {
+        let rate_limit =
+            rate_limit::classify(self.rejected.as_ref().or(self.latest_quota.as_ref()), now);
+        let terminal_reason = self
+            .result
+            .as_ref()
+            .and_then(|r| r.get("terminal_reason"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        StreamSummary {
+            result: self.result,
+            rate_limit,
+            terminal_reason,
+        }
+    }
+}
+
+/// Summarize a launch's stream-json lines (see [`StreamAccumulator`]).
 pub fn summarize_stream<'a>(
     lines: impl Iterator<Item = &'a str>,
     now: DateTime<Utc>,
 ) -> StreamSummary {
-    let _ = (lines, now);
-    StreamSummary {
-        result: None,
-        rate_limit: QuotaVerdict::Allowed,
-        terminal_reason: None,
+    let mut acc = StreamAccumulator::default();
+    for line in lines {
+        acc.push(line);
+    }
+    acc.into_summary(now)
+}
+
+impl StreamSummary {
+    /// Whether the last result line has subtype `success` (spike
+    /// `classify_run_exit`); no result at all is `false`.
+    pub fn result_ok(&self) -> bool {
+        self.result
+            .as_ref()
+            .and_then(|r| r.get("subtype"))
+            .and_then(Value::as_str)
+            == Some("success")
     }
 }
 
-/// Whether `result` is an authentication failure. RED stub.
+/// Whether `result` is an authentication failure (D-23 `[inferred — audit]`): an
+/// ERROR result (`is_error` true or an `error_*` subtype) whose text, or one of its
+/// `errors`, contains [`AUTH_FAILURE_MARKERS`]. The error requirement is what keeps
+/// a successful run that merely wrote about authentication from being relaunched.
 pub fn is_auth_failure(result: Option<&Value>) -> bool {
-    let _ = result;
-    false
+    let Some(Value::Object(map)) = result else {
+        return false;
+    };
+    let is_error = map.get("is_error").and_then(Value::as_bool) == Some(true)
+        || map
+            .get("subtype")
+            .and_then(Value::as_str)
+            .is_some_and(|subtype| subtype.starts_with("error"));
+    if !is_error {
+        return false;
+    }
+    let mut texts: Vec<&str> = Vec::new();
+    texts.extend(map.get("result").and_then(Value::as_str));
+    if let Some(Value::Array(errors)) = map.get("errors") {
+        texts.extend(errors.iter().filter_map(Value::as_str));
+    }
+    texts.iter().any(|text| {
+        AUTH_FAILURE_MARKERS
+            .iter()
+            .any(|marker| text.contains(marker))
+    })
 }
 
-/// The verdict for a launch end. RED stub: everything is kept.
+/// The verdict for a launch end. Pure; the order is the module header's.
 pub fn decide(end: &LaunchEnd) -> Verdict {
-    let _ = end;
-    Verdict::Keep
+    if end.stop_requested {
+        return Verdict::Terminal(TerminalStatus::Stopped, "stop:user".to_owned());
+    }
+    if end.tripped.is_some() {
+        return Verdict::Keep;
+    }
+    if end.ended_by_driver && end.status.is_terminal() {
+        return Verdict::Keep;
+    }
+    if end.ended_by_driver && end.status == RunStatus::Running {
+        return Verdict::FreshRelaunch;
+    }
+    if is_auth_failure(end.stream.result.as_ref()) {
+        return match end.token_source {
+            TokenSource::Host if end.auth_relaunches < MAX_AUTH_RELAUNCHES => Verdict::AuthRelaunch,
+            TokenSource::Host => Verdict::Park(format!(
+                "auth: host token rejected after {MAX_AUTH_RELAUNCHES} relaunches"
+            )),
+            TokenSource::Stored => Verdict::Park(
+                "auth: stored token rejected \u{2014} rerun driver auth setup".to_owned(),
+            ),
+        };
+    }
+    match &end.stream.rate_limit {
+        QuotaVerdict::Rejected { window, resets_at } => {
+            return Verdict::Park(format!(
+                "rate-limit: {}",
+                rate_limit::park_detail(window, *resets_at)
+            ));
+        }
+        QuotaVerdict::Allowed => {
+            if rate_limit::terminal_reason_names_a_rate_limit(end.stream.terminal_reason.as_deref())
+            {
+                return Verdict::Park(format!(
+                    "rate-limit: {}",
+                    rate_limit::park_detail(&QuotaWindow::Unknown(None), None)
+                ));
+            }
+        }
+    }
+    match classify_exit(
+        end.rc.unwrap_or(-1),
+        false,
+        false,
+        end.stream.result_ok(),
+        end.outstanding.as_deref(),
+    ) {
+        Some((ExitClass::Stalled, reason)) => Verdict::Terminal(TerminalStatus::Stalled, reason),
+        Some((ExitClass::Crashed, reason)) => Verdict::Terminal(TerminalStatus::Crashed, reason),
+        // Unreachable: classify_exit returns None only for a trip or a driver end,
+        // both handled above. Keeping the status is the safe reading.
+        None => Verdict::Keep,
+    }
 }
 
 #[cfg(test)]
