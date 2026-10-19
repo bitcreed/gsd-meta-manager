@@ -42,4 +42,6 @@ pub mod log;
 pub mod protocol;
 pub mod scan;
 #[cfg(target_os = "linux")]
+pub mod serve;
+#[cfg(target_os = "linux")]
 pub mod store;

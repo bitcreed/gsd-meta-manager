@@ -113,7 +113,44 @@ pub fn run(action: DriverctlAction) -> i32 {
         DriverctlAction::Log(log) => log_main(&log),
         DriverctlAction::Show => show_main(),
         DriverctlAction::Hook => hook_main(),
+        DriverctlAction::Serve {
+            run_dir,
+            project,
+            sock,
+        } => serve_main(run_dir, project, sock),
     }
+}
+
+/// `driverctl serve`: run the launcher-side server until a signal (D-03).
+#[cfg(target_os = "linux")]
+fn serve_main(
+    run_dir: std::path::PathBuf,
+    project: std::path::PathBuf,
+    sock: Option<std::path::PathBuf>,
+) -> i32 {
+    let options = gsd_meta_manager::driverctl::serve::ServeOptions {
+        run_dir,
+        project,
+        sock,
+    };
+    match gsd_meta_manager::driverctl::serve::serve(options) {
+        Ok(()) => 0,
+        Err(error) => {
+            err_line(&format!("driverctl serve: {error}"));
+            error.exit_code()
+        }
+    }
+}
+
+/// `driverctl serve` needs `renameat2(RENAME_EXCHANGE)` and `flock`: Linux only.
+#[cfg(not(target_os = "linux"))]
+fn serve_main(
+    _run_dir: std::path::PathBuf,
+    _project: std::path::PathBuf,
+    _sock: Option<std::path::PathBuf>,
+) -> i32 {
+    err_line("driverctl serve: unsupported platform (the run store needs Linux)");
+    1
 }
 
 /// Send one request and return the reply object.
