@@ -383,6 +383,14 @@ impl Preferences {
     }
 }
 
+impl Preferences {
+    /// Whether the push step may open a pull request after a push
+    /// (`preferences.driver.open_pr`, D-26). Stub until the GREEN commit.
+    pub fn driver_open_pr(&self) -> bool {
+        false
+    }
+}
+
 impl Default for Preferences {
     fn default() -> Self {
         Preferences {
@@ -936,5 +944,43 @@ mod tests {
                 .preferences
                 .mouse
         );
+    }
+
+    // -- preferences.driver.open_pr (28-08, D-26)
+
+    fn prefs(json: &str) -> Preferences {
+        serde_json::from_str(json).expect("preferences parse")
+    }
+
+    #[test]
+    fn open_pr_is_off_unless_the_user_turned_it_on() {
+        assert!(!Preferences::default().driver_open_pr(), "absent");
+        assert!(!prefs("{}").driver_open_pr(), "empty preferences");
+        assert!(!prefs(r#"{"driver": {}}"#).driver_open_pr(), "no key");
+        assert!(prefs(r#"{"driver": {"open_pr": true}}"#).driver_open_pr());
+        assert!(!prefs(r#"{"driver": {"open_pr": false}}"#).driver_open_pr());
+    }
+
+    #[test]
+    fn open_pr_reads_only_a_real_boolean() {
+        for odd in [
+            r#"{"driver": {"open_pr": "true"}}"#,
+            r#"{"driver": {"open_pr": 1}}"#,
+            r#"{"driver": {"open_pr": null}}"#,
+            r#"{"driver": "open_pr"}"#,
+            r#"{"driver": [true]}"#,
+            r#"{"open_pr": true}"#,
+        ] {
+            assert!(!prefs(odd).driver_open_pr(), "{odd}");
+        }
+    }
+
+    #[test]
+    fn the_open_pr_key_survives_a_round_trip() {
+        let before = prefs(r#"{"driver": {"open_pr": true, "other": 7}}"#);
+        let text = serde_json::to_string(&before).expect("serialize");
+        let after: Preferences = serde_json::from_str(&text).expect("parse");
+        assert!(after.driver_open_pr());
+        assert_eq!(after.extra["driver"]["other"], 7);
     }
 }
