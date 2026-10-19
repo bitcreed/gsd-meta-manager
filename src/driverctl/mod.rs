@@ -29,4 +29,5 @@
 //!    shape this would take.
 
 pub mod counters;
+pub mod log;
 pub mod scan;

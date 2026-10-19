@@ -167,3 +167,254 @@ pub fn digest16(raw: &[u8]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driverctl::log::{epoch_seconds, parse_log};
+
+    const T: f64 = 1_000_000.0;
+
+    fn obs(st: &mut GapRoundsState, phase: &str, ts: f64, digest: &str) -> (GapKind, u32) {
+        observe_gap(st, phase, ts, digest, None)
+    }
+
+    // -- the gapcount selftest value table, one test per case family --------------
+
+    #[test]
+    fn rounds_534_seconds_apart_stay_separate_and_drive_the_s2_predicates() {
+        let mut st = GapRoundsState::default();
+        let got: Vec<_> = [T, T + 534.0, T + 1068.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| obs(&mut st, "1", t, &format!("d{i}")))
+            .collect();
+        assert_eq!(
+            got,
+            [(GapKind::New, 1), (GapKind::New, 2), (GapKind::New, 3)]
+        );
+        // S2 predicates: deny when n >= gl + 1, trip when n > gl + 1.
+        let gl = 2;
+        let preds: Vec<_> = got.iter().map(|&(_, n)| (n > gl, n > gl + 1)).collect();
+        assert_eq!(preds, [(false, false), (false, false), (true, false)]);
+        let four = 4;
+        assert_eq!((four > gl, four > gl + 1), (true, true)); // kill only at L+2
+    }
+
+    #[test]
+    fn window_boundary_is_strict_and_unrounded() {
+        let mut st = GapRoundsState::default();
+        assert_eq!(obs(&mut st, "1", T, "a"), (GapKind::New, 1));
+        assert_eq!(obs(&mut st, "1", T + 44.9, "b"), (GapKind::Coalesced, 1));
+
+        let mut st = GapRoundsState::default();
+        assert_eq!(obs(&mut st, "1", T, "a"), (GapKind::New, 1));
+        assert_eq!(obs(&mut st, "1", T + 45.0, "b"), (GapKind::New, 2));
+
+        let mut st = GapRoundsState::default();
+        assert_eq!(obs(&mut st, "1", T, "a"), (GapKind::New, 1));
+        assert_eq!(obs(&mut st, "1", T + 44.999999, "b").0, GapKind::Coalesced);
+    }
+
+    #[test]
+    fn sliding_anchor_makes_five_writes_20s_apart_one_round() {
+        let mut st = GapRoundsState::default();
+        let kinds: Vec<_> = [0.0, 20.0, 40.0, 60.0, 80.0]
+            .iter()
+            .enumerate()
+            .map(|(i, off)| obs(&mut st, "1", T + off, &format!("d{i}")).0)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                GapKind::New,
+                GapKind::Coalesced,
+                GapKind::Coalesced,
+                GapKind::Coalesced,
+                GapKind::Coalesced
+            ]
+        );
+        assert_eq!(st.per_phase.get("1"), Some(&1));
+        assert_eq!(st.coalesced.get("1"), Some(&4));
+        // 45 s after the slid anchor opens a new round, far from the first write.
+        assert_eq!(obs(&mut st, "1", T + 80.0 + 45.0, "z"), (GapKind::New, 2));
+    }
+
+    #[test]
+    fn duplicate_digest_leaves_count_and_anchor() {
+        let mut st = GapRoundsState::default();
+        obs(&mut st, "1", T, "same");
+        let anchor = st.last_write["1"];
+        assert_eq!(
+            obs(&mut st, "1", T + 100.0, "same"),
+            (GapKind::Duplicate, 1)
+        );
+        assert_eq!(st.last_write["1"], anchor);
+        assert_eq!(st.per_phase.get("1"), Some(&1));
+        assert_eq!(obs(&mut st, "1", T + 100.0, "other"), (GapKind::New, 2));
+    }
+
+    #[test]
+    fn a_write_older_than_the_anchor_never_moves_it_backwards() {
+        let mut st = GapRoundsState::default();
+        obs(&mut st, "1", T, "a");
+        // Within the window but earlier than the anchor: coalesced, anchor stays.
+        assert_eq!(obs(&mut st, "1", T - 10.0, "b"), (GapKind::Coalesced, 1));
+        assert_eq!(st.last_write["1"], T);
+        // Far earlier than the anchor: a new round, anchor still max(prev, ts).
+        assert_eq!(obs(&mut st, "1", T - 500.0, "c"), (GapKind::New, 2));
+        assert_eq!(st.last_write["1"], T);
+    }
+
+    #[test]
+    fn phases_count_independently() {
+        let mut st = GapRoundsState::default();
+        assert_eq!(obs(&mut st, "1", T, "a"), (GapKind::New, 1));
+        assert_eq!(obs(&mut st, "2", T + 1.0, "b"), (GapKind::New, 1));
+    }
+
+    #[test]
+    fn json_round_trip_keeps_the_window_across_a_relaunch() {
+        let mut st = GapRoundsState::default();
+        observe_gap(&mut st, "1", T, "a", Some("f.md"));
+        let json = serde_json::to_string(&st).unwrap();
+        let mut st2: GapRoundsState = serde_json::from_str(&json).unwrap();
+        assert_eq!(st2, st);
+        assert_eq!(obs(&mut st2, "1", T + 10.0, "b"), (GapKind::Coalesced, 1));
+        assert_eq!(obs(&mut st2, "1", T + 10.0 + 600.0, "c"), (GapKind::New, 2));
+        assert_eq!(obs(&mut st2, "1", T + 10.0, "b"), (GapKind::Duplicate, 2));
+    }
+
+    #[test]
+    fn s2_shaped_state_without_window_fields_loads_and_counts() {
+        let mut st: GapRoundsState =
+            serde_json::from_str(r#"{"limit": 2, "per_phase": {}, "seen": {}}"#).unwrap();
+        assert_eq!(st.limit, Some(2));
+        assert_eq!(obs(&mut st, "1", T, "a"), (GapKind::New, 1));
+        assert!(st.last_write.contains_key("1"));
+        let bare: GapRoundsState = serde_json::from_str("{}").unwrap();
+        assert_eq!(bare, GapRoundsState::default());
+    }
+
+    #[test]
+    fn worst_phase_picks_the_highest_count() {
+        let mut st = GapRoundsState::default();
+        assert_eq!(worst_phase(&st), (None, 0));
+        obs(&mut st, "1", T, "a");
+        obs(&mut st, "2", T + 1.0, "b");
+        obs(&mut st, "2", T + 1000.0, "c");
+        assert_eq!(worst_phase(&st), (Some("2".to_owned()), 2));
+    }
+
+    #[test]
+    fn worst_phase_ties_go_to_the_latest_write() {
+        let mut st = GapRoundsState::default();
+        obs(&mut st, "1", T + 500.0, "a");
+        obs(&mut st, "2", T, "b");
+        assert_eq!(worst_phase(&st), (Some("1".to_owned()), 1));
+        obs(&mut st, "3", T + 900.0, "c");
+        assert_eq!(worst_phase(&st), (Some("3".to_owned()), 1));
+    }
+
+    // -- the one status / phase-key / digest definitions ----------------------------
+
+    #[test]
+    fn fm_status_is_quote_tolerant_and_frontmatter_only() {
+        let some = |s: &str| Some(s.to_owned());
+        assert_eq!(
+            fm_status(b"---\nstatus: \"gaps_found\"\n---\n"),
+            some("gaps_found")
+        );
+        assert_eq!(
+            fm_status(b"---\nstatus: gaps_found\n---\nx"),
+            some("gaps_found")
+        );
+        assert_eq!(
+            fm_status(b"---\nphase: x\nstatus: 'passed'\n---\n"),
+            some("passed")
+        );
+        assert_eq!(fm_status(b"status: gaps_found\n"), None);
+        assert_eq!(fm_status(b"---\nphase: x\n---\nstatus: gaps_found\n"), None);
+        assert_eq!(fm_status(b"\xff\xfe---\nstatus: gaps_found\n"), None);
+        assert_eq!(fm_status(b""), None);
+    }
+
+    #[test]
+    fn phase_key_drops_leading_zeros_and_keeps_a_decimal_part() {
+        assert_eq!(phase_key("01-slugify").as_deref(), Some("1"));
+        assert_eq!(phase_key("26.1-driver").as_deref(), Some("26.1"));
+        assert_eq!(phase_key("27-driverctl").as_deref(), Some("27"));
+        assert_eq!(phase_key("00-x").as_deref(), Some("0"));
+        assert_eq!(phase_key("010-x").as_deref(), Some("10"));
+        assert_eq!(phase_key("notes"), None);
+        assert_eq!(phase_key(""), None);
+    }
+
+    #[test]
+    fn digest16_is_the_first_16_hex_of_sha256() {
+        assert_eq!(digest16(b""), "e3b0c44298fc1c14");
+        assert_eq!(digest16(b"abc"), "ba7816bf8f01cfea");
+    }
+
+    // -- replays over committed copies of the spike-003 evidence ---------------------
+
+    const RUN1_LOG: &str = include_str!("../../tests/fixtures/driverctl/spike003/run1/LOG.md");
+    const R261A_STATE: &str =
+        include_str!("../../tests/fixtures/driverctl/spike003/r261a/state.json");
+
+    #[test]
+    fn run1_replay_coalesces_the_sed_rewrite() {
+        let events = parse_log(RUN1_LOG);
+        let gap_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.item == "RUN" && e.event == "gap-observed" && e.get("phase") == Some("1"))
+            .collect();
+        let old: Vec<u32> = gap_events
+            .iter()
+            .map(|e| e.get("count").unwrap().parse().unwrap())
+            .collect();
+
+        let mut st = GapRoundsState::default();
+        let mut new = Vec::new();
+        let mut coalesced = 0;
+        for (n, e) in gap_events.iter().enumerate() {
+            let ts = epoch_seconds(&e.at).expect("fixture timestamp");
+            match observe_gap(&mut st, "1", ts, &format!("obs{n}"), e.get("file")) {
+                (GapKind::New, k) => new.push(k),
+                (GapKind::Coalesced, _) => coalesced += 1,
+                (GapKind::Duplicate, _) => {}
+            }
+        }
+        assert_eq!(old, [1, 2, 3]);
+        assert_eq!(new, [1, 2]);
+        assert_eq!(coalesced, 1);
+    }
+
+    #[test]
+    fn r261a_state_shape_loads() {
+        let doc: serde_json::Value = serde_json::from_str(R261A_STATE).unwrap();
+        let gap = doc["caps"]["gap_rounds"].clone();
+        let st: GapRoundsState = serde_json::from_value(gap).unwrap();
+        assert_eq!(st.limit, Some(2));
+        assert_eq!(st.per_phase, BTreeMap::from([("1".to_owned(), 3)]));
+        assert_eq!(st.coalesced, BTreeMap::from([("1".to_owned(), 2)]));
+        assert_eq!(st.seen.len(), 5);
+        assert_eq!(st.last_write["1"], 1792290232.7904544);
+        assert_eq!(
+            st.seen["06110c788ecfe659"].file.as_deref(),
+            Some(".planning/phases/01-slugify/01-VERIFICATION.md")
+        );
+
+        let back = serde_json::to_value(&st).unwrap();
+        let keys: std::collections::BTreeSet<String> =
+            back.as_object().unwrap().keys().cloned().collect();
+        let want: std::collections::BTreeSet<String> =
+            ["limit", "seen", "per_phase", "last_write", "coalesced"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect();
+        assert_eq!(keys, want);
+        let again: GapRoundsState = serde_json::from_value(back).unwrap();
+        assert_eq!(again, st);
+    }
+}
