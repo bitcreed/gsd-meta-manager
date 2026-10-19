@@ -368,32 +368,338 @@ pub fn validate_hook(payload: &HookPayload) -> Result<(), Invalid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn args_with(f: impl FnOnce(&mut LogArgs)) -> LogArgs {
-        let mut a = LogArgs::default();
-        f(&mut a);
-        a
+    fn args(pairs: &[(&str, &str)]) -> LogArgs {
+        let map: serde_json::Map<String, Value> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), json!(v)))
+            .collect();
+        serde_json::from_value(Value::Object(map)).expect("test args")
+    }
+
+    fn items() -> Vec<String> {
+        vec!["I-01".to_owned(), "I-02".to_owned()]
+    }
+
+    fn ok(event: &str, pairs: &[(&str, &str)]) -> ValidatedEvent {
+        validate_log(event, &args(pairs), &items())
+            .unwrap_or_else(|e| panic!("{event} {pairs:?} should be accepted: {e}"))
+    }
+
+    fn rejected(event: &str, pairs: &[(&str, &str)]) -> String {
+        match validate_log(event, &args(pairs), &items()) {
+            Ok(v) => panic!("{event} {pairs:?} should be rejected, got {v:?}"),
+            Err(Invalid(m)) => m,
+        }
     }
 
     #[test]
     fn start_accepts_a_known_mode_and_refuses_the_rest() {
-        let ok = validate_log(
-            "start",
-            &args_with(|a| a.mode = Some("headless".into())),
-            &[],
-        )
-        .unwrap();
         assert_eq!(
-            ok,
+            ok("start", &[("mode", "headless")]),
             ValidatedEvent::Start {
                 mode: "headless".into(),
                 loop_mode: None,
                 session: None
             }
         );
-        let err = validate_log("start", &args_with(|a| a.mode = Some("bogus".into())), &[]);
-        assert_eq!(err, Err(Invalid("--mode must be interactive|headless".into())));
-        assert!(validate_log("start", &LogArgs::default(), &[]).is_err());
+        assert_eq!(
+            rejected("start", &[("mode", "bogus")]),
+            "--mode must be interactive|headless"
+        );
+        rejected("start", &[]);
+        // The A7 tightening: loop-mode and session reach a LOG header.
+        rejected("start", &[("mode", "headless"), ("loop_mode", "a|b")]);
+        rejected("start", &[("mode", "headless"), ("session", "a\nb")]);
+        // A blank optional value is absent, not an error.
+        assert_eq!(
+            ok("start", &[("mode", "headless"), ("session", "  ")]),
+            ValidatedEvent::Start {
+                mode: "headless".into(),
+                loop_mode: None,
+                session: None
+            }
+        );
+    }
+
+    #[test]
+    fn reconcile_parses_found_and_defaults_to_zero() {
+        assert_eq!(ok("reconcile", &[]), ValidatedEvent::Reconcile { found: 0 });
+        assert_eq!(
+            ok("reconcile", &[("found", " 3 ")]),
+            ValidatedEvent::Reconcile { found: 3 }
+        );
+        assert_eq!(
+            rejected("reconcile", &[("found", "three")]),
+            "--found must be an integer"
+        );
+    }
+
+    #[test]
+    fn dispatched_needs_a_known_item_a_step_and_an_integer_round() {
+        assert_eq!(
+            ok(
+                "dispatched",
+                &[
+                    ("item", "I-01"),
+                    ("step", "/gsd-plan-phase 1"),
+                    ("round", "2"),
+                    ("phase", "1")
+                ]
+            ),
+            ValidatedEvent::Dispatched {
+                item: "I-01".into(),
+                step: "/gsd-plan-phase 1".into(),
+                round: 2,
+                phase: Some("1".into())
+            }
+        );
+        assert_eq!(
+            ok("dispatched", &[("item", "I-02"), ("step", "go")]),
+            ValidatedEvent::Dispatched {
+                item: "I-02".into(),
+                step: "go".into(),
+                round: 0,
+                phase: None
+            }
+        );
+        rejected("dispatched", &[("item", "I-01")]);
+        rejected("dispatched", &[("item", "I-01"), ("step", "a|b")]);
+        assert_eq!(
+            rejected(
+                "dispatched",
+                &[("item", "I-01"), ("step", "go"), ("round", "x")]
+            ),
+            "--round must be an integer"
+        );
+        rejected(
+            "dispatched",
+            &[("item", "I-01"), ("step", "go"), ("phase", "1\n2")],
+        );
+    }
+
+    #[test]
+    fn known_item_rejects_run_and_unknown_ids_with_the_spike_message() {
+        assert_eq!(
+            rejected("dispatched", &[("item", "RUN"), ("step", "go")]),
+            "--item 'RUN' is not an item in DIRECTION.md"
+        );
+        assert_eq!(
+            rejected(
+                "verified",
+                &[("item", "I-99"), ("done_when", "met"), ("evidence", "x")]
+            ),
+            "--item 'I-99' is not an item in DIRECTION.md"
+        );
+        // No DIRECTION items at all: every item-level event is refused.
+        let none: Vec<String> = Vec::new();
+        assert!(validate_log(
+            "needs-human",
+            &args(&[("item", "I-01"), ("question", "why")]),
+            &none
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn report_keeps_fifteen_lines_flags_truncation_and_reads_findings() {
+        let long = (1..=16)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ValidatedEvent::Report {
+            body,
+            truncated,
+            findings,
+            ..
+        } = ok(
+            "report",
+            &[("item", "I-01"), ("status", "done"), ("body", &long)],
+        )
+        else {
+            panic!("not a report")
+        };
+        assert_eq!(body.len(), MAX_REPORT_LINES);
+        assert!(truncated);
+        assert_eq!(findings, None);
+
+        let ValidatedEvent::Report {
+            body,
+            truncated,
+            findings,
+            ..
+        } = ok(
+            "report",
+            &[
+                ("item", "I-01"),
+                ("status", "partial"),
+                ("body", "FINDINGS: 4\ndetail\n\n"),
+            ],
+        )
+        else {
+            panic!("not a report")
+        };
+        assert_eq!(body, vec!["FINDINGS: 4".to_owned(), "detail".to_owned()]);
+        assert!(!truncated);
+        assert_eq!(findings, Some(4));
+
+        rejected(
+            "report",
+            &[("item", "I-01"), ("status", "maybe"), ("body", "x")],
+        );
+        assert_eq!(
+            rejected(
+                "report",
+                &[("item", "I-01"), ("status", "done"), ("body", "\n\n")]
+            ),
+            "report body (stdin) is empty; pipe the worker report verbatim"
+        );
+        rejected("report", &[("item", "I-01"), ("status", "done")]);
+        rejected(
+            "report",
+            &[("item", "I-01"), ("status", "done"), ("body", "ok\u{1b}[31m")],
+        );
+        // A tab is the one control character a report may carry.
+        ok(
+            "report",
+            &[("item", "I-01"), ("status", "done"), ("body", "a\tb")],
+        );
+    }
+
+    #[test]
+    fn verified_needs_a_done_when_verdict_and_a_one_line_evidence() {
+        assert_eq!(
+            ok(
+                "verified",
+                &[
+                    ("item", "I-01"),
+                    ("done_when", "not-met"),
+                    ("evidence", "tests fail")
+                ]
+            ),
+            ValidatedEvent::Verified {
+                item: "I-01".into(),
+                done_when: "not-met".into(),
+                evidence: "tests fail".into()
+            }
+        );
+        rejected(
+            "verified",
+            &[("item", "I-01"), ("done_when", "maybe"), ("evidence", "x")],
+        );
+        rejected("verified", &[("item", "I-01"), ("done_when", "met")]);
+    }
+
+    #[test]
+    fn status_requires_a_rule_for_parked_and_an_outcome_unless_running() {
+        assert_eq!(
+            ok("status", &[("item", "I-01"), ("state", "running")]),
+            ValidatedEvent::Status {
+                item: "I-01".into(),
+                state: ItemState::Running,
+                rule: None,
+                outcome: None
+            }
+        );
+        assert_eq!(
+            ok(
+                "status",
+                &[
+                    ("item", "I-01"),
+                    ("state", "parked"),
+                    ("rule", "budget"),
+                    ("outcome", "out of budget")
+                ]
+            ),
+            ValidatedEvent::Status {
+                item: "I-01".into(),
+                state: ItemState::Parked,
+                rule: Some("budget".into()),
+                outcome: Some("out of budget".into())
+            }
+        );
+        rejected(
+            "status",
+            &[("item", "I-01"), ("state", "bogus"), ("outcome", "x")],
+        );
+        rejected(
+            "status",
+            &[("item", "I-01"), ("state", "parked"), ("outcome", "x")],
+        );
+        rejected(
+            "status",
+            &[
+                ("item", "I-01"),
+                ("state", "parked"),
+                ("rule", "bogus"),
+                ("outcome", "x"),
+            ],
+        );
+        // The tightening: a rule that is given is checked even when not parked.
+        rejected(
+            "status",
+            &[("item", "I-01"), ("state", "running"), ("rule", "bogus")],
+        );
+        rejected("status", &[("item", "I-01"), ("state", "done")]);
+        rejected(
+            "status",
+            &[("item", "I-01"), ("state", "done"), ("outcome", "a\nb")],
+        );
+    }
+
+    #[test]
+    fn needs_human_question_is_one_line_up_to_three_hundred() {
+        ok(
+            "needs-human",
+            &[("item", "I-02"), ("question", &"q".repeat(300))],
+        );
+        rejected(
+            "needs-human",
+            &[("item", "I-02"), ("question", &"q".repeat(301))],
+        );
+        rejected("needs-human", &[("item", "I-02")]);
+    }
+
+    #[test]
+    fn recovered_takes_a_known_action_and_a_reason() {
+        assert_eq!(
+            ok(
+                "recovered",
+                &[
+                    ("item", "I-01"),
+                    ("action", "resume"),
+                    ("reason", "worker died")
+                ]
+            ),
+            ValidatedEvent::Recovered {
+                item: "I-01".into(),
+                action: "resume".into(),
+                reason: "worker died".into()
+            }
+        );
+        rejected(
+            "recovered",
+            &[("item", "I-01"), ("action", "bogus"), ("reason", "x")],
+        );
+        rejected("recovered", &[("item", "I-01"), ("action", "done")]);
+    }
+
+    #[test]
+    fn end_maps_each_reason_and_never_yields_crashed_or_stalled() {
+        for (reason, status) in END_REASONS {
+            assert_eq!(
+                ok("end", &[("reason", reason)]),
+                ValidatedEvent::End {
+                    reason: (*reason).to_owned(),
+                    status: status.clone()
+                }
+            );
+            assert!(!matches!(status, RunStatus::Crashed | RunStatus::Stalled));
+        }
+        rejected("end", &[("reason", "crashed")]);
+        rejected("end", &[("reason", "stalled")]);
+        rejected("end", &[]);
     }
 
     #[test]
@@ -403,8 +709,45 @@ mod tests {
     }
 
     #[test]
+    fn validate_hook_checks_only_values_that_reach_a_log_header() {
+        let payload = |event: &str, session: &str| HookPayload {
+            hook_event_name: Some(event.into()),
+            session_id: Some(session.into()),
+            ..HookPayload::default()
+        };
+        assert!(validate_hook(&payload("SessionStart", "abc-123")).is_ok());
+        assert!(validate_hook(&payload("SessionStart", "a|b")).is_err());
+        assert!(validate_hook(&payload("SessionEnd", "a\nb")).is_err());
+        // A gate payload writes nothing derived from the payload, so it is never refused.
+        assert!(validate_hook(&payload("PreToolUse", "a|b")).is_ok());
+    }
+
+    #[test]
+    fn is_gate_needs_pretooluse_agent_or_task_and_no_agent_id() {
+        let mut p = HookPayload {
+            hook_event_name: Some("PreToolUse".into()),
+            tool_name: Some("Agent".into()),
+            ..HookPayload::default()
+        };
+        assert!(p.is_gate());
+        p.tool_name = Some("Task".into());
+        assert!(p.is_gate());
+        p.agent_id = Some("sub-1".into());
+        assert!(!p.is_gate());
+        p.agent_id = None;
+        p.tool_name = Some("Bash".into());
+        assert!(!p.is_gate());
+        p.tool_name = Some("Agent".into());
+        p.hook_event_name = Some("PostToolUse".into());
+        assert!(!p.is_gate());
+    }
+
+    #[test]
     fn parse_request_accepts_trailing_whitespace_and_a_missing_newline() {
-        assert!(matches!(parse_request(br#"{"op":"show"}"#), Ok(Request::Show)));
+        assert!(matches!(
+            parse_request(br#"{"op":"show"}"#),
+            Ok(Request::Show)
+        ));
         assert!(matches!(
             parse_request(b"{\"op\":\"show\"}\n"),
             Ok(Request::Show)
@@ -416,8 +759,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_request_refuses_an_unknown_op() {
-        let err = parse_request(br#"{"op":"set_terminal","status":"crashed"}"#).unwrap_err();
-        assert!(err.0.starts_with("malformed request:"), "{err}");
+    fn parse_request_refuses_an_unknown_op_a_bad_args_shape_and_a_stray_key() {
+        for bad in [
+            &br#"{"op":"set_terminal","status":"crashed"}"#[..],
+            br#"{"op":"log","event":"start","args":5}"#,
+            br#"{"op":"log","event":"start","args":[]}"#,
+            br#"{"op":"log","event":"start","args":{"round":1}}"#,
+            br#"{"op":"log","event":"start","args":{"bogus":"x"}}"#,
+            br#"{"op":"hook","payload":{"tool_input":{}}}"#,
+            br#"not json"#,
+            b"",
+        ] {
+            let err = parse_request(bad).unwrap_err();
+            assert!(
+                err.0.starts_with("malformed request:"),
+                "{err} for {}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+        assert!(parse_request(br#"{"op":"log","event":"start","args":null}"#).is_ok());
+        assert!(parse_request(br#"{"op":"log","event":"start"}"#).is_ok());
+    }
+
+    #[test]
+    fn oversized_request_is_refused() {
+        let big = vec![b' '; MAX_REQUEST_BYTES + 1];
+        assert!(parse_request(&big).is_err());
+    }
+
+    #[test]
+    fn response_json_omits_absent_fields() {
+        assert_eq!(
+            serde_json::to_string(&Response::ok()).unwrap(),
+            r#"{"ok":true}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::deny("cap")).unwrap(),
+            r#"{"ok":true,"deny":"cap"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::rejected("no")).unwrap(),
+            r#"{"ok":false,"error":"no"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::frontmatter("---\n")).unwrap(),
+            r#"{"ok":true,"frontmatter":"---\n"}"#
+        );
     }
 }
