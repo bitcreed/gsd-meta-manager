@@ -1085,10 +1085,29 @@ default. Hosts without bwrap or systemd-run get an explicit degraded mode.
      degraded mode then runs unsandboxed, with caps enforced by process supervision, and the posture
      is recorded on the run and shown in the TUI. Headless operation never needs tmux.
 
-**Plans**: 0 plans
+**Plans**: 9 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 28 to break down)
+**Wave 1**
+- [ ] 28-01-PLAN.md — tracer: `driver launch` runs the driver in bwrap under a user scope from an embedded store, cap flags recorded (LNCH-01/08)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 28-02-PLAN.md — run lifecycle (rc 3, crash-detected, fresh-exit relaunch under one lock, detached default) and `driver stop` killing the whole scope, live proof (LNCH-01/02, DRIVE-01)
+- [ ] 28-03-PLAN.md — hardened sandbox profile (runtime-dir tmpfs, credential masks, read-only gate settings), per-run config transform, no-refresh-token invariant, live SC3/D-27 probe (LNCH-04/05/06)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 28-04-PLAN.md — host detection and refusal, `--unsandboxed` degraded supervision, `sandbox` posture keys (LNCH-07)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 28-05-PLAN.md — hard caps (dispatch / gap L+1 deny, L+2 kill / wall clock + RuntimeMaxSec) and launch-end verdicts (rate-limit park, auth relaunch, stalled) (LNCH-03/05)
+- [ ] 28-06-PLAN.md — `driver auth setup|status` onboarding and the ported Stop guard (LNCH-05/03)
+- [ ] 28-07-PLAN.md — TUI: launcher runs on the Driver tab, UNSANDBOXED badge, stop via the shared function (LNCH-01/07)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 28-08-PLAN.md — push step from a launcher-owned mirror: fixed refspec, SAFE-01/03/06 reuse, auto-push at run end, opt-in PR (LNCH-06)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 28-09-PLAN.md — live acceptance harness: L1-L5, L7, L8 on Haiku; D-33 real-Opus gap-cap run with pre-registered rubric and $20 ceiling; phase gate (SC2, carried risk)
 
 **Carried risk (from Phase 26.1, operator-accepted 2026-10-18)**: VALID-02's cap half (deny at
 limit+1, kill at limit+2) was proven only by the scripted Haiku stand-in `r261-l7`; on the organic
