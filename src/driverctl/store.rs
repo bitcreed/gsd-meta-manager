@@ -495,9 +495,15 @@ impl RunStore {
         Ok(())
     }
 
-    /// Append `entries` to LOG.md, commit `next` as the new state and regenerate
-    /// the frontmatter. On an I/O failure before the commit the in-memory state is
-    /// unchanged.
+    /// Persist `next` as `state.json`, append `entries` to LOG.md, commit `next` as
+    /// the new state and regenerate the frontmatter.
+    ///
+    /// WR-03 order: `state.json` first, then the LOG append. The save is the step
+    /// that can fail for lack of space or an I/O error, and a failed save must not
+    /// leave an event in the LOG that the counters never saw (a driver that retries
+    /// would then log it twice). If the LOG append fails after the save, the
+    /// previous `state.json` is written back, so on any failure before the commit
+    /// the files and the in-memory state are as they were.
     fn commit(
         &mut self,
         mut next: RunState,
@@ -505,12 +511,11 @@ impl RunStore {
         regen: Regen,
     ) -> Result<(), StoreError> {
         let now = self.now_string();
+        let mut data = String::new();
         if let Some(last) = entries.last() {
-            let mut data = String::new();
             for e in entries {
                 data.push_str(&log::format_line(&now, &e.item, e.event, &e.kv, &e.detail));
             }
-            log::append(&self.log_path(), &data).map_err(io_err("append LOG.md"))?;
             next.last_event = Some(LastEvent {
                 at: Some(now.clone()),
                 item: Some(last.item.clone()),
@@ -520,6 +525,16 @@ impl RunStore {
         }
         next.updated_at = now;
         self.write_state(&next)?;
+        if !data.is_empty() {
+            if let Err(e) = log::append(&self.log_path(), &data) {
+                if let Err(undo) = self.write_state(&self.state) {
+                    eprintln!(
+                        "driverctl: could not restore state.json after a failed LOG append: {undo}"
+                    );
+                }
+                return Err(io_err("append LOG.md")(e));
+            }
+        }
         self.state = next;
         match regen {
             Regen::Always => {

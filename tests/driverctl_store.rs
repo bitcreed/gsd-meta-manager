@@ -1390,6 +1390,75 @@ fn wr02_set_terminal_after_a_fresh_exit_records_the_stop() {
 }
 
 #[test]
+fn wr03_a_failed_state_save_appends_nothing_to_the_log() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    log_ok(&mut store, "start", &[("mode", "headless")]);
+
+    // A directory where state.json belongs: the rename-into-place cannot succeed.
+    let state = fx.run_dir.join("state.json");
+    let state_before = fs::read(&state).unwrap();
+    fs::remove_file(&state).unwrap();
+    fs::create_dir(&state).unwrap();
+    let log_before = fx.log();
+
+    let r = send(
+        &mut store,
+        &log_req(
+            "needs-human",
+            &[("item", "I-01"), ("question", "which one?")],
+        ),
+    );
+    assert!(!r.ok, "the save fails, so the request fails: {r:?}");
+    assert_eq!(
+        fx.log(),
+        log_before,
+        "no LOG line may exist for a state change that was not saved"
+    );
+
+    // Heal the path: the retry succeeds and logs exactly one line.
+    fs::remove_dir(&state).unwrap();
+    fs::write(&state, &state_before).unwrap();
+    let r = send(
+        &mut store,
+        &log_req(
+            "needs-human",
+            &[("item", "I-01"), ("question", "which one?")],
+        ),
+    );
+    assert!(r.ok, "{r:?}");
+    assert_eq!(fx.log().lines().count(), log_before.lines().count() + 1);
+}
+
+#[test]
+fn wr03_a_failed_log_append_restores_state_json() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    log_ok(&mut store, "start", &[("mode", "headless")]);
+
+    let state_before = fs::read(fx.run_dir.join("state.json")).unwrap();
+    // A directory where LOG.md belongs: the append cannot succeed.
+    fs::remove_file(fx.run_dir.join("LOG.md")).unwrap();
+    fs::create_dir(fx.run_dir.join("LOG.md")).unwrap();
+
+    let r = send(
+        &mut store,
+        &log_req(
+            "needs-human",
+            &[("item", "I-01"), ("question", "which one?")],
+        ),
+    );
+    assert!(!r.ok, "{r:?}");
+    assert_eq!(
+        fs::read(fx.run_dir.join("state.json")).unwrap(),
+        state_before,
+        "state.json must not advance past a LOG line that was never written"
+    );
+}
+
+#[test]
 fn no_request_can_set_crashed_or_stalled_or_rewrite_a_counter() {
     let fx = Fixture::new();
     let mut store = fx.open();
