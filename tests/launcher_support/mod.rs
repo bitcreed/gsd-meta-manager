@@ -157,12 +157,27 @@ pub struct Fixture {
     pub project_dir: TempDir,
     pub scratch: TempDir,
     pub run_dir: PathBuf,
+    /// The `XDG_RUNTIME_DIR` the launcher and `driver stop` run with: a private
+    /// directory by default, the real one in the live tests.
+    pub runtime_dir: PathBuf,
 }
 
 impl Fixture {
     pub fn new() -> Self {
-        let project_dir = TempDir::new().expect("project dir");
-        let scratch = TempDir::new().expect("scratch dir");
+        Self::build(TempDir::new(), TempDir::new())
+    }
+
+    /// A fixture whose directories live under `base` instead of the system temp
+    /// dir. The live tests need this: bwrap's `--tmpfs /tmp` hides everything
+    /// under `/tmp`, so the fake `claude` and the project must not be there.
+    pub fn new_in(base: &Path) -> Self {
+        fs::create_dir_all(base).expect("fixture base dir");
+        Self::build(TempDir::new_in(base), TempDir::new_in(base))
+    }
+
+    fn build(project_dir: std::io::Result<TempDir>, scratch: std::io::Result<TempDir>) -> Self {
+        let project_dir = project_dir.expect("project dir");
+        let scratch = scratch.expect("scratch dir");
         let run_dir = project_dir
             .path()
             .join(".planning/meta-manager/drivers")
@@ -170,10 +185,12 @@ impl Fixture {
         fs::create_dir_all(&run_dir).expect("run dir");
         fs::write(run_dir.join("DIRECTION.md"), BODY).expect("DIRECTION.md");
 
+        let runtime_dir = scratch.path().join("run");
         let fixture = Fixture {
             project_dir,
             scratch,
             run_dir,
+            runtime_dir,
         };
         for dir in ["run", "home", "config", "data", "shims", "rec"] {
             fs::create_dir_all(fixture.scratch.path().join(dir)).expect("scratch subdir");
@@ -309,7 +326,7 @@ impl Fixture {
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.shims().display()))
             .env("HOME", self.home())
-            .env("XDG_RUNTIME_DIR", scratch.join("run"))
+            .env("XDG_RUNTIME_DIR", &self.runtime_dir)
             .env("XDG_CONFIG_HOME", scratch.join("config"))
             .env("XDG_DATA_HOME", scratch.join("data"))
             .env("XDG_STATE_HOME", scratch.join("state"))
