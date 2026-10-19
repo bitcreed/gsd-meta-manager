@@ -9,6 +9,7 @@ pub mod change_tracker;
 pub mod cli;
 pub mod config;
 pub mod driver;
+pub mod driverctl;
 pub mod envelope;
 pub mod error;
 pub mod executor;
