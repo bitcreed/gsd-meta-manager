@@ -50,7 +50,8 @@ use std::time::Duration;
 use gsd_meta_manager::cli::{DriverctlAction, DriverctlLog};
 use serde_json::{json, Map, Value};
 
-/// How long a connect, a write or the wait for a reply may take, in total.
+/// How long a connect, a write or the wait for a reply may take, in total (the
+/// connect is bounded by [`connect_within`], WR-08).
 ///
 /// Matches the spike client's `settimeout(15)`. It is a TOTAL deadline for the
 /// reply here rather than a per-`recv` timeout: a server trickling one byte every
@@ -156,10 +157,41 @@ fn serve_main(
     1
 }
 
+/// `connect(2)` bounded by `limit` (WR-08).
+///
+/// `UnixStream::connect` has no timeout, and it blocks for good when the listener's
+/// backlog is full (a stopped or wedged server). The connect therefore runs on a
+/// helper thread and the caller waits with `recv_timeout`; on a timeout the helper
+/// is abandoned (the process exits right after, which ends it).
+#[cfg(unix)]
+fn connect_within(
+    path: &std::ffi::OsStr,
+    limit: Duration,
+) -> Result<std::os::unix::net::UnixStream, ClientError> {
+    use std::os::unix::net::UnixStream;
+
+    let transport = |err: std::io::Error| ClientError::Transport {
+        detail: format!("connect: {err}"),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target = std::path::PathBuf::from(path);
+    std::thread::Builder::new()
+        .name("driverctl-connect".to_owned())
+        .spawn(move || {
+            let _ = tx.send(UnixStream::connect(target));
+        })
+        .map_err(transport)?;
+    match rx.recv_timeout(limit) {
+        Ok(result) => result.map_err(transport),
+        Err(_) => Err(ClientError::Transport {
+            detail: format!("connect: no connection within {} s", limit.as_secs().max(1)),
+        }),
+    }
+}
+
 /// Send one request and return the reply object.
 #[cfg(unix)]
 fn request(req: &Value) -> Result<Value, ClientError> {
-    use std::os::unix::net::UnixStream;
     use std::time::Instant;
 
     let transport = |what: &str, err: std::io::Error| ClientError::Transport {
@@ -172,9 +204,13 @@ fn request(req: &Value) -> Result<Value, ClientError> {
     };
     let deadline = Instant::now() + CLIENT_TIMEOUT;
 
-    let mut stream = UnixStream::connect(&path).map_err(|e| transport("connect", e))?;
+    let mut stream = connect_within(&path, CLIENT_TIMEOUT)?;
     stream
-        .set_write_timeout(Some(CLIENT_TIMEOUT))
+        .set_write_timeout(Some(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(1)),
+        ))
         .map_err(|e| transport("set write timeout", e))?;
 
     let mut line = serde_json::to_vec(req).map_err(|e| ClientError::BadResponse {
@@ -483,4 +519,48 @@ fn hook_main() -> i32 {
         _ => {}
     }
     0
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn wr08_connect_to_a_full_backlog_times_out_instead_of_blocking() {
+        let td = tempfile::TempDir::new().unwrap();
+        let sock = td.path().join("full.sock");
+        // Bound, listening, never accepting: the backlog fills and a further
+        // blocking connect(2) would wait forever.
+        let _listener = UnixListener::bind(&sock).unwrap();
+        let mut held = Vec::new();
+        let mut timed_out = false;
+        for _ in 0..10_000 {
+            match connect_within(sock.as_os_str(), Duration::from_millis(300)) {
+                Ok(stream) => held.push(stream),
+                Err(ClientError::Transport { detail }) => {
+                    assert!(detail.contains("no connection within"), "{detail}");
+                    timed_out = true;
+                    break;
+                }
+                Err(other) => panic!("unexpected error: {other}"),
+            }
+        }
+        assert!(
+            timed_out,
+            "the backlog never filled after {} connects",
+            held.len()
+        );
+    }
+
+    #[test]
+    fn wr08_connect_to_a_live_listener_still_succeeds_and_a_dead_path_errors() {
+        let td = tempfile::TempDir::new().unwrap();
+        let sock = td.path().join("ok.sock");
+        let _listener = UnixListener::bind(&sock).unwrap();
+        assert!(connect_within(sock.as_os_str(), Duration::from_secs(30)).is_ok());
+        let missing = td.path().join("none.sock");
+        let err = connect_within(missing.as_os_str(), Duration::from_secs(30)).unwrap_err();
+        assert!(err.to_string().starts_with("connect: "), "{err}");
+    }
 }
