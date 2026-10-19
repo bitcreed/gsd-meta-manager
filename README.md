@@ -49,16 +49,38 @@ all of them:
   markdown rendering in a project's Docs › Milestones sub-tab (`←` `→` inside
   the Docs tab switch Files / Milestones), without leaving the dashboard.
 
-### Not the same as GSD's claude-orchestration backend
+### Where it fits in the GSD ecosystem
 
-GSD 1.8.0 added an experimental, opt-in `claude-orchestration` execution backend.
-That backend parallelizes plan execution *inside a single Claude session on a
-single project* -- running a phase's waves concurrently via Claude Code's Workflow
-tool -- and produces the same commits and `SUMMARY.md` artifacts as normal
-execution, writing no new on-disk state format. GSD Meta Manager works at the
-opposite scope: it observes and acts *across many projects* from one terminal. The
-two are complementary -- orchestration speeds up work *within* one project's phase;
-the Meta Manager gives you the view and the controls *across* your whole portfolio.
+GSD Meta Manager sits beside GSD rather than inside it: it reads what GSD
+leaves on disk and writes only the few files listed below.
+
+| GSD piece | Relationship |
+|-----------|--------------|
+| gsd-core (`.planning/`) | What the app manages: each project's `.planning/` state, read straight from disk. Regularly synced to gsd-core releases -- see [Compatibility](#compatibility) |
+| `/gsd-progress`, `/gsd-manager` | One project, from inside a Claude session. This app covers every registered project from outside any session |
+| `claude-orchestration` backend | Runs one project's phase waves in parallel inside a single Claude session, leaving the same commits and `SUMMARY.md` files as normal execution -- complementary, and read like any other run |
+| Runtimes | Claude Code and Codex: live sessions are detected (Linux), and the experimental driver runs either (`claude -p` or `codex exec`). Resume is Claude-only |
+| gsd-tools | Called read-only, as `gsd-tools smart-entry --json`, for next-command suggestions |
+| Capabilities | Their `capabilities.*` config keys are on the Config tab; keys this build does not model round-trip losslessly as read-only rows. Installed packs are not read |
+| gsd-pi | Not supported: it keeps project state in its own `.gsd/` directory and database, not `.planning/` |
+
+What it writes:
+
+- `.planning/config.json` and `$GSD_HOME/.gsd/defaults.json`, on a Config-tab
+  save -- under GSD's own lock, replaced atomically.
+- `.planning/meta-manager/QUEUE.md` (Queue tab), its own config and log, and a
+  new project's directory with `git init` (`c`).
+- The experimental driver: run records under `.planning/meta-manager/`, a block
+  in `.git/info/exclude`, files in its data directory -- plus whatever the GSD
+  commands it launches write.
+
+What it never touches:
+
+- Session transcripts (a subagent's is checked only for its timestamp, never
+  opened), the GSD install, or installed capabilities.
+- `ROADMAP.md`, `STATE.md` or phase artifacts, except through your `$EDITOR`
+  (`e`). Git is read with `--no-optional-locks`; the app never commits or
+  pushes.
 
 ## Features
 
