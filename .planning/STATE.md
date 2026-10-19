@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: executing
-stopped_at: Phase 28 context gathered
-last_updated: "2026-10-19T18:41:20.825Z"
+stopped_at: Completed 28-01-PLAN.md
+last_updated: "2026-10-19T19:00:04.072Z"
 last_activity: 2026-10-19
-last_activity_desc: Phase 27 complete, transitioned to Phase 28
-state_head: 5eb719da6368d73a028bf9cfd8d0b9842cde2bca
+last_activity_desc: Phase 28 execution started
+state_head: bdf57f85d35e57fc58a482e22bb38fbf7219b79f
 progress:
   total_phases: 10
   completed_phases: 11
@@ -25,10 +25,6 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
 **Current focus:** Phase 28 — Sandboxed Driver Launcher
-2026-10-14, which replaced Phases 19/21/22/23 with Phases 26-31, following spikes 001/002.
-Autonomous Orchestration Preview, cut after the release gate itself was repaired. The v2.0
-**Autonomous Orchestration** milestone is NOT finished — v1.7.0/v1.7.1/v1.7.2 are interim releases
-cut mid-milestone, at Phase 22. Work resumes at Phase 22 (container-execution-target).
 
 ## Current Position
 
@@ -231,8 +227,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 28 (Sandboxed Driver Launcher) — READY TO EXECUTE
-Plan: Not started
+Phase: 28 (Sandboxed Driver Launcher) — EXECUTING
+Plan: 2 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -266,7 +262,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-19 - Completed quick task 261019-hqu: README: Where it fits in the GSD ecosystem
+Last activity: 2026-10-19 — Phase 28 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -477,6 +473,7 @@ verify-phase if the gate is fixed.
 | Phase 26.1 P09 | 20 min | 2 tasks | 3 files |
 | Phase 26.1 P10 | 20 min | 3 tasks | 2 files |
 | Phase 26.1 P11 | 30 min | 3 tasks | 5 files |
+| Phase 28 P01 | 55min | 1 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -625,6 +622,9 @@ Recent decisions affecting current work:
 - [Phase 27]: COALESCE_S = 45.0 strict <, fm_status is the single status definition (not VerificationStatus::from_raw)
 
 - [2026-10-18] Operator accepted ADJUST as final for VALID-02 (26.1-UAT test 1). VALID-01 and VALID-02 marked complete; VALID-02 traceability = ADJUST (Haiku-scripted r261-l7 evidence, Opus NOT-REACHED). Risk carried to Phases 28/29: exercise launcher deny/kill under the real driver.
+- [Phase 28]: 28-01: driver child gets env_clear + the exact pure child_env map instead of env_remove [inferred - audit]
+- [Phase 28]: 28-01: launcher state dir is created after the run lock so a refused launch writes nothing [inferred - audit]
+- [Phase 28]: 28-01: teardown order is stop serving, classify+set_terminal, remove socket, drop store last (R4); a None verdict writes nothing until 28-02's RunStore::end_launch
 
 ### Roadmap Evolution
 
@@ -798,9 +798,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-19T17:16:00.830Z
-Stopped at: Phase 28 context gathered
-Resume file: .planning/phases/28-sandboxed-driver-launcher/28-CONTEXT.md
+Last session: 2026-10-19T19:00:03.098Z
+Stopped at: Completed 28-01-PLAN.md
+Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
 

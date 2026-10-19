@@ -198,7 +198,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 - [ ] **LNCH-07**: Without bwrap or systemd-run (macOS), the launcher refuses by default. An explicit
   opt-in degraded mode runs unsandboxed, with caps enforced by process supervision, and the posture
   is recorded on the run and shown in the TUI `[inferred]`.
-- [ ] **LNCH-08**: Headless operation needs no tmux. An interactive or tmux attach is optional and
+- [x] **LNCH-08**: Headless operation needs no tmux. An interactive or tmux attach is optional and
   never on the control path.
 
 ### Master Prompt & Templates (PRMT): Phase 29
@@ -356,7 +356,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-05 | Phase 28 | Pending |
 | LNCH-06 | Phase 28 | Pending |
 | LNCH-07 | Phase 28 | Pending |
-| LNCH-08 | Phase 28 | Pending |
+| LNCH-08 | Phase 28 | Complete |
 | PRMT-01 | Phase 29 | Pending |
 | PRMT-02 | Phase 29 | Pending |
 | PRMT-03 | Phase 29 | Pending |

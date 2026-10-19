@@ -1085,11 +1085,11 @@ default. Hosts without bwrap or systemd-run get an explicit degraded mode.
      degraded mode then runs unsandboxed, with caps enforced by process supervision, and the posture
      is recorded on the run and shown in the TUI. Headless operation never needs tmux.
 
-**Plans**: 9 plans
+**Plans**: 1/9 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 28-01-PLAN.md — tracer: `driver launch` runs the driver in bwrap under a user scope from an embedded store, cap flags recorded (LNCH-01/08)
+- [x] 28-01-PLAN.md — tracer: `driver launch` runs the driver in bwrap under a user scope from an embedded store, cap flags recorded (LNCH-01/08)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 28-02-PLAN.md — run lifecycle (rc 3, crash-detected, fresh-exit relaunch under one lock, detached default) and `driver stop` killing the whole scope, live proof (LNCH-01/02, DRIVE-01)
@@ -1319,7 +1319,7 @@ Plans:
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
-| 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
+| 28. Sandboxed Driver Launcher | 1/9 | In Progress | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
 | 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
