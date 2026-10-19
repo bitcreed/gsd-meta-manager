@@ -2,6 +2,7 @@ pub mod backlog;
 pub mod config_json;
 pub mod config_secrets;
 pub mod disk_status;
+pub mod driver_frontmatter;
 pub mod git_ops;
 pub mod gsd_install;
 pub mod phase_num;
