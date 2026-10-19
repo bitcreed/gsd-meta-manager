@@ -38,20 +38,22 @@ fn out_line(text: &str) {
 pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
     match action {
         DriverAction::Launch(args) => launch_main(&args, config),
+        DriverAction::Stop {
+            project,
+            run_id,
+            wait_secs,
+        } => stop_main(&project, &run_id, wait_secs, config),
     }
 }
 
 /// The project root a `driver launch` target names, through the registry.
 #[cfg(target_os = "linux")]
-fn resolve_project(
-    args: &LaunchArgs,
-    config: Option<PathBuf>,
-) -> Result<(String, PathBuf), String> {
+fn resolve_project(target: &str, config: Option<PathBuf>) -> Result<(String, PathBuf), String> {
     let config_path = config.unwrap_or_else(Config::default_path);
     let config = load_config(&config_path).map_err(|e| format!("{e:#}"))?;
     let cwd =
         std::env::current_dir().map_err(|e| format!("cannot read the working directory: {e}"))?;
-    let alias = resolve_launch_target(&config, &args.project, &cwd)
+    let alias = resolve_launch_target(&config, target, &cwd)
         .map_err(|e| format!("{e}\n{}", e.suggestion()))?;
     let project = config
         .projects
@@ -77,7 +79,7 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             return 1;
         }
     }
-    let (alias, project) = match resolve_project(args, config.clone()) {
+    let (alias, project) = match resolve_project(&args.project, config.clone()) {
         Ok(resolved) => resolved,
         Err(message) => {
             err_line(&format!("driver launch: {message}"));
@@ -113,7 +115,7 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
                 ));
                 0
             }
-            Err(error) => report(&error),
+            Err(error) => report("launch", &error),
         };
     }
     match launch(options) {
@@ -126,17 +128,44 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             ));
             0
         }
-        Err(error) => report(&error),
+        Err(error) => report("launch", &error),
     }
+}
+
+/// `driver stop`: signal the launcher (or stop an orphaned scope) and say what
+/// happened. `1` when the launcher was signalled but still holds the run.
+#[cfg(target_os = "linux")]
+fn stop_main(target: &str, run_id: &str, wait_secs: u64, config: Option<PathBuf>) -> i32 {
+    use gsd_meta_manager::launcher::stop::{stop_run, StopReport};
+
+    let (_alias, project) = match resolve_project(target, config) {
+        Ok(resolved) => resolved,
+        Err(message) => {
+            err_line(&format!("driver stop: {message}"));
+            return 1;
+        }
+    };
+    match stop_run(&project, run_id, std::time::Duration::from_secs(wait_secs)) {
+        Ok(report) => {
+            out_line(&format!("driver stop: run {run_id}: {report}"));
+            i32::from(matches!(report, StopReport::StillRunning { .. }))
+        }
+        Err(error) => report("stop", &error),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn stop_main(_target: &str, _run_id: &str, _wait_secs: u64, _config: Option<PathBuf>) -> i32 {
+    report("stop", &LauncherError::UnsupportedPlatform)
 }
 
 /// The launcher needs `flock`, `renameat2`, `bwrap` and `systemd-run`: Linux only.
 #[cfg(not(target_os = "linux"))]
 fn launch_main(_args: &LaunchArgs, _config: Option<PathBuf>) -> i32 {
-    report(&LauncherError::UnsupportedPlatform)
+    report("launch", &LauncherError::UnsupportedPlatform)
 }
 
-fn report(error: &LauncherError) -> i32 {
-    err_line(&format!("driver launch: {error}"));
+fn report(verb: &str, error: &LauncherError) -> i32 {
+    err_line(&format!("driver {verb}: {error}"));
     error.exit_code()
 }

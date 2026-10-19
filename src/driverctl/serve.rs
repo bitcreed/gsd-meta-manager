@@ -452,7 +452,7 @@ async fn wait_for_stop_signal(stop: Arc<AtomicBool>, ready: mpsc::Sender<Result<
 
 /// Install the SIGTERM/SIGINT handlers and return once they are registered, so a
 /// signal sent after this returns is never lost.
-fn install_signal_handlers(stop: &Arc<AtomicBool>) -> Result<(), DriverctlError> {
+pub(crate) fn install_signal_handlers(stop: &Arc<AtomicBool>) -> Result<(), DriverctlError> {
     let (tx, rx) = mpsc::channel();
     let stop = Arc::clone(stop);
     std::thread::Builder::new()

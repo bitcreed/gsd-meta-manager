@@ -13,7 +13,10 @@
 //! 4. record the launch (`RUN | launch | n=<n> | mode=bwrap-scope`, the scope unit
 //!    and the cap limits), start the driver, tick the store every [`TICK`] until
 //!    it exits;
-//! 5. stop the (empty) scope and look at how the launch ended (D-16):
+//! 5. stop the (empty) scope and look at how the launch ended (D-16). A `SIGTERM`
+//!    or `SIGINT` to the launcher (`driver stop`, D-09) is the user stop: the
+//!    monitor stops the scope through [`Containment::stop`], the run is recorded
+//!    `stopped` with reason `stop:user`, and nothing relaunches:
 //!    * the driver ended its context with `fresh-exit` (status still `running`):
 //!      record `launch-end` with [`RunStore::end_launch`] and go back to step 4
 //!      **in the same process, with the lock and the socket still held** (D-05,
@@ -60,11 +63,11 @@ use crate::driver::lock::{
 use crate::driverctl::counters::{classify_exit, outstanding_dispatch, ExitClass};
 use crate::driverctl::log::parse_log;
 use crate::driverctl::serve::{
-    bind_run_socket, hash8, lock_store, socket_path, spawn_accept_loop, tick_once, valid_run_id,
-    validate_run_dir, EmbeddedServer, DRIVERS_REL, STALE_TEMP_AGE, TICK,
+    bind_run_socket, hash8, install_signal_handlers, lock_store, socket_path, spawn_accept_loop,
+    tick_once, valid_run_id, validate_run_dir, EmbeddedServer, DRIVERS_REL, STALE_TEMP_AGE, TICK,
 };
 use crate::driverctl::store::{
-    CapLimits, DriverSpec, LaunchSpec, RunStore, TerminalStatus, LOG_FILE,
+    CapLimits, DriverSpec, LaunchSpec, RunStore, TerminalOutcome, TerminalStatus, LOG_FILE,
 };
 use crate::error::LockError;
 use crate::state_reader::driver_frontmatter::RunStatus;
@@ -74,6 +77,14 @@ pub const LAUNCHER_MODE: &str = "bwrap-scope";
 
 /// How long `systemctl --user stop <scope>` may take after the driver exited.
 const SCOPE_STOP_BUDGET: Duration = Duration::from_secs(30);
+
+/// How long a user stop lets `systemctl --user stop <scope>` take. The scope
+/// carries `TimeoutStopSec=15`, so systemd escalates to `SIGKILL` inside this.
+const USER_STOP_BUDGET: Duration = Duration::from_secs(60);
+
+/// How long a user stop waits for the driver child to exit once the scope is
+/// stopped, before the child itself is killed.
+const CHILD_EXIT_WAIT: Duration = Duration::from_secs(5);
 
 /// How often the monitor loop looks at the child between ticks.
 const CHILD_POLL: Duration = Duration::from_millis(100);
@@ -221,12 +232,101 @@ struct LaunchContext {
     config_dir: PathBuf,
     sock: PathBuf,
     home: PathBuf,
+    /// Set by `SIGTERM`/`SIGINT` (`driver stop`): the user wants the run stopped.
+    user_stop: Arc<AtomicBool>,
+}
+
+/// What holds a launch's processes together, and so what stopping it means.
+///
+/// One arm today: the systemd scope. 28-04 adds the process-group arm of the
+/// explicit unsandboxed mode.
+enum Containment {
+    Scope {
+        /// The full unit name, `.scope` suffix included.
+        unit: String,
+    },
+}
+
+impl Containment {
+    /// Stop everything the launch started and reap `child`.
+    ///
+    /// `systemctl --user stop <unit>` signals every process of the cgroup (a
+    /// `setsid` grandchild included, which a process-group kill would miss) and
+    /// systemd escalates to `SIGKILL` after the unit's `TimeoutStopSec`. It runs
+    /// on a helper thread while this one keeps reaping `child`: the scope's main
+    /// process is OUR child, a zombie stays in the cgroup until it is waited on,
+    /// and a stop that waits for an empty cgroup would otherwise wait for us.
+    /// If the child is still there a grace period after `systemctl` returned (the
+    /// scope did not exist yet, or systemd is gone) it is killed directly:
+    /// `bwrap` is its pid-namespace init, so that takes the sandbox with it.
+    fn stop(&self, child: &mut Child) {
+        let stopper = match self {
+            Containment::Scope { unit } => {
+                let unit = unit.clone();
+                std::thread::Builder::new()
+                    .name("scope-stop".to_owned())
+                    .spawn(move || {
+                        run_bounded(
+                            "systemctl",
+                            &["--user".into(), "stop".into(), unit.into()],
+                            None,
+                            &[],
+                            USER_STOP_BUDGET,
+                        )
+                    })
+                    .ok()
+            }
+        };
+        let mut stopper_done_at: Option<Instant> = None;
+        loop {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            if stopper_done_at.is_none() && stopper.as_ref().is_none_or(|h| h.is_finished()) {
+                stopper_done_at = Some(Instant::now());
+            }
+            if stopper_done_at.is_some_and(|at| at.elapsed() >= CHILD_EXIT_WAIT) {
+                let _ = child.kill();
+                break;
+            }
+            std::thread::sleep(CHILD_POLL);
+        }
+        if let Some(handle) = stopper {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Containment {
+    /// The belt to `--die-with-parent`'s braces after the driver exited by itself:
+    /// stop whatever is left of the containment. Best effort.
+    fn stop_leftovers(&self) {
+        match self {
+            Containment::Scope { unit } => {
+                let _ = run_bounded(
+                    "systemctl",
+                    &["--user".into(), "stop".into(), unit.into()],
+                    None,
+                    &[],
+                    SCOPE_STOP_BUDGET,
+                );
+            }
+        }
+    }
 }
 
 /// How the driver process ended.
 struct Exited {
     rc: i32,
     result_ok: bool,
+    /// The launcher stopped it because the user asked (`driver stop`).
+    user_stopped: bool,
+}
+
+/// How the wait on the driver child ended.
+struct Waited {
+    status: std::process::ExitStatus,
+    user_stopped: bool,
 }
 
 /// Run one headless driver for `opts.run_id` and block until it ends.
@@ -274,6 +374,12 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         },
     })?;
 
+    // D-09: from here a SIGTERM/SIGINT is the user's stop, not the end of this
+    // process. Registered before `begin_launch`, as `serve` orders it, so a signal
+    // sent once the lock is held is never lost.
+    let user_stop = Arc::new(AtomicBool::new(false));
+    install_signal_handlers(&user_stop)?;
+
     // Both lock files exist from here on: bwrap masks them with /dev/null.
     fs::OpenOptions::new()
         .create(true)
@@ -317,6 +423,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         config_dir,
         sock,
         home,
+        user_stop,
     };
     let mut session = session;
     loop {
@@ -349,6 +456,12 @@ fn run_one_launch(
     session: &mut Session,
     ctx: &LaunchContext,
 ) -> Result<AfterLaunch, LauncherError> {
+    if ctx.user_stop.load(Ordering::SeqCst) {
+        // Asked to stop before this launch began (or between two): start nothing.
+        session.stop_serving();
+        record_user_stop(session, None)?;
+        return Ok(AfterLaunch::Finished);
+    }
     let n = lock_store(&session.store)
         .state()
         .launches
@@ -387,6 +500,13 @@ fn finish_launch(
     ctx: &LaunchContext,
     exited: &Exited,
 ) -> Result<AfterLaunch, LauncherError> {
+    if exited.user_stopped || ctx.user_stop.load(Ordering::SeqCst) {
+        // The driver is gone and so is its scope. A stop that arrives while the
+        // driver is exiting by itself is still the user's stop: nothing relaunches.
+        session.stop_serving();
+        record_user_stop(session, Some(exited.rc))?;
+        return Ok(AfterLaunch::Finished);
+    }
     let fresh_exit = {
         let guard = lock_store(&session.store);
         let state = guard.state();
@@ -625,19 +745,28 @@ fn supervise(
         })?;
     drop(env);
 
-    let status = wait_ticking(session, &mut child, &ctx.project)?;
+    let containment = Containment::Scope {
+        unit: scope.to_owned(),
+    };
+    let Waited {
+        status,
+        user_stopped,
+    } = wait_ticking(
+        session,
+        &mut child,
+        &ctx.project,
+        &ctx.user_stop,
+        &containment,
+    )?;
     // One last look: a verification written just before the exit still counts.
     tick_once(&session.store, &ctx.project);
 
     // The scope normally ended with its last process; this is the belt to
-    // `--die-with-parent`'s braces, and it is best effort.
-    let _ = run_bounded(
-        "systemctl",
-        &["--user".into(), "stop".into(), scope.into()],
-        None,
-        &[],
-        SCOPE_STOP_BUDGET,
-    );
+    // `--die-with-parent`'s braces, and it is best effort. A user stop has
+    // already stopped it.
+    if !user_stopped {
+        containment.stop_leftovers();
+    }
 
     let rc = status
         .code()
@@ -646,20 +775,39 @@ fn supervise(
     Ok(Exited {
         rc,
         result_ok: last_result_ok(&out_path),
+        user_stopped,
     })
 }
 
-/// Wait for `child`, running [`tick_once`] about every [`TICK`].
+/// Wait for `child`, running [`tick_once`] about every [`TICK`], and stop it
+/// through `containment` as soon as `user_stop` is set.
 fn wait_ticking(
     session: &Session,
     child: &mut Child,
     project: &Path,
-) -> Result<std::process::ExitStatus, LauncherError> {
+    user_stop: &AtomicBool,
+    containment: &Containment,
+) -> Result<Waited, LauncherError> {
     loop {
         let slice_started = Instant::now();
         while slice_started.elapsed() < TICK {
+            if user_stop.load(Ordering::SeqCst) {
+                containment.stop(child);
+                return match child.wait() {
+                    Ok(status) => Ok(Waited {
+                        status,
+                        user_stopped: true,
+                    }),
+                    Err(e) => Err(io_error("wait for the stopped driver", e)),
+                };
+            }
             match child.try_wait() {
-                Ok(Some(status)) => return Ok(status),
+                Ok(Some(status)) => {
+                    return Ok(Waited {
+                        status,
+                        user_stopped: false,
+                    })
+                }
                 Ok(None) => std::thread::sleep(CHILD_POLL),
                 Err(e) => {
                     let _ = child.kill();
@@ -670,6 +818,17 @@ fn wait_ticking(
         }
         tick_once(&session.store, project);
     }
+}
+
+/// Record the user's stop (D-09): `stopped` with reason `stop:user`. A terminal
+/// status the driver had already recorded is kept, and then the launch end is
+/// logged without a status change like any other driver-ended launch.
+fn record_user_stop(session: &Session, rc: Option<i32>) -> Result<(), LauncherError> {
+    let mut store = lock_store(&session.store);
+    if store.set_terminal(TerminalStatus::Stopped, "stop:user")? == TerminalOutcome::KeptDriverEnd {
+        store.end_launch(rc)?;
+    }
+    Ok(())
 }
 
 /// Record how the launch ended (D-16): a driver `RUN end` keeps the status the

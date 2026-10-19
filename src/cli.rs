@@ -412,6 +412,16 @@ pub enum DriverAction {
     // otherwise size the whole enum (`clippy::large_enum_variant`).
     /// Run the headless driver for an existing run inside the sandbox
     Launch(Box<LaunchArgs>),
+    /// Stop a run: signal its launcher, which stops the whole sandbox scope
+    Stop {
+        /// Alias or path of a registered project
+        project: String,
+        /// The run id: `.planning/meta-manager/drivers/<run-id>`
+        run_id: String,
+        /// How long to wait for the launcher to finish stopping, in seconds
+        #[arg(long, default_value_t = 60)]
+        wait_secs: u64,
+    },
 }
 
 /// The master prompt's loop mode (`{MODE}` in the prompt).
@@ -917,6 +927,66 @@ mod tests {
         };
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
         assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
+    }
+
+    fn driver_action(args: &[&str]) -> Result<DriverAction, clap::Error> {
+        let argv: Vec<&str> = ["gsd-meta-manager", "driver"]
+            .into_iter()
+            .chain(args.iter().copied())
+            .collect();
+        match Cli::try_parse_from(argv)?.command {
+            Some(Commands::Driver { action }) => Ok(action),
+            _ => panic!("did not resolve to Commands::Driver"),
+        }
+    }
+
+    #[test]
+    fn driver_launch_detaches_unless_foreground_and_hides_the_daemon_flag() {
+        let launch = |extra: &[&str]| {
+            let mut args = vec!["launch", "p", "r1", "--prompt-file", "/x/p.md"];
+            args.extend_from_slice(extra);
+            match driver_action(&args).expect("parses") {
+                DriverAction::Launch(args) => *args,
+                _ => panic!("not a launch"),
+            }
+        };
+        let detached = launch(&[]);
+        assert!(!detached.foreground && !detached.daemon_child);
+        assert!(launch(&["--foreground"]).foreground);
+        assert!(launch(&["--foreground", "--daemon-child"]).daemon_child);
+
+        let mut driver = Cli::command();
+        let help = driver
+            .find_subcommand_mut("driver")
+            .and_then(|d| d.find_subcommand_mut("launch"))
+            .expect("driver launch exists")
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--foreground"), "{help}");
+        assert!(!help.contains("daemon-child"), "{help}");
+    }
+
+    #[test]
+    fn driver_stop_takes_a_project_a_run_id_and_a_wait() {
+        match driver_action(&["stop", "p", "r1"]).expect("parses") {
+            DriverAction::Stop {
+                project,
+                run_id,
+                wait_secs,
+            } => {
+                assert_eq!((project.as_str(), run_id.as_str()), ("p", "r1"));
+                assert_eq!(wait_secs, 60, "the default wait");
+            }
+            _ => panic!("not a stop"),
+        }
+        match driver_action(&["stop", "p", "r1", "--wait-secs", "5"]).expect("parses") {
+            DriverAction::Stop { wait_secs, .. } => assert_eq!(wait_secs, 5),
+            _ => panic!("not a stop"),
+        }
+        assert!(
+            driver_action(&["stop", "p"]).is_err(),
+            "the run id is required"
+        );
     }
 
     #[test]

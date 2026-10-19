@@ -36,10 +36,13 @@
 //!    stdout is a file; there is no `tmux` argv and no terminal on the launch or
 //!    control path.
 //!
+//! 9. **The run lifecycle is the launcher's (28-02).** `run` holds the lock across
+//!    `fresh-exit` relaunches, stops the scope on a `SIGTERM` (`stop` is the
+//!    sender), and detaches into its own session unless `--foreground`.
+//!
 //! # What this module root leaves to later plans
 //!
-//! The lifecycle (rc 3 on a held lock is here; crash-detected relaunch, fresh-exit
-//! relaunch, stop and the detached default are 28-02), the sandbox hardening
+//! The sandbox hardening
 //! (28-03), the degraded mode (28-04), the caps' enforcement (28-05), auth
 //! onboarding (28-06), the push step (28-07) and the TUI (28-08).
 
@@ -53,6 +56,8 @@ pub mod config_dir;
 pub mod process;
 #[cfg(target_os = "linux")]
 pub mod run;
+#[cfg(target_os = "linux")]
+pub mod stop;
 
 /// Why a launch did not run (or could not continue).
 ///
