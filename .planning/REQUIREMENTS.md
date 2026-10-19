@@ -166,7 +166,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 ### Launcher (LNCH): Phase 28
 
-- [ ] **LNCH-01**: `gsd-meta-manager driver launch` runs the master headless inside bwrap under
+- [x] **LNCH-01**: `gsd-meta-manager driver launch` runs the master headless inside bwrap under
   `systemd-run --user --scope`. Stop kills the whole scope, including descendants.
 - [ ] **LNCH-02**: The run lock is an flock held by the launcher outside the sandbox. It reuses
   Phase 17 CTRL-05 and is never a pid file. A second launcher is refused, and a relaunch after a
@@ -349,7 +349,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | DCTL-02 | Phase 27 | Complete |
 | DCTL-03 | Phase 27 | Complete |
 | DCTL-04 | Phase 27 | Complete |
-| LNCH-01 | Phase 28 | Pending |
+| LNCH-01 | Phase 28 | Complete |
 | LNCH-02 | Phase 28 | Pending |
 | LNCH-03 | Phase 28 | Pending |
 | LNCH-04 | Phase 28 | Pending |

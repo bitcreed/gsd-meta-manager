@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: executing
-stopped_at: Completed 28-06-PLAN.md
-last_updated: "2026-10-19T20:48:39.742Z"
+stopped_at: Completed 28-07-PLAN.md
+last_updated: "2026-10-19T21:07:30.840Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 28 execution started
-state_head: a6eb87aeb70c66efec765825eef36bce0ccdfe52
+state_head: c5c031ebd1480092ad2810d96410086832f4c5cc
 progress:
   total_phases: 10
   completed_phases: 11
@@ -228,7 +228,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 28 (Sandboxed Driver Launcher) — EXECUTING
-Plan: 7 of 9
+Plan: 8 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -479,6 +479,7 @@ verify-phase if the gate is fixed.
 | Phase 28 P04 | 40 min | 2 tasks | 11 files |
 | Phase 28 P05 | 20 min | 2 tasks | 6 files |
 | Phase 28 P06 | 18 min | 2 tasks | 13 files |
+| Phase 28 P07 | 16 min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -641,6 +642,7 @@ Recent decisions affecting current work:
 - [Phase 28]: Wall clock is checked at the 2 s tick; cap-minutes 0/NaN is refused; host token re-read precedes the auth-relaunch line; is_auth_failure needs an error result [inferred - audit, 28-05] — Wall clock is checked at the 2 s tick; cap-minutes 0/NaN is refused; host token re-read precedes the auth-relaunch line; is_auth_failure needs an error result [inferred - audit, 28-05]
 - [Phase 28]: 28-06: token shape check is advisory (sk-ant-oat01- prefix warns, does not refuse); guard budget is 3 blocks per outstanding dispatch [inferred — audit]
 - [Phase 28]: 28-06: an existing token directory is tightened (group/other write removed), not refused, and store_token pins 0600 at open instead of a process-wide umask [inferred — audit]
+- [Phase 28]: Launcher runs and the {/}/X keys exist only where the Driver tab exists (experimental gate); the footer tiers are untouched and the keys are named on the section header [inferred — audit] — Three keys unbound everywhere else; the footer has three measured width forms pinned by test with no room for hints. The section never takes the legacy tab's first 15 rows, windows around the highlight, and collapses to a count (with an UNSANDBOXED count) when one row is spare.
 
 ### Roadmap Evolution
 
@@ -814,8 +816,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-19T20:48:38.743Z
-Stopped at: Completed 28-06-PLAN.md
+Last session: 2026-10-19T21:07:29.840Z
+Stopped at: Completed 28-07-PLAN.md
 Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
