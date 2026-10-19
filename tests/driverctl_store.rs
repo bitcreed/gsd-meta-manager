@@ -1372,6 +1372,24 @@ fn set_terminal_keeps_a_driver_run_end() {
 }
 
 #[test]
+fn wr02_set_terminal_after_a_fresh_exit_records_the_stop() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(with_driver()).unwrap();
+    log_ok(&mut store, "end", &[("reason", "fresh-exit")]);
+    assert_eq!(fx.state_json()["status"], "running");
+    let outcome = store
+        .set_terminal(TerminalStatus::Stopped, "serve:signal")
+        .unwrap();
+    assert_eq!(outcome, TerminalOutcome::Applied);
+    assert_eq!(
+        fx.state_json()["status"],
+        "stopped",
+        "a clean stop after fresh-exit must not stay `running` (reader derives crashed)"
+    );
+}
+
+#[test]
 fn no_request_can_set_crashed_or_stalled_or_rewrite_a_counter() {
     let fx = Fixture::new();
     let mut store = fx.open();

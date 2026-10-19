@@ -1020,7 +1020,11 @@ impl RunStore {
         status: TerminalStatus,
         reason: &str,
     ) -> Result<TerminalOutcome, StoreError> {
-        if self.state.ended_by_driver {
+        // WR-02: only a *terminal* driver end is kept. `fresh-exit` records
+        // `running` with `ended_by_driver` set; keeping that would leave a cleanly
+        // stopped `serve` at `running` with its lock released, which the reader
+        // derives as `crashed`.
+        if self.state.ended_by_driver && self.state.status.is_terminal() {
             return Ok(TerminalOutcome::KeptDriverEnd);
         }
         let reason = log::one_line("reason", Some(reason), 200).unwrap_or_else(|_| {
