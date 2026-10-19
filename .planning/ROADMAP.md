@@ -1025,14 +1025,14 @@ liveness class for a headless driver ended while a dispatched worker was still o
      VERIFICATION.md scan and the `caps.gap_rounds.per_phase` state, and exposes a cap hook point
      for Phase 28. Heartbeat-only rewrites are coalesced to at most one every 120 s.
 
-**Plans**: 6 plans
+**Plans**: 3/6 plans executed
 
 Plans:
 
 **Wave 1**
-- [ ] 27-01-PLAN.md — Run-lock primitives (acquire_at/_with_retry, probe_at) and the exchange-verify DIRECTION.md splice + write_body under DIRECTION.lock; editor-race port and lock race tests 1-5 (DCTL-02)
-- [ ] 27-02-PLAN.md — driverctl module root; 26.1 coalesced gap counter with its VERIFICATION.md scan, LOG grammar, outstanding_dispatch / classify_exit, replayed from spike-003 evidence (DCTL-04)
-- [ ] 27-03-PLAN.md — Frontmatter schema v1: typed DriverFrontmatter reader + hand emitter, `stalled`, inline item_states, golden + 18 spike fixtures (DCTL-03)
+- [x] 27-01-PLAN.md — Run-lock primitives (acquire_at/_with_retry, probe_at) and the exchange-verify DIRECTION.md splice + write_body under DIRECTION.lock; editor-race port and lock race tests 1-5 (DCTL-02)
+- [x] 27-02-PLAN.md — driverctl module root; 26.1 coalesced gap counter with its VERIFICATION.md scan, LOG grammar, outstanding_dispatch / classify_exit, replayed from spike-003 evidence (DCTL-04)
+- [x] 27-03-PLAN.md — Frontmatter schema v1: typed DriverFrontmatter reader + hand emitter, `stalled`, inline item_states, golden + 18 spike fixtures (DCTL-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 27-04-PLAN.md — Hidden `driverctl log|show|hook` client dispatched before tracing, fail-closed gate, MASTER-PROMPT parse; reader liveness table R1-R6 (DCTL-01, DCTL-03)
@@ -1231,7 +1231,7 @@ Plans:
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
-| 27. driverctl & Driver Frontmatter | 0/0 | Not started | - |
+| 27. driverctl & Driver Frontmatter | 3/6 | In Progress | - |
 | 28. Sandboxed Driver Launcher | 0/0 | Not started | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
 | 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
