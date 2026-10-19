@@ -1,0 +1,10 @@
+direction_body_sha256_before=0eaf5f31fe7926117990d22939c01c0ad3d0b90f46434ce358205932b2668cac
+launch_rc_1=0
+second_launcher_rc=3
+scope_pids_before_kill=3
+scope_gone_s=0.0
+lock_free_after_kill=yes
+status_after_kill=running
+stop_after_kill=driver stop: run lacc-l5: the run is not running
+launch_rc_2=0
+direction_body_sha256_after=0eaf5f31fe7926117990d22939c01c0ad3d0b90f46434ce358205932b2668cac

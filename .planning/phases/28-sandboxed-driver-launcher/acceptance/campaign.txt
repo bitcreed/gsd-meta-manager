@@ -1,1 +1,3 @@
 # <utc> <mode> <launch> <usd> <source>  (D-34: sum may never pass 20)
+2026-10-19T22:07:53Z l5 1 0.15 budget-charged
+2026-10-19T22:08:01Z l5 2 0.0033 result

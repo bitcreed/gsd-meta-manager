@@ -1,0 +1,5 @@
+L5-1 PASS a second launcher on the live run was refused with rc 3
+L5-2 PASS after SIGKILL the lock reads free, status still 'running' (reader derives crashed), scope gone in 0.0s
+L5-3 PASS RUN | crash-detected | previous_launch=1 (line 39)
+L5-4 PASS crash-detected (line 39) precedes launch n=2 (line 40)
+RESULT PASS

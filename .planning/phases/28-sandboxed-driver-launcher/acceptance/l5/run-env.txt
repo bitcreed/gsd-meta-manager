@@ -1,0 +1,12 @@
+CASE=l5
+ATTEMPT=first
+MODEL=haiku
+PROMPT=.planning/spikes/002-launcher-caps-and-tool-frontmatter/experiment/cap-tests/L5-relaunch.md
+PROMPT_SHA256=97502353724090a63e3d90c1a335ce3855af23c9faafe111cfe4e07834139876
+CAPS=dispatches=10,minutes=10,gap_rounds=2
+MAX_BUDGET_USD=0.15
+CLAUDE_VERSION=2.1.304 (Claude Code)
+BINARY_SHA256=b806d97fb3bba103a981c23d50f1cab1a884de12a36a7d31130d1486cf4d6a4a
+HEAD=a71a3389eb1ee6cfc7630a7b16740d28ab88826e
+STARTED_UTC=2026-10-19T22:07:47Z
+ENDED_UTC=2026-10-19T22:08:01Z

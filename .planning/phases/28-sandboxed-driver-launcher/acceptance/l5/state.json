@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "run_id": "lacc-l5",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/launcher-acceptance/l5-20261019T220747Z/project",
+  "status": "stopped",
+  "status_reason": "driver:stop",
+  "created_at": "2026-10-19T22:07:47Z",
+  "updated_at": "2026-10-19T22:08:01Z",
+  "launches": 2,
+  "current": {
+    "item": null,
+    "phase": null,
+    "step": null
+  },
+  "items": {},
+  "connections": [
+    {
+      "role": "driver",
+      "state": "lost",
+      "session_id": "8d4bc25e-9d8f-4d69-9f1d-3c48946aeefd",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-lacc-l5-30e60c68-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-19T22:07:47Z",
+      "last_heartbeat": "2026-10-19T22:07:52Z"
+    },
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 2645109,
+      "scope_unit": "gsdmm-driver-lacc-l5-30e60c68-2.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-19T22:07:53Z",
+      "last_heartbeat": "2026-10-19T22:07:53Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "ca5dc671-5305-47c8-acc2-7b5345952b89",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-lacc-l5-30e60c68-2.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-19T22:07:53Z",
+      "last_heartbeat": "2026-10-19T22:08:00Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 0,
+      "limit": 10
+    },
+    "wall_clock_min": {
+      "used": 0.1,
+      "limit": 10.0
+    },
+    "gap_rounds": {
+      "limit": 2,
+      "seen": {},
+      "per_phase": {},
+      "last_write": {},
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 0,
+  "denied_dispatches": 0,
+  "last_event": {
+    "at": "2026-10-19T22:08:01Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "rc=0 status=stopped"
+  },
+  "ended_by_driver": true,
+  "active_seconds": 7.405441152,
+  "launch_branch": "main",
+  "launch_start_sha": "cf479ce3f1fd8cc23aace0da737cb5ad3a960f04",
+  "sandbox": "bwrap-scope"
+}
