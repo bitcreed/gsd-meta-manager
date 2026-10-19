@@ -102,6 +102,7 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             wall_clock_min: Some(args.cap_minutes),
             gap_rounds: Some(args.cap_gap_rounds),
         },
+        unsandboxed: args.unsandboxed,
     };
     if !args.foreground {
         return match launch_detached(&options, config.as_deref()) {
@@ -160,9 +161,25 @@ fn stop_main(_target: &str, _run_id: &str, _wait_secs: u64, _config: Option<Path
 }
 
 /// The launcher needs `flock`, `renameat2`, `bwrap` and `systemd-run`: Linux only.
+///
+/// D-31: without `--unsandboxed` the refusal names what a sandboxed run needs
+/// (`bwrap` and `systemd-run`); with it the run store is what is missing, because
+/// the degraded mode is functional only on Linux in this phase. Both exit 1.
 #[cfg(not(target_os = "linux"))]
-fn launch_main(_args: &LaunchArgs, _config: Option<PathBuf>) -> i32 {
-    report("launch", &LauncherError::UnsupportedPlatform)
+fn launch_main(args: &LaunchArgs, _config: Option<PathBuf>) -> i32 {
+    if args.unsandboxed {
+        err_line(
+            "driver launch: unsupported platform: the run store needs Linux \
+             (no renamex_np splice yet)",
+        );
+        return 1;
+    }
+    report(
+        "launch",
+        &LauncherError::SandboxUnavailable {
+            missing: vec!["bwrap".to_owned(), "systemd-run".to_owned()],
+        },
+    )
 }
 
 fn report(verb: &str, error: &LauncherError) -> i32 {

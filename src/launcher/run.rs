@@ -46,10 +46,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use rustix::process::Signal;
 use serde_json::Value;
 
 use super::auth::resolve_launch_token;
 use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec};
+use super::host::{decide, detect, Posture};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::sandbox::{
     bwrap_argv, child_env, claude_argv, render_prompt, scope_unit_name, systemd_run_argv,
@@ -57,6 +59,7 @@ use super::sandbox::{
 };
 use super::LauncherError;
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
+use crate::driver::kill::{signal_group, DRIVER_TEARDOWN_GRACE};
 use crate::driver::lock::{
     acquire_at_with_retry, probe_at, read_holder_at, run_lock_path, LockProbe, ACQUIRE_RETRY_BUDGET,
 };
@@ -73,6 +76,7 @@ use crate::error::LockError;
 use crate::state_reader::driver_frontmatter::RunStatus;
 
 /// The launcher connection's mode for a sandboxed launch (`RUN | launch | mode=`).
+/// A degraded launch records `degraded` instead ([`Posture::as_str`]).
 pub const LAUNCHER_MODE: &str = "bwrap-scope";
 
 /// How long `systemctl --user stop <scope>` may take after the driver exited.
@@ -134,6 +138,9 @@ pub struct LaunchOptions {
     pub max_budget_usd: f64,
     /// The caps to record on the run (D-12..D-14); enforcement is 28-05's.
     pub limits: CapLimits,
+    /// `--unsandboxed` (D-29): run the driver as a supervised process group with no
+    /// `bwrap` and no scope. Per launch; there is no config default.
+    pub unsandboxed: bool,
 }
 
 /// How the run stands when [`launch`] returns.
@@ -234,17 +241,23 @@ struct LaunchContext {
     home: PathBuf,
     /// Set by `SIGTERM`/`SIGINT` (`driver stop`): the user wants the run stopped.
     user_stop: Arc<AtomicBool>,
+    /// How the driver is contained, decided once from the host probes (D-28).
+    posture: Posture,
 }
 
 /// What holds a launch's processes together, and so what stopping it means.
 ///
-/// One arm today: the systemd scope. 28-04 adds the process-group arm of the
-/// explicit unsandboxed mode.
+/// Two arms: the systemd scope of the sandboxed mode and the process group of the
+/// explicit `--unsandboxed` mode (D-29).
 enum Containment {
     Scope {
         /// The full unit name, `.scope` suffix included.
         unit: String,
     },
+    /// The driver is a process-group leader (`process_group(0)`), so its group id is
+    /// its pid. A process that leaves the group (`setsid`) escapes this: that is
+    /// what the missing scope costs, and why the mode is opt-in.
+    Group { pgid: u32 },
 }
 
 impl Containment {
@@ -261,6 +274,10 @@ impl Containment {
     /// `bwrap` is its pid-namespace init, so that takes the sandbox with it.
     fn stop(&self, child: &mut Child) {
         let stopper = match self {
+            Containment::Group { pgid } => {
+                stop_group(*pgid, child);
+                return;
+            }
             Containment::Scope { unit } => {
                 let unit = unit.clone();
                 std::thread::Builder::new()
@@ -302,6 +319,11 @@ impl Containment {
     /// stop whatever is left of the containment. Best effort.
     fn stop_leftovers(&self) {
         match self {
+            // The leader is already reaped; this is best effort for the rest of
+            // the group (a background job the driver left behind).
+            Containment::Group { pgid } => {
+                let _ = signal_group(*pgid, Signal::KILL);
+            }
             Containment::Scope { unit } => {
                 let _ = run_bounded(
                     "systemctl",
@@ -313,6 +335,27 @@ impl Containment {
             }
         }
     }
+}
+
+/// The synchronous twin of the Phase 17 kill escalation (`driver::kill`): `SIGTERM`
+/// to the group, up to [`DRIVER_TEARDOWN_GRACE`] for the leader to exit, then
+/// `SIGKILL` to whatever is left of the group. The caller reaps `child`.
+///
+/// The final `SIGKILL` also goes out when the leader exited inside the grace: a
+/// descendant that ignored `SIGTERM` must not outlive the launch. If the leader
+/// was already reaped and the group is empty, `kill(-pgid)` is an `ESRCH` to
+/// ignore; a recycled pid inside that millisecond window would need a pid
+/// wrap-around and is accepted `[inferred — audit]`.
+fn stop_group(pgid: u32, child: &mut Child) {
+    let _ = signal_group(pgid, Signal::TERM);
+    let deadline = Instant::now() + DRIVER_TEARDOWN_GRACE;
+    while Instant::now() < deadline {
+        if !matches!(child.try_wait(), Ok(None)) {
+            break;
+        }
+        std::thread::sleep(CHILD_POLL);
+    }
+    let _ = signal_group(pgid, Signal::KILL);
 }
 
 /// How the driver process ended.
@@ -357,6 +400,10 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         detail: "the home directory is unknown".to_owned(),
     })?;
     let state_dir = run_state_dir_in(&root, &project, &run_id);
+
+    // D-28: the host probes, after every refusal that needs no process and before
+    // the lock, so a host that cannot sandbox writes nothing.
+    let posture = decide(&detect(), opts.unsandboxed)?;
 
     // D-07: the run lock first. Nothing below writes before this.
     let lock = acquire_at_with_retry(
@@ -424,6 +471,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         sock,
         home,
         user_stop,
+        posture,
     };
     let mut session = session;
     loop {
@@ -469,14 +517,19 @@ fn run_one_launch(
     let unit = scope_unit_name(&ctx.run_id, &hash8(&ctx.run_dir), n);
     let scope = format!("{unit}.scope");
 
+    // A degraded launch has no scope to name.
+    let scope_unit = match ctx.posture {
+        Posture::BwrapScope => Some(scope.clone()),
+        Posture::Degraded { .. } => None,
+    };
     lock_store(&session.store).begin_launch(LaunchSpec {
-        launcher_mode: LAUNCHER_MODE.to_owned(),
+        launcher_mode: ctx.posture.as_str().to_owned(),
         limits: ctx.opts.limits.clone(),
         driver: Some(DriverSpec {
             model: Some(ctx.opts.model.clone()),
             mode: "headless".to_owned(),
         }),
-        scope_unit: Some(scope.clone()),
+        scope_unit,
     })?;
 
     match supervise(session, ctx, n, &unit, &scope) {
@@ -560,6 +613,9 @@ pub fn launch_argv(opts: &LaunchOptions, config: Option<&Path>) -> Vec<OsString>
     if let Some(rounds) = opts.limits.gap_rounds {
         argv.extend(["--cap-gap-rounds".into(), rounds.to_string().into()]);
     }
+    if opts.unsandboxed {
+        argv.push("--unsandboxed".into());
+    }
     argv.extend(["--foreground", "--daemon-child"].map(OsString::from));
     argv
 }
@@ -628,6 +684,10 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
         .map(std::path::absolute)
         .transpose()
         .map_err(|e| io_error("resolve --config", e))?;
+
+    // D-28: refuse here, in the caller's terminal, before any state directory or
+    // log exists. The daemon decides again for itself.
+    decide(&detect(), opts.unsandboxed)?;
 
     let log_path = detached_log_path(&project, &run_id)?;
     let state_dir = log_path.parent().ok_or_else(|| LauncherError::Io {
@@ -711,8 +771,15 @@ fn supervise(
         ctx.opts.loop_mode.as_str(),
     );
     let driver_argv = claude_argv(&prompt, &ctx.opts.model, ctx.opts.max_budget_usd);
-    let spec = SandboxSpec::from_host(paths, &ctx.home);
-    let argv = systemd_run_argv(unit, None, &bwrap_argv(&spec, &driver_argv));
+    // D-29: the degraded driver is `claude` itself: same env, config dir and socket,
+    // but no bwrap and no scope, so none of the 28-03 isolation applies to it.
+    let argv = match ctx.posture {
+        Posture::BwrapScope => {
+            let spec = SandboxSpec::from_host(paths, &ctx.home);
+            systemd_run_argv(unit, None, &bwrap_argv(&spec, &driver_argv))
+        }
+        Posture::Degraded { .. } => driver_argv,
+    };
 
     let mut path = ctx.config_dir.join("bin").into_os_string();
     if let Some(host_path) = std::env::var_os("PATH") {
@@ -741,12 +808,22 @@ fn supervise(
 
     let mut child =
         spawn_launch_child(&argv, &env, &ctx.project, out).map_err(|e| LauncherError::Spawn {
-            detail: format!("systemd-run: {e}"),
+            detail: format!(
+                "{}: {e}",
+                match ctx.posture {
+                    Posture::BwrapScope => "systemd-run",
+                    Posture::Degraded { .. } => "claude",
+                }
+            ),
         })?;
     drop(env);
 
-    let containment = Containment::Scope {
-        unit: scope.to_owned(),
+    let containment = match ctx.posture {
+        Posture::BwrapScope => Containment::Scope {
+            unit: scope.to_owned(),
+        },
+        // `spawn_launch_child` made the child a group leader: its pid is the pgid.
+        Posture::Degraded { .. } => Containment::Group { pgid: child.id() },
     };
     let Waited {
         status,
@@ -762,8 +839,9 @@ fn supervise(
     tick_once(&session.store, &ctx.project);
 
     // The scope normally ended with its last process; this is the belt to
-    // `--die-with-parent`'s braces, and it is best effort. A user stop has
-    // already stopped it.
+    // `--die-with-parent`'s braces, and it is best effort. A degraded run has no
+    // other containment, so the group is killed here. A user stop has already
+    // stopped it.
     if !user_stopped {
         containment.stop_leftovers();
     }
@@ -988,6 +1066,7 @@ mod tests {
                 wall_clock_min: Some(12.5),
                 gap_rounds: Some(0),
             },
+            unsandboxed: false,
         }
     }
 
@@ -1058,6 +1137,32 @@ mod tests {
         assert_eq!(args.cap_minutes, 12.5);
         assert_eq!(args.cap_gap_rounds, 0);
         assert!(args.foreground && args.daemon_child);
+    }
+
+    #[test]
+    fn launch_argv_carries_unsandboxed_only_when_asked_and_it_parses_back() {
+        use crate::cli::{Cli, Commands, DriverAction};
+        use clap::Parser;
+
+        assert!(!words(&launch_argv(&options(), None)).contains(&"--unsandboxed".to_owned()));
+        let mut opts = options();
+        opts.unsandboxed = true;
+        let argv = words(&launch_argv(&opts, None));
+        assert_eq!(
+            &argv[argv.len() - 3..],
+            ["--unsandboxed", "--foreground", "--daemon-child"]
+        );
+
+        let mut full = vec![OsString::from("gsd-meta-manager")];
+        full.extend(launch_argv(&opts, None));
+        let cli = Cli::try_parse_from(full).expect("the daemon's own command line parses");
+        let Some(Commands::Driver {
+            action: DriverAction::Launch(args),
+        }) = cli.command
+        else {
+            panic!("not a driver launch");
+        };
+        assert!(args.unsandboxed);
     }
 
     #[test]

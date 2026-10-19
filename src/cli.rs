@@ -471,6 +471,11 @@ pub struct LaunchArgs {
     /// Internal: this process is the re-executed detached launcher (D-04)
     #[arg(long, hide = true)]
     pub daemon_child: bool,
+    /// Run the driver WITHOUT bwrap and a systemd scope, as a supervised process
+    /// group (degraded; D-29). Per launch, never a default: without it a host that
+    /// cannot sandbox is refused. The run records `sandbox: degraded`.
+    #[arg(long)]
+    pub unsandboxed: bool,
 }
 
 /// The sandbox-side verbs of `driverctl`.

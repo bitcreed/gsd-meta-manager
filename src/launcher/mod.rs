@@ -40,11 +40,16 @@
 //!    `fresh-exit` relaunches, stops the scope on a `SIGTERM` (`stop` is the
 //!    sender), and detaches into its own session unless `--foreground`.
 //!
+//! 10. **No sandbox, no run, unless the launch says so (28-04, D-28..D-30).**
+//!     [`host`] probes the host before the lock; a host that cannot sandbox is
+//!     refused with a typed error naming what is missing and `--unsandboxed`. Only
+//!     that flag, per launch, runs the driver as a supervised process group, and the
+//!     run records `sandbox: degraded` so it is never shown as sandboxed.
+//!
 //! # What this module root leaves to later plans
 //!
-//! The sandbox hardening
-//! (28-03), the degraded mode (28-04), the caps' enforcement (28-05), auth
-//! onboarding (28-06), the push step (28-07) and the TUI (28-08).
+//! The caps' enforcement (28-05), auth onboarding (28-06), the push step (28-07)
+//! and the TUI (28-08).
 
 pub mod sandbox;
 
@@ -52,6 +57,8 @@ pub mod sandbox;
 pub mod auth;
 #[cfg(target_os = "linux")]
 pub mod config_dir;
+#[cfg(target_os = "linux")]
+pub mod host;
 #[cfg(target_os = "linux")]
 pub mod process;
 #[cfg(target_os = "linux")]
@@ -84,6 +91,13 @@ pub enum LauncherError {
     /// its own exit code (`3` for a run that is already launched); `detail` is
     /// what it wrote to `launcher.log`.
     DaemonExited { code: i32, detail: String },
+    /// The host cannot sandbox the driver and the launch did not carry
+    /// `--unsandboxed` (D-28). `missing` names each piece: `bwrap`, `systemd-run`,
+    /// `user-systemd`.
+    SandboxUnavailable { missing: Vec<String> },
+    /// `claude` is absent or older than the hook `onFailure` minimum (D-28); refused
+    /// in both modes.
+    ClaudeVersion { detail: String },
 }
 
 impl LauncherError {
@@ -111,6 +125,13 @@ impl std::fmt::Display for LauncherError {
             LauncherError::UnsupportedPlatform => {
                 f.write_str("unsupported platform (the launcher needs Linux)")
             }
+            LauncherError::SandboxUnavailable { missing } => write!(
+                f,
+                "sandbox unavailable: missing {}; rerun with --unsandboxed to launch without \
+                 bwrap and a systemd scope (degraded)",
+                missing.join(", ")
+            ),
+            LauncherError::ClaudeVersion { detail } => write!(f, "claude version: {detail}"),
             LauncherError::DaemonExited { code, detail } => {
                 write!(
                     f,
@@ -183,6 +204,12 @@ mod tests {
                 detail: "x".to_owned(),
             },
             LauncherError::UnsupportedPlatform,
+            LauncherError::SandboxUnavailable {
+                missing: vec!["bwrap".to_owned()],
+            },
+            LauncherError::ClaudeVersion {
+                detail: "x".to_owned(),
+            },
         ] {
             assert_eq!(other.exit_code(), 1, "{other}");
         }

@@ -61,7 +61,8 @@ fn launch_runs_the_driver_in_the_scope_and_records_its_end() {
     let shim = fx.shim_log();
     let unit_line = shim
         .lines()
-        .find(|l| l.starts_with("systemd-run "))
+        // The capability probes (`systemd-run --version`, 28-04) are logged first.
+        .find(|l| l.starts_with("systemd-run --user"))
         .unwrap_or_else(|| panic!("no systemd-run line in:\n{shim}"));
     let prefix = "systemd-run --user --scope --quiet --collect --unit=gsdmm-driver-r28-";
     assert!(unit_line.starts_with(prefix), "{unit_line}");
@@ -284,7 +285,12 @@ fn a_held_run_lock_is_refused_with_exit_3_before_anything_is_written() {
     );
     assert_eq!(fx.log(), "", "a refused launch writes no LOG");
     assert!(!fx.run_dir.join("state.json").exists(), "or state.json");
-    assert!(fx.shim_log().is_empty(), "or starts a process");
+    // The capability probes run before the lock (28-04); a driver must not start.
+    assert!(
+        !fx.shim_log().contains("systemd-run --user") && !fx.shim_log().contains("claude -p"),
+        "or starts a process: {}",
+        fx.shim_log()
+    );
     assert!(!fx.state_dir().exists(), "or a state directory");
 }
 
