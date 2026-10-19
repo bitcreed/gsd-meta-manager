@@ -1454,4 +1454,18 @@ Builds on Phase 32's capability model. Global vs project scope, the per-scope
 `.gsd-capabilities.json` ledgers and the `~/.gsd/consent.json` record all apply; a project install
 cannot shadow a global one.
 
+### Phase 999.6: Capability registry browsing (BACKLOG)
+
+**Goal:** Browse the GSD capability registry (`docs/registries/capabilities.json`, fetched from
+GitHub) from the TUI, as the discovery front end for capability install (Phase 999.5).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+Captured 2026-10-19, deferred out of Phase 32. **Trigger:** worth doing once the registry ships
+with GSD or has more entries; until then a network fetch buys little.
+
 Note: Backlog 999.1 (Milestone Archive Browser) promoted to Phase 12 in v1.2.
