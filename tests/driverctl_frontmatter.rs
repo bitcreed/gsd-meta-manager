@@ -22,9 +22,9 @@
 //! timestamps keep the goldens independent of the crate version and the clock.
 
 use gsd_meta_manager::state_reader::driver_frontmatter::{
-    parse_driver_frontmatter, Cap, Caps, Connection, DispatchAudit, DriverFrontmatter, GapCap,
-    ItemCounts, ItemState, ItemStateEntry, ItemStates, LastEvent, RunStatus, WallClockCap,
-    DRIVER_FRONTMATTER_VERSION, HEARTBEAT_STALE_AFTER_S,
+    parse_driver_frontmatter, Cap, Caps, Connection, DispatchAudit, DriverFrontmatter,
+    FrontmatterError, GapCap, ItemCounts, ItemState, ItemStateEntry, ItemStates, LastEvent,
+    RunStatus, WallClockCap, DRIVER_FRONTMATTER_VERSION, HEARTBEAT_STALE_AFTER_S,
 };
 use std::path::PathBuf;
 
@@ -141,7 +141,14 @@ fn conn(role: &str, state: &str, pid: u32, session: Option<&str>) -> Connection 
         state: state.to_string(),
         session_id: session.map(str::to_string),
         model: session.map(|_| "opus".to_string()),
-        mode: Some(if role == "launcher" { "bwrap" } else { "headless" }.to_string()),
+        mode: Some(
+            if role == "launcher" {
+                "bwrap"
+            } else {
+                "headless"
+            }
+            .to_string(),
+        ),
         pid: Some(pid),
         scope_unit: Some("gsdmm-golden-1.scope".to_string()),
         host: Some("goldenhost".to_string()),
@@ -201,7 +208,12 @@ fn running() -> DriverFrontmatter {
     fm.launches = 1;
     fm.connected = vec![
         conn("launcher", "connected", 41234, None),
-        conn("driver", "connected", 41240, Some("7c0e1d2a-0000-4000-8000-000000000001")),
+        conn(
+            "driver",
+            "connected",
+            41240,
+            Some("7c0e1d2a-0000-4000-8000-000000000001"),
+        ),
     ];
     fm.last_event = event(
         "2026-01-01T00:13:58Z",
@@ -219,7 +231,12 @@ fn ended(status: RunStatus, reason: &str, summary: &str) -> DriverFrontmatter {
     fm.status_reason = Some(reason.to_string());
     fm.connected = vec![
         conn("launcher", "disconnected", 41234, None),
-        conn("driver", "disconnected", 41240, Some("7c0e1d2a-0000-4000-8000-000000000001")),
+        conn(
+            "driver",
+            "disconnected",
+            41240,
+            Some("7c0e1d2a-0000-4000-8000-000000000001"),
+        ),
     ];
     fm.last_event = event("2026-01-01T00:20:00Z", "RUN", "launch-end", summary);
     fm.updated_at = "2026-01-01T00:20:00Z".to_string();
@@ -251,9 +268,19 @@ fn multi_connection() -> DriverFrontmatter {
     let mut fm = running();
     fm.launches = 2;
     fm.connected = vec![
-        conn("driver", "lost", 41240, Some("7c0e1d2a-0000-4000-8000-000000000001")),
+        conn(
+            "driver",
+            "lost",
+            41240,
+            Some("7c0e1d2a-0000-4000-8000-000000000001"),
+        ),
         conn("launcher", "connected", 41300, None),
-        conn("driver", "connected", 41306, Some("7c0e1d2a-0000-4000-8000-000000000002")),
+        conn(
+            "driver",
+            "connected",
+            41306,
+            Some("7c0e1d2a-0000-4000-8000-000000000002"),
+        ),
     ];
     fm
 }
@@ -318,7 +345,11 @@ fn golden_multi_connection_round_trips() {
         .collect();
     assert_eq!(
         roles,
-        [("driver", "lost"), ("launcher", "connected"), ("driver", "connected")]
+        [
+            ("driver", "lost"),
+            ("launcher", "connected"),
+            ("driver", "connected")
+        ]
     );
 }
 
@@ -343,9 +374,94 @@ fn item_states_keep_direction_order() {
         entry("I-05", ItemState::Failed, 1, Some("verify failed")),
     ]);
     let back = parse_driver_frontmatter(&fm.emit()).expect("round trip");
-    let ids: Vec<&str> = back.item_states.0.iter().map(|(id, _)| id.as_str()).collect();
+    let ids: Vec<&str> = back
+        .item_states
+        .0
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
     assert_eq!(ids, ["I-10", "I-02", "I-05"]);
     assert_eq!(back, fm);
+}
+
+// ---------------------------------------------------------------- spike fixtures
+
+/// Every spike-generated DIRECTION.md, as (file name, text), sorted by name.
+fn spike_directions() -> Vec<(String, String)> {
+    let dir = fixture("direction");
+    let mut out: Vec<(String, String)> = std::fs::read_dir(&dir)
+        .expect("direction fixture dir")
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let text = std::fs::read_to_string(&p).expect("fixture readable");
+            (name, text)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// D-16's "spike-002 Python outputs cross-checked as additional reader fixtures"
+/// and D-19's `serde(default)` guarantee: none of these has `item_states`.
+#[test]
+fn every_spike_direction_parses() {
+    let files = spike_directions();
+    assert_eq!(files.len(), 18, "a spike copy is missing: {files:?}");
+
+    let mut tally: std::collections::BTreeMap<String, u32> = Default::default();
+    for (name, text) in &files {
+        let fm =
+            parse_driver_frontmatter(text).unwrap_or_else(|e| panic!("{name} does not parse: {e}"));
+        assert_eq!(fm.generated_by, "driverctl 0.2-spike", "{name}");
+        assert!(fm.item_states.0.is_empty(), "{name} has item_states");
+        if name == "s002-template.md" {
+            assert_eq!(fm.status, RunStatus::Running);
+            assert_eq!(fm.connected.len(), 2, "template carries two connections");
+        } else {
+            *tally.entry(fm.status.as_str().to_string()).or_default() += 1;
+        }
+    }
+    let tally: Vec<(&str, u32)> = tally.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    assert_eq!(
+        tally,
+        [("crashed", 1), ("done", 1), ("parked", 11), ("stopped", 4)],
+        "status tally over the 17 run files"
+    );
+}
+
+#[test]
+fn version_marker_and_block_errors() {
+    let (_, text) = spike_directions()
+        .into_iter()
+        .find(|(n, _)| n == "s003-run1b.md")
+        .expect("run1b fixture");
+
+    let bumped = text.replace(
+        "driver_frontmatter_version: 1",
+        "driver_frontmatter_version: 2",
+    );
+    assert_eq!(
+        parse_driver_frontmatter(&bumped),
+        Err(FrontmatterError::UnsupportedVersion { found: 2 })
+    );
+
+    let unmarked = text.replace("generated_by: driverctl", "generated_by: somethingelse");
+    assert_eq!(
+        parse_driver_frontmatter(&unmarked),
+        Err(FrontmatterError::NotDriverctl)
+    );
+
+    let body_only = text.split_once("\n---\n").expect("block end").1.to_string();
+    assert_eq!(
+        parse_driver_frontmatter(&body_only),
+        Err(FrontmatterError::NoFrontmatter)
+    );
+    assert_eq!(
+        parse_driver_frontmatter(""),
+        Err(FrontmatterError::NoFrontmatter)
+    );
 }
 
 /// Writes the golden files from `emit()`. Run once with `DRIVERCTL_GOLDEN_WRITE=1`.
@@ -362,7 +478,10 @@ fn write_goldens() {
         ("multi-connection", multi_connection()),
     ];
     for (name, fm) in all {
-        std::fs::write(fixture(&format!("golden/{name}.md")), format!("{}{BODY}", fm.emit()))
-            .expect("write golden");
+        std::fs::write(
+            fixture(&format!("golden/{name}.md")),
+            format!("{}{BODY}", fm.emit()),
+        )
+        .expect("write golden");
     }
 }

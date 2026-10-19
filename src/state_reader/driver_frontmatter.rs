@@ -67,7 +67,8 @@ pub const DRIVER_FRONTMATTER_VERSION: u32 = 1;
 pub const HEARTBEAT_STALE_AFTER_S: u64 = 300;
 
 /// The trailing comment on the `generated_by` line.
-pub const GENERATED_BY_COMMENT: &str = "# TOOL-WRITTEN. Do not edit: regenerated on every run event.";
+pub const GENERATED_BY_COMMENT: &str =
+    "# TOOL-WRITTEN. Do not edit: regenerated on every run event.";
 
 fn default_stale_after() -> u64 {
     HEARTBEAT_STALE_AFTER_S
@@ -501,8 +502,14 @@ impl DriverFrontmatter {
         lines.push("---".to_string());
         // The value is written plain so the `generated_by: driverctl` marker
         // survives; control characters are dropped so it cannot span lines.
-        let generated_by: String = self.generated_by.chars().filter(|c| !c.is_control()).collect();
-        lines.push(format!("generated_by: {generated_by}   {GENERATED_BY_COMMENT}"));
+        let generated_by: String = self
+            .generated_by
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        lines.push(format!(
+            "generated_by: {generated_by}   {GENERATED_BY_COMMENT}"
+        ));
         lines.push(format!(
             "driver_frontmatter_version: {}",
             self.driver_frontmatter_version
@@ -513,11 +520,23 @@ impl DriverFrontmatter {
             known => known.as_str().to_string(),
         };
         lines.push(format!("status: {status}"));
-        lines.push(format!("status_reason: {}", quote_or_null(&self.status_reason)));
+        lines.push(format!(
+            "status_reason: {}",
+            quote_or_null(&self.status_reason)
+        ));
         lines.push(format!("control: {}", quote_or_null(&self.control)));
-        lines.push(format!("current_item: {}", quote_or_null(&self.current_item)));
-        lines.push(format!("current_phase: {}", quote_or_null(&self.current_phase)));
-        lines.push(format!("current_step: {}", quote_or_null(&self.current_step)));
+        lines.push(format!(
+            "current_item: {}",
+            quote_or_null(&self.current_item)
+        ));
+        lines.push(format!(
+            "current_phase: {}",
+            quote_or_null(&self.current_phase)
+        ));
+        lines.push(format!(
+            "current_step: {}",
+            quote_or_null(&self.current_step)
+        ));
         let i = &self.items;
         lines.push(format!(
             "items: {{total: {}, pending: {}, running: {}, done: {}, parked: {}, failed: {}}}",
@@ -663,7 +682,10 @@ mod tests {
 
     #[test]
     fn unknown_major_is_rejected() {
-        let text = RUN1B.replace("driver_frontmatter_version: 1", "driver_frontmatter_version: 2");
+        let text = RUN1B.replace(
+            "driver_frontmatter_version: 1",
+            "driver_frontmatter_version: 2",
+        );
         assert_eq!(
             parse_driver_frontmatter(&text),
             Err(FrontmatterError::UnsupportedVersion { found: 2 })
