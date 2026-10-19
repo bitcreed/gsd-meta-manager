@@ -5,10 +5,10 @@ current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: planning
 stopped_at: Phase 28 context gathered
-last_updated: "2026-10-19T17:16:01.945Z"
+last_updated: "2026-10-19T17:33:12.806Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 27 complete, transitioned to Phase 28
-state_head: 318e23387c706b1a3d0c8a1cc27314fba43a1f01
+state_head: 76bbac14ae72af7350ca22a0a425fcc249c74c1b
 progress:
   total_phases: 10
   completed_phases: 11
@@ -266,7 +266,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-19 - Completed quick task 261019-foc: gsd-core v1.18.0 sync baseline
+Last activity: 2026-10-19 - Completed quick task 261019-guw: Fix two config.json defects: strict_known_registries type, and unlocked non-atomic writes
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -793,6 +793,7 @@ Recent decisions affecting current work:
 | 261016-dx4 | Emit /gsd-<name> instead of /gsd:<name> (upstream gsd-core e288f4ab2, #4859: colon form is now unregistered): change app-generated colon-form commands in src/state_reader/queue_md.rs fallback suggestions (~314-333) and doc comments (~36-38, ~284-289), backlog enqueue at src/ui/screens/detail.rs ~5621, on-screen hints at detail.rs ~7128 and ~8756-8779; update tests asserting the colon form (detail.rs ~26107-26131, queue_md tests); add a send-time compat rewrite /gsd:<name> -> /gsd-<name> when dispatching to Claude (analogous to codex_command's rewrite for Codex; src/executor/runtime.rs / src/executor/claude.rs) so colon entries already in users' QUEUE.md keep working (INFERRED decision, record it); keep GSD_COMMAND_PREFIXES accepting both forms; do NOT add /gsd-core:gsd-<name> plugin support; also update README/docs/* mentions of the /gsd: form for app-emitted commands. | 2026-10-16 | 21085da | .planning/quick/261016-dx4-emit-gsd-name-instead-of-gsd-name-upstre |
 | 261016-dx5 | Fix status misclassification in classify_status (src/app.rs): it matches the word "complete", so a STATE body status like "Phase complete — ready for verification" (written by gsd-core 1.17.0 `phase complete`, upstream fde7d4e80, for the next phase) is likely shown as Complete. First confirm with a failing test; if real, fix so that string classifies as awaiting verification / not complete (closest existing status variant; check upstream status vocabulary in ~/projects/node/gsd-core), plus a test for "Ready to execute". If not a bug, record that and make no code change. | 2026-10-16 | e45c571 | .planning/quick/261016-dx5-fix-status-misclassification-in-classify |
 | 261019-foc | gsd-core v1.18.0 sync baseline | 2026-10-19 | 8c3dea2 | [261019-foc-gsd-core-v1-18-0-sync-baseline](./quick/261019-foc-gsd-core-v1-18-0-sync-baseline/) |
+| 261019-guw | Fix two config.json defects: strict_known_registries type, and unlocked non-atomic writes | 2026-10-19 | 76bbac1 | [261019-guw-fix-two-config-json-defects-strict-known](./quick/261019-guw-fix-two-config-json-defects-strict-known/) |
 
 ## Session Continuity
 
