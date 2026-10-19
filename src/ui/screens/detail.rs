@@ -4792,8 +4792,6 @@ impl Screen for DetailScreen {
                         let project_path =
                             ctx.config.projects.get(&self.alias).map(|p| p.path.clone());
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        let target = cache.defaults_edit_target;
-                        let user_path = cache.defaults_user_path.clone();
                         if let Some(editing_idx) = cache.defaults_editing {
                             // Dropdown is open — Enter applies the selected option.
                             let entries = entries_for_cache(cache);
@@ -4803,17 +4801,12 @@ impl Screen for DetailScreen {
                                     .defaults_dropdown_selected
                                     .min(options.len().saturating_sub(1));
                                 if let Some(value) = options.get(dropdown_idx).cloned() {
-                                    if let Some(active) = active_config_mut(cache) {
-                                        if set_config_value(active, entry.key.as_ref(), &value) {
-                                            persist_active_config(
-                                                target,
-                                                project_path.as_deref(),
-                                                user_path.as_deref(),
-                                                active,
-                                                &mut ctx.status_message,
-                                            );
-                                        }
-                                    }
+                                    persist_active_config(
+                                        project_path.as_deref(),
+                                        cache,
+                                        &mut ctx.status_message,
+                                        |c| set_config_value(c, entry.key.as_ref(), &value),
+                                    );
                                 }
                             }
                             cache.defaults_editing = None;
@@ -4857,21 +4850,12 @@ impl Screen for DetailScreen {
                                     cache.defaults_text_buffer = super::EditBuffer::default();
                                 } else if matches!(entry.kind.editable(), ConfigValueKind::Integer)
                                 {
-                                    if let Some(active) = active_config_mut(cache) {
-                                        if mutate_config_entry(
-                                            active,
-                                            entry.key.as_ref(),
-                                            &entry.kind,
-                                        ) {
-                                            persist_active_config(
-                                                target,
-                                                project_path.as_deref(),
-                                                user_path.as_deref(),
-                                                active,
-                                                &mut ctx.status_message,
-                                            );
-                                        }
-                                    }
+                                    persist_active_config(
+                                        project_path.as_deref(),
+                                        cache,
+                                        &mut ctx.status_message,
+                                        |c| mutate_config_entry(c, entry.key.as_ref(), &entry.kind),
+                                    );
                                 }
                             }
                         }
@@ -5008,8 +4992,6 @@ impl Screen for DetailScreen {
             KeyCode::Char('x') if current_view == DetailSubView::Defaults => {
                 let project_path = ctx.config.projects.get(&self.alias).map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                let target = cache.defaults_edit_target;
-                let user_path = cache.defaults_user_path.clone();
                 // Never clear a row the filter hides (T-HDI-04).
                 if cache.defaults_editing.is_none() && defaults_selection_visible(cache) {
                     let entries = entries_for_cache(cache);
@@ -5024,25 +5006,29 @@ impl Screen for DetailScreen {
                         // which is exactly the arm an unescaped key would leak
                         // through.
                         let key_shown = shown(key.as_ref());
-                        if let Some(active) = active_config_mut(cache) {
-                            let cleared = clear_config_value(active, key.as_ref());
-                            if cleared {
-                                persist_active_config(
-                                    target,
-                                    project_path.as_deref(),
-                                    user_path.as_deref(),
-                                    active,
-                                    &mut ctx.status_message,
-                                );
-                                ctx.status_message = Some((
-                                    format!("Cleared {}", key_shown),
-                                    std::time::Instant::now(),
-                                ));
-                            } else {
-                                ctx.status_message = Some((
-                                    format!("{} cannot be cleared", key_shown),
-                                    std::time::Instant::now(),
-                                ));
+                        if active_config_mut(cache).is_some() {
+                            let outcome = persist_active_config(
+                                project_path.as_deref(),
+                                cache,
+                                &mut ctx.status_message,
+                                |c| clear_config_value(c, key.as_ref()),
+                            );
+                            match outcome {
+                                PersistOutcome::Applied => {
+                                    ctx.status_message = Some((
+                                        format!("Cleared {}", key_shown),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                                PersistOutcome::NotApplied => {
+                                    ctx.status_message = Some((
+                                        format!("{} cannot be cleared", key_shown),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                                // The error status persist_active_config set
+                                // must not be overwritten.
+                                PersistOutcome::Failed => {}
                             }
                         }
                     }
@@ -6265,8 +6251,6 @@ impl DetailScreen {
             KeyCode::Enter => {
                 let project_path = ctx.config.projects.get(&self.alias).map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                let target = cache.defaults_edit_target;
-                let user_path = cache.defaults_user_path.clone();
                 // PERSISTENCE — the one question the raw take answers. These
                 // are the bytes the operator typed, going back to their
                 // `.planning/config.json` byte-identical; a `U+XXXX` display
@@ -6290,32 +6274,27 @@ impl DetailScreen {
                                 ),
                                 std::time::Instant::now(),
                             ));
-                        } else if let Some(active) = active_config_mut(cache) {
-                            if set_secret_value(active, key.as_ref(), &buffer) {
-                                persist_active_config(
-                                    target,
-                                    project_path.as_deref(),
-                                    user_path.as_deref(),
-                                    active,
-                                    &mut ctx.status_message,
-                                );
-                            }
-                        }
-                    } else if let Some(active) = active_config_mut(cache) {
-                        let applied = if buffer.is_empty() {
-                            clear_config_value(active, key.as_ref())
                         } else {
-                            set_string_value(active, key.as_ref(), &buffer)
-                        };
-                        if applied {
                             persist_active_config(
-                                target,
                                 project_path.as_deref(),
-                                user_path.as_deref(),
-                                active,
+                                cache,
                                 &mut ctx.status_message,
+                                |c| set_secret_value(c, key.as_ref(), &buffer),
                             );
                         }
+                    } else {
+                        persist_active_config(
+                            project_path.as_deref(),
+                            cache,
+                            &mut ctx.status_message,
+                            |c| {
+                                if buffer.is_empty() {
+                                    clear_config_value(c, key.as_ref())
+                                } else {
+                                    set_string_value(c, key.as_ref(), &buffer)
+                                }
+                            },
+                        );
                     }
                 }
                 // The saved value may no longer match the filter.
@@ -12532,31 +12511,72 @@ fn config_write_path(
     }
 }
 
-/// Persist the active config to disk and surface a status message.
+/// What [`persist_active_config`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistOutcome {
+    /// The edit was applied (and written, when the scope has a file).
+    Applied,
+    /// The key was not recognised or the edit changed nothing; nothing written.
+    NotApplied,
+    /// The save was refused or failed; the cache still equals disk and the
+    /// error status is already set.
+    Failed,
+}
+
+/// Apply one edit to the active config, persist it, and surface a status
+/// message (quick 261019-guw).
+///
+/// The edit arrives as a closure and is applied to a FRESH read of the file
+/// inside gsd-core's lock ([`crate::state_reader::config_write`]), never to the
+/// cached snapshot, so a `gsd config-set` that landed since the tab loaded is
+/// not lost. The cache is replaced only after a successful write: a failed save
+/// leaves the display equal to disk.
 ///
 /// The destination comes from [`config_write_path`]; the global path is the
-/// one resolved into the cache, never re-read from `$HOME` here (I-7).
+/// one resolved into the cache, never re-read from `$HOME` here (I-7). With no
+/// resolvable path the edit is applied in memory only.
 fn persist_active_config(
-    target: super::DefaultsEditTarget,
     project_path: Option<&std::path::Path>,
-    user_defaults_path: Option<&std::path::Path>,
-    config: &crate::state_reader::config_json::GsdConfig,
+    cache: &mut super::ProjectViewCache,
     status_message: &mut Option<(String, std::time::Instant)>,
-) {
+    mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
+) -> PersistOutcome {
     use super::DefaultsEditTarget;
-    let Some(path) = config_write_path(target, project_path, user_defaults_path) else {
-        return;
+    use crate::state_reader::config_write::{update_gsd_config, ConfigWriteTarget, LockPolicy};
+    let target = cache.defaults_edit_target;
+    let user_path = cache.defaults_user_path.clone();
+    let Some(active) = active_config_mut(cache) else {
+        return PersistOutcome::NotApplied;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
-        if std::fs::write(&path, &json).is_ok() {
+    let Some(path) = config_write_path(target, project_path, user_path.as_deref()) else {
+        return if mutate(active) {
+            PersistOutcome::Applied
+        } else {
+            PersistOutcome::NotApplied
+        };
+    };
+    let write_target = match (target, project_path) {
+        (DefaultsEditTarget::Project, Some(root)) => ConfigWriteTarget::Project {
+            config_path: path,
+            project_root: root.to_path_buf(),
+        },
+        _ => ConfigWriteTarget::GlobalDefaults { path },
+    };
+    let flavor = write_target.flavor();
+    match update_gsd_config(&write_target, LockPolicy::tui(flavor), active, mutate) {
+        Ok(Some(fresh)) => {
+            *active = fresh;
             let label = match target {
                 DefaultsEditTarget::Project => "Config saved",
                 DefaultsEditTarget::Global => "Defaults saved",
             };
             *status_message = Some((label.to_string(), std::time::Instant::now()));
+            PersistOutcome::Applied
+        }
+        Ok(None) => PersistOutcome::NotApplied,
+        Err(err) => {
+            *status_message = Some((err.status_text(flavor), std::time::Instant::now()));
+            PersistOutcome::Failed
         }
     }
 }
@@ -22212,6 +22232,157 @@ mod tests {
     fn sparse_gsd_config() -> crate::state_reader::config_json::GsdConfig {
         crate::state_reader::config_json::parse_gsd_config(r#"{"mode":"yolo"}"#)
             .expect("the sparse fixture parses")
+    }
+
+    // --- quick 261019-guw: lock-aware atomic Defaults saves ---------------
+
+    /// A Defaults-tab context for a TempDir project with a real
+    /// `.planning/config.json` (`{"mode":"yolo","commit_docs":true}`), parked
+    /// on the `commit_docs` row, plus a global defaults path inside a second
+    /// TempDir. Returns `(ctx, screen, project_dir, home_dir)`.
+    fn config_save_fixture() -> (
+        AppContext,
+        DetailScreen,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        use crate::config::RegisteredProject;
+        use crate::state_reader::config_json::parse_gsd_config;
+        let proj_td = tempfile::TempDir::new().expect("project temp dir");
+        let home_td = tempfile::TempDir::new().expect("home temp dir");
+        let project_file = proj_td.path().join(".planning/config.json");
+        std::fs::create_dir_all(project_file.parent().unwrap()).unwrap();
+        std::fs::write(&project_file, r#"{"mode":"yolo","commit_docs":true}"#).unwrap();
+        let mut ctx = test_ctx();
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: proj_td.path().to_path_buf(),
+                added: "2026-10-19".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Defaults);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.defaults_config = parse_gsd_config(&std::fs::read_to_string(&project_file).unwrap());
+        cache.defaults_user_path = Some(home_td.path().join(".gsd/defaults.json"));
+        cache.defaults_user_config = None;
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        (ctx, screen, proj_td, home_td)
+    }
+
+    /// Select the `commit_docs` row and flip it through the dropdown
+    /// (Enter, Down, Enter), exactly as an operator would.
+    fn flip_commit_docs(screen: &mut DetailScreen, ctx: &mut AppContext) {
+        let idx = entries_for_cache(&ctx.view_cache[TEST_ALIAS])
+            .iter()
+            .position(|e| e.key.as_ref() == "commit_docs")
+            .expect("a commit_docs row");
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .unwrap()
+            .defaults_selected = idx;
+        press(screen, ctx, KeyCode::Enter);
+        press(screen, ctx, KeyCode::Down);
+        press(screen, ctx, KeyCode::Enter);
+    }
+
+    fn status_text(ctx: &AppContext) -> String {
+        ctx.status_message
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn config_save_takes_and_releases_the_planning_lock() {
+        use crate::state_reader::config_json::parse_gsd_config;
+        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
+        flip_commit_docs(&mut screen, &mut ctx);
+        let planning = proj_td.path().join(".planning");
+        let on_disk =
+            parse_gsd_config(&std::fs::read_to_string(planning.join("config.json")).unwrap())
+                .expect("the file parses");
+        assert_eq!(on_disk.commit_docs, Some(false), "the edit reached disk");
+        assert!(!planning.join(".lock").exists(), "the lock is released");
+        let leftovers: Vec<_> = std::fs::read_dir(&planning)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-") || n.contains(".stale-"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp or stale file: {leftovers:?}");
+        assert_eq!(status_text(&ctx), "Config saved");
+    }
+
+    #[test]
+    fn config_save_refuses_while_a_live_gsd_holds_the_planning_lock() {
+        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
+        let planning = proj_td.path().join(".planning");
+        let lock = planning.join(".lock");
+        let body = format!(
+            r#"{{"pid":1,"cwd":"{}","acquired":"2026-10-19T00:00:00.000Z"}}"#,
+            proj_td.path().display()
+        );
+        std::fs::write(&lock, &body).unwrap();
+        let config_before = std::fs::read(planning.join("config.json")).unwrap();
+        let cached_before = ctx.view_cache[TEST_ALIAS]
+            .defaults_config
+            .as_ref()
+            .unwrap()
+            .commit_docs;
+
+        let started = std::time::Instant::now();
+        flip_commit_docs(&mut screen, &mut ctx);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(1900),
+            "the save waits out the TUI budget"
+        );
+
+        assert_eq!(
+            std::fs::read(planning.join("config.json")).unwrap(),
+            config_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(&lock).unwrap(),
+            body,
+            "the lock is untouched"
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS]
+                .defaults_config
+                .as_ref()
+                .unwrap()
+                .commit_docs,
+            cached_before,
+            "the cache still equals disk"
+        );
+        let status = status_text(&ctx);
+        assert!(status.contains("Config NOT saved"), "{status}");
+        assert!(status.contains("pid 1"), "{status}");
+    }
+
+    #[test]
+    fn config_save_global_defaults_refuses_while_the_installer_lock_is_live() {
+        let (mut ctx, mut screen, _proj_td, home_td) = config_save_fixture();
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let gsd_dir = home_td.path().join(".gsd");
+        std::fs::create_dir_all(&gsd_dir).unwrap();
+        let lock = gsd_dir.join("gsd-install-migration.lock");
+        let body = "{\"pid\":1,\"acquiredAt\":\"2026-10-19T00:00:00.000Z\"}\n";
+        std::fs::write(&lock, body).unwrap();
+
+        flip_commit_docs(&mut screen, &mut ctx);
+
+        assert!(
+            !gsd_dir.join("defaults.json").exists(),
+            "the defaults file is not created"
+        );
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), body);
+        let status = status_text(&ctx);
+        assert!(status.contains("Defaults NOT saved"), "{status}");
+        assert!(status.contains("pid 1"), "{status}");
     }
 
     // --- quick 260927-t3s: `g` switches the Config scope ------------------
