@@ -77,10 +77,12 @@ created: "2026-10-20"
 | Risk ID | Threat Ref | Rationale | Accepted By | Date |
 |---------|------------|-----------|-------------|------|
 | AR-28-01 | T-28-SC | No new crates or package installs in phase 28; Cargo.lock untouched | plan-time disposition (28-01..09) | 2026-10-20 |
-| AR-28-02 | T-28-25 (IN-04) | Campaign ledger read-modify-append without lock; only concurrent `run` invocations could both pass the ceiling check. Single-operator use + per-launch `--max-budget-usd` bound exposure. [inferred — audit] | gsd-secure-phase (unattended) | 2026-10-20 |
-| AR-28-03 | T-28-09 (WR-02 residual) | Credential hiding remains a pattern denylist; `GIT_CONFIG_*`, settings keys `awsAuthRefresh`/`awsCredentialExport`/`otelHeadersHelper`, and a blanket mask of `~/.config/gsd-meta-manager` not added. Beyond the declared mitigation. [inferred — audit] | gsd-secure-phase (unattended) | 2026-10-20 |
+| AR-28-02 | T-28-25 (IN-04) | Campaign ledger read-modify-append without lock; only concurrent `run` invocations could both pass the ceiling check. Single-operator use + per-launch `--max-budget-usd` bound exposure. [inferred — audit] | gsd-secure-phase (unattended); **operator accepted 2026-10-20** | 2026-10-20 |
+| AR-28-03 | T-28-09 (WR-02 residual) | Credential hiding remains a pattern denylist; `GIT_CONFIG_*`, settings keys `awsAuthRefresh`/`awsCredentialExport`/`otelHeadersHelper`, and a blanket mask of `~/.config/gsd-meta-manager` not added. Beyond the declared mitigation. [inferred — audit] | gsd-secure-phase (unattended); **operator accepted 2026-10-20** | 2026-10-20 |
 
 *Accepted risks do not resurface in future audit runs.*
+
+**Operator acceptance (2026-10-20):** the operator reviewed and accepted AR-28-02 (campaign ledger has no lock) and AR-28-03 (remaining credential locations still visible in the sandbox). The `[inferred — audit]` dispositions above are now operator-confirmed. Phase 28's two hands-on UAT checks (`driver auth setup` browser login; macOS `driver launch` refuse then `--unsandboxed`) remain pending with the operator.
 
 ### Follow-ups (non-blocking, outside declared register scope)
 
