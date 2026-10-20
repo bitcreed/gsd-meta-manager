@@ -399,13 +399,33 @@ fn replace_and_bind(sock: &Path, stale: bool) -> Result<UnixListener, DriverctlE
     bind_private(sock)
 }
 
+/// Bind `path` as a 0600 socket without ever touching the process-wide umask
+/// (CR-01: `umask(2)` is per process, so swapping it around a `bind` races every
+/// other thread's file creation and, with two binders, can leave it stuck).
+///
+/// The socket is bound inside a private 0700 staging directory next to `path`
+/// (nobody else can traverse it, so the socket's creation mode is unreachable),
+/// chmod-ed to 0600, then renamed into place: a bound unix socket keeps working
+/// after `rename`, because the listener is bound to the inode, not the name.
 fn bind_private(path: &Path) -> Result<UnixListener, DriverctlError> {
-    let old = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o177));
-    let bound = UnixListener::bind(path);
-    rustix::process::umask(old);
-    let listener = bound.map_err(|e| io_error(&format!("bind {}", path.display()), e))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| io_error(&format!("chmod {}", path.display()), e))?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".b")
+        .tempdir_in(parent)
+        .map_err(|e| io_error(&format!("stage a bind in {}", parent.display()), e))?;
+    fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o700))
+        .map_err(|e| io_error("chmod the bind staging directory", e))?;
+    let staged = staging.path().join("s");
+    check_sun_len(&staged)?;
+    let listener = UnixListener::bind(&staged)
+        .map_err(|e| io_error(&format!("bind {}", staged.display()), e))?;
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o600))
+        .map_err(|e| io_error("chmod the staged socket", e))?;
+    fs::rename(&staged, path)
+        .map_err(|e| io_error(&format!("move the socket to {}", path.display()), e))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| io_error("set the listener non-blocking", e))?;
@@ -1153,6 +1173,48 @@ mod tests {
         let listener = replace_and_bind(&sock, true).unwrap();
         assert!(UnixStream::connect(&sock).is_ok());
         drop(listener);
+    }
+
+    #[test]
+    fn cr01_bind_private_never_touches_the_process_umask_and_binds_concurrently() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let before = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
+        let dir = td.path().to_owned();
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    for j in 0..10 {
+                        let sock = dir.join(format!("c{i}-{j}.sock"));
+                        let listener = bind_private(&sock).unwrap();
+                        let mode = fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+                        assert_eq!(mode, 0o600, "the socket is owner-only");
+                        assert!(UnixStream::connect(&sock).is_ok());
+                        drop(listener);
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        let after = rustix::process::umask(before);
+        assert_eq!(
+            after.as_raw_mode(),
+            0o022,
+            "bind_private left the umask alone"
+        );
+        let leftovers: Vec<_> = fs::read_dir(td.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".b"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging dirs are removed: {leftovers:?}"
+        );
     }
 
     #[test]
