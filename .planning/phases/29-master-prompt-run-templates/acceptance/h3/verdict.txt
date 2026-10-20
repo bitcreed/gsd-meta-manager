@@ -1,0 +1,6 @@
+H3-new PASS run id 20261020-acc-h3-043834 was minted by driver new
+H3-check PASS driver check exit 0 on the filled template (DRIVE-03)
+H3-seed PASS I-01 parked rule=gap-rounds with a needs-human question before launch A (seeded host-side)
+H3-A PASS launch A (answer filled, budget unchanged): no I-01 dispatched, RUN | end | reason=all-parked
+H3-B PASS launch B (gap-rounds=1 and the answer): I-01 dispatched x1
+RESULT PASS

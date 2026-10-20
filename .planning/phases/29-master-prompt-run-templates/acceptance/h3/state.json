@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "run_id": "20261020-acc-h3-043834",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/prompt-acceptance/h3-20261020T043810Z/project",
+  "status": "stopped",
+  "status_reason": "stop:user",
+  "created_at": "2026-10-20T04:38:34Z",
+  "updated_at": "2026-10-20T04:39:19Z",
+  "launches": 3,
+  "current": {
+    "item": "I-01",
+    "phase": "1",
+    "step": "/gsd-plan-phase 1 --gaps"
+  },
+  "items": {
+    "I-01": {
+      "state": "running",
+      "outcome": "gap-rounds budget raised to 1 by human; closure round 1 approved",
+      "dispatches": 2,
+      "first_dispatch_at": "2026-10-20T04:38:34Z",
+      "findings": [
+        1
+      ]
+    }
+  },
+  "connections": [
+    {
+      "role": "driver",
+      "state": "lost",
+      "session_id": null,
+      "model": null,
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": null,
+      "host": "mediabox",
+      "started_at": "2026-10-20T04:38:34Z",
+      "last_heartbeat": null
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "de2a7343-b5bb-47cc-ac6b-dbfd2fd6b1be",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-h3-043834-08325b56-2.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T04:38:35Z",
+      "last_heartbeat": "2026-10-20T04:39:02Z"
+    },
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 697952,
+      "scope_unit": "gsdmm-driver-20261020-acc-h3-043834-08325b56-3.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T04:39:03Z",
+      "last_heartbeat": "2026-10-20T04:39:03Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "37f87b22-0230-456d-a281-a60d3cc72fe7",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-h3-043834-08325b56-3.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T04:39:03Z",
+      "last_heartbeat": "2026-10-20T04:39:18Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 0,
+      "limit": 4
+    },
+    "wall_clock_min": {
+      "used": 0.7,
+      "limit": 15.0
+    },
+    "gap_rounds": {
+      "limit": 2,
+      "seen": {
+        "1:59ffce36299b7454": {
+          "phase": "1",
+          "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+        }
+      },
+      "per_phase": {
+        "1": 1
+      },
+      "last_write": {
+        "1": 1792471114.9631746
+      },
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 0,
+  "denied_dispatches": 0,
+  "last_event": {
+    "at": "2026-10-20T04:39:19Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "status=stopped reason=stop:user"
+  },
+  "ended_by_driver": false,
+  "awaiting_recovery": [],
+  "recovered_this_launch": [],
+  "active_seconds": 44.080513877,
+  "launch_branch": "main",
+  "launch_start_sha": "72fd463f6ea59e529ee70df3402acd34bc2739e1",
+  "prompt_version": "driver-prompt/1.0.0",
+  "sandbox": "bwrap-scope"
+}
