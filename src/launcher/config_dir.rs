@@ -386,4 +386,35 @@ mod tests {
         let dir_mode = fs::metadata(&spec.config_dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700);
     }
+
+    const NEXT_SHIM: &str = "#!/bin/sh\ncase \"$1\" in\n  next) shift; exec '/opt/gsd mm/gsd-meta-manager' next \"$@\" ;;\n  *) echo \"gsd-meta-manager: only 'next' is available inside the driver sandbox\" >&2; exit 2 ;;\nesac\n";
+
+    #[test]
+    fn the_gsd_meta_manager_shim_execs_next_and_refuses_everything_else() {
+        let root = TempDir::new().unwrap();
+        let spec = spec(&root);
+        seed(&spec).unwrap();
+        let shim = spec.config_dir.join("bin/gsd-meta-manager");
+        let text = fs::read_to_string(&shim).unwrap();
+        assert_eq!(text, NEXT_SHIM);
+        assert!(text.contains("case \"$1\" in"), "{text}");
+        assert!(
+            text.contains("only 'next' is available inside the driver sandbox"),
+            "{text}"
+        );
+        let mode = fs::metadata(&shim).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn both_shims_are_byte_identical_after_a_second_seed() {
+        let root = TempDir::new().unwrap();
+        let spec = spec(&root);
+        seed(&spec).unwrap();
+        let read = |name: &str| fs::read(spec.config_dir.join("bin").join(name)).unwrap();
+        let (first_driverctl, first_next) = (read("driverctl"), read("gsd-meta-manager"));
+        seed(&spec).unwrap();
+        assert_eq!(first_driverctl, read("driverctl"));
+        assert_eq!(first_next, read("gsd-meta-manager"));
+    }
 }

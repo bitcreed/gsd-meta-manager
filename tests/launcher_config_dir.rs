@@ -420,3 +420,64 @@ fn no_refresh_token_material_reaches_the_sandbox() {
         assert!(!body.contains("AT-SENTINEL"), "{}", file.display());
     }
 }
+
+// ── The `gsd-meta-manager` shim runs `next` and nothing else (Phase 29, D-21) ──
+
+/// Seed a config dir whose "binary" is a script that records each call and echoes
+/// its argv, then return the shim path and the record file.
+fn next_shim_with_fake_binary(root: &TempDir) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let record = root.path().join("fake-calls");
+    let fake = root.path().join("fake-gsd-meta-manager");
+    fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\necho called >> '{}'\necho \"$@\"\n",
+            record.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let spec = SeedSpec {
+        config_dir: root.path().join("cfg"),
+        host_claude_dir: root.path().join("host"),
+        binary: fake,
+        run_dir: root.path().join("run"),
+    };
+    seed(&spec).unwrap();
+    (spec.config_dir.join("bin/gsd-meta-manager"), record)
+}
+
+#[test]
+fn the_next_shim_forwards_next_and_its_arguments_to_the_binary() {
+    let root = TempDir::new().unwrap();
+    let (shim, record) = next_shim_with_fake_binary(&root);
+    let out = std::process::Command::new(&shim)
+        .args(["next", "/p", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "next /p --json\n");
+    assert_eq!(fs::read_to_string(record).unwrap(), "called\n");
+}
+
+#[test]
+fn the_next_shim_refuses_any_other_verb_without_running_the_binary() {
+    let root = TempDir::new().unwrap();
+    let (shim, record) = next_shim_with_fake_binary(&root);
+    for argv in [vec!["driver", "launch", "x", "y"], vec![], vec!["nextish"]] {
+        let out = std::process::Command::new(&shim)
+            .args(&argv)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{argv:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{argv:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "gsd-meta-manager: only 'next' is available inside the driver sandbox\n",
+            "{argv:?}"
+        );
+    }
+    assert!(!record.exists(), "the fake binary must never have run");
+}
