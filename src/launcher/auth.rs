@@ -5,10 +5,11 @@
 //! `claudeAiOauth.accessToken`, refused under [`MIN_TOKEN_LIFETIME`] to expiry.
 //! Nothing else is consulted.
 //!
-//! **Only the access token is ever read from the host file.** Spike 002 (A2.4)
-//! measured that a copied refresh token logs the host out the first time either
-//! side refreshes, so [`host_access_token`] parses `accessToken` and `expiresAt`
-//! and keeps no other field.
+//! **Only the access token (and its expiry) is ever extracted from the host
+//! file.** Spike 002 (A2.4) measured that a copied refresh token logs the host
+//! out the first time either side refreshes, so [`host_access_token`] parses the
+//! whole file, keeps `accessToken` and `expiresAt`, and drops the parsed
+//! document, refresh token included, before it returns.
 //!
 //! **A token reaches the child only as `CLAUDE_CODE_OAUTH_TOKEN` in its
 //! environment** (T-28-03): not argv (world-readable in `/proc`), not a file, not
@@ -158,10 +159,12 @@ pub fn read_stored_token(path: &Path) -> Result<Option<String>, AuthError> {
 
 /// The host's current access token, from `<host_claude_dir>/.credentials.json`.
 ///
-/// Reads `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (epoch
-/// milliseconds) and nothing else: the refresh token never enters this process's
-/// memory as a value. Refused when less than [`MIN_TOKEN_LIFETIME`] remains at
-/// `now`.
+/// The whole credentials file is read and parsed in this process, so the refresh
+/// token is briefly in memory as part of the parsed document. Only
+/// `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (epoch
+/// milliseconds) are extracted, and the returned [`LaunchToken`] carries the
+/// access token alone, so the refresh token never reaches the sandbox (T-28-13).
+/// Refused when less than [`MIN_TOKEN_LIFETIME`] remains at `now`.
 pub fn host_access_token(
     host_claude_dir: &Path,
     now: DateTime<Utc>,

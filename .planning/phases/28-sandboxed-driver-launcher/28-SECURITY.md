@@ -86,8 +86,8 @@ created: "2026-10-20"
 
 ### Follow-ups (non-blocking, outside declared register scope)
 
-- Sibling run dirs under `.planning/meta-manager/drivers/` are writable from inside the sandbox (only the current run dir is ro-bound, `sandbox.rs:274-280`).
-- `auth.rs:159` doc claims the refresh token never enters process memory; `host_access_token` parses the whole credentials file (the token still never reaches the sandbox).
+- Sibling run dirs under `.planning/meta-manager/drivers/` are writable from inside the sandbox (only the current run dir is ro-bound, `sandbox.rs:274-280`). **Resolved by quick task 261020-f80 (018cc17):** drivers dir hidden by an empty tmpfs; own run dir and lock masks re-bound on top; live-probed.
+- `auth.rs:159` doc claims the refresh token never enters process memory; `host_access_token` parses the whole credentials file (the token still never reaches the sandbox). **Resolved by quick task 261020-f80 (this commit):** doc comments in `auth.rs` corrected.
 
 ---
 
