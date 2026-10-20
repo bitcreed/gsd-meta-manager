@@ -1,0 +1,8 @@
+H1-new PASS run id 20261020-acc-h1-132352 was minted by driver new
+H1-check PASS driver check exit 0 on the filled template (DRIVE-03)
+H1-1 PASS I-01 dispatched (LOG line 53) and hook_dispatches=1 before the SIGKILL
+H1-2 PASS launch 2 recorded (LOG line 55)
+H1-3 PASS crash-detected previous_launch=1 (line 54) precedes launch 2 (line 55)
+H1-4 PASS exactly one I-01 recovered in launch 2
+H1-5 PASS recovered (line 59) precedes launch 2's first I-01 dispatched (line 61)
+RESULT PASS

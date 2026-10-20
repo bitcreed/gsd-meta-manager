@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "run_id": "20261020-acc-h1-132352",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/prompt-acceptance/h1-20261020T132352Z/project",
+  "status": "parked",
+  "status_reason": "driver:all-parked",
+  "created_at": "2026-10-20T13:23:52Z",
+  "updated_at": "2026-10-20T13:26:25Z",
+  "launches": 2,
+  "current": {
+    "item": "I-01",
+    "phase": "0",
+    "step": "Create notes/h1.txt with one line, run sleep 90 once, commit the file"
+  },
+  "items": {
+    "I-01": {
+      "state": "parked",
+      "outcome": "worker committed on worktree branch; current branch main lacks the commit; human must bring it onto main",
+      "dispatches": 2,
+      "first_dispatch_at": "2026-10-20T13:24:01Z",
+      "findings": [
+        0
+      ]
+    }
+  },
+  "connections": [
+    {
+      "role": "driver",
+      "state": "lost",
+      "session_id": "8f19363c-2808-4dd4-850c-99161088702b",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-h1-132352-49285860-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:23:52Z",
+      "last_heartbeat": "2026-10-20T13:24:05Z"
+    },
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 27923,
+      "scope_unit": "gsdmm-driver-20261020-acc-h1-132352-49285860-2.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:24:06Z",
+      "last_heartbeat": "2026-10-20T13:24:06Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "d13cf374-db93-4ba1-92ba-6763de88e0cf",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-h1-132352-49285860-2.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:24:06Z",
+      "last_heartbeat": "2026-10-20T13:26:24Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 2,
+      "limit": 6
+    },
+    "wall_clock_min": {
+      "used": 2.3,
+      "limit": 15.0
+    },
+    "gap_rounds": {
+      "limit": 2,
+      "seen": {},
+      "per_phase": {},
+      "last_write": {},
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 2,
+  "denied_dispatches": 0,
+  "last_event": {
+    "at": "2026-10-20T13:26:25Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "rc=0 status=parked"
+  },
+  "ended_by_driver": true,
+  "awaiting_recovery": [],
+  "recovered_this_launch": [
+    "I-01"
+  ],
+  "active_seconds": 138.508423465,
+  "launch_branch": "main",
+  "launch_start_sha": "5498cc8f91757f25f87dc661951262bc2b42d28b",
+  "prompt_version": "driver-prompt/1.0.0",
+  "sandbox": "bwrap-scope"
+}

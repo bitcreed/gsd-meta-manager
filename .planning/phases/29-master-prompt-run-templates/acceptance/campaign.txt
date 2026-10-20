@@ -2,3 +2,5 @@
 2026-10-20T04:39:02Z h3 2 0.0090 result
 2026-10-20T04:39:19Z h3 3 0.15 killed-full-budget
 2026-10-20T13:20:05Z h4 1 0.0103 result
+2026-10-20T13:24:06Z h1 1 0.40 killed-full-budget
+2026-10-20T13:26:25Z h1 2 0.0138 result

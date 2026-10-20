@@ -1,0 +1,15 @@
+run_id=20261020-acc-h1-132352
+direction_body_sha256_before=e97d56d23e7254abf5a8d0577f373bb1dad0c2bceecc2d8b49f81dcc72ac7f52
+launch_args_1=--model haiku --loop-mode loop --cap-dispatches 6 --cap-minutes 15 --cap-gap-rounds 2 --max-budget-usd 0.40
+launch_rc_1=0
+dispatch_observed=yes
+hook_dispatches_before_kill=1
+launcher_killed=yes
+scope_gone_s=0.0
+lock_free_after_kill=yes
+status_after_kill=running
+log_lines_before_relaunch=53
+launch_args_2=--model haiku --loop-mode loop --cap-dispatches 6 --cap-minutes 15 --cap-gap-rounds 2 --max-budget-usd 0.40 --foreground
+launch_rc_2=0
+direction_body_sha256_after=e97d56d23e7254abf5a8d0577f373bb1dad0c2bceecc2d8b49f81dcc72ac7f52
+infra_fault=no
