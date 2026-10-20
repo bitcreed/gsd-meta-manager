@@ -294,3 +294,39 @@ fn killed_dispatch_recovered_exactly_once(action: &str, expected_state: &str) {
 fn a_killed_dispatch_is_recovered_exactly_once_before_the_next_dispatch() {
     killed_dispatch_recovered_exactly_once("resume", "running");
 }
+
+#[test]
+fn a_killed_dispatch_is_recovered_exactly_once_before_the_next_dispatch_done() {
+    killed_dispatch_recovered_exactly_once("done", "done");
+}
+
+#[test]
+fn a_killed_dispatch_is_recovered_exactly_once_before_the_next_dispatch_reset() {
+    killed_dispatch_recovered_exactly_once("reset", "pending");
+}
+
+#[test]
+fn a_killed_dispatch_is_recovered_exactly_once_before_the_next_dispatch_park() {
+    killed_dispatch_recovered_exactly_once("park", "parked");
+}
+
+#[test]
+fn a_launcher_and_driver_crash_is_reconciled_on_relaunch() {
+    let fx = fixture();
+    crash_first_launch(&fx, true);
+    let out = relaunch(&fx, "resume");
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let log = fx.log();
+    let crash = log
+        .find("RUN | crash-detected | previous_launch=1")
+        .unwrap_or_else(|| panic!("no crash-detected line:\n{log}"));
+    let relaunch_at = log
+        .find("RUN | launch | n=2")
+        .unwrap_or_else(|| panic!("no second launch line:\n{log}"));
+    assert!(
+        crash < relaunch_at,
+        "crash-detected precedes the launch:\n{log}"
+    );
+    assert_recovered_exactly_once(&fx, "resume", "running");
+}
