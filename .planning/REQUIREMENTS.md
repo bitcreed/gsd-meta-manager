@@ -168,17 +168,17 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 - [x] **LNCH-01**: `gsd-meta-manager driver launch` runs the master headless inside bwrap under
   `systemd-run --user --scope`. Stop kills the whole scope, including descendants.
-- [ ] **LNCH-02**: The run lock is an flock held by the launcher outside the sandbox. It reuses
+- [x] **LNCH-02**: The run lock is an flock held by the launcher outside the sandbox. It reuses
   Phase 17 CTRL-05 and is never a pid file. A second launcher is refused, and a relaunch after a
   crash logs `crash-detected`.
-- [ ] **LNCH-03**: Hard caps are enforced from outside the sandbox:
+- [x] **LNCH-03**: Hard caps are enforced from outside the sandbox:
   - dispatch count: denied at the limit;
   - active wall-clock minutes: kill the scope, with `RuntimeMaxSec` as backstop;
   - gap rounds: deny at limit+1, kill at limit+2, reading driverctl's `caps.gap_rounds.per_phase`
     (the counter is owned by Phase 27, DCTL-04).
 
   A rate-limit result parks the run without retry and names the quota window.
-- [ ] **LNCH-04**: Each run gets its own `CLAUDE_CONFIG_DIR`.
+- [x] **LNCH-04**: Each run gets its own `CLAUDE_CONFIG_DIR`.
   - GSD agents, skills and hooks are linked read-only.
   - The user's GSD and rtk hooks are kept.
   - The global `CLAUDE.md` is not linked (OQ-R2 default) `[inferred]`.
@@ -318,7 +318,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| DRIVE-01 | Phase 28/29 (re-mapped) | Pending: master driver pursues DIRECTION.md items headless |
+| DRIVE-01 | Phase 28/29 (re-mapped) | Pending: Phase 28 launcher half evidenced live (28-09: d33 real-Opus driver, organic deny then scope kill); Phase 29 master prompt half open [inferred - audit] |
 | DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; now an advisory hint (PRMT-05) |
 | DRIVE-03 | Phase 29 (re-mapped) | Pending: DIRECTION.md items with done-when/budget are the reviewable plan |
 | DRIVE-04 | Phase 21 (superseded) | Superseded: the master is the model; dispatch cap replaces escalation cap (LNCH-03) |
@@ -350,9 +350,9 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | DCTL-03 | Phase 27 | Complete |
 | DCTL-04 | Phase 27 | Complete |
 | LNCH-01 | Phase 28 | Complete |
-| LNCH-02 | Phase 28 | Pending |
-| LNCH-03 | Phase 28 | Pending |
-| LNCH-04 | Phase 28 | Pending |
+| LNCH-02 | Phase 28 | Complete |
+| LNCH-03 | Phase 28 | Complete |
+| LNCH-04 | Phase 28 | Complete |
 | LNCH-05 | Phase 28 | Complete |
 | LNCH-06 | Phase 28 | Complete |
 | LNCH-07 | Phase 28 | Complete |

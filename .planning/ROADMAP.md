@@ -1085,7 +1085,7 @@ default. Hosts without bwrap or systemd-run get an explicit degraded mode.
      degraded mode then runs unsandboxed, with caps enforced by process supervision, and the posture
      is recorded on the run and shown in the TUI. Headless operation never needs tmux.
 
-**Plans**: 8/9 plans executed
+**Plans**: 9/9 plans executed
 
 Plans:
 **Wave 1**
@@ -1107,7 +1107,7 @@ Plans:
 - [x] 28-08-PLAN.md — push step from a launcher-owned mirror: fixed refspec, SAFE-01/03/06 reuse, auto-push at run end, opt-in PR (LNCH-06)
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 28-09-PLAN.md — live acceptance harness: L1-L5, L7, L8 on Haiku; D-33 real-Opus gap-cap run with pre-registered rubric and $20 ceiling; phase gate (SC2, carried risk)
+- [x] 28-09-PLAN.md — live acceptance harness: L1-L5, L7, L8 on Haiku; D-33 real-Opus gap-cap run with pre-registered rubric and $20 ceiling; phase gate (SC2, carried risk)
 
 **Carried risk (from Phase 26.1, operator-accepted 2026-10-18)**: VALID-02's cap half (deny at
 limit+1, kill at limit+2) was proven only by the scripted Haiku stand-in `r261-l7`; on the organic
@@ -1319,7 +1319,7 @@ Plans:
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
-| 28. Sandboxed Driver Launcher | 8/9 | In Progress | - |
+| 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
 | 29. Master Prompt & Run Templates | 0/0 | Not started | - |
 | 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |

@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.14.0
 current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
-status: executing
-stopped_at: Completed 28-08-PLAN.md
-last_updated: "2026-10-19T21:29:36.313Z"
+status: verifying
+stopped_at: Completed 28-09-PLAN.md
+last_updated: "2026-10-20T00:33:28.703Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 28 execution started
-state_head: b6064d2ebf0944dcd869140bf0bc3d7cc46fefb1
+state_head: 21188c5da39e4b8712559b8cfdf52a0eac22dc86
 progress:
   total_phases: 10
   completed_phases: 11
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 27 (driverctl & Driver Frontmatter) complete 2026-10-19: 6/6 plans, verification passed 4/4,
   security SECURED (0 open threats). DCTL-01..04 complete. The `stalled` status value carried from
   26.1 shipped (RunStatus::is_terminal covers stopped|done|crashed|stalled|parked).
@@ -481,6 +481,7 @@ verify-phase if the gate is fixed.
 | Phase 28 P06 | 18 min | 2 tasks | 13 files |
 | Phase 28 P07 | 16 min | 2 tasks | 8 files |
 | Phase 28 P08 | 21min | 2 tasks | 10 files |
+| Phase 28 P09 | ~14h wall (paid campaign + token wait) | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -647,6 +648,8 @@ Recent decisions affecting current work:
 - [Phase 28]: 28-08: launch_start_sha, not launch_branch, marks the first launch; LaunchOptions carries pr_policy beside open_pr; an existing push mirror keeps its pinned URL (delete mirror.git to change remotes) [inferred - audit]
 - [Phase 28]: 28-08: a PR is attempted after every Pushed outcome when driver.open_pr is on and the SAFE-06 ledger refuses the second (pr-refused); AlreadyPushed never retries a PR; an unusable ledger refuses fail closed [inferred - audit]
 - [Phase 28]: 28-08: launcher git runs with GIT_ALLOW_PROTOCOL=file:git:http:https:ssh, repository GIT_* variables removed, pinned URLs validated, and git/gh error lines URL-redacted before print or LOG [inferred - audit]
+- [Phase 28]: 28-09: l3 recorded FAIL (driver's 8 scripted reps ended 1s after count 3), not rerun; deny-after-3 evidenced live by l7 [inferred - audit]
+- [Phase 28]: 28-09: D-33 PASS closes the 26.1 VALID-02 carried risk; the kill's second gaps_found was injected per the pre-registered rule, the deny organic
 
 ### Roadmap Evolution
 
@@ -820,8 +823,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-19T21:29:35.315Z
-Stopped at: Completed 28-08-PLAN.md
+Last session: 2026-10-20T00:33:27.682Z
+Stopped at: Completed 28-09-PLAN.md
 Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
