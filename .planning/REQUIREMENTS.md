@@ -225,7 +225,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   `[inferred]`.
 - [ ] **PRMT-04**: Startup reconciliation resolves every `running` item to exactly one of done,
   resume, reset or park. A `control` edit is honoured before the next dispatch.
-- [ ] **PRMT-05**: `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory
+- [x] **PRMT-05**: `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory
   hint that never binds the driver.
 
 ### Driver Tab (DTAB): Phase 30
@@ -361,7 +361,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | PRMT-02 | Phase 29 | Pending |
 | PRMT-03 | Phase 29 | Pending |
 | PRMT-04 | Phase 29 | Pending |
-| PRMT-05 | Phase 29 | Pending |
+| PRMT-05 | Phase 29 | Complete |
 | DTAB-01 | Phase 30 | Pending |
 | DTAB-02 | Phase 30 | Pending |
 | DTAB-03 | Phase 30 | Pending |

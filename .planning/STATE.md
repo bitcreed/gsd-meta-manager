@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 29
 current_phase_name: Master Prompt & Run Templates
 status: executing
-stopped_at: Completed 29-02-PLAN.md
-last_updated: "2026-10-20T03:15:47.138Z"
+stopped_at: Completed 29-03-PLAN.md
+last_updated: "2026-10-20T03:27:53.388Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 29 execution started
-state_head: 549fc7442548e7a3832a003e5531a23e37135c2f
+state_head: f0d960d45139c050a3aa0439638f94b7f7351e5f
 progress:
   total_phases: 10
   completed_phases: 11
@@ -228,7 +228,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 29 (Master Prompt & Run Templates) — EXECUTING
-Plan: 3 of 8
+Plan: 4 of 8
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -484,6 +484,7 @@ verify-phase if the gate is fixed.
 | Phase 28 P09 | ~14h wall (paid campaign + token wait) | 3 tasks | 4 files |
 | Phase 29 P01 | 13 min | 3 tasks | 7 files |
 | Phase 29 P02 | 12 min | 3 tasks | 7 files |
+| Phase 29 P03 | 12min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -656,6 +657,8 @@ Recent decisions affecting current work:
 - [Phase 29]: driver-prompt/1.0.0: SC1 rules are hard rules 1-5; stop rules in a marker-delimited precedence block with human control (rule 1) above launcher-cap
 - [Phase 29]: 29-02: store rejects dispatched under control pause|stop (D-19/OQ5 store half) [inferred - audit]; D-18 pause semantics operator-confirmed 2026-10-19
 - [Phase 29]: 29-02: awaiting_recovery ids absent from current DIRECTION items are skipped at check time, not pruned from state
+- [Phase 29]: 29-03: next default target uses router::is_goal_met (not phase_is_done) so a gaps_found phase is reported, not skipped [inferred — audit]
+- [Phase 29]: 29-03: next --json is required; no-target/no-rule/goal-met reasons are hyphenated constants distinct from RouterReason snake_case [inferred — audit]
 
 ### Roadmap Evolution
 
@@ -829,8 +832,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-20T03:15:45.938Z
-Stopped at: Completed 29-02-PLAN.md
+Last session: 2026-10-20T03:27:52.184Z
+Stopped at: Completed 29-03-PLAN.md
 Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
