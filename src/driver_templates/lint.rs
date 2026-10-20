@@ -1,8 +1,56 @@
 //! The DIRECTION lint behind `driver check` (Phase 29; D-11, DRIVE-03).
 //!
-//! RED stub: the real lint lands in the next commit.
+//! `driver check <project> <run-id>` turns the human-written DIRECTION body into a
+//! machine-checkable plan: it reports, with file line numbers, everything that
+//! keeps the file from being a plan the driver can follow, before any launch (the
+//! launch preflight reuses [`lint_direction`]).
+//!
+//! # Strict where the store is lenient
+//!
+//! [`parse_direction`](crate::driver::direction::parse_direction) is lenient on
+//! purpose (the store depends on it never failing and on an unreadable field being
+//! simply absent), so this lint is a separate, pure, strict reader. It parses only
+//! the documented `- key: value` lines, never modifies `parse_direction`, and does
+//! no I/O.
+//!
+//! # Placeholders (Pitfall 16)
+//!
+//! A placeholder is one of the exact brace spans in the shipped template body
+//! outside HTML comments ([`template_placeholders`]), never "anything in braces":
+//! `${HOME}`, `{"a":1}` and `{a,b}` are legitimate text in a `done-when`. HTML
+//! comments are blanked (byte for byte, newlines kept) before any matching, so a
+//! placeholder inside a comment is never a problem and line numbers stay true.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::LazyLock;
+
+use regex::Regex;
+
+use super::DIRECTION_TEMPLATE;
+use crate::driver::direction::split_frontmatter;
+
+/// The launcher's default gap-round cap (`driver launch --cap-gap-rounds`). An item
+/// budget above it only holds if the human relaunches with a higher cap.
+const DEFAULT_GAP_CAP: u64 = 2;
+
+/// The `control` words DIRECTION.md may carry.
+const CONTROL_WORDS: [&str; 3] = ["run", "pause", "stop"];
+
+/// The keys an item `budget` may carry.
+const BUDGET_KEYS: [&str; 3] = ["dispatches", "minutes", "gap-rounds"];
+
+/// The keys a `run-budget` may carry.
+const RUN_BUDGET_KEYS: [&str; 2] = ["dispatches", "hours"];
+
+static KEY_VALUE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^- ([A-Za-z][A-Za-z-]*):[ \t]*(.*?)[ \t]*$").expect("static regex")
+});
+static ITEM_HEADING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^### (I-\d+)[ \t]+(\S.*?)[ \t]*$").expect("static regex"));
+static ITEM_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^I-\d+$").expect("static regex"));
+static BRACE_SPAN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{[^{}\n]*\}").expect("static regex"));
 
 /// One lint finding: a file line (frontmatter lines counted) and a message.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,12 +74,12 @@ impl Finding {
     }
 }
 
-/// The result of [`lint_direction`].
+/// The result of [`lint_direction`]; both lists are sorted by (line, message).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LintReport {
     /// Findings that make DIRECTION.md an invalid plan.
     pub problems: Vec<Finding>,
-    /// Findings worth a look that do not change the verdict.
+    /// Findings worth a look that do not change the verdict (exit code).
     pub warnings: Vec<Finding>,
 }
 
@@ -42,14 +90,441 @@ impl LintReport {
     }
 }
 
-/// The brace spans of the shipped template body outside HTML comments.
-pub fn template_placeholders() -> Vec<&'static str> {
-    Vec::new()
+/// `text` with every `<!-- ... -->` span replaced by spaces, newlines kept, so the
+/// result has the same length, the same line structure and the same char
+/// boundaries as `text`. An unterminated comment runs to the end.
+fn blank_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail.find("-->").map_or(tail.len(), |i| i + "-->".len());
+        out.extend(tail[..end].chars().flat_map(|c| {
+            // One ASCII space per byte keeps offsets identical to the input.
+            let n = if c == '\n' { 0 } else { c.len_utf8() };
+            let spaces = std::iter::repeat_n(' ', n);
+            let newline = std::iter::once('\n').take(usize::from(c == '\n'));
+            newline.chain(spaces)
+        }));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
-/// Lint a whole DIRECTION.md (frontmatter optional).
-pub fn lint_direction(_text: &str) -> LintReport {
-    LintReport::default()
+/// The brace spans of the shipped template body outside HTML comments, in order,
+/// without repeats: the unfilled placeholders (`{run-id}` is the one `driver new`
+/// fills itself).
+pub fn template_placeholders() -> Vec<&'static str> {
+    static SPANS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+        let blanked = blank_comments(DIRECTION_TEMPLATE);
+        let mut spans: Vec<&'static str> = Vec::new();
+        for m in BRACE_SPAN.find_iter(&blanked) {
+            // `blanked` has the template's offsets, so the span can be sliced from
+            // the 'static original.
+            let span = &DIRECTION_TEMPLATE[m.start()..m.end()];
+            if !spans.contains(&span) {
+                spans.push(span);
+            }
+        }
+        spans
+    });
+    SPANS.clone()
+}
+
+/// What a `### ` heading under `## Items` turned out to be.
+struct Item {
+    id: String,
+    heading_line: usize,
+    /// First occurrence of each `- key: value` line: key -> (line, value).
+    fields: BTreeMap<String, (usize, String)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Preamble,
+    Direction,
+    Items,
+    Other,
+}
+
+/// A non-negative decimal integer (no sign, no fraction, no overflow).
+fn parse_count(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+/// Check a `k=v, k=v` list against `allowed`; returns the integer pairs or pushes
+/// one problem per bad piece on `line`.
+fn check_pairs(
+    what: &str,
+    value: &str,
+    allowed: &[&str],
+    line: usize,
+    problems: &mut Vec<Finding>,
+) -> Vec<(String, u64)> {
+    let mut pairs = Vec::new();
+    let mut bad = |message: String| problems.push(Finding { line, message });
+    if value.is_empty() {
+        bad(format!(
+            "{what} has no pairs; expected {}",
+            pair_hint(allowed)
+        ));
+        return pairs;
+    }
+    for piece in value.split(',') {
+        let piece = piece.trim();
+        let Some((key, number)) = piece.split_once('=') else {
+            bad(format!(
+                "{what} piece `{piece}` is not <key>=<integer>; expected {}",
+                pair_hint(allowed)
+            ));
+            continue;
+        };
+        let (key, number) = (key.trim(), number.trim());
+        if !allowed.contains(&key) {
+            bad(format!(
+                "{what} has unknown key `{key}`; expected {}",
+                pair_hint(allowed)
+            ));
+            continue;
+        }
+        match parse_count(number) {
+            Some(n) => pairs.push((key.to_owned(), n)),
+            None => bad(format!(
+                "{what} pair `{key}={number}` is not a non-negative integer"
+            )),
+        }
+    }
+    pairs
+}
+
+fn pair_hint(allowed: &[&str]) -> String {
+    format!("comma-separated integer pairs of {}", allowed.join("|"))
+}
+
+/// Lint a whole DIRECTION.md (frontmatter optional, split off with
+/// [`split_frontmatter`]); every finding carries its file line number.
+pub fn lint_direction(text: &str) -> LintReport {
+    let (_, body) = split_frontmatter(text);
+    let skipped = &text[..text.len() - body.len()];
+    let first_line = skipped.matches('\n').count() + 1;
+    let blanked = blank_comments(body);
+    let lines: Vec<(usize, &str)> = blanked
+        .lines()
+        .enumerate()
+        .map(|(i, l)| (first_line + i, l))
+        .collect();
+
+    let mut problems: Vec<Finding> = Vec::new();
+    let mut warnings: Vec<Finding> = Vec::new();
+
+    let mut section = Section::Preamble;
+    let mut direction_line: Option<usize> = None;
+    let mut items_line: Option<usize> = None;
+    let mut controls: Vec<(usize, String)> = Vec::new();
+    let mut items: Vec<Item> = Vec::new();
+    let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
+    let mut headings_under_items = 0usize;
+
+    for &(n, raw) in &lines {
+        let line = raw.trim_end();
+        if line.starts_with("## ") || line == "##" {
+            section = match line.trim() {
+                "## Direction" => {
+                    direction_line.get_or_insert(n);
+                    Section::Direction
+                }
+                "## Items" => {
+                    items_line.get_or_insert(n);
+                    Section::Items
+                }
+                _ => Section::Other,
+            };
+            continue;
+        }
+        if section == Section::Items && line.starts_with("### ") {
+            headings_under_items += 1;
+            if let Some(caps) = ITEM_HEADING.captures(line) {
+                let id = caps[1].to_owned();
+                if let Some(first) = seen_ids.get(&id) {
+                    problems.push(Finding {
+                        line: n,
+                        message: format!("duplicate item id {id} (first defined on line {first})"),
+                    });
+                } else {
+                    seen_ids.insert(id.clone(), n);
+                }
+                items.push(Item {
+                    id,
+                    heading_line: n,
+                    fields: BTreeMap::new(),
+                });
+            } else {
+                problems.push(Finding {
+                    line: n,
+                    message: format!(
+                        "an item heading must be `### I-<n> <title>` (found `{}`)",
+                        line.trim()
+                    ),
+                });
+                // Lines under a malformed heading belong to no item.
+                items.push(Item {
+                    id: String::new(),
+                    heading_line: n,
+                    fields: BTreeMap::new(),
+                });
+            }
+            continue;
+        }
+        let Some(caps) = KEY_VALUE.captures(line) else {
+            continue;
+        };
+        let (key, value) = (caps[1].to_owned(), caps[2].to_owned());
+        match (section, key.as_str()) {
+            (Section::Direction, "control") => controls.push((n, value)),
+            (Section::Direction, "run-budget") => {
+                check_pairs("run-budget", &value, &RUN_BUDGET_KEYS, n, &mut problems);
+            }
+            (_, "human-verification") => {
+                if !matches!(value.as_str(), "defer" | "skip") {
+                    problems.push(Finding {
+                        line: n,
+                        message: format!(
+                            "human-verification must be `defer` or `skip` (found `{value}`)"
+                        ),
+                    });
+                }
+            }
+            (Section::Items, _) => {
+                if let Some(item) = items.last_mut().filter(|i| !i.id.is_empty()) {
+                    item.fields.entry(key).or_insert((n, value));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Sections.
+    if direction_line.is_none() {
+        problems.push(Finding {
+            line: 1,
+            message: "missing the `## Direction` section".to_owned(),
+        });
+    }
+    if items_line.is_none() {
+        problems.push(Finding {
+            line: 1,
+            message: "missing the `## Items` section".to_owned(),
+        });
+    }
+    if let Some(at) = direction_line {
+        if controls.is_empty() {
+            problems.push(Finding {
+                line: at,
+                message: "no `- control:` line under `## Direction`".to_owned(),
+            });
+        }
+    }
+    for (n, value) in &controls {
+        if !CONTROL_WORDS.contains(&value.as_str()) {
+            problems.push(Finding {
+                line: *n,
+                message: format!(
+                    "control must be exactly one of {} (found `{value}`)",
+                    CONTROL_WORDS.join(", ")
+                ),
+            });
+        }
+    }
+    if let Some(at) = items_line {
+        if headings_under_items == 0 {
+            problems.push(Finding {
+                line: at,
+                message: "no items under `## Items`".to_owned(),
+            });
+        }
+    }
+
+    // Items.
+    let known: BTreeSet<&str> = seen_ids.keys().map(String::as_str).collect();
+    let mut edges: BTreeMap<&str, (usize, Vec<&str>)> = BTreeMap::new();
+    for item in items.iter().filter(|i| !i.id.is_empty()) {
+        let id = item.id.as_str();
+        let head = item.heading_line;
+        for key in ["intent", "done-when"] {
+            match item.fields.get(key) {
+                Some((_, v)) if !v.is_empty() => {}
+                Some((n, _)) => problems.push(Finding {
+                    line: *n,
+                    message: format!("{id}: `{key}` is empty"),
+                }),
+                None => problems.push(Finding {
+                    line: head,
+                    message: format!("{id}: missing `- {key}:`"),
+                }),
+            }
+        }
+        match item.fields.get("budget") {
+            None => problems.push(Finding {
+                line: head,
+                message: format!("{id}: missing `- budget:`"),
+            }),
+            Some((n, v)) => {
+                let before = problems.len();
+                let pairs = check_pairs("budget", v, &BUDGET_KEYS, *n, &mut problems);
+                for finding in &mut problems[before..] {
+                    finding.message = format!("{id}: {}", finding.message);
+                }
+                for (key, count) in pairs {
+                    if key == "gap-rounds" && count > DEFAULT_GAP_CAP {
+                        warnings.push(Finding {
+                            line: *n,
+                            message: format!(
+                                "gap-rounds {count} exceeds the launcher's default gap cap \
+                                 {DEFAULT_GAP_CAP}; relaunch with --cap-gap-rounds {count}"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some((n, v)) = item.fields.get("hold") {
+            if !matches!(v.as_str(), "true" | "false") {
+                problems.push(Finding {
+                    line: *n,
+                    message: format!("{id}: hold must be `true` or `false` (found `{v}`)"),
+                });
+            }
+        }
+        if let Some((n, v)) = item.fields.get("after") {
+            if v != "none" {
+                let mut targets = Vec::new();
+                for part in v.split(',').map(str::trim) {
+                    if !ITEM_ID.is_match(part) {
+                        problems.push(Finding {
+                            line: *n,
+                            message: format!(
+                                "{id}: after must be `none` or a comma list of item ids \
+                                 (found `{v}`)"
+                            ),
+                        });
+                        targets.clear();
+                        break;
+                    }
+                    if known.contains(part) {
+                        targets.push(part);
+                    } else {
+                        problems.push(Finding {
+                            line: *n,
+                            message: format!("{id}: after names {part}, which is not an item"),
+                        });
+                    }
+                }
+                // The first definition of an id owns its edges.
+                edges.entry(id).or_insert((*n, targets));
+            }
+        }
+    }
+    problems.extend(cycle_problems(&items, &edges));
+
+    // Unfilled placeholders, anywhere in the body outside comments.
+    let placeholders = template_placeholders();
+    for &(n, line) in &lines {
+        for span in &placeholders {
+            if line.contains(span) {
+                problems.push(Finding {
+                    line: n,
+                    message: format!("placeholder still present: {span}"),
+                });
+            }
+        }
+    }
+
+    problems.sort();
+    problems.dedup();
+    warnings.sort();
+    warnings.dedup();
+    LintReport { problems, warnings }
+}
+
+/// One problem per dependency cycle in the `after` graph (a self-edge is a cycle),
+/// reported on the `after` line of the cycle's first member in file order.
+fn cycle_problems(items: &[Item], edges: &BTreeMap<&str, (usize, Vec<&str>)>) -> Vec<Finding> {
+    // File order of first definitions: the DFS order and the rotation key.
+    let mut order: Vec<&str> = Vec::new();
+    for item in items.iter().filter(|i| !i.id.is_empty()) {
+        if !order.contains(&item.id.as_str()) {
+            order.push(item.id.as_str());
+        }
+    }
+    let position = |id: &str| order.iter().position(|o| *o == id).unwrap_or(usize::MAX);
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Unseen,
+        OnPath,
+        Done,
+    }
+    fn visit<'a>(
+        node: &'a str,
+        edges: &BTreeMap<&'a str, (usize, Vec<&'a str>)>,
+        marks: &mut BTreeMap<&'a str, Mark>,
+        path: &mut Vec<&'a str>,
+        cycles: &mut Vec<Vec<&'a str>>,
+    ) {
+        marks.insert(node, Mark::OnPath);
+        path.push(node);
+        if let Some((_, targets)) = edges.get(node) {
+            for &next in targets {
+                match marks.get(next).copied().unwrap_or(Mark::Unseen) {
+                    Mark::Unseen => visit(next, edges, marks, path, cycles),
+                    Mark::OnPath => {
+                        let from = path.iter().position(|p| *p == next).unwrap_or(0);
+                        cycles.push(path[from..].to_vec());
+                    }
+                    Mark::Done => {}
+                }
+            }
+        }
+        path.pop();
+        marks.insert(node, Mark::Done);
+    }
+
+    let mut marks: BTreeMap<&str, Mark> = BTreeMap::new();
+    let mut cycles: Vec<Vec<&str>> = Vec::new();
+    for &start in &order {
+        if marks.get(start).copied().unwrap_or(Mark::Unseen) == Mark::Unseen {
+            let mut path = Vec::new();
+            visit(start, edges, &mut marks, &mut path, &mut cycles);
+        }
+    }
+
+    let mut seen: BTreeSet<Vec<&str>> = BTreeSet::new();
+    let mut findings = Vec::new();
+    for mut cycle in cycles {
+        // Start the cycle at its first member in file order.
+        let first = (0..cycle.len())
+            .min_by_key(|i| position(cycle[*i]))
+            .unwrap_or(0);
+        cycle.rotate_left(first);
+        let mut members = cycle.clone();
+        members.sort_unstable();
+        if !seen.insert(members) {
+            continue;
+        }
+        let line = edges.get(cycle[0]).map_or(1, |(n, _)| *n);
+        let mut shown = cycle.clone();
+        shown.push(cycle[0]);
+        findings.push(Finding {
+            line,
+            message: format!("dependency cycle in after: {}", shown.join(" -> ")),
+        });
+    }
+    findings
 }
 
 #[cfg(test)]

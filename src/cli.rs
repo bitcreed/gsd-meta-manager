@@ -486,6 +486,14 @@ pub enum DriverAction {
         /// The run's name: ASCII letters, digits, `.`, `_`, `-`; not starting with `.` or `-`
         slug: String,
     },
+    /// Lint a run's DIRECTION.md: print every problem with its line and exit 1,
+    /// or nothing and exit 0 (read-only)
+    Check {
+        /// Alias or path of a registered project
+        project: String,
+        /// The run id: `.planning/meta-manager/drivers/<run-id>`
+        run_id: String,
+    },
     /// The driver's long-lived OAuth token: store one, or see what is stored
     Auth {
         #[command(subcommand)]
@@ -1194,6 +1202,20 @@ mod tests {
         assert!(
             driver_action(&["new", "p", "smoke", "--prompt-file", "x"]).is_err(),
             "a run is minted from the embedded templates only"
+        );
+    }
+
+    #[test]
+    fn driver_check_takes_a_project_and_a_run_id() {
+        match driver_action(&["check", "p", "r1"]).expect("parses") {
+            DriverAction::Check { project, run_id } => {
+                assert_eq!((project.as_str(), run_id.as_str()), ("p", "r1"));
+            }
+            _ => panic!("not a check"),
+        }
+        assert!(
+            driver_action(&["check", "p"]).is_err(),
+            "the run id is required"
         );
     }
 

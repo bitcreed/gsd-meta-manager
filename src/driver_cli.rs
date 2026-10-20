@@ -45,6 +45,7 @@ pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
         } => stop_main(&project, &run_id, wait_secs, config),
         DriverAction::Push { project, run_id } => push_main(&project, &run_id, config),
         DriverAction::New { project, slug } => new_main(&project, &slug, config),
+        DriverAction::Check { project, run_id } => check_main(&project, &run_id, config),
         DriverAction::Auth { action } => auth_main(action),
     }
 }
@@ -384,6 +385,70 @@ fn new_main(target: &str, slug: &str, config: Option<PathBuf>) -> i32 {
 #[cfg(not(target_os = "linux"))]
 fn new_main(_target: &str, _slug: &str, _config: Option<PathBuf>) -> i32 {
     report("new", &LauncherError::UnsupportedPlatform)
+}
+
+/// `driver check`: lint a run's DIRECTION.md and print every problem (D-11, DRIVE-03).
+///
+/// Read-only. Problems then warnings, one `DIRECTION.md:<line>: ...` line each;
+/// nothing is printed for a clean file. `0` without problems, `1` with any, and `1`
+/// for a run that cannot be read.
+#[cfg(target_os = "linux")]
+fn check_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
+    use gsd_meta_manager::driver_templates::lint::lint_direction;
+    use gsd_meta_manager::driverctl::serve::{valid_run_id, validate_run_dir, RUN_ID_RE};
+    use gsd_meta_manager::state_reader::driver_frontmatter::DRIVER_RUNS_REL;
+
+    let (_alias, project, _registry) = match resolve_project(target, config) {
+        Ok(resolved) => resolved,
+        Err(message) => {
+            err_line(&format!("driver check: {message}"));
+            return 1;
+        }
+    };
+    if !valid_run_id(run_id) {
+        err_line(&format!(
+            "driver check: run id {run_id:?} does not match {RUN_ID_RE}"
+        ));
+        return 1;
+    }
+    let run_dir = match validate_run_dir(&project, &project.join(DRIVER_RUNS_REL).join(run_id)) {
+        Ok((run_dir, _id)) => run_dir,
+        Err(error) => {
+            err_line(&format!("driver check: {error}"));
+            return 1;
+        }
+    };
+    let direction = run_dir.join("DIRECTION.md");
+    let text = match std::fs::read_to_string(&direction) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            err_line(&format!(
+                "driver check: DIRECTION.md not found in {}; run driver new",
+                run_dir.display()
+            ));
+            return 1;
+        }
+        Err(e) => {
+            err_line(&format!(
+                "driver check: cannot read {}: {e}",
+                direction.display()
+            ));
+            return 1;
+        }
+    };
+    let report = lint_direction(&text);
+    for problem in &report.problems {
+        out_line(&problem.to_string());
+    }
+    for warning in &report.warnings {
+        out_line(&warning.as_warning());
+    }
+    i32::from(!report.is_clean())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_main(_target: &str, _run_id: &str, _config: Option<PathBuf>) -> i32 {
+    report("check", &LauncherError::UnsupportedPlatform)
 }
 
 /// `driver push`: the push step for a finished run whose launcher is gone.
