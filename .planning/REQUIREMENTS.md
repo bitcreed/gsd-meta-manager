@@ -81,9 +81,9 @@ interleave and corrupt each other.
 
 ### Autonomous Driver (DRIVE)
 
-- [ ] **DRIVE-01**: A user states a goal once in natural language and the driver pursues it across multiple GSD commands without further input
+- [x] **DRIVE-01**: A user states a goal once in natural language and the driver pursues it across multiple GSD commands without further input
 - [x] **DRIVE-02**: The driver chooses the next GSD command from observed project state using deterministic rules, not a model call, for every case the rules cover
-- [ ] **DRIVE-03**: The driver's goal is decomposed into a structured, machine-checkable plan that the user can review before the run starts
+- [x] **DRIVE-03**: The driver's goal is decomposed into a structured, machine-checkable plan that the user can review before the run starts
 - [ ] **DRIVE-04**: The driver escalates to a model only for goal decomposition and for ambiguity the rules cannot resolve, with a per-run cap on such escalations *(superseded 2026-10-14; see Traceability)*
 - [x] **DRIVE-05**: The driver parks and flags for a human when it encounters a GSD gate that requires human judgement
 - [x] **DRIVE-06**: The driver reports a terminal outcome — goal met, parked, or halted — with the reason
@@ -214,7 +214,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   `.planning/meta-manager/drivers/<run-id>/`, with a self-ignoring `.gitignore`, DIRECTION.md, and
   LOG.md with its grammar inline. DIRECTION.md holds `control: run|pause|stop`, standing rules, and
   items with intent, done-when, budget, after, hold and answer.
-- [ ] **PRMT-03**: The prompt and the template state these stop rules, and their precedence:
+- [x] **PRMT-03**: The prompt and the template state these stop rules, and their precedence:
   - item budget;
   - at most 2 gap rounds per phase;
   - divergence;
@@ -223,7 +223,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
   Stop rules outrank a human `answer:`, and only a budget edit lifts one (OQ-R1 default)
   `[inferred]`.
-- [ ] **PRMT-04**: Startup reconciliation resolves every `running` item to exactly one of done,
+- [x] **PRMT-04**: Startup reconciliation resolves every `running` item to exactly one of done,
   resume, reset or park. A `control` edit is honoured before the next dispatch.
 - [x] **PRMT-05**: `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory
   hint that never binds the driver.
@@ -318,9 +318,9 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| DRIVE-01 | Phase 28/29 (re-mapped) | Pending: Phase 28 launcher half evidenced live (28-09: d33 real-Opus driver, organic deny then scope kill); Phase 29 master prompt half open [inferred - audit] |
+| DRIVE-01 | Phase 28/29 (re-mapped) | Complete: Phase 28 launcher half evidenced live (28-09: d33 real-Opus driver, organic deny then scope kill); Phase 29 master prompt half closed by operator sign-off 2026-10-20 accepting o1 ADJUST x2 (29-UAT.md) |
 | DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; now an advisory hint (PRMT-05) |
-| DRIVE-03 | Phase 29 (re-mapped) | Pending: DIRECTION.md items with done-when/budget are the reviewable plan |
+| DRIVE-03 | Phase 29 (re-mapped) | Complete: DIRECTION.md items with done-when/budget are the reviewable plan; `driver check` lints it (29-VERIFICATION) |
 | DRIVE-04 | Phase 21 (superseded) | Superseded: the master is the model; dispatch cap replaces escalation cap (LNCH-03) |
 | DRIVE-05 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred] |
 | DRIVE-06 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred] |
@@ -359,8 +359,8 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-08 | Phase 28 | Complete |
 | PRMT-01 | Phase 29 | Complete |
 | PRMT-02 | Phase 29 | Complete |
-| PRMT-03 | Phase 29 | Pending |
-| PRMT-04 | Phase 29 | Pending |
+| PRMT-03 | Phase 29 | Complete |
+| PRMT-04 | Phase 29 | Complete |
 | PRMT-05 | Phase 29 | Complete |
 | DTAB-01 | Phase 30 | Pending |
 | DTAB-02 | Phase 30 | Pending |
