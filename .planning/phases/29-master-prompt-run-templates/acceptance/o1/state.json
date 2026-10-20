@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "run_id": "20261020-acc-o1-133927",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/prompt-acceptance/o1-20261020T133927Z/project",
+  "status": "parked",
+  "status_reason": "driver:all-parked",
+  "created_at": "2026-10-20T13:39:29Z",
+  "updated_at": "2026-10-20T13:55:57Z",
+  "launches": 1,
+  "current": {
+    "item": "I-01",
+    "phase": "1",
+    "step": "/gsd-execute-phase 1 --gaps-only"
+  },
+  "items": {
+    "I-01": {
+      "state": "parked",
+      "outcome": "2nd gaps_found after round 1; driverctl caps.gap_rounds used 2/2; feed keeps growing new rule classes",
+      "dispatches": 4,
+      "first_dispatch_at": "2026-10-20T13:39:39Z",
+      "findings": [
+        2,
+        1,
+        1,
+        1
+      ]
+    }
+  },
+  "connections": [
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 101320,
+      "scope_unit": "gsdmm-driver-20261020-acc-o1-133927-19d6bc8c-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:39:29Z",
+      "last_heartbeat": "2026-10-20T13:39:29Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "6c8f1032-1f79-4fe5-a171-ab6750035032",
+      "model": "opus",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-o1-133927-19d6bc8c-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:39:29Z",
+      "last_heartbeat": "2026-10-20T13:55:56Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 4,
+      "limit": 10
+    },
+    "wall_clock_min": {
+      "used": 16.5,
+      "limit": 90.0
+    },
+    "gap_rounds": {
+      "limit": 2,
+      "seen": {
+        "1:133d4a343b9e3b83": {
+          "phase": "1",
+          "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+        },
+        "1:29c01f172827bcc0": {
+          "phase": "1",
+          "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+        }
+      },
+      "per_phase": {
+        "1": 2
+      },
+      "last_write": {
+        "1": 1792504493.983389
+      },
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 4,
+  "denied_dispatches": 0,
+  "last_event": {
+    "at": "2026-10-20T13:55:57Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "rc=0 status=parked"
+  },
+  "ended_by_driver": true,
+  "awaiting_recovery": [],
+  "recovered_this_launch": [],
+  "active_seconds": 987.959548048,
+  "launch_branch": "main",
+  "launch_start_sha": "93e9deb5fb4e4a7e0a5e91c313a9e9a99a00ef00",
+  "prompt_version": "driver-prompt/1.0.0",
+  "sandbox": "bwrap-scope"
+}
