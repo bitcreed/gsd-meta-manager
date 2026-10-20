@@ -26,6 +26,10 @@
 #       5 host precondition (bwrap, user systemd, claude version, auth); 6 secret gate or evidence scan hit;
 #       7 kit integrity (make_variant.py --check); 8 campaign ceiling would be exceeded or is unmeasurable;
 #       9 pre-registration gate (d33: the rubric commit is not an ancestor of HEAD, or the rubric changed since).
+# PHASE 29 NOTE (Pitfall 12): the DIRECTION shapes of l1-l8 and d33 (spike inline/DIRECTION.run*.md) predate the
+# Phase 29 launch preflight (`driver launch` runs the DIRECTION lint and requires `control: run` before anything
+# else). Re-running any of these cases now would be REFUSED by that preflight, so this harness is kept as the
+# record of the Phase 28 measurements and as the helper library `scripts/prompt-acceptance.sh` sources.
 # Verdict grammar (spike run.sh): `<check> PASS|FAIL|NOT-REACHED <detail>` lines, then `RESULT PASS|FAIL|ADJUST`.
 # Evidence is derived files only (LOG.md, state.json, DIRECTION frontmatter, stop-guard.log, drift.log, cost and
 # observation lines): never a stream jsonl, a transcript, the per-run claude-config or an environment dump.
@@ -989,12 +993,16 @@ run_l5() {
 }
 
 # ---------------------------------------------------------------------------------------------- main
-CMD="${1:-}"; CASE_ARG="${2:-}"
-case "$CMD" in
-  selftest) run_selftest ;;
-  run|check)
-    case " $CASES " in *" $CASE_ARG "*) ;; *) echo "$USAGE" >&2; exit 2 ;; esac
-    if [ "$CMD" = check ]; then do_check "$CASE_ARG"; exit $?; fi
-    do_run "$CASE_ARG" ;;
-  *) echo "$USAGE" >&2; exit 2 ;;
-esac
+# The dispatch runs only when this file is EXECUTED. `scripts/prompt-acceptance.sh` (Phase 29, plan 29-07, D-25)
+# sources it for the helpers above and supplies its own dispatch.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  CMD="${1:-}"; CASE_ARG="${2:-}"
+  case "$CMD" in
+    selftest) run_selftest ;;
+    run|check)
+      case " $CASES " in *" $CASE_ARG "*) ;; *) echo "$USAGE" >&2; exit 2 ;; esac
+      if [ "$CMD" = check ]; then do_check "$CASE_ARG"; exit $?; fi
+      do_run "$CASE_ARG" ;;
+    *) echo "$USAGE" >&2; exit 2 ;;
+  esac
+fi
