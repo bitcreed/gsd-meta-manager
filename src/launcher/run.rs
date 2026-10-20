@@ -1284,6 +1284,9 @@ fn supervise(
         &[
             ("CLAUDE_CONFIG_DIR", ctx.config_dir.clone().into_os_string()),
             ("DRIVERCTL_SOCK", ctx.sock.clone().into_os_string()),
+            // Read by the master prompt (spike 001-003 `MASTER-PROMPT.md`), not by this
+            // crate: it tells the driver's scripts the launcher already holds the run
+            // lock, so they must not try to take it (IN-01).
             ("DRIVER_LOCK_HELD", "1".into()),
             ("PATH", path),
             ("CLAUDE_CODE_OAUTH_TOKEN", ctx.token.value.clone().into()),
