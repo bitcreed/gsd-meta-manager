@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.14.0
-current_phase: 28
-current_phase_name: Sandboxed Driver Launcher
-status: verifying
+current_phase: 29
+current_phase_name: Master Prompt & Run Templates
+status: executing
 stopped_at: Phase 29 context gathered
-last_updated: "2026-10-20T01:32:42.987Z"
+last_updated: "2026-10-20T02:24:22.625Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 28 execution started
-state_head: 6e74d7b262b08b34c6c9ee854498b7c2bd31ad23
+state_head: a072857a3c5a047f7360c1c44ea2598d9a6c0599
 progress:
   total_phases: 10
   completed_phases: 11
-  total_plans: 9
+  total_plans: 8
   completed_plans: 112
 milestone_name: gsd-core 1.17.0 Sync
 ---
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Status: Phase complete — ready for verification
+Status: Ready to execute
   Phase 27 (driverctl & Driver Frontmatter) complete 2026-10-19: 6/6 plans, verification passed 4/4,
   security SECURED (0 open threats). DCTL-01..04 complete. The `stalled` status value carried from
   26.1 shipped (RunStatus::is_terminal covers stopped|done|crashed|stalled|parked).
@@ -227,7 +227,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 28 (Sandboxed Driver Launcher) — EXECUTING
+Phase: 29 (Master Prompt & Run Templates) — READY TO EXECUTE
 Plan: 9 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
