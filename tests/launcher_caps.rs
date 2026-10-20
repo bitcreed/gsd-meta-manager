@@ -702,3 +702,50 @@ sleep 60
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(fx.state_json()["status_reason"], "stop:user");
 }
+
+/// RESEARCH A1 (the offline gate for plan 29-07's H3/H4): a `status: gaps_found`
+/// VERIFICATION.md that exists BEFORE the launch is not baseline. The launcher's
+/// per-tick scan counts it on the first tick, so `gap-observed | phase=1 | count=1`
+/// is in LOG.md before a driver that waits for it sends its first hook. A harness
+/// that wants a gap round counted therefore pre-writes the file; one that wants a
+/// clean count must not leave a stale `gaps_found` file in the project.
+#[test]
+fn a_gaps_found_file_present_at_launch_is_counted_on_the_first_tick() {
+    let fx = Fixture::new();
+    write_gaps(fx.project(), 1);
+    let log_path = fx.run_dir.join("LOG.md");
+    fx.write_scenario(&format!(
+        r#"
+D="$FAKE_CLAUDE_DIR"
+driverctl log start --mode headless --loop-mode loop
+seen=no
+i=0
+while [ "$i" -lt 150 ]; do
+  if grep -q 'RUN | gap-observed' '{log}'; then seen=yes; break; fi
+  sleep 0.1
+  i=$((i + 1))
+done
+echo "$seen" > "$D/gap_seen_before_hook"
+printf '%s' '{{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s1","tool_input":{{"prompt":"run phase 1"}}}}' | driverctl hook > "$D/hook_out.txt"
+driverctl log end --reason stop
+printf '%s\n' '{{"type":"result","subtype":"success"}}'
+"#,
+        log = log_path.display()
+    ));
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    assert_eq!(
+        fx.recorded("gap_seen_before_hook").trim(),
+        "yes",
+        "the pre-existing gaps_found file was not counted before the first hook:\n{}",
+        fx.log()
+    );
+    let log = fx.log();
+    let want = "RUN | gap-observed | phase=1 | count=1 |";
+    assert_eq!(gap_lines(&log).len(), 1, "{log}");
+    assert!(
+        log.contains(want),
+        "no `{want}` for the file present at launch:\n{log}"
+    );
+}
