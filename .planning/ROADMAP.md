@@ -1152,10 +1152,26 @@ left implicit.
   5. `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory hint, which
      the prompt cites as advisory only.
 
-**Plans**: 0 plans
+**Plans**: 8 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 29 to break down)
+**Wave 1**
+- [ ] 29-01-PLAN.md — embedded, versioned `driver-prompt/1.0.0` asset with SC1 hard rules, written stop-rule precedence, goldens (PRMT-01/03/05)
+- [ ] 29-02-PLAN.md — store/gate enforcement: one recovery decision per running item, no dispatch under `control: pause|stop`, `prompt_version` recorded (PRMT-01/04)
+- [ ] 29-03-PLAN.md — `gsd-meta-manager next <project> --json`, advisory read-only router hint usable in the sandbox (PRMT-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 29-04-PLAN.md — `driver new` / `driver check`: run dir from embedded templates (.gitignore, DIRECTION.md, LOG.md grammar) and lint (PRMT-02/03, DRIVE-03)
+- [ ] 29-05-PLAN.md — deterministic SC4 proofs: scripted crash-and-relaunch reconciliation, mid-dispatch pause (PRMT-04)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 29-06-PLAN.md — launch wiring: embedded prompt by default, hidden `--prompt-file` override recorded as custom variant, preflight lint (PRMT-01/02, DRIVE-03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 29-07-PLAN.md — acceptance harness with consent/prereg/$25 ledger gates, zero-spend rehearsals, offline phase gate (PRMT-01/03/04, DRIVE-03)
+
+**Wave 5** *(blocked on Wave 4 completion; cost-consent checkpoint)*
+- [ ] 29-08-PLAN.md — paid acceptance: four Haiku cases + one Opus case (≤1 retry), behind operator cost consent, $25 ceiling (PRMT-01/03/04, DRIVE-03)
 
 **Carried risk (from Phase 26.1, operator-accepted 2026-10-18)**: launcher deny/kill was never
 reached under a real Opus driver (VALID-02 = ADJUST). SC3's "at most 2 gap rounds" stop rule must be
