@@ -418,3 +418,118 @@ fn the_minted_log_parses_to_zero_events() {
     assert!(log.starts_with("# Driver log: "), "{log}");
     assert!(parse_log(&log).is_empty());
 }
+
+// ---------------------------------------------------------------- driver check
+
+/// A fresh run's id and DIRECTION.md path.
+fn fresh_run(world: &World, slug: &str) -> (String, PathBuf) {
+    let out = world.driver(&["new", ALIAS, slug]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let run_id = created_id(&out);
+    let direction = world.drivers().join(&run_id).join("DIRECTION.md");
+    (run_id, direction)
+}
+
+fn mtime(path: &Path) -> std::time::SystemTime {
+    fs::metadata(path)
+        .expect("metadata")
+        .modified()
+        .expect("mtime")
+}
+
+/// Replace every template placeholder in `path` with real text.
+fn fill_placeholders(path: &Path) {
+    use gsd_meta_manager::driver_templates::lint::template_placeholders;
+
+    let mut text = fs::read_to_string(path).expect("read");
+    for span in template_placeholders() {
+        text = text.replace(span, "filled");
+    }
+    fs::write(path, text).expect("write");
+}
+
+#[test]
+fn check_on_a_fresh_run_names_each_unfilled_placeholder_and_is_read_only() {
+    let world = World::new();
+    let (run_id, direction) = fresh_run(&world, "fresh");
+    let bytes = fs::read(&direction).expect("read");
+    let stamp = mtime(&direction);
+    let before = dir_listing(direction.parent().expect("run dir"));
+
+    let out = world.driver(&["check", ALIAS, &run_id]);
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 6, "one line per placeholder:\n{text}");
+    let mut last = 0usize;
+    for line in &lines {
+        let rest = line
+            .strip_prefix("DIRECTION.md:")
+            .unwrap_or_else(|| panic!("{line}"));
+        let (n, message) = rest.split_once(": ").unwrap_or_else(|| panic!("{line}"));
+        let n: usize = n.parse().unwrap_or_else(|_| panic!("{line}"));
+        assert!(n >= last, "sorted by line: {text}");
+        last = n;
+        assert!(message.contains('{'), "{line}");
+    }
+
+    assert_eq!(fs::read(&direction).expect("read"), bytes, "read-only");
+    assert_eq!(mtime(&direction), stamp);
+    assert_eq!(dir_listing(direction.parent().expect("run dir")), before);
+}
+
+#[test]
+fn check_on_a_filled_run_exits_zero_silently_and_changes_nothing() {
+    let world = World::new();
+    let (run_id, direction) = fresh_run(&world, "filled");
+    fill_placeholders(&direction);
+    let bytes = fs::read(&direction).expect("read");
+    let stamp = mtime(&direction);
+
+    let out = world.driver(&["check", ALIAS, &run_id]);
+    assert_eq!(out.status.code(), Some(0), "stdout: {}", stdout(&out));
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+    assert_eq!(fs::read(&direction).expect("read"), bytes);
+    assert_eq!(mtime(&direction), stamp);
+}
+
+#[test]
+fn check_prints_a_gap_rounds_warning_without_failing() {
+    let world = World::new();
+    let (run_id, direction) = fresh_run(&world, "warned");
+    fill_placeholders(&direction);
+    let text = fs::read_to_string(&direction).expect("read");
+    fs::write(&direction, text.replacen("gap-rounds=2", "gap-rounds=3", 1)).expect("write");
+
+    let out = world.driver(&["check", ALIAS, &run_id]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let printed = stdout(&out);
+    assert_eq!(printed.lines().count(), 1, "{printed}");
+    assert!(
+        printed.contains(": warning: gap-rounds 3 exceeds the launcher's default gap cap 2; relaunch with --cap-gap-rounds 3"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn check_of_an_unknown_run_or_a_missing_direction_exits_one() {
+    let world = World::new();
+    let out = world.driver(&["check", ALIAS, "20260101-nope"]);
+    assert_eq!(out.status.code(), Some(1), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).starts_with("driver check: "),
+        "{}",
+        stderr(&out)
+    );
+
+    let (run_id, direction) = fresh_run(&world, "gone");
+    fs::remove_file(&direction).expect("remove");
+    let out = world.driver(&["check", ALIAS, &run_id]);
+    assert_eq!(out.status.code(), Some(1), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains("DIRECTION.md not found") && stderr(&out).contains("driver new"),
+        "{}",
+        stderr(&out)
+    );
+}

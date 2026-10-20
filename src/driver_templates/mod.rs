@@ -29,6 +29,8 @@
 //!   refusal naming the path (never a suffix, never an overwrite), and every file
 //!   is opened `create_new`.
 
+pub mod lint;
+
 /// The DIRECTION.md body template (no frontmatter). `{run-id}` is filled by
 /// `driver new`; every other `{...}` outside an HTML comment is a placeholder the
 /// human must replace (the lint reports each one).
