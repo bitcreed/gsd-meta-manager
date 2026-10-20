@@ -133,7 +133,7 @@ Out of scope, owned elsewhere:
   `control: pause|stop` (deny message `LAUNCHER CAP: control=<value>`), so a model that misses the re-read still
   cannot start new work. The in-flight worker finishes, its report is recorded, then the driver ends
   `--reason pause|stop`. SC4's "ends the run after the current item" is read as "after the current dispatch"
-  (PRMT-04 wording, which is stricter). `[inferred — audit]` — flagged: SC4 and PRMT-04 differ in wording.
+  (PRMT-04 wording, which is stricter). `[operator-confirmed 2026-10-19]` — SC4 and PRMT-04 differ in wording; the operator confirmed the PRMT-04 reading (before the next dispatch).
 - **D-19:** The SC4 proof is two-layered:
   - **deterministic** (default `cargo test`, CI-safe): a scripted fake driver (stub `claude` replaying a
     recorded stream, the Phase 28 e2e pattern) is SIGKILLed mid-dispatch, relaunched, and must emit exactly
