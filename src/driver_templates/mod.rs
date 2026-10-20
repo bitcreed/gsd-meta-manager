@@ -275,3 +275,176 @@ mod create {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use regex::Regex;
+
+    use super::*;
+    use crate::driver::direction::{body_sane, parse_direction};
+    use crate::driverctl::log::parse_log;
+    use crate::launcher::prompt::{stop_rules_block, MASTER_PROMPT};
+
+    #[cfg(target_os = "linux")]
+    fn day() -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone;
+        chrono::Utc
+            .with_ymd_and_hms(2026, 10, 19, 23, 59, 59)
+            .single()
+            .expect("a valid instant")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mint_run_id_composes_the_utc_date_and_the_slug() {
+        assert_eq!(mint_run_id("smoke", day()).as_deref(), Ok("20261019-smoke"));
+        assert_eq!(
+            mint_run_id("a.b_c-1", day()).as_deref(),
+            Ok("20261019-a.b_c-1")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mint_run_id_accepts_the_longest_slug_and_refuses_one_byte_more() {
+        let longest = "a".repeat(71);
+        let id = mint_run_id(&longest, day()).expect("71 + 9 = 80 bytes is the limit");
+        assert_eq!(id.len(), 80);
+        let too_long = "a".repeat(72);
+        assert_eq!(
+            mint_run_id(&too_long, day()),
+            Err(NewRunError::BadSlug(too_long.clone()))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mint_run_id_refuses_every_unusable_slug_with_the_allowed_shape() {
+        for slug in [
+            "",
+            "-x",
+            ".x",
+            "a/b",
+            "a b",
+            "caf\u{e9}",
+            "a\nb",
+            "..",
+            "a\u{202e}b",
+        ] {
+            let err = mint_run_id(slug, day()).expect_err(slug);
+            assert_eq!(err, NewRunError::BadSlug(slug.to_owned()), "{slug:?}");
+            let message = err.to_string();
+            assert!(
+                message.contains(SLUG_RE) && message.contains("80 bytes"),
+                "the message names the allowed shape and the limit: {message}"
+            );
+            assert_eq!(message.lines().count(), 1, "one line each: {message:?}");
+        }
+    }
+
+    #[test]
+    fn the_direction_template_carries_the_prompts_stop_rules_byte_for_byte() {
+        let template = stop_rules_block(DIRECTION_TEMPLATE).expect("the template has the block");
+        let prompt = stop_rules_block(MASTER_PROMPT).expect("the prompt has the block");
+        assert_eq!(template, prompt);
+    }
+
+    #[test]
+    fn the_direction_template_is_a_sane_body_with_one_example_item() {
+        assert!(body_sane(DIRECTION_TEMPLATE));
+        let info = parse_direction(DIRECTION_TEMPLATE);
+        assert_eq!(info.control.as_deref(), Some("run"));
+        let ids: Vec<&str> = info.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["I-01"]);
+    }
+
+    #[test]
+    fn the_log_template_starts_with_no_events() {
+        assert!(parse_log(LOG_TEMPLATE).is_empty());
+        assert!(
+            !LOG_TEMPLATE.lines().any(|l| l.starts_with("- 20")),
+            "no comment line may look like an event header (Pitfall 17)"
+        );
+    }
+
+    /// Every LOG event name the store and the launcher can write, found by reading
+    /// their source (so a newly added event fails the golden below until the
+    /// template's grammar names it). Test modules are cut off: their literals are
+    /// fixtures, not events.
+    fn emitted_events() -> BTreeSet<String> {
+        let patterns = [
+            r#"LogEntry::run\(\s*"([a-z][a-z-]*)""#,
+            r#"\bevent:\s*"([a-z][a-z-]*)""#,
+            r#"log_event\(\s*\w+,\s*"([a-z][a-z-]*)""#,
+            r#"log_launcher_event\(\s*"([a-z][a-z-]*)""#,
+        ]
+        .map(|p| Regex::new(p).expect("static regex"));
+        let mut names = BTreeSet::new();
+        for dir in ["driverctl", "launcher"] {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(dir);
+            for entry in std::fs::read_dir(&dir).expect("source dir") {
+                let path = entry.expect("entry").path();
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("source file");
+                let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+                for re in &patterns {
+                    names.extend(re.captures_iter(production).map(|c| c[1].to_owned()));
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn the_log_grammar_names_every_event_the_store_and_launcher_emit() {
+        let emitted = emitted_events();
+        // Positive controls: the scan must see both the driver's events and the
+        // launcher's, or "nothing missing" certifies nothing.
+        for expected in [
+            "start",
+            "reconcile",
+            "dispatched",
+            "report",
+            "verified",
+            "status",
+            "needs-human",
+            "recovered",
+            "end",
+            "launch",
+            "launch-end",
+            "push-refused",
+            "auth-relaunch",
+        ] {
+            assert!(
+                emitted.contains(expected),
+                "scan missed {expected}: {emitted:?}"
+            );
+        }
+        let missing: Vec<&String> = emitted
+            .iter()
+            .filter(|name| {
+                let in_grammar = Regex::new(&format!(
+                    r"(?m)^  (?:RUN|\{{id\}})\s+{}(?:\s|$)",
+                    regex::escape(name)
+                ))
+                .expect("per-name regex");
+                !in_grammar.is_match(LOG_TEMPLATE)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "assets/LOG.md does not name: {missing:?}\n(emitted: {emitted:?})"
+        );
+    }
+
+    #[test]
+    fn the_log_grammar_documents_the_prompt_field_and_the_stalled_status() {
+        assert!(LOG_TEMPLATE.contains("prompt="));
+        assert!(LOG_TEMPLATE.contains("stalled"));
+    }
+}

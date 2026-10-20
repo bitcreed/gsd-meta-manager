@@ -227,3 +227,194 @@ fn driver_new_creates_a_self_ignoring_run_dir_and_prints_the_next_commands() {
     );
     assert!(!text.contains("--prompt-file"), "{text}");
 }
+
+/// Every file under `dir` with its bytes and mtime, for "nothing was touched".
+fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>, std::time::SystemTime)> {
+    let mut rows: Vec<_> = fs::read_dir(dir)
+        .expect("read the run dir")
+        .map(|e| {
+            let e = e.expect("entry");
+            let meta = e.metadata().expect("metadata");
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                fs::read(e.path()).expect("read"),
+                meta.modified().expect("mtime"),
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+#[test]
+fn a_second_run_with_the_same_slug_the_same_day_is_refused_and_touches_nothing() {
+    let world = World::new();
+    let first = world.driver(&["new", ALIAS, "smoke"]);
+    assert!(first.status.success(), "stderr: {}", stderr(&first));
+    let run_id = created_id(&first);
+    let run_dir = world.drivers().join(&run_id);
+    let before = snapshot(&run_dir);
+    let dir_mtime = fs::metadata(&run_dir)
+        .expect("meta")
+        .modified()
+        .expect("mtime");
+
+    // Skip the (vanishingly rare) case of the date rolling over between the calls.
+    let second = world.driver(&["new", ALIAS, "smoke"]);
+    if utc_date() != run_id[..8] {
+        return;
+    }
+    assert_eq!(second.status.code(), Some(1), "stdout: {}", stdout(&second));
+    let err = stderr(&second);
+    assert!(
+        err.contains(&run_dir.display().to_string()),
+        "stderr names the existing run dir: {err}"
+    );
+    assert_eq!(
+        err.lines().filter(|l| l.starts_with("driver new:")).count(),
+        1
+    );
+    assert!(stdout(&second).is_empty(), "{}", stdout(&second));
+    assert_eq!(snapshot(&run_dir), before, "bytes and mtimes are unchanged");
+    assert_eq!(
+        fs::metadata(&run_dir)
+            .expect("meta")
+            .modified()
+            .expect("mtime"),
+        dir_mtime
+    );
+    assert_eq!(
+        dir_listing(&world.drivers()),
+        [run_id],
+        "no suffixed sibling was made"
+    );
+}
+
+#[test]
+fn a_bad_slug_is_refused_before_anything_is_created() {
+    let world = World::new();
+    let too_long = "a".repeat(72);
+    for slug in [
+        "a/b",
+        "a b",
+        "caf\u{e9}",
+        ".hidden",
+        "..",
+        too_long.as_str(),
+    ] {
+        let out = world.driver(&["new", ALIAS, slug]);
+        assert_eq!(out.status.code(), Some(1), "{slug:?}: {}", stderr(&out));
+        let err = stderr(&out);
+        assert!(
+            err.contains("80 bytes") && err.contains("^[A-Za-z0-9]"),
+            "{slug:?}: the refusal names the allowed shape: {err}"
+        );
+        assert!(
+            !world.project().join(".planning/meta-manager").exists(),
+            "{slug:?}: nothing, not even the parents, was created"
+        );
+    }
+}
+
+#[test]
+fn a_symlinked_drivers_dir_is_refused_and_the_target_stays_empty() {
+    let world = World::new();
+    let outside = world.tmp.path().join("outside");
+    fs::create_dir_all(&outside).expect("outside dir");
+    fs::create_dir_all(world.project().join(".planning/meta-manager")).expect("parents");
+    std::os::unix::fs::symlink(&outside, world.drivers()).expect("symlink");
+
+    let out = world.driver(&["new", ALIAS, "smoke"]);
+    assert_eq!(out.status.code(), Some(1), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains(&world.drivers().display().to_string()),
+        "the refusal names the symlink: {}",
+        stderr(&out)
+    );
+    assert!(
+        dir_listing(&outside).is_empty(),
+        "nothing was written through it"
+    );
+}
+
+#[test]
+fn a_symlinked_meta_manager_dir_is_refused_and_the_target_stays_empty() {
+    let world = World::new();
+    let outside = world.tmp.path().join("outside");
+    fs::create_dir_all(&outside).expect("outside dir");
+    let meta = world.project().join(".planning/meta-manager");
+    std::os::unix::fs::symlink(&outside, &meta).expect("symlink");
+
+    let out = world.driver(&["new", ALIAS, "smoke"]);
+    assert_eq!(out.status.code(), Some(1), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains(&meta.display().to_string()),
+        "{}",
+        stderr(&out)
+    );
+    assert!(dir_listing(&outside).is_empty());
+}
+
+#[test]
+fn a_symlinked_planning_dir_is_refused_and_the_target_stays_empty() {
+    let world = World::new();
+    let outside = world.tmp.path().join("outside");
+    fs::create_dir_all(&outside).expect("outside dir");
+    let planning = world.project().join(".planning");
+    fs::remove_dir_all(&planning).expect("remove .planning");
+    std::os::unix::fs::symlink(&outside, &planning).expect("symlink");
+
+    let out = world.driver(&["new", ALIAS, "smoke"]);
+    assert_eq!(out.status.code(), Some(1), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains(&planning.display().to_string()),
+        "{}",
+        stderr(&out)
+    );
+    assert!(dir_listing(&outside).is_empty());
+}
+
+#[test]
+fn a_project_without_planning_is_refused() {
+    let world = World::new();
+    fs::remove_dir_all(world.project().join(".planning")).expect("remove .planning");
+    let out = world.driver(&["new", ALIAS, "smoke"]);
+    assert_eq!(out.status.code(), Some(1), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains("not a GSD project"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !world.project().join(".planning").exists(),
+        "nothing was created"
+    );
+}
+
+#[test]
+fn the_minted_direction_template_carries_the_prompts_stop_rules_block() {
+    use gsd_meta_manager::launcher::prompt::{stop_rules_block, MASTER_PROMPT};
+
+    let world = World::new();
+    let out = world.driver(&["new", ALIAS, "rules"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let run_dir = world.drivers().join(created_id(&out));
+    let direction = fs::read_to_string(run_dir.join("DIRECTION.md")).expect("read");
+    assert_eq!(
+        stop_rules_block(&direction).expect("the run's DIRECTION.md has the block"),
+        stop_rules_block(MASTER_PROMPT).expect("the prompt has the block")
+    );
+}
+
+#[test]
+fn the_minted_log_parses_to_zero_events() {
+    use gsd_meta_manager::driverctl::log::parse_log;
+
+    let world = World::new();
+    let out = world.driver(&["new", ALIAS, "logged"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let run_dir = world.drivers().join(created_id(&out));
+    let log = fs::read_to_string(run_dir.join("LOG.md")).expect("read");
+    assert!(log.starts_with("# Driver log: "), "{log}");
+    assert!(parse_log(&log).is_empty());
+}
