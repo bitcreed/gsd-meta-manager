@@ -1,4 +1,4 @@
-L3-1 PASS gap-observed phase=1 counts 1, 2, 3 (lines 38,39,40)
-L3-2 FAIL no phase-1 deny after count 3 (deny line none, count 3 line 40)
+L3-1 FAIL gap-observed counts missing (1:38 2:no 3:no)
+L3-2 FAIL no phase-1 deny after count 3 (deny line none, count 3 line none)
 L3-3 PASS no failed-verification deny before count 3
 RESULT FAIL

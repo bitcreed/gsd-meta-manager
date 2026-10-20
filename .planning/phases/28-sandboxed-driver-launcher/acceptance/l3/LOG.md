@@ -33,10 +33,10 @@ Written by the launcher / hooks, never by the model:
 Current item status = the last `status` event for that id (absent = pending).
 -->
 
-- 2026-10-19T22:09:41Z | RUN | launch | n=1 | mode=bwrap-scope | model=haiku
-- 2026-10-19T22:09:42Z | RUN | connect | session=9648b823-a20b-4043-8338-4be1dfc41e93 | source=startup
-- 2026-10-19T22:10:31Z | RUN | gap-observed | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
-- 2026-10-19T22:11:21Z | RUN | gap-observed | phase=1 | count=2 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
-- 2026-10-19T22:12:11Z | RUN | gap-observed | phase=1 | count=3 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
-- 2026-10-19T22:12:12Z | RUN | disconnect | session=9648b823-a20b-4043-8338-4be1dfc41e93 | reason=other
-- 2026-10-19T22:12:12Z | RUN | launch-end | status=crashed | reason=driver exited rc=0 without RUN end
+- 2026-10-20T01:12:35Z | RUN | launch | n=1 | mode=bwrap-scope | model=haiku
+- 2026-10-20T01:12:36Z | RUN | connect | session=b7f5cb08-c6c9-4a44-aa68-582057b3707d | source=startup
+- 2026-10-20T01:13:01Z | RUN | gap-observed | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
+- 2026-10-20T01:13:25Z | RUN | gap-coalesced | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md
+- 2026-10-20T01:13:52Z | RUN | gap-coalesced | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md
+- 2026-10-20T01:15:13Z | RUN | disconnect | session=b7f5cb08-c6c9-4a44-aa68-582057b3707d | reason=other
+- 2026-10-20T01:15:14Z | RUN | launch-end | status=crashed | reason=driver exited rc=0 without RUN end
