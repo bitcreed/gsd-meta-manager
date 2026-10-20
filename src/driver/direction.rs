@@ -156,15 +156,85 @@ fn budget_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?m)^- budget:\s*(.+)$").expect("budget regex"))
 }
 
+/// `text` with every `<!-- ... -->` span replaced by spaces, newlines kept, so the
+/// result has the same length, the same line structure and the same char
+/// boundaries as `text`. An unterminated comment runs to the end.
+///
+/// The one comment reader: [`parse_direction`] (the store) and the `driver check`
+/// lint both call it, so a commented-out line is invisible to both.
+pub fn blank_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail.find("-->").map_or(tail.len(), |i| i + "-->".len());
+        out.extend(tail[..end].chars().flat_map(|c| {
+            // One ASCII space per byte keeps offsets identical to the input.
+            let n = if c == '\n' { 0 } else { c.len_utf8() };
+            let spaces = std::iter::repeat_n(' ', n);
+            let newline = std::iter::once('\n').take(usize::from(c == '\n'));
+            newline.chain(spaces)
+        }));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The `## ` section a DIRECTION body line belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    /// Before the first `## ` heading.
+    Preamble,
+    /// Under `## Direction`.
+    Direction,
+    /// Under `## Items`.
+    Items,
+    /// Under any other `## ` heading.
+    Other,
+}
+
+/// The section a `## ` heading line opens, or `None` when `line` is not one.
+///
+/// The one section reader: the store's parser and the lint both use it.
+pub fn section_heading(line: &str) -> Option<Section> {
+    let line = line.trim_end();
+    if !(line.starts_with("## ") || line == "##") {
+        return None;
+    }
+    Some(match line.trim() {
+        "## Direction" => Section::Direction,
+        "## Items" => Section::Items,
+        _ => Section::Other,
+    })
+}
+
 /// Parse the control word and per-item budgets out of a DIRECTION body.
 ///
-/// A read-only port of the spike's `parse_direction`: it never fails, an
-/// unreadable field is simply absent.
+/// A port of the spike's `parse_direction` that never fails: an unreadable field
+/// is simply absent. It reads the body the way the `driver check` lint does
+/// (WR-01): HTML comments are blanked first, and `### I-n` items count only under
+/// `## Items`, so a commented-out or misplaced item is not an item to either
+/// reader.
 pub fn parse_direction(body: &str) -> DirectionInfo {
+    let blanked = blank_comments(body);
     let control = control_re()
-        .captures(body)
+        .captures(&blanked)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string());
+
+    let mut items_text = String::new();
+    let mut section = Section::Preamble;
+    for line in blanked.lines() {
+        if let Some(next) = section_heading(line) {
+            section = next;
+        } else if section == Section::Items {
+            items_text.push_str(line);
+            items_text.push('\n');
+        }
+    }
+    let body = items_text.as_str();
 
     let starts: Vec<(usize, usize, String)> = item_re()
         .captures_iter(body)

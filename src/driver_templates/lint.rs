@@ -5,13 +5,16 @@
 //! keeps the file from being a plan the driver can follow, before any launch (the
 //! launch preflight reuses [`lint_direction`]).
 //!
-//! # Strict where the store is lenient
+//! # One reader with the store (WR-01)
 //!
-//! [`parse_direction`](crate::driver::direction::parse_direction) is lenient on
-//! purpose (the store depends on it never failing and on an unreadable field being
-//! simply absent), so this lint is a separate, pure, strict reader. It parses only
-//! the documented `- key: value` lines, never modifies `parse_direction`, and does
-//! no I/O.
+//! [`parse_direction`](crate::driver::direction::parse_direction) is what the store
+//! reads (the gate's control word, the items `driverctl log` accepts, the
+//! frontmatter counts). This lint is a separate, pure, strict reader that does no
+//! I/O, but the two share the comment reader ([`blank_comments`]) and the section
+//! reader ([`section_heading`]), so they cannot disagree about what is an item or
+//! a control line: a commented-out item is invisible to both, and a `### I-n`
+//! heading or a `- control:` line outside its section, or a second `- control:`
+//! line, is reported here instead of being silently honoured or ignored.
 //!
 //! # Placeholders (Pitfall 16)
 //!
@@ -28,7 +31,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::DIRECTION_TEMPLATE;
-use crate::driver::direction::split_frontmatter;
+use crate::driver::direction::{blank_comments, section_heading, split_frontmatter, Section};
 
 /// The launcher's default gap-round cap (`driver launch --cap-gap-rounds`). An item
 /// budget above it only holds if the human relaunches with a higher cap.
@@ -48,6 +51,8 @@ static KEY_VALUE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static ITEM_HEADING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^### (I-\d+)[ \t]+(\S.*?)[ \t]*$").expect("static regex"));
+static STRAY_ITEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^### (I-\d+)\b").expect("static regex"));
 static ITEM_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^I-\d+$").expect("static regex"));
 static BRACE_SPAN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{[^{}\n]*\}").expect("static regex"));
@@ -90,29 +95,6 @@ impl LintReport {
     }
 }
 
-/// `text` with every `<!-- ... -->` span replaced by spaces, newlines kept, so the
-/// result has the same length, the same line structure and the same char
-/// boundaries as `text`. An unterminated comment runs to the end.
-fn blank_comments(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("<!--") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
-        let end = tail.find("-->").map_or(tail.len(), |i| i + "-->".len());
-        out.extend(tail[..end].chars().flat_map(|c| {
-            // One ASCII space per byte keeps offsets identical to the input.
-            let n = if c == '\n' { 0 } else { c.len_utf8() };
-            let spaces = std::iter::repeat_n(' ', n);
-            let newline = std::iter::once('\n').take(usize::from(c == '\n'));
-            newline.chain(spaces)
-        }));
-        rest = &tail[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
 /// The brace spans of the shipped template body outside HTML comments, in order,
 /// without repeats: the unfilled placeholders (`{run-id}` is the one `driver new`
 /// fills itself).
@@ -139,14 +121,6 @@ struct Item {
     heading_line: usize,
     /// First occurrence of each `- key: value` line: key -> (line, value).
     fields: BTreeMap<String, (usize, String)>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Section {
-    Preamble,
-    Direction,
-    Items,
-    Other,
 }
 
 /// A non-negative decimal integer (no sign, no fraction, no overflow).
@@ -232,19 +206,29 @@ pub fn lint_direction(text: &str) -> LintReport {
 
     for &(n, raw) in &lines {
         let line = raw.trim_end();
-        if line.starts_with("## ") || line == "##" {
-            section = match line.trim() {
-                "## Direction" => {
+        if let Some(next) = section_heading(line) {
+            match next {
+                Section::Direction => {
                     direction_line.get_or_insert(n);
-                    Section::Direction
                 }
-                "## Items" => {
+                Section::Items => {
                     items_line.get_or_insert(n);
-                    Section::Items
                 }
-                _ => Section::Other,
-            };
+                Section::Preamble | Section::Other => {}
+            }
+            section = next;
             continue;
+        }
+        if section != Section::Items {
+            if let Some(caps) = STRAY_ITEM.captures(line) {
+                problems.push(Finding {
+                    line: n,
+                    message: format!(
+                        "item heading {} is outside `## Items`; the driver ignores it",
+                        &caps[1]
+                    ),
+                });
+            }
         }
         if section == Section::Items && line.starts_with("### ") {
             headings_under_items += 1;
@@ -286,6 +270,12 @@ pub fn lint_direction(text: &str) -> LintReport {
         let (key, value) = (caps[1].to_owned(), caps[2].to_owned());
         match (section, key.as_str()) {
             (Section::Direction, "control") => controls.push((n, value)),
+            (_, "control") => problems.push(Finding {
+                line: n,
+                message: "`- control:` is outside `## Direction`; the driver still reads it \
+                          (a `pause` or `stop` there holds the run), so move it"
+                    .to_owned(),
+            }),
             (Section::Direction, "run-budget") => {
                 check_pairs("run-budget", &value, &RUN_BUDGET_KEYS, n, &mut problems);
             }
@@ -328,6 +318,14 @@ pub fn lint_direction(text: &str) -> LintReport {
                 message: "no `- control:` line under `## Direction`".to_owned(),
             });
         }
+    }
+    for (n, _) in controls.iter().skip(1) {
+        problems.push(Finding {
+            line: *n,
+            message: "more than one `- control:` line; keep exactly one (the driver holds the \
+                      run if any of them says `pause` or `stop`)"
+                .to_owned(),
+        });
     }
     for (n, value) in &controls {
         if !CONTROL_WORDS.contains(&value.as_str()) {
@@ -901,5 +899,72 @@ mod tests {
         let p = only_problem(&text);
         assert_eq!(p.line, line_of(&text, "- hold: maybe"));
         assert!(p.line > 4);
+    }
+
+    // -- WR-01: the lint and the store's parser read one plan
+
+    /// The ids the store would accept (`parse_direction`) and the ids the lint saw.
+    fn store_ids(text: &str) -> Vec<String> {
+        let (_, body) = split_frontmatter(text);
+        crate::driver::direction::parse_direction(body)
+            .items
+            .into_iter()
+            .map(|i| i.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_multi_line_commented_out_item_is_invisible_to_the_lint_and_the_store() {
+        let text = format!(
+            "{}\n<!--\n### I-09 parked idea\n\n- intent: x\n- done-when: y\n- budget: dispatches=1\n-->\n",
+            filled()
+        );
+        assert!(lint_direction(&text).is_clean());
+        assert_eq!(store_ids(&text), ["I-01"], "the store does not count I-09");
+    }
+
+    #[test]
+    fn a_stray_item_heading_outside_items_is_flagged_and_not_a_store_item() {
+        let text = filled().replacen(
+            "- control: run\n",
+            "- control: run\n\n### I-09 stray\n\n",
+            1,
+        );
+        let p = only_problem(&text);
+        assert_eq!(p.line, line_of(&text, "### I-09"));
+        assert!(
+            p.message.contains("I-09") && p.message.contains("outside `## Items`"),
+            "{p}"
+        );
+        assert_eq!(store_ids(&text), ["I-01"], "the store ignores it as well");
+
+        // A later `## ` section is no better.
+        let later = format!("{}\n## Notes\n\n### I-07 notes\n", filled());
+        let p = only_problem(&later);
+        assert!(p.message.contains("I-07"), "{p}");
+        assert_eq!(store_ids(&later), ["I-01"]);
+    }
+
+    #[test]
+    fn a_duplicate_control_line_is_flagged_on_the_second_line() {
+        let text = filled().replacen("- control: run\n", "- control: run\n- control: pause\n", 1);
+        let p = only_problem(&text);
+        assert_eq!(p.line, line_of(&text, "- control: pause"));
+        assert!(p.message.contains("more than one `- control:`"), "{p}");
+    }
+
+    #[test]
+    fn a_control_line_outside_direction_is_flagged() {
+        let text = format!("{}\n## Notes\n\n- control: pause\n", filled());
+        let report = lint_direction(&text);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.line == line_of(&text, "- control: pause")
+                    && p.message.contains("outside `## Direction`")),
+            "{:#?}",
+            report.problems
+        );
     }
 }
