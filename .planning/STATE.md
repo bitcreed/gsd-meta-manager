@@ -860,9 +860,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-20T16:13:19.085Z
-Stopped at: Phase 30 UI-SPEC approved
-Resume file: .planning/phases/30-driver-tab-on-direction-md/30-UI-SPEC.md
+Last session: 2026-10-20T18:00:00.000Z
+Stopped at: Session resumed, proceeding to /gsd-execute-phase 30
+Resume file: .planning/phases/30-driver-tab-on-direction-md/30-01-PLAN.md
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md
 `human_needed`). Phases 30-31 follow.
