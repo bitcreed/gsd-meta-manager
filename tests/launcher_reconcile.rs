@@ -26,6 +26,7 @@ use std::fs;
 use std::process::{Child, Output};
 use std::time::Duration;
 
+use gsd_meta_manager::driver::direction::write_body;
 use launcher_support::{wait_until, Fixture};
 use rustix::process::{kill_process_group, Pid, Signal};
 
@@ -67,6 +68,28 @@ driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phas
 printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s1","tool_input":{"prompt":"run phase 1"}}' | driverctl hook > "$D/crash_hook.json"
 touch "$D/started"
 while :; do sleep 1; done
+"#;
+
+/// The mid-dispatch pause driver: dispatch I-01, wait for the test to save
+/// `control: pause` and release it, record the worker's report, then meet the
+/// pause at the next dispatch both at the hook and at the store.
+const PAUSE_SCENARIO: &str = r#"
+D="$FAKE_CLAUDE_DIR"
+driverctl log start --mode headless --loop-mode loop
+driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phase 1
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s1","tool_input":{"prompt":"run phase 1"}}' | driverctl hook > "$D/hook1.json"
+touch "$D/started"
+while [ ! -f "$D/release" ]; do sleep 0.1; done
+driverctl log report --item I-01 --status partial <<'EOF'
+STATUS: partial
+FINDINGS: 0
+SUGGESTED_NEXT: finish the plan
+EOF
+printf '%s' '{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s1","tool_input":{"prompt":"run phase 1 again"}}' | driverctl hook > "$D/hook2.json"
+driverctl log dispatched --item I-01 --step "/gsd-execute-phase 1" --round 0 --phase 1 2> "$D/dispatch_2.err"
+echo $? > "$D/rc_dispatch_2"
+driverctl log end --reason pause
+printf '%s\n' '{"type":"result","subtype":"success"}'
 "#;
 
 /// The relaunch driver for one recovery `action`. It records every driverctl exit
@@ -328,5 +351,98 @@ fn a_launcher_and_driver_crash_is_reconciled_on_relaunch() {
         crash < relaunch_at,
         "crash-detected precedes the launch:\n{log}"
     );
+    assert_recovered_exactly_once(&fx, "resume", "running");
+}
+
+/// Launch 1 of the pause tests: save `control: pause` while I-01's worker runs.
+fn pause_mid_dispatch(fx: &Fixture) -> Output {
+    fx.write_scenario(PAUSE_SCENARIO);
+    let launcher = fx.spawn_launch(&[]);
+    assert!(
+        wait_until(Duration::from_secs(10), || fx.scenario_started()),
+        "the launcher never reached its driver:\n{}",
+        fx.log()
+    );
+    // The human-save path: the splice with driverctl's own writes tolerates it.
+    write_body(&fx.run_dir, |body| {
+        body.replace("- control: run", "- control: pause")
+    })
+    .expect("save control: pause");
+    assert!(
+        fs::read_to_string(fx.run_dir.join("DIRECTION.md"))
+            .unwrap()
+            .contains("- control: pause"),
+        "the pause edit did not land"
+    );
+    fx.release();
+    finish(launcher, Duration::from_secs(30))
+}
+
+#[test]
+fn a_pause_written_mid_dispatch_is_honoured_before_the_next_dispatch() {
+    let fx = fixture();
+    let out = pause_mid_dispatch(&fx);
+    assert!(out.status.success(), "{}\n{}", stderr(&out), fx.log());
+
+    let log = fx.log();
+    // The first (pre-pause) hook was allowed; the second is denied by the control word.
+    assert!(
+        !fx.recorded("hook1.json").contains("permissionDecision"),
+        "the first dispatch was allowed: {}",
+        fx.recorded("hook1.json")
+    );
+    let hook2 = fx.recorded("hook2.json");
+    assert!(hook2.contains("\"permissionDecision\":\"deny\""), "{hook2}");
+    assert!(hook2.contains("LAUNCHER CAP: control=pause"), "{hook2}");
+
+    // The store refuses a dispatched too, naming the control word.
+    assert_eq!(rc(&fx, "rc_dispatch_2"), "2", "{log}");
+    assert!(
+        fx.recorded("dispatch_2.err").contains("control=pause"),
+        "{}",
+        fx.recorded("dispatch_2.err")
+    );
+
+    // LOG: one denial, one dispatched in the launch, the report before the end.
+    let denials: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("RUN | dispatch-denied"))
+        .collect();
+    assert_eq!(denials.len(), 1, "{log}");
+    assert!(denials[0].contains("control=pause"), "{}", denials[0]);
+    assert_eq!(count(&log, "RUN | end | reason=pause"), 1, "{log}");
+    assert_eq!(count(&log, "| I-01 | dispatched |"), 1, "{log}");
+    let report_at = log
+        .find("| I-01 | report |")
+        .expect("the in-flight report is recorded");
+    let end_at = log.find("RUN | end | reason=pause").expect("end line");
+    assert!(report_at < end_at, "the report precedes the end:\n{log}");
+    assert_eq!(fx.state_json()["status"], "paused", "{log}");
+}
+
+#[test]
+fn a_paused_run_reconciles_its_running_item_on_relaunch() {
+    let fx = fixture();
+    let out = pause_mid_dispatch(&fx);
+    assert!(out.status.success(), "{}\n{}", stderr(&out), fx.log());
+    // Pitfall 10: a report does not finish an item, so I-01 is still running.
+    assert_eq!(fx.state_json()["items"]["I-01"]["state"], "running");
+
+    // The human sets the body back to `run` and relaunches.
+    write_body(&fx.run_dir, |body| {
+        body.replace("- control: pause", "- control: run")
+    })
+    .expect("save control: run");
+    for name in [
+        "rc_dispatch_2",
+        "dispatch_2.err",
+        "hook1.json",
+        "hook2.json",
+    ] {
+        let _ = fs::remove_file(fx.rec_dir().join(name));
+    }
+
+    let out = relaunch(&fx, "resume");
+    assert!(out.status.success(), "{}", stderr(&out));
     assert_recovered_exactly_once(&fx, "resume", "running");
 }
