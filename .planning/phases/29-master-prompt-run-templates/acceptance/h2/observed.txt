@@ -1,0 +1,16 @@
+run_id=20261020-acc-h2-132852
+direction_body_sha256_before=39111c65c3ae19ca0fee62bd3f3e98586f41d9c71b9e88524933ea9df149fcca
+launch_args_1=--model haiku --loop-mode loop --cap-dispatches 6 --cap-minutes 15 --cap-gap-rounds 2 --max-budget-usd 0.40
+launch_rc_1=0
+dispatch_observed=yes
+hook_dispatches_before_pause=1
+pause_saved_epoch=1792502949
+pause_saved_utc=2026-10-20T13:29:09Z
+log_lines_before_relaunch=70
+restored_epoch=1792503063
+launch_args_2=--model haiku --loop-mode loop --cap-dispatches 6 --cap-minutes 15 --cap-gap-rounds 2 --max-budget-usd 0.40
+launch_rc_2=0
+recovered_observed=no
+stop_rc_2=0
+direction_body_sha256_after=39111c65c3ae19ca0fee62bd3f3e98586f41d9c71b9e88524933ea9df149fcca
+infra_fault=no

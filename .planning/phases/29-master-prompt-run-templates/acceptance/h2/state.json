@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "run_id": "20261020-acc-h2-132852",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/prompt-acceptance/h2-20261020T132852Z/project",
+  "status": "parked",
+  "status_reason": "driver:all-parked",
+  "created_at": "2026-10-20T13:28:52Z",
+  "updated_at": "2026-10-20T13:31:39Z",
+  "launches": 2,
+  "current": {
+    "item": "I-02",
+    "phase": "0",
+    "step": "Create notes/h2b.txt holding one line, then commit the file"
+  },
+  "items": {
+    "I-01": {
+      "state": "done",
+      "outcome": "notes/h2.txt committed (5c393c3)",
+      "dispatches": 1,
+      "first_dispatch_at": "2026-10-20T13:29:02Z",
+      "findings": [
+        0
+      ]
+    },
+    "I-02": {
+      "state": "parked",
+      "outcome": "notes/h2b.txt committed only on worktree branch 22de049; awaiting merge decision",
+      "dispatches": 1,
+      "first_dispatch_at": "2026-10-20T13:31:13Z",
+      "findings": [
+        0
+      ]
+    }
+  },
+  "connections": [
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "b91700e5-fad5-4fc9-8422-82a01a304f32",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-h2-132852-9bf41f1a-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:28:52Z",
+      "last_heartbeat": "2026-10-20T13:31:02Z"
+    },
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 68980,
+      "scope_unit": "gsdmm-driver-20261020-acc-h2-132852-9bf41f1a-2.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:31:03Z",
+      "last_heartbeat": "2026-10-20T13:31:03Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "42c52203-bfca-4df5-9764-11002312c786",
+      "model": "haiku",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-h2-132852-9bf41f1a-2.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:31:03Z",
+      "last_heartbeat": "2026-10-20T13:31:38Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 2,
+      "limit": 6
+    },
+    "wall_clock_min": {
+      "used": 2.8,
+      "limit": 15.0
+    },
+    "gap_rounds": {
+      "limit": 2,
+      "seen": {},
+      "per_phase": {},
+      "last_write": {},
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 2,
+  "denied_dispatches": 0,
+  "last_event": {
+    "at": "2026-10-20T13:31:39Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "rc=0 status=parked"
+  },
+  "ended_by_driver": true,
+  "awaiting_recovery": [],
+  "recovered_this_launch": [],
+  "active_seconds": 165.53459910200002,
+  "launch_branch": "main",
+  "launch_start_sha": "24a73a5f5dc482a3bd9bb783c30735132e712675",
+  "prompt_version": "driver-prompt/1.0.0",
+  "sandbox": "bwrap-scope"
+}

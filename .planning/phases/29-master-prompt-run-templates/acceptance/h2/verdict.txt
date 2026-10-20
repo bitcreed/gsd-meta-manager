@@ -1,0 +1,8 @@
+H2-new PASS run id 20261020-acc-h2-132852 was minted by driver new
+H2-check PASS driver check exit 0 on the filled template (DRIVE-03)
+H2-1 PASS I-01 dispatched (LOG line 53), hook_dispatches=1, control: pause saved at epoch 1792502949
+H2-2 PASS I-01's report was recorded
+H2-3 PASS RUN | end | reason=pause (LOG line 68)
+H2-4 PASS no dispatched line after the control: pause save (epoch 1792502949) in launch 1
+H2-5 FAIL launch 2: I-01 recovered x0 (first line none), first dispatched 75
+RESULT FAIL
