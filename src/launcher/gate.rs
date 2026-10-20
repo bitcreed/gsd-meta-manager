@@ -9,6 +9,10 @@
 //!
 //! 1. a tripped cap denies everything (`run stopped by launcher cap <cap>`), from
 //!    the instant the monitor decided to kill, before the scope has even exited;
+//! 1b. the human's DIRECTION `control` word (Phase 29, D-18): `pause` and `stop`
+//!    deny a new dispatch (`control=<word>; dispatch nothing new; ...`) so the
+//!    run is honoured *before the next dispatch* [operator-confirmed 2026-10-19].
+//!    The word is read by the store and passed in, which keeps this pure;
 //! 2. the gap-round rule: with limit `gl`, a dispatch whose prompt names a phase
 //!    `P` ([`mentions_phase`]) is denied once `per_phase[P] >= gl + 1`. The kill at
 //!    `gl + 2` is the monitor's (`run.rs`), not this module's;
@@ -52,16 +56,24 @@ pub fn mentions_phase(prompt: &str, phase: &str) -> bool {
 
 /// Decide one driver-level dispatch. Pure; see the module header for the order.
 ///
-/// `tripped` is the cap the monitor has already tripped, if any.
+/// `tripped` is the cap the monitor has already tripped, if any; `control` is the
+/// `control` word `DIRECTION.md` reads right now (`run`, `pause`, `stop`, or none).
+/// The order is tripped, control, gap rule, dispatch cap.
 pub fn decide_dispatch(
     payload: &HookPayload,
     state: &RunState,
     limits: &CapLimits,
     tripped: Option<&str>,
-    _control: Option<&str>,
+    control: Option<&str>,
 ) -> GateDecision {
     if let Some(cap) = tripped {
         return GateDecision::Deny(format!("run stopped by launcher cap {cap}"));
+    }
+    if let Some(word @ ("pause" | "stop")) = control {
+        return GateDecision::Deny(format!(
+            "control={word}; dispatch nothing new; record the in-flight worker's report, \
+             then driverctl log end --reason {word}"
+        ));
     }
     let prompt = payload.prompt.as_deref().unwrap_or("");
     if let Some(gl) = limits.gap_rounds {

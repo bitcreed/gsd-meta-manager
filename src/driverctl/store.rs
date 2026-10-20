@@ -946,8 +946,10 @@ impl RunStore {
         }
     }
 
-    /// The D-17 acceptance rule: why `event` is refused until the items a crashed
-    /// launch left `running` have each been recovered once.
+    /// The acceptance rules that depend on more than the event itself: why `event`
+    /// is refused under a human `control: pause|stop` (D-19), until the items a
+    /// crashed launch left `running` have each been recovered once (D-17), or for
+    /// a second `recovered` of one item in a launch.
     ///
     /// An awaiting id the human has since removed from `DIRECTION.md` cannot be
     /// recovered (the protocol only accepts listed items), so it no longer blocks.
@@ -958,6 +960,16 @@ impl RunStore {
     ) -> Option<String> {
         match event {
             ValidatedEvent::Dispatched { .. } => {
+                // D-19 / RESEARCH Open Question 5 [inferred - audit: taken because
+                // D-19's live assertion is `no further dispatched`]: a human
+                // `pause`/`stop` also stops the driver's own `dispatched` record.
+                // It is checked first so a paused relaunch names the control word.
+                if let Some(word @ ("pause" | "stop")) = direction.control.as_deref() {
+                    return Some(format!(
+                        "control={word}: dispatch nothing new; record the in-flight report, \
+                         then end --reason {word}"
+                    ));
+                }
                 let blocking = self.state.awaiting_recovery.iter().find(|id| {
                     direction.items.is_empty() || direction.items.iter().any(|i| &i.id == *id)
                 })?;
