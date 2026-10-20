@@ -28,7 +28,7 @@ is clean. The `#[ignore]` live bwrap isolation test was NOT run, so the new `tty
 
 ## Fixed Issues
 
-### CR-01: `bind_private` changes the PROCESS-WIDE umask
+### CR-01: `bind_private` changes the PROCESS-WIDE umask; concurrent callers can leave it stuck at 0o177
 
 **Files modified:** `src/driverctl/serve.rs`
 **Commit:** 0951aea
@@ -37,14 +37,14 @@ is clean. The `#[ignore]` live bwrap isolation test was NOT run, so the new `tty
 `cr01_bind_private_never_touches_the_process_umask_and_binds_concurrently` (8 threads x 10 binds, asserts
 umask unchanged, mode 0600, no leftover staging dirs). Logic change: requires human verification.
 
-### WR-01: bwrap started without `--new-session`
+### WR-01: bwrap is started without `--new-session` (controlling-terminal injection)
 
 **Files modified:** `src/launcher/sandbox.rs`, `tests/launcher_live_isolation.rs`
 **Commit:** a9fa45a (the `tests/launcher_sandbox.rs` golden was updated in 60f634e)
 **Applied fix:** `--new-session` added before `--die-with-parent` (`--die-with-parent` was already
 present); golden order updated; live probe gained a `tty_open` line asserted `NONE`.
 
-### WR-02: Credential hiding is an incomplete denylist
+### WR-02: Credential hiding is a denylist and is incomplete (env and home files), while the network is open
 
 **Files modified:** `src/launcher/sandbox.rs`, `src/launcher/config_dir.rs`, `tests/launcher_live_isolation.rs`
 **Commit:** 862847a
@@ -61,7 +61,7 @@ Not done: `GIT_CONFIG_*` (the envelope phase relies on it), `awsAuthRefresh`-sty
 as far as their `env` entries), and a blanket mask of `~/.config/gsd-meta-manager` (the registry may be needed
 by the in-sandbox shim; only the token file is masked). Live probe extended with these paths (unrun).
 
-### WR-03: Prompt passed as an option-parsable positional / unvalidated size
+### WR-03: The master prompt is passed as a positional that can be parsed as an option, and as a single argv string
 
 **Files modified:** `src/launcher/sandbox.rs`, `src/launcher/run.rs`, `tests/launcher_support/mod.rs`, `tests/launcher_e2e.rs`, `tests/launcher_sandbox.rs`
 **Commit:** 60f634e
@@ -70,21 +70,21 @@ by the in-sandbox shim; only the token file is masked). Live probe extended with
 rendered prompt over 120 KiB in both `launch` and `launch_detached`, before the lock. The fake claude shim now
 reads the argument after `--`. New e2e tests cover a `---`-leading template and the empty/oversized refusals.
 
-### WR-04: `RERUN=1` deleted evidence before the gates
+### WR-04: `RERUN=1` deletes the committed evidence BEFORE any gate that can refuse the rerun
 
 **Files modified:** `scripts/launcher-acceptance.sh`
 **Commit:** 112f55a
 **Applied fix:** The `rm -f` now runs after `host_preconditions` (step 6), driven by a `CLEAR_OLD_EVIDENCE`
 flag set in the evidence guard. The fresh-directory-and-swap variant was not done (larger change).
 
-### WR-05: Tests require `.planning/` content the crate excludes
+### WR-05: Tests (and the harness selftest) require `.planning/` content that the crate excludes
 
 **Files modified:** `tests/launcher_acceptance.rs`
 **Commit:** f9adaa3
 **Applied fix:** `planning_skip_reason()` (phase dir and both spike dirs) feeds `skip_reason()` and the ledger
 test, which now print `SKIP:` instead of panicking in a packaged crate or `gsd-pr-branch` checkout.
 
-### WR-06: Unvalidated float and budget flags
+### WR-06: Float and budget flags are unvalidated; `inf`, `NaN` and negative values reach systemd and `claude`
 
 **Files modified:** `src/cli.rs`, `src/launcher/run.rs`
 **Commit:** 8b3eb4c
@@ -92,7 +92,7 @@ test, which now print `SKIP:` instead of panicking in a packaged crate or `gsd-p
 525600) for `--max-budget-usd` and `--cap-minutes`; `check_limits` repeats the check in `launch` and
 `launch_detached`. Test added.
 
-### WR-07: `install_signal_handlers` is one-shot
+### WR-07: `install_signal_handlers` is one-shot; a second SIGTERM/SIGINT is swallowed for the rest of the process
 
 **Files modified:** `src/driverctl/serve.rs`, `src/launcher/run.rs`
 **Commit:** 53c59f5
@@ -101,20 +101,20 @@ a process-wide `STOP_ESCALATED`, which makes `Containment::stop` kill the child 
 `systemctl stop` helper) and `stop_group` skip its grace period. The recorded stop is still written. Unit test
 covers the counting; no real signals are sent in tests. Logic change: requires human verification.
 
-### IN-01: `DRIVER_LOCK_HELD` has no consumer in `src/`
+### IN-01: `DRIVER_LOCK_HELD=1` is exported to the driver but nothing in `src/` reads it
 
 **Files modified:** `src/launcher/run.rs`
 **Commit:** 44f1c39
 **Applied fix:** Comment records that the spike master prompts consume it.
 
-### IN-02: Module documentation drift
+### IN-02: Module documentation drift in `process.rs` and `auth.rs`
 
 **Files modified:** `src/launcher/process.rs`, `src/launcher/auth.rs`, `src/driverctl/serve.rs`
 **Commit:** 3279b91
 **Applied fix:** "Three shapes" -> "Five shapes"; the `store_token` paragraph re-flowed; the stale
 `replace_and_bind` doc that described the umask swap corrected.
 
-### IN-03: Harness tests pass vacuously when tools are missing
+### IN-03: Harness-tests pass vacuously when their tools are missing
 
 **Files modified:** `tests/launcher_acceptance.rs`
 **Commit:** 313f054
