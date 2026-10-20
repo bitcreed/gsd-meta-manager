@@ -1503,4 +1503,21 @@ Plans:
 Captured 2026-10-19, deferred out of Phase 32. **Trigger:** worth doing once the registry ships
 with GSD or has more entries; until then a network fetch buys little.
 
+### Phase 999.7: Master prompt 1.1 — reconcile-first refusal routing + IN-01 (BACKLOG)
+
+**Goal:** Next master-prompt version (prompt bump from `driver-prompt/1.0.0`). (1) A "reconcile
+first" refusal (D-17) reaches the driver as `LAUNCHER CAP: ...`, and stop rule 2 (launcher denial)
+then makes it park the item instead of running reconcile and continuing. Only a driver that skips
+its startup reconcile hits this. Make the refusal distinguishable in the prompt and route it to
+"reconcile, then continue". (2) Bundle 29-REVIEW IN-01: the prompt uses `$RUN_DIR`/`$PROJECT_ROOT`
+as env vars, but the launcher only substitutes `{RUN_DIR}`/`{PROJECT_ROOT}` textually.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+Captured 2026-10-20 at the Phase 29 UAT sign-off. Both need a prompt version bump, so ship together.
+
 Note: Backlog 999.1 (Milestone Archive Browser) promoted to Phase 12 in v1.2.
