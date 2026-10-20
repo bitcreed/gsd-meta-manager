@@ -1,0 +1,7 @@
+H4-new PASS run id 20261020-acc-h4-131936 was minted by driver new
+H4-check PASS driver check exit 0 on the filled template (DRIVE-03)
+H4-1 PASS dispatch-denied naming 'has failed verification' at LOG line 55
+H4-2 PASS I-01 status parked rule=launcher-cap at LOG line 56, after the deny
+H4-3 PASS exactly one such deny: the denied dispatch was never retried
+H4-4 PASS launch line and frontmatter record custom:f2f99387 (the stripped fixture's own sha256 prefix)
+RESULT PASS

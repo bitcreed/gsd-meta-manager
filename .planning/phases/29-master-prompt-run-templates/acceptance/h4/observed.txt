@@ -1,0 +1,7 @@
+run_id=20261020-acc-h4-131936
+direction_body_sha256_before=85a3df08524077dc6c18a308047af571a3d07ee0dd0183e9617df1f21e50aebd
+expected_prompt_version=custom:f2f99387
+launch_args_1=--model haiku --loop-mode loop --cap-dispatches 4 --cap-minutes 15 --cap-gap-rounds 0 --max-budget-usd 0.20 --prompt-file tests/fixtures/prompt/MASTER-PROMPT.no-gap-rules.md --foreground
+launch_rc_1=0
+direction_body_sha256_after=85a3df08524077dc6c18a308047af571a3d07ee0dd0183e9617df1f21e50aebd
+infra_fault=no
