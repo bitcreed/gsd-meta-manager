@@ -32,6 +32,7 @@ use regex::Regex;
 
 use super::DIRECTION_TEMPLATE;
 use crate::driver::direction::{blank_comments, section_heading, split_frontmatter, Section};
+use crate::text::render_for_terminal;
 
 /// The launcher's default gap-round cap (`driver launch --cap-gap-rounds`). An item
 /// budget above it only holds if the human relaunches with a higher cap.
@@ -66,16 +67,29 @@ pub struct Finding {
     pub message: String,
 }
 
+/// Both printed forms go through [`render_for_terminal`] (WR-03): a message quotes
+/// text from DIRECTION.md (a value, a heading, a piece of a list), and that file can
+/// arrive with a cloned repository carrying escape sequences, C1 controls or bidi
+/// overrides. `message` itself stays the raw text so callers and tests can compare it.
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DIRECTION.md:{}: {}", self.line, self.message)
+        write!(
+            f,
+            "DIRECTION.md:{}: {}",
+            self.line,
+            render_for_terminal(&self.message)
+        )
     }
 }
 
 impl Finding {
     /// The warning form: `DIRECTION.md:<line>: warning: <message>`.
     pub fn as_warning(&self) -> String {
-        format!("DIRECTION.md:{}: warning: {}", self.line, self.message)
+        format!(
+            "DIRECTION.md:{}: warning: {}",
+            self.line,
+            render_for_terminal(&self.message)
+        )
     }
 }
 
@@ -943,6 +957,32 @@ mod tests {
         let p = only_problem(&later);
         assert!(p.message.contains("I-07"), "{p}");
         assert_eq!(store_ids(&later), ["I-01"]);
+    }
+
+    #[test]
+    fn a_finding_quoting_hostile_direction_text_prints_no_control_or_bidi_character() {
+        // WR-03: ESC, a C1 CSI, a bell and a right-to-left override in a DIRECTION value.
+        let hostile = "\u{1b}[31mred\u{9b}2J\u{7}x\u{202e}gnp.exe";
+        let text = filled().replacen("- control: run", &format!("- control: {hostile}"), 1);
+        let report = lint_direction(&text);
+        let finding = report
+            .problems
+            .iter()
+            .find(|p| p.message.contains("control must be"))
+            .expect("the bad control word is a problem");
+        assert!(
+            finding.message.contains('\u{1b}'),
+            "the raw message is kept"
+        );
+        for shown in [finding.to_string(), finding.as_warning()] {
+            for c in shown.chars() {
+                assert!(
+                    !c.is_control() && c != '\u{202e}',
+                    "{shown:?} carries {c:?}"
+                );
+            }
+            assert!(shown.starts_with("DIRECTION.md:"), "{shown:?}");
+        }
     }
 
     #[test]

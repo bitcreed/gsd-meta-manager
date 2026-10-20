@@ -34,6 +34,23 @@ fn out_line(text: &str) {
     let _ = writeln!(stdout, "{text}");
 }
 
+/// `text` as one terminal-safe shell word for a command line printed to be copied
+/// (WR-03): control and bidi characters are escaped first, then a word with anything
+/// outside the plain path/alias set is single-quoted.
+#[cfg(target_os = "linux")]
+fn shell_word(text: &str) -> String {
+    let shown = gsd_meta_manager::text::render_for_terminal(text).to_string();
+    let plain = !shown.is_empty()
+        && shown
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c));
+    if plain {
+        shown
+    } else {
+        format!("'{}'", shown.replace('\'', "'\\''"))
+    }
+}
+
 /// Run one `driver` verb and return the process exit code.
 pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
     match action {
@@ -365,6 +382,7 @@ fn new_main(target: &str, slug: &str, config: Option<PathBuf>) -> i32 {
         Ok(run) => {
             out_line(&format!("driver new: created run {}", run.run_id));
             out_line(&format!("  direction: {}", run.direction.display()));
+            let target = shell_word(target);
             out_line(&format!(
                 "  check:  gsd-meta-manager driver check {target} {}",
                 run.run_id
@@ -536,4 +554,28 @@ fn report(verb: &str, error: &LauncherError) -> i32 {
         _ => err_line(&format!("driver {verb}: {error}")),
     }
     error.exit_code()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::shell_word;
+
+    #[test]
+    fn a_plain_alias_or_path_is_printed_as_is() {
+        assert_eq!(shell_word("proj-1"), "proj-1");
+        assert_eq!(shell_word("/home/me/proj_a/x.y"), "/home/me/proj_a/x.y");
+    }
+
+    #[test]
+    fn anything_else_is_single_quoted_and_free_of_control_characters() {
+        assert_eq!(shell_word("my proj"), "'my proj'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word(""), "''");
+        let shown = shell_word("a\u{1b}[31m b\u{202e}");
+        assert!(shown.starts_with('\'') && shown.ends_with('\''), "{shown}");
+        assert!(
+            !shown.chars().any(|c| c.is_control() || c == '\u{202e}'),
+            "{shown:?}"
+        );
+    }
 }
