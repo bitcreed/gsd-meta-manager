@@ -63,18 +63,111 @@ pub const STRIP_ENV: &[&str] = &[
 /// would silently replace the run token.
 pub const EXTRA_STRIP_ENV: &[&str] = &["ANTHROPIC_AUTH_TOKEN"];
 
-/// Directories under `$HOME` the sandbox replaces with an empty tmpfs.
-pub const TMPFS_MASK_DIRS: &[&str] = &[".ssh", ".gnupg", ".config/gh", ".aws", ".docker"];
+/// Further credential channels stripped by exact name (WR-02): cloud, registry
+/// and git/ssh helper variables that name a credential or a program that fetches one.
+pub const MORE_STRIP_ENV: &[&str] = &[
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "KUBECONFIG",
+    "DOCKER_CONFIG",
+    "DOCKER_AUTH_CONFIG",
+    "NETRC",
+    "GNUPGHOME",
+    "NPM_CONFIG_USERCONFIG",
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
+    "DBUS_SESSION_BUS_ADDRESS",
+];
 
-/// Files under `$HOME` the sandbox masks with `/dev/null`. The last two close
+/// Variable-name prefixes stripped (WR-02): the cloud and forge families.
+pub const STRIP_ENV_PREFIXES: &[&str] = &[
+    "AWS_",
+    "AZURE_",
+    "ARM_",
+    "GOOGLE_",
+    "GCP_",
+    "GCLOUD_",
+    "CLOUDSDK_",
+    "GH_",
+    "GITHUB_",
+    "GITLAB_",
+    "GLAB_",
+    "CI_JOB_",
+];
+
+/// Variable-name suffixes stripped (WR-02): anything named like a secret.
+pub const STRIP_ENV_SUFFIXES: &[&str] = &[
+    "_TOKEN",
+    "_SECRET",
+    "_PASSWORD",
+    "_PASSWD",
+    "_PASSPHRASE",
+    "_API_KEY",
+    "_APIKEY",
+    "_SECRET_KEY",
+    "_ACCESS_KEY",
+    "_PRIVATE_KEY",
+    "_CREDENTIALS",
+    "_CREDS",
+];
+
+/// True when the launcher removes `key` from the driver's environment: the exact
+/// lists [`STRIP_ENV`], [`EXTRA_STRIP_ENV`], [`MORE_STRIP_ENV`] plus the
+/// [`STRIP_ENV_PREFIXES`] and [`STRIP_ENV_SUFFIXES`] families.
+///
+/// This stays a denylist because the driver legitimately needs a long tail of
+/// ordinary variables (`PATH`, proxies, toolchain homes, `ANTHROPIC_BASE_URL`, ...)
+/// that an allowlist would have to guess `[inferred — audit]`. The launcher's own
+/// values (`CLAUDE_CODE_OAUTH_TOKEN`, ...) are applied AFTER this filter by
+/// [`child_env`], so a family match never removes what the launcher sets.
+pub fn is_stripped_env(key: &std::ffi::OsStr) -> bool {
+    let Some(name) = key.to_str() else {
+        // A non-UTF-8 name matches no family; it is not a credential convention.
+        return false;
+    };
+    let upper = name.to_ascii_uppercase();
+    STRIP_ENV
+        .iter()
+        .chain(EXTRA_STRIP_ENV)
+        .chain(MORE_STRIP_ENV)
+        .any(|exact| name == *exact)
+        || STRIP_ENV_PREFIXES.iter().any(|p| upper.starts_with(p))
+        || STRIP_ENV_SUFFIXES.iter().any(|x| upper.ends_with(x))
+}
+
+/// Directories under `$HOME` the sandbox replaces with an empty tmpfs.
+pub const TMPFS_MASK_DIRS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".config/gh",
+    ".aws",
+    ".docker",
+    ".kube",
+    ".azure",
+    ".config/gcloud",
+    ".config/glab-cli",
+    ".local/share/keyrings",
+    ".terraform.d",
+];
+
+/// Files under `$HOME` the sandbox masks with `/dev/null`. The git entries close
 /// git's own credential stores for D-27 (a push from inside must find no
-/// credential) `[inferred — audit]`.
+/// credential) `[inferred — audit]`; the package-registry and launcher-token files
+/// close WR-02 (the network is open, so anything readable is exfiltratable).
 pub const NULL_MASK_FILES: &[&str] = &[
     ".claude/.credentials.json",
     ".claude.json",
     ".git-credentials",
     ".config/git/credentials",
     ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".vault-token",
+    ".config/gsd-meta-manager/driver-oauth-token",
 ];
 
 /// The scope unit name of launch `launch_n` of a run (D-08):
@@ -126,11 +219,18 @@ impl SandboxSpec {
             .map(|rel| home.join(rel))
             .filter(|p| p.is_dir())
             .collect();
-        let null_masks = NULL_MASK_FILES
+        let mut null_masks: Vec<PathBuf> = NULL_MASK_FILES
             .iter()
             .map(|rel| home.join(rel))
             .filter(|p| p.exists())
             .collect();
+        // The stored run token lives under `dirs::config_dir()`, which an
+        // `XDG_CONFIG_HOME` moves away from `~/.config` (WR-02).
+        if let Some(token) = super::auth::token_path() {
+            if token.exists() && !null_masks.contains(&token) {
+                null_masks.push(token);
+            }
+        }
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|dir| dir.is_absolute());
@@ -271,8 +371,8 @@ pub fn render_prompt(template: &str, run_dir: &Path, project: &Path, mode: &str)
     prompt
 }
 
-/// The child's whole environment: `host` minus [`STRIP_ENV`] and
-/// [`EXTRA_STRIP_ENV`], then `GIT_TERMINAL_PROMPT=0` (a push from inside must
+/// The child's whole environment: `host` minus [`is_stripped_env`] (the
+/// [`STRIP_ENV`] lists and the secret-name families), then `GIT_TERMINAL_PROMPT=0` (a push from inside must
 /// fail, not wait on a prompt, D-27), then each of `sets` applied in order (a
 /// later set of the same key wins).
 ///
@@ -285,12 +385,7 @@ pub fn child_env(
 ) -> BTreeMap<OsString, OsString> {
     let mut env: BTreeMap<OsString, OsString> = host
         .into_iter()
-        .filter(|(key, _)| {
-            !STRIP_ENV
-                .iter()
-                .chain(EXTRA_STRIP_ENV)
-                .any(|stripped| key == stripped)
-        })
+        .filter(|(key, _)| !is_stripped_env(key))
         .collect();
     env.insert(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"));
     for (key, value) in sets {
@@ -379,6 +474,52 @@ mod tests {
         );
         assert_eq!(env[&OsString::from("CLAUDE_CONFIG_DIR")], "/run-cfg");
         assert_eq!(env[&OsString::from("PATH")], "/cfg/bin:/usr/bin");
+    }
+
+    #[test]
+    fn child_env_strips_cloud_forge_and_secret_named_variables() {
+        let secrets = [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SESSION_TOKEN",
+            "AZURE_CLIENT_SECRET",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GCP_PROJECT_KEY_ALIAS_TOKEN",
+            "GITLAB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_PAT",
+            "NPM_TOKEN",
+            "CARGO_REGISTRY_TOKEN",
+            "CARGO_REGISTRIES_X_TOKEN",
+            "OPENAI_API_KEY",
+            "DB_PASSWORD",
+            "my_secret",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+            "GIT_SSH_COMMAND",
+            "KUBECONFIG",
+        ];
+        let mut host: Vec<(OsString, OsString)> = secrets
+            .iter()
+            .map(|k| (OsString::from(k), OsString::from("v")))
+            .collect();
+        for keep in ["PATH", "HOME", "TERM", "LANG", "HTTPS_PROXY", "CARGO_HOME"] {
+            host.push((OsString::from(keep), OsString::from("v")));
+        }
+        host.push((
+            OsString::from("CLAUDE_CODE_OAUTH_TOKEN"),
+            OsString::from("host"),
+        ));
+        let env = child_env(
+            host,
+            &[("CLAUDE_CODE_OAUTH_TOKEN", OsString::from("launcher"))],
+        );
+        for key in secrets {
+            assert!(!env.contains_key(&OsString::from(key)), "{key} survived");
+        }
+        for keep in ["PATH", "HOME", "TERM", "LANG", "HTTPS_PROXY", "CARGO_HOME"] {
+            assert!(env.contains_key(&OsString::from(keep)), "{keep} was lost");
+        }
+        assert_eq!(env[&OsString::from("CLAUDE_CODE_OAUTH_TOKEN")], "launcher");
     }
 
     #[test]

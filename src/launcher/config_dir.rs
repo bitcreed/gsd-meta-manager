@@ -35,7 +35,7 @@ use serde_json::{json, Map, Value};
 
 use crate::driverctl::serve::hash8;
 
-use super::sandbox::{EXTRA_STRIP_ENV, STRIP_ENV};
+use super::sandbox::is_stripped_env;
 
 /// The application's directory under the data dir.
 const APP_SUBDIR: &str = "gsd-meta-manager";
@@ -168,7 +168,7 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
 ///
 /// * a non-object input is an empty object;
 /// * [`DROPPED_SETTINGS_KEYS`] are removed, and so is every `env` entry named in
-///   `sandbox::STRIP_ENV` or `sandbox::EXTRA_STRIP_ENV` (the settings `env` block
+///   `sandbox::is_stripped_env` (the settings `env` block
 ///   would otherwise re-inject what the process environment scrub removed
 ///   `[inferred — audit]`);
 /// * the dispatch gate (`PreToolUse`, `Agent|Task`, `onFailure: block`) goes
@@ -186,12 +186,7 @@ pub fn settings_transform(host: Value, hook_command: &str, stop_guard_command: &
         settings.remove(*key);
     }
     if let Some(Value::Object(env)) = settings.get_mut("env") {
-        env.retain(|name, _| {
-            !STRIP_ENV
-                .iter()
-                .chain(EXTRA_STRIP_ENV)
-                .any(|stripped| name == stripped)
-        });
+        env.retain(|name, _| !is_stripped_env(std::ffi::OsStr::new(name)));
     }
     let hooks = settings
         .entry("hooks".to_owned())

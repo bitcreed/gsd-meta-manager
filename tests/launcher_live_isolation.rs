@@ -61,6 +61,15 @@ if [ -d "$home/.config/gh" ]; then
 else
   echo "gh_entries=absent"
 fi
+echo "npmrc_read=$(read_rc "$home/.npmrc")"
+echo "cargo_credentials_read=$(read_rc "$home/.cargo/credentials.toml")"
+echo "run_token_read=$(read_rc "$home/.config/gsd-meta-manager/driver-oauth-token")"
+for d in .aws .kube .azure .config/gcloud; do
+  if [ -d "$home/$d" ]; then echo "entries_$(echo "$d" | tr './' '__')=$(ls -A "$home/$d" 2>/dev/null | wc -l | tr -d ' ')"; fi
+done
+echo "env_aws_access_key_id=${AWS_ACCESS_KEY_ID:-}"
+echo "env_npm_token=${NPM_TOKEN:-}"
+echo "env_gitlab_token=${GITLAB_TOKEN:-}"
 echo "env_ssh_auth_sock=${SSH_AUTH_SOCK:-}"
 echo "env_gh_token=${GH_TOKEN:-}"
 echo "env_anthropic_api_key=${ANTHROPIC_API_KEY:-}"
@@ -235,6 +244,9 @@ fn sandbox_isolates_host_credentials_and_services() {
         ("GH_TOKEN", "gh-token-probe-sentinel"),
         ("ANTHROPIC_API_KEY", "api-key-probe-sentinel"),
         ("ANTHROPIC_AUTH_TOKEN", "auth-token-probe-sentinel"),
+        ("AWS_ACCESS_KEY_ID", "aws-probe-sentinel"),
+        ("NPM_TOKEN", "npm-probe-sentinel"),
+        ("GITLAB_TOKEN", "gitlab-probe-sentinel"),
     ] {
         host_env.retain(|(k, _)| k != key);
         host_env.push((key.into(), value.into()));
@@ -391,6 +403,9 @@ fn sandbox_isolates_host_credentials_and_services() {
         "claude_json_read",
         "git_credentials_read",
         "netrc_read",
+        "npmrc_read",
+        "cargo_credentials_read",
+        "run_token_read",
     ] {
         let value = get(key);
         assert!(
@@ -399,6 +414,11 @@ fn sandbox_isolates_host_credentials_and_services() {
         );
     }
     assert_eq!(get("ssh_entries"), "0");
+    for (key, value) in &kv {
+        if key.starts_with("entries_") {
+            assert_eq!(*value, "0", "{key}: a masked credential directory is empty");
+        }
+    }
     let gh = get("gh_entries");
     assert!(gh == "0" || gh == "absent", "gh_entries={gh}");
     for key in [
@@ -406,6 +426,9 @@ fn sandbox_isolates_host_credentials_and_services() {
         "env_gh_token",
         "env_anthropic_api_key",
         "env_anthropic_auth_token",
+        "env_aws_access_key_id",
+        "env_npm_token",
+        "env_gitlab_token",
     ] {
         assert_eq!(get(key), "", "{key} must be unset inside");
     }
