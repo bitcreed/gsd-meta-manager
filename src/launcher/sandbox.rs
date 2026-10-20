@@ -333,9 +333,18 @@ pub fn systemd_run_argv(
     argv
 }
 
+/// The most bytes the rendered master prompt may have. Linux caps ONE argv string
+/// at `MAX_ARG_STRLEN` (128 KiB); a larger prompt makes `execve` fail with `E2BIG`
+/// after the launch was already recorded (WR-03), so it is refused up front.
+pub const MAX_PROMPT_BYTES: usize = 120 * 1024;
+
 /// The headless driver's own command line (spike `claude` list).
+///
+/// The prompt is the LAST argument, after a `--`, so a template that starts with
+/// `-` (a `---` front-matter fence, a `- ` bullet) is never read as an option
+/// (WR-03). `[inferred — audit]`: `claude` is a commander CLI, which honours `--`.
 pub fn claude_argv(prompt: &str, model: &str, max_budget_usd: f64) -> Vec<OsString> {
-    let mut driver_argv: Vec<OsString> = vec![os("claude"), os("-p"), os(prompt)];
+    let mut driver_argv: Vec<OsString> = vec![os("claude"), os("-p")];
     // Project settings are reloaded mid-session; only the per-run user settings
     // (the gate hooks) may apply (RESEARCH §3, T-28-11).
     driver_argv.extend(["--setting-sources", "user"].iter().map(|s| os(s)));
@@ -353,6 +362,8 @@ pub fn claude_argv(prompt: &str, model: &str, max_budget_usd: f64) -> Vec<OsStri
         .map(|s| os(s)),
     );
     driver_argv.push(OsString::from(max_budget_usd.to_string()));
+    driver_argv.push(os("--"));
+    driver_argv.push(os(prompt));
     driver_argv
 }
 
@@ -632,7 +643,6 @@ mod tests {
             [
                 "claude",
                 "-p",
-                "do it",
                 "--setting-sources",
                 "user",
                 "--model",
@@ -643,9 +653,20 @@ mod tests {
                 "--permission-mode",
                 "bypassPermissions",
                 "--max-budget-usd",
-                "10"
+                "10",
+                "--",
+                "do it"
             ]
         );
+    }
+
+    #[test]
+    fn claude_argv_keeps_a_dash_leading_prompt_after_the_double_dash() {
+        let argv = strings(&claude_argv("---\ntitle: x\n---", "opus", 10.0));
+        let n = argv.len();
+        assert_eq!(argv[n - 2], "--");
+        assert_eq!(argv[n - 1], "---\ntitle: x\n---");
+        assert_eq!(argv.iter().filter(|a| *a == "--").count(), 1);
     }
 
     #[test]

@@ -137,7 +137,10 @@ REC=$FAKE_CLAUDE_DIR
 mkdir -p "$REC"
 env | sed 's/^\(CLAUDE_CODE_OAUTH_TOKEN\)=.*/\1=REDACTED/' > "$REC/env.txt"
 printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" > "$REC/token.txt"
-printf '%s' "$2" > "$REC/prompt.txt"
+# The prompt is the argument after `--` (the launcher puts it last, WR-03).
+PROMPT=; PREV=
+for A in "$@"; do if [ "$PREV" = "--" ]; then PROMPT=$A; fi; PREV=$A; done
+printf '%s' "$PROMPT" > "$REC/prompt.txt"
 printf '%s\n' "$@" > "$REC/argv.txt"
 readlink /proc/self/fd/0 > "$REC/stdin.txt"
 if [ -n "$FAKE_CLAUDE_SCENARIO" ]; then exec /bin/sh "$FAKE_CLAUDE_SCENARIO"; fi

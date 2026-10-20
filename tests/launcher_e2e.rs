@@ -31,6 +31,45 @@ fn stderr(out: &std::process::Output) -> String {
 }
 
 #[test]
+fn a_dash_leading_template_reaches_the_driver_as_a_prompt_not_an_option() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    fs::write(
+        fx.prompt_file(),
+        "---\ntitle: front matter\n---\nMODE={MODE}\n",
+    )
+    .unwrap();
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let prompt = fx.recorded("prompt.txt");
+    assert!(
+        prompt.starts_with("---\ntitle: front matter\n---"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("MODE=loop"), "{prompt}");
+}
+
+#[test]
+fn an_empty_or_oversized_template_is_refused_before_anything_is_written() {
+    for (body, needle) in [
+        (" \n".to_owned(), "empty"),
+        ("x".repeat(130 * 1024), "over the"),
+    ] {
+        let fx = Fixture::new();
+        fx.write_scenario(WELL_MANNERED_SCENARIO);
+        fs::write(fx.prompt_file(), body).unwrap();
+        let out = fx.launch(&[]);
+        assert!(!out.status.success());
+        assert!(stderr(&out).contains(needle), "{}", stderr(&out));
+        assert!(
+            !fx.rec_dir().join("prompt.txt").exists(),
+            "no driver was started"
+        );
+    }
+}
+
+#[test]
 fn launch_runs_the_driver_in_the_scope_and_records_its_end() {
     let fx = Fixture::new();
     fx.write_scenario(WELL_MANNERED_SCENARIO);

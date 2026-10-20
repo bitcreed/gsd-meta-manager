@@ -133,6 +133,7 @@ fn golden_bwrap_argv() {
         SOCK,
         SOCK,
         "--unshare-pid",
+        "--new-session",
         "--die-with-parent",
         "--chdir",
         "/work/proj",
@@ -233,7 +234,8 @@ fn claude_argv_restricts_setting_sources() {
         .position(|a| a == "--setting-sources")
         .expect("--setting-sources is present");
     assert_eq!(argv[at + 1], "user");
-    assert_eq!(argv[..3], ["claude", "-p", "do it"]);
+    assert_eq!(argv[..2], ["claude", "-p"]);
+    assert_eq!(argv[argv.len() - 2..], ["--", "do it"]);
 }
 
 // ---------------------------------------------------------------------------

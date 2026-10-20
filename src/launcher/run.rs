@@ -70,7 +70,7 @@ use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::push;
 use super::sandbox::{
     bwrap_argv, child_env, claude_argv, render_prompt, scope_unit_name, systemd_run_argv,
-    LaunchPaths, SandboxSpec,
+    LaunchPaths, SandboxSpec, MAX_PROMPT_BYTES,
 };
 use super::LauncherError;
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
@@ -190,6 +190,36 @@ fn io_error(context: &str, err: impl std::fmt::Display) -> LauncherError {
     LauncherError::Io {
         detail: format!("{context}: {err}"),
     }
+}
+
+/// Refuse an empty or oversized master prompt before anything is written (WR-03):
+/// an empty one makes `claude -p` wait for stdin that is `/dev/null`, and one over
+/// [`MAX_PROMPT_BYTES`] makes `execve` fail with `E2BIG`, both after `RUN | launch`
+/// is on the log.
+fn check_prompt(
+    template: &str,
+    prompt_file: &Path,
+    run_dir: &Path,
+    project: &Path,
+    mode: &str,
+) -> Result<(), LauncherError> {
+    if template.trim().is_empty() {
+        return Err(io_error(
+            &format!("prompt file {}", prompt_file.display()),
+            "the template is empty",
+        ));
+    }
+    let rendered = render_prompt(template, run_dir, project, mode).len();
+    if rendered > MAX_PROMPT_BYTES {
+        return Err(io_error(
+            &format!("prompt file {}", prompt_file.display()),
+            format!(
+                "the rendered prompt is {rendered} bytes, over the {MAX_PROMPT_BYTES}-byte \
+                 limit of one command-line argument"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The embedded store and its socket server (D-06).
@@ -436,6 +466,13 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     })?;
     let template = fs::read_to_string(&opts.prompt_file)
         .map_err(|e| io_error(&format!("prompt file {}", opts.prompt_file.display()), e))?;
+    check_prompt(
+        &template,
+        &opts.prompt_file,
+        &run_dir,
+        &project,
+        opts.loop_mode.as_str(),
+    )?;
     let root = driver_root().ok_or_else(|| LauncherError::Io {
         detail: "no per-user data directory is available for the launcher state".to_owned(),
     })?;
@@ -1092,6 +1129,15 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
             "not a regular file",
         ));
     }
+    let template = fs::read_to_string(&prompt_file)
+        .map_err(|e| io_error(&format!("prompt file {}", prompt_file.display()), e))?;
+    check_prompt(
+        &template,
+        &prompt_file,
+        &run_dir,
+        &project,
+        opts.loop_mode.as_str(),
+    )?;
     let config = config
         .map(std::path::absolute)
         .transpose()
