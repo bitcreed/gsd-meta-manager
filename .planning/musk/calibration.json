@@ -1,33 +1,33 @@
 {
   "version": 1,
-  "generated_at": "2026-10-20T00:40:44.509Z",
+  "generated_at": "2026-10-20T14:33:21.551Z",
   "runtime": "claude-code",
   "transcript_dir": "/home/blk/.claude/projects/-home-blk-projects-rust-gsd-meta-manager",
   "since": null,
   "min_samples": 5,
   "basis": "harness",
   "sessions": 31,
-  "subagents": 312,
-  "messages": 12624,
+  "subagents": 333,
+  "messages": 13541,
   "totals": {
-    "tokens": 61849812,
-    "cache_read": 1797113040,
-    "attributed_to_phase": 36505924
+    "tokens": 67303996,
+    "cache_read": 1943923813,
+    "attributed_to_phase": 41642792
   },
   "prices": {
     "per_task": null,
     "per_plan_overhead": {
-      "p25": 202394,
-      "p50": 279647,
-      "p75": 327124,
-      "n": 43,
+      "p25": 205857,
+      "p50": 268912,
+      "p75": 326487,
+      "n": 51,
       "basis": "harness"
     },
     "per_phase": {
-      "p25": 827493,
-      "p50": 4764518,
-      "p75": 6047202,
-      "n": 9,
+      "p25": 1354873,
+      "p50": 4542548,
+      "p75": 5732734,
+      "n": 10,
       "basis": "harness"
     },
     "per_quick_task": {
@@ -38,55 +38,55 @@
       "basis": "harness"
     },
     "per_req": {
-      "p25": 176464,
-      "p50": 734253,
-      "p75": 1030024,
-      "n": 9,
+      "p25": 207053,
+      "p50": 727175,
+      "p75": 990587,
+      "n": 10,
       "basis": "harness"
     }
   },
   "samples": {
-    "per_task": 43,
-    "per_plan_overhead": 43,
-    "per_phase": 9,
+    "per_task": 51,
+    "per_plan_overhead": 51,
+    "per_phase": 10,
     "per_quick_task": 44,
-    "per_req": 9
+    "per_req": 10
   },
   "fit": {
-    "a": 342378,
-    "b": -24018,
-    "r2": 0.017,
-    "n": 43
+    "a": 342652,
+    "b": -24164,
+    "r2": 0.016,
+    "n": 51
   },
   "by_agent_type": {
     "gsd-executor": {
-      "runs": 83,
-      "tokens_total": 19844317,
-      "cache_read_total": 760235723,
-      "p50_per_run": 226345
+      "runs": 92,
+      "tokens_total": 22001074,
+      "cache_read_total": 827643354,
+      "p50_per_run": 216196
     },
     "gsd-planner": {
-      "runs": 48,
-      "tokens_total": 14618872,
-      "cache_read_total": 428512951,
-      "p50_per_run": 259541
+      "runs": 49,
+      "tokens_total": 15262774,
+      "cache_read_total": 449023108,
+      "p50_per_run": 267000
     },
     "general-purpose": {
-      "runs": 119,
-      "tokens_total": 5405501,
-      "cache_read_total": 64211254,
-      "p50_per_run": 23975
+      "runs": 124,
+      "tokens_total": 5543024,
+      "cache_read_total": 64664771,
+      "p50_per_run": 23933
     },
     "gsd-phase-researcher": {
-      "runs": 11,
-      "tokens_total": 3361937,
-      "cache_read_total": 113929825,
-      "p50_per_run": 283906
+      "runs": 12,
+      "tokens_total": 3832453,
+      "cache_read_total": 132064826,
+      "p50_per_run": 305733
     },
     "main": {
       "runs": 22,
-      "tokens_total": 3303569,
-      "cache_read_total": 54027064,
+      "tokens_total": 3620885,
+      "cache_read_total": 54913364,
       "p50_per_run": 61580
     },
     "orchestrator:/gsd-quick": {
@@ -101,41 +101,47 @@
       "cache_read_total": 28551023,
       "p50_per_run": 243911
     },
-    "gsd-plan-checker": {
-      "runs": 14,
-      "tokens_total": 1454853,
-      "cache_read_total": 10534318,
-      "p50_per_run": 79527
-    },
     "orchestrator:/gsd-execute-phase": {
-      "runs": 8,
-      "tokens_total": 1259229,
-      "cache_read_total": 51079799,
-      "p50_per_run": 160486
+      "runs": 9,
+      "tokens_total": 1839416,
+      "cache_read_total": 60226283,
+      "p50_per_run": 174944
+    },
+    "gsd-plan-checker": {
+      "runs": 15,
+      "tokens_total": 1540822,
+      "cache_read_total": 10780906,
+      "p50_per_run": 85969
     },
     "gsd-verifier": {
-      "runs": 11,
-      "tokens_total": 1228602,
-      "cache_read_total": 20160627,
-      "p50_per_run": 119887
+      "runs": 12,
+      "tokens_total": 1346412,
+      "cache_read_total": 21819026,
+      "p50_per_run": 118849
     },
     "orchestrator:/gsd-plan-phase": {
-      "runs": 9,
-      "tokens_total": 1094943,
-      "cache_read_total": 32427515,
-      "p50_per_run": 109534
+      "runs": 10,
+      "tokens_total": 1211244,
+      "cache_read_total": 35822887,
+      "p50_per_run": 112918
     },
     "gsd-pattern-mapper": {
-      "runs": 6,
-      "tokens_total": 850459,
-      "cache_read_total": 14098003,
-      "p50_per_run": 102350
+      "runs": 7,
+      "tokens_total": 925545,
+      "cache_read_total": 14334799,
+      "p50_per_run": 98513
     },
     "orchestrator:/gsd-code-review": {
-      "runs": 13,
-      "tokens_total": 702162,
-      "cache_read_total": 22625750,
-      "p50_per_run": 53487
+      "runs": 14,
+      "tokens_total": 838022,
+      "cache_read_total": 29160963,
+      "p50_per_run": 53882
+    },
+    "gsd-code-fixer": {
+      "runs": 4,
+      "tokens_total": 727756,
+      "cache_read_total": 20690085,
+      "p50_per_run": 202745
     },
     "gsd-debugger": {
       "runs": 2,
@@ -149,11 +155,11 @@
       "cache_read_total": 21921376,
       "p50_per_run": 99421
     },
-    "gsd-code-fixer": {
-      "runs": 3,
-      "tokens_total": 529095,
-      "cache_read_total": 14853025,
-      "p50_per_run": 206828
+    "orchestrator:/gsd-discuss-phase": {
+      "runs": 5,
+      "tokens_total": 523137,
+      "cache_read_total": 11733028,
+      "p50_per_run": 96368
     },
     "orchestrator:/gsd-debug": {
       "runs": 5,
@@ -167,11 +173,11 @@
       "cache_read_total": 19489968,
       "p50_per_run": 232052
     },
-    "orchestrator:/gsd-discuss-phase": {
-      "runs": 4,
-      "tokens_total": 402339,
-      "cache_read_total": 9276689,
-      "p50_per_run": 95944
+    "gsd-security-auditor": {
+      "runs": 2,
+      "tokens_total": 416837,
+      "cache_read_total": 9756682,
+      "p50_per_run": 208419
     },
     "orchestrator:/gsd-capture": {
       "runs": 7,
@@ -180,22 +186,16 @@
       "p50_per_run": 48758
     },
     "orchestrator:/gsd-secure-phase": {
-      "runs": 4,
-      "tokens_total": 281213,
-      "cache_read_total": 7600176,
-      "p50_per_run": 72057
+      "runs": 5,
+      "tokens_total": 312767,
+      "cache_read_total": 9494944,
+      "p50_per_run": 65257
     },
     "orchestrator:/gsd-phase": {
       "runs": 5,
       "tokens_total": 200522,
       "cache_read_total": 8728484,
       "p50_per_run": 22317
-    },
-    "gsd-security-auditor": {
-      "runs": 1,
-      "tokens_total": 150893,
-      "cache_read_total": 1745534,
-      "p50_per_run": 150893
     },
     "claude-code-guide": {
       "runs": 1,
@@ -776,8 +776,8 @@
       }
     },
     "28": {
-      "tokens_total": 7034186,
-      "cache_read_total": 277813375,
+      "tokens_total": 7850476,
+      "cache_read_total": 302148697,
       "by_agent_type": {
         "gsd-executor": {
           "runs": 12,
@@ -803,11 +803,23 @@
           "cache_read_total": 2922173,
           "p50_per_run": 315005
         },
+        "gsd-security-auditor": {
+          "runs": 1,
+          "tokens_total": 265944,
+          "cache_read_total": 8011148,
+          "p50_per_run": 265944
+        },
         "gsd-plan-checker": {
           "runs": 1,
           "tokens_total": 238714,
           "cache_read_total": 3440999,
           "p50_per_run": 238714
+        },
+        "general-purpose": {
+          "runs": 7,
+          "tokens_total": 236335,
+          "cache_read_total": 3014384,
+          "p50_per_run": 23919
         },
         "orchestrator:/gsd-execute-phase": {
           "runs": 2,
@@ -815,11 +827,17 @@
           "cache_read_total": 8888994,
           "p50_per_run": 116688
         },
-        "general-purpose": {
-          "runs": 5,
-          "tokens_total": 169874,
-          "cache_read_total": 2615650,
-          "p50_per_run": 23919
+        "gsd-code-fixer": {
+          "runs": 1,
+          "tokens_total": 198661,
+          "cache_read_total": 5837060,
+          "p50_per_run": 198661
+        },
+        "orchestrator:/gsd-code-review": {
+          "runs": 2,
+          "tokens_total": 170950,
+          "cache_read_total": 9028074,
+          "p50_per_run": 85475
         },
         "orchestrator:/gsd-plan-phase": {
           "runs": 1,
@@ -833,6 +851,12 @@
           "cache_read_total": 2310258,
           "p50_per_run": 136916
         },
+        "gsd-verifier": {
+          "runs": 1,
+          "tokens_total": 117810,
+          "cache_read_total": 1658399,
+          "p50_per_run": 117810
+        },
         "gsd-pattern-mapper": {
           "runs": 1,
           "tokens_total": 106187,
@@ -845,11 +869,71 @@
           "cache_read_total": 1864288,
           "p50_per_run": 67915
         },
-        "orchestrator:/gsd-code-review": {
+        "orchestrator:/gsd-secure-phase": {
           "runs": 1,
-          "tokens_total": 35090,
-          "cache_read_total": 2492861,
-          "p50_per_run": 35090
+          "tokens_total": 31554,
+          "cache_read_total": 1894768,
+          "p50_per_run": 31554
+        }
+      }
+    },
+    "29": {
+      "tokens_total": 4320578,
+      "cache_read_total": 121589151,
+      "by_agent_type": {
+        "gsd-executor": {
+          "runs": 9,
+          "tokens_total": 2156757,
+          "cache_read_total": 67407631,
+          "p50_per_run": 216102
+        },
+        "gsd-planner": {
+          "runs": 1,
+          "tokens_total": 643902,
+          "cache_read_total": 20510157,
+          "p50_per_run": 643902
+        },
+        "orchestrator:/gsd-execute-phase": {
+          "runs": 1,
+          "tokens_total": 580187,
+          "cache_read_total": 9146484,
+          "p50_per_run": 580187
+        },
+        "gsd-phase-researcher": {
+          "runs": 1,
+          "tokens_total": 470516,
+          "cache_read_total": 18135001,
+          "p50_per_run": 470516
+        },
+        "orchestrator:/gsd-discuss-phase": {
+          "runs": 1,
+          "tokens_total": 120798,
+          "cache_read_total": 2456339,
+          "p50_per_run": 120798
+        },
+        "orchestrator:/gsd-plan-phase": {
+          "runs": 1,
+          "tokens_total": 116301,
+          "cache_read_total": 3395372,
+          "p50_per_run": 116301
+        },
+        "gsd-plan-checker": {
+          "runs": 1,
+          "tokens_total": 85969,
+          "cache_read_total": 246588,
+          "p50_per_run": 85969
+        },
+        "gsd-pattern-mapper": {
+          "runs": 1,
+          "tokens_total": 75086,
+          "cache_read_total": 236796,
+          "p50_per_run": 75086
+        },
+        "general-purpose": {
+          "runs": 3,
+          "tokens_total": 71062,
+          "cache_read_total": 54783,
+          "p50_per_run": 23643
         }
       }
     },
@@ -1007,6 +1091,10 @@
         "ts": "2026-10-19T17:12:04.652Z"
       },
       {
+        "phase": "29",
+        "ts": "2026-10-20T01:29:25.977Z"
+      },
+      {
         "phase": "25",
         "ts": "2026-09-26T01:29:18.384Z"
       }
@@ -1113,6 +1201,10 @@
         "ts": "2026-09-22T17:45:20.932Z"
       },
       {
+        "phase": "29",
+        "ts": "2026-10-20T01:51:14.849Z"
+      },
+      {
         "phase": "28",
         "ts": "2026-10-19T17:39:23.674Z"
       },
@@ -1207,6 +1299,6 @@
     ]
   },
   "notes": [
-    "fit slope -24018 <= 0: per_task left null"
+    "fit slope -24164 <= 0: per_task left null"
   ]
 }
