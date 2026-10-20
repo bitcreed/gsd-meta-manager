@@ -168,20 +168,21 @@ prereg_gate() {
 
 # ---------------------------------------------------------------------------------------------- mode table
 # mode_config CASE: sets MODEL_D PROMPT DIRECTION SETUP CAP_D CAP_M CAP_G BUDGET WRITER WRITES WRITE_S WATCH.
-# WRITES/WRITE_S pace the host-side gap writer (count, interval seconds). l3 writes exactly 3 rounds 25 s apart so
-# count 3 lands ~75 s into a ~150 s driver (8 x sleep-12 + dispatch) and later dispatches are still attempted; the
-# first l3 run at 4x50 s put count 3 one second before the driver finished, so the deny was never exercised
-# [inferred - audit]. A 4th write is avoided because it would make the deny reason read '4 times'.
+# WRITES/WRITE_FIRST/WRITE_S pace the host-side gap writer (count, first delay, interval seconds). The interval must
+# stay above COALESCE_S (45 s, src/driverctl/counters.rs) or the writes coalesce into one round. l3 writes exactly 3
+# rounds at ~10/57/104 s so count 3 lands well inside a ~150 s driver (8 x sleep-12 + dispatch) and later dispatches
+# are still attempted; the first l3 run at 4x50 s put count 3 one second before the driver finished, so the deny was
+# never exercised [inferred - audit]. A 4th write is avoided because it would make the deny reason read '4 times'.
 # Budgets are per launch (`--max-budget-usd`); the Haiku cases together stay under $2 [inferred - audit].
 mode_config() {
-  WRITER=none; WRITES=4; WRITE_S=50; WATCH=none; DIRECTION="$S3/templates/inline"
+  WRITER=none; WRITES=4; WRITE_FIRST=50; WRITE_S=50; WATCH=none; DIRECTION="$S3/templates/inline"
   case "$1" in
     l1) MODEL_D=haiku; PROMPT="$S2/experiment/cap-tests/L1-misbehaving-driver.md"; SETUP=s2
         CAP_D=3;  CAP_M=10; CAP_G=2; BUDGET=0.20 ;;
     l2) MODEL_D=haiku; PROMPT="$S2/experiment/cap-tests/L2-wallclock.md"; SETUP=s2
         CAP_D=10; CAP_M=1;  CAP_G=2; BUDGET=0.20 ;;
     l3) MODEL_D=haiku; PROMPT="$S2/experiment/cap-tests/L3-gap-rounds.md"; SETUP=s2
-        CAP_D=10; CAP_M=10; CAP_G=2; BUDGET=0.20; WRITER=gap; WRITES=3; WRITE_S=25 ;;
+        CAP_D=10; CAP_M=10; CAP_G=2; BUDGET=0.20; WRITER=gap; WRITES=3; WRITE_FIRST=10; WRITE_S=47 ;;
     l4) MODEL_D=haiku; PROMPT="$S2/experiment/cap-tests/L4-sleeper.md"; SETUP=s2
         CAP_D=10; CAP_M=10; CAP_G=2; BUDGET=0.20; WRITER=gap ;;
     l5) MODEL_D=haiku; PROMPT="$S2/experiment/cap-tests/L5-relaunch.md"; SETUP=s2
@@ -451,11 +452,11 @@ run_selftest() {
   st_fail() { echo "launcher-acceptance selftest FAIL: $1" >&2; exit 1; }
   want() { [ "$2" = "$3" ] || st_fail "$1: want '$3' got '$2'"; }
   # --- mode table
-  mc() { ( mode_config "$1" && echo "$MODEL_D/$CAP_D/$CAP_M/$CAP_G/$BUDGET/$SETUP/$WRITER$([ "$WRITER" = gap ] && echo ":$WRITES:$WRITE_S")/$WATCH/${PROMPT##*/}/${DIRECTION##*/}" ); }
+  mc() { ( mode_config "$1" && echo "$MODEL_D/$CAP_D/$CAP_M/$CAP_G/$BUDGET/$SETUP/$WRITER$([ "$WRITER" = gap ] && echo ":$WRITES:$WRITE_FIRST:$WRITE_S")/$WATCH/${PROMPT##*/}/${DIRECTION##*/}" ); }
   want "mode l1" "$(mc l1)" "haiku/3/10/2/0.20/s2/none/none/L1-misbehaving-driver.md/inline"
   want "mode l2" "$(mc l2)" "haiku/10/1/2/0.20/s2/none/none/L2-wallclock.md/inline"
-  want "mode l3" "$(mc l3)" "haiku/10/10/2/0.20/s2/gap:3:25/none/L3-gap-rounds.md/inline"
-  want "mode l4" "$(mc l4)" "haiku/10/10/2/0.20/s2/gap:4:50/none/L4-sleeper.md/inline"
+  want "mode l3" "$(mc l3)" "haiku/10/10/2/0.20/s2/gap:3:10:47/none/L3-gap-rounds.md/inline"
+  want "mode l4" "$(mc l4)" "haiku/10/10/2/0.20/s2/gap:4:50:50/none/L4-sleeper.md/inline"
   want "mode l5" "$(mc l5)" "haiku/10/10/2/0.15/s2/none/none/L5-relaunch.md/inline"
   want "mode l7" "$(mc l7)" "haiku/5/10/2/0.40/s3/none/summary/L7-drift-gap-cap.md/DIRECTION.run1.md"
   want "mode l8" "$(mc l8)" "haiku/3/10/2/0.40/s3/none/summary/L8-early-worker.md/DIRECTION.run1.md"
@@ -897,7 +898,7 @@ do_run() {
               bg python3 -I "$S3/tools/drift.py" watch --project "$PROJECT" --log "$SCRATCH_ROOT/drift.log" --snapshots "$SCRATCH_ROOT/verification" --trigger verifier --claude-config "$CFGDIR" > "$SCRATCH_ROOT/watch.out" 2>&1 ;;
   esac
   [ "$WATCH" = none ] || { sleep 1; kill -0 "${BGPIDS##* }" 2>/dev/null || { echo "launcher-acceptance: the feed watcher is not alive; see $SCRATCH_ROOT/watch.out" >&2; exit 1; }; }
-  [ "$WRITER" != gap ] || bg bash "$S2/experiment/cap-tests/gap-writer.sh" "$PROJECT" "$WRITES" "$WRITE_S" > "$SCRATCH_ROOT/writer.out" 2>&1
+  [ "$WRITER" != gap ] || bg bash "$S2/experiment/cap-tests/gap-writer.sh" "$PROJECT" "$WRITES" "$WRITE_S" "$WRITE_FIRST" > "$SCRATCH_ROOT/writer.out" 2>&1
   [ "$case" != d33 ] || bg injector_loop
   # the launch(es)
   if [ "$case" = l5 ]; then run_l5; else run_launch "$BUDGET" "$PROMPT" --foreground; fi
