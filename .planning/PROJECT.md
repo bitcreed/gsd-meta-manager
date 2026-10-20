@@ -59,6 +59,7 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Detail-tab consolidation — eight tabs plus Driver (`1:Roadmap 2:Phases … 8:Docs`, `D:Drive`); PhaseList removed, Archive folded into Docs › Milestones; Roadmap/Phases share the selected phase — Phase 24
 - ✓ Running agents & live wave view — lock-free scan of agent worktrees (commits ahead, dirty count), pluggable runtime-adapter seam with a Claude Code adapter (subagent meta, transcript-mtime liveness, worktree-less subagents), plans grouped by PLAN `wave:` with done/finished/running/stalled/queued states, width-fitted dashboard Status summary, Sessions › Agents sub-view, and an estimated `~fixed/total` for code-fixer runs (AGENT-01..07) — Phase 25
 - ✓ driverctl & driver frontmatter — `gsd-meta-manager driverctl serve|log|hook|show` is the single writer of a run's `state.json`, LOG.md and the DIRECTION.md frontmatter (exchange-verify splice via `renameat2(RENAME_EXCHANGE)`, 0 lost rename-saves under an editor race); typed `DriverFrontmatter` schema v1 with `stalled`/`crashed` terminal states set only by the launcher; counters (dispatches, coalesced 45 s gap rounds, heartbeat) from tool-observed state only; three recorded spike runs replay with identical LOG lines and counts (DCTL-01..04) — Phase 27
+- ✓ Master prompt & run templates — embedded, versioned `driver-prompt/1.0.0` recorded on every run (`custom:<sha8>` for overrides); `driver new` mints `<yyyymmdd>-<slug>` with self-ignoring run dir, DIRECTION.md and LOG.md templates; `driver check` lints the reviewable plan; one 8-rule stop precedence stated identically in prompt and template; crash-and-relaunch reconciliation and gate-enforced `control: pause|stop`; `next <project> --json` advisory router hint (PRMT-01..05, DRIVE-03, DRIVE-01 prompt half by operator sign-off) — Phase 29
 
 ### Active
 
@@ -95,8 +96,9 @@ Phases 26-31 replace them.*
   - a per-run `CLAUDE_CONFIG_DIR` with setup-token auth;
   - a push step outside the sandbox;
   - a macOS degraded mode.
-- **Master prompt and run templates.** The prompt is shipped and versioned. Stop-rule precedence is
-  explicit, and a crashed run is reconciled on restart.
+- **Master prompt 1.1 (emerged, Phase 29).** Route a "reconcile first" refusal to reconcile-then-
+  continue instead of a stop-rule-2 park, and fix IN-01 (`$RUN_DIR`/`$PROJECT_ROOT` used as env vars).
+  Backlog 999.7.
 - **Driver tab on DIRECTION.md.** It reads status, caps, heartbeat and crash state, and steers by
   editing `control`.
 - **Retirement.** The superseded Phase 19, 21 and 22 code is removed or rewired.
@@ -200,6 +202,7 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | Auth through a long-lived `claude setup-token` token passed as an env var; no refresh token in the sandbox | Spike 002 measured that a host refresh rotates the refresh token and revokes the previous access token, so copied credentials would log the host out | — Pending (Phase 28) |
 | OQ-R1: driver stop rules outrank a human `answer:`; only a budget edit lifts them `[inferred]` | Spike 002 finding 5 default. Open human call | ⚠️ Revisit — human to confirm |
 | OQ-R2: driven runs do not see the user's global CLAUDE.md; GSD + rtk hooks kept `[inferred]` | Spike 002 A2.1 default. The driver's rules come from its prompt | ⚠️ Revisit — human to confirm |
+| Phase 29 closed on accepted acceptance outcomes (operator decision 2026-10-20): o1 ADJUST x2 accepted; h2 H2-5 FAIL ruled a rubric setup flaw (item already done at relaunch, so no recovery owed; harness precondition fixed in WR-07, 04a7a40); no re-run | The real-Opus third gaps_found park was never reached live; carried risk is covered by 28-09 d33, h4 and the deterministic reconcile suites. A further paid run would test the model, not the prompt | ✓ Accepted — DRIVE-01 prompt half closed |
 | Fixer progress shown as an estimate (`~F/T`) from REVIEW.md `findings.total` + `fix(NN)` commit ids (Phase 25) | No authoritative fix ledger exists mid-run; labelling it approximate is honest | ⚠️ Revisit — WR-03/WR-04 (wrong REVIEW file, inflated count) open |
 
 ## Evolution
@@ -220,4 +223,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-19 after Phase 27 (driverctl & driver frontmatter shipped, DCTL-01..04; review CR-01 + WR-01..09 open)*
+*Last updated: 2026-10-20 after Phase 29 (master prompt & run templates shipped, PRMT-01..05, DRIVE-03, DRIVE-01; review 0/12 open)*

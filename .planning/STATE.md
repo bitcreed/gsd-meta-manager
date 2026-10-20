@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.14.0
-current_phase: 29
-current_phase_name: Master Prompt & Run Templates
+current_phase: 28
+current_phase_name: Sandboxed Driver Launcher
 status: verifying
-stopped_at: Completed 29-08-PLAN.md
-last_updated: "2026-10-20T14:32:25.959Z"
-last_activity: 2026-10-19
-last_activity_desc: Phase 29 execution started
-state_head: e470812b3ebffa154ebe1862997da7d8b7a37c34
+stopped_at: Phase 29 complete, ready to verify Phase 28
+last_updated: "2026-10-20T15:51:38.074Z"
+last_activity: 2026-10-20
+last_activity_desc: Phase 29 complete, transitioned to Phase 28
+state_head: 01eb8c8c694a41ece79c5ce99e65423c7118a5ed
 progress:
   total_phases: 10
-  completed_phases: 11
+  completed_phases: 12
   total_plans: 8
   completed_plans: 112
+  percent: 60
 milestone_name: gsd-core 1.17.0 Sync
 ---
 
@@ -24,10 +25,20 @@ milestone_name: gsd-core 1.17.0 Sync
 See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 29 — Master Prompt & Run Templates
+**Current focus:** Phase 28 — Sandboxed Driver Launcher (UAT/verification still open)
 
 ## Current Position
 
+Status: Phase 29 complete — Phase 28 awaiting verification
+  Phase 29 (Master Prompt & Run Templates) complete 2026-10-20: 8/8 plans, re-verification passed
+  5/5 after the code-review fixes (01eb8c8), UAT 1/1 (operator sign-off accepting o1 ADJUST x2 and
+  h2 H2-5 as a rubric setup flaw; no re-run). PRMT-01..05, DRIVE-03 and DRIVE-01 complete. Review
+  ledger 0/12 open; SECURITY threats_open 0. Backlog 999.7 holds the next prompt bump
+  (reconcile-first refusal routing + IN-01).
+  Phase 28 (Sandboxed Driver Launcher) still reads 28-UAT.md `testing` and 28-VERIFICATION.md
+  `human_needed`. Next: `/gsd-verify-work 28` `[inferred — audit]`.
+
+Earlier (2026-10-19):
 Status: Phase complete — ready for verification
   Phase 27 (driverctl & Driver Frontmatter) complete 2026-10-19: 6/6 plans, verification passed 4/4,
   security SECURED (0 open threats). DCTL-01..04 complete. The `stalled` status value carried from
@@ -227,8 +238,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 29 (Master Prompt & Run Templates) — EXECUTING
-Plan: 8 of 8
+Phase: 28 — Sandboxed Driver Launcher
+Plan: 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -262,7 +273,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-19 — Phase 29 execution started
+Last activity: 2026-10-20 — Phase 29 complete, transitioned to Phase 28
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -391,7 +402,7 @@ verify-phase if the gate is fixed.
 
 **Velocity:**
 
-- Total plans completed: 71
+- Total plans completed: 79
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -409,6 +420,7 @@ verify-phase if the gate is fixed.
 | 26 | 3 | - | - |
 | 26.1 | 11 | - | - |
 | 27 | 6 | - | - |
+| 29 | 8 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -848,11 +860,12 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-20T14:32:25.332Z
-Stopped at: Completed 29-08-PLAN.md
+Last session: 2026-10-20T15:55:00Z
+Stopped at: Phase 29 complete, ready to verify Phase 28
 Resume file: None
 
-Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
+Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md
+`human_needed`). Phases 30-31 follow.
 
 Earlier (2026-10-17): Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
 

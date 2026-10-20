@@ -101,7 +101,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02 (completed 2026-10-18)
 - [x] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md (completed 2026-10-19)
 - [ ] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode
-- [ ] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation
+- [x] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation (completed 2026-10-20)
 - [ ] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control`
 - [ ] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded
 - [ ] **Phase 32: GSD Capabilities: Visibility & Per-Project Control** - See every GSD capability per project and across projects; toggle and configure them per project from the TUI
@@ -1152,7 +1152,7 @@ left implicit.
   5. `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory hint, which
      the prompt cites as advisory only.
 
-**Plans**: 8/8 plans executed
+**Plans**: 8/8 plans complete
 
 Plans:
 **Wave 1**
@@ -1336,7 +1336,7 @@ Plans:
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
-| 29. Master Prompt & Run Templates | 8/8 | In Progress | - |
+| 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
 | 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
