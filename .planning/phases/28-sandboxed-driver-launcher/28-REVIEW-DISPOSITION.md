@@ -49,11 +49,11 @@ findings:
     title: "Harness-tests pass vacuously when their tools are missing"
   - id: IN-04
     severity: info
-    disposition: open
+    disposition: skipped
     title: "The campaign ledger is read-modify-append without a lock"
-open: 12
+open: 11
 total: 12
-recorded: 2026-10-20T00:40:33.015Z
+recorded: 2026-10-20T01:06:04.587Z
 ---
 
 # Phase 28: Code Review Disposition
@@ -71,7 +71,7 @@ recorded: 2026-10-20T00:40:33.015Z
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
-| IN-04 | info | open | - |
+| IN-04 | info | skipped | 28-REVIEW-FIX.md |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
