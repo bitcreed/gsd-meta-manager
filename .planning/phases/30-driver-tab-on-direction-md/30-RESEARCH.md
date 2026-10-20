@@ -815,17 +815,20 @@ let editor = std::env::var("VISUAL")
 | A5 | A `tests/` e2e through the real binary plus a seam satisfies D-26's "launch and relaunch test" | Pitfall 5 | Verifier may read D-26 as requiring the TUI code path end to end |
 | A6 | Re-using `LAUNCHER_RUNS_LISTED` (20) per project for the dashboard scan is cheap enough every ~5 s | Pattern 6 | Many projects × many runs could add measurable I/O. It is bounded and tunable |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does SC3's "every edit takes the shared flock" accept `write_body`'s proceed-without-lock fallback?**
    - Known: the fallback is Phase 27 design (27 D-20) and the exchange-verify still prevents loss.
    - Unclear: whether the verifier will read the timeout path as a violation.
    - Recommendation: accept it, surface `lock_timed_out` to the user, and record the reasoning in VERIFICATION. Do not change `write_body` here.
+   - RESOLVED: accepted as recommended in plan 30-04 (orchestrator decision 3). `write_body` is unchanged; a `lock_timed_out` write appends ` Written without DIRECTION.lock (another writer held it); the exchange check kept every save.` to the status copy (30-04 Tasks 1-3, with a lock-held test in Task 2), and the 30-04 SUMMARY records the nuance for VERIFICATION. [inferred — audit]
 2. **Should `R` on a `paused` run auto-offer "set control: run, then launch"?**
    - Known: the preflight refuses otherwise (Pitfall 2).
    - Recommendation: a single extra key in the launch form (`[c]` jumps to the chooser). No automatic write.
+   - RESOLVED: adopted in plan 30-05 Task 2. A live `control` other than `run` shows the Yellow control row and blocks `y`; `c` in the form pops it and pushes `ControlChooserScreen` for the run; nothing writes `control: run` automatically. [inferred — audit]
 3. **Relaunch prefill for `loop_mode`.**
    - The `driver` connection carries `mode: Some(driver.mode.clone())` (`store.rs:955`), but this research did not confirm that the value is the loop-mode word. Recommendation: map it only if it equals `"loop"`/`"fresh-per-item"`, else use the default with "(default)".
+   - RESOLVED: confirmed during planning that the value is never a loop-mode word. `driver.mode` is one of `driverctl::protocol::MODES` (`interactive`, `headless`; `src/driverctl/protocol.rs:72`), and the launcher writes `headless` (`src/launcher/run.rs:800`). The recommendation's "else" branch therefore always applies: plan 30-05's D-21 prefill truth shows the CLI default loop mode with ` (default)` and never infers it from the connection or from LOG text. [inferred — audit]
 
 ## Environment Availability
 

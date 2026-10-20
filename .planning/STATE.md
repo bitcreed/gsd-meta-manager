@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.14.0
-current_phase: 28
-current_phase_name: Sandboxed Driver Launcher
-status: verifying
+current_phase: 30
+current_phase_name: Driver Tab on DIRECTION.md
+status: executing
 stopped_at: Phase 30 UI-SPEC approved
-last_updated: "2026-10-20T16:16:42.012Z"
+last_updated: "2026-10-20T17:13:25.976Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 29 complete, transitioned to Phase 28
-state_head: c84bb259415d7bd0377c3e239f15b3f06af78506
+state_head: f8ab657189ff2d3edd7000c3b47054088faf2100
 progress:
   total_phases: 10
   completed_phases: 12
-  total_plans: 8
+  total_plans: 5
   completed_plans: 112
 milestone_name: gsd-core 1.17.0 Sync
 ---
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Status: Phase 29 complete — Phase 28 awaiting verification
+Status: Ready to execute
   Phase 29 (Master Prompt & Run Templates) complete 2026-10-20: 8/8 plans, re-verification passed
   5/5 after the code-review fixes (01eb8c8), UAT 1/1 (operator sign-off accepting o1 ADJUST x2 and
   h2 H2-5 as a rubric setup flaw; no re-run). PRMT-01..05, DRIVE-03 and DRIVE-01 complete. Review
@@ -237,7 +237,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 28 — Sandboxed Driver Launcher
+Phase: 30 (Driver Tab on DIRECTION.md) — READY TO EXECUTE
 Plan: 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).

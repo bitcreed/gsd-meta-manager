@@ -1215,10 +1215,24 @@ DIRECTION.md.
 
      The Phase 18 stream-json injection UI is no longer the steering path.
 
-**Plans**: 0 plans
+**Plans**: 5 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 30 to break down)
+
+**Wave 1**
+- [ ] 30-01-PLAN.md — launcher runs are the Driver tab's run list: derived-status header, drivers/ watcher route, legacy runs collapsed, 28-07 section retired, `x` kill re-hosted (DTAB-01, DTAB-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 30-02-PLAN.md — selected-run view: merged items, header rows, heartbeat age/stale, caps + audit, connected[], live LOG.md tail (DTAB-01, DTAB-02, DTAB-04)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 30-03-PLAN.md — dashboard crashed/parked/driven/stale markers (OBS-02/07) and height tiers with no orphaned header (DTAB-02, DTAB-01)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 30-04-PLAN.md — steering through DIRECTION.md: control chooser, answer/un-hold, polite stop, `$EDITOR` body-only edit, injection key retired (DTAB-03, DTAB-04)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 30-05-PLAN.md — new run / launch / relaunch through the detached launcher, degraded-host second confirm, zero-spend e2e (DTAB-04)
 
 ### Phase 31: Retire Superseded Envelope & Goal-Layer Code
 
