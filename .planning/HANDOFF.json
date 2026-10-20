@@ -1,42 +1,37 @@
 {
   "version": "1.0",
-  "timestamp": "2026-08-26T00:00:00.000Z",
-  "phase": "21",
-  "phase_name": "llm-goal-layer-prompt-injection-hardening",
-  "phase_dir": "21-llm-goal-layer-prompt-injection-hardening",
-  "plan": 23,
+  "timestamp": "2026-10-20T17:13:58.498Z",
+  "phase": "30",
+  "phase_name": "Driver Tab on DIRECTION.md",
+  "phase_dir": "30-driver-tab-on-direction-md",
+  "plan": 1,
   "task": 0,
-  "total_tasks": 4,
+  "total_tasks": 15,
   "status": "paused",
   "completed_tasks": [
-    {"id": "round-7", "name": "21-19/21-20 planned, checked, executed, reviewed, verified (pass 8: 4/5)", "status": "done", "commit": "f1a9d0d"},
-    {"id": "round-8", "name": "21-21/21-22 planned, checked, executed; tracking repaired after executor session death", "status": "done", "commit": "458a24a"},
-    {"id": "review-8+pass-9", "name": "round-8 review (5 Critical, 5 Warning) and verification pass 9 (4/5, gaps_found)", "status": "done", "commit": "dfa11c6"},
-    {"id": "round-9-plans", "name": "21-23..21-26 written; gsd-plan-checker VERIFICATION PASSED on first pass", "status": "done", "commit": "8a0df64"}
+    {"id": "research", "name": "30-RESEARCH.md written (opus researcher)", "status": "done", "commit": "f8ab657"},
+    {"id": "plan", "name": "30-01..30-05 PLAN.md + 30-PATTERNS.md; plan-checker PASSED after 1 revision; decision coverage 29/29; DTAB-01..04 covered", "status": "done", "commit": "be365f9"}
   ],
   "remaining_tasks": [
-    {"id": 1, "name": "/gsd-execute-phase 21 --gaps-only — wave 1: 21-23 (tracer); wave 2: 21-24 || 21-25; wave 3: 21-26. Wave order load-bearing.", "status": "not_started"},
-    {"id": 2, "name": "Independent code review, then gsd-verifier pass 10, in agents SEPARATE from the executor and from each other", "status": "not_started"},
-    {"id": 3, "name": "Human-run of 10 #[ignore]d driver_injection_corpus tests (needs live Claude subscription) for criterion 4 / SAFE-07", "status": "not_started"}
+    {"id": "30-01", "name": "Wave 1: launcher runs become the run list (derived status, drivers/ watcher route, x kill)", "status": "not_started"},
+    {"id": "30-02", "name": "Wave 2: selected-run view + live LOG.md tail", "status": "not_started"},
+    {"id": "30-03", "name": "Wave 3: dashboard markers + height tiers", "status": "not_started"},
+    {"id": "30-04", "name": "Wave 4: steering (control, answer/un-hold, $EDITOR flow)", "status": "not_started"},
+    {"id": "30-05", "name": "Wave 5: launch / relaunch / new run", "status": "not_started"}
   ],
-  "blockers": [
-    {"description": "Criterion 4 (SAFE-07) behavioural half cannot be automated — needs a human with a live Claude subscription to run 10 #[ignore]d driver_injection_corpus tests", "type": "human_action", "workaround": "none — user has chosen to leave it tracked in deferred-items.md rather than run it now"}
-  ],
+  "blockers": [],
   "async_jobs": [],
   "human_actions_pending": [
-    {"action": "Run the 10 #[ignore]d driver_injection_corpus tests under a real Claude subscription", "context": "The only way to close criterion 4; no automated pass substitutes. User decision this session: leave tracked, do not run yet.", "blocking": false}
+    {"action": "Audit [inferred — audit] decisions in 30-RESEARCH.md and 30-0N-PLAN.md (editor order, 60-col truncation, lock-timeout fallback, launch-form refusals, D-12/D-16 deviations, musk cut M-0012)", "context": "Planned unattended", "blocking": false},
+    {"action": "Phase 28 operator hands-on checks (human_needed)", "context": "Does not block Phase 30", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Identity fields inverted to an [A-Za-z0-9._-] allow-list", "rationale": "USER-CONFIRMED this session. An allow-list cannot be one code point short the way a deny-list can. Accepted trade: non-ASCII aliases stop registering; code-revertible, D-17-3 recovery path certified by test.", "phase": "21"},
-    {"decision": "Round 9 scoped as TYPE-LEVEL INVERSION, not another site sweep", "rationale": "USER-CONFIRMED this session. Eight rounds show site-sweeping does not converge and type-level inversion does. A round-9 plan that escapes the five Criticals site-by-site is a FAILED plan even if every site is correct.", "phase": "21"},
-    {"decision": "The zero-width drop is a Paragraph property, NOT a Buffer property", "rationale": "SETTLED — independently derived three times. ratatui-core-0.1.2/src/buffer/buffer.rs:353 filters width > 0 inside set_stringn, the Paragraph path. Block::title and ListItem PRESERVE zero-width. This is what makes CR-04 (raw third-party commit subjects through a List) live rather than theoretical. Do not relitigate.", "phase": "21"}
+    {"decision": "Editor order $VISUAL -> $EDITOR -> vi (existing handoff, src/main.rs:841-844); D-17 parenthetical overridden", "rationale": "Follow the app's one shared editor rule; matches git and UI-SPEC [inferred — audit]", "phase": "30"},
+    {"decision": "Item titles truncated at min(60, remaining width) by display width with an ellipsis via detail::fit_cells after sanitising; dropped if room <= 1", "rationale": "driver.rs::ellipsize counts chars and overflows on wide glyphs [inferred — audit]", "phase": "30"},
+    {"decision": "write_body lock-timeout fallback counts as written with lock_timed_out surfaced", "rationale": "Phase 27 write_body writes anyway after 2 s [inferred — audit]", "phase": "30"},
+    {"decision": "5 sequential waves", "rationale": "All plans share src/app.rs, src/action.rs, src/ui/screens/*; later plans consume earlier symbols", "phase": "30"}
   ],
-  "corrections": [
-    {"correction": "dfa11c6's commit message explains pass 9's one-off probe failure as CR-04 firing when the commit cache was populated. That explanation is WRONG — probe_ctx does no I/O, so git_entries cannot be populated. CR-04 is real and independently confirmed; the cause of that single failure is unexplained. Round 9 makes CR-04 fire deterministically rather than relying on the story."},
-    {"correction": "The error type carrying the alias variants is OptInError at src/error.rs:283-350. Earlier reports called it DriverError; no such type exists in this tree."},
-    {"correction": "The Screen impl count is 11, not 13. The review's 13 was 11 plus its own two plants."}
-  ],
-  "uncommitted_files": [],
-  "next_action": "/gsd-execute-phase 21 --gaps-only — round-9 plans 21-23..21-26 are plan-checked and PASSED at 8a0df64. Wave 1: 21-23 (tracer). Wave 2: 21-24 || 21-25 (files_modified intersection verified empty). Wave 3: 21-26.",
-  "context_notes": "Ninth gap-closure round on phase 21 (v2.0). Rounds 7 and 8 both landed green: cargo test 1372 passed / 0 failed / 13 ignored, clippy -- -D warnings exit 0. Criterion 1 went from falsely-claimed (pass 6) to verified against five independent UCD derivations (CPython, Perl Unicode::UCD, OpenJDK) sweeping all 170 Cf and all 4174 Default_Ignorable code points. Criteria 2, 3, 5 VERIFIED; criterion 4 is the only permanently agent-unclosable item. Round 9's inversion: crate::text::Untrusted withholds Display/AsRef/Deref/Borrow/Into<Cow>/serde with two purpose-named accessors, and Rendered is the only escaped type that IS Into<Cow<'static,str>> so the short ergonomic path at every render site is the safe one. Applied to CARRIER FIELDS, not call sites. Reach measured honestly: gates 21 fields across 9 of 15 carrier types; the other 6 are tabulated with the measurement that excludes them and stay on census + probe, named as a sampling control. Census moves off line-oriented scanning to a SEALED SUPERTRAIT, so an unadjudicated impl is error[E0277]. CR-03 and CR-05 cannot fall out of the inversion and get scoped tasks — stated honestly rather than claimed. New defect found while measuring and folded into 21-25: detail.rs:3341 byte-slices a session id at [..8], a multibyte panic. STANDING CONSTRAINTS: rtk filters output and has caused false negatives four times in this phase — always rtk proxy for count/presence checks; code review and gsd-verifier must run as agents separate from the executor and from each other, which has caught a real defect in all eight prior cycles."
+  "uncommitted_files": ["?? .planning/state.json"],
+  "next_action": "/gsd-execute-phase 30 (check executor-isolation-dispatch.md; ISOLATION=none per worktree base-check memo; origin is public, so do not push)",
+  "context_notes": "Paused at operator request immediately after planning completed; no partial plans. A parallel /gsd-quick (261020-f80) had been editing src/launcher; its commits c84bb25/a3d8f8d landed. Plans do not modify src/launcher. .planning/state.json was untracked before this session and is left alone."
 }
