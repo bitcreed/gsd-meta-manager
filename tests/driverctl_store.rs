@@ -19,11 +19,12 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use gsd_meta_manager::driver::direction::direction_lock;
+use gsd_meta_manager::driver::direction::parse_direction;
 use gsd_meta_manager::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
 use gsd_meta_manager::driverctl::protocol::Response;
 use gsd_meta_manager::driverctl::store::{
-    CapLimits, DriverSpec, GateDecision, LaunchSpec, RunStore, StoreError, TerminalOutcome,
-    TerminalStatus,
+    frontmatter_for, CapLimits, DriverSpec, GateDecision, LaunchSpec, RunState, RunStore,
+    StoreError, TerminalOutcome, TerminalStatus,
 };
 use gsd_meta_manager::launcher::gate::{new_tripped, CapGate};
 use gsd_meta_manager::state_reader::driver_frontmatter::{
@@ -1831,5 +1832,136 @@ fn a_paused_relaunch_names_the_control_word_before_the_reconcile_rule() {
         &mut store,
         "recovered",
         &[("item", "I-01"), ("action", "park"), ("reason", "paused")],
+    );
+}
+
+// ---------------------------------------------------------------- the prompt version (29-02, D-03)
+
+fn with_prompt(version: Option<&str>) -> LaunchSpec {
+    LaunchSpec {
+        prompt_version: version.map(str::to_owned),
+        ..standalone()
+    }
+}
+
+fn launch_lines(log: &str) -> Vec<String> {
+    log_events(log)
+        .into_iter()
+        .filter(|l| l.starts_with("RUN | launch |"))
+        .collect()
+}
+
+#[test]
+fn the_prompt_version_is_recorded_per_launch_and_never_inherited() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store
+            .begin_launch(with_prompt(Some("driver-prompt/1.0.0")))
+            .unwrap();
+    }
+    assert_eq!(fx.state_json()["prompt_version"], "driver-prompt/1.0.0");
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.prompt_version.as_deref(), Some("driver-prompt/1.0.0"));
+
+    {
+        let mut store = fx.open();
+        store
+            .begin_launch(with_prompt(Some("custom:0a1b2c3d")))
+            .unwrap();
+    }
+    assert_eq!(fx.state_json()["prompt_version"], "custom:0a1b2c3d");
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.prompt_version.as_deref(), Some("custom:0a1b2c3d"));
+
+    {
+        let mut store = fx.open();
+        store.begin_launch(with_prompt(None)).unwrap();
+    }
+    assert!(
+        fx.state_json().get("prompt_version").is_none(),
+        "a launch without a version removes the key"
+    );
+    let direction = fx.read("DIRECTION.md");
+    assert!(!direction.contains("prompt_version"), "{direction}");
+
+    let lines = launch_lines(&fx.log());
+    assert_eq!(
+        lines,
+        vec![
+            "RUN | launch | n=1 | mode=standalone | prompt=driver-prompt/1.0.0".to_owned(),
+            "RUN | launch | n=2 | mode=standalone | prompt=custom:0a1b2c3d".to_owned(),
+            "RUN | launch | n=3 | mode=standalone".to_owned(),
+        ],
+        "LOG.md keeps every launch's own value"
+    );
+}
+
+#[test]
+fn a_hostile_prompt_version_stays_one_log_field() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store
+        .begin_launch(with_prompt(Some("a|b\nRUN | end | reason=x")))
+        .unwrap();
+    let lines = launch_lines(&fx.log());
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        "RUN | launch | n=1 | mode=standalone | prompt=a b RUN   end   reason=x"
+    );
+    assert_eq!(
+        fx.log().lines().filter(|l| l.starts_with("- ")).count(),
+        1,
+        "still one event line"
+    );
+}
+
+#[test]
+fn frontmatter_for_derives_the_never_launched_block_and_matches_the_store() {
+    let body = "# Driver direction: pure
+
+## Direction
+
+- control: run
+- goal: Derive the block.
+
+## Items
+
+### I-01 Only slice
+
+- intent: Phase 1 is planned, executed and verified.
+";
+    let direction = parse_direction(body);
+    let state = RunState::new("r1", "/p", "2026-10-19T00:00:00Z");
+    let fm = frontmatter_for(&state, &direction);
+    assert_eq!(fm.run_id, "r1");
+    assert_eq!(fm.status, RunStatus::Starting);
+    assert_eq!(fm.launches, 0);
+    assert_eq!(fm.items.total, 1);
+    assert_eq!(fm.items.pending, 1);
+    assert_eq!(fm.control.as_deref(), Some("run"));
+    assert_eq!(fm.prompt_version, None);
+    assert_eq!(fm.updated_at, "2026-10-19T00:00:00Z");
+
+    // The store delegates to it: same state, same DIRECTION, same block.
+    let fx = Fixture::with_body(body);
+    let store = fx.open();
+    assert_eq!(
+        store.frontmatter(),
+        frontmatter_for(store.state(), &parse_direction(body))
+    );
+
+    // A launch carrying a version shows it in the derived block.
+    let mut launched = state.clone();
+    launched.extra.insert(
+        "prompt_version".to_owned(),
+        serde_json::json!("driver-prompt/1.0.0"),
+    );
+    assert_eq!(
+        frontmatter_for(&launched, &direction)
+            .prompt_version
+            .as_deref(),
+        Some("driver-prompt/1.0.0")
     );
 }

@@ -1001,6 +1001,37 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_version_key_round_trips_right_after_the_sandbox_keys() {
+        let mut fm = parse_driver_frontmatter(RUN1B).unwrap();
+        assert_eq!(fm.prompt_version, None);
+        let plain = fm.emit();
+        assert!(
+            !plain.contains("prompt_version"),
+            "emitted only when set:\n{plain}"
+        );
+
+        fm.prompt_version = Some("driver-prompt/1.0.0".to_owned());
+        let text = fm.emit();
+        assert!(
+            text.contains("launches: 1\nprompt_version: \"driver-prompt/1.0.0\"\nconnected:"),
+            "{text}"
+        );
+        assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm);
+
+        fm.sandbox = Some("bwrap-scope".to_owned());
+        fm.sandbox_missing = Some(vec!["bwrap".to_owned()]);
+        fm.prompt_version = Some("custom:0a1b2c3d".to_owned());
+        let text = fm.emit();
+        assert!(
+            text.contains(
+                "sandbox_missing: [\"bwrap\"]\nprompt_version: \"custom:0a1b2c3d\"\nconnected:"
+            ),
+            "{text}"
+        );
+        assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm);
+    }
+
+    #[test]
     fn a_hostile_sandbox_value_cannot_span_lines() {
         let mut fm = parse_driver_frontmatter(RUN1B).unwrap();
         fm.sandbox = Some("a\nstatus: done".to_owned());

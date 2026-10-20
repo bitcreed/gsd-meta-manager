@@ -488,3 +488,31 @@ fn write_goldens() {
         .expect("write golden");
     }
 }
+
+#[test]
+fn prompt_version_is_additive_and_round_trips_for_both_forms() {
+    let plain = running();
+    let plain_text = plain.emit();
+    assert!(
+        !plain_text.contains("prompt_version"),
+        "a block without a version keeps its bytes:\n{plain_text}"
+    );
+
+    for version in ["driver-prompt/1.0.0", "custom:0a1b2c3d"] {
+        let mut fm = running();
+        fm.prompt_version = Some(version.to_owned());
+        let text = fm.emit();
+        assert!(
+            text.contains(&format!("\nprompt_version: \"{version}\"\n")),
+            "{text}"
+        );
+        assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm, "{version}");
+        // Only the one line differs from the unversioned block.
+        let without: String = text
+            .lines()
+            .filter(|l| !l.starts_with("prompt_version:"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(without, plain_text, "{version}");
+    }
+}
