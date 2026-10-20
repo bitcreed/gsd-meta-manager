@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "run_id": "20261020-acc-o1-135833",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/prompt-acceptance/o1-20261020T135833Z/project",
+  "status": "parked",
+  "status_reason": "driver:all-parked",
+  "created_at": "2026-10-20T13:58:34Z",
+  "updated_at": "2026-10-20T14:25:23Z",
+  "launches": 1,
+  "current": {
+    "item": "I-01",
+    "phase": "1",
+    "step": "/gsd-plan-phase 1 --gaps"
+  },
+  "items": {
+    "I-01": {
+      "state": "parked",
+      "outcome": "feed criterion contradicts SLUG-01/CONTEXT; 01-03 plan ready, awaiting human answer",
+      "dispatches": 5,
+      "first_dispatch_at": "2026-10-20T13:58:46Z",
+      "findings": [
+        2,
+        1,
+        1,
+        1,
+        2
+      ]
+    }
+  },
+  "connections": [
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 204203,
+      "scope_unit": "gsdmm-driver-20261020-acc-o1-135833-63cb3857-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:58:34Z",
+      "last_heartbeat": "2026-10-20T13:58:34Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "42a6716d-5b62-423a-9f39-dbecc53151b4",
+      "model": "opus",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-20261020-acc-o1-135833-63cb3857-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T13:58:34Z",
+      "last_heartbeat": "2026-10-20T14:25:23Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 5,
+      "limit": 10
+    },
+    "wall_clock_min": {
+      "used": 26.8,
+      "limit": 90.0
+    },
+    "gap_rounds": {
+      "limit": 2,
+      "seen": {
+        "1:07e5651aa472bafa": {
+          "phase": "1",
+          "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+        },
+        "1:a62284b889773c3b": {
+          "phase": "1",
+          "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+        }
+      },
+      "per_phase": {
+        "1": 2
+      },
+      "last_write": {
+        "1": 1792506191.3653138
+      },
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 5,
+  "denied_dispatches": 0,
+  "last_event": {
+    "at": "2026-10-20T14:25:23Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "rc=0 status=parked"
+  },
+  "ended_by_driver": true,
+  "awaiting_recovery": [],
+  "recovered_this_launch": [],
+  "active_seconds": 1608.981029292,
+  "launch_branch": "main",
+  "launch_start_sha": "4798d2b77cf2cd28c62f0967a4a1ff7154bc4d57",
+  "prompt_version": "driver-prompt/1.0.0",
+  "sandbox": "bwrap-scope"
+}

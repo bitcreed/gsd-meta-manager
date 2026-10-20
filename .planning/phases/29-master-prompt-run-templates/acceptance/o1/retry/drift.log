@@ -1,0 +1,5 @@
+2026-10-20T13:58:33Z start gen=0 trigger=verifier
+2026-10-20T14:12:32Z gen=1 summaries=1 head=761e78e titles=27 trigger=verifier spawn=rinzRJCF spawn_at=2026-10-20T14:12:32.492Z
+2026-10-20T14:13:13Z snapshot file=.planning/phases/01-slugify/01-VERIFICATION.md hash=a62284b8 status=gaps_found gen=1 -> 01-20261020T141313Z-a62284b8.md
+2026-10-20T14:22:29Z gen=2 summaries=2 head=12144fa titles=33 trigger=verifier spawn=hingF7kJ spawn_at=2026-10-20T14:22:29.485Z
+2026-10-20T14:23:11Z snapshot file=.planning/phases/01-slugify/01-VERIFICATION.md hash=07e5651a status=gaps_found gen=2 -> 02-20261020T142311Z-07e5651a.md

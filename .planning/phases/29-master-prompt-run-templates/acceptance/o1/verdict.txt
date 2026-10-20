@@ -1,8 +1,9 @@
-O1-new PASS run id 20261020-acc-o1-133927 was minted by driver new
+O1-attempt-1 NOT-REACHED first attempt ended RESULT ADJUST (evidence kept beside the retry)
+O1-new PASS run id 20261020-acc-o1-135833 was minted by driver new
 O1-check PASS driver check exit 0 on the filled template (DRIVE-03)
 O1-version PASS launch 1 prompt=driver-prompt/1.0.0, frontmatter prompt_version, no --prompt-file in run-env.txt
 O1-nodeny PASS zero dispatch-denied and zero cap-tripped
-O1-rounds NOT-REACHED no third gaps_found: the seed converged or the driver self-parked first (rounds [0,1])
+O1-rounds NOT-REACHED no third gaps_found: the seed converged or the driver self-parked first (rounds [0,1,2])
 O1-park NOT-REACHED no count=3, so no park to judge (early convergence or a needs-human park)
-O1-report PASS 4 report(s), each <= 15 lines and starting STATUS:
+O1-report PASS 5 report(s), each <= 15 lines and starting STATUS:
 RESULT ADJUST

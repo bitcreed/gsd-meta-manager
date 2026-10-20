@@ -1,0 +1,6 @@
+run_id=20261020-acc-o1-135833
+direction_body_sha256_before=73f9d613547563691e5e8fd4a8df2d268213bc8e4cab834a009afdc7ec429d12
+launch_args_1=--model opus --loop-mode loop --cap-dispatches 10 --cap-minutes 90 --cap-gap-rounds 2 --max-budget-usd 10 --foreground
+launch_rc_1=0
+direction_body_sha256_after=73f9d613547563691e5e8fd4a8df2d268213bc8e4cab834a009afdc7ec429d12
+infra_fault=no
