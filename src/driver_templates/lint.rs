@@ -451,6 +451,36 @@ pub fn lint_direction(text: &str) -> LintReport {
     LintReport { problems, warnings }
 }
 
+/// The first `- control: <word>` line under `## Direction`: its 1-based file line and
+/// its value, read the way [`lint_direction`] reads it (comments blanked, frontmatter
+/// lines counted). `None` when there is no such line.
+///
+/// The launch preflight uses it to point its "control is pause" refusal at the line
+/// the human has to change (RESEARCH Open Question 2).
+pub fn control_line(text: &str) -> Option<(usize, String)> {
+    let (_, body) = split_frontmatter(text);
+    let skipped = &text[..text.len() - body.len()];
+    let first_line = skipped.matches('\n').count() + 1;
+    let blanked = blank_comments(body);
+    let mut in_direction = false;
+    for (i, raw) in blanked.lines().enumerate() {
+        let line = raw.trim_end();
+        if line.starts_with("## ") || line == "##" {
+            in_direction = line.trim() == "## Direction";
+            continue;
+        }
+        if !in_direction {
+            continue;
+        }
+        if let Some(caps) = KEY_VALUE.captures(line) {
+            if &caps[1] == "control" {
+                return Some((first_line + i, caps[2].to_owned()));
+            }
+        }
+    }
+    None
+}
+
 /// One problem per dependency cycle in the `after` graph (a self-edge is a cycle),
 /// reported on the `after` line of the cycle's first member in file order.
 fn cycle_problems(items: &[Item], edges: &BTreeMap<&str, (usize, Vec<&str>)>) -> Vec<Finding> {
@@ -710,6 +740,29 @@ mod tests {
                 .to_string()
                 .starts_with(&format!("DIRECTION.md:{}: ", p.line)));
         }
+    }
+
+    #[test]
+    fn control_line_reports_the_file_line_and_word_of_the_control() {
+        let text = filled();
+        let want = line_of(&text, "- control:");
+        assert_eq!(control_line(&text), Some((want, "run".to_owned())));
+        let paused = text.replacen("- control: run", "- control: pause", 1);
+        assert_eq!(control_line(&paused), Some((want, "pause".to_owned())));
+    }
+
+    #[test]
+    fn control_line_ignores_comments_and_other_sections() {
+        let text =
+            "<!-- - control: stop -->\n## Items\n- control: stop\n## Direction\n- control: run\n";
+        assert_eq!(control_line(text), Some((5, "run".to_owned())));
+        assert_eq!(control_line("## Direction\n- goal: x\n"), None);
+    }
+
+    #[test]
+    fn control_line_counts_frontmatter_lines() {
+        let text = "---\nstatus: new\n---\n## Direction\n- control: stop\n";
+        assert_eq!(control_line(text), Some((5, "stop".to_owned())));
     }
 
     #[test]

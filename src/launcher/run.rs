@@ -79,6 +79,7 @@ use crate::driver::kill::{signal_group, DRIVER_TEARDOWN_GRACE};
 use crate::driver::lock::{
     acquire_at_with_retry, probe_at, read_holder_at, run_lock_path, LockProbe, ACQUIRE_RETRY_BUDGET,
 };
+use crate::driver_templates::lint::{control_line, lint_direction, Finding};
 use crate::driverctl::counters::outstanding_dispatch;
 use crate::driverctl::log::parse_log;
 use crate::driverctl::serve::{
@@ -212,6 +213,44 @@ fn check_limits(opts: &LaunchOptions) -> Result<(), LauncherError> {
                 format!("{minutes} is not a finite positive number of minutes"),
             ));
         }
+    }
+    Ok(())
+}
+
+/// Refuse a DIRECTION.md that is not a valid plan, or that the human has paused or
+/// stopped, before anything is written or spent (D-11, DRIVE-03, T-29-21).
+///
+/// Runs the same strict lint as `driver check` ([`lint_direction`]); a clean lint
+/// is then held to one more rule: `control` must be `run`. A launch on `pause` or
+/// `stop` would pay the driver's startup cost only to be told to stop (RESEARCH
+/// Open Question 2, `[inferred - audit]`). Warnings never refuse.
+///
+/// Reads the file only: it is called before the lock, the token and the prompt.
+fn preflight_direction(run_dir: &Path) -> Result<(), LauncherError> {
+    let path = run_dir.join("DIRECTION.md");
+    let text = fs::read_to_string(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            LauncherError::DirectionInvalid {
+                problems: vec!["DIRECTION.md not found; create the run with driver new".to_owned()],
+            }
+        } else {
+            io_error(&format!("read {}", path.display()), e)
+        }
+    })?;
+    let report = lint_direction(&text);
+    if !report.is_clean() {
+        return Err(LauncherError::DirectionInvalid {
+            problems: report.problems.iter().map(ToString::to_string).collect(),
+        });
+    }
+    if let Some((line, word)) = control_line(&text).filter(|(_, word)| word != "run") {
+        let finding = Finding {
+            line,
+            message: format!("control is {word}; set - control: run to launch"),
+        };
+        return Err(LauncherError::DirectionInvalid {
+            problems: vec![finding.to_string()],
+        });
     }
     Ok(())
 }
@@ -509,6 +548,8 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     }
     let requested_run_dir = opts.project.join(DRIVERS_REL).join(&opts.run_id);
     let (run_dir, run_id) = validate_run_dir(&opts.project, &requested_run_dir)?;
+    // D-11: before the lock, any write, the token and the prompt.
+    preflight_direction(&run_dir)?;
     let project = fs::canonicalize(&opts.project)
         .map_err(|e| io_error(&format!("project {}", opts.project.display()), e))?;
     check_limits(&opts)?;
@@ -1175,6 +1216,8 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
     }
     let requested = opts.project.join(DRIVERS_REL).join(&opts.run_id);
     let (run_dir, run_id) = validate_run_dir(&opts.project, &requested)?;
+    // D-11: in the caller's terminal, before a state directory, a log or a daemon.
+    preflight_direction(&run_dir)?;
     let project = fs::canonicalize(&opts.project)
         .map_err(|e| io_error(&format!("project {}", opts.project.display()), e))?;
     check_limits(opts)?;

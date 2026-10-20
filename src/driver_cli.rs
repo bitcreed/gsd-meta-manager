@@ -529,6 +529,11 @@ fn launch_main(args: &LaunchArgs, _config: Option<PathBuf>) -> i32 {
 }
 
 fn report(verb: &str, error: &LauncherError) -> i32 {
-    err_line(&format!("driver {verb}: {error}"));
+    match error {
+        // Already `DIRECTION.md:<line>: <message>` lines: a verb prefix would make the
+        // first one a different shape from the rest.
+        LauncherError::DirectionInvalid { .. } => err_line(&error.to_string()),
+        _ => err_line(&format!("driver {verb}: {error}")),
+    }
     error.exit_code()
 }

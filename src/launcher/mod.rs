@@ -118,6 +118,10 @@ pub enum LauncherError {
     /// The run's active wall-clock cap is already used up (D-13): nothing was
     /// written and no driver was started.
     CapExhausted { detail: String },
+    /// DIRECTION.md failed the launch preflight (D-11, DRIVE-03): it is not a plan
+    /// the driver can follow, or the human has paused or stopped it. Nothing was
+    /// written. Each entry is one rendered `DIRECTION.md:<line>: <message>` line.
+    DirectionInvalid { problems: Vec<String> },
 }
 
 impl LauncherError {
@@ -153,6 +157,9 @@ impl std::fmt::Display for LauncherError {
             ),
             LauncherError::ClaudeVersion { detail } => write!(f, "claude version: {detail}"),
             LauncherError::CapExhausted { detail } => write!(f, "cap exhausted: {detail}"),
+            // One problem per line, in the `file:line: message` shape editors and
+            // terminals can jump to; no prefix, so every line is the same shape.
+            LauncherError::DirectionInvalid { problems } => f.write_str(&problems.join("\n")),
             LauncherError::DaemonExited { code, detail } => {
                 write!(
                     f,
@@ -234,9 +241,27 @@ mod tests {
             LauncherError::CapExhausted {
                 detail: "x".to_owned(),
             },
+            LauncherError::DirectionInvalid {
+                problems: vec!["DIRECTION.md:1: x".to_owned()],
+            },
         ] {
             assert_eq!(other.exit_code(), 1, "{other}");
         }
+    }
+
+    #[test]
+    fn an_invalid_direction_prints_one_problem_per_line_and_nothing_else() {
+        let error = LauncherError::DirectionInvalid {
+            problems: vec![
+                "DIRECTION.md:9: I-01: missing `- done-when:`".to_owned(),
+                "DIRECTION.md:14: I-02: missing `- budget:`".to_owned(),
+            ],
+        };
+        assert_eq!(
+            error.to_string(),
+            "DIRECTION.md:9: I-01: missing `- done-when:`\n\
+             DIRECTION.md:14: I-02: missing `- budget:`"
+        );
     }
 
     #[test]
