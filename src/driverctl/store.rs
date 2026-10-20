@@ -154,6 +154,13 @@ pub struct RunState {
     pub last_event: Option<LastEvent>,
     /// Whether the driver itself logged `RUN end` in the current launch.
     pub ended_by_driver: bool,
+    /// The sorted ids that were `running` when the current launch began: each needs
+    /// its one recorded `recovered` decision before any `dispatched` is accepted
+    /// (D-17, PRMT-04). Rebuilt by every [`RunStore::begin_launch`].
+    pub awaiting_recovery: Vec<String>,
+    /// The ids a `recovered` was accepted for in the current launch (a second one
+    /// for the same id is refused). Cleared by every [`RunStore::begin_launch`].
+    pub recovered_this_launch: Vec<String>,
     /// Keys this build does not know (the launcher's `auth`, `cost`, ...).
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -178,6 +185,8 @@ impl Default for RunState {
             denied_dispatches: 0,
             last_event: None,
             ended_by_driver: false,
+            awaiting_recovery: Vec::new(),
+            recovered_this_launch: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -216,7 +225,7 @@ pub const EXTRA_ACTIVE_SECONDS: &str = "active_seconds";
 
 /// The typed [`RunState`] fields (serialized names): the launcher-key writer
 /// ([`RunStore::set_launcher_key`]) refuses every one of them.
-const RUN_STATE_FIELDS: [&str; 16] = [
+const RUN_STATE_FIELDS: [&str; 18] = [
     "schema",
     "run_id",
     "project_root",
@@ -233,6 +242,8 @@ const RUN_STATE_FIELDS: [&str; 16] = [
     "denied_dispatches",
     "last_event",
     "ended_by_driver",
+    "awaiting_recovery",
+    "recovered_this_launch",
 ];
 
 /// The `state.json` key holding the last push of the run (28-08, D-24).
@@ -829,6 +840,16 @@ impl RunStore {
 
         next.launches = next.launches.saturating_add(1);
         next.ended_by_driver = false;
+        // D-17: every item left `running` by an earlier launch needs exactly one
+        // recorded recovery decision before this launch may dispatch (the map is
+        // ordered, so the ids come out sorted).
+        next.awaiting_recovery = next
+            .items
+            .iter()
+            .filter(|(_, record)| record.state == ItemState::Running)
+            .map(|(id, _)| id.clone())
+            .collect();
+        next.recovered_this_launch.clear();
         next.status = RunStatus::Running;
         next.status_reason = None;
         next.caps.dispatches.limit = spec.limits.dispatches;
@@ -922,6 +943,36 @@ impl RunStore {
         }
     }
 
+    /// The D-17 acceptance rule: why `event` is refused until the items a crashed
+    /// launch left `running` have each been recovered once.
+    ///
+    /// An awaiting id the human has since removed from `DIRECTION.md` cannot be
+    /// recovered (the protocol only accepts listed items), so it no longer blocks.
+    fn recovery_rejection(
+        &self,
+        event: &ValidatedEvent,
+        direction: &DirectionInfo,
+    ) -> Option<String> {
+        match event {
+            ValidatedEvent::Dispatched { .. } => {
+                let blocking = self.state.awaiting_recovery.iter().find(|id| {
+                    direction.items.is_empty() || direction.items.iter().any(|i| &i.id == *id)
+                })?;
+                Some(format!(
+                    "reconcile first: {blocking} was running at launch start; record driverctl \
+                     log recovered --item {blocking} --action {}",
+                    protocol::RECOVER_ACTIONS.join("|")
+                ))
+            }
+            ValidatedEvent::Recovered { item, .. }
+                if self.state.recovered_this_launch.contains(item) =>
+            {
+                Some(format!("already recovered in this launch: {item}"))
+            }
+            _ => None,
+        }
+    }
+
     fn handle_log(&mut self, event: &str, args: &LogArgs) -> Response {
         let direction = self.direction_info();
         let ids: Vec<String> = direction.items.iter().map(|i| i.id.clone()).collect();
@@ -942,8 +993,20 @@ impl RunStore {
             _ => (None, None),
         };
 
+        if let Some(message) = self.recovery_rejection(&validated, &direction) {
+            return Response::rejected(message);
+        }
+
         let now = self.now_string();
         let mut next = self.state.clone();
+        if let ValidatedEvent::Recovered { item, .. } = &validated {
+            // The item moves out of the awaiting set into this launch's recovered
+            // set in the same committed state, so a store restart keeps it.
+            next.awaiting_recovery.retain(|id| id != item);
+            if !next.recovered_this_launch.contains(item) {
+                next.recovered_this_launch.push(item.clone());
+            }
+        }
         let entry = apply_event(&mut next, validated, &now, budget, base);
         match self.commit(next, &[entry], Regen::Always) {
             Ok(()) => Response::ok(),
