@@ -333,6 +333,60 @@ fn existing_evidence_is_never_spent_over_without_rerun() {
     }
 }
 
+/// Evidence for `case` with the given verdict and observed lines, in a scratch acceptance dir.
+fn evidence(case: &str, verdict: &str, observed: &str) -> TempDir {
+    let acc = TempDir::new().expect("tempdir");
+    fs::create_dir_all(acc.path().join(case)).expect("mkdir");
+    fs::write(acc.path().join(case).join("verdict.txt"), verdict).expect("write verdict");
+    fs::write(acc.path().join(case).join("observed.txt"), observed).expect("write observed");
+    acc
+}
+
+#[test]
+fn a_logic_fail_is_not_rerun_except_h2_evidence_from_the_superseded_harness() {
+    // WR-07: a miss is reported, not rerun (RESEARCH A7). The one exception is an h2 FAIL
+    // measured before the harness could stage its own premise: it gets the guard's single
+    // rerun, and the consent gate (exit 10 here: no consent.txt) still stands in front of it.
+    if let Some(reason) = skip_reason() {
+        println!("SKIP: {reason}");
+        return;
+    }
+    let verdict = "H2-5 FAIL launch 2: I-01 recovered x0\nRESULT FAIL\n";
+    let run = |case: &str, observed: &str| {
+        let trap = Trap::new();
+        let acc = evidence(case, verdict, observed);
+        let out = trap.script(
+            &["run", case],
+            &[
+                ("ACCEPTANCE_DIR", acc.path().to_str().expect("utf8")),
+                ("RERUN", "1"),
+            ],
+        );
+        assert_eq!(trap.hits(), "", "{case}: nothing may be spent");
+        out
+    };
+
+    let old_h2 = run("h2", "infra_fault=no\n");
+    assert_eq!(old_h2.status.code(), Some(10), "{}", text(&old_h2));
+    assert!(
+        !text(&old_h2).contains("a miss is reported"),
+        "{}",
+        text(&old_h2)
+    );
+
+    let fixed_h2 = run("h2", "h2_harness=2\ninfra_fault=no\n");
+    assert_eq!(fixed_h2.status.code(), Some(2), "{}", text(&fixed_h2));
+    assert!(
+        text(&fixed_h2).contains("a miss is reported"),
+        "{}",
+        text(&fixed_h2)
+    );
+
+    let h1 = run("h1", "infra_fault=no\n");
+    assert_eq!(h1.status.code(), Some(2), "{}", text(&h1));
+    assert!(text(&h1).contains("a miss is reported"), "{}", text(&h1));
+}
+
 #[test]
 fn a_rehearsal_cannot_point_at_the_committed_evidence() {
     if let Some(reason) = skip_reason() {
@@ -695,6 +749,39 @@ while alive; do sleep 1; done
     )
 }
 
+/// h2 as it really went on 2026-10-20 (WR-07): the driver meets the pause at the next dispatch
+/// but has already FINISHED I-01 (report, verified, status done), so nothing is running at the
+/// relaunch. The harness must stage the premise itself; the relaunch's driver then recovers I-01
+/// before any dispatch.
+fn h2_finished_item_scenario() -> String {
+    format!(
+        r#"{PRELUDE}
+DIR=$(ls "$PWD"/.planning/meta-manager/drivers/*/DIRECTION.md | head -1)
+if [ "$N" = 1 ]; then
+  driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phase 1
+  printf '%s' "$HOOK" | driverctl hook > "$D/hook1.json"
+  i=0
+  until grep -q '^- control: pause$' "$DIR" || [ "$i" -ge 120 ]; do sleep 0.5; i=$((i + 1)); done
+  driverctl log report --item I-01 --status done <<'EOF'
+STATUS: done
+FINDINGS: 0
+EOF
+  driverctl log verified --item I-01 --done-when met --evidence "notes/h2.txt committed"
+  driverctl log status --item I-01 --state done --outcome "committed"
+  printf '%s' "$HOOK" | driverctl hook > "$D/hook2.json"
+  driverctl log dispatched --item I-02 --step "/gsd-plan-phase 2" --round 0 --phase 2 2> "$D/dispatch_refused.err"
+  driverctl log end --reason pause
+  printf '%s\n' "$RESULT"
+  exit 0
+fi
+driverctl log recovered --item I-01 --action resume --reason "pause relaunch"
+driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phase 1
+printf '%s' "$HOOK" | driverctl hook > "$D/hook3.json"
+while alive; do sleep 1; done
+"#
+    )
+}
+
 /// h3: the seeded park. Launch A (answer only) ends all-parked at once; launch B (gap-rounds
 /// raised) dispatches I-01.
 fn h3_scenario() -> String {
@@ -754,7 +841,38 @@ fn scripted_rehearsal_h2_derives_a_pass_through_pause_and_relaunch() {
         let observed = fs::read_to_string(acc.join("h2/observed.txt")).unwrap_or_default();
         assert!(observed.contains("pause_saved_epoch="), "{observed}");
         assert!(observed.contains("restored_epoch="), "{observed}");
+        assert!(
+            observed.contains("premise_i_01_running=native"),
+            "a driver that left I-01 running needs no staging:\n{observed}"
+        );
+        assert!(!observed.contains("staged-host-side"), "{observed}");
     });
+}
+
+#[test]
+fn scripted_rehearsal_h2_stages_the_running_premise_when_the_driver_finished_the_item() {
+    // WR-07: the live driver finished I-01 before ending on pause. The case still reaches
+    // a PASS, because the harness stages `running` host-side and the evidence says so.
+    rehearse(
+        "h2",
+        Some(&h2_finished_item_scenario()),
+        |out, hit_log, acc| {
+            assert_rehearsal_reached_the_fake_claude("h2", out, hit_log, acc);
+            assert_scripted_pass("h2", out);
+            let observed = fs::read_to_string(acc.join("h2/observed.txt")).unwrap_or_default();
+            assert!(observed.contains("h2_harness=2"), "{observed}");
+            assert!(
+                observed.contains("premise_i_01_state_before_staging=done"),
+                "{observed}"
+            );
+            assert!(
+                observed.contains("premise_i_01_running=staged-host-side"),
+                "{observed}"
+            );
+            let log = fs::read_to_string(acc.join("h2/LOG.md")).unwrap_or_default();
+            assert!(log.contains("| I-01 | status | state=running"), "{log}");
+        },
+    );
 }
 
 #[test]

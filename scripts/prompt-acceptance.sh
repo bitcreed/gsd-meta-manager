@@ -944,9 +944,12 @@ pa_write_gaps_found() {
 
 # case_h2 (D-18, D-19): launch 1 detached on a chore with a second item behind it; once I-01 is in flight save
 # `control: pause` (rename-save, like an editor); the run must record the report, dispatch nothing new and end
-# reason=pause. Then restore `control: run` and relaunch: one recovered for I-01 before any dispatch.
+# reason=pause. Then restore `control: run` and relaunch: one recovered for I-01 before any dispatch. The premise
+# "I-01 is still running at the relaunch" is staged by the harness when the live driver finished the item first
+# (pa_stage_item_running, WR-07; `h2_harness=2` marks evidence from this revision).
 case_h2() {
   pa_haiku_setup
+  obs h2_harness 2
   export PA_GOAL="Complete the two chores, I-01 first and I-02 after it, one dispatch each." PA_WORKER=haiku PA_TITLE="Write the h2 note and commit it"
   export PA_INTENT="A worker creates notes/h2.txt holding one line, runs the shell command sleep 90 once so the chore takes about ninety seconds, then commits the file."
   export PA_DONE="notes/h2.txt is committed on the current branch." PA_BUDGET="dispatches=4" PA_RULE="Do not touch any file other than the notes file of the item in flight."
@@ -974,6 +977,7 @@ case_h2() {
   # the run must end by itself (reason=pause); if it does not, stop it so the relaunch below can happen at all
   if ! pa_wait_launch_end "$b1"; then obs launch_1_ended_by_itself no; pa_stop_run 1 "$b1"; fi
   pa_record_costs
+  pa_stage_item_running I-01
   b2="$(loglines)"
   obs log_lines_before_relaunch "$b2"
   human_save "$RUN_DIR/DIRECTION.md" 's/^- control: pause$/- control: run/'
@@ -985,19 +989,54 @@ case_h2() {
   pa_record_costs
 }
 
+# pa_serve_up: serve the run's store host-side (`driverctl serve`, no model, no launcher); sets SERVE_PID and
+# SERVE_SOCK. pa_serve_down stops it. Shared by pa_seed_park (h3) and pa_stage_item_running (h2).
+pa_serve_up() {
+  local waited=0
+  SERVE_SOCK=""
+  bg "$BIN" driverctl serve --run-dir "$RUN_DIR" --project "$PROJECT" > "$SCRATCH_ROOT/serve.out" 2>&1
+  SERVE_PID=$!
+  while [ "$waited" -lt 100 ]; do
+    grep -q 'listening on' "$SCRATCH_ROOT/serve.out" 2>/dev/null && break
+    kill -0 "$SERVE_PID" 2>/dev/null || { echo "prompt-acceptance: driverctl serve exited: $(cat "$SCRATCH_ROOT/serve.out")" >&2; exit 1; }
+    sleep 0.2; waited=$((waited + 1))
+  done
+  SERVE_SOCK="$(sed -n 's/.*listening on \(.*\)$/\1/p' "$SCRATCH_ROOT/serve.out" | sed -n '1p')"
+  [ -n "$SERVE_SOCK" ] || { echo "prompt-acceptance: driverctl serve never reported a socket: $(cat "$SCRATCH_ROOT/serve.out")" >&2; exit 1; }
+}
+pa_serve_down() {
+  kill "$SERVE_PID" 2>/dev/null || true
+  wait "$SERVE_PID" 2>/dev/null || true
+}
+
+# pa_stage_item_running ITEM (WR-07): h2's premise (D-19) is "the previous launch ended on pause while ITEM was still
+# running", and the live driver decides that, not the harness: the committed 20261020 run finished I-01 (done) before
+# it ended on pause, so no item awaited recovery and H2-5 could never hold. The case therefore stages its own
+# premise: when the store does not already say ITEM is running, log `status --state running` for it host-side (free,
+# the pa_seed_park pattern) before the relaunch. The observation records which it was, so the evidence never claims a
+# native premise it did not have.
+pa_stage_item_running() {
+  local item="$1" state key
+  key="premise_$(printf '%s' "$item" | tr 'A-Z-' 'a-z_')_running"
+  state="$(jget "$RUN_DIR/state.json" "items.$item.state")"
+  if [ "$state" = running ]; then obs "$key" native; return 0; fi
+  obs "${key%_running}_state_before_staging" "${state:-none}"
+  # the launcher that just ended may still hold the run lock for a moment; serve needs it
+  local held=0
+  while pa_launcher_held && [ "$held" -lt 30 ]; do sleep 1; held=$((held + 1)); done
+  pa_serve_up
+  env "${SCRUB[@]}" DRIVERCTL_SOCK="$SERVE_SOCK" "$BIN" driverctl log status --item "$item" --state running >> "$SCRATCH_ROOT/seed.out" 2>&1 || obs "$key" staging-failed
+  pa_serve_down
+  state="$(jget "$RUN_DIR/state.json" "items.$item.state")"
+  if [ "$state" = running ]; then obs "$key" staged-host-side; else obs "$key" no; fi
+}
+
 # pa_seed_park: free, host-side. Serve the run's store with `driverctl serve` and log the history that parks I-01
 # on gap-rounds (start, dispatched, report, verified not-met, status parked, needs-human, end all-parked); no model.
 pa_seed_park() {
-  local sock="" waited=0 pid
-  bg "$BIN" driverctl serve --run-dir "$RUN_DIR" --project "$PROJECT" > "$SCRATCH_ROOT/serve.out" 2>&1
-  pid=$!
-  while [ "$waited" -lt 100 ]; do
-    grep -q 'listening on' "$SCRATCH_ROOT/serve.out" 2>/dev/null && break
-    kill -0 "$pid" 2>/dev/null || { echo "prompt-acceptance: driverctl serve exited: $(cat "$SCRATCH_ROOT/serve.out")" >&2; exit 1; }
-    sleep 0.2; waited=$((waited + 1))
-  done
-  sock="$(sed -n 's/.*listening on \(.*\)$/\1/p' "$SCRATCH_ROOT/serve.out" | sed -n '1p')"
-  [ -n "$sock" ] || { echo "prompt-acceptance: driverctl serve never reported a socket: $(cat "$SCRATCH_ROOT/serve.out")" >&2; exit 1; }
+  local sock pid
+  pa_serve_up
+  sock="$SERVE_SOCK"; pid="$SERVE_PID"
   ctl() { env "${SCRUB[@]}" DRIVERCTL_SOCK="$sock" "$BIN" driverctl "$@" >> "$SCRATCH_ROOT/seed.out" 2>&1; }
   ctl log start --mode headless --loop-mode loop
   ctl log dispatched --item I-01 --step "/gsd-plan-phase 1 --gaps" --round 0 --phase 1
@@ -1097,6 +1136,15 @@ evidence_gates() {
   fi
 }
 
+# pa_superseded_harness CASE EVDIR (WR-07): the FAIL in EVDIR was produced by a harness revision that has since been
+# fixed as a harness defect, not by the product missing a criterion. Today only h2: before `h2_harness=2` the case
+# could not stage its own premise (I-01 running at the relaunch), so its H2-5 FAIL measured the harness. The
+# allowance is the single rerun the guard already permits (RERUN=1, consent and ceiling gates unchanged), and it
+# closes once the evidence carries the marker: a FAIL from the fixed harness is a finding like any other.
+pa_superseded_harness() {
+  [ "$1" = h2 ] && [ -z "$(obs_get "$2/observed.txt" h2_harness)" ]
+}
+
 # pa_evidence_guard CASE: sets EVD ATTEMPT LABEL CLEAR_OLD_EVIDENCE; refuses to spend twice (exit 2).
 pa_evidence_guard() {
   local case="$1" res
@@ -1107,7 +1155,7 @@ pa_evidence_guard() {
       res="$(sed -n 's/^RESULT //p' "$EVD/verdict.txt" | tail -n 1)"
       [ "$res" != PASS ] || { echo "prompt-acceptance: $case already PASSed; no rerun is needed or allowed" >&2; exit 2; }
       # a logic FAIL is a finding, not a rerun (RESEARCH A7); only ADJUST (o1) or an infrastructure fault reruns
-      if [ "$res" = FAIL ] && [ "$(obs_get "$EVD/observed.txt" infra_fault)" != yes ]; then
+      if [ "$res" = FAIL ] && [ "$(obs_get "$EVD/observed.txt" infra_fault)" != yes ] && ! pa_superseded_harness "$case" "$EVD"; then
         echo "prompt-acceptance: $case ended FAIL without an infrastructure fault; a miss is reported, not rerun" >&2; exit 2
       fi
     fi
