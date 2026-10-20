@@ -5,10 +5,10 @@ current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: executing
 stopped_at: Phase 30 UI-SPEC approved
-last_updated: "2026-10-20T17:13:25.976Z"
+last_updated: "2026-10-20T23:58:26.203Z"
 last_activity: 2026-10-20
-last_activity_desc: Phase 29 complete, transitioned to Phase 28
-state_head: f8ab657189ff2d3edd7000c3b47054088faf2100
+last_activity_desc: Phase 30 execution started
+state_head: b151d6b9ef370442289b36bfbc4088d64ee8bfd3
 progress:
   total_phases: 10
   completed_phases: 12
@@ -24,11 +24,11 @@ milestone_name: gsd-core 1.17.0 Sync
 See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 28 — Sandboxed Driver Launcher (UAT/verification still open)
+**Current focus:** Phase 30 — Driver Tab on DIRECTION.md
 
 ## Current Position
 
-Status: Ready to execute
+Status: Executing Phase 30
   Phase 29 (Master Prompt & Run Templates) complete 2026-10-20: 8/8 plans, re-verification passed
   5/5 after the code-review fixes (01eb8c8), UAT 1/1 (operator sign-off accepting o1 ADJUST x2 and
   h2 H2-5 as a rubric setup flaw; no re-run). PRMT-01..05, DRIVE-03 and DRIVE-01 complete. Review
@@ -237,8 +237,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 30 (Driver Tab on DIRECTION.md) — READY TO EXECUTE
-Plan: 9
+Phase: 30 (Driver Tab on DIRECTION.md) — EXECUTING
+Plan: 1 of 5
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -272,7 +272,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-20 - Completed quick task 261020-f80: Hide sibling driver run dirs in bwrap sandbox + fix auth.rs doc comment
+Last activity: 2026-10-20 — Phase 30 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
