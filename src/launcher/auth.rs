@@ -288,11 +288,12 @@ pub fn validate_pasted_token(raw: &str) -> Result<String, AuthError> {
 /// owned by this user (else [`AuthError::Unsafe`]); group and other write bits are
 /// removed from it, but nothing else is changed: the default directory also holds
 /// the registry (`config.json`), commonly 0755 or 0775, and the token file's own
-/// 0600 is what protects the value `[inferred — audit]`. The value goes to a sibling temp file created 0600 (never
-/// more permissive, even for an instant, which is what the plan's
-/// `umask(0o177)` buys without touching process-wide state), is fsynced and then
-/// renamed into place, so a reader sees the old file or the whole new one. The
-/// value is never logged.
+/// 0600 is what protects the value `[inferred — audit]`.
+///
+/// The value goes to a sibling temp file created 0600 (never more permissive, even
+/// for an instant, which is what the plan's `umask(0o177)` would buy, without
+/// touching process-wide state), is fsynced and then renamed into place, so a
+/// reader sees the old file or the whole new one. The value is never logged.
 pub fn store_token(path: &Path, token: &str) -> Result<(), AuthError> {
     let token = validate_pasted_token(token)?;
     let io = |what: &str, e: std::io::Error| AuthError::Io {

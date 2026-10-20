@@ -368,8 +368,7 @@ fn socket_is_live(path: &Path) -> bool {
     }
 }
 
-/// Bind `path` with a private mode: the umask is 0o177 around the bind, then the
-/// mode is set explicitly (T-27-26).
+/// Bind `path` with a private mode ([`bind_private`], T-27-26).
 ///
 /// A socket file already at `path` is replaced only when no one is listening on it
 /// (WR-05). Holding THIS run's lock does not make the path this run's: an explicit

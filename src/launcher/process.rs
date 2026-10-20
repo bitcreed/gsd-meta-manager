@@ -8,7 +8,7 @@
 //! outside its sandbox. The agent is reached only through `bwrap` (or, in 28-04,
 //! the explicit degraded spawn).
 //!
-//! Three shapes:
+//! Five shapes:
 //!
 //! * [`spawn_launch_child`], the long-lived driver child: a process-group leader
 //!   with stdin `/dev/null` (no TTY, no `tmux`), stdout and stderr to a file, and
