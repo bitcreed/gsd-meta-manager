@@ -1152,7 +1152,7 @@ left implicit.
   5. `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory hint, which
      the prompt cites as advisory only.
 
-**Plans**: 3/8 plans executed
+**Plans**: 4/8 plans executed
 
 Plans:
 **Wave 1**
@@ -1161,7 +1161,7 @@ Plans:
 - [x] 29-03-PLAN.md — `gsd-meta-manager next <project> --json`, advisory read-only router hint usable in the sandbox (PRMT-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 29-04-PLAN.md — `driver new` / `driver check`: run dir from embedded templates (.gitignore, DIRECTION.md, LOG.md grammar) and lint (PRMT-02/03, DRIVE-03)
+- [x] 29-04-PLAN.md — `driver new` / `driver check`: run dir from embedded templates (.gitignore, DIRECTION.md, LOG.md grammar) and lint (PRMT-02/03, DRIVE-03)
 - [ ] 29-05-PLAN.md — deterministic SC4 proofs: scripted crash-and-relaunch reconciliation, mid-dispatch pause (PRMT-04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
@@ -1336,7 +1336,7 @@ Plans:
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
-| 29. Master Prompt & Run Templates | 3/8 | In Progress | - |
+| 29. Master Prompt & Run Templates | 4/8 | In Progress | - |
 | 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |

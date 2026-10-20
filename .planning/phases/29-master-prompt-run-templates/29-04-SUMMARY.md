@@ -130,8 +130,12 @@ See `key-decisions` above. The inferred ones (slug shape, separate `check` verb,
 - **Verification:** that test and the 24 + 13 plan tests green; full suite back to the single expected failure.
 - **Committed in:** 7c682b7
 
-**3. [Rule 3 - Blocking] Hidden test-time guard on `RUN_ID_RE`/`DRIVERS_REL` visibility**
-- `DRIVERS_REL` is `pub(crate)`, so the bin-side `check_main` uses the public `state_reader::driver_frontmatter::DRIVER_RUNS_REL` (documented as the same path) with `valid_run_id` + `validate_run_dir` doing the real validation. No behaviour change.
+**3. [Rule 3 - Blocking] `DRIVERS_REL` is `pub(crate)`**
+- **Found during:** Task 3
+- **Issue:** the bin-side `check_main` cannot import `driverctl::serve::DRIVERS_REL`.
+- **Fix:** it uses the public `state_reader::driver_frontmatter::DRIVER_RUNS_REL` (documented as the same path), with `valid_run_id` + `validate_run_dir` doing the real validation. No behaviour change.
+- **Files modified:** src/driver_cli.rs
+- **Committed in:** 6846b65
 
 ---
 
