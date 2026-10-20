@@ -5,72 +5,72 @@ titles: json
 findings:
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: fixed
     title: "`bind_private` changes the PROCESS-WIDE umask; concurrent callers can leave it stuck at 0o177"
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "bwrap is started without `--new-session` (controlling-terminal injection)"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Credential hiding is a denylist and is incomplete (env and home files), while the network is open"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The master prompt is passed as a positional that can be parsed as an option, and as a single argv string"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`RERUN=1` deletes the committed evidence BEFORE any gate that can refuse the rerun"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Tests (and the harness selftest) require `.planning/` content that the crate excludes"
   - id: WR-06
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Float and budget flags are unvalidated; `inf`, `NaN` and negative values reach systemd and `claude`"
   - id: WR-07
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`install_signal_handlers` is one-shot; a second SIGTERM/SIGINT is swallowed for the rest of the process"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`DRIVER_LOCK_HELD=1` is exported to the driver but nothing in `src/` reads it"
   - id: IN-02
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Module documentation drift in `process.rs` and `auth.rs`"
   - id: IN-03
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Harness-tests pass vacuously when their tools are missing"
   - id: IN-04
     severity: info
     disposition: skipped
     title: "The campaign ledger is read-modify-append without a lock"
-open: 11
+open: 0
 total: 12
-recorded: 2026-10-20T01:06:04.587Z
+recorded: 2026-10-20T01:06:13.950Z
 ---
 
 # Phase 28: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
-| WR-06 | warning | open | - |
-| WR-07 | warning | open | - |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
-| IN-03 | info | open | - |
+| CR-01 | critical | fixed | 28-REVIEW-FIX.md |
+| WR-01 | warning | fixed | 28-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 28-REVIEW-FIX.md |
+| WR-03 | warning | fixed | 28-REVIEW-FIX.md |
+| WR-04 | warning | fixed | 28-REVIEW-FIX.md |
+| WR-05 | warning | fixed | 28-REVIEW-FIX.md |
+| WR-06 | warning | fixed | 28-REVIEW-FIX.md |
+| WR-07 | warning | fixed | 28-REVIEW-FIX.md |
+| IN-01 | info | fixed | 28-REVIEW-FIX.md |
+| IN-02 | info | fixed | 28-REVIEW-FIX.md |
+| IN-03 | info | fixed | 28-REVIEW-FIX.md |
 | IN-04 | info | skipped | 28-REVIEW-FIX.md |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
