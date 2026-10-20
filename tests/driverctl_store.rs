@@ -1784,6 +1784,124 @@ fn dispatched_is_rejected_while_control_is_pause_or_stop_but_the_rest_is_accepte
     }
 }
 
+/// Replace the `- control: run` line of the fixture's DIRECTION.md with `line`.
+fn set_control_line(fx: &Fixture, line: &str) {
+    let path = fx.run_dir.join("DIRECTION.md");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("- control: run"), "the fixture body says run");
+    fs::write(&path, text.replacen("- control: run", line, 1)).unwrap();
+}
+
+#[test]
+fn a_pause_or_stop_is_honoured_in_any_case_and_with_stray_whitespace() {
+    // WR-02: the lint only checks at launch, so a mid-run edit of `Pause` must still hold.
+    for (line, word) in [
+        ("- control: Pause", "pause"),
+        ("- control: PAUSE", "pause"),
+        ("- control:   Stop   ", "stop"),
+        ("-   control:\tSTOP", "stop"),
+        ("  - Control: pAuSe", "pause"),
+    ] {
+        let fx = Fixture::new();
+        let mut store = fx.open();
+        store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+        store.begin_launch(standalone()).unwrap();
+        log_ok(&mut store, "start", &[("mode", "headless")]);
+        set_control_line(&fx, line);
+
+        let r = send(&mut store, GATE_REQ);
+        let deny = r
+            .deny
+            .unwrap_or_else(|| panic!("{line:?}: the gate must deny"));
+        assert!(
+            deny.starts_with(&format!("control={word};")),
+            "{line:?}: {deny}"
+        );
+
+        let r = send(
+            &mut store,
+            &log_req(
+                "dispatched",
+                &[("item", "I-02"), ("step", "go"), ("round", "0")],
+            ),
+        );
+        assert!(!r.ok, "{line:?}: dispatched must be refused: {r:?}");
+        assert!(
+            r.error
+                .as_deref()
+                .unwrap_or("")
+                .starts_with(&format!("control={word}:")),
+            "{line:?}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn a_pause_on_any_duplicate_control_line_holds_the_run() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    set_control_line(&fx, "- control: run\n- control: pause");
+    let r = send(&mut store, GATE_REQ);
+    assert!(
+        r.deny
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("control=pause;"),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn an_unreadable_direction_fails_closed_for_the_gate_and_for_dispatched() {
+    // WR-02: a read error other than NotFound hides the human's pause, so it denies.
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    log_ok(&mut store, "start", &[("mode", "headless")]);
+    let path = fx.run_dir.join("DIRECTION.md");
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap(); // reading a directory is EISDIR, not NotFound
+
+    let r = send(&mut store, GATE_REQ);
+    let deny = r
+        .deny
+        .expect("an unreadable DIRECTION.md denies the dispatch");
+    assert!(deny.contains("DIRECTION.md is unreadable"), "{deny}");
+    assert!(deny.contains("dispatch nothing new"), "{deny}");
+
+    let r = send(
+        &mut store,
+        &log_req(
+            "dispatched",
+            &[("item", "I-02"), ("step", "go"), ("round", "0")],
+        ),
+    );
+    assert!(!r.ok, "{r:?}");
+    assert!(
+        r.error
+            .as_deref()
+            .unwrap_or("")
+            .contains("DIRECTION.md is unreadable"),
+        "{r:?}"
+    );
+    assert_eq!(fx.state_json()["hook_dispatches"], 0);
+}
+
+#[test]
+fn an_absent_direction_is_the_no_direction_case_and_the_gate_allows() {
+    // NotFound is the documented "no direction" case (a bare `driverctl serve`).
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    fs::remove_file(fx.run_dir.join("DIRECTION.md")).unwrap();
+    let r = send(&mut store, GATE_REQ);
+    assert!(r.deny.is_none(), "{r:?}");
+}
+
 #[test]
 fn dispatched_is_accepted_when_control_is_run() {
     let fx = Fixture::new();

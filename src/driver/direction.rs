@@ -135,7 +135,7 @@ pub struct DirectionItem {
 /// What [`parse_direction`] read out of a body.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DirectionInfo {
-    /// The word after `- control:`, if any.
+    /// The word after `- control:`, lower-cased, if any.
     pub control: Option<String>,
     /// Items in document order.
     pub items: Vec<DirectionItem>,
@@ -143,7 +143,24 @@ pub struct DirectionInfo {
 
 fn control_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?m)^- control:\s*(\w+)").expect("control regex"))
+    // Deliberately looser than the lint's `- control: <word>`: the human's pause is a
+    // safety control, so an indented line, extra spaces or any letter case still read.
+    RE.get_or_init(|| {
+        Regex::new(r"(?mi)^[ \t]*-[ \t]+control[ \t]*:[ \t]*(\w+)").expect("control regex")
+    })
+}
+
+/// The hold a `control` word asks for: `Some("pause")` or `Some("stop")` for those
+/// words in any letter case and with surrounding whitespace, else `None`.
+///
+/// The one matcher for the human's pause/stop (D-18, D-19): the store's `dispatched`
+/// refusal and the launcher gate both call it, so neither fails open on `Pause`.
+pub fn control_hold(word: &str) -> Option<&'static str> {
+    match word.trim().to_ascii_lowercase().as_str() {
+        "pause" => Some("pause"),
+        "stop" => Some("stop"),
+        _ => None,
+    }
 }
 
 fn item_re() -> &'static Regex {
@@ -219,10 +236,17 @@ pub fn section_heading(line: &str) -> Option<Section> {
 /// reader.
 pub fn parse_direction(body: &str) -> DirectionInfo {
     let blanked = blank_comments(body);
-    let control = control_re()
-        .captures(&blanked)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
+    // The control word, lower-cased. With more than one `- control:` line (the lint
+    // flags that) a `pause` or `stop` on any of them wins over an earlier `run`: an
+    // ambiguous file holds the run rather than spending on.
+    let mut control: Option<String> = None;
+    for caps in control_re().captures_iter(&blanked) {
+        let word = caps[1].to_ascii_lowercase();
+        let holds = control_hold(&word).is_some();
+        if control.is_none() || (holds && control.as_deref().and_then(control_hold).is_none()) {
+            control = Some(word);
+        }
+    }
 
     let mut items_text = String::new();
     let mut section = Section::Preamble;
@@ -726,6 +750,45 @@ mod tests {
         assert_eq!(info.items[1].budget.get("dispatches"), Some(&1));
 
         assert_eq!(parse_direction("nothing here"), DirectionInfo::default());
+    }
+
+    #[test]
+    fn control_words_are_lower_cased_and_a_hold_on_any_line_wins() {
+        let body = |line: &str| format!("## Direction\n\n{line}\n\n## Items\n");
+        assert_eq!(
+            parse_direction(&body("- control:   PaUsE  "))
+                .control
+                .as_deref(),
+            Some("pause")
+        );
+        assert_eq!(
+            parse_direction(&body("  -  CONTROL :stop"))
+                .control
+                .as_deref(),
+            Some("stop")
+        );
+        // Duplicates: the first word, unless a later line holds the run.
+        assert_eq!(
+            parse_direction(&body("- control: run\n- control: other"))
+                .control
+                .as_deref(),
+            Some("run")
+        );
+        assert_eq!(
+            parse_direction(&body("- control: run\n- control: Stop\n- control: pause"))
+                .control
+                .as_deref(),
+            Some("stop")
+        );
+        // A commented-out hold is not a hold.
+        assert_eq!(
+            parse_direction(&body("- control: run\n<!-- - control: pause -->"))
+                .control
+                .as_deref(),
+            Some("run")
+        );
+        assert_eq!(control_hold(" Pause\t"), Some("pause"));
+        assert_eq!(control_hold("run"), None);
     }
 
     #[test]

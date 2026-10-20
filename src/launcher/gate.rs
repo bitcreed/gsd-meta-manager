@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use regex::Regex;
 
+use crate::driver::direction::control_hold;
 use crate::driverctl::protocol::HookPayload;
 use crate::driverctl::store::{CapLimits, Gate, GateDecision, RunState};
 
@@ -69,7 +70,7 @@ pub fn decide_dispatch(
     if let Some(cap) = tripped {
         return GateDecision::Deny(format!("run stopped by launcher cap {cap}"));
     }
-    if let Some(word @ ("pause" | "stop")) = control {
+    if let Some(word) = control.and_then(control_hold) {
         return GateDecision::Deny(format!(
             "control={word}; dispatch nothing new; record the in-flight worker's report, \
              then driverctl log end --reason {word}"
@@ -426,6 +427,28 @@ mod tests {
                     "control={word}; dispatch nothing new; record the in-flight worker's \
                      report, then driverctl log end --reason {word}"
                 )
+            );
+        }
+    }
+
+    #[test]
+    fn control_is_matched_case_insensitively_and_names_the_canonical_word() {
+        for (given, word) in [
+            ("Pause", "pause"),
+            ("PAUSE", "pause"),
+            (" Stop ", "stop"),
+            ("sTOP", "stop"),
+        ] {
+            let decision = decide_dispatch(
+                &dispatch("anything"),
+                &state(0, &[]),
+                &limits(None, None),
+                None,
+                Some(given),
+            );
+            assert!(
+                denied(&decision).starts_with(&format!("control={word};")),
+                "{given:?}: {decision:?}"
             );
         }
     }

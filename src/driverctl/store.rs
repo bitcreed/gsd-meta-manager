@@ -52,8 +52,8 @@ use super::log;
 use super::protocol::{self, HookPayload, Invalid, LogArgs, Request, Response, ValidatedEvent};
 use super::scan::{scan_verifications, VerificationWrite};
 use crate::driver::direction::{
-    parse_direction, splice_frontmatter, split_frontmatter, DirectionInfo, SpliceOutcome,
-    DIRECTION_FILE,
+    control_hold, parse_direction, splice_frontmatter, split_frontmatter, DirectionInfo,
+    SpliceOutcome, DIRECTION_FILE,
 };
 use crate::driver::lock::{LockHolder, RunLock};
 use crate::state_reader::driver_frontmatter::{
@@ -641,14 +641,27 @@ impl RunStore {
         self.run_dir.join(LOG_FILE)
     }
 
-    /// `DIRECTION.md`'s control word and items; an absent file has neither.
-    fn direction_info(&self) -> DirectionInfo {
-        let Ok(bytes) = fs::read(self.run_dir.join(DIRECTION_FILE)) else {
-            return DirectionInfo::default();
+    /// `DIRECTION.md`'s control word and items. An absent file (`NotFound`) is the
+    /// documented "no direction" case (a bare `driverctl serve`, a run dir `driver new`
+    /// has not filled) and has neither. Any other read error is `Err(kind)`: the
+    /// control word is then unknown, which the dispatch paths treat as a hold.
+    fn direction_read(&self) -> Result<DirectionInfo, String> {
+        let bytes = match fs::read(self.run_dir.join(DIRECTION_FILE)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(DirectionInfo::default())
+            }
+            Err(e) => return Err(e.kind().to_string()),
         };
         let text = String::from_utf8_lossy(&bytes);
         let (_, body) = split_frontmatter(&text);
-        parse_direction(body)
+        Ok(parse_direction(body))
+    }
+
+    /// [`Self::direction_read`] for readers that can live without it (the
+    /// frontmatter counts): an unreadable file reads as empty.
+    fn direction_info(&self) -> DirectionInfo {
+        self.direction_read().unwrap_or_default()
     }
 
     // -- persistence
@@ -997,7 +1010,7 @@ impl RunStore {
                 // D-19's live assertion is `no further dispatched`]: a human
                 // `pause`/`stop` also stops the driver's own `dispatched` record.
                 // It is checked first so a paused relaunch names the control word.
-                if let Some(word @ ("pause" | "stop")) = direction.control.as_deref() {
+                if let Some(word) = direction.control.as_deref().and_then(control_hold) {
                     return Some(format!(
                         "control={word}: dispatch nothing new; record the in-flight report, \
                          then end --reason {word}"
@@ -1022,7 +1035,17 @@ impl RunStore {
     }
 
     fn handle_log(&mut self, event: &str, args: &LogArgs) -> Response {
-        let direction = self.direction_info();
+        let read = self.direction_read();
+        // Fail closed (WR-02): with DIRECTION.md unreadable the human's pause/stop is
+        // unknown, so a new `dispatched` is refused. Every other event still records.
+        if event == "dispatched" {
+            if let Err(kind) = &read {
+                return Response::rejected(format!(
+                    "DIRECTION.md is unreadable ({kind}): control unknown, dispatch nothing new"
+                ));
+            }
+        }
+        let direction = read.unwrap_or_default();
         let ids: Vec<String> = direction.items.iter().map(|i| i.id.clone()).collect();
         let validated = match protocol::validate_log(event, args, &ids) {
             Ok(v) => v,
@@ -1118,8 +1141,17 @@ impl RunStore {
                 regen = Regen::Always;
             }
             _ if payload.is_gate() => {
-                let control = self.direction_info().control;
-                match (self.gate)(payload, &self.state, control.as_deref()) {
+                let decision = match self.direction_read() {
+                    Ok(direction) => {
+                        (self.gate)(payload, &self.state, direction.control.as_deref())
+                    }
+                    // Fail closed (WR-02): an unreadable DIRECTION.md hides a pause, so
+                    // the dispatch is denied, with the reason in `dispatch-denied`.
+                    Err(kind) => GateDecision::Deny(format!(
+                        "DIRECTION.md is unreadable ({kind}): control unknown, dispatch nothing new"
+                    )),
+                };
+                match decision {
                     GateDecision::Allow => {
                         next.hook_dispatches = next.hook_dispatches.saturating_add(1);
                         next.caps.dispatches.used = next.hook_dispatches;
