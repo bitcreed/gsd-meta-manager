@@ -1152,7 +1152,7 @@ left implicit.
   5. `gsd-meta-manager next <project> --json` exposes the Phase 20 router as an advisory hint, which
      the prompt cites as advisory only.
 
-**Plans**: 7/8 plans executed
+**Plans**: 8/8 plans executed
 
 Plans:
 **Wave 1**
@@ -1171,7 +1171,7 @@ Plans:
 - [x] 29-07-PLAN.md — acceptance harness with consent/prereg/$25 ledger gates, zero-spend rehearsals, offline phase gate (PRMT-01/03/04, DRIVE-03)
 
 **Wave 5** *(blocked on Wave 4 completion; cost-consent checkpoint)*
-- [ ] 29-08-PLAN.md — paid acceptance: four Haiku cases + one Opus case (≤1 retry), behind operator cost consent, $25 ceiling (PRMT-01/03/04, DRIVE-03)
+- [x] 29-08-PLAN.md — paid acceptance: four Haiku cases + one Opus case (≤1 retry), behind operator cost consent, $25 ceiling (PRMT-01/03/04, DRIVE-03)
 
 **Carried risk (from Phase 26.1, operator-accepted 2026-10-18)**: launcher deny/kill was never
 reached under a real Opus driver (VALID-02 = ADJUST). SC3's "at most 2 gap rounds" stop rule must be
@@ -1336,7 +1336,7 @@ Plans:
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
-| 29. Master Prompt & Run Templates | 7/8 | In Progress | - |
+| 29. Master Prompt & Run Templates | 8/8 | In Progress | - |
 | 30. Driver Tab on DIRECTION.md | 0/0 | Not started | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |

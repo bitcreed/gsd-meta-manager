@@ -203,7 +203,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 ### Master Prompt & Templates (PRMT): Phase 29
 
-- [ ] **PRMT-01**: The master prompt ships embedded and versioned, and its version is recorded on the
+- [x] **PRMT-01**: The master prompt ships embedded and versioned, and its version is recorded on the
   run. It requires:
   - one fresh subagent per GSD step;
   - the 11-field report of at most 15 lines, copied verbatim;
@@ -357,7 +357,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-06 | Phase 28 | Complete |
 | LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |
-| PRMT-01 | Phase 29 | Pending |
+| PRMT-01 | Phase 29 | Complete |
 | PRMT-02 | Phase 29 | Complete |
 | PRMT-03 | Phase 29 | Pending |
 | PRMT-04 | Phase 29 | Pending |

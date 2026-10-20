@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.14.0
 current_phase: 29
 current_phase_name: Master Prompt & Run Templates
-status: executing
-stopped_at: Completed 29-07-PLAN.md
-last_updated: "2026-10-20T04:36:51.650Z"
+status: verifying
+stopped_at: Completed 29-08-PLAN.md
+last_updated: "2026-10-20T14:32:25.959Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 29 execution started
-state_head: cf405542f8e5a0c854ed458fffac36a55779f1c1
+state_head: e470812b3ebffa154ebe1862997da7d8b7a37c34
 progress:
   total_phases: 10
   completed_phases: 11
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 27 (driverctl & Driver Frontmatter) complete 2026-10-19: 6/6 plans, verification passed 4/4,
   security SECURED (0 open threats). DCTL-01..04 complete. The `stalled` status value carried from
   26.1 shipped (RunStatus::is_terminal covers stopped|done|crashed|stalled|parked).
@@ -489,6 +489,7 @@ verify-phase if the gate is fixed.
 | Phase 29 P05 | 40 min | 3 tasks | 3 files |
 | Phase 29 P06 | 30min | 3 tasks | 7 files |
 | Phase 29 P07 | 23 min | 3 tasks | 5 files |
+| Phase 29 P08 | 3h (resumed) | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -673,6 +674,7 @@ Recent decisions affecting current work:
 - [Phase 29]: 29-07: gate order is consent (10), ceiling (8), prereg (9) so the CI-safe exit-8 proof needs no real pre-registration; every gate still precedes the first launch [inferred - audit]
 - [Phase 29]: 29-07: h2 carries a second item I-02 (after I-01) so a next dispatch exists for the pause to refuse (D-18, operator-confirmed 2026-10-19); H2-4 forbids a dispatch of any item after the pause save [inferred - audit]
 - [Phase 29]: 29-07: the rubric is pre-registered at acceb353a82dea32a56b17d943cad5073335ea94 and acceptance/prereg.txt holds that bare sha; Haiku reruns only after an infrastructure fault, o1 retries once after ADJUST, never a third
+- [Phase 29]: 29-08: h2 recorded FAIL (H2-5), not rerun; o1 two ADJUSTs, no third attempt; ledger 12.7557 of 25 [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -846,8 +848,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-20T04:36:51.069Z
-Stopped at: Completed 29-07-PLAN.md
+Last session: 2026-10-20T14:32:25.332Z
+Stopped at: Completed 29-08-PLAN.md
 Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
