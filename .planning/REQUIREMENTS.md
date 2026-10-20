@@ -210,7 +210,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   - nested `isolation: "worktree"` pass-through;
   - the async no-respawn rule;
   - every record going through driverctl.
-- [ ] **PRMT-02**: `gsd-meta-manager driver new` mints a `<yyyymmdd>-<slug>` run id. It creates
+- [x] **PRMT-02**: `gsd-meta-manager driver new` mints a `<yyyymmdd>-<slug>` run id. It creates
   `.planning/meta-manager/drivers/<run-id>/`, with a self-ignoring `.gitignore`, DIRECTION.md, and
   LOG.md with its grammar inline. DIRECTION.md holds `control: run|pause|stop`, standing rules, and
   items with intent, done-when, budget, after, hold and answer.
@@ -358,7 +358,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |
 | PRMT-01 | Phase 29 | Pending |
-| PRMT-02 | Phase 29 | Pending |
+| PRMT-02 | Phase 29 | Complete |
 | PRMT-03 | Phase 29 | Pending |
 | PRMT-04 | Phase 29 | Pending |
 | PRMT-05 | Phase 29 | Complete |
