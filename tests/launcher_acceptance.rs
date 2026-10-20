@@ -33,8 +33,30 @@ fn have(tool: &str) -> bool {
         .is_ok()
 }
 
+/// Why the planning tree the harness reads is absent, if it is. `Cargo.toml` excludes
+/// `.planning/` from the published crate and `gsd-pr-branch` filters it out, so a
+/// packaged or PR-branch checkout has neither the spikes nor the phase evidence
+/// (WR-05); those checkouts cannot run these proofs, and say so instead of failing.
+fn planning_skip_reason() -> Option<String> {
+    for rel in [
+        PHASE_DIR,
+        ".planning/spikes/002-launcher-caps-and-tool-frontmatter",
+        ".planning/spikes/003-divergent-gap-loop-validation",
+    ] {
+        if !repo().join(rel).is_dir() {
+            return Some(format!(
+                "{rel} is not in this checkout (.planning/ excluded)"
+            ));
+        }
+    }
+    None
+}
+
 /// Why this host cannot run the harness' bash, if it cannot.
 fn skip_reason() -> Option<String> {
+    if let Some(reason) = planning_skip_reason() {
+        return Some(reason);
+    }
     for tool in ["bash", "python3", "git"] {
         if !have(tool) {
             return Some(format!("{tool} is not runnable here"));
@@ -246,6 +268,10 @@ fn the_committed_acceptance_tree_holds_no_stream_config_or_token() {
 /// T-28-25: the committed ledger never sums past the $20 phase ceiling.
 #[test]
 fn the_committed_campaign_ledger_stays_within_the_phase_ceiling() {
+    if let Some(reason) = planning_skip_reason() {
+        println!("SKIP: {reason}");
+        return;
+    }
     let ledger = repo().join(PHASE_DIR).join("acceptance/campaign.txt");
     let body = fs::read_to_string(&ledger).expect("acceptance/campaign.txt exists");
     let mut sum = 0.0_f64;
