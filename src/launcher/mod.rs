@@ -61,6 +61,7 @@
 //!     `refs/heads/gsd-auto/<alias>/<run-id>` after the SAFE-03 scan of the tip's
 //!     tree, and opens a pull request only when the user enabled `driver.open_pr`.
 
+pub mod prompt;
 pub mod sandbox;
 
 #[cfg(target_os = "linux")]

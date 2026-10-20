@@ -610,9 +610,12 @@ fn fallible_tracing_survives_unwritable_data_dir() {
 
 const MASTER_PROMPT: &str = include_str!("fixtures/driverctl/MASTER-PROMPT.md");
 
-/// The fenced block under `## Recording events`.
-fn recording_block() -> Vec<&'static str> {
-    let mut lines = MASTER_PROMPT.lines();
+/// The prompt the driver is actually given (Phase 29, D-07): the embedded asset.
+const EMBEDDED_MASTER_PROMPT: &str = include_str!("../src/launcher/assets/MASTER-PROMPT.md");
+
+/// The fenced block under `## Recording events` of `prompt`.
+fn recording_block(prompt: &'static str) -> Vec<&'static str> {
+    let mut lines = prompt.lines();
     assert!(
         lines
             .by_ref()
@@ -733,11 +736,23 @@ fn instantiate(line: &str) -> Vec<String> {
 
 #[test]
 fn master_prompt_lines_parse_and_build_spike_requests() {
+    lift_and_run_prompt(MASTER_PROMPT);
+}
+
+/// D-07: the prompt the launcher embeds cannot drift from the Phase 27 CLI.
+#[test]
+fn the_embedded_master_prompt_runs_through_the_real_cli() {
+    lift_and_run_prompt(EMBEDDED_MASTER_PROMPT);
+}
+
+/// Lift every `driverctl` line of `prompt`'s Recording-events block, fill the
+/// placeholders and run each form through the real binary.
+fn lift_and_run_prompt(prompt: &'static str) {
     let report_stdin = "STATUS: done\nITEM: I-01\n";
     let server = Recorder::start(&[r#"{"ok": true, "frontmatter": "---\nrun: demo\n---\n"}"#]);
     let mut exercised = 0usize;
 
-    for line in recording_block() {
+    for line in recording_block(prompt) {
         if !line.starts_with("driverctl ") {
             continue;
         }
