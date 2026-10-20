@@ -1133,6 +1133,43 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_prompt_override_is_not_in_launch_help() {
+        let mut root = Cli::command();
+        let launch = root
+            .find_subcommand_mut("driver")
+            .and_then(|d| d.find_subcommand_mut("launch"))
+            .expect("driver launch exists");
+        for (form, rendered) in [
+            ("render_help", launch.render_help().to_string()),
+            ("render_long_help", launch.render_long_help().to_string()),
+        ] {
+            // POSITIVE CONTROL: a visible launch flag is rendered, so an absent
+            // `--prompt-file` is a hidden one and not an empty rendering.
+            assert!(rendered.contains("--cap-gap-rounds"), "{form}: {rendered}");
+            assert!(
+                !rendered.contains("prompt-file"),
+                "{form} advertises the test override (D-04):\n{rendered}"
+            );
+        }
+        // Hidden is not removed: the override still parses (the tests and the
+        // detached launcher's own command line depend on it).
+        assert!(driver_action(&["launch", "p", "r1", "--prompt-file", "/x/p.md"]).is_ok());
+        assert!(driver_action(&["launch", "p", "r1"]).is_ok());
+    }
+
+    #[test]
+    fn the_default_gap_cap_is_two() {
+        // D-14: the shipped launcher cap L. The DIRECTION lint warns against it, so
+        // a change here must change that rule too.
+        let DriverAction::Launch(args) = driver_action(&["launch", "p", "r1"]).expect("parses")
+        else {
+            panic!("not a launch");
+        };
+        assert_eq!(args.cap_gap_rounds, 2);
+        assert_eq!(args.prompt_file, None);
+    }
+
+    #[test]
     fn driver_auth_takes_setup_or_status_and_nothing_else() {
         assert!(matches!(
             driver_action(&["auth", "setup"]),

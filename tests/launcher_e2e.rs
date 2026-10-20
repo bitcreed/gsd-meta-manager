@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use gsd_meta_manager::driver::lock::{
     acquire_at, probe_at, read_holder_at, run_lock_path, LockProbe,
 };
+use gsd_meta_manager::launcher::prompt::{custom_version, MASTER_PROMPT};
 use gsd_meta_manager::state_reader::driver_frontmatter::{
     read_driver_run, DerivedStatus, RunStatus,
 };
@@ -93,6 +94,109 @@ fn a_launch_without_a_prompt_file_runs_the_embedded_versioned_prompt() {
         view.frontmatter.prompt_version.as_deref(),
         Some("driver-prompt/1.0.0")
     );
+}
+
+#[test]
+fn a_prompt_file_is_recorded_as_custom_with_the_hash_of_its_bytes() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let expected = custom_version(launcher_support::PROMPT_TEMPLATE.as_bytes());
+    assert!(
+        expected.starts_with("custom:") && expected.len() == "custom:".len() + 8,
+        "{expected}"
+    );
+    let line = launch_line(&fx.log(), 1);
+    assert!(line.ends_with(&format!("prompt={expected}")), "{line}");
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(
+        view.frontmatter.prompt_version.as_deref(),
+        Some(expected.as_str())
+    );
+}
+
+#[test]
+fn a_prompt_file_holding_the_embedded_bytes_is_still_custom() {
+    // PRMT-01 adjacency edge: the source, not the content, decides the version.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    fs::write(fx.prompt_file(), MASTER_PROMPT).unwrap();
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let line = launch_line(&fx.log(), 1);
+    let expected = custom_version(MASTER_PROMPT.as_bytes());
+    assert!(line.ends_with(&format!("prompt={expected}")), "{line}");
+    assert!(line.contains("prompt=custom:"), "{line}");
+    assert!(!line.contains("driver-prompt/"), "{line}");
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(
+        view.frontmatter.prompt_version.as_deref(),
+        Some(expected.as_str())
+    );
+}
+
+#[test]
+fn every_launch_records_the_version_of_the_prompt_it_actually_used() {
+    // Pitfall 1, and the invariant of the assumption-delta decision: launch 1 runs a
+    // prompt file, launch 2 (after a crash) runs the embedded prompt. The frontmatter
+    // holds the LATEST version; the log keeps both.
+    let fx = Fixture::new();
+    fx.write_scenario(WAITING_SCENARIO);
+    let mut first = fx.spawn_launch(&[]);
+    assert!(
+        wait_until(Duration::from_secs(10), || fx.scenario_started()),
+        "the launcher never reached its driver"
+    );
+    first.kill().expect("SIGKILL the launcher");
+    first.wait().expect("reap the launcher");
+    fx.kill_fixture_processes();
+
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let second = fx
+        .launch_command_embedded(launcher_support::ALIAS, RUN_ID, &["--foreground"])
+        .output()
+        .expect("the binary is built and spawnable");
+    assert!(second.status.success(), "{}", stderr(&second));
+
+    let log = fx.log();
+    let custom = custom_version(launcher_support::PROMPT_TEMPLATE.as_bytes());
+    assert!(
+        launch_line(&log, 1).ends_with(&format!("prompt={custom}")),
+        "{log}"
+    );
+    assert!(
+        launch_line(&log, 2).ends_with("prompt=driver-prompt/1.0.0"),
+        "{log}"
+    );
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(
+        view.frontmatter.prompt_version.as_deref(),
+        Some("driver-prompt/1.0.0")
+    );
+}
+
+#[test]
+fn an_empty_or_whitespace_prompt_file_is_refused_before_a_launch_is_logged() {
+    for body in ["", "  \n\t\n"] {
+        let fx = Fixture::new();
+        fx.write_scenario(WELL_MANNERED_SCENARIO);
+        fs::write(fx.prompt_file(), body).unwrap();
+
+        let out = fx.launch(&[]);
+        assert!(!out.status.success(), "{body:?} launched");
+        assert!(
+            stderr(&out).contains("the template is empty"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(!fx.log().contains("RUN | launch"), "{}", fx.log());
+        assert!(!fx.rec_dir().join("prompt.txt").exists(), "no driver ran");
+    }
 }
 
 #[test]
@@ -750,6 +854,40 @@ fn detached_launch_returns_once_the_child_holds_the_lock() {
         "the detached run never reached a terminal status:\n{}",
         fx.log()
     );
+}
+
+#[test]
+fn a_detached_launch_without_a_prompt_file_records_the_embedded_version() {
+    // The daemon is re-executed with the parent's own argv: with no prompt file the
+    // parent and the daemon both resolve the embedded asset and agree on its version.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let child = fx
+        .launch_command_embedded(launcher_support::ALIAS, RUN_ID, &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the command");
+    let out = finish(child, Duration::from_secs(15));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            matches!(
+                read_driver_run(&fx.run_dir).map(|v| v.derived),
+                Ok(DerivedStatus::AsWritten(RunStatus::Stopped))
+            )
+        }),
+        "the detached run never reached a terminal status:\n{}",
+        fx.log()
+    );
+    assert!(
+        launch_line(&fx.log(), 1).ends_with("prompt=driver-prompt/1.0.0"),
+        "{}",
+        fx.log()
+    );
+    assert!(fx
+        .recorded("prompt.txt")
+        .starts_with("<!-- driver-prompt/1.0.0"));
 }
 
 /// A detached `driver launch` (no `--foreground`), bounded so a launcher that
