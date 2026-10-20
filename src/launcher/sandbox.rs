@@ -18,7 +18,7 @@
 //!   credential files masked, each only when it exists (a mask over a missing
 //!   path aborts bwrap);
 //! * the per-run config directory read-write;
-//! * `--unshare-pid --die-with-parent`.
+//! * `--unshare-pid --new-session --die-with-parent`.
 //!
 //! 28-03 hardened this profile without changing a signature in this file:
 //!
@@ -194,6 +194,9 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         }
     }
     argv.push(os("--unshare-pid"));
+    // A new session drops the operator's controlling terminal, so the model cannot
+    // `ioctl(TIOCSTI)` keystrokes into the shell that launched it (WR-01).
+    argv.push(os("--new-session"));
     argv.push(os("--die-with-parent"));
     argv.push(os("--chdir"));
     argv.push(paths.project.as_os_str().to_owned());
@@ -439,6 +442,7 @@ mod tests {
             "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock",
             "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock",
             "--unshare-pid",
+            "--new-session",
             "--die-with-parent",
             "--chdir",
             "/work/proj",

@@ -66,6 +66,7 @@ echo "env_gh_token=${GH_TOKEN:-}"
 echo "env_anthropic_api_key=${ANTHROPIC_API_KEY:-}"
 echo "env_anthropic_auth_token=${ANTHROPIC_AUTH_TOKEN:-}"
 echo "env_git_terminal_prompt=${GIT_TERMINAL_PROMPT:-}"
+if (: < /dev/tty) 2>/dev/null; then echo "tty_open=OPEN"; else echo "tty_open=NONE"; fi
 echo "run_dir_touch=$(touch_state "$run_dir/sandbox-probe")"
 echo "lock_bytes=$(stat -c %s "$run_dir/launcher.lock")"
 echo "lock_read=$(read_rc "$run_dir/launcher.lock")"
@@ -409,6 +410,11 @@ fn sandbox_isolates_host_credentials_and_services() {
         assert_eq!(get(key), "", "{key} must be unset inside");
     }
     assert_eq!(get("env_git_terminal_prompt"), "0");
+    assert_eq!(
+        get("tty_open"),
+        "NONE",
+        "the controlling terminal must not be reachable inside (--new-session)"
+    );
     assert_eq!(get("run_dir_touch"), "EROFS");
     assert_eq!(get("lock_bytes"), "0");
     assert_eq!(get("direction_lock_bytes"), "0");
