@@ -1199,8 +1199,17 @@ mod tests {
     fn cr01_bind_private_never_touches_the_process_umask_and_binds_concurrently() {
         use std::os::unix::fs::PermissionsExt;
 
+        // Read the umask from /proc instead of `umask(2)`: swapping it here would itself
+        // race every other test thread in this process, the very bug CR-01 removed.
+        fn read_umask() -> String {
+            fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .find_map(|l| l.strip_prefix("Umask:").map(|v| v.trim().to_owned()))
+                .expect("Umask: line in /proc/self/status")
+        }
         let td = TempDir::new().unwrap();
-        let before = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
+        let before = read_umask();
         let dir = td.path().to_owned();
         let workers: Vec<_> = (0..8)
             .map(|i| {
@@ -1220,12 +1229,7 @@ mod tests {
         for w in workers {
             w.join().unwrap();
         }
-        let after = rustix::process::umask(before);
-        assert_eq!(
-            after.as_raw_mode(),
-            0o022,
-            "bind_private left the umask alone"
-        );
+        assert_eq!(read_umask(), before, "bind_private left the umask alone");
         let leftovers: Vec<_> = fs::read_dir(td.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
