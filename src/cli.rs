@@ -530,9 +530,12 @@ pub struct LaunchArgs {
     pub project: String,
     /// The run id: `.planning/meta-manager/drivers/<run-id>` must exist
     pub run_id: String,
-    /// The master prompt template; `{RUN_DIR}`, `{PROJECT_ROOT}` and `{MODE}` are filled in
-    #[arg(long)]
-    pub prompt_file: PathBuf,
+    /// Test and acceptance override: run this prompt file instead of the embedded
+    /// `driver-prompt/X.Y.Z`. The run records it as `custom:<sha8>` (the first 8 hex
+    /// of the SHA-256 of the file's bytes), never as the shipped version (D-04).
+    /// `{RUN_DIR}`, `{PROJECT_ROOT}` and `{MODE}` are filled in.
+    #[arg(long, hide = true)]
+    pub prompt_file: Option<PathBuf>,
     /// The driver's model
     #[arg(long, default_value = "opus")]
     pub model: String,

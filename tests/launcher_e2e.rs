@@ -50,6 +50,51 @@ fn a_dash_leading_template_reaches_the_driver_as_a_prompt_not_an_option() {
     assert!(prompt.contains("MODE=loop"), "{prompt}");
 }
 
+/// The `RUN | launch` line of launch number `n` in a run log.
+fn launch_line(log: &str, n: u32) -> String {
+    let marker = format!("RUN | launch | n={n} ");
+    log.lines()
+        .find(|l| l.contains(&marker))
+        .unwrap_or_else(|| panic!("no launch {n} line in:\n{log}"))
+        .to_owned()
+}
+
+#[test]
+fn a_launch_without_a_prompt_file_runs_the_embedded_versioned_prompt() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    // PRMT-01 / D-04 / D-10: a run is launched by its id alone.
+    let out = fx
+        .launch_command_embedded(launcher_support::ALIAS, RUN_ID, &["--foreground"])
+        .output()
+        .expect("the binary is built and spawnable");
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let prompt = fx.recorded("prompt.txt");
+    assert!(prompt.starts_with("<!-- driver-prompt/1.0.0"), "{prompt}");
+    let run_dir = fs::canonicalize(&fx.run_dir).unwrap();
+    let project = fs::canonicalize(fx.project()).unwrap();
+    assert!(
+        prompt.contains(&run_dir.display().to_string()),
+        "the rendered RUN_DIR"
+    );
+    assert!(
+        prompt.contains(&project.display().to_string()),
+        "the rendered PROJECT_ROOT"
+    );
+    assert!(!prompt.contains("{RUN_DIR}"), "placeholders are filled");
+
+    let log = fx.log();
+    let line = launch_line(&log, 1);
+    assert!(line.ends_with("prompt=driver-prompt/1.0.0"), "{line}");
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(
+        view.frontmatter.prompt_version.as_deref(),
+        Some("driver-prompt/1.0.0")
+    );
+}
+
 #[test]
 fn an_empty_or_oversized_template_is_refused_before_anything_is_written() {
     for (body, needle) in [

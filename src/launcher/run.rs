@@ -67,6 +67,7 @@ use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::host::{decide, detect, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
+use super::prompt::{self, ResolvedPrompt};
 use super::push;
 use super::sandbox::{
     bwrap_argv, child_env, claude_argv, render_prompt, scope_unit_name, systemd_run_argv,
@@ -159,8 +160,9 @@ pub struct LaunchOptions {
     /// The registry alias the project was resolved from.
     pub alias: String,
     pub run_id: String,
-    /// The master prompt template (`--prompt-file`, D-03).
-    pub prompt_file: PathBuf,
+    /// The hidden `--prompt-file` override (D-04). `None` runs the embedded
+    /// `driver-prompt/X.Y.Z`; `Some` runs that file and records `custom:<sha8>`.
+    pub prompt_file: Option<PathBuf>,
     pub model: String,
     pub loop_mode: LoopMode,
     pub max_budget_usd: f64,
@@ -214,27 +216,45 @@ fn check_limits(opts: &LaunchOptions) -> Result<(), LauncherError> {
     Ok(())
 }
 
+/// The prompt this launch runs (D-04): the embedded `driver-prompt/X.Y.Z` when no
+/// `--prompt-file` was given, otherwise that file's text under a `custom:<sha8>`
+/// version. The source, not the content, decides the version: a file holding the
+/// embedded asset's exact bytes is still `custom:`.
+///
+/// The file is read here, in the launching process (never only in a daemon).
+fn resolve_prompt(opts: &LaunchOptions) -> Result<(ResolvedPrompt, String), LauncherError> {
+    match &opts.prompt_file {
+        None => {
+            let resolved = prompt::embedded();
+            let label = format!("embedded prompt {}", resolved.version);
+            Ok((resolved, label))
+        }
+        Some(path) => {
+            let label = format!("prompt file {}", path.display());
+            let text = fs::read_to_string(path).map_err(|e| io_error(&label, e))?;
+            Ok((prompt::custom(text), label))
+        }
+    }
+}
+
 /// Refuse an empty or oversized master prompt before anything is written (WR-03):
 /// an empty one makes `claude -p` wait for stdin that is `/dev/null`, and one over
 /// [`MAX_PROMPT_BYTES`] makes `execve` fail with `E2BIG`, both after `RUN | launch`
-/// is on the log.
+/// is on the log. `source` names where the text came from in the refusal.
 fn check_prompt(
     template: &str,
-    prompt_file: &Path,
+    source: &str,
     run_dir: &Path,
     project: &Path,
     mode: &str,
 ) -> Result<(), LauncherError> {
     if template.trim().is_empty() {
-        return Err(io_error(
-            &format!("prompt file {}", prompt_file.display()),
-            "the template is empty",
-        ));
+        return Err(io_error(source, "the template is empty"));
     }
     let rendered = render_prompt(template, run_dir, project, mode).len();
     if rendered > MAX_PROMPT_BYTES {
         return Err(io_error(
-            &format!("prompt file {}", prompt_file.display()),
+            source,
             format!(
                 "the rendered prompt is {rendered} bytes, over the {MAX_PROMPT_BYTES}-byte \
                  limit of one command-line argument"
@@ -317,6 +337,9 @@ impl Session {
 struct LaunchContext {
     opts: LaunchOptions,
     template: String,
+    /// The version every launch of this process records (`driver-prompt/X.Y.Z` or
+    /// `custom:<sha8>`, D-03).
+    prompt_version: String,
     token: super::auth::LaunchToken,
     project: PathBuf,
     run_dir: PathBuf,
@@ -494,11 +517,10 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     let token = resolve_launch_token(Utc::now()).map_err(|e| LauncherError::Auth {
         detail: e.to_string(),
     })?;
-    let template = fs::read_to_string(&opts.prompt_file)
-        .map_err(|e| io_error(&format!("prompt file {}", opts.prompt_file.display()), e))?;
+    let (resolved, source) = resolve_prompt(&opts)?;
     check_prompt(
-        &template,
-        &opts.prompt_file,
+        &resolved.template,
+        &source,
         &run_dir,
         &project,
         opts.loop_mode.as_str(),
@@ -584,7 +606,8 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
 
     let ctx = LaunchContext {
         opts,
-        template,
+        template: resolved.template.into_owned(),
+        prompt_version: resolved.version,
         token,
         project,
         run_dir,
@@ -738,7 +761,7 @@ fn run_one_launch(
         scope_unit,
         sandbox: Some(ctx.posture.as_str().to_owned()),
         sandbox_missing: ctx.posture.missing().to_vec(),
-        prompt_version: None,
+        prompt_version: Some(ctx.prompt_version.clone()),
     })?;
 
     let budget = Budget {
@@ -1076,8 +1099,10 @@ pub fn launch_argv(opts: &LaunchOptions, config: Option<&Path>) -> Vec<OsString>
     argv.extend(["driver", "launch"].map(OsString::from));
     argv.push(opts.project.as_os_str().to_owned());
     argv.push(OsString::from(&opts.run_id));
-    argv.push("--prompt-file".into());
-    argv.push(opts.prompt_file.as_os_str().to_owned());
+    if let Some(prompt_file) = &opts.prompt_file {
+        argv.push("--prompt-file".into());
+        argv.push(prompt_file.as_os_str().to_owned());
+    }
     argv.extend(["--model".into(), OsString::from(&opts.model)]);
     argv.extend(["--loop-mode".into(), opts.loop_mode.as_str().into()]);
     argv.extend([
@@ -1153,21 +1178,34 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
     let project = fs::canonicalize(&opts.project)
         .map_err(|e| io_error(&format!("project {}", opts.project.display()), e))?;
     check_limits(opts)?;
-    let prompt_file = fs::canonicalize(&opts.prompt_file)
-        .map_err(|e| io_error(&format!("prompt file {}", opts.prompt_file.display()), e))?;
-    if !prompt_file.is_file() {
-        return Err(io_error(
-            &format!("prompt file {}", prompt_file.display()),
-            "not a regular file",
-        ));
-    }
-    let template = fs::read_to_string(&prompt_file)
-        .map_err(|e| io_error(&format!("prompt file {}", prompt_file.display()), e))?;
+    // The daemon's working directory is `/`, so a prompt file is made absolute and
+    // checked here, in the caller's terminal; the daemon re-reads the same canonical
+    // path and so records the same version (T-29-22). The embedded default has no file.
+    let prompt_file = match &opts.prompt_file {
+        None => None,
+        Some(given) => {
+            let canonical = fs::canonicalize(given)
+                .map_err(|e| io_error(&format!("prompt file {}", given.display()), e))?;
+            if !canonical.is_file() {
+                return Err(io_error(
+                    &format!("prompt file {}", canonical.display()),
+                    "not a regular file",
+                ));
+            }
+            Some(canonical)
+        }
+    };
+    let absolute = LaunchOptions {
+        project,
+        prompt_file,
+        ..opts.clone()
+    };
+    let (resolved, source) = resolve_prompt(&absolute)?;
     check_prompt(
-        &template,
-        &prompt_file,
+        &resolved.template,
+        &source,
         &run_dir,
-        &project,
+        &absolute.project,
         opts.loop_mode.as_str(),
     )?;
     let config = config
@@ -1180,7 +1218,7 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
     decide(&detect(), opts.unsandboxed)?;
     check_wall_clock_budget(&run_dir, &opts.limits)?;
 
-    let log_path = detached_log_path(&project, &run_id)?;
+    let log_path = detached_log_path(&absolute.project, &run_id)?;
     let state_dir = log_path.parent().ok_or_else(|| LauncherError::Io {
         detail: "the launcher log has no directory".to_owned(),
     })?;
@@ -1197,11 +1235,6 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
         .map_err(|e| io_error(&format!("open {}", log_path.display()), e))?;
     let offset = log.metadata().map(|m| m.len()).unwrap_or(0);
 
-    let absolute = LaunchOptions {
-        project,
-        prompt_file,
-        ..opts.clone()
-    };
     let argv = launch_argv(&absolute, config.as_deref());
     let mut child = respawn_detached(&argv, log).map_err(|e| LauncherError::Spawn {
         detail: format!("the detached launcher: {e}"),
@@ -1560,7 +1593,7 @@ mod tests {
             project: PathBuf::from("/work/proj"),
             alias: "p".to_owned(),
             run_id: "r28".to_owned(),
-            prompt_file: PathBuf::from("/work/prompt.md"),
+            prompt_file: Some(PathBuf::from("/work/prompt.md")),
             model: "haiku".to_owned(),
             loop_mode: LoopMode::FreshPerItem,
             max_budget_usd: 1.5,
@@ -1612,6 +1645,36 @@ mod tests {
     }
 
     #[test]
+    fn launch_argv_leaves_the_prompt_file_off_when_none_was_given() {
+        let mut opts = options();
+        opts.prompt_file = None;
+        let argv = words(&launch_argv(&opts, None));
+        assert!(!argv.iter().any(|a| a == "--prompt-file"), "{argv:?}");
+        assert_eq!(&argv[..4], ["driver", "launch", "/work/proj", "r28"]);
+        assert_eq!(argv[4], "--model", "{argv:?}");
+    }
+
+    #[test]
+    fn launch_argv_without_a_prompt_file_round_trips_through_the_real_parser() {
+        use crate::cli::{Cli, Commands, DriverAction};
+        use clap::Parser;
+
+        let mut opts = options();
+        opts.prompt_file = None;
+        let mut argv = vec![OsString::from("gsd-meta-manager")];
+        argv.extend(launch_argv(&opts, None));
+        let cli = Cli::try_parse_from(argv).expect("the daemon's own command line parses");
+        let Some(Commands::Driver {
+            action: DriverAction::Launch(args),
+        }) = cli.command
+        else {
+            panic!("not a driver launch");
+        };
+        assert_eq!(args.prompt_file, None);
+        assert!(args.foreground && args.daemon_child);
+    }
+
+    #[test]
     fn launch_argv_puts_the_config_first_and_omits_unset_caps() {
         let mut opts = options();
         opts.limits = CapLimits::default();
@@ -1637,6 +1700,7 @@ mod tests {
         };
         assert_eq!(args.project, "/work/proj");
         assert_eq!(args.run_id, "r28");
+        assert_eq!(args.prompt_file, Some(PathBuf::from("/work/prompt.md")));
         assert_eq!(args.loop_mode, DriverLoopMode::FreshPerItem);
         assert_eq!(args.cap_dispatches, 3);
         assert_eq!(args.cap_minutes, 12.5);

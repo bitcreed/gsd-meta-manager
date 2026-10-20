@@ -366,6 +366,21 @@ impl Fixture {
         cmd
     }
 
+    /// `driver launch` with NO `--prompt-file`: the embedded prompt (D-04). Same
+    /// hermetic environment as [`launch_command_raw`](Self::launch_command_raw);
+    /// `--foreground` is left to the caller, as there.
+    pub fn launch_command_embedded(
+        &self,
+        target: &str,
+        run_id: &str,
+        extra_args: &[&str],
+    ) -> Command {
+        let mut cmd = self.hermetic_command();
+        cmd.args(["driver", "launch", target, run_id])
+            .args(extra_args);
+        cmd
+    }
+
     /// Run `driver launch` for [`RUN_ID`] to completion.
     pub fn launch(&self, extra_args: &[&str]) -> Output {
         self.launch_command(RUN_ID, extra_args)
