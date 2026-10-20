@@ -355,6 +355,25 @@ mod tests {
     }
 
     #[test]
+    fn the_direction_template_promises_no_key_the_prompt_never_reads() {
+        // WR-05: the template once shipped `- isolation: worktree` ("passed through to
+        // workers") while the prompt hard-codes the nested-dispatch isolation and never
+        // reads the key, so a human's `isolation: none` was silently ignored.
+        assert!(!DIRECTION_TEMPLATE.contains("- isolation:"));
+        for key in [
+            "control",
+            "worker-model",
+            "run-budget",
+            "human-verification",
+        ] {
+            assert!(
+                DIRECTION_TEMPLATE.contains(&format!("- {key}:")) && MASTER_PROMPT.contains(key),
+                "the template's `{key}` knob must be one the prompt reads"
+            );
+        }
+    }
+
+    #[test]
     fn the_direction_template_is_a_sane_body_with_one_example_item() {
         assert!(body_sane(DIRECTION_TEMPLATE));
         let info = parse_direction(DIRECTION_TEMPLATE);

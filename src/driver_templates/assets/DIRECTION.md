@@ -19,8 +19,6 @@ Fill in every {...} placeholder (or delete the line), then run `gsd-meta-manager
 - worker-model: sonnet
   <!-- model passed to worker subagents; the driver itself is launched with Opus -->
 - run-budget: dispatches=20, hours=4
-- isolation: worktree
-  <!-- worktree | none. Passed through to workers for nested GSD dispatches that require it. -->
 
 ### Standing rules
 
