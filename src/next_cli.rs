@@ -27,8 +27,10 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::driver::router::{self, Decision};
 use gsd_meta_manager::error::DriveError;
+use gsd_meta_manager::launch_target::resolve_launch_target;
 use gsd_meta_manager::state_reader::{parse_project_state, ProjectState};
 use gsd_meta_manager::text::{render_for_terminal, Untrusted};
 use serde_json::{json, Value};
@@ -58,25 +60,58 @@ fn out_line(text: &str) {
 }
 
 /// Resolve the project argument to a root that contains `.planning/`.
-fn resolve_root(target: &str) -> Result<PathBuf, String> {
+///
+/// An existing directory with a `.planning/` subdirectory is used as it is: that
+/// is the sandbox case, where there is no registry to consult. Anything else is
+/// looked up as a registered alias (or a path inside a registered root) through
+/// the same read-only resolver the launcher uses. Neither branch creates a file.
+fn resolve_root(target: &str, config: Option<&Path>) -> Result<PathBuf, String> {
+    let shown = || render_for_terminal(target);
     let path = Path::new(target);
     if path.join(".planning").is_dir() {
-        return path.canonicalize().map_err(|e| {
-            format!(
-                "cannot resolve {}: {e}",
-                render_for_terminal(&path.display().to_string())
-            )
-        });
+        return path
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve {}: {e}", shown()));
     }
-    Err(format!(
-        "{} is not a directory containing .planning/",
-        render_for_terminal(target)
-    ))
+    let config_path = config.map_or_else(Config::default_path, Path::to_path_buf);
+    let config = load_config(&config_path).map_err(|e| format!("{e:#}"))?;
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("cannot read the working directory: {e}"))?;
+    let alias = resolve_launch_target(&config, target, &cwd).map_err(|_| {
+        format!(
+            "{} is neither a directory containing .planning/ nor a registered project",
+            shown()
+        )
+    })?;
+    let root = config
+        .projects
+        .get(&alias)
+        .map(|project| project.path.clone())
+        .ok_or_else(|| format!("project {} is not in the registry", shown()))?;
+    if !root.join(".planning").is_dir() {
+        return Err(format!("{} has no .planning/ directory", shown()));
+    }
+    Ok(root.canonicalize().unwrap_or(root))
 }
 
 /// The first current-milestone roadmap phase whose verification is not goal-met.
-fn default_target(_state: &ProjectState) -> Option<String> {
-    None
+///
+/// Goal-met is [`router::is_goal_met`], the router's own predicate, and NOT
+/// `phase_is_done`: that counts `Executed` as done, so a phase stuck at
+/// `gaps_found` would be skipped and never reported. A phase with no disk
+/// inference at all is not goal-met either. Roadmap order, no re-sorting.
+fn default_target(state: &ProjectState) -> Option<String> {
+    state
+        .roadmap_entries()
+        .into_iter()
+        .map(|(phase, _planned)| phase)
+        .filter(|phase| state.in_current_milestone(&phase.number))
+        .find(|phase| {
+            !state
+                .disk_status_for(&phase.number)
+                .is_some_and(router::is_goal_met)
+        })
+        .map(|phase| phase.number.clone())
 }
 
 /// The D-20 object. `decision: None` is the "nothing left to route" answer.
@@ -84,8 +119,7 @@ fn default_target(_state: &ProjectState) -> Option<String> {
 /// One arm per `Decision` variant and no wildcard, following the router's own
 /// discipline: a new arm is a compile error here, not a silent fallthrough.
 fn hint_json(root: &Path, target: Option<&str>, decision: Option<&Decision>) -> Value {
-    let (kind, command, reason, detail): (&str, Option<&str>, &str, Option<&str>) = match decision
-    {
+    let (kind, command, reason, detail): (&str, Option<&str>, &str, Option<&str>) = match decision {
         Some(Decision::Run { command, rationale }) => {
             ("run", Some(command.as_str()), rationale, None)
         }
@@ -111,7 +145,7 @@ fn hint_json(root: &Path, target: Option<&str>, decision: Option<&Decision>) -> 
 }
 
 /// Run `next` and return the process exit code.
-pub fn run(project: &str, target_phase: Option<&str>, _config: Option<PathBuf>) -> i32 {
+pub fn run(project: &str, target_phase: Option<&str>, config: Option<PathBuf>) -> i32 {
     if let Some(target) = target_phase {
         if !gsd_meta_manager::journal::is_plain_path_component(target) {
             let refusal = DriveError::TargetPhaseInvalid {
@@ -121,20 +155,21 @@ pub fn run(project: &str, target_phase: Option<&str>, _config: Option<PathBuf>) 
             return 1;
         }
     }
-    let root = match resolve_root(project) {
+    let root = match resolve_root(project, config.as_deref()) {
         Ok(root) => root,
         Err(message) => {
             err_line(&format!("next: {message}"));
             return 1;
         }
     };
-    let Some(target) = target_phase else {
-        err_line("next: --target-phase is required");
-        return 1;
-    };
     let state = parse_project_state(&root.join(".planning"));
-    let decision = router::decide(&state, target);
-    out_line(&hint_json(&root, Some(target), Some(&decision)).to_string());
+    let target = target_phase
+        .map(str::to_owned)
+        .or_else(|| default_target(&state));
+    // No target left (every current-milestone phase is goal-met, or the roadmap
+    // names none): an honest "nothing to route", not an error (D-20).
+    let decision = target.as_deref().map(|phase| router::decide(&state, phase));
+    out_line(&hint_json(&root, target.as_deref(), decision.as_ref()).to_string());
     0
 }
 
@@ -170,7 +205,10 @@ mod tests {
         );
         for (phase, status) in verdicts {
             let dir = planning.join(format!("phases/0{phase}-p{phase}"));
-            write(&dir.join(format!("0{phase}-01-PLAN.md")), "---\nphase: x\n---\n");
+            write(
+                &dir.join(format!("0{phase}-01-PLAN.md")),
+                "---\nphase: x\n---\n",
+            );
             write(
                 &dir.join(format!("0{phase}-01-SUMMARY.md")),
                 "---\nstatus: complete\n---\n",
@@ -194,27 +232,27 @@ mod tests {
     }
 
     #[test]
-    fn default_target_skips_a_passed_phase_and_stops_at_a_gaps_found_one() {
+    fn the_default_target_skips_a_passed_phase_and_stops_at_a_gaps_found_one() {
         let dir = banded_project(&[("2", "passed"), ("3", "gaps_found")], &[]);
         assert_eq!(target_of(&dir).as_deref(), Some("3"));
     }
 
     #[test]
-    fn default_target_does_not_skip_a_phase_that_is_executed_but_not_verified() {
+    fn the_default_target_does_not_skip_a_phase_that_is_executed_but_not_verified() {
         // `phase_is_done` counts Executed as done; goal-met does not.
         let dir = banded_project(&[("2", "gaps_found")], &["3"]);
         assert_eq!(target_of(&dir).as_deref(), Some("2"));
     }
 
     #[test]
-    fn default_target_is_none_when_every_current_milestone_phase_passed() {
+    fn the_default_target_is_none_when_every_current_milestone_phase_passed() {
         // Phase 1 is NOT passed, but it is outside the current milestone.
         let dir = banded_project(&[("2", "passed"), ("3", "passed")], &["1"]);
         assert_eq!(target_of(&dir), None);
     }
 
     #[test]
-    fn default_target_counts_a_phase_with_no_artifacts_as_unfinished() {
+    fn the_default_target_counts_a_phase_with_no_artifacts_as_unfinished() {
         let dir = banded_project(&[("2", "passed")], &[]);
         assert_eq!(target_of(&dir).as_deref(), Some("3"));
     }

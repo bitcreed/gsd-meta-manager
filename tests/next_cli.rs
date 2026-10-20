@@ -89,14 +89,20 @@ fn json(output: &Output) -> Value {
         1,
         "exactly one line on stdout: {stdout:?}"
     );
-    serde_json::from_str(stdout.trim_end()).unwrap_or_else(|e| panic!("stdout is JSON: {e}: {stdout}"))
+    serde_json::from_str(stdout.trim_end())
+        .unwrap_or_else(|e| panic!("stdout is JSON: {e}: {stdout}"))
 }
 
 #[test]
 fn a_discussed_phase_is_routed_to_planning_as_an_advisory_run() {
     let dir = project(&[("1", "Alpha")]);
     discussed(dir.path(), "1", "alpha");
-    let out = next(&[dir.path().to_str().unwrap(), "--target-phase", "1", "--json"]);
+    let out = next(&[
+        dir.path().to_str().unwrap(),
+        "--target-phase",
+        "1",
+        "--json",
+    ]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let hint = json(&out);
     assert_eq!(hint["advisory"], Value::Bool(true));
@@ -141,7 +147,11 @@ fn refused(output: &Output) {
     assert!(output.stdout.is_empty(), "nothing on stdout: {output:?}");
     let err = stderr(output);
     assert!(err.starts_with("next: "), "{err:?}");
-    assert_eq!(err.trim_end().lines().count(), 1, "one stderr line: {err:?}");
+    assert_eq!(
+        err.trim_end().lines().count(),
+        1,
+        "one stderr line: {err:?}"
+    );
 }
 
 #[test]
@@ -263,7 +273,10 @@ fn without_json_clap_exits_two() {
 /// (path, size, mtime) of every file under `dir`, sorted.
 fn snapshot(dir: &Path) -> Vec<(String, u64, std::time::SystemTime)> {
     fn walk(dir: &Path, out: &mut Vec<(String, u64, std::time::SystemTime)>) {
-        let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap())
+            .collect();
         entries.sort_by_key(|e| e.path());
         for entry in entries {
             let meta = entry.metadata().unwrap();
@@ -338,8 +351,16 @@ fn artifact_prose_never_reaches_the_output() {
         &phase_dir(dir.path(), "1", "alpha").join("1-VERIFICATION.md"),
         &format!("---\nstatus: {marker}\n---\n\n{marker}\n"),
     );
-    write(&phase_dir(dir.path(), "1", "alpha").join("1-01-PLAN.md"), marker);
-    let out = next(&[dir.path().to_str().unwrap(), "--target-phase", "1", "--json"]);
+    write(
+        &phase_dir(dir.path(), "1", "alpha").join("1-01-PLAN.md"),
+        marker,
+    );
+    let out = next(&[
+        dir.path().to_str().unwrap(),
+        "--target-phase",
+        "1",
+        "--json",
+    ]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains(marker), "artifact text leaked: {stdout}");
@@ -353,7 +374,10 @@ fn artifact_prose_never_reaches_the_output() {
         .chain(["goal-met", "no-rule", "no-target"])
         .collect();
     let reason = hint["reason"].as_str().expect("reason is a string");
-    assert!(reasons.contains(&reason), "{reason:?} is not a router token");
+    assert!(
+        reasons.contains(&reason),
+        "{reason:?} is not a router token"
+    );
     assert!(
         ["run", "park", "goal_met", "no_rule", "none"]
             .contains(&hint["decision"].as_str().unwrap()),
