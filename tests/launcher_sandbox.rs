@@ -103,10 +103,14 @@ fn golden_bwrap_argv() {
         "--ro-bind",
         "/dev/null",
         "/home/u/.netrc",
-        // project rw, run dir ro, the two lock masks
+        // project rw
         "--bind",
         "/work/proj",
         "/work/proj",
+        // drivers dir hidden: siblings vanish, own run re-bound below
+        "--tmpfs",
+        "/work/proj/.planning/meta-manager/drivers",
+        // run dir ro, the two lock masks
         "--ro-bind",
         RUN,
         RUN,

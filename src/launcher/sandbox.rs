@@ -10,10 +10,11 @@
 //! L1 step 0:
 //!
 //! * host root read-only, a private `/dev`, `/proc` and `/tmp`;
-//! * the project checkout read-write (the driver commits), the run directory
-//!   read-only on top of it, and the two lock files inside it masked with
-//!   `/dev/null` (Phase 27 hand-off 2: a sandboxed process must not take either
-//!   `flock`);
+//! * the project checkout read-write (the driver commits), every sibling run
+//!   directory hidden by an empty tmpfs over the drivers dir, the run directory
+//!   re-bound read-only on top of that, and the two lock files inside it masked
+//!   with `/dev/null` (Phase 27 hand-off 2: a sandboxed process must not take
+//!   either `flock`);
 //! * the host's credential directories replaced by an empty tmpfs and the
 //!   credential files masked, each only when it exists (a mask over a missing
 //!   path aborts bwrap);
@@ -34,6 +35,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+
+use crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL;
 
 /// The first word of every scope unit name (D-08).
 pub const SCOPE_PREFIX: &str = "gsdmm-driver";
@@ -186,7 +189,8 @@ pub fn scope_unit_name(run_id: &str, hash8: &str, launch_n: u32) -> String {
 pub struct LaunchPaths {
     /// The driven checkout: read-write inside.
     pub project: PathBuf,
-    /// `<project>/.planning/meta-manager/drivers/<run-id>`: read-only inside.
+    /// `<project>/.planning/meta-manager/drivers/<run-id>`: read-only inside, its
+    /// siblings hidden.
     pub run_dir: PathBuf,
     /// The per-run `CLAUDE_CONFIG_DIR`: read-write inside.
     pub config_dir: PathBuf,
@@ -250,6 +254,10 @@ fn os(s: &str) -> OsString {
 
 /// The `bwrap` command line that runs `command` in the sandbox, in a fixed
 /// order (the order is the contract: a later bind covers an earlier one).
+///
+/// The drivers dir is covered by an empty tmpfs right after the project bind, so
+/// sibling runs are hidden; the run's own ro-bind and lock masks follow it and are
+/// re-established on top.
 pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
     let paths = &spec.paths;
     let mut argv: Vec<OsString> = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc"]
@@ -272,6 +280,17 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         argv.push(path.as_os_str().to_owned());
     };
     bind(&mut argv, "--bind", &paths.project);
+    // Sibling runs vanish: an empty tmpfs over the drivers dir, then this run's own
+    // directory is re-bound on top. The tmpfs must follow the project bind (which
+    // would otherwise re-mount the host drivers dir over it) and precede the run-dir
+    // bind and lock masks (which a later tmpfs would hide). Only emitted when the run
+    // dir sits directly under the project's drivers dir; `validate_run_dir` guarantees
+    // that in production.
+    let drivers = paths.project.join(DRIVER_RUNS_REL);
+    if paths.run_dir.parent() == Some(drivers.as_path()) {
+        argv.push(os("--tmpfs"));
+        argv.push(drivers.into_os_string());
+    }
     bind(&mut argv, "--ro-bind", &paths.run_dir);
     for lock in ["launcher.lock", "DIRECTION.lock"] {
         argv.push(os("--ro-bind"));
@@ -572,6 +591,8 @@ mod tests {
             "--bind",
             "/work/proj",
             "/work/proj",
+            "--tmpfs",
+            "/work/proj/.planning/meta-manager/drivers",
             "--ro-bind",
             run,
             run,
@@ -608,6 +629,105 @@ mod tests {
         .map(|s| (*s).to_owned())
         .collect();
         assert_eq!(argv, expected);
+    }
+
+    /// The index of the adjacent `flag, path` pair (or `flag, path, path` bind).
+    fn pos(argv: &[String], flag: &str, path: &str) -> usize {
+        let hits: Vec<usize> = (0..argv.len().saturating_sub(1))
+            .filter(|&i| argv[i] == flag && argv[i + 1] == path)
+            .collect();
+        assert_eq!(hits.len(), 1, "{flag} {path} must appear exactly once");
+        hits[0]
+    }
+
+    const DRIVERS: &str = "/work/proj/.planning/meta-manager/drivers";
+
+    #[test]
+    fn sibling_runs_are_hidden_by_a_tmpfs_before_the_run_dir_is_re_bound() {
+        let argv = strings(&bwrap_argv(&spec(), &[OsString::from("claude")]));
+        let run = format!("{DRIVERS}/r1");
+        let project = pos(&argv, "--bind", "/work/proj");
+        let tmpfs = pos(&argv, "--tmpfs", DRIVERS);
+        let run_bind = pos(&argv, "--ro-bind", &run);
+        let lock = argv
+            .iter()
+            .position(|a| a == &format!("{run}/launcher.lock"))
+            .unwrap();
+        let direction = argv
+            .iter()
+            .position(|a| a == &format!("{run}/DIRECTION.lock"))
+            .unwrap();
+        let cfg = pos(&argv, "--bind", "/data/driver/ab12cd34/r1/claude-config");
+        let settings = pos(
+            &argv,
+            "--ro-bind",
+            "/data/driver/ab12cd34/r1/claude-config/settings.json",
+        );
+        let bin = pos(
+            &argv,
+            "--ro-bind",
+            "/data/driver/ab12cd34/r1/claude-config/bin",
+        );
+        let runtime = pos(&argv, "--tmpfs", "/run/user/1000");
+        let sock = pos(
+            &argv,
+            "--bind",
+            "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock",
+        );
+        assert_eq!(
+            tmpfs,
+            project + 3,
+            "the tmpfs follows the project bind triple"
+        );
+        assert_eq!(run_bind, tmpfs + 2, "the run-dir ro-bind follows the tmpfs");
+        assert!(run_bind < lock && lock < direction && direction < cfg);
+        assert!(cfg < settings && settings < bin && bin < runtime && runtime < sock);
+    }
+
+    #[test]
+    fn a_config_dir_under_the_drivers_dir_is_bound_after_the_hiding_tmpfs() {
+        let mut s = spec();
+        let cfg = format!("{DRIVERS}/cfg");
+        s.paths.config_dir = PathBuf::from(&cfg);
+        let argv = strings(&bwrap_argv(&s, &[OsString::from("claude")]));
+        let tmpfs = pos(&argv, "--tmpfs", DRIVERS);
+        assert!(pos(&argv, "--bind", &cfg) > tmpfs);
+        assert!(pos(&argv, "--ro-bind", &format!("{cfg}/settings.json")) > tmpfs);
+        assert!(pos(&argv, "--ro-bind", &format!("{cfg}/bin")) > tmpfs);
+    }
+
+    #[test]
+    fn no_drivers_tmpfs_unless_the_run_dir_sits_directly_under_the_projects_drivers_dir() {
+        for run in [
+            "/work/proj/r1",
+            "/other/.planning/meta-manager/drivers/r1",
+            "/work/proj/.planning/meta-manager/drivers/a/r1",
+        ] {
+            let mut s = spec();
+            s.paths.run_dir = PathBuf::from(run);
+            let argv = strings(&bwrap_argv(&s, &[OsString::from("claude")]));
+            for i in 0..argv.len() - 1 {
+                if argv[i] == "--tmpfs" {
+                    assert!(
+                        !argv[i + 1].ends_with(".planning/meta-manager/drivers")
+                            && argv[i + 1] != "/work/proj",
+                        "{run}: unexpected tmpfs {}",
+                        argv[i + 1]
+                    );
+                }
+            }
+            // Exactly the pre-change profile: the golden minus the pair.
+            let base = strings(&bwrap_argv(&spec(), &[OsString::from("claude")]));
+            let mut want: Vec<String> = base.clone();
+            let t = pos(&base, "--tmpfs", DRIVERS);
+            want.drain(t..t + 2);
+            for e in &mut want {
+                if e.starts_with("/work/proj/.planning/meta-manager/drivers/r1") {
+                    *e = e.replacen("/work/proj/.planning/meta-manager/drivers/r1", run, 1);
+                }
+            }
+            assert_eq!(argv, want, "{run}");
+        }
     }
 
     #[test]
