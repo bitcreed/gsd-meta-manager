@@ -407,8 +407,11 @@ pa_selftest() {
   # the ledger worst case of the case table stays within the phase ceiling: h1 2x0.40 + h2 2x0.40 + h3 3x0.15 + h4 0.20 + o1 2x10
   want "worst case" "$(awk 'BEGIN { printf "%.2f", 2 * 0.40 + 2 * 0.40 + 3 * 0.15 + 0.20 + 2 * 10 }')" "22.25"
   [ -f "$REPO/$H4_FIXTURE_REL" ] || st_fail "the h4 prompt fixture $H4_FIXTURE_REL is missing"
-  [ ! -d "$S3" ] || [ -f "$S3/templates/DIRECTION.run1.md" ] && [ -f "$S3/tools/drift.py" ] && [ -f "$S3/experiment/setup-scratch.sh" ] \
-    || st_fail "a spike-003 file the o1 case needs is missing"
+  # skip when the spike directory is absent; `a || b && c && d || e` parsed as `((a || b) && c && d) || e`, which failed there
+  if [ -d "$S3" ]; then
+    [ -f "$S3/templates/DIRECTION.run1.md" ] && [ -f "$S3/tools/drift.py" ] && [ -f "$S3/experiment/setup-scratch.sh" ] \
+      || st_fail "a spike-003 file the o1 case needs is missing"
+  fi
   rc=0; ( mode_config bogus ) || rc=$?; want "mode bogus rc" "$rc" 2
   want "the maximum ceiling" "$MAX_CEILING" 25
   # --- ceiling arithmetic, including the killed-launch charge (D-25)
