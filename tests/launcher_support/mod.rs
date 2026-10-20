@@ -43,7 +43,9 @@ pub const ALIAS: &str = "p28";
 /// The stored token every fixture writes.
 pub const TOKEN: &str = "tok-test-0123456789abcdef";
 
-/// The human-owned DIRECTION body: two items.
+/// The human-owned DIRECTION body: two items. Lint-clean (Phase 29, Pitfall 12): the
+/// launch preflight runs `driver_templates::lint::lint_direction` on it, so every
+/// item carries intent, done-when, a dispatch budget, `after` and `hold`.
 pub const BODY: &str = "# Driver direction: launcher test
 
 ## Direction
@@ -56,11 +58,18 @@ pub const BODY: &str = "# Driver direction: launcher test
 ### I-01 First slice
 
 - intent: Phase 1 is planned, executed and verified.
+- done-when: Phase 1 has a passing VERIFICATION.md.
 - budget: dispatches=3
+- after: none
+- hold: false
 
 ### I-02 Second slice
 
 - intent: Phase 2 is planned, executed and verified.
+- done-when: Phase 2 has a passing VERIFICATION.md.
+- budget: dispatches=3
+- after: none
+- hold: false
 ";
 
 /// The master prompt template the fixture's `--prompt-file` holds.

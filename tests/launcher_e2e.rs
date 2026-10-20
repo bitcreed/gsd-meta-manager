@@ -24,7 +24,7 @@ use gsd_meta_manager::state_reader::driver_frontmatter::{
     read_driver_run, DerivedStatus, RunStatus,
 };
 use launcher_support::{
-    wait_until, Fixture, RUN_ID, TOKEN, WAITING_SCENARIO, WELL_MANNERED_SCENARIO,
+    wait_until, Fixture, BODY, RUN_ID, TOKEN, WAITING_SCENARIO, WELL_MANNERED_SCENARIO,
 };
 
 fn stderr(out: &std::process::Output) -> String {
@@ -197,6 +197,147 @@ fn an_empty_or_whitespace_prompt_file_is_refused_before_a_launch_is_logged() {
         assert!(!fx.log().contains("RUN | launch"), "{}", fx.log());
         assert!(!fx.rec_dir().join("prompt.txt").exists(), "no driver ran");
     }
+}
+
+/// Assert a launch refused on DIRECTION.md left no trace: no lock record, no
+/// `state.json`, no log, no per-run state directory and no `claude` invocation.
+fn assert_nothing_was_written(fx: &Fixture, log_before: &str) {
+    assert!(
+        !run_lock_path(&fx.run_dir).exists(),
+        "a lock record was written"
+    );
+    assert!(
+        !fx.run_dir.join("state.json").exists(),
+        "state.json was written"
+    );
+    assert_eq!(fx.log(), log_before, "LOG.md changed");
+    assert!(!fx.state_dir().exists(), "the per-run state dir was made");
+    assert_eq!(
+        fs::read_dir(fx.rec_dir()).unwrap().count(),
+        0,
+        "claude was invoked"
+    );
+}
+
+/// The `DIRECTION.md:<line>: ` lines on stderr.
+fn direction_lines(out: &std::process::Output) -> Vec<String> {
+    stderr(out)
+        .lines()
+        .filter(|l| l.contains("DIRECTION.md:"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_direction_that_fails_the_lint_is_refused_before_anything_is_written() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let body = BODY.replacen(
+        "- done-when: Phase 1 has a passing VERIFICATION.md.\n",
+        "",
+        1,
+    );
+    assert_ne!(body, BODY, "the fixture body lost its done-when line");
+    fs::write(fx.run_dir.join("DIRECTION.md"), &body).unwrap();
+    let log_before = fx.log();
+
+    let out = fx.launch(&[]);
+
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let lines = direction_lines(&out);
+    assert_eq!(lines.len(), 1, "one problem, one line: {}", stderr(&out));
+    assert!(
+        lines[0].contains("I-01: missing `- done-when:`"),
+        "{lines:?}"
+    );
+    assert_nothing_was_written(&fx, &log_before);
+}
+
+#[test]
+fn the_detached_path_refuses_a_failing_direction_in_the_callers_terminal() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let body = BODY.replacen(
+        "- done-when: Phase 2 has a passing VERIFICATION.md.\n",
+        "",
+        1,
+    );
+    assert_ne!(body, BODY);
+    fs::write(fx.run_dir.join("DIRECTION.md"), &body).unwrap();
+    let log_before = fx.log();
+
+    // No `--foreground`: the launcher would detach. The refusal happens before it.
+    let child = fx
+        .launch_command_embedded(launcher_support::ALIAS, RUN_ID, &[])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the command");
+    let out = finish(child, Duration::from_secs(15));
+
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        direction_lines(&out)
+            .iter()
+            .any(|l| l.contains("I-02: missing `- done-when:`")),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("detached launcher exited"),
+        "no daemon was started: {}",
+        stderr(&out)
+    );
+    assert_nothing_was_written(&fx, &log_before);
+    assert!(
+        !fx.state_dir().join("launcher.log").exists(),
+        "no launcher.log: the refusal came first"
+    );
+}
+
+#[test]
+fn a_paused_or_stopped_direction_is_refused_at_launch() {
+    // RESEARCH OQ2 [inferred - audit]: a launch on `control: pause|stop` would spend
+    // the Opus startup cost just to be told to stop.
+    for word in ["pause", "stop"] {
+        let fx = Fixture::new();
+        fx.write_scenario(WELL_MANNERED_SCENARIO);
+        let body = BODY.replacen("- control: run\n", &format!("- control: {word}\n"), 1);
+        assert_ne!(body, BODY);
+        fs::write(fx.run_dir.join("DIRECTION.md"), &body).unwrap();
+        let log_before = fx.log();
+
+        let out = fx.launch(&[]);
+
+        assert_eq!(out.status.code(), Some(1), "{word}: {}", stderr(&out));
+        assert_eq!(
+            direction_lines(&out),
+            [format!(
+                "DIRECTION.md:5: control is {word}; set - control: run to launch"
+            )],
+            "{}",
+            stderr(&out)
+        );
+        assert_nothing_was_written(&fx, &log_before);
+    }
+}
+
+#[test]
+fn a_lint_warning_does_not_refuse_the_launch() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let body = BODY.replacen(
+        "- budget: dispatches=3\n",
+        "- budget: dispatches=3, gap-rounds=3\n",
+        1,
+    );
+    assert_ne!(body, BODY);
+    fs::write(fx.run_dir.join("DIRECTION.md"), &body).unwrap();
+
+    let out = fx.launch(&[]);
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(fx.log().contains("RUN | launch | n=1"), "{}", fx.log());
 }
 
 #[test]
