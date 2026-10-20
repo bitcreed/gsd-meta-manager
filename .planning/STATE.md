@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 29
 current_phase_name: Master Prompt & Run Templates
 status: executing
-stopped_at: Phase 29 context gathered
-last_updated: "2026-10-20T02:24:22.625Z"
+stopped_at: Completed 29-01-PLAN.md
+last_updated: "2026-10-20T03:02:11.765Z"
 last_activity: 2026-10-19
-last_activity_desc: Phase 28 execution started
-state_head: a072857a3c5a047f7360c1c44ea2598d9a6c0599
+last_activity_desc: Phase 29 execution started
+state_head: 30930f97a441c0509f8eb5f29c1f5e0103959543
 progress:
   total_phases: 10
   completed_phases: 11
@@ -24,7 +24,7 @@ milestone_name: gsd-core 1.17.0 Sync
 See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 28 — Sandboxed Driver Launcher
+**Current focus:** Phase 29 — Master Prompt & Run Templates
 
 ## Current Position
 
@@ -227,8 +227,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 29 (Master Prompt & Run Templates) — READY TO EXECUTE
-Plan: 9 of 9
+Phase: 29 (Master Prompt & Run Templates) — EXECUTING
+Plan: 2 of 8
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -262,7 +262,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-19 — Phase 28 execution started
+Last activity: 2026-10-19 — Phase 29 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -482,6 +482,7 @@ verify-phase if the gate is fixed.
 | Phase 28 P07 | 16 min | 2 tasks | 8 files |
 | Phase 28 P08 | 21min | 2 tasks | 10 files |
 | Phase 28 P09 | ~14h wall (paid campaign + token wait) | 3 tasks | 4 files |
+| Phase 29 P01 | 13 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -650,6 +651,8 @@ Recent decisions affecting current work:
 - [Phase 28]: 28-08: launcher git runs with GIT_ALLOW_PROTOCOL=file:git:http:https:ssh, repository GIT_* variables removed, pinned URLs validated, and git/gh error lines URL-redacted before print or LOG [inferred - audit]
 - [Phase 28]: 28-09: l3 recorded FAIL (driver's 8 scripted reps ended 1s after count 3), not rerun; deny-after-3 evidenced live by l7 [inferred - audit]
 - [Phase 28]: 28-09: D-33 PASS closes the 26.1 VALID-02 carried risk; the kill's second gaps_found was injected per the pre-registered rule, the deny organic
+- [Phase 29]: D-18 operator-confirmed: control honoured before the next dispatch (PRMT-04 reading)
+- [Phase 29]: driver-prompt/1.0.0: SC1 rules are hard rules 1-5; stop rules in a marker-delimited precedence block with human control (rule 1) above launcher-cap
 
 ### Roadmap Evolution
 
@@ -823,9 +826,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-20T01:32:41.489Z
-Stopped at: Phase 29 context gathered
-Resume file: .planning/phases/29-master-prompt-run-templates/29-CONTEXT.md
+Last session: 2026-10-20T03:02:10.582Z
+Stopped at: Completed 29-01-PLAN.md
+Resume file: None
 
 Next: `/gsd-discuss-phase 28` (Sandboxed Driver Launcher).
 
