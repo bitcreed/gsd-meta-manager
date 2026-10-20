@@ -395,4 +395,92 @@ mod tests {
             GateDecision::Deny("run stopped by launcher cap wall_clock_min".to_owned())
         );
     }
+
+    // -- control (D-18)
+
+    #[test]
+    fn control_pause_and_stop_deny_a_dispatch_with_the_exact_reason() {
+        for word in ["pause", "stop"] {
+            let decision = decide_dispatch(
+                &dispatch("anything"),
+                &state(0, &[]),
+                &limits(None, None),
+                None,
+                Some(word),
+            );
+            assert_eq!(
+                denied(&decision),
+                format!(
+                    "control={word}; dispatch nothing new; record the in-flight worker's \
+                     report, then driverctl log end --reason {word}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn control_run_or_absent_falls_through_to_the_existing_rules() {
+        for control in [Some("run"), Some("other"), None] {
+            assert_eq!(
+                decide_dispatch(
+                    &dispatch("x"),
+                    &state(0, &[]),
+                    &limits(Some(5), None),
+                    None,
+                    control
+                ),
+                GateDecision::Allow,
+                "{control:?}"
+            );
+            let decision = decide_dispatch(
+                &dispatch("x"),
+                &state(5, &[]),
+                &limits(Some(5), None),
+                None,
+                control,
+            );
+            assert!(
+                denied(&decision).starts_with("dispatch cap reached (5/5)."),
+                "{control:?}: {decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tripped_cap_wins_over_control_and_control_wins_over_the_cap_rules() {
+        let tripped = decide_dispatch(
+            &dispatch("phase 1"),
+            &state(9, &[("1", 9)]),
+            &limits(Some(1), Some(1)),
+            Some("wall_clock_min"),
+            Some("pause"),
+        );
+        assert_eq!(
+            denied(&tripped),
+            "run stopped by launcher cap wall_clock_min"
+        );
+
+        let control = decide_dispatch(
+            &dispatch("phase 1"),
+            &state(9, &[("1", 9)]),
+            &limits(Some(1), Some(1)),
+            None,
+            Some("stop"),
+        );
+        assert!(denied(&control).starts_with("control=stop;"), "{control:?}");
+    }
+
+    #[test]
+    fn the_cap_gate_hands_the_store_control_word_to_the_decision() {
+        let mut gate = CapGate::new(limits(None, None), new_tripped()).into_gate();
+        assert_eq!(
+            gate(&dispatch("x"), &state(0, &[]), Some("run")),
+            GateDecision::Allow
+        );
+        let decision = gate(&dispatch("x"), &state(0, &[]), Some("pause"));
+        assert!(
+            denied(&decision).starts_with("control=pause;"),
+            "{decision:?}"
+        );
+    }
 }

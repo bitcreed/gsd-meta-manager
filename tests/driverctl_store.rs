@@ -25,6 +25,7 @@ use gsd_meta_manager::driverctl::store::{
     CapLimits, DriverSpec, GateDecision, LaunchSpec, RunStore, StoreError, TerminalOutcome,
     TerminalStatus,
 };
+use gsd_meta_manager::launcher::gate::{new_tripped, CapGate};
 use gsd_meta_manager::state_reader::driver_frontmatter::{
     parse_driver_frontmatter, ItemState, RunStatus,
 };
@@ -1675,4 +1676,160 @@ fn a_sandboxed_launch_has_no_missing_list() {
     let text = fx.read("DIRECTION.md");
     assert!(text.contains("\nsandbox: \"bwrap-scope\"\n"), "{text}");
     assert!(!text.contains("sandbox_missing"), "{text}");
+}
+
+// ---------------------------------------------------------------- control (D-18, D-19)
+
+/// A `control: <word>` edit of the human's DIRECTION.md, bytes below the tool
+/// block otherwise untouched.
+fn set_control(fx: &Fixture, word: &str) {
+    let path = fx.run_dir.join("DIRECTION.md");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("- control: run"), "the fixture body says run");
+    fs::write(
+        &path,
+        text.replacen("- control: run", &format!("- control: {word}"), 1),
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_cap_gate_denies_a_driver_dispatch_while_control_is_pause() {
+    for word in ["pause", "stop"] {
+        let fx = Fixture::new();
+        let mut store = fx.open();
+        store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+        store.begin_launch(standalone()).unwrap();
+        set_control(&fx, word);
+
+        let r = send(&mut store, GATE_REQ);
+        let deny = r.deny.expect("a paused run denies the dispatch");
+        assert!(deny.starts_with(&format!("control={word};")), "{deny}");
+
+        let state = fx.state_json();
+        assert_eq!(state["denied_dispatches"], 1);
+        assert_eq!(state["hook_dispatches"], 0);
+        let log = fx.log();
+        let denied: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("RUN | dispatch-denied"))
+            .collect();
+        assert_eq!(denied.len(), 1, "{log}");
+        assert!(denied[0].contains(&format!("control={word}")), "{log}");
+    }
+}
+
+#[test]
+fn control_run_lets_the_cap_gate_allow_the_same_dispatch() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    let r = send(&mut store, GATE_REQ);
+    assert!(r.deny.is_none(), "{r:?}");
+    assert_eq!(fx.state_json()["hook_dispatches"], 1);
+}
+
+#[test]
+fn dispatched_is_rejected_while_control_is_pause_or_stop_but_the_rest_is_accepted() {
+    for word in ["pause", "stop"] {
+        let fx = Fixture::new();
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        log_ok(&mut store, "start", &[("mode", "headless")]);
+        log_ok(
+            &mut store,
+            "dispatched",
+            &[("item", "I-01"), ("step", "go"), ("round", "0")],
+        );
+        set_control(&fx, word);
+
+        let before = snapshot(&fx);
+        let r = send(
+            &mut store,
+            &log_req(
+                "dispatched",
+                &[("item", "I-02"), ("step", "go"), ("round", "0")],
+            ),
+        );
+        assert!(!r.ok, "{r:?}");
+        assert_eq!(
+            r.error.as_deref(),
+            Some(
+                format!(
+                    "control={word}: dispatch nothing new; record the in-flight report, then \
+                     end --reason {word}"
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(snapshot(&fx), before, "a rejection writes nothing");
+
+        log_ok(
+            &mut store,
+            "report",
+            &[("item", "I-01"), ("status", "done"), ("body", "ok")],
+        );
+        log_ok(
+            &mut store,
+            "verified",
+            &[
+                ("item", "I-01"),
+                ("done_when", "met"),
+                ("evidence", "tests pass"),
+            ],
+        );
+        log_ok(&mut store, "end", &[("reason", "pause")]);
+    }
+}
+
+#[test]
+fn dispatched_is_accepted_when_control_is_run() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(standalone()).unwrap();
+    log_ok(&mut store, "start", &[("mode", "headless")]);
+    log_ok(
+        &mut store,
+        "dispatched",
+        &[("item", "I-02"), ("step", "go"), ("round", "0")],
+    );
+}
+
+#[test]
+fn a_paused_relaunch_names_the_control_word_before_the_reconcile_rule() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        log_ok(&mut store, "start", &[("mode", "headless")]);
+        log_ok(
+            &mut store,
+            "dispatched",
+            &[("item", "I-01"), ("step", "go"), ("round", "0")],
+        );
+    }
+    set_control(&fx, "pause");
+    let mut store = fx.open();
+    store.begin_launch(standalone()).unwrap();
+    let r = send(
+        &mut store,
+        &log_req(
+            "dispatched",
+            &[("item", "I-02"), ("step", "go"), ("round", "0")],
+        ),
+    );
+    assert!(
+        r.error
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("control=pause:"),
+        "{r:?}"
+    );
+    // The running item can still be reconciled while paused.
+    log_ok(
+        &mut store,
+        "recovered",
+        &[("item", "I-01"), ("action", "park"), ("reason", "paused")],
+    );
 }
