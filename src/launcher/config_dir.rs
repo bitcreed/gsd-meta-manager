@@ -18,7 +18,11 @@
 //!   fails closed;
 //! * a minimal `.claude.json` (`hasCompletedOnboarding`), only when absent;
 //! * a `bin/driverctl` shim that execs this binary (hand-off 8), so the master
-//!   prompt's `driverctl log ...` runs unchanged.
+//!   prompt's `driverctl log ...` runs unchanged;
+//! * a `bin/gsd-meta-manager` shim that execs this binary with `next` and its
+//!   arguments, and refuses every other first argument (Phase 29, D-21), so the
+//!   prompt's citation `gsd-meta-manager next {PROJECT_ROOT} --json` resolves on
+//!   `PATH` inside the sandbox.
 //!
 //! The data directory follows the envelope's rule (`src/envelope/mod.rs`): an
 //! `Option` with no `/tmp` fallback, because a shared directory is where a
@@ -252,6 +256,23 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
         shell_quote(spec.binary.as_os_str())
     );
     write_atomic(&shim, script.as_bytes(), 0o755)?;
+
+    // D-21: `gsd-meta-manager next <project> --json` is the read-only router hint
+    // the master prompt cites. The shim puts `next` on PATH (`<cfg>/bin` leads it)
+    // and refuses any other first argument, so a typo cannot run `driver launch`
+    // by accident.
+    //
+    // **A convenience, not a security boundary** (T-29-12, accepted). `/` is
+    // ro-bound inside the sandbox (`--ro-bind / /`), so the binary's absolute path
+    // is executable whether or not this shim exists, and a driver that wants
+    // another verb can call it directly. The boundary is the sandbox itself: a
+    // read-only run directory, no host secrets, and pushes only from the host.
+    let next_shim = bin.join("gsd-meta-manager");
+    let next_script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  next) shift; exec {} next \"$@\" ;;\n  *) echo \"gsd-meta-manager: only 'next' is available inside the driver sandbox\" >&2; exit 2 ;;\nesac\n",
+        shell_quote(spec.binary.as_os_str())
+    );
+    write_atomic(&next_shim, next_script.as_bytes(), 0o755)?;
     Ok(())
 }
 
