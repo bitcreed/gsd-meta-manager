@@ -5,7 +5,7 @@
 //!
 //! 1. the user asked to stop -> `stopped`, `stop:user`;
 //! 2. a cap tripped -> keep (the trip already recorded `stopped`);
-//! 3. the driver ended the run itself with a terminal `RUN end` -> keep;
+//! 3. the driver ended the run itself with a terminal or `pause` `RUN end` -> keep;
 //! 4. the driver ended only its context (`fresh-exit`: still `running`) -> relaunch;
 //! 5. the launch's result is an authentication failure (D-23) -> relaunch with the
 //!    host token again (at most twice per run), or park when the stored token was
@@ -204,7 +204,10 @@ pub fn decide(end: &LaunchEnd) -> Verdict {
     if end.tripped.is_some() {
         return Verdict::Keep;
     }
-    if end.ended_by_driver && end.status.is_terminal() {
+    // A driver that ended the run with `RUN end --reason pause` has decided the
+    // run's fate too: `paused` is not in `is_terminal` (a human resumes it), but
+    // relabelling it `crashed` would contradict the driver's own record (29-05).
+    if end.ended_by_driver && (end.status.is_terminal() || end.status == RunStatus::Paused) {
         return Verdict::Keep;
     }
     if end.ended_by_driver && end.status == RunStatus::Running {
@@ -356,6 +359,17 @@ mod tests {
                 rate_limit: rejected(),
                 terminal_reason: None,
             },
+            ..base()
+        };
+        assert_eq!(decide(&end), Verdict::Keep);
+    }
+
+    #[test]
+    fn a_driver_pause_end_is_kept_not_relabelled_crashed() {
+        let end = LaunchEnd {
+            rc: Some(0),
+            status: RunStatus::Paused,
+            ended_by_driver: true,
             ..base()
         };
         assert_eq!(decide(&end), Verdict::Keep);
