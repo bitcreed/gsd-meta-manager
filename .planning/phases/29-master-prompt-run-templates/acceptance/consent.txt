@@ -1,0 +1,6 @@
+# Phase 29 plan 29-08 cost consent. Decision given by the operator in the dispatching session (relayed verbatim by the orchestrator): approve-all, o1 with at most one retry.
+approved_ceiling_usd=25
+approved_cases=h1 h2 h3 h4 o1
+decided_by=operator
+decided_at=2026-10-20T04:37:56Z
+option=approve-all
