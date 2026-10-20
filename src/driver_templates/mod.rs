@@ -109,8 +109,8 @@ mod create {
                 NewRunError::BadSlug(slug) => write!(
                     f,
                     "slug {:?} is not usable: it must match {SLUG_RE} (ASCII letters, digits, \
-                     '.', '_', '-'; not empty, no leading '.' or '-') and the run id \
-                     <yyyymmdd>-<slug> must be at most 80 bytes",
+                     dot, underscore and dash; not empty, no leading dot or dash) and the run \
+                     id <yyyymmdd>-<slug> must be at most 80 bytes",
                     render_for_terminal(slug).to_string()
                 ),
                 NewRunError::NotGsdProject(p) => write!(
