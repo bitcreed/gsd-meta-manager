@@ -9,14 +9,14 @@
 //!
 //! 1. a tripped cap denies everything (`run stopped by launcher cap <cap>`), from
 //!    the instant the monitor decided to kill, before the scope has even exited;
-//! 1b. the human's DIRECTION `control` word (Phase 29, D-18): `pause` and `stop`
+//! 2. the human's DIRECTION `control` word (Phase 29, D-18): `pause` and `stop`
 //!    deny a new dispatch (`control=<word>; dispatch nothing new; ...`) so the
 //!    run is honoured *before the next dispatch* [operator-confirmed 2026-10-19].
 //!    The word is read by the store and passed in, which keeps this pure;
-//! 2. the gap-round rule: with limit `gl`, a dispatch whose prompt names a phase
+//! 3. the gap-round rule: with limit `gl`, a dispatch whose prompt names a phase
 //!    `P` ([`mentions_phase`]) is denied once `per_phase[P] >= gl + 1`. The kill at
 //!    `gl + 2` is the monitor's (`run.rs`), not this module's;
-//! 3. the dispatch cap: with limit `lim`, the dispatch is denied once
+//! 4. the dispatch cap: with limit `lim`, the dispatch is denied once
 //!    `hook_dispatches >= lim`, so dispatches `1..=lim` pass and `lim + 1` is the
 //!    first denied.
 //!

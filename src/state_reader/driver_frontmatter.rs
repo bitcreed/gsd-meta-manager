@@ -24,7 +24,9 @@
 //! the one addition over the spike's generator; it sits right after `items`.
 //! `sandbox` (`bwrap-scope` | `degraded`) and `sandbox_missing` (D-30, Phase 28)
 //! are the second: emitted right after `launches`, **only when set**, so a block
-//! that predates the launcher keeps its bytes.
+//! that predates the launcher keeps its bytes. `prompt_version` (Phase 29, D-03:
+//! `driver-prompt/1.0.0` or `custom:<sha8>`) is the third, right after the sandbox
+//! keys, under the same only-when-set rule.
 //!
 //! # Reading is tolerant, with one exception
 //!
@@ -608,6 +610,10 @@ impl DriverFrontmatter {
         if let Some(missing) = &self.sandbox_missing {
             let items: Vec<String> = missing.iter().map(|m| quote(m)).collect();
             lines.push(format!("sandbox_missing: [{}]", items.join(", ")));
+        }
+        // Phase 29 D-03: the same additive rule, no schema version bump.
+        if let Some(version) = &self.prompt_version {
+            lines.push(format!("prompt_version: {}", quote(version)));
         }
         if self.connected.is_empty() {
             lines.push("connected: []".to_string());

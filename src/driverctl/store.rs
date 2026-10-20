@@ -219,6 +219,9 @@ pub struct CapLimits {
 /// forward-compatible `extra` map, so a build that predates them round-trips them.
 const EXTRA_SANDBOX: &str = "sandbox";
 const EXTRA_SANDBOX_MISSING: &str = "sandbox_missing";
+/// The master-prompt version of THIS launch (Phase 29, D-03), set or removed by
+/// every [`RunStore::begin_launch`] like the posture.
+const EXTRA_PROMPT_VERSION: &str = "prompt_version";
 
 /// The `state.json` key holding the summed active wall-clock seconds (D-13).
 pub const EXTRA_ACTIVE_SECONDS: &str = "active_seconds";
@@ -551,7 +554,11 @@ pub fn frontmatter_for(state: &RunState, direction: &DirectionInfo) -> DriverFro
                     .filter_map(|item| item.as_str().map(str::to_owned))
                     .collect()
             }),
-        prompt_version: None,
+        prompt_version: state
+            .extra
+            .get(EXTRA_PROMPT_VERSION)
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         connected: state.connections.clone(),
         heartbeat_stale_after_s: HEARTBEAT_STALE_AFTER_S,
         last_event: state.last_event.clone().unwrap_or_default(),
@@ -895,6 +902,21 @@ impl RunStore {
             );
         }
 
+        // D-03: the prompt version belongs to THIS launch too; a key left by an
+        // earlier launch must not describe a `driverctl serve` that has none.
+        let prompt_version = spec.prompt_version.as_deref().map(header_safe);
+        match &prompt_version {
+            Some(version) => {
+                next.extra.insert(
+                    EXTRA_PROMPT_VERSION.to_owned(),
+                    Value::String(version.clone()),
+                );
+            }
+            None => {
+                next.extra.remove(EXTRA_PROMPT_VERSION);
+            }
+        }
+
         let host = host_name();
         let launcher_mode = header_safe(&spec.launcher_mode);
         next.connections.push(Connection {
@@ -931,6 +953,7 @@ impl RunStore {
                 ("n", Some(next.launches.to_string())),
                 ("mode", Some(launcher_mode)),
                 ("model", model),
+                ("prompt", prompt_version),
             ],
         ));
         self.commit(next, &entries, Regen::Always)
