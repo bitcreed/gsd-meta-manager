@@ -520,6 +520,11 @@ pub enum DriverLoopMode {
     FreshPerItem,
 }
 
+/// The launcher's default gap-round cap per phase (`driver launch --cap-gap-rounds`, D-14).
+/// The DIRECTION lint warns about an item budget above it, so the lint reads this one
+/// constant rather than a hand-copied `2` (IN-04).
+pub const DEFAULT_CAP_GAP_ROUNDS: u32 = 2;
+
 /// Arguments of `driver launch <project> <run-id>`.
 ///
 /// The run directory must already exist (D-02): minting one is `driver new`
@@ -552,7 +557,7 @@ pub struct LaunchArgs {
     #[arg(long, default_value_t = 60.0, value_parser = positive_finite_minutes)]
     pub cap_minutes: f64,
     /// Gap-round cap per phase, recorded on the run
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = DEFAULT_CAP_GAP_ROUNDS)]
     pub cap_gap_rounds: u32,
     /// Stay in this terminal for the run's life; without it the launcher detaches
     /// into its own session and logs to `launcher.log` under the run's state dir
@@ -1165,7 +1170,8 @@ mod tests {
         else {
             panic!("not a launch");
         };
-        assert_eq!(args.cap_gap_rounds, 2);
+        assert_eq!(args.cap_gap_rounds, DEFAULT_CAP_GAP_ROUNDS);
+        assert_eq!(DEFAULT_CAP_GAP_ROUNDS, 2, "D-14: the shipped launcher cap");
         assert_eq!(args.prompt_file, None);
     }
 

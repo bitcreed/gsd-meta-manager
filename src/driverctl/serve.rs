@@ -97,8 +97,9 @@ pub const STALE_TEMP_AGE: Duration = Duration::from_secs(60);
 /// dash or dot, at most 80 characters.
 pub const RUN_ID_RE: &str = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$";
 
-/// Where run directories live, relative to the project root.
-pub(crate) const DRIVERS_REL: &str = ".planning/meta-manager/drivers";
+/// Where run directories live, relative to the project root: the one path constant,
+/// owned by the state reader (IN-04).
+pub(crate) const DRIVERS_REL: &str = crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL;
 
 /// How long the accept loop and the ticker sleep between checks of the stop flag.
 const POLL: Duration = Duration::from_millis(50);

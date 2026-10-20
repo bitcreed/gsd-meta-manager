@@ -31,12 +31,13 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use super::DIRECTION_TEMPLATE;
+use crate::cli::DEFAULT_CAP_GAP_ROUNDS;
 use crate::driver::direction::{blank_comments, section_heading, split_frontmatter, Section};
 use crate::text::render_for_terminal;
 
 /// The launcher's default gap-round cap (`driver launch --cap-gap-rounds`). An item
 /// budget above it only holds if the human relaunches with a higher cap.
-const DEFAULT_GAP_CAP: u64 = 2;
+const DEFAULT_GAP_CAP: u64 = DEFAULT_CAP_GAP_ROUNDS as u64;
 
 /// The `control` words DIRECTION.md may carry.
 const CONTROL_WORDS: [&str; 3] = ["run", "pause", "stop"];
