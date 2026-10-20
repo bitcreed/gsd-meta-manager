@@ -478,6 +478,14 @@ pub enum DriverAction {
         /// The run id: `.planning/meta-manager/drivers/<run-id>`
         run_id: String,
     },
+    /// Create a new run: a self-ignoring run directory with a DIRECTION.md and LOG.md
+    /// template (id `<yyyymmdd>-<slug>`, UTC)
+    New {
+        /// Alias or path of a registered project
+        project: String,
+        /// The run's name: ASCII letters, digits, `.`, `_`, `-`; not starting with `.` or `-`
+        slug: String,
+    },
     /// The driver's long-lived OAuth token: store one, or see what is stored
     Auth {
         #[command(subcommand)]
@@ -1168,6 +1176,24 @@ mod tests {
         assert!(
             driver_action(&["push", "p"]).is_err(),
             "the run id is required"
+        );
+    }
+
+    #[test]
+    fn driver_new_takes_a_project_and_a_slug() {
+        match driver_action(&["new", "p", "smoke"]).expect("parses") {
+            DriverAction::New { project, slug } => {
+                assert_eq!((project.as_str(), slug.as_str()), ("p", "smoke"));
+            }
+            _ => panic!("not a new"),
+        }
+        assert!(
+            driver_action(&["new", "p"]).is_err(),
+            "the slug is required"
+        );
+        assert!(
+            driver_action(&["new", "p", "smoke", "--prompt-file", "x"]).is_err(),
+            "a run is minted from the embedded templates only"
         );
     }
 

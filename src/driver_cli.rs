@@ -44,6 +44,7 @@ pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
             wait_secs,
         } => stop_main(&project, &run_id, wait_secs, config),
         DriverAction::Push { project, run_id } => push_main(&project, &run_id, config),
+        DriverAction::New { project, slug } => new_main(&project, &slug, config),
         DriverAction::Auth { action } => auth_main(action),
     }
 }
@@ -342,6 +343,47 @@ fn stop_main(target: &str, run_id: &str, wait_secs: u64, config: Option<PathBuf>
         }
         Err(error) => report("stop", &error),
     }
+}
+
+/// `driver new`: mint a run directory from the embedded templates (D-08 .. D-10).
+///
+/// Prints where DIRECTION.md is and the exact next commands; opens no editor.
+/// `1` for every refusal, and nothing is created on a refusal.
+#[cfg(target_os = "linux")]
+fn new_main(target: &str, slug: &str, config: Option<PathBuf>) -> i32 {
+    use gsd_meta_manager::driver_templates::create_run_dir;
+
+    let (_alias, project, _registry) = match resolve_project(target, config) {
+        Ok(resolved) => resolved,
+        Err(message) => {
+            err_line(&format!("driver new: {message}"));
+            return 1;
+        }
+    };
+    match create_run_dir(&project, slug, chrono::Utc::now()) {
+        Ok(run) => {
+            out_line(&format!("driver new: created run {}", run.run_id));
+            out_line(&format!("  direction: {}", run.direction.display()));
+            out_line(&format!(
+                "  check:  gsd-meta-manager driver check {target} {}",
+                run.run_id
+            ));
+            out_line(&format!(
+                "  launch: gsd-meta-manager driver launch {target} {}",
+                run.run_id
+            ));
+            0
+        }
+        Err(error) => {
+            err_line(&format!("driver new: {error}"));
+            1
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn new_main(_target: &str, _slug: &str, _config: Option<PathBuf>) -> i32 {
+    report("new", &LauncherError::UnsupportedPlatform)
 }
 
 /// `driver push`: the push step for a finished run whose launcher is gone.
