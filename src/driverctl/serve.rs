@@ -448,8 +448,27 @@ pub(crate) fn bind_run_socket(sock: &Path) -> Result<UnixListener, DriverctlErro
 
 // ---------------------------------------------------------------- signals
 
-/// Wait for SIGTERM or SIGINT, then set `stop`. An `async fn` with no blocking
-/// call in it (`tests/async_blocking_guard.rs`).
+/// Set once a SECOND SIGTERM/SIGINT arrives while the first stop is still being
+/// carried out (WR-07): the operator is impatient, so teardown must skip its
+/// grace periods. Process-wide, like the signals themselves.
+static STOP_ESCALATED: AtomicBool = AtomicBool::new(false);
+
+/// True after a second stop signal: waits for a graceful stop should be cut short.
+pub(crate) fn stop_escalated() -> bool {
+    STOP_ESCALATED.load(Ordering::SeqCst)
+}
+
+/// Record one stop signal: the first sets `stop`, any later one sets `escalated`.
+fn note_stop_signal(stop: &AtomicBool, escalated: &AtomicBool) {
+    if stop.swap(true, Ordering::SeqCst) {
+        escalated.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Wait for SIGTERM or SIGINT for the life of the process: the first sets `stop`,
+/// a later one escalates ([`stop_escalated`]). tokio never uninstalls a `sigaction`
+/// it registered, so a one-shot wait would swallow every later signal (WR-07). An
+/// `async fn` with no blocking call in it (`tests/async_blocking_guard.rs`).
 async fn wait_for_stop_signal(stop: Arc<AtomicBool>, ready: mpsc::Sender<Result<(), String>>) {
     use tokio::signal::unix::{signal, SignalKind};
 
@@ -463,11 +482,13 @@ async fn wait_for_stop_signal(stop: Arc<AtomicBool>, ready: mpsc::Sender<Result<
         }
     };
     let _ = ready.send(Ok(()));
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = int.recv() => {}
+    loop {
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
+        note_stop_signal(&stop, &STOP_ESCALATED);
     }
-    stop.store(true, Ordering::SeqCst);
 }
 
 /// Install the SIGTERM/SIGINT handlers and return once they are registered, so a
@@ -1215,6 +1236,20 @@ mod tests {
             leftovers.is_empty(),
             "staging dirs are removed: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn wr07_a_second_stop_signal_escalates() {
+        let stop = AtomicBool::new(false);
+        let escalated = AtomicBool::new(false);
+        note_stop_signal(&stop, &escalated);
+        assert!(
+            stop.load(Ordering::SeqCst),
+            "the first signal requests the stop"
+        );
+        assert!(!escalated.load(Ordering::SeqCst), "but does not escalate");
+        note_stop_signal(&stop, &escalated);
+        assert!(escalated.load(Ordering::SeqCst), "the second one escalates");
     }
 
     #[test]

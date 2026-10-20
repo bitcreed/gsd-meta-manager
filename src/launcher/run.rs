@@ -82,7 +82,8 @@ use crate::driverctl::counters::outstanding_dispatch;
 use crate::driverctl::log::parse_log;
 use crate::driverctl::serve::{
     bind_run_socket, hash8, install_signal_handlers, lock_store, socket_path, spawn_accept_loop,
-    tick_once, valid_run_id, validate_run_dir, EmbeddedServer, DRIVERS_REL, STALE_TEMP_AGE, TICK,
+    stop_escalated, tick_once, valid_run_id, validate_run_dir, EmbeddedServer, DRIVERS_REL,
+    STALE_TEMP_AGE, TICK,
 };
 use crate::driverctl::store::{
     CapLimits, DriverSpec, LaunchSpec, RunState, RunStore, TerminalOutcome, TerminalStatus,
@@ -395,6 +396,13 @@ impl Containment {
                 let _ = child.kill();
                 break;
             }
+            // WR-07: a second Ctrl-C / SIGTERM cuts the grace short. `bwrap` is the
+            // namespace init, so killing the child takes the sandbox with it.
+            if stop_escalated() {
+                let _ = child.kill();
+                // The `systemctl stop` helper finishes on its own; do not wait for it.
+                return;
+            }
             std::thread::sleep(CHILD_POLL);
         }
         if let Some(handle) = stopper {
@@ -438,7 +446,7 @@ impl Containment {
 fn stop_group(pgid: u32, child: &mut Child) {
     let _ = signal_group(pgid, Signal::TERM);
     let deadline = Instant::now() + DRIVER_TEARDOWN_GRACE;
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !stop_escalated() {
         if !matches!(child.try_wait(), Ok(None)) {
             break;
         }
