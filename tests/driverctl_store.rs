@@ -1916,6 +1916,84 @@ fn dispatched_is_accepted_when_control_is_run() {
 }
 
 #[test]
+fn the_dispatch_gate_itself_refuses_until_each_running_item_is_recovered() {
+    // WR-06: D-17 is a refusal of the Agent dispatch, not only of the `dispatched`
+    // record, so a driver that skips the log still cannot start un-reconciled work.
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        log_ok(&mut store, "start", &[("mode", "headless")]);
+        log_ok(
+            &mut store,
+            "dispatched",
+            &[("item", "I-01"), ("step", "go"), ("round", "0")],
+        );
+    }
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+
+    let r = send(&mut store, GATE_REQ);
+    let deny = r
+        .deny
+        .expect("an un-reconciled relaunch denies the dispatch");
+    assert!(
+        deny.starts_with("reconcile first: I-01 was running at launch start"),
+        "{deny}"
+    );
+    let state = fx.state_json();
+    assert_eq!(
+        state["hook_dispatches"], 0,
+        "a denied dispatch is not counted"
+    );
+    assert_eq!(state["denied_dispatches"], 1);
+    let log = fx.log();
+    assert!(
+        log.lines()
+            .any(|l| l.contains("RUN | dispatch-denied") && l.contains("reconcile first: I-01")),
+        "{log}"
+    );
+
+    log_ok(
+        &mut store,
+        "recovered",
+        &[
+            ("item", "I-01"),
+            ("action", "resume"),
+            ("reason", "worker died"),
+        ],
+    );
+    let r = send(&mut store, GATE_REQ);
+    assert!(
+        r.deny.is_none(),
+        "after the recovery the dispatch passes: {r:?}"
+    );
+    assert_eq!(fx.state_json()["hook_dispatches"], 1);
+}
+
+#[test]
+fn a_control_hold_is_named_before_the_reconcile_rule_at_the_dispatch_gate() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        log_ok(&mut store, "start", &[("mode", "headless")]);
+        log_ok(
+            &mut store,
+            "dispatched",
+            &[("item", "I-01"), ("step", "go"), ("round", "0")],
+        );
+    }
+    set_control(&fx, "pause");
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    let deny = send(&mut store, GATE_REQ).deny.expect("denied");
+    assert!(deny.starts_with("control=pause;"), "{deny}");
+}
+
+#[test]
 fn a_paused_relaunch_names_the_control_word_before_the_reconcile_rule() {
     let fx = Fixture::new();
     {

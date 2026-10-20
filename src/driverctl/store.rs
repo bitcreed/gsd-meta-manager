@@ -992,6 +992,19 @@ impl RunStore {
         }
     }
 
+    /// The first item a crashed launch left `running` that still needs its one
+    /// `recovered` and that `DIRECTION.md` still lists (D-17). Shared by the
+    /// `dispatched` record rule and the dispatch gate, so both refuse on the same set.
+    ///
+    /// An awaiting id the human has since removed from `DIRECTION.md` cannot be
+    /// recovered (the protocol only accepts listed items), so it no longer blocks.
+    fn blocking_recovery(&self, direction: &DirectionInfo) -> Option<&String> {
+        self.state
+            .awaiting_recovery
+            .iter()
+            .find(|id| direction.items.is_empty() || direction.items.iter().any(|i| &i.id == *id))
+    }
+
     /// The acceptance rules that depend on more than the event itself: why `event`
     /// is refused under a human `control: pause|stop` (D-19), until the items a
     /// crashed launch left `running` have each been recovered once (D-17), or for
@@ -1016,9 +1029,7 @@ impl RunStore {
                          then end --reason {word}"
                     ));
                 }
-                let blocking = self.state.awaiting_recovery.iter().find(|id| {
-                    direction.items.is_empty() || direction.items.iter().any(|i| &i.id == *id)
-                })?;
+                let blocking = self.blocking_recovery(direction)?;
                 Some(format!(
                     "reconcile first: {blocking} was running at launch start; record driverctl \
                      log recovered --item {blocking} --action {}",
@@ -1143,7 +1154,20 @@ impl RunStore {
             _ if payload.is_gate() => {
                 let decision = match self.direction_read() {
                     Ok(direction) => {
-                        (self.gate)(payload, &self.state, direction.control.as_deref())
+                        match (self.gate)(payload, &self.state, direction.control.as_deref()) {
+                            // D-17 at the dispatch itself (WR-06): the Agent tool call is
+                            // refused while an item the last launch left running has no
+                            // `recovered` yet, not only the driver's `dispatched` record.
+                            // The gate's own denials (cap, control) come first.
+                            GateDecision::Allow => match self.blocking_recovery(&direction) {
+                                Some(id) => GateDecision::Deny(format!(
+                                    "reconcile first: {id} was running at launch start; log \
+                                     recovered for it before dispatching anything new"
+                                )),
+                                None => GateDecision::Allow,
+                            },
+                            deny => deny,
+                        }
                     }
                     // Fail closed (WR-02): an unreadable DIRECTION.md hides a pause, so
                     // the dispatch is denied, with the reason in `dispatch-denied`.
