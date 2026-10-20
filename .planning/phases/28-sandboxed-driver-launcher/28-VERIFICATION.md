@@ -130,3 +130,7 @@ No blocking gaps. One caveat: l3's live assertion (deny after count 3) was never
 
 _Verified: 2026-10-20_
 _Verifier: Claude (gsd-verifier)_
+
+## Addendum 2026-10-20 — l3 caveat closed
+
+Harness pacing fixed (`e087343`, `8e97eb1`: 3 gap writes at ~10/57/104 s, spacing above the 45 s `COALESCE_S` window) and l3 rerun on Haiku: `check l3` **RESULT PASS** — counts 1/2/3 then `dispatch-denied 'phase 1 has failed verification 3 times'` twice, none before count 3 (`63fed30`, $0.0174). An intermediate attempt at 25 s spacing failed because the writes coalesced (`8754c08`, $0.0203). The SC2 / LNCH-03 l3 caveat no longer applies.
