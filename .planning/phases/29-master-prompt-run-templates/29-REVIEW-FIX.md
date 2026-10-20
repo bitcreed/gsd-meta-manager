@@ -27,7 +27,7 @@ The frontmatter counts the 12 review findings only (9 fixed / 3 skipped); the ex
 
 ## Fixed Issues
 
-### WR-01: DIRECTION lint and the store's parser read different plans
+### WR-01: DIRECTION lint and the store's parser read different plans, so `driver check` can certify a file the store reads differently
 
 **Files modified:** `src/driver/direction.rs`, `src/driver_templates/lint.rs`
 **Commit:** 1fb4c24
@@ -35,7 +35,7 @@ The frontmatter counts the 12 review findings only (9 fixed / 3 skipped); the ex
 **Applied fix:** One shared reader instead of a cross-check. `blank_comments` and a new `section_heading`/`Section` moved into `driver::direction`; `parse_direction` now blanks HTML comments and counts `### I-n` only under `## Items`, exactly as the lint does. The lint also reports a stray `### I-n` outside `## Items`, a `- control:` outside `## Direction`, and a second `- control:` line. Tests: multi-line commented-out item invisible to both readers, stray item under `## Direction` and under a later section flagged and ignored by the store, duplicate and out-of-section control lines flagged.
 **Decision [inferred - audit]:** the stray item is made invisible to the store (and flagged by the lint) rather than only flagged, because a misplaced heading that stays dispatchable is the divergence the review describes. `control` is deliberately NOT section-scoped in the store (a pause typed anywhere still holds the run: fail closed); the lint flags it instead.
 
-### WR-02: pause/stop control fails open on a read error and on non-lowercase spellings
+### WR-02: The human `pause`/`stop` control fails open on a read error and on any non-lowercase spelling
 
 **Files modified:** `src/driver/direction.rs`, `src/driverctl/store.rs`, `src/launcher/gate.rs`, `tests/driverctl_store.rs`
 **Commit:** e4b8125
@@ -49,7 +49,7 @@ The frontmatter counts the 12 review findings only (9 fixed / 3 skipped); the ex
 **Commit:** 9258e33
 **Applied fix:** `Display for Finding` and `Finding::as_warning` (the only two printed forms, used by `driver check` and the launch preflight) run the message through `render_for_terminal`; the raw `message` field stays comparable. `driver new` now prints its `check:`/`launch:` command lines with the target passed through a new `shell_word` (escaped, single-quoted when not a plain word). Tests: a hostile value (ESC, C1 CSI, BEL, RLO) prints no control/bidi character in either form; `shell_word` cases.
 
-### WR-04: `mentions_phase` attributes a decimal phase to its integer parent
+### WR-04: `mentions_phase` attributes a decimal phase to its integer parent, so the gap-round gate denies the wrong dispatch
 
 **Files modified:** `src/launcher/gate.rs`
 **Commit:** 35a7264
@@ -63,7 +63,7 @@ The frontmatter counts the 12 review findings only (9 fixed / 3 skipped); the ex
 **Applied fix:** Removed the promise (the `- isolation: worktree` line and its comment) from the template and added a test that every knob the template ships is one the prompt reads.
 **Justification (smaller, safer change) [inferred - audit]:** teaching the prompt to read `isolation:` would change `driver-prompt/1.0.0`; that exact version is what the committed live acceptance evidence was measured against, so a bump would invalidate it and need a paid re-run. Removing two template lines changes nothing the prompt or any evidence depends on. Existing DIRECTION files that still carry `isolation:` lint clean (the key is simply ignored, as before). `PA_ISOLATION` in the o1 case of `scripts/prompt-acceptance.sh` is now a no-op (its python branch matches no line); left in place because it changes no behaviour and o1 evidence is already committed.
 
-### WR-06: "reconcile first" refusal enforced only on the `dispatched` log record
+### WR-06: The "reconcile first" refusal is enforced only on the `dispatched` log record, not on the dispatch itself
 
 **Files modified:** `src/driverctl/store.rs`, `tests/driverctl_store.rs`
 **Commit:** 6f45357
@@ -72,7 +72,7 @@ The frontmatter counts the 12 review findings only (9 fixed / 3 skipped); the ex
 **Decision [inferred - audit]:** enforced in the store's hook path rather than inside the pure `decide_dispatch`, because the pure function has no DIRECTION item list and the store is where both rules already share one filter; it also holds for any installed gate.
 **Needs a human (not changed):** hook denials reach the driver as `LAUNCHER CAP: reconcile first: ...`, and master-prompt stop rule 2 says any denial other than `control=` is parked `launcher-cap`. A driver that skips its Startup reconcile and trips this denial would therefore park the item instead of recovering it. The prompt already instructs the reconcile before any dispatch, so this only affects a non-conforming driver, and fixing it means editing the prompt (version bump, evidence invalidation, fixture regeneration). Recommend deciding that together with the next prompt revision.
 
-### WR-07: H2 acceptance case cannot stage its premise
+### WR-07: The H2 acceptance case cannot stage its premise, and the committed evidence is an unresolved FAIL
 
 **Files modified:** `scripts/prompt-acceptance.sh`, `tests/prompt_acceptance.rs`
 **Commit:** 04a7a40
@@ -80,7 +80,7 @@ The frontmatter counts the 12 review findings only (9 fixed / 3 skipped); the ex
 **Not done, by instruction:** no paid or live run, no real-model re-run, no committed evidence file touched. **The H2 re-run is pending**: the committed `acceptance/h2/verdict.txt` is still `RESULT FAIL` (H2-5), 29-VERIFICATION.md / 29-UAT.md were not edited, and the live claim "pause mid-dispatch then relaunch reconciles" remains unproven live until the operator consents to the rerun (`RERUN=1 scripts/prompt-acceptance.sh run h2`, which needs the consent file).
 **Decisions [inferred - audit]:** staging a `running` state after the driver legitimately finished the item makes H2-5 test the reconcile ordering, not that a live driver was interrupted mid-worker; the observed lines state this explicitly. The guard allowance is keyed on the missing marker so it cannot be used twice.
 
-### IN-02: `pa_selftest` skip logic for a missing spike directory
+### IN-02: `pa_selftest` skip logic for a missing spike directory has the wrong precedence
 
 **Files modified:** `scripts/prompt-acceptance.sh`
 **Commit:** 3dfa13e
@@ -106,7 +106,7 @@ The frontmatter counts the 12 review findings only (9 fixed / 3 skipped); the ex
 **Reason:** not trivial. Either fix is a contract change: editing the prompt bumps `driver-prompt/1.0.0` and invalidates the committed live evidence; exporting `RUN_DIR`/`PROJECT_ROOT` in `child_env` changes the driver environment that `launcher_e2e` pins and adds generic-named variables to the sandboxed process. Needs its own decision.
 **Original issue:** The launcher substitutes `{RUN_DIR}`/`{PROJECT_ROOT}` textually, but only `DRIVER_LOCK_HELD` is in the driver env, so `cat $RUN_DIR/DIRECTION.md` would expand empty.
 
-### IN-03: Preflight reorders refusals
+### IN-03: Preflight reorders refusals: a paused or invalid DIRECTION now masks "already launched"
 
 **File:** `src/launcher/run.rs:229-253,551-553`
 **Reason:** not trivial. Probing the lock before linting changes the launch refusal order and exit codes that tests and the detached-launcher path depend on; the lossy-UTF-8 half alone would leave the ordering half undone. Deferred to a change that owns the ordering.
