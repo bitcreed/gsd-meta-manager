@@ -59,6 +59,12 @@ fn skip_reason() -> Option<String> {
     }
     for tool in ["bash", "python3", "git"] {
         if !have(tool) {
+            // IN-03: on CI a missing tool must not turn this whole file into a
+            // vacuous green.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "{tool} is not runnable on a CI host; these proofs cannot run"
+            );
             return Some(format!("{tool} is not runnable here"));
         }
     }
