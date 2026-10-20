@@ -44,14 +44,22 @@ const PROMPT_CHARS: usize = 4000;
 /// `1 --gaps` all name phase `1`; `phase 10` does not. Case-insensitive.
 ///
 /// `phase` is a phase key as `phase_key` writes it (`1`, `26.1`): it is escaped, so
-/// its `.` is a literal dot. An empty `phase` or an empty prompt never matches.
+/// its `.` is a literal dot, and a decimal phase is never mistaken for its integer
+/// parent or the reverse (`26.1` is not `26`, `26.10` is not `26.1`, `260` is not `26`). An empty `phase` or an empty prompt never matches.
 pub fn mentions_phase(prompt: &str, phase: &str) -> bool {
     if prompt.is_empty() || phase.is_empty() {
         return false;
     }
     let prompt: String = prompt.chars().take(PROMPT_CHARS).collect();
     let ph = regex::escape(phase);
-    let pattern = format!(r"(?i)(phase[\s_-]*0*{ph}\b|-phase\s+0*{ph}\b|\b0*{ph}\s+--gaps)");
+    // The key must stand alone: a following `.<digit>` makes it a decimal phase (26.1
+    // is not phase 26 and 26 is not phase 26.1), and the `--gaps` form must not start
+    // inside a longer number (`26.1 --gaps` is not `1 --gaps`). The regex crate has no
+    // lookaround, so the neighbouring character is consumed.
+    let end = r"(?:$|[^0-9A-Za-z_.]|\.(?:$|[^0-9]))";
+    let pattern = format!(
+        r"(?i)(?:phase[\s_-]*0*{ph}{end}|-phase\s+0*{ph}{end}|(?:^|[^0-9A-Za-z_.])0*{ph}\s+--gaps)"
+    );
     Regex::new(&pattern).is_ok_and(|re| re.is_match(&prompt))
 }
 
@@ -236,6 +244,74 @@ mod tests {
         assert!(mentions_phase("verify phase 26.1 again", "26.1"));
         assert!(!mentions_phase("verify phase 26x1 again", "26.1"));
         assert!(!mentions_phase("verify phase 26 again", "26.1"));
+    }
+
+    #[test]
+    fn a_decimal_phase_is_not_its_integer_parent_and_the_reverse() {
+        // WR-04: the gap-round gate must deny the right phase's dispatch.
+        let key = |prompt: &str, phase: &str| mentions_phase(prompt, phase);
+        for prompt in [
+            "verify phase 26.1 again",
+            "/gsd-plan-phase 26.1 --gaps",
+            "26.1 --gaps",
+            "phase 26.10",
+            "phase 260",
+            "phase-26.1",
+        ] {
+            assert!(!key(prompt, "26"), "26 must not match {prompt:?}");
+        }
+        assert!(!key("26.1 --gaps", "1"), "1 is not the tail of 26.1");
+        assert!(!key("phase 26.1", "1"));
+        assert!(!key("/gsd-plan-phase 260 --gaps", "26"));
+        assert!(!key("phase 26.10", "26.1"), "26.1 is not 26.10");
+        assert!(!key("phase 26.1.2", "26.1"));
+        assert!(!key("phase 260", "26.1"));
+
+        for (prompt, phase) in [
+            ("verify phase 26 again", "26"),
+            ("phase 26", "26"),
+            ("phase 26.", "26"),
+            ("phase 26. Then stop", "26"),
+            ("phase 26, then 27", "26"),
+            ("phase 26\nnext", "26"),
+            ("/gsd-plan-phase 26 --gaps", "26"),
+            ("26 --gaps", "26"),
+            ("phase 26.1", "26.1"),
+            ("phase 26.10", "26.10"),
+            ("/gsd-plan-phase 26.1 --gaps", "26.1"),
+            ("26.1 --gaps", "26.1"),
+            ("phase 26.1.", "26.1"),
+            ("phase-26", "26"),
+        ] {
+            assert!(key(prompt, phase), "{phase} must match {prompt:?}");
+        }
+    }
+
+    #[test]
+    fn the_gap_rule_denies_a_decimal_phase_only_under_its_own_count() {
+        let lim = limits(None, Some(2));
+        // Phase 26 is over the cap; a dispatch for 26.1 is a different phase.
+        assert_eq!(
+            decide_dispatch(
+                &dispatch("/gsd-plan-phase 26.1 --gaps"),
+                &state(0, &[("26", 3)]),
+                &lim,
+                None,
+                None
+            ),
+            GateDecision::Allow
+        );
+        let decision = decide_dispatch(
+            &dispatch("/gsd-plan-phase 26.1 --gaps"),
+            &state(0, &[("26", 3), ("26.1", 3)]),
+            &lim,
+            None,
+            None,
+        );
+        assert!(
+            denied(&decision).starts_with("phase 26.1 has failed verification 3 times"),
+            "{decision:?}"
+        );
     }
 
     #[test]
