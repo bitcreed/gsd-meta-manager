@@ -5,6 +5,35 @@ use clap::{Args, Parser, Subcommand};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// The largest `--max-budget-usd` accepted: a typo guard, far above any real run.
+pub const MAX_BUDGET_USD: f64 = 100_000.0;
+/// The largest `--cap-minutes` accepted (one year). systemd stores `RuntimeMaxSec`
+/// as `u64` microseconds, so an unbounded value is rejected by `systemd-run` after
+/// the launch was already recorded.
+pub const MAX_CAP_MINUTES: f64 = 525_600.0;
+
+/// A finite number in `(0, max]`; `inf`, `NaN`, zero and negatives are refused.
+pub fn positive_finite(text: &str, what: &str, max: f64) -> Result<f64, String> {
+    let value: f64 = text
+        .parse()
+        .map_err(|_| format!("{what} must be a number, got {text:?}"))?;
+    if value.is_finite() && value > 0.0 && value <= max {
+        Ok(value)
+    } else {
+        Err(format!(
+            "{what} must be a finite number greater than 0 and at most {max}, got {text:?}"
+        ))
+    }
+}
+
+fn positive_finite_usd(text: &str) -> Result<f64, String> {
+    positive_finite(text, "the budget", MAX_BUDGET_USD)
+}
+
+fn positive_finite_minutes(text: &str) -> Result<f64, String> {
+    positive_finite(text, "the cap", MAX_CAP_MINUTES)
+}
+
 #[derive(Parser)]
 #[command(
     name = "gsd-meta-manager",
@@ -476,13 +505,13 @@ pub struct LaunchArgs {
     #[arg(long, value_enum, default_value_t = DriverLoopMode::Loop)]
     pub loop_mode: DriverLoopMode,
     /// The driver's spend ceiling, passed to `claude --max-budget-usd`
-    #[arg(long, default_value_t = 10.0)]
+    #[arg(long, default_value_t = 10.0, value_parser = positive_finite_usd)]
     pub max_budget_usd: f64,
     /// Dispatch cap recorded on the run
     #[arg(long, default_value_t = 10)]
     pub cap_dispatches: u32,
     /// Active wall-clock cap in minutes, recorded on the run
-    #[arg(long, default_value_t = 60.0)]
+    #[arg(long, default_value_t = 60.0, value_parser = positive_finite_minutes)]
     pub cap_minutes: f64,
     /// Gap-round cap per phase, recorded on the run
     #[arg(long, default_value_t = 2)]

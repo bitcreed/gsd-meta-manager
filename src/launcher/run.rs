@@ -192,6 +192,27 @@ fn io_error(context: &str, err: impl std::fmt::Display) -> LauncherError {
     }
 }
 
+/// Defence in depth behind the clap parsers (WR-06): a library caller can hand
+/// `launch` a NaN, infinite, zero or negative budget or wall-clock cap.
+fn check_limits(opts: &LaunchOptions) -> Result<(), LauncherError> {
+    let ok = |v: f64, max: f64| v.is_finite() && v > 0.0 && v <= max;
+    if !ok(opts.max_budget_usd, crate::cli::MAX_BUDGET_USD) {
+        return Err(io_error(
+            "--max-budget-usd",
+            format!("{} is not a finite positive amount", opts.max_budget_usd),
+        ));
+    }
+    if let Some(minutes) = opts.limits.wall_clock_min {
+        if !ok(minutes, crate::cli::MAX_CAP_MINUTES) {
+            return Err(io_error(
+                "--cap-minutes",
+                format!("{minutes} is not a finite positive number of minutes"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse an empty or oversized master prompt before anything is written (WR-03):
 /// an empty one makes `claude -p` wait for stdin that is `/dev/null`, and one over
 /// [`MAX_PROMPT_BYTES`] makes `execve` fail with `E2BIG`, both after `RUN | launch`
@@ -459,6 +480,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     let (run_dir, run_id) = validate_run_dir(&opts.project, &requested_run_dir)?;
     let project = fs::canonicalize(&opts.project)
         .map_err(|e| io_error(&format!("project {}", opts.project.display()), e))?;
+    check_limits(&opts)?;
 
     // Before the lock: a token refusal or an unreadable prompt writes nothing.
     let token = resolve_launch_token(Utc::now()).map_err(|e| LauncherError::Auth {
@@ -1121,6 +1143,7 @@ pub fn launch_detached(opts: &LaunchOptions, config: Option<&Path>) -> Result<u3
     let (run_dir, run_id) = validate_run_dir(&opts.project, &requested)?;
     let project = fs::canonicalize(&opts.project)
         .map_err(|e| io_error(&format!("project {}", opts.project.display()), e))?;
+    check_limits(opts)?;
     let prompt_file = fs::canonicalize(&opts.prompt_file)
         .map_err(|e| io_error(&format!("prompt file {}", opts.prompt_file.display()), e))?;
     if !prompt_file.is_file() {
@@ -1607,6 +1630,38 @@ mod tests {
         assert_eq!(args.cap_minutes, 12.5);
         assert_eq!(args.cap_gap_rounds, 0);
         assert!(args.foreground && args.daemon_child);
+    }
+
+    #[test]
+    fn budget_and_cap_flags_refuse_non_finite_zero_and_negative_values() {
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        let parse = |flag: &str, value: &str| {
+            Cli::try_parse_from([
+                "gsd-meta-manager",
+                "driver",
+                "launch",
+                "p",
+                "r1",
+                "--prompt-file",
+                "t.md",
+                &format!("{flag}={value}"),
+            ])
+        };
+        for flag in ["--max-budget-usd", "--cap-minutes"] {
+            for bad in ["inf", "NaN", "-1", "0", "1e300", "abc"] {
+                assert!(parse(flag, bad).is_err(), "{flag}={bad} must be refused");
+            }
+            assert!(parse(flag, "2.5").is_ok(), "{flag}=2.5");
+        }
+        let mut opts = options();
+        opts.max_budget_usd = f64::NAN;
+        assert!(check_limits(&opts).is_err());
+        let mut opts = options();
+        opts.limits.wall_clock_min = Some(f64::INFINITY);
+        assert!(check_limits(&opts).is_err());
+        assert!(check_limits(&options()).is_ok());
     }
 
     #[test]
