@@ -58,6 +58,7 @@ pub fn decide_dispatch(
     state: &RunState,
     limits: &CapLimits,
     tripped: Option<&str>,
+    _control: Option<&str>,
 ) -> GateDecision {
     if let Some(cap) = tripped {
         return GateDecision::Deny(format!("run stopped by launcher cap {cap}"));
@@ -134,9 +135,9 @@ impl CapGate {
     /// asks for the store, so the two cannot deadlock.
     pub fn into_gate(self) -> Gate {
         let CapGate { limits, tripped } = self;
-        Box::new(move |payload, state| {
+        Box::new(move |payload, state, control| {
             let cap = tripped_cap(&tripped);
-            decide_dispatch(payload, state, &limits, cap.as_deref())
+            decide_dispatch(payload, state, &limits, cap.as_deref(), control)
         })
     }
 }
@@ -251,6 +252,7 @@ mod tests {
             &state(0, &[]),
             &limits(None, Some(0)),
             None,
+            None,
         );
         assert_eq!(decision, GateDecision::Allow);
         let missing = HookPayload {
@@ -262,6 +264,7 @@ mod tests {
                 &missing,
                 &state(0, &[("1", 9)]),
                 &limits(None, Some(0)),
+                None,
                 None
             ),
             GateDecision::Allow,
@@ -276,13 +279,13 @@ mod tests {
         let lim = limits(Some(3), None);
         for used in 0..3 {
             assert_eq!(
-                decide_dispatch(&dispatch("x"), &state(used, &[]), &lim, None),
+                decide_dispatch(&dispatch("x"), &state(used, &[]), &lim, None, None),
                 GateDecision::Allow,
                 "dispatch {} of 3",
                 used + 1
             );
         }
-        let decision = decide_dispatch(&dispatch("x"), &state(3, &[]), &lim, None);
+        let decision = decide_dispatch(&dispatch("x"), &state(3, &[]), &lim, None, None);
         assert!(
             denied(&decision).starts_with("dispatch cap reached (3/3)."),
             "{decision:?}"
@@ -291,8 +294,13 @@ mod tests {
 
     #[test]
     fn limit_zero_denies_the_first_dispatch() {
-        let decision =
-            decide_dispatch(&dispatch("x"), &state(0, &[]), &limits(Some(0), None), None);
+        let decision = decide_dispatch(
+            &dispatch("x"),
+            &state(0, &[]),
+            &limits(Some(0), None),
+            None,
+            None,
+        );
         assert!(denied(&decision).starts_with("dispatch cap reached (0/0)."));
     }
 
@@ -301,10 +309,10 @@ mod tests {
         let lim = limits(None, Some(2));
         let prompt = dispatch("/gsd-plan-phase 1 --gaps");
         assert_eq!(
-            decide_dispatch(&prompt, &state(0, &[("1", 2)]), &lim, None),
+            decide_dispatch(&prompt, &state(0, &[("1", 2)]), &lim, None, None),
             GateDecision::Allow
         );
-        let decision = decide_dispatch(&prompt, &state(0, &[("1", 3)]), &lim, None);
+        let decision = decide_dispatch(&prompt, &state(0, &[("1", 3)]), &lim, None, None);
         assert_eq!(
             denied(&decision),
             "phase 1 has failed verification 3 times (gap-round cap 2); no further dispatch \
@@ -312,7 +320,13 @@ mod tests {
         );
         // A dispatch naming another phase is untouched.
         assert_eq!(
-            decide_dispatch(&dispatch("phase 2"), &state(0, &[("1", 3)]), &lim, None),
+            decide_dispatch(
+                &dispatch("phase 2"),
+                &state(0, &[("1", 3)]),
+                &lim,
+                None,
+                None
+            ),
             GateDecision::Allow
         );
     }
@@ -321,10 +335,22 @@ mod tests {
     fn gap_limit_zero_denies_the_first_dispatch_naming_a_phase_at_count_1() {
         let lim = limits(None, Some(0));
         assert_eq!(
-            decide_dispatch(&dispatch("phase 1"), &state(0, &[("1", 0)]), &lim, None),
+            decide_dispatch(
+                &dispatch("phase 1"),
+                &state(0, &[("1", 0)]),
+                &lim,
+                None,
+                None
+            ),
             GateDecision::Allow
         );
-        let decision = decide_dispatch(&dispatch("phase 1"), &state(0, &[("1", 1)]), &lim, None);
+        let decision = decide_dispatch(
+            &dispatch("phase 1"),
+            &state(0, &[("1", 1)]),
+            &lim,
+            None,
+            None,
+        );
         assert!(denied(&decision).contains("failed verification 1 times (gap-round cap 0)"));
     }
 
@@ -334,6 +360,7 @@ mod tests {
             &dispatch("phase 1"),
             &state(5, &[("1", 3)]),
             &limits(Some(5), Some(2)),
+            None,
             None,
         );
         assert!(denied(&decision).starts_with("phase 1 has failed verification"));
@@ -348,6 +375,7 @@ mod tests {
             &state(0, &[]),
             &limits(None, None),
             Some("gap_rounds"),
+            None,
         );
         assert_eq!(denied(&decision), "run stopped by launcher cap gap_rounds");
     }
@@ -358,12 +386,12 @@ mod tests {
         let mut gate = CapGate::new(limits(Some(10), None), Tripped::clone(&tripped)).into_gate();
         let payload = dispatch("x");
         let state = state(0, &[]);
-        assert_eq!(gate(&payload, &state), GateDecision::Allow);
+        assert_eq!(gate(&payload, &state, None), GateDecision::Allow);
         assert!(trip(&tripped, "wall_clock_min"));
         assert!(!trip(&tripped, "gap_rounds"), "the second trip is a no-op");
         assert_eq!(tripped_cap(&tripped).as_deref(), Some("wall_clock_min"));
         assert_eq!(
-            gate(&payload, &state),
+            gate(&payload, &state, None),
             GateDecision::Deny("run stopped by launcher cap wall_clock_min".to_owned())
         );
     }

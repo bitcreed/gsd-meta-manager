@@ -992,7 +992,7 @@ fn a_denying_gate_counts_the_denial_logs_it_and_replies_deny() {
     type Seen = Vec<(Option<String>, u32)>;
     let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    store.set_gate(Box::new(move |payload, state| {
+    store.set_gate(Box::new(move |payload, state, _control| {
         let rounds = state
             .caps
             .gap_rounds

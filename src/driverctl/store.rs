@@ -298,8 +298,10 @@ pub enum GateDecision {
 }
 
 /// The Phase 28 hook point (D-26): decides a driver-level dispatch from the hook
-/// payload and the run state, including `caps.gap_rounds.per_phase`.
-pub type Gate = Box<dyn FnMut(&HookPayload, &RunState) -> GateDecision + Send>;
+/// payload and the run state, including `caps.gap_rounds.per_phase`. The third
+/// argument is the `control` word `DIRECTION.md` reads right now (D-18), so a
+/// human `pause`/`stop` edit reaches the gate without the gate reading files.
+pub type Gate = Box<dyn FnMut(&HookPayload, &RunState, Option<&str>) -> GateDecision + Send>;
 
 /// The store's time source, replaceable for tests.
 pub type Clock = Box<dyn Fn() -> DateTime<Utc> + Send>;
@@ -494,7 +496,7 @@ impl RunStore {
             state,
             lock,
             clock,
-            gate: Box::new(|_, _| GateDecision::Allow),
+            gate: Box::new(|_, _, _| GateDecision::Allow),
             last_regen: None,
             heartbeat_pending: false,
             last_splice: None,
@@ -502,8 +504,9 @@ impl RunStore {
     }
 
     /// Install the dispatch gate (D-26). Phase 28 installs its cap gate here; it
-    /// receives the hook payload and the run state, including
-    /// `caps.gap_rounds.per_phase`. The default allows every dispatch.
+    /// receives the hook payload, the run state (including
+    /// `caps.gap_rounds.per_phase`) and the DIRECTION control word. The default
+    /// allows every dispatch.
     pub fn set_gate(&mut self, gate: Gate) {
         self.gate = gate;
     }
@@ -1070,7 +1073,8 @@ impl RunStore {
                 regen = Regen::Always;
             }
             _ if payload.is_gate() => {
-                match (self.gate)(payload, &self.state) {
+                let control = self.direction_info().control;
+                match (self.gate)(payload, &self.state, control.as_deref()) {
                     GateDecision::Allow => {
                         next.hook_dispatches = next.hook_dispatches.saturating_add(1);
                         next.caps.dispatches.used = next.hook_dispatches;
