@@ -882,6 +882,4 @@ four rows close the gaps the probe surfaced.
 - [x] Dimension 6 Registry Safety: PASS
 - [x] Dimension 7 Inventory Provenance: PASS
 
-**Approval:** pending
-
 **Approval:** approved 2026-10-20 (gsd-ui-checker, 6 PASS / 1 FLAG). Open for planner: D-17 editor order (`$VISUAL` first here vs `$EDITOR` first in D-17) `[inferred — audit]`.
