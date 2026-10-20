@@ -1,0 +1,113 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": "v1.14.0",
+  "phases": [
+    {
+      "number": "14",
+      "name": "UI Fixes",
+      "status": "complete"
+    },
+    {
+      "number": "15",
+      "name": "Transport Foundation",
+      "status": "complete"
+    },
+    {
+      "number": "16",
+      "name": "Run Journal & State Substrate",
+      "status": "complete"
+    },
+    {
+      "number": "17",
+      "name": "Supervisor",
+      "status": "complete"
+    },
+    {
+      "number": "18",
+      "name": "Driver Tab, Live Watch & Durable Injection",
+      "status": "complete"
+    },
+    {
+      "number": "19",
+      "name": "GITSAFE — Git & Blast-Radius Envelope",
+      "status": "pending"
+    },
+    {
+      "number": "20",
+      "name": "Deterministic Decision Router & Run Bounds",
+      "status": "complete"
+    },
+    {
+      "number": "21",
+      "name": "LLM Goal Layer & Prompt-Injection Hardening",
+      "status": "pending"
+    },
+    {
+      "number": "22",
+      "name": "Container Execution Target",
+      "status": "pending"
+    },
+    {
+      "number": "23",
+      "name": "Gate Policy & Auto-Validation",
+      "status": "pending"
+    },
+    {
+      "number": "24",
+      "name": "Roadmap Tab Redesign & Detail-Tab Consolidation",
+      "status": "complete"
+    },
+    {
+      "number": "25",
+      "name": "Running Agents & Live Wave View",
+      "status": "complete"
+    },
+    {
+      "number": "26",
+      "name": "Driver Validation Spike 003",
+      "status": "complete"
+    },
+    {
+      "number": "26.1",
+      "name": "Driver Validation Spike 003 Re-run",
+      "status": "complete"
+    },
+    {
+      "number": "27",
+      "name": "driverctl & Driver Frontmatter",
+      "status": "complete"
+    },
+    {
+      "number": "28",
+      "name": "Sandboxed Driver Launcher",
+      "status": "in_progress"
+    },
+    {
+      "number": "29",
+      "name": "Master Prompt & Run Templates",
+      "status": "complete"
+    },
+    {
+      "number": "30",
+      "name": "Driver Tab on DIRECTION.md",
+      "status": "pending"
+    },
+    {
+      "number": "31",
+      "name": "Retire Superseded Envelope & Goal-Layer Code",
+      "status": "pending"
+    },
+    {
+      "number": "32",
+      "name": "GSD Capabilities: Visibility & Per-Project Control",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd-progress --next",
+    "label": "Advance to the next step",
+    "reason": "Phase 18 of 20 · executing"
+  },
+  "updated_at": "2026-10-20T17:13:26.001Z"
+}
