@@ -824,7 +824,9 @@ do_run() {
         || { echo "launcher-acceptance: the first d33 attempt PASSed; no retry is needed or allowed" >&2; exit 2; }
       attempt=retry; EVD="$EVD/retry"; label=d33-retry
     else
-      rm -f "$EVD"/{verdict.txt,LOG.md,state.json,frontmatter.md,cost.txt,observed.txt,run-env.txt,launcher-out.txt,stop-guard.log,scope-procs.txt,drift.log,injection.txt}
+      # WR-04: the old evidence is only cleared once every gate that can refuse the
+      # rerun has passed (see step 6), so a refused rerun never destroys the record.
+      CLEAR_OLD_EVIDENCE=1
     fi
   fi
   # (2) d33: the pre-registered rubric (T-28-26), before any other gate or any spend
@@ -847,7 +849,10 @@ do_run() {
   if [ -z "${GSDMM_BIN:-}" ]; then ( cd "$REPO" && cargo build --release --quiet ) || { echo "launcher-acceptance: cargo build --release failed" >&2; exit 1; }; fi
   [ -x "$BIN" ] || { echo "launcher-acceptance: $BIN is not executable" >&2; exit 2; }
   host_preconditions
-  # (6) from here on money can be spent
+  # (6) from here on money can be spent; the superseded evidence goes only now (WR-04)
+  if [ "${CLEAR_OLD_EVIDENCE:-0}" = 1 ]; then
+    rm -f "$EVD"/{verdict.txt,LOG.md,state.json,frontmatter.md,cost.txt,observed.txt,run-env.txt,launcher-out.txt,stop-guard.log,scope-procs.txt,drift.log,injection.txt}
+  fi
   ALIAS="acc-$case"; RUN_ID="lacc-$case"; CFG="$SCRATCH_ROOT/config.json"
   PROJECT="$SCRATCH_ROOT/project"; RUN_DIR="$PROJECT/.planning/meta-manager/drivers/$RUN_ID"
   OUT="$SCRATCH_ROOT/launcher-out.txt"; OBS="$SCRATCH_ROOT/observed.txt"; SCOPE_RAW="$SCRATCH_ROOT/scope-procs.raw"
