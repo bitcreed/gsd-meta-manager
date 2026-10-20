@@ -5,10 +5,10 @@ current_phase: 28
 current_phase_name: Sandboxed Driver Launcher
 status: verifying
 stopped_at: Phase 30 UI-SPEC approved
-last_updated: "2026-10-20T16:13:19.840Z"
+last_updated: "2026-10-20T16:16:42.012Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 29 complete, transitioned to Phase 28
-state_head: 92af33c4c0d81056b0ae0860901e818732bc9694
+state_head: c84bb259415d7bd0377c3e239f15b3f06af78506
 progress:
   total_phases: 10
   completed_phases: 12
@@ -272,7 +272,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-20 — Phase 29 complete, transitioned to Phase 28
+Last activity: 2026-10-20 - Completed quick task 261020-f80: Hide sibling driver run dirs in bwrap sandbox + fix auth.rs doc comment
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -856,6 +856,7 @@ Recent decisions affecting current work:
 | 261019-foc | gsd-core v1.18.0 sync baseline | 2026-10-19 | 8c3dea2 | [261019-foc-gsd-core-v1-18-0-sync-baseline](./quick/261019-foc-gsd-core-v1-18-0-sync-baseline/) |
 | 261019-guw | Fix two config.json defects: strict_known_registries type, and unlocked non-atomic writes | 2026-10-19 | 76bbac1 | [261019-guw-fix-two-config-json-defects-strict-known](./quick/261019-guw-fix-two-config-json-defects-strict-known/) |
 | 261019-hqu | README: Where it fits in the GSD ecosystem | 2026-10-19 | 8c022ad | [261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste](./quick/261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste/) |
+| 261020-f80 | Hide sibling driver run dirs in bwrap sandbox + fix auth.rs doc comment | 2026-10-20 | c84bb25 | [261020-f80-hide-sibling-driver-run-dirs-in-bwrap-sa](./quick/261020-f80-hide-sibling-driver-run-dirs-in-bwrap-sa/) |
 
 ## Session Continuity
 
