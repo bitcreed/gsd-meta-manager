@@ -70,6 +70,22 @@ by the in-sandbox shim; only the token file is masked). Live probe extended with
 rendered prompt over 120 KiB in both `launch` and `launch_detached`, before the lock. The fake claude shim now
 reads the argument after `--`. New e2e tests cover a `---`-leading template and the empty/oversized refusals.
 
+**Real-CLI audit (2026-10-19) — VERIFIED, the inferred item is closed.** Host `claude --version` =
+`2.1.304 (Claude Code)`. Run from a neutral scratch dir with the launcher's exact `claude_argv` shape, only
+model and budget swapped:
+`claude -p --setting-sources user --model haiku --output-format stream-json --verbose --permission-mode bypassPermissions --max-budget-usd 0.03 -- "$P" </dev/null`
+
+| Prompt `$P` | exit | `result` event |
+|---|---|---|
+| `reply with the word OK` | 0 | `{"subtype":"success","is_error":false,"result":"OK","total_cost_usd":0.0047}` |
+| `---\ntitle: x\n---\nreply with the word DASHOK` | 0 | `{"subtype":"success","is_error":false,"result":"DASHOK","total_cost_usd":0.0047}` |
+
+Control (same dash-leading prompt as a positional right after `-p`, no `--`): exit 1,
+`error: unknown option '---\ntitle: x\n---\nreply with the word DASHOK'`, no API call. So `--` is honoured,
+the argument after it is the prompt, and it is required for front-matter templates. Spend ≈ $0.0094. No code
+change needed. (The `[inferred — audit]` note on `claude_argv` in `src/launcher/sandbox.rs` is now settled by
+this entry.)
+
 ### WR-04: `RERUN=1` deletes the committed evidence BEFORE any gate that can refuse the rerun
 
 **Files modified:** `scripts/launcher-acceptance.sh`
