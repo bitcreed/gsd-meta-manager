@@ -342,7 +342,9 @@ pub const MAX_PROMPT_BYTES: usize = 120 * 1024;
 ///
 /// The prompt is the LAST argument, after a `--`, so a template that starts with
 /// `-` (a `---` front-matter fence, a `- ` bullet) is never read as an option
-/// (WR-03). `[inferred — audit]`: `claude` is a commander CLI, which honours `--`.
+/// (WR-03). Verified against the real `claude` 2.1.304 (commit 6ffda4c, Phase 28
+/// `28-REVIEW-FIX.md` WR-03): a `---`-leading prompt after `--` succeeds, and the same
+/// prompt without `--` is rejected as an unknown option.
 pub fn claude_argv(prompt: &str, model: &str, max_budget_usd: f64) -> Vec<OsString> {
     let mut driver_argv: Vec<OsString> = vec![os("claude"), os("-p")];
     // Project settings are reloaded mid-session; only the per-run user settings
