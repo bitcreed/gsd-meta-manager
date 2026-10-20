@@ -31,7 +31,7 @@ use tempfile::TempDir;
 const PHASE_DIR: &str = ".planning/phases/29-master-prompt-run-templates";
 
 /// The cases whose refusals are proven below.
-const CASES: [&str; 1] = ["h1"];
+const CASES: [&str; 5] = ["h1", "h2", "h3", "h4", "o1"];
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -279,13 +279,13 @@ fn a_launch_that_could_pass_the_ceiling_is_refused_with_exit_8() {
         return;
     }
     for case in CASES {
-        // ledger 24.8 + h1's 0.40 budget > the approved 25
+        // ledger 24.99 + any case budget (0.15 at least) > the approved 25
         let trap = Trap::new();
         let acc = TempDir::new().expect("tempdir");
         write_consent(acc.path(), "25");
         fs::write(
             acc.path().join("campaign.txt"),
-            "2026-10-20T00:00:00Z o1 1 24.8000 killed-full-budget\n",
+            "2026-10-20T00:00:00Z o1 1 24.9900 killed-full-budget\n",
         )
         .expect("write a ledger");
         let out = trap.script(
@@ -440,7 +440,11 @@ fn the_committed_campaign_ledger_stays_within_the_phase_ceiling() {
 /// `claude` answers `--version`, otherwise appends its (truncated) argv to the hit
 /// log and prints a success `result` line that costs nothing. The hit log path is
 /// baked into each script, so the launcher's environment carries nothing extra.
-fn write_rehearsal_fakes(dir: &Path) -> PathBuf {
+///
+/// With a `scenario` (a `/bin/sh` script, `__D__` standing for `dir`) the fake `claude` runs it after
+/// logging, as a scripted driver would: it calls `driverctl` the way the master prompt does. The fake
+/// `bwrap` honours `--chdir`, so the scenario starts in the project like the real driver does.
+fn write_rehearsal_fakes(dir: &Path, scenario: Option<&str>) -> PathBuf {
     let hits = dir.join("hits.log");
     let h = hits.display();
     let log_argv = format!(
@@ -450,13 +454,22 @@ fn write_rehearsal_fakes(dir: &Path) -> PathBuf {
         "#!/bin/sh\nSHIMS=$(dirname \"$0\")\nTOOL=systemd-run\n{log_argv}unit=\"\"\nfor a in \"$@\"; do case \"$a\" in --unit=*) unit=${{a#--unit=}};; esac; done\n[ -n \"$unit\" ] && echo $$ > \"$SHIMS/$unit.pid\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"--\" ]; then shift; break; fi; shift; done\nexec \"$@\"\n"
     );
     let bwrap = format!(
-        "#!/bin/sh\nTOOL=bwrap\n{log_argv}while [ $# -gt 0 ]; do if [ \"$1\" = \"--\" ]; then shift; break; fi; shift; done\nexec \"$@\"\n"
+        "#!/bin/sh\nTOOL=bwrap\n{log_argv}CH=\"\"\nwhile [ $# -gt 0 ]; do case \"$1\" in --chdir) CH=$2;; esac; if [ \"$1\" = \"--\" ]; then shift; break; fi; shift; done\n[ -n \"$CH\" ] && cd \"$CH\"\nexec \"$@\"\n"
     );
     let systemctl = format!(
         "#!/bin/sh\nSHIMS=$(dirname \"$0\")\nTOOL=systemctl\n{log_argv}[ \"$1\" = \"--user\" ] && shift\nverb=$1\nunit=${{2%.scope}}\npid=\"\"\n[ -n \"$unit\" ] && pid=$(cat \"$SHIMS/$unit.pid\" 2>/dev/null)\ncase \"$verb\" in\n  is-system-running) echo running; exit 0;;\n  is-active) if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then echo active; exit 0; fi; echo inactive; exit 3;;\n  stop) if [ -n \"$pid\" ]; then kill -s TERM -- \"-$pid\" 2>/dev/null; i=0; while kill -0 \"$pid\" 2>/dev/null && [ \"$i\" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done; fi; exit 0;;\nesac\nexit 0\n"
     );
+    let run_scenario = match scenario {
+        Some(body) => {
+            let path = dir.join("scenario.sh");
+            fs::write(&path, body.replace("__D__", &dir.display().to_string()))
+                .expect("write the scenario");
+            format!("exec /bin/sh '{}'\n", path.display())
+        }
+        None => String::new(),
+    };
     let claude = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.304 (Claude Code)\"; exit 0; fi\nTOOL=claude\n{log_argv}printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":0}}'\nexit 0\n"
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.304 (Claude Code)\"; exit 0; fi\nTOOL=claude\n{log_argv}{run_scenario}printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":0}}'\nexit 0\n"
     );
     for (name, body) in [
         ("systemd-run", systemd_run),
@@ -494,7 +507,7 @@ fn rehearsal_base() -> Result<PathBuf, String> {
 
 /// Run one rehearsal and hand (harness output, hit log, scratch evidence root) to `check`
 /// while the scratch tree still exists; it is removed afterwards.
-fn rehearse(case: &str, check: impl FnOnce(&Output, &str, &Path)) {
+fn rehearse(case: &str, scenario: Option<&str>, check: impl FnOnce(&Output, &str, &Path)) {
     if let Some(reason) = skip_reason() {
         println!("SKIP: {reason}");
         return;
@@ -517,7 +530,7 @@ fn rehearse(case: &str, check: impl FnOnce(&Output, &str, &Path)) {
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).expect("chmod");
     let fakes = work.path().join("fakes");
     fs::create_dir_all(&fakes).expect("fakes dir");
-    let hits = write_rehearsal_fakes(&fakes);
+    let hits = write_rehearsal_fakes(&fakes, scenario);
     // a dummy stored token under a scratch XDG_CONFIG_HOME (never the real config dir)
     let config_home = work.path().join("cfg");
     let token = config_home.join("gsd-meta-manager/driver-oauth-token");
@@ -603,7 +616,7 @@ fn assert_rehearsal_reached_the_fake_claude(case: &str, out: &Output, hit_log: &
 
 #[test]
 fn rehearsal_h1_reaches_the_fake_claude_through_driver_new_check_and_launch() {
-    rehearse("h1", |out, hit_log, acc| {
+    rehearse("h1", None, |out, hit_log, acc| {
         assert_rehearsal_reached_the_fake_claude("h1", out, hit_log, acc);
         let observed = fs::read_to_string(acc.join("h1/observed.txt")).unwrap_or_default();
         assert!(observed.contains("run_id=2"), "{observed}");
@@ -611,6 +624,187 @@ fn rehearsal_h1_reaches_the_fake_claude_through_driver_new_check_and_launch() {
             !observed.contains("--prompt-file"),
             "h1 launches by run id alone:\n{observed}"
         );
+    });
+}
+
+/// Shared prelude of the scripted drivers: which launch this is, and the launcher's pid so the
+/// scenario ends when the harness SIGKILLs the launcher (the fake scope has no die-with-parent).
+const PRELUDE: &str = r#"
+D='__D__'
+N=$(cat "$D/n" 2>/dev/null || echo 0); N=$((N + 1)); echo "$N" > "$D/n"
+P=$PPID
+HOOK='{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s1","tool_input":{"prompt":"run phase 1"}}'
+RESULT='{"type":"result","subtype":"success","total_cost_usd":0}'
+alive() { kill -0 "$P" 2>/dev/null && [ -d "$D" ]; }
+driverctl log start --mode headless --loop-mode loop
+"#;
+
+/// h1: launch 1 dispatches I-01 and hangs until the launcher is SIGKILLed; launch 2 recovers it
+/// first, then redispatches and finishes.
+fn h1_scenario() -> String {
+    format!(
+        r#"{PRELUDE}
+if [ "$N" = 1 ]; then
+  driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phase 1
+  printf '%s' "$HOOK" | driverctl hook > "$D/hook1.json"
+  while alive; do sleep 1; done
+  exit 0
+fi
+driverctl log recovered --item I-01 --action resume --reason "worker died"
+driverctl log reconcile --found 1
+driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phase 1
+printf '%s' "$HOOK" | driverctl hook > "$D/hook2.json"
+driverctl log report --item I-01 --status done <<'EOF'
+STATUS: done
+FINDINGS: 0
+EOF
+driverctl log verified --item I-01 --done-when met --evidence "notes/h1.txt committed"
+driverctl log status --item I-01 --state done --outcome "committed"
+driverctl log end --reason all-done
+printf '%s\n' "$RESULT"
+"#
+    )
+}
+
+/// h2: launch 1 dispatches I-01, waits for the harness to save `control: pause`, records the
+/// report, meets the pause at the next dispatch and ends `pause`; launch 2 recovers I-01 first.
+fn h2_scenario() -> String {
+    format!(
+        r#"{PRELUDE}
+DIR=$(ls "$PWD"/.planning/meta-manager/drivers/*/DIRECTION.md | head -1)
+if [ "$N" = 1 ]; then
+  driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phase 1
+  printf '%s' "$HOOK" | driverctl hook > "$D/hook1.json"
+  i=0
+  until grep -q '^- control: pause$' "$DIR" || [ "$i" -ge 120 ]; do sleep 0.5; i=$((i + 1)); done
+  driverctl log report --item I-01 --status partial <<'EOF'
+STATUS: partial
+FINDINGS: 0
+EOF
+  printf '%s' "$HOOK" | driverctl hook > "$D/hook2.json"
+  driverctl log dispatched --item I-02 --step "/gsd-plan-phase 2" --round 0 --phase 2 2> "$D/dispatch_refused.err"
+  driverctl log end --reason pause
+  printf '%s\n' "$RESULT"
+  exit 0
+fi
+driverctl log recovered --item I-01 --action resume --reason "pause relaunch"
+driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1" --round 0 --phase 1
+printf '%s' "$HOOK" | driverctl hook > "$D/hook3.json"
+while alive; do sleep 1; done
+"#
+    )
+}
+
+/// h3: the seeded park. Launch A (answer only) ends all-parked at once; launch B (gap-rounds
+/// raised) dispatches I-01.
+fn h3_scenario() -> String {
+    format!(
+        r#"{PRELUDE}
+if [ "$N" = 1 ]; then
+  driverctl log end --reason all-parked
+  printf '%s\n' "$RESULT"
+  exit 0
+fi
+driverctl log status --item I-01 --state pending --outcome "gap-rounds raised to 1"
+driverctl log dispatched --item I-01 --step "/gsd-plan-phase 1 --gaps" --round 1 --phase 1
+printf '%s' "$HOOK" | driverctl hook > "$D/hook1.json"
+while alive; do sleep 1; done
+"#
+    )
+}
+
+/// h4: with the gap cap at 0 and `gaps_found` present at launch, the closure dispatch is denied
+/// by the launcher; the driver parks `launcher-cap`, never retries, and ends.
+fn h4_scenario() -> String {
+    format!(
+        r#"{PRELUDE}
+sleep 8
+printf '%s' "$HOOK" | driverctl hook > "$D/hook1.json"
+driverctl log status --item I-01 --state parked --rule launcher-cap --outcome "dispatch denied by the launcher"
+driverctl log end --reason all-parked
+printf '%s\n' "$RESULT"
+"#
+    )
+}
+
+/// What a scripted rehearsal must add: the verdict the evidence derives is a PASS.
+fn assert_scripted_pass(case: &str, out: &Output) {
+    let all = text(out);
+    assert!(
+        all.contains("RESULT PASS"),
+        "{case}: the scripted driver did not derive RESULT PASS:\n{all}"
+    );
+}
+
+#[test]
+fn scripted_rehearsal_h1_derives_a_pass_through_kill_and_relaunch() {
+    rehearse("h1", Some(&h1_scenario()), |out, hit_log, acc| {
+        assert_rehearsal_reached_the_fake_claude("h1", out, hit_log, acc);
+        assert_scripted_pass("h1", out);
+        let claude_hits = hit_log.lines().filter(|l| l.starts_with("claude ")).count();
+        assert_eq!(claude_hits, 2, "launch 1 and launch 2: {hit_log}");
+    });
+}
+
+#[test]
+fn scripted_rehearsal_h2_derives_a_pass_through_pause_and_relaunch() {
+    rehearse("h2", Some(&h2_scenario()), |out, hit_log, acc| {
+        assert_rehearsal_reached_the_fake_claude("h2", out, hit_log, acc);
+        assert_scripted_pass("h2", out);
+        let observed = fs::read_to_string(acc.join("h2/observed.txt")).unwrap_or_default();
+        assert!(observed.contains("pause_saved_epoch="), "{observed}");
+        assert!(observed.contains("restored_epoch="), "{observed}");
+    });
+}
+
+#[test]
+fn scripted_rehearsal_h3_seeds_the_park_host_side_and_derives_a_pass() {
+    rehearse("h3", Some(&h3_scenario()), |out, hit_log, acc| {
+        assert_rehearsal_reached_the_fake_claude("h3", out, hit_log, acc);
+        assert_scripted_pass("h3", out);
+        let observed = fs::read_to_string(acc.join("h3/observed.txt")).unwrap_or_default();
+        assert!(observed.contains("seeded_events=yes"), "{observed}");
+        let claude_hits = hit_log.lines().filter(|l| l.starts_with("claude ")).count();
+        assert_eq!(claude_hits, 2, "launch A and launch B: {hit_log}");
+    });
+}
+
+#[test]
+fn scripted_rehearsal_h4_passes_the_stripped_prompt_fixture_and_derives_a_pass() {
+    rehearse("h4", Some(&h4_scenario()), |out, hit_log, acc| {
+        assert_rehearsal_reached_the_fake_claude("h4", out, hit_log, acc);
+        assert_scripted_pass("h4", out);
+        let observed = fs::read_to_string(acc.join("h4/observed.txt")).unwrap_or_default();
+        assert!(
+            observed.contains("--prompt-file tests/fixtures/prompt/MASTER-PROMPT.no-gap-rules.md"),
+            "h4 passes the fixture through the hidden flag:\n{observed}"
+        );
+        assert!(
+            observed.contains("expected_prompt_version=custom:"),
+            "{observed}"
+        );
+        let env = fs::read_to_string(acc.join("h4/run-env.txt")).unwrap_or_default();
+        assert!(
+            env.contains("PROMPT_SOURCE=file tests/fixtures/prompt"),
+            "{env}"
+        );
+    });
+}
+
+#[test]
+fn rehearsal_o1_runs_the_seed_the_watcher_and_an_embedded_launch() {
+    rehearse("o1", None, |out, hit_log, acc| {
+        assert_rehearsal_reached_the_fake_claude("o1", out, hit_log, acc);
+        let env = fs::read_to_string(acc.join("o1/run-env.txt")).unwrap_or_default();
+        assert!(env.contains("MODEL=opus"), "{env}");
+        assert!(env.contains("PROMPT_SOURCE=embedded"), "{env}");
+        assert!(
+            !env.contains("--prompt-file"),
+            "o1 launches by run id alone:\n{env}"
+        );
+        let log = fs::read_to_string(acc.join("o1/LOG.md")).unwrap_or_default();
+        assert!(log.contains("prompt=driver-prompt/1.0.0"), "{log}");
+        assert!(acc.join("o1/verdict.txt").is_file());
     });
 }
 
@@ -636,4 +830,10 @@ fn run_live(case: &str) {
 #[ignore = "paid live run: needs plan 29-08's consent.txt; spends real model budget"]
 fn live_h1_crash_reconcile() {
     run_live("h1");
+}
+
+#[test]
+#[ignore = "paid live run: needs plan 29-08's consent.txt; spends real model budget"]
+fn live_h2_pause() {
+    run_live("h2");
 }
