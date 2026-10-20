@@ -33,10 +33,12 @@ Written by the launcher / hooks, never by the model:
 Current item status = the last `status` event for that id (absent = pending).
 -->
 
-- 2026-10-20T01:12:35Z | RUN | launch | n=1 | mode=bwrap-scope | model=haiku
-- 2026-10-20T01:12:36Z | RUN | connect | session=b7f5cb08-c6c9-4a44-aa68-582057b3707d | source=startup
-- 2026-10-20T01:13:01Z | RUN | gap-observed | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
-- 2026-10-20T01:13:25Z | RUN | gap-coalesced | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md
-- 2026-10-20T01:13:52Z | RUN | gap-coalesced | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md
-- 2026-10-20T01:15:13Z | RUN | disconnect | session=b7f5cb08-c6c9-4a44-aa68-582057b3707d | reason=other
-- 2026-10-20T01:15:14Z | RUN | launch-end | status=crashed | reason=driver exited rc=0 without RUN end
+- 2026-10-20T01:16:02Z | RUN | launch | n=1 | mode=bwrap-scope | model=haiku
+- 2026-10-20T01:16:03Z | RUN | connect | session=6ab61d51-c1c3-424d-b9fe-d808e36b64bc | source=startup
+- 2026-10-20T01:16:12Z | RUN | gap-observed | phase=1 | count=1 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
+- 2026-10-20T01:17:00Z | RUN | gap-observed | phase=1 | count=2 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
+- 2026-10-20T01:17:46Z | RUN | gap-observed | phase=1 | count=3 | file=.planning/phases/01-slugify/01-VERIFICATION.md | source=driverctl-scan
+- 2026-10-20T01:18:00Z | RUN | dispatch-denied | reason=phase 1 has failed verification 3 times (gap-round cap 2); no further dispatch for phase 1. Park the item with --rule gap-rounds.
+- 2026-10-20T01:18:30Z | RUN | dispatch-denied | reason=phase 1 has failed verification 3 times (gap-round cap 2); no further dispatch for phase 1. Park the item with --rule gap-rounds.
+- 2026-10-20T01:18:35Z | RUN | disconnect | session=6ab61d51-c1c3-424d-b9fe-d808e36b64bc | reason=other
+- 2026-10-20T01:18:36Z | RUN | launch-end | status=crashed | reason=driver exited rc=0 without RUN end

@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "run_id": "lacc-l3",
-  "project_root": "/home/blk/.local/state/gsd-meta-manager/launcher-acceptance/l3-20261020T011212Z/project",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/launcher-acceptance/l3-20261020T011602Z/project",
   "status": "crashed",
   "status_reason": "driver exited rc=0 without RUN end",
-  "created_at": "2026-10-20T01:12:35Z",
-  "updated_at": "2026-10-20T01:15:14Z",
+  "created_at": "2026-10-20T01:16:02Z",
+  "updated_at": "2026-10-20T01:18:36Z",
   "launches": 1,
   "current": {
     "item": null,
@@ -20,28 +20,28 @@
       "session_id": null,
       "model": null,
       "mode": "bwrap-scope",
-      "pid": 3499414,
-      "scope_unit": "gsdmm-driver-lacc-l3-7a3b84a0-1.scope",
+      "pid": 3510634,
+      "scope_unit": "gsdmm-driver-lacc-l3-44581b63-1.scope",
       "host": "mediabox",
-      "started_at": "2026-10-20T01:12:35Z",
-      "last_heartbeat": "2026-10-20T01:12:35Z"
+      "started_at": "2026-10-20T01:16:02Z",
+      "last_heartbeat": "2026-10-20T01:16:02Z"
     },
     {
       "role": "driver",
       "state": "disconnected",
-      "session_id": "b7f5cb08-c6c9-4a44-aa68-582057b3707d",
+      "session_id": "6ab61d51-c1c3-424d-b9fe-d808e36b64bc",
       "model": "haiku",
       "mode": "headless",
       "pid": null,
-      "scope_unit": "gsdmm-driver-lacc-l3-7a3b84a0-1.scope",
+      "scope_unit": "gsdmm-driver-lacc-l3-44581b63-1.scope",
       "host": "mediabox",
-      "started_at": "2026-10-20T01:12:35Z",
-      "last_heartbeat": "2026-10-20T01:15:13Z"
+      "started_at": "2026-10-20T01:16:02Z",
+      "last_heartbeat": "2026-10-20T01:18:35Z"
     }
   ],
   "caps": {
     "dispatches": {
-      "used": 8,
+      "used": 6,
       "limit": 10
     },
     "wall_clock_min": {
@@ -51,41 +51,39 @@
     "gap_rounds": {
       "limit": 2,
       "seen": {
-        "1:00de39a2b0dd754e": {
+        "1:8581b7c9bf20fb93": {
           "phase": "1",
           "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
         },
-        "1:2e1f61a89e755f11": {
+        "1:883db857856bfda8": {
           "phase": "1",
           "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
         },
-        "1:906fef4dad57a468": {
+        "1:baa320df42596c34": {
           "phase": "1",
           "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
         }
       },
       "per_phase": {
-        "1": 1
+        "1": 3
       },
       "last_write": {
-        "1": 1792458830.8300347
+        "1": 1792459066.5897214
       },
-      "coalesced": {
-        "1": 2
-      }
+      "coalesced": {}
     }
   },
-  "hook_dispatches": 8,
-  "denied_dispatches": 0,
+  "hook_dispatches": 6,
+  "denied_dispatches": 2,
   "last_event": {
-    "at": "2026-10-20T01:15:14Z",
+    "at": "2026-10-20T01:18:36Z",
     "item": "RUN",
     "event": "launch-end",
     "summary": "status=crashed reason=driver exited rc=0 without RUN end"
   },
   "ended_by_driver": false,
-  "active_seconds": 158.455892705,
+  "active_seconds": 153.463781569,
   "launch_branch": "main",
-  "launch_start_sha": "c8e045d3a1bf4fb63203b85b4454ad4ac8825a12",
+  "launch_start_sha": "e82ba17459eade2ee1e59eca127ef0aa6b415300",
   "sandbox": "bwrap-scope"
 }
