@@ -285,6 +285,10 @@ pub struct LaunchSpec {
     pub sandbox: Option<String>,
     /// What the host probes found missing, for a degraded launch.
     pub sandbox_missing: Vec<String>,
+    /// The master-prompt version this launch runs (`driver-prompt/1.0.0` or
+    /// `custom:<sha8>`, Phase 29 D-03); `None` for a launch that is not the
+    /// launcher's (`driverctl serve`).
+    pub prompt_version: Option<String>,
 }
 
 // ---------------------------------------------------------------- hooks
@@ -452,6 +456,107 @@ enum Regen {
     /// A heartbeat: regenerate only when [`HEARTBEAT_REGEN_MIN_S`] has passed
     /// since the last regeneration (or there has been none).
     HeartbeatOnly,
+}
+
+/// The derived frontmatter view (D-19): item counts and states in DIRECTION
+/// order, caps with `gap_rounds` from the worst phase, the dispatch audit.
+///
+/// Pure: the same state and DIRECTION always give the same block, so
+/// [`RunStore::frontmatter`] and `driver new` (which emits the never-launched
+/// block before any store exists) share one derivation (Phase 29, D-09).
+pub fn frontmatter_for(state: &RunState, direction: &DirectionInfo) -> DriverFrontmatter {
+    let mut ids: Vec<String> = Vec::new();
+    let source: Vec<&String> = if direction.items.is_empty() {
+        state.items.keys().collect()
+    } else {
+        direction.items.iter().map(|i| &i.id).collect()
+    };
+    for id in source {
+        // A duplicated `### I-01` header must not become a duplicate YAML key.
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+
+    let mut counts = ItemCounts {
+        total: u32::try_from(ids.len()).unwrap_or(u32::MAX),
+        ..ItemCounts::default()
+    };
+    let mut entries = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let record = state.items.get(id);
+        let item_state = record.map_or(ItemState::Pending, |r| r.state);
+        match item_state {
+            ItemState::Pending => counts.pending += 1,
+            ItemState::Running => counts.running += 1,
+            ItemState::Done => counts.done += 1,
+            ItemState::Parked => counts.parked += 1,
+            ItemState::Failed => counts.failed += 1,
+        }
+        entries.push((
+            id.clone(),
+            ItemStateEntry {
+                state: item_state,
+                dispatches: record.map_or(0, |r| r.dispatches),
+                outcome: record.and_then(|r| r.outcome.clone()),
+            },
+        ));
+    }
+
+    let (phase, used) = worst_phase(&state.caps.gap_rounds);
+    let logged = state
+        .items
+        .values()
+        .fold(0u32, |acc, r| acc.saturating_add(r.dispatches));
+
+    DriverFrontmatter {
+        generated_by: format!("driverctl {}", env!("CARGO_PKG_VERSION")),
+        driver_frontmatter_version: DRIVER_FRONTMATTER_VERSION,
+        run_id: state.run_id.clone(),
+        status: state.status.clone(),
+        status_reason: state.status_reason.clone(),
+        control: direction.control.clone(),
+        current_item: state.current.item.clone(),
+        current_phase: state.current.phase.clone(),
+        current_step: state.current.step.clone(),
+        items: counts,
+        item_states: ItemStates(entries),
+        caps: Caps {
+            dispatches: state.caps.dispatches.clone(),
+            wall_clock_min: state.caps.wall_clock_min.clone(),
+            gap_rounds: GapCap {
+                used,
+                limit: state.caps.gap_rounds.limit,
+                phase,
+            },
+        },
+        dispatch_audit: DispatchAudit {
+            logged,
+            observed: state.hook_dispatches,
+            denied: state.denied_dispatches,
+        },
+        launches: state.launches,
+        sandbox: state
+            .extra
+            .get(EXTRA_SANDBOX)
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        sandbox_missing: state
+            .extra
+            .get(EXTRA_SANDBOX_MISSING)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect()
+            }),
+        prompt_version: None,
+        connected: state.connections.clone(),
+        heartbeat_stale_after_s: HEARTBEAT_STALE_AFTER_S,
+        last_event: state.last_event.clone().unwrap_or_default(),
+        updated_at: state.updated_at.clone(),
+    }
 }
 
 impl RunStore {
@@ -650,104 +755,9 @@ impl RunStore {
 
     // -- frontmatter
 
-    /// The derived frontmatter view (D-19): item counts and states in DIRECTION
-    /// order, caps with `gap_rounds` from the worst phase, the dispatch audit.
+    /// The derived frontmatter view (D-19): see [`frontmatter_for`].
     pub fn frontmatter(&self) -> DriverFrontmatter {
-        let direction = self.direction_info();
-        let mut ids: Vec<String> = Vec::new();
-        let source: Vec<&String> = if direction.items.is_empty() {
-            self.state.items.keys().collect()
-        } else {
-            direction.items.iter().map(|i| &i.id).collect()
-        };
-        for id in source {
-            // A duplicated `### I-01` header must not become a duplicate YAML key.
-            if !ids.contains(id) {
-                ids.push(id.clone());
-            }
-        }
-
-        let mut counts = ItemCounts {
-            total: u32::try_from(ids.len()).unwrap_or(u32::MAX),
-            ..ItemCounts::default()
-        };
-        let mut entries = Vec::with_capacity(ids.len());
-        for id in &ids {
-            let record = self.state.items.get(id);
-            let state = record.map_or(ItemState::Pending, |r| r.state);
-            match state {
-                ItemState::Pending => counts.pending += 1,
-                ItemState::Running => counts.running += 1,
-                ItemState::Done => counts.done += 1,
-                ItemState::Parked => counts.parked += 1,
-                ItemState::Failed => counts.failed += 1,
-            }
-            entries.push((
-                id.clone(),
-                ItemStateEntry {
-                    state,
-                    dispatches: record.map_or(0, |r| r.dispatches),
-                    outcome: record.and_then(|r| r.outcome.clone()),
-                },
-            ));
-        }
-
-        let (phase, used) = worst_phase(&self.state.caps.gap_rounds);
-        let logged = self
-            .state
-            .items
-            .values()
-            .fold(0u32, |acc, r| acc.saturating_add(r.dispatches));
-
-        DriverFrontmatter {
-            generated_by: format!("driverctl {}", env!("CARGO_PKG_VERSION")),
-            driver_frontmatter_version: DRIVER_FRONTMATTER_VERSION,
-            run_id: self.state.run_id.clone(),
-            status: self.state.status.clone(),
-            status_reason: self.state.status_reason.clone(),
-            control: direction.control,
-            current_item: self.state.current.item.clone(),
-            current_phase: self.state.current.phase.clone(),
-            current_step: self.state.current.step.clone(),
-            items: counts,
-            item_states: ItemStates(entries),
-            caps: Caps {
-                dispatches: self.state.caps.dispatches.clone(),
-                wall_clock_min: self.state.caps.wall_clock_min.clone(),
-                gap_rounds: GapCap {
-                    used,
-                    limit: self.state.caps.gap_rounds.limit,
-                    phase,
-                },
-            },
-            dispatch_audit: DispatchAudit {
-                logged,
-                observed: self.state.hook_dispatches,
-                denied: self.state.denied_dispatches,
-            },
-            launches: self.state.launches,
-            sandbox: self
-                .state
-                .extra
-                .get(EXTRA_SANDBOX)
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            sandbox_missing: self
-                .state
-                .extra
-                .get(EXTRA_SANDBOX_MISSING)
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.as_str().map(str::to_owned))
-                        .collect()
-                }),
-            connected: self.state.connections.clone(),
-            heartbeat_stale_after_s: HEARTBEAT_STALE_AFTER_S,
-            last_event: self.state.last_event.clone().unwrap_or_default(),
-            updated_at: self.state.updated_at.clone(),
-        }
+        frontmatter_for(&self.state, &self.direction_info())
     }
 
     /// The text of the frontmatter block, as `show` replies with it.

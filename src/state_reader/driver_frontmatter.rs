@@ -384,6 +384,12 @@ pub struct DriverFrontmatter {
     /// What the host probes found missing when `sandbox` is `degraded`.
     #[serde(default)]
     pub sandbox_missing: Option<Vec<String>>,
+    /// The master-prompt version this launch ran: `driver-prompt/1.0.0` for the
+    /// embedded prompt, `custom:<sha8>` for an operator-supplied one (Phase 29,
+    /// D-03). Additive like `sandbox`: absent from every frontmatter written
+    /// before Phase 29 and emitted only when set, so those stay byte-identical.
+    #[serde(default)]
+    pub prompt_version: Option<String>,
     #[serde(default)]
     pub connected: Vec<Connection>,
     #[serde(default = "default_stale_after")]

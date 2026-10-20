@@ -110,6 +110,7 @@ fn base(status: RunStatus) -> DriverFrontmatter {
         launches: 0,
         sandbox: None,
         sandbox_missing: None,
+        prompt_version: None,
         connected: Vec::new(),
         heartbeat_stale_after_s: HEARTBEAT_STALE_AFTER_S,
         last_event: LastEvent::default(),

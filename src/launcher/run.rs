@@ -738,6 +738,7 @@ fn run_one_launch(
         scope_unit,
         sandbox: Some(ctx.posture.as_str().to_owned()),
         sandbox_missing: ctx.posture.missing().to_vec(),
+        prompt_version: None,
     })?;
 
     let budget = Budget {
