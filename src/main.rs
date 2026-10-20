@@ -1,6 +1,7 @@
 mod driver_cli;
 mod driverctl_cli;
 mod event;
+mod next_cli;
 mod tui;
 
 use event::EventBus;
@@ -105,6 +106,18 @@ fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse_checked();
     match cli.command.take() {
         Some(Commands::Driverctl { action }) => std::process::exit(driverctl_cli::run(action)),
+        // `next` is the read-only router hint (Phase 29, D-21): dispatched here,
+        // before `init_tracing`, because tracing creates a log file and `next`
+        // must write nothing, in or out of the sandbox.
+        Some(Commands::Next {
+            project,
+            target_phase,
+            ..
+        }) => std::process::exit(next_cli::run(
+            &project,
+            target_phase.as_deref(),
+            cli.config.clone(),
+        )),
         other => cli.command = other,
     }
 
@@ -432,6 +445,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Driver { .. }) => {
             return Err(anyhow::anyhow!(
                 "driver is dispatched in `main` before the async runtime exists"
+            ));
+        }
+        // And `next`, which runs even earlier (before tracing) so it can write nothing.
+        Some(Commands::Next { .. }) => {
+            return Err(anyhow::anyhow!(
+                "next is dispatched in `main` before tracing and the async runtime exist"
             ));
         }
         Some(Commands::Envelope { action }) => match action {

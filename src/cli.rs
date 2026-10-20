@@ -432,6 +432,25 @@ pub enum Commands {
         #[command(subcommand)]
         action: DriverAction,
     },
+    // The read-only half of the master prompt's "what next" citation (Phase 29,
+    // D-20, D-21). The Phase 20 router answers from the state reader and nothing
+    // else, so the hint needs no registry write, no lock, no journal and no log
+    // file; `main` therefore dispatches it before `init_tracing`, like
+    // `driverctl`, and the sandbox shim exposes exactly this verb.
+    //
+    // `--json` is required (not defaulted) so the output contract is chosen
+    // explicitly and a future human-readable form has room to exist.
+    /// Advisory next GSD command from the Phase 20 router (read-only)
+    Next {
+        /// Alias of a registered project, or a path to a directory containing .planning/
+        project: String,
+        /// The phase to route (defaults to the first unfinished current-milestone phase)
+        #[arg(long)]
+        target_phase: Option<String>,
+        /// Print the hint as one JSON object on stdout
+        #[arg(long, required = true)]
+        json: bool,
+    },
 }
 
 /// The verbs of `driver`.
@@ -1013,6 +1032,47 @@ mod tests {
             Ok(_) => panic!("an unknown flag must be refused"),
         };
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
+    }
+
+    // ── The read-only `next` hint (Phase 29, D-20) ───────────────────────
+
+    #[test]
+    fn next_parses_a_project_target_phase_and_json() {
+        let cli = checked(&["next", "p", "--target-phase", "3", "--json"]).expect("parses");
+        match cli.command {
+            Some(Commands::Next {
+                project,
+                target_phase,
+                json,
+            }) => {
+                assert_eq!(project, "p");
+                assert_eq!(target_phase.as_deref(), Some("3"));
+                assert!(json);
+            }
+            _ => panic!("did not resolve to Commands::Next"),
+        }
+    }
+
+    #[test]
+    fn next_without_a_target_phase_leaves_it_unset() {
+        let cli = checked(&["next", "p", "--json"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Next {
+                target_phase: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn next_without_json_is_a_usage_error() {
+        let err = match checked(&["next", "p"]) {
+            Err(err) => err,
+            Ok(_) => panic!("`next` without --json must be refused"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
         assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
     }
 
