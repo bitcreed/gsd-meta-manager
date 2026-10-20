@@ -9,6 +9,9 @@
 // Run it OUTSIDE any tool sandbox. A test that cannot run prints a `SKIP:` line
 // and returns; a `SKIP:` line is no evidence, it means this host proved nothing.
 //
+// A sibling run dir is probed too: it must be invisible inside the sandbox and
+// byte-identical on the host after a tampering attempt (quick 261020-f80).
+//
 // The probe uses the REAL `HOME` read-only: it prints exit codes, entry counts
 // and byte counts, never the content of a host file. It writes nothing to the
 // host except under `CARGO_TARGET_TMPDIR`.
@@ -28,10 +31,11 @@ use gsd_meta_manager::launcher::sandbox::{
 };
 use tempfile::TempDir;
 
-/// The in-sandbox probe. `$1` run dir, `$2` config dir, `$3` host home.
+/// The in-sandbox probe. `$1` run dir, `$2` config dir, `$3` host home, `$4` a
+/// sibling run dir.
 /// Every line is `KEY=VALUE`; no host file content is printed.
 const PROBE: &str = r#"
-run_dir=$1; cfg=$2; home=$3
+run_dir=$1; cfg=$2; home=$3; sib=$4
 touch_state() {
   out=$(touch "$1" 2>&1) && { echo WRITABLE; rm -f "$1"; return; }
   case "$out" in
@@ -87,6 +91,13 @@ echo "runtime_entries=$(ls -A "$XDG_RUNTIME_DIR" | tr '\n' ' ' | sed 's/ *$//')"
 if [ -S "$XDG_RUNTIME_DIR/bus" ]; then echo "bus=present"; else echo "bus=absent"; fi
 echo "user_manager=$(systemctl --user is-system-running 2>&1 | head -n 1)"
 if [ -S "$DRIVERCTL_SOCK" ]; then echo "sock=present"; else echo "sock=absent"; fi
+echo "drivers_entries=$(ls -A "$(dirname "$run_dir")" | tr '\n' ' ' | sed 's/ *$//')"
+if [ -e "$sib" ]; then echo "sibling_visible=present"; else echo "sibling_visible=absent"; fi
+echo "sibling_log_read=$(read_rc "$sib/LOG.md")"
+mkdir -p "$sib" 2>/dev/null
+echo tampered >> "$sib/LOG.md" 2>/dev/null
+touch "$sib/sandbox-probe" 2>/dev/null
+echo "sibling_write_attempted=1"
 "#;
 
 fn bwrap_runs_here() -> Result<(), String> {
@@ -222,6 +233,9 @@ fn sandbox_isolates_host_credentials_and_services() {
         "direction-lock-holder-record\n",
     )
     .unwrap();
+    let sibling = project.join(".planning/meta-manager/drivers/probe28-sibling");
+    fs::create_dir_all(&sibling).unwrap();
+    fs::write(sibling.join("LOG.md"), "sibling-log-sentinel\n").unwrap();
     git_ok(&project, &["init", "-q"]);
     git_ok(&project, &["commit", "-q", "--allow-empty", "-m", "probe"]);
 
@@ -305,7 +319,7 @@ fn sandbox_isolates_host_credentials_and_services() {
     };
 
     // ---- SC3 probe ---------------------------------------------------------
-    let probe = in_sandbox(PROBE, &[&run_dir, &config_dir, &home]);
+    let probe = in_sandbox(PROBE, &[&run_dir, &config_dir, &home, &sibling]);
     println!("LIVE host user manager: {state}");
     println!("LIVE host XDG_RUNTIME_DIR entries: {}", {
         let mut names: Vec<String> = fs::read_dir(&runtime)
@@ -331,6 +345,43 @@ fn sandbox_isolates_host_credentials_and_services() {
     if leaked {
         let _ = fs::remove_file(&wrongly_created);
     }
+
+    // ---- sibling run dirs are hidden (quick 261020-f80) --------------------
+    // Placed before the push probe: its host-control SKIP returns early.
+    assert!(probe.success, "the probe run failed: {}", probe.stderr);
+    let sib_kv: BTreeMap<&str, &str> = probe
+        .stdout
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .collect();
+    let sib_get = |key: &str| -> &str {
+        sib_kv
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| panic!("no `{key}=` line in the probe output"))
+    };
+    assert_eq!(sib_get("drivers_entries"), "probe28");
+    assert_eq!(sib_get("sibling_visible"), "absent");
+    assert_eq!(sib_get("sibling_log_read"), "absent");
+    assert_eq!(sib_get("sibling_write_attempted"), "1");
+    let entry_names = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        fs::read(sibling.join("LOG.md")).unwrap(),
+        b"sibling-log-sentinel\n",
+        "the host sibling LOG.md changed"
+    );
+    assert_eq!(entry_names(&sibling), ["LOG.md"]);
+    assert_eq!(
+        entry_names(run_dir.parent().unwrap()),
+        ["probe28", "probe28-sibling"]
+    );
 
     // ---- D-27 push probe ---------------------------------------------------
     let host_push = |url: &str| -> Ran {
