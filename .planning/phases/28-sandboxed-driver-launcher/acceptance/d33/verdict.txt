@@ -1,0 +1,6 @@
+D33-deny PASS organic dispatch-denied at LOG line 72: phase 1 has failed verification 1 times (gap-round cap 0); no further dispatch for phase 1. Park the
+D33-noself PASS no RUN end before the deny (deny at line 72, RUN end absent)
+D33-kill PASS cap-tripped gap_rounds action=kill-scope, no process of the scope survives (32 pids sampled), source=injected
+D33-source PASS second gaps_found source=injected (injection.txt: injected at epoch 1792455462)
+D33-cost PASS launch cost recorded in cost.txt: $9.0000
+RESULT PASS

@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "run_id": "lacc-d33",
+  "project_root": "/home/blk/.local/state/gsd-meta-manager/launcher-acceptance/d33-20261020T000537Z/project",
+  "status": "stopped",
+  "status_reason": "launcher-cap:gap_rounds",
+  "created_at": "2026-10-20T00:05:39Z",
+  "updated_at": "2026-10-20T00:17:44Z",
+  "launches": 1,
+  "current": {
+    "item": "I-01",
+    "phase": "1",
+    "step": "/gsd-plan-phase 1 --gaps"
+  },
+  "items": {
+    "I-01": {
+      "state": "running",
+      "outcome": "executed; gaps_found round 1 (+ to plus)",
+      "dispatches": 3,
+      "first_dispatch_at": "2026-10-20T00:06:10Z",
+      "findings": [
+        1,
+        1
+      ]
+    }
+  },
+  "connections": [
+    {
+      "role": "launcher",
+      "state": "disconnected",
+      "session_id": null,
+      "model": null,
+      "mode": "bwrap-scope",
+      "pid": 2996765,
+      "scope_unit": "gsdmm-driver-lacc-d33-16259ac2-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T00:05:39Z",
+      "last_heartbeat": "2026-10-20T00:05:39Z"
+    },
+    {
+      "role": "driver",
+      "state": "disconnected",
+      "session_id": "45f6bb38-d40e-487e-84cd-5848aa29249c",
+      "model": "opus",
+      "mode": "headless",
+      "pid": null,
+      "scope_unit": "gsdmm-driver-lacc-d33-16259ac2-1.scope",
+      "host": "mediabox",
+      "started_at": "2026-10-20T00:05:39Z",
+      "last_heartbeat": "2026-10-20T00:17:42Z"
+    }
+  ],
+  "caps": {
+    "dispatches": {
+      "used": 2,
+      "limit": 10
+    },
+    "wall_clock_min": {
+      "used": 12.1,
+      "limit": 90.0
+    },
+    "gap_rounds": {
+      "limit": 0,
+      "seen": {
+        "1:332c5fe2c1cbef51": {
+          "phase": "1",
+          "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+        },
+        "1:a64bb1406ee95da3": {
+          "phase": "1",
+          "file": ".planning/phases/01-slugify/01-VERIFICATION.md"
+        }
+      },
+      "per_phase": {
+        "1": 2
+      },
+      "last_write": {
+        "1": 1792455468.376
+      },
+      "coalesced": {}
+    }
+  },
+  "hook_dispatches": 2,
+  "denied_dispatches": 1,
+  "last_event": {
+    "at": "2026-10-20T00:17:44Z",
+    "item": "RUN",
+    "event": "launch-end",
+    "summary": "rc=143 status=stopped"
+  },
+  "ended_by_driver": false,
+  "active_seconds": 725.201258989,
+  "launch_branch": "main",
+  "launch_start_sha": "130248992eb92e141aadb834220d7c7f58d0e613",
+  "sandbox": "bwrap-scope"
+}
