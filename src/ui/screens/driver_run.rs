@@ -52,27 +52,30 @@ use crate::state_reader::driver_frontmatter::{
 // A fixed `&'static str` is the *mechanism* enforcing "no glyph is derived from
 // file content": no byte read off disk can be assigned to one of these, so a
 // forged frontmatter cannot reach a run row through its glyph.
+//
+// Each is an alias of a `crate::ui::glyphs` registry constant, the single place
+// the width-safety rule is stated and tested (quick 261021-1id).
 
-/// `◆` U+25C6 — a run whose lock is held (`running`, `starting`).
-pub const GLYPH_RUN_LIVE: &str = "\u{25C6}";
+/// `⧫` U+29EB — a run whose lock is held (`running`, `starting`).
+pub const GLYPH_RUN_LIVE: &str = crate::ui::glyphs::LOZENGE_BLACK;
 /// `✗` U+2717 — crashed, stalled. The word disambiguates the failure family.
-pub const GLYPH_RUN_CRASHED: &str = "\u{2717}";
-/// `◇` U+25C7 — liveness unknown, an unknown status word, an unreadable run.
-pub const GLYPH_RUN_UNKNOWN: &str = "\u{25C7}";
-/// `○` U+25CB — a minted run that has never been launched.
-pub const GLYPH_RUN_UNLAUNCHED: &str = "\u{25CB}";
-/// `⚑` U+2691 — parked: the run needs a human.
-pub const GLYPH_RUN_PARKED: &str = "\u{2691}";
-/// `‖` U+2016 — paused.
-pub const GLYPH_RUN_PAUSED: &str = "\u{2016}";
-/// `■` U+25A0 — stopped.
-pub const GLYPH_RUN_STOPPED: &str = "\u{25A0}";
-/// `●` U+25CF — done.
-pub const GLYPH_RUN_DONE: &str = "\u{25CF}";
+pub const GLYPH_RUN_CRASHED: &str = crate::ui::glyphs::BALLOT_X;
+/// `◊` U+25CA — liveness unknown, an unknown status word, an unreadable run.
+pub const GLYPH_RUN_UNKNOWN: &str = crate::ui::glyphs::LOZENGE_WHITE;
+/// `◦` U+25E6 — a minted run that has never been launched.
+pub const GLYPH_RUN_UNLAUNCHED: &str = crate::ui::glyphs::CIRCLE_OPEN;
+/// `❢` U+2762 — parked: the run needs a human.
+pub const GLYPH_RUN_PARKED: &str = crate::ui::glyphs::ATTENTION;
+/// `ǁ` U+01C1 — paused.
+pub const GLYPH_RUN_PAUSED: &str = crate::ui::glyphs::DOUBLE_BAR;
+/// `▮` U+25AE — stopped.
+pub const GLYPH_RUN_STOPPED: &str = crate::ui::glyphs::BLACK_RECT;
+/// `◍` U+25CD — done.
+pub const GLYPH_RUN_DONE: &str = crate::ui::glyphs::CIRCLE_FILLED;
 /// `▸` U+25B8 — the collapsed legacy-runs row.
-pub const LEGACY_COLLAPSED: &str = "\u{25B8}";
+pub const LEGACY_COLLAPSED: &str = crate::ui::glyphs::TRIANGLE_RIGHT_SMALL;
 /// `▾` U+25BE — the expanded legacy-runs row.
-pub const LEGACY_EXPANDED: &str = "\u{25BE}";
+pub const LEGACY_EXPANDED: &str = crate::ui::glyphs::TRIANGLE_DOWN_SMALL;
 
 // ── Measured layout constants (the `STATUS_COLUMN_MIN_CELLS` discipline) ────
 
@@ -93,9 +96,9 @@ const HEADER_LABEL_CELLS: usize = 10;
 /// Posture cell: the run's frontmatter says `sandbox: degraded`.
 const POSTURE_DEGRADED: &str = "!";
 
-/// `·` U+00B7 — an item that is in the DIRECTION body but that the driver has not
+/// `∙` U+2219 — an item that is in the DIRECTION body but that the driver has not
 /// recorded a state for yet.
-pub const GLYPH_ITEM_UNSEEN: &str = "\u{00B7}";
+pub const GLYPH_ITEM_UNSEEN: &str = crate::ui::glyphs::BULLET_OPERATOR;
 
 /// Item rows shown before the `… {k} more items` row (UI-SPEC `ITEMS_MAX_ROWS`).
 pub const ITEMS_MAX_ROWS: usize = 8;
@@ -107,9 +110,9 @@ const ITEM_ID_CELLS: usize = 5;
 /// cells, padded to eight so the dispatch count has a gap before it.
 const ITEM_WORD_CELLS: usize = 8;
 
-/// `◈` U+25C8 — a run whose lock is held but whose heartbeat is older than the
+/// `⬖` U+2B16 — a run whose lock is held but whose heartbeat is older than the
 /// file's own threshold (D-08). Never `crashed`: the lock is the liveness authority.
-pub const GLYPH_RUN_STALE: &str = "\u{25C8}";
+pub const GLYPH_RUN_STALE: &str = crate::ui::glyphs::DIAMOND_HALF_BLACK;
 
 /// `█` U+2588 — a filled cap-bar cell.
 const GLYPH_BAR_FILLED: &str = "\u{2588}";
@@ -194,7 +197,7 @@ pub fn status_cell(entry: &DriverRunEntry) -> StatusCell {
 
 /// [`status_cell`] at a given instant: the same table, plus the stale case (D-08). A
 /// run whose lock is held (`running`/`starting`) and whose heartbeat is older than the
-/// file's own `heartbeat_stale_after_s` reads `◈ stale` in Yellow, with the written
+/// file's own `heartbeat_stale_after_s` reads `⬖ stale` in Yellow, with the written
 /// word kept for the detail header. It is never called crashed.
 pub fn status_cell_at(entry: &DriverRunEntry, now: SystemTime) -> StatusCell {
     let cell = base_status_cell(entry);
@@ -456,7 +459,7 @@ pub enum MarkerClass {
 }
 
 /// One project's launcher-run marker (D-12): the highest class among the runs
-/// considered, and whether any of them holds its run lock (the tab-bar `D:Drive◆`
+/// considered, and whether any of them holds its run lock (the tab-bar `D:Drive⧫`
 /// light). Plain data, so it travels in an `Action` and sits in the view cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LauncherMarker {
@@ -2232,7 +2235,7 @@ fn token_row(
 /// Cells the run id keeps before the status tokens may take the rest of a SUMMARY row.
 const SUMMARY_ID_MIN_CELLS: usize = 12;
 
-/// One SUMMARY row, `> ◆ running    20261020-driver-tab  ctl pause (pending)  hb 3:10
+/// One SUMMARY row, `> ⧫ running    20261020-driver-tab  ctl pause (pending)  hb 3:10
 /// stale`: highlight, glyph, word padded to [`RUN_WORD_CELLS`], the run id cut by
 /// display width, then the status tokens that fit whole.
 ///
@@ -3538,11 +3541,11 @@ mod tests {
         let row = entry("20261020-driver-tab", running());
         assert_eq!(
             text_of(&run_row(&row, true, 30)).trim_end(),
-            "> \u{25C6} 20261020-driver-tab"
+            "> \u{29EB} 20261020-driver-tab"
         );
         assert_eq!(
             text_of(&run_row(&row, false, 40)).trim_end(),
-            "  \u{25C6} running    20261020-driver-tab"
+            "  \u{29EB} running    20261020-driver-tab"
         );
     }
 
@@ -3619,8 +3622,8 @@ mod tests {
         // floor (36), so each row carries its glyph and run id only.
         let (rows, _) = render(rows_in(), 80, 24);
         assert!(row_with(&rows, "20261020-crashed").contains("\u{2717} 20261020-crashed"));
-        assert!(row_with(&rows, "20261019-running").contains("\u{25C6} 20261019-running"));
-        assert!(row_with(&rows, "20261018-fresh").contains("\u{25CB} 20261018-fresh"));
+        assert!(row_with(&rows, "20261019-running").contains("\u{29EB} 20261019-running"));
+        assert!(row_with(&rows, "20261018-fresh").contains("\u{25E6} 20261018-fresh"));
         assert!(rows
             .iter()
             .any(|row| row.contains("Driver \u{2014} EXPERIMENTAL")));
@@ -3630,9 +3633,9 @@ mod tests {
         let crashed_row = row_with(&rows, "20261020-crashed");
         assert!(crashed_row.contains("\u{2717} crashed"), "{crashed_row:?}");
         let running_row = row_with(&rows, "20261019-running");
-        assert!(running_row.contains("\u{25C6} running"), "{running_row:?}");
+        assert!(running_row.contains("\u{29EB} running"), "{running_row:?}");
         let fresh_row = row_with(&rows, "20261018-fresh");
-        assert!(fresh_row.contains("\u{25CB} unlaunched"), "{fresh_row:?}");
+        assert!(fresh_row.contains("\u{25E6} unlaunched"), "{fresh_row:?}");
         // The first row is selected.
         assert!(crashed_row.contains("> "), "{crashed_row:?}");
     }
@@ -4250,18 +4253,18 @@ mod tests {
         assert!(text[0].starts_with("\u{2500}\u{2500} items "), "{text:#?}");
         assert_eq!(
             text[1].trim_end(),
-            "> I-03 \u{2691} parked   2d hold  Wire the run list"
+            "> I-03 \u{2762} parked   2d hold  Wire the run list"
         );
         assert_eq!(
             text[2].trim_end(),
-            "  I-04 \u{25C6} running  1d       Steering transforms"
+            "  I-04 \u{29EB} running  1d       Steering transforms"
         );
         assert_eq!(
             text[3].trim_end(),
-            "  I-05 \u{B7} unseen   0d       Dashboard marker"
+            "  I-05 \u{2219} unseen   0d       Dashboard marker"
         );
         assert!(
-            text[4].starts_with("  I-09 \u{25CF} done     4d")
+            text[4].starts_with("  I-09 \u{25CD} done     4d")
                 && text[4].ends_with("[not in DIRECTION]"),
             "{:?}",
             text[4]
@@ -4462,7 +4465,7 @@ mod tests {
         );
         let (rows, _) = render(cache_with_detail(detail.clone()), 100, 24);
         assert!(
-            row_with(&rows, "I-01 \u{2691}").contains("parked"),
+            row_with(&rows, "I-01 \u{2762}").contains("parked"),
             "{rows:#?}"
         );
         assert!(
@@ -4911,7 +4914,7 @@ mod tests {
         assert!(control.contains("ago stale (after 2:00)"), "{control}");
         let list = row_with(&rows, "20261020-a");
         assert!(
-            list.contains("\u{25C8}"),
+            list.contains("\u{2B16}"),
             "the list glyph is the stale one: {list}"
         );
         assert!(list.contains("stale"), "{list}");
@@ -5415,7 +5418,7 @@ mod tests {
         let rows = render(cache_of(vec![held]), 140, 30).0;
         let list = row_with(&rows, "20261020-lock");
         assert!(
-            list.contains("\u{25C8} stale"),
+            list.contains("\u{2B16} stale"),
             "held lock, old heartbeat: {list}"
         );
         assert!(row_with(&rows, "control ").contains("stale"));
@@ -6630,7 +6633,7 @@ mod tests {
         let line = summary_row(&entry, Some(&detail), true, now, 100);
         let text = text_of(&line);
         assert!(
-            text.starts_with("> \u{25C6} running    20261020-driver-tab  ctl pause (pending)"),
+            text.starts_with("> \u{29EB} running    20261020-driver-tab  ctl pause (pending)"),
             "{text:?}"
         );
         assert_eq!(
@@ -6645,7 +6648,7 @@ mod tests {
         );
         let plain = text_of(&summary_row(&entry, None, false, now, 100));
         assert!(
-            plain.starts_with("  \u{25C6} running    20261020-driver-tab  ctl run"),
+            plain.starts_with("  \u{29EB} running    20261020-driver-tab  ctl run"),
             "{plain:?}"
         );
 
@@ -6928,7 +6931,7 @@ mod tests {
         // SUMMARY (H <= 11): one row per run across the whole width, no sections.
         let (rows, _) = render(sweep_cache(dir.path()), 100, 11);
         assert!(
-            rows[0].starts_with("> \u{25C6}") || rows[0].starts_with("> \u{25C8}"),
+            rows[0].starts_with("> \u{29EB}") || rows[0].starts_with("> \u{2B16}"),
             "{rows:#?}"
         );
         assert!(rows[0].contains(SWEEP_RUN), "{rows:#?}");

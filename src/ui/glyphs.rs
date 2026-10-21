@@ -44,28 +44,28 @@
 
 /// Driven, live, running, starting, legacy live, detail driver marker.
 /// `U+29EB` BLACK LOZENGE. Was `U+25C6`.
-pub const LOZENGE_BLACK: &str = "\u{25C6}";
+pub const LOZENGE_BLACK: &str = "\u{29EB}";
 /// Stale (filled = live, half = stale, open = unknown).
 /// `U+2B16` DIAMOND WITH LEFT HALF BLACK. Was `U+25C8`.
-pub const DIAMOND_HALF_BLACK: &str = "\u{25C8}";
+pub const DIAMOND_HALF_BLACK: &str = "\u{2B16}";
 /// Liveness unknown or unreadable. `U+25CA` LOZENGE. Was `U+25C7`.
-pub const LOZENGE_WHITE: &str = "\u{25C7}";
+pub const LOZENGE_WHITE: &str = "\u{25CA}";
 /// Crashed, stalled, failed, missed. `U+2717` BALLOT X.
 pub const BALLOT_X: &str = "\u{2717}";
 /// Parked, needs a human. `U+2762` HEAVY EXCLAMATION MARK ORNAMENT. Was `U+2691`.
-pub const ATTENTION: &str = "\u{2691}";
+pub const ATTENTION: &str = "\u{2762}";
 /// Paused (draws as two bars). `U+01C1` LATIN LETTER LATERAL CLICK. Was `U+2016`.
-pub const DOUBLE_BAR: &str = "\u{2016}";
+pub const DOUBLE_BAR: &str = "\u{01C1}";
 /// Stopped, killed. `U+25AE` BLACK VERTICAL RECTANGLE. Was `U+25A0`.
-pub const BLACK_RECT: &str = "\u{25A0}";
+pub const BLACK_RECT: &str = "\u{25AE}";
 /// Done, succeeded, acted on, roadmap done, git commit, selected option.
 /// `U+25CD` CIRCLE WITH VERTICAL FILL. Was `U+25CF`.
-pub const CIRCLE_FILLED: &str = "\u{25CF}";
+pub const CIRCLE_FILLED: &str = "\u{25CD}";
 /// Unlaunched, pending, queued, roadmap ready, planned, succeeded-no-changes,
 /// git merge. `U+25E6` WHITE BULLET. Was `U+25CB`.
-pub const CIRCLE_OPEN: &str = "\u{25CB}";
+pub const CIRCLE_OPEN: &str = "\u{25E6}";
 /// Unmerged, delivered. `U+25D2` CIRCLE WITH LOWER HALF BLACK. Was `U+25D0`.
-pub const CIRCLE_HALF: &str = "\u{25D0}";
+pub const CIRCLE_HALF: &str = "\u{25D2}";
 /// Roadmap active. `U+25C9` FISHEYE.
 pub const FISHEYE: &str = "\u{25C9}";
 /// Roadmap blocked. `U+25CC` DOTTED CIRCLE.
@@ -74,23 +74,23 @@ pub const CIRCLE_DOTTED: &str = "\u{25CC}";
 pub const CLOCK: &str = "\u{25F7}";
 /// Session, roadmap selected, Waves running, current-phase marker.
 /// `U+25BA` BLACK RIGHT-POINTING POINTER. Was `U+25B6`.
-pub const POINTER_RIGHT: &str = "\u{25B6}";
+pub const POINTER_RIGHT: &str = "\u{25BA}";
 /// Folded, collapsed, active wave row. `U+25B8` BLACK RIGHT-POINTING SMALL TRIANGLE.
 pub const TRIANGLE_RIGHT_SMALL: &str = "\u{25B8}";
 /// Open, expanded, more. `U+25BE` BLACK DOWN-POINTING SMALL TRIANGLE.
 /// Also replaces `U+25BC` in the roadmap widget.
 pub const TRIANGLE_DOWN_SMALL: &str = "\u{25BE}";
 /// Roadmap dependency marker. `U+21E1` UPWARDS DASHED ARROW. Was `U+2191`.
-pub const ARROW_UP_DASHED: &str = "\u{2191}";
+pub const ARROW_UP_DASHED: &str = "\u{21E1}";
 /// Roadmap unblocks marker. `U+21E3` DOWNWARDS DASHED ARROW. Was `U+2193`.
-pub const ARROW_DOWN_DASHED: &str = "\u{2193}";
+pub const ARROW_DOWN_DASHED: &str = "\u{21E3}";
 /// Item unseen, roadmap implied, stderr marker, Waves queued.
 /// `U+2219` BULLET OPERATOR. Was `U+00B7` as a marker.
-pub const BULLET_OPERATOR: &str = "\u{00B7}";
+pub const BULLET_OPERATOR: &str = "\u{2219}";
 /// Done (Waves, stage ladder, checks). `U+2713` CHECK MARK.
 pub const CHECK: &str = "\u{2713}";
 /// Stage in progress. `U+22EF` MIDLINE HORIZONTAL ELLIPSIS. Was `U+2026` as a stage mark.
-pub const MIDLINE_ELLIPSIS: &str = "\u{2026}";
+pub const MIDLINE_ELLIPSIS: &str = "\u{22EF}";
 /// Tab overflow to the left. `U+2039` SINGLE LEFT-POINTING ANGLE QUOTATION MARK.
 pub const ANGLE_LEFT: &str = "\u{2039}";
 /// Tab overflow to the right, crumb. `U+203A` SINGLE RIGHT-POINTING ANGLE QUOTATION MARK.

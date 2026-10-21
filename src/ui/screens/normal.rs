@@ -96,51 +96,55 @@ fn prev_status(threshold: DiskStatus) -> DiskStatus {
 //   these codepoints ambiguously, and makes the intended codepoint checkable by
 //   eye against the UI-SPEC table.
 //
-// Each is one glyph plus one space — two terminal cells — and every glyph is
-// East-Asian-Width Ambiguous (narrow), matching the shipped `\u{25b6}`. That is
-// what keeps the Alias column aligned at all three dashboard width tiers.
+// Each is one glyph plus one space — two terminal cells — and every glyph is a
+// member of `crate::ui::glyphs::ALL`: East-Asian-Width Neutral, Narrow or
+// Halfwidth, never emoji-capable, and 1 cell under both `unicode-width`
+// measures (the rule and its rationale live in that module). That is what keeps
+// the Alias column aligned at all three dashboard width tiers on any terminal
+// and font. `badge_glyphs_are_width_stable` pins the membership.
 
-/// Rank 1 — an agent is driving this repo *right now*. `◆` FILLED DIAMOND.
+/// Rank 1 — an agent is driving this repo *right now*. `⧫` U+29EB BLACK LOZENGE.
 ///
 /// Shape-distinct from every other badge at a glance. `▲` (up triangle) was
-/// rejected: it is the session `▶` rotated, and two glyphs that differ only by
+/// rejected: it is the session `►` rotated, and two glyphs that differ only by
 /// rotation fail the at-a-glance test that is this badge's whole purpose.
-pub(super) const BADGE_DRIVEN: &str = "\u{25C6} ";
+pub(super) const BADGE_DRIVEN: &str = "\u{29EB} ";
 
-/// Rank 2 — this project is waiting on a human. `⚑` BLACK FLAG.
+/// Rank 2 — this project is waiting on a human. `❢` U+2762 HEAVY EXCLAMATION MARK ORNAMENT.
 ///
-/// A flag is the conventional "planted here, come look" mark and shares no
-/// outline with the diamond, the two pause bars, the hourglass or the triangle.
-pub(super) const BADGE_NEEDS_HUMAN: &str = "\u{2691} ";
+/// An exclamation mark is the conventional "come look" mark and shares no
+/// outline with the lozenge, the two pause bars, the clock or the pointer.
+pub(super) const BADGE_NEEDS_HUMAN: &str = "\u{2762} ";
 
 /// A launcher run of this project crashed: its run lock is free while the file says
-/// it was running (30-03, D-12). `✗` BALLOT X, U+2717, text presentation and narrow.
+/// it was running (30-03, D-12). `✗` BALLOT X, U+2717.
 /// Dashboard rank 1: a false crash invites a relaunch over a live run, so only the
 /// lock probe raises it (never a stale heartbeat, never an unknown probe).
 pub(super) const BADGE_CRASHED: &str = "\u{2717} ";
 
 /// A launcher run is live but its heartbeat is older than the file's own threshold
-/// (30-03, D-12). `◈` WHITE DIAMOND CONTAINING BLACK SMALL DIAMOND, U+25C8, narrow
-/// and shape-distinct from the filled `◆` and the open `◇`.
-pub(super) const BADGE_STALE: &str = "\u{25C8} ";
+/// (30-03, D-12). `⬖` U+2B16 DIAMOND WITH LEFT HALF BLACK: filled = live, half = stale,
+/// open = unknown, and shape-distinct from both.
+pub(super) const BADGE_STALE: &str = "\u{2B16} ";
 
 /// Whether a launcher run is alive could not be established: the lock probe failed
-/// (30-03, D-12). `◇` WHITE DIAMOND, U+25C7, the run list's own liveness-unknown glyph.
-pub(super) const BADGE_UNKNOWN: &str = "\u{25C7} ";
+/// (30-03, D-12). `◊` U+25CA LOZENGE, the run list's own liveness-unknown glyph.
+pub(super) const BADGE_UNKNOWN: &str = "\u{25CA} ";
 
-/// Rank 3 — a non-empty HANDOFF. `‖` DOUBLE VERTICAL LINE. Shipped in v1.4.
+/// Rank 3 — a non-empty HANDOFF. `ǁ` U+01C1 LATIN LETTER LATERAL CLICK, which draws as two bars. Shipped
+/// in v1.4 as U+2016.
 /// Was `⏸` U+23F8, which several terminals draw emoji-wide (2 cells) while
 /// `unicode-width` reports 1 — see `badge_glyphs_are_width_stable`.
-pub(super) const BADGE_PAUSED: &str = "\u{2016} ";
+pub(super) const BADGE_PAUSED: &str = "\u{01C1} ";
 
 /// Rank 4 — blocked on an external/async job, not stuck. `◷` clock face (WHITE
 /// CIRCLE WITH UPPER RIGHT QUADRANT). Was `⏳` U+23F3, East-Asian-Width Wide.
 /// Shipped in GSD 1.8.0.
 pub(super) const BADGE_EXTERNAL_JOB: &str = "\u{25F7} ";
 
-/// Rank 5 — an active Claude or Codex session in this project's directory. `▶`.
-/// Shipped in v1.0.
-pub(super) const BADGE_SESSION: &str = "\u{25b6} ";
+/// Rank 5 — an active Claude or Codex session in this project's directory. `►` U+25BA BLACK RIGHT-POINTING POINTER.
+/// Shipped in v1.0 as U+25B6.
+pub(super) const BADGE_SESSION: &str = "\u{25BA} ";
 
 /// The single badge a dashboard alias cell leads with.
 ///
@@ -267,7 +271,7 @@ fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
         })
     } else if needs_human {
         // Waiting on the user, per 18-04's evidence predicate (D-14). Rank 4: the
-        // legacy predicate alone, so a stale launcher project shows `◈` below and
+        // legacy predicate alone, so a stale launcher project shows `⬖` below and
         // still sorts first (`needs_attention_for`).
         Some(AliasBadge {
             glyph: BADGE_NEEDS_HUMAN,
@@ -1431,17 +1435,17 @@ mod tests {
     /// thing it is checking cannot fail, and the badge table is exactly the
     /// place a silent swap (two ranks trading colours) would go unnoticed.
     const DRIVEN_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{25C6} ",
+        glyph: "\u{29EB} ",
         color: Color::Magenta,
         modifier: Modifier::BOLD,
     };
     const NEEDS_HUMAN_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{2691} ",
+        glyph: "\u{2762} ",
         color: Color::Red,
         modifier: Modifier::BOLD,
     };
     const PAUSE_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{2016} ",
+        glyph: "\u{01C1} ",
         color: Color::Cyan,
         modifier: Modifier::empty(),
     };
@@ -1452,18 +1456,32 @@ mod tests {
     };
     /// Cross-terminal alignment guard (todo 2026-07-29-badge-glyph-display-width-
     /// alignment). A glyph whose width the terminal and `unicode-width` disagree
-    /// on shifts a badged row one cell against an unbadged one. The disagreement
-    /// is confined to Wide codepoints and default-emoji-presentation codepoints,
-    /// so every badge glyph must come from this pinned allowlist of text-
-    /// presentation, non-Wide codepoints and render as exactly 2 cells.
+    /// on shifts a badged row one cell against an unbadged one. Every badge glyph
+    /// must be a member of the width-safe registry (`crate::ui::glyphs::ALL`,
+    /// whose own test checks the rule) plus one space, render as exactly 2 cells,
+    /// and sit on the pinned registry constant.
     #[test]
     fn badge_glyphs_are_width_stable() {
-        const ALLOWED: [char; 8] = [
-            '\u{25C6}', '\u{2691}', '\u{2016}', '\u{25F7}', '\u{25B6}', '\u{2717}', '\u{25C8}',
+        use crate::ui::glyphs as g;
+        // Former glyphs, kept as regression witnesses (Wide, emoji-default or
+        // East-Asian-Ambiguous).
+        const FORBIDDEN: [char; 8] = [
+            '\u{23F8}', '\u{23F3}', '\u{25C6}', '\u{2691}', '\u{2016}', '\u{25B6}', '\u{25C8}',
             '\u{25C7}',
         ];
-        // Former glyphs, kept as regression witnesses (Wide / emoji-default).
-        const FORBIDDEN: [char; 2] = ['\u{23F8}', '\u{23F3}'];
+        let pinned = [
+            (BADGE_DRIVEN, g::LOZENGE_BLACK),
+            (BADGE_NEEDS_HUMAN, g::ATTENTION),
+            (BADGE_PAUSED, g::DOUBLE_BAR),
+            (BADGE_STALE, g::DIAMOND_HALF_BLACK),
+            (BADGE_UNKNOWN, g::LOZENGE_WHITE),
+            (BADGE_SESSION, g::POINTER_RIGHT),
+            (BADGE_CRASHED, g::BALLOT_X),
+            (BADGE_EXTERNAL_JOB, g::CLOCK),
+        ];
+        for (badge, registry) in pinned {
+            assert_eq!(badge, format!("{registry} "), "badge must be its registry glyph + a space");
+        }
         let badges = [
             BADGE_DRIVEN,
             BADGE_NEEDS_HUMAN,
@@ -1479,7 +1497,10 @@ mod tests {
             let glyph = chars.next().expect("glyph");
             assert_eq!(chars.next(), Some(' '), "{b:?} must be glyph + one space");
             assert_eq!(chars.next(), None, "{b:?} must be exactly two chars");
-            assert!(ALLOWED.contains(&glyph), "{glyph:?} not width-stable");
+            assert!(
+                crate::ui::glyphs::ALL.iter().any(|(_, r)| *r == glyph.to_string()),
+                "{glyph:?} is not a registry glyph"
+            );
             assert!(!FORBIDDEN.contains(&glyph));
             assert_eq!(Span::raw(b).width(), 2, "{b:?} must render 2 cells");
             assert_eq!(Span::raw(glyph.to_string()).width(), 1);
@@ -1492,7 +1513,7 @@ mod tests {
     }
 
     const SESSION_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{25b6} ",
+        glyph: "\u{25BA} ",
         color: Color::Green,
         modifier: Modifier::empty(),
     };
@@ -1506,7 +1527,7 @@ mod tests {
         SESSION_BADGE,
     ];
 
-    /// The three badges Phase 30 adds for launcher-run markers (D-12). `◆` and `⚑`
+    /// The three badges Phase 30 adds for launcher-run markers (D-12). `⧫` and `❢`
     /// are reused from the shipped table with new sources, so they are not here.
     const CRASHED_BADGE: AliasBadge = AliasBadge {
         glyph: "\u{2717} ",
@@ -1514,12 +1535,12 @@ mod tests {
         modifier: Modifier::BOLD,
     };
     const STALE_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{25C8} ",
+        glyph: "\u{2B16} ",
         color: Color::Yellow,
         modifier: Modifier::BOLD,
     };
     const UNKNOWN_BADGE: AliasBadge = AliasBadge {
-        glyph: "\u{25C7} ",
+        glyph: "\u{25CA} ",
         color: Color::Yellow,
         modifier: Modifier::empty(),
     };
@@ -2594,7 +2615,7 @@ mod tests {
         let rows = render_dashboard_rows(80, vec![pipeline_row(), badged, flagged]);
 
         // Column offsets, not byte offsets: a badged row is no longer pure
-        // ASCII, and `\u{25C6}` is three bytes wide but one cell wide. Every
+        // ASCII, and `\u{29EB}` is three bytes wide but one cell wide. Every
         // badge glyph is East-Asian-Width narrow, so one buffer cell is one
         // char and a char count *is* the column.
         fn column_of(row: &str, needle: &str) -> usize {
@@ -3829,8 +3850,8 @@ mod tests {
         });
     }
 
-    /// A stale project sorts first (it needs attention) while its badge is `◈`, and an
-    /// unknown project gets `◇` without moving: a failed probe is not a call for a human.
+    /// A stale project sorts first (it needs attention) while its badge is `⬖`, and an
+    /// unknown project gets `◊` without moving: a failed probe is not a call for a human.
     #[test]
     fn launcher_marker_attention_first_sorts_a_stale_project_first_and_unknown_not_at_all() {
         let mut ctx = ctx_with_aliases(&["alpha", "mike", "zulu"]).with_experimental(true);

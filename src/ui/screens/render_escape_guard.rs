@@ -3909,7 +3909,7 @@ mod tests {
             " phase ",
             "audit ",
             // An item row (`parked` from the closed enum) and the cursor-item row.
-            "\u{2691} parked",
+            "\u{2762} parked",
             "parked: ",
             "answer: ",
             // The LOG pane: its rule, the reset notice, and a rewritten header.

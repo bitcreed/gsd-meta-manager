@@ -5954,7 +5954,7 @@ mod tests {
         deliver_launcher_refresh(&mut app, &mut rx).await;
         let text = render_top_screen(&app);
         assert!(text.contains("\u{2717} crashed"), "{text}");
-        assert!(!text.contains("\u{25C6} running"), "{text}");
+        assert!(!text.contains("\u{29EB} running"), "{text}");
 
         // 2. The lock is held by this test: the same bytes now read running.
         let _lock = acquire_at(&run_lock_path(&run_dir), LAUNCHER_RUN, std::process::id())
@@ -5962,7 +5962,7 @@ mod tests {
         app.update(run_file_change(dir.path(), "DIRECTION.md"));
         deliver_launcher_refresh(&mut app, &mut rx).await;
         let text = render_top_screen(&app);
-        assert!(text.contains("\u{25C6} running"), "{text}");
+        assert!(text.contains("\u{29EB} running"), "{text}");
         assert!(!text.contains("\u{2717} crashed"), "{text}");
         assert_eq!(app.ctx.reparse_dispatches, 0, "no project re-parse");
     }
@@ -6031,11 +6031,11 @@ mod tests {
                 .to_string()
         };
         assert!(
-            row("I-01 \u{2691} parked").contains("> I-01"),
+            row("I-01 \u{2762} parked").contains("> I-01"),
             "the cursor starts on the parked item:\n{text}"
         );
-        assert!(row("I-02 \u{B7} unseen").contains("second thing"), "{text}");
-        let nine = row("I-09 \u{25CF} done");
+        assert!(row("I-02 \u{2219} unseen").contains("second thing"), "{text}");
+        let nine = row("I-09 \u{25CD} done");
         assert!(nine.contains("[not in DIRECTION]"), "{nine}");
         assert!(row("I-01 parked").contains("needs a socket path"), "{text}");
         assert_eq!(
@@ -8746,7 +8746,7 @@ mod tests {
         app.update(run_file_change(dir.path(), "DIRECTION.md"));
         deliver_launcher_refresh(&mut app, &mut rx).await;
         let text = render_top_screen(&app);
-        assert!(text.contains("\u{25C6} running"), "a live run:\n{text}");
+        assert!(text.contains("\u{29EB} running"), "a live run:\n{text}");
         assert!(!text.contains("(pending)"), "nothing pending yet:\n{text}");
 
         // `c` opens the chooser, `p` dispatches and pops.
