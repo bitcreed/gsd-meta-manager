@@ -2422,6 +2422,181 @@ mod tests {
         assert!(text.contains("Sandbox: bwrap + systemd scope"), "{text}");
     }
 
+    // ── Plan 30-09 Task 1: the essentials outlive the findings (WR-05, UI D5) ──
+
+    const SPEND_SENTENCE: &str = "Each driver session may spend up to $10.00 of Claude usage (claude --max-budget-usd). It runs detached and keeps running after you close this TUI.";
+
+    /// The popup's inner text of an 80-column draw (the popup is 72 wide, inner 70 from
+    /// column 5), rows joined by one space with runs of blanks collapsed, so a wrapped
+    /// sentence reads as the sentence.
+    fn popup_prose(drawn: &str) -> String {
+        drawn
+            .lines()
+            .map(|row| row.chars().skip(5).take(70).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn warnings(count: usize) -> LaunchPreflight {
+        LaunchPreflight {
+            lint_warnings: (1..=count)
+                .map(|n| format!("DIRECTION.md:{n}: warning: item I-0{n} has no budget"))
+                .collect(),
+            ..LaunchPreflight::default()
+        }
+    }
+
+    /// How many `DIRECTION.md:{n}: warning` rows the drawing lists, and the `k` of the
+    /// `… k more` row (0 when there is none).
+    fn warnings_shown(prose: &str) -> (usize, usize) {
+        let shown = prose.matches(": warning: item I-0").count();
+        let more = prose
+            .split("\u{2026} ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|k| k.parse::<usize>().ok())
+            .unwrap_or(0);
+        (shown, more)
+    }
+
+    #[test]
+    fn launcher_launch_the_spend_and_sandbox_rows_outlive_the_findings() {
+        use crate::ui::screens::confirm_popup::{body_room, wrapped_rows};
+        // The essential rows at the default form: the title, the spend paragraph, the
+        // sandbox row and the six fields, counted the way the popup wraps them.
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(&mut ctx, LaunchPreflight::default());
+        let mut essential = screen.body_lines(&ctx);
+        essential.pop(); // the key row is not essential
+        let (inner, room) = body_room(Rect::new(0, 0, 80, 18));
+        assert_eq!((inner, room), (70, 13));
+        assert_eq!(
+            wrapped_rows(&essential, inner),
+            11,
+            "title 1 + spend 3 + sandbox 1 + six fields 6, leaving 2 finding rows at 80x18"
+        );
+
+        // 80x24, three warnings: everything is on screen and y launches.
+        arrive(&mut ctx, warnings(3));
+        let tall = popup_prose(&draw(&screen, &ctx, 80, 24));
+        assert!(tall.contains(SPEND_SENTENCE), "{tall}");
+        assert!(tall.contains(SANDBOX_OK), "{tall}");
+        for label in Field::ALL.map(Field::label) {
+            assert!(tall.contains(label), "{label}: {tall}");
+        }
+        assert_eq!(warnings_shown(&tall), (3, 0), "{tall}");
+        assert!(!screen.popup.clipped());
+
+        // 80x18, six warnings: the warnings give way, the spend and sandbox rows do not,
+        // and the confirmation is still live.
+        arrive(&mut ctx, warnings(6));
+        let mid = popup_prose(&draw(&screen, &ctx, 80, 18));
+        assert!(mid.contains(SPEND_SENTENCE), "{mid}");
+        assert!(mid.contains(SANDBOX_OK), "{mid}");
+        for label in Field::ALL.map(Field::label) {
+            assert!(mid.contains(label), "{label}: {mid}");
+        }
+        let (shown, more) = warnings_shown(&mid);
+        assert!(shown >= 1 && shown < 6, "some warnings are cut: {mid}");
+        assert_eq!(shown + more, 6, "the count row counts what was cut: {mid}");
+        assert!(!screen.popup.clipped(), "the essentials fit: {mid}");
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'y'),
+            ScreenAction::Pop
+        ));
+        assert!(matches!(
+            rx.try_recv().ok(),
+            Some(Action::DriverLaunchRequested { .. })
+        ));
+        assert!(rx.try_recv().is_err(), "exactly one request");
+    }
+
+    #[test]
+    fn launcher_launch_a_degraded_host_at_80x24_still_shows_the_two_red_rows_and_u() {
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(&mut ctx, degraded());
+        let prose = popup_prose(&draw(&screen, &ctx, 80, 24));
+        assert!(prose.contains(SPEND_SENTENCE), "{prose}");
+        assert!(
+            prose.contains("Sandbox unavailable: missing bwrap."),
+            "{prose}"
+        );
+        assert!(
+            prose.contains("A sandboxed launch is refused on this host."),
+            "{prose}"
+        );
+        assert!(
+            prose.contains("[U] launch UNSANDBOXED instead (asks again)"),
+            "{prose}"
+        );
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'y'),
+            ScreenAction::None
+        ));
+        assert!(rx.try_recv().is_err(), "y still refuses");
+    }
+
+    #[test]
+    fn launcher_launch_a_form_cut_off_at_80x12_launches_nothing() {
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(&mut ctx, LaunchPreflight::default());
+        let drawn = draw(&screen, &ctx, 80, 12);
+        let prose = popup_prose(&drawn);
+        assert!(prose.contains(SPEND_SENTENCE), "{prose}");
+        assert!(prose.contains(SANDBOX_OK), "{prose}");
+        assert!(
+            prose.contains("Cut off: enlarge the terminal to confirm"),
+            "{prose}"
+        );
+        assert!(screen.popup.clipped());
+        // y, and Enter on Yes, dispatch nothing while the form is cut off.
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'y'),
+            ScreenAction::None
+        ));
+        screen.handle_key(KeyCode::Tab, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(
+            screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx),
+            ScreenAction::None
+        ));
+        assert!(rx.try_recv().is_err(), "a cut-off form launches nothing");
+        // n still leaves.
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'n'),
+            ScreenAction::Pop
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_launch_the_lint_popup_keeps_its_question_at_80x12() {
+        let (mut screen, mut ctx, mut rx) = lint_popup(6);
+        let prose = popup_prose(&draw(&screen, &ctx, 80, 12));
+        assert!(prose.contains("Edit it again now?"), "{prose}");
+        assert!(prose.contains("DIRECTION.md:1: unfilled placeholder"), "{prose}");
+        let more: usize = prose
+            .split("\u{2026} ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|k| k.parse().ok())
+            .expect("a `… k more` row");
+        let listed = prose.matches("unfilled placeholder").count();
+        assert_eq!(listed + more, 6, "{prose}");
+        assert!(listed < 6, "{prose}");
+        assert!(!screen.popup.clipped(), "the question fits: {prose}");
+        assert!(matches!(
+            screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx),
+            ScreenAction::Pop
+        ));
+        assert!(matches!(
+            rx.try_recv().ok(),
+            Some(Action::DriverEditRequested { .. })
+        ));
+    }
+
     /// The preflight over real files: the same lint and control the launcher applies.
     #[cfg(target_os = "linux")]
     #[test]
