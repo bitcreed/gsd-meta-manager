@@ -86,12 +86,19 @@ pub const SOCKET_DIR_NAME: &str = "gsdmm-driverctl";
 
 /// The longest socket path `sockaddr_un` holds on macOS (`sun_path` is 104
 /// bytes including the NUL).
-#[cfg(target_os = "macos")]
-pub const MAX_SUN_PATH: usize = 103;
+pub const MACOS_MAX_SUN_PATH: usize = 103;
 
-/// The longest socket path `sockaddr_un` holds off macOS (108 bytes with the NUL).
+/// The longest socket path `sockaddr_un` holds off macOS (`sun_path` is 108
+/// bytes including the NUL).
+pub const LINUX_MAX_SUN_PATH: usize = 107;
+
+/// The socket path limit of the platform this build targets.
+#[cfg(target_os = "macos")]
+pub const MAX_SUN_PATH: usize = MACOS_MAX_SUN_PATH;
+
+/// The socket path limit of the platform this build targets.
 #[cfg(not(target_os = "macos"))]
-pub const MAX_SUN_PATH: usize = 107;
+pub const MAX_SUN_PATH: usize = LINUX_MAX_SUN_PATH;
 
 /// How many connections may be in flight; the next one is answered `busy`.
 pub const MAX_CONNECTIONS: usize = 32;
@@ -346,9 +353,9 @@ pub fn socket_path_in(
         )));
     }
 
+    // Length is refused BEFORE the directory is created.
+    let path = default_socket_file(runtime, run_id, canonical_run_dir, MAX_SUN_PATH)?;
     let dir = runtime.join(SOCKET_DIR_NAME);
-    let path = dir.join(format!("{run_id}-{}.sock", hash8(canonical_run_dir)));
-    check_sun_len(&path)?;
 
     match fs::DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => {}
@@ -375,12 +382,78 @@ pub fn socket_path_in(
     Ok(path)
 }
 
+/// The first eight bytes of `sha256(run id, 0x00, canonical run dir)` as sixteen
+/// lowercase hex digits: the stem of the fixed-length default socket name.
+///
+/// Neither a run id (it matches [`RUN_ID_RE`]) nor a unix path holds a NUL byte,
+/// so the (id, NUL, dir) encoding is injective. SHA-256 and not a hasher from the
+/// standard library's hash module, whose output is unspecified across Rust
+/// releases: the name must be the same on every build and platform (a golden
+/// value pins it). [`hash8`] is deliberately a different, unchanged digest: it
+/// also names scope units, config dirs and mirrors.
+fn socket_name_hash(run_id: &str, canonical_run_dir: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(run_id.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(canonical_run_dir.as_os_str().as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The default socket file for a run under `base`: pure, no I/O, `max_len` passed
+/// in so the result does not depend on the host OS.
+///
+/// The D-21 name `<base>/gsdmm-driverctl/<run-id>-<hash8(run dir)>.sock` is kept
+/// whenever it fits `max_len`, so every path that resolved before is
+/// byte-identical. Otherwise the name falls back to
+/// `<base>/gsdmm-driverctl/<socket_name_hash>.sock` in the SAME private
+/// directory: a constant 38 bytes past `base` (16 for `/gsdmm-driverctl`, 1 for
+/// `/`, 16 hex, 5 for `.sock`), so a base up to 65 bytes fits under the macOS
+/// limit regardless of the run id `[inferred — audit]`. The two name shapes
+/// cannot collide: the fixed stem has no `-`, a D-21 name always has one. Only
+/// when even the fixed-length name is over `max_len` is the base too long, a
+/// typed [`DriverctlError::SocketPath`].
+fn default_socket_file(
+    base: &Path,
+    run_id: &str,
+    canonical_run_dir: &Path,
+    max_len: usize,
+) -> Result<PathBuf, DriverctlError> {
+    let dir = base.join(SOCKET_DIR_NAME);
+    let d21 = dir.join(format!("{run_id}-{}.sock", hash8(canonical_run_dir)));
+    if d21.as_os_str().len() <= max_len {
+        return Ok(d21);
+    }
+    let fixed = dir.join(format!(
+        "{}.sock",
+        socket_name_hash(run_id, canonical_run_dir)
+    ));
+    check_sun_len_max(&fixed, max_len).map_err(|e| match e {
+        DriverctlError::SocketPath { detail } => DriverctlError::SocketPath {
+            detail: format!(
+                "{detail}; the socket base directory is too long, point XDG_RUNTIME_DIR \
+                 (or TMPDIR on macOS) at a shorter directory"
+            ),
+        },
+        other => other,
+    })?;
+    Ok(fixed)
+}
+
 fn check_sun_len(path: &Path) -> Result<(), DriverctlError> {
+    check_sun_len_max(path, MAX_SUN_PATH)
+}
+
+fn check_sun_len_max(path: &Path, max_len: usize) -> Result<(), DriverctlError> {
     let len = path.as_os_str().len();
-    if len > MAX_SUN_PATH {
+    if len > max_len {
         return Err(DriverctlError::SocketPath {
             detail: format!(
-                "{} is {len} bytes, over the {MAX_SUN_PATH}-byte unix socket limit",
+                "{} is {len} bytes, over the {max_len}-byte unix socket limit",
                 path.display()
             ),
         });

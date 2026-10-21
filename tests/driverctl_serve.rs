@@ -538,7 +538,10 @@ fn default_socket_path_gives_a_long_run_id_the_fixed_length_name() {
     wait_listening(&mut served);
 
     let dir = runtime.path().join("gsdmm-driverctl");
-    let expected = dir.join(format!("{}.sock", expected_fixed_stem(&run_id, &fx.run_dir)));
+    let expected = dir.join(format!(
+        "{}.sock",
+        expected_fixed_stem(&run_id, &fx.run_dir)
+    ));
     assert!(
         expected.exists(),
         "fixed-length socket at {}",
