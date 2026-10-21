@@ -680,6 +680,18 @@ pub fn editor_args(
     }
 }
 
+/// The program and argv that open `path` in `editor`.
+pub fn editor_command(
+    editor: &str,
+    path: &std::path::Path,
+    line: Option<usize>,
+) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
+    (
+        std::ffi::OsString::from(editor),
+        editor_args(editor, path, line),
+    )
+}
+
 impl App {
     /// Called when `$EDITOR` returns: re-read any cached browser or archive file that
     /// was just edited so the viewer does not show pre-edit text.
@@ -3962,6 +3974,121 @@ mod tests {
         assert_eq!(
             editor_args("nvim", p, Some(0)),
             os(&["/r/.planning/ROADMAP.md"])
+        );
+    }
+
+    /// WR-06: a bare program keeps the shipped direct spawn, argv unchanged.
+    #[test]
+    fn editor_command_runs_a_bare_program_directly() {
+        use std::ffi::OsString;
+        let p = std::path::Path::new("/r/.planning/DIRECTION.md");
+        assert_eq!(
+            editor_command("nvim", p, Some(42)),
+            (
+                OsString::from("nvim"),
+                vec![
+                    OsString::from("+42"),
+                    OsString::from("/r/.planning/DIRECTION.md")
+                ]
+            )
+        );
+        assert_eq!(
+            editor_command("", p, None),
+            (
+                OsString::from("vi"),
+                vec![OsString::from("/r/.planning/DIRECTION.md")]
+            ),
+            "an empty editor string is `vi`"
+        );
+    }
+
+    /// WR-06 / git's `prepare_shell_cmd` rule: an editor string with arguments runs as
+    /// `sh -c '<editor> "$@"' '<editor>' <args...>`.
+    #[cfg(unix)]
+    #[test]
+    fn editor_command_wraps_an_editor_with_arguments_in_sh() {
+        use std::ffi::OsString;
+        let p = std::path::Path::new("/r/.planning/DIRECTION.md");
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            editor_command("code -w", p, Some(7)),
+            (
+                OsString::from("sh"),
+                os(&[
+                    "-c",
+                    "code -w \"$@\"",
+                    "code -w",
+                    "-g",
+                    "/r/.planning/DIRECTION.md:7"
+                ])
+            )
+        );
+        assert_eq!(
+            editor_command("emacs -nw", p, None),
+            (
+                OsString::from("sh"),
+                os(&[
+                    "-c",
+                    "emacs -nw \"$@\"",
+                    "emacs -nw",
+                    "/r/.planning/DIRECTION.md"
+                ])
+            )
+        );
+    }
+
+    /// T-30-27: the path (inside a run directory a cloned repository or a sibling sandbox
+    /// names) is only ever a separate argv element after `$0`, never part of the script.
+    #[cfg(unix)]
+    #[test]
+    fn editor_command_never_puts_the_path_in_the_shell_script() {
+        let hostile = "/runs/$(touch PWNED);`id`'\"x/DIRECTION.md";
+        let p = std::path::Path::new(hostile);
+        for editor in ["code -w", "nvim -u NONE", "'/opt/My Ed/ed' --wait", "emacs -nw"] {
+            for line in [None, Some(3)] {
+                let (program, argv) = editor_command(editor, p, line);
+                assert_eq!(program, std::ffi::OsString::from("sh"), "{editor}");
+                assert_eq!(argv[0], std::ffi::OsString::from("-c"), "{editor}");
+                let script = argv[1].to_string_lossy().into_owned();
+                assert_eq!(script, format!("{editor} \"$@\""), "{editor}");
+                assert!(!script.contains("PWNED"), "{script}");
+                assert_eq!(argv[2], std::ffi::OsString::from(editor), "$0 is the editor");
+                assert!(
+                    argv[3..]
+                        .iter()
+                        .any(|a| a.to_string_lossy().contains(hostile)),
+                    "the path rides as its own argv element: {argv:?}"
+                );
+            }
+        }
+    }
+
+    /// WR-06: line positioning is keyed on the file name of the editor string's first word.
+    #[cfg(unix)]
+    #[test]
+    fn editor_command_positions_the_line_for_the_first_word() {
+        use std::ffi::OsString;
+        let p = std::path::Path::new("/r/DIRECTION.md");
+        let tail = |editor: &str, line: usize| {
+            let (_, argv) = editor_command(editor, p, Some(line));
+            argv[3..].to_vec()
+        };
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(tail("nvim -u NONE", 3), os(&["+3", "/r/DIRECTION.md"]));
+        assert_eq!(tail("code -w", 9), os(&["-g", "/r/DIRECTION.md:9"]));
+        assert_eq!(
+            tail("/usr/local/bin/code --wait", 4),
+            os(&["-g", "/r/DIRECTION.md:4"])
+        );
+        assert_eq!(
+            tail("\"/opt/My Editors/nvim\" -u NONE", 2),
+            os(&["+2", "/r/DIRECTION.md"]),
+            "a quoted first word is unquoted before it is keyed"
+        );
+        assert_eq!(
+            tail("ed -s", 5),
+            os(&["/r/DIRECTION.md"]),
+            "an unknown editor never gets a guessed flag"
         );
     }
 
