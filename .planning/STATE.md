@@ -272,7 +272,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-21 - Completed quick task 261021-1id: Make TUI status glyphs width-safe across terminals
+Last activity: 2026-10-21 - Completed quick task 261021-1id: Make TUI status glyphs width-safe across terminals (also 261021-1if: macOS socket-path run-id length limit removed)
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -892,6 +892,7 @@ Recent decisions affecting current work:
 | 261021-0jg | Cross-target clippy cleanup and macOS unsandboxed launch portability (D-31) | 2026-10-21 | 794af4b | [261021-0jg-cross-target-clippy-cleanup-and-macos-un](./quick/261021-0jg-cross-target-clippy-cleanup-and-macos-un/) |
 | 261021-101 | Fix Phase 30 review findings WR-07 WR-02 IN-04 | 2026-10-21 | 524ba05 | [261021-101-fix-phase-30-review-findings-wr-07-wr-02](./quick/261021-101-fix-phase-30-review-findings-wr-07-wr-02/) |
 | 261021-1id | Make TUI status glyphs width-safe across terminals (EAW Neutral, non-emoji glyph registry + width test; Driver labels DIM) | 2026-10-21 | 7bd6e15 | [261021-1id-make-tui-status-glyphs-width-safe-across](./quick/261021-1id-make-tui-status-glyphs-width-safe-across/) |
+| 261021-1if | Remove macOS socket-path run-id length limit for driverctl socket (fixed-length hashed fallback name) | 2026-10-21 | dffb6c9 | [261021-1if-remove-macos-socket-path-run-id-length-l](./quick/261021-1if-remove-macos-socket-path-run-id-length-l/) |
 
 ## Session Continuity
 

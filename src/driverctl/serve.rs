@@ -28,7 +28,11 @@
 //! 4. **The default socket path is private (D-21, T-27-22).** Without `--sock` it is
 //!    `$XDG_RUNTIME_DIR/gsdmm-driverctl/<run-id>-<sha256(canonical run dir)[:8]>.sock`.
 //!    That directory is created 0700 and must be a real directory owned by the
-//!    current uid with no group/other bits. An unset `XDG_RUNTIME_DIR`, or a path
+//!    current uid with no group/other bits. A D-21 name over [`MAX_SUN_PATH`] bytes
+//!    falls back to a fixed-length `<16 hex of sha256(run id, NUL, canonical run
+//!    dir)>.sock` in the same private directory, which is what lets a stock macOS
+//!    `$TMPDIR` (about 49 bytes) take any valid run id `[inferred — audit]`. An
+//!    unset `XDG_RUNTIME_DIR`, or a base so long that even the fixed-length name is
 //!    over [`MAX_SUN_PATH`] bytes, is a typed refusal. There is deliberately no
 //!    `/tmp` fallback `[inferred — audit]`: a shared directory is exactly where a
 //!    squatter pre-creates the path. On macOS only, an unset `XDG_RUNTIME_DIR`
@@ -86,12 +90,19 @@ pub const SOCKET_DIR_NAME: &str = "gsdmm-driverctl";
 
 /// The longest socket path `sockaddr_un` holds on macOS (`sun_path` is 104
 /// bytes including the NUL).
-#[cfg(target_os = "macos")]
-pub const MAX_SUN_PATH: usize = 103;
+pub const MACOS_MAX_SUN_PATH: usize = 103;
 
-/// The longest socket path `sockaddr_un` holds off macOS (108 bytes with the NUL).
+/// The longest socket path `sockaddr_un` holds off macOS (`sun_path` is 108
+/// bytes including the NUL).
+pub const LINUX_MAX_SUN_PATH: usize = 107;
+
+/// The socket path limit of the platform this build targets.
+#[cfg(target_os = "macos")]
+pub const MAX_SUN_PATH: usize = MACOS_MAX_SUN_PATH;
+
+/// The socket path limit of the platform this build targets.
 #[cfg(not(target_os = "macos"))]
-pub const MAX_SUN_PATH: usize = 107;
+pub const MAX_SUN_PATH: usize = LINUX_MAX_SUN_PATH;
 
 /// How many connections may be in flight; the next one is answered `busy`.
 pub const MAX_CONNECTIONS: usize = 32;
@@ -270,7 +281,8 @@ pub fn hash8(canonical: &Path) -> String {
 /// that use the same run id from colliding on one socket (T-27-25). Phase 28
 /// passes this as `DRIVERCTL_SOCK`. `TMPDIR` is read from the environment
 /// variable only, never `std::env::temp_dir()`, which silently falls back to
-/// `/tmp` `[inferred — audit]`.
+/// `/tmp` `[inferred — audit]`. The file name is the D-21 name when it fits the
+/// platform limit, else a fixed-length hashed one (see `default_socket_file`).
 pub fn socket_path(run_id: &str, canonical_run_dir: &Path) -> Result<PathBuf, DriverctlError> {
     let base = socket_base_dir(
         std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
@@ -329,6 +341,10 @@ fn socket_base_dir(
 }
 
 /// [`socket_path`] with the runtime directory passed in (the testable core).
+///
+/// The length is refused before the directory is created; both name shapes get
+/// the same private-directory checks (0700, a real directory, owned by the
+/// current uid, no group/other bits).
 pub fn socket_path_in(
     runtime_dir: Option<&Path>,
     run_id: &str,
@@ -346,9 +362,9 @@ pub fn socket_path_in(
         )));
     }
 
+    // Length is refused BEFORE the directory is created.
+    let path = default_socket_file(runtime, run_id, canonical_run_dir, MAX_SUN_PATH)?;
     let dir = runtime.join(SOCKET_DIR_NAME);
-    let path = dir.join(format!("{run_id}-{}.sock", hash8(canonical_run_dir)));
-    check_sun_len(&path)?;
 
     match fs::DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => {}
@@ -375,12 +391,78 @@ pub fn socket_path_in(
     Ok(path)
 }
 
+/// The first eight bytes of `sha256(run id, 0x00, canonical run dir)` as sixteen
+/// lowercase hex digits: the stem of the fixed-length default socket name.
+///
+/// Neither a run id (it matches [`RUN_ID_RE`]) nor a unix path holds a NUL byte,
+/// so the (id, NUL, dir) encoding is injective. SHA-256 and not a hasher from the
+/// standard library's hash module, whose output is unspecified across Rust
+/// releases: the name must be the same on every build and platform (a golden
+/// value pins it). [`hash8`] is deliberately a different, unchanged digest: it
+/// also names scope units, config dirs and mirrors.
+fn socket_name_hash(run_id: &str, canonical_run_dir: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(run_id.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(canonical_run_dir.as_os_str().as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The default socket file for a run under `base`: pure, no I/O, `max_len` passed
+/// in so the result does not depend on the host OS.
+///
+/// The D-21 name `<base>/gsdmm-driverctl/<run-id>-<hash8(run dir)>.sock` is kept
+/// whenever it fits `max_len`, so every path that resolved before is
+/// byte-identical. Otherwise the name falls back to
+/// `<base>/gsdmm-driverctl/<socket_name_hash>.sock` in the SAME private
+/// directory: a constant 38 bytes past `base` (16 for `/gsdmm-driverctl`, 1 for
+/// `/`, 16 hex, 5 for `.sock`), so a base up to 65 bytes fits under the macOS
+/// limit regardless of the run id `[inferred — audit]`. The two name shapes
+/// cannot collide: the fixed stem has no `-`, a D-21 name always has one. Only
+/// when even the fixed-length name is over `max_len` is the base too long, a
+/// typed [`DriverctlError::SocketPath`].
+fn default_socket_file(
+    base: &Path,
+    run_id: &str,
+    canonical_run_dir: &Path,
+    max_len: usize,
+) -> Result<PathBuf, DriverctlError> {
+    let dir = base.join(SOCKET_DIR_NAME);
+    let d21 = dir.join(format!("{run_id}-{}.sock", hash8(canonical_run_dir)));
+    if d21.as_os_str().len() <= max_len {
+        return Ok(d21);
+    }
+    let fixed = dir.join(format!(
+        "{}.sock",
+        socket_name_hash(run_id, canonical_run_dir)
+    ));
+    check_sun_len_max(&fixed, max_len).map_err(|e| match e {
+        DriverctlError::SocketPath { detail } => DriverctlError::SocketPath {
+            detail: format!(
+                "{detail}; the socket base directory is too long, point XDG_RUNTIME_DIR \
+                 (or TMPDIR on macOS) at a shorter directory"
+            ),
+        },
+        other => other,
+    })?;
+    Ok(fixed)
+}
+
 fn check_sun_len(path: &Path) -> Result<(), DriverctlError> {
+    check_sun_len_max(path, MAX_SUN_PATH)
+}
+
+fn check_sun_len_max(path: &Path, max_len: usize) -> Result<(), DriverctlError> {
     let len = path.as_os_str().len();
-    if len > MAX_SUN_PATH {
+    if len > max_len {
         return Err(DriverctlError::SocketPath {
             detail: format!(
-                "{} is {len} bytes, over the {MAX_SUN_PATH}-byte unix socket limit",
+                "{} is {len} bytes, over the {max_len}-byte unix socket limit",
                 path.display()
             ),
         });
@@ -1125,7 +1207,9 @@ mod tests {
     fn socket_path_refuses_a_path_over_the_unix_limit() {
         let rt = runtime_dir();
         let long_id = "r".repeat(80);
-        let nested = rt.path().join("x".repeat(60));
+        // Long enough that even the fixed-length name overflows, whatever the
+        // host TMPDIR length.
+        let nested = rt.path().join("x".repeat(MAX_SUN_PATH));
         fs::create_dir(&nested).unwrap();
         let err = socket_path_in(Some(&nested), &long_id, Path::new("/p/r")).unwrap_err();
         assert!(err.to_string().contains(&MAX_SUN_PATH.to_string()), "{err}");
@@ -1234,6 +1318,153 @@ mod tests {
         let resolved2 = base(None, Some(rt2.path().to_str().unwrap()), true).unwrap();
         let err = socket_path_in(Some(&resolved2), "r27", Path::new("/p/r27")).unwrap_err();
         assert!(err.to_string().contains("group or others"), "{err}");
+    }
+
+    // ------------------------------------- fixed-length fallback (quick 261021-1if)
+
+    /// A stock-shaped macOS `$TMPDIR` (49 bytes, with the trailing slash).
+    const STOCK_MACOS_TMPDIR: &str = "/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/";
+
+    fn is_lower_hex16(stem: &str) -> bool {
+        stem.len() == 16
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
+    #[test]
+    fn the_d21_name_is_kept_when_it_fits_exactly() {
+        let run_dir = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+
+        let id62 = "a".repeat(62);
+        let linux = default_socket_file(
+            Path::new("/run/user/1000"),
+            &id62,
+            run_dir,
+            LINUX_MAX_SUN_PATH,
+        )
+        .unwrap();
+        assert_eq!(
+            linux,
+            PathBuf::from(format!(
+                "/run/user/1000/gsdmm-driverctl/{id62}-{}.sock",
+                hash8(run_dir)
+            ))
+        );
+        assert_eq!(linux.as_os_str().len(), LINUX_MAX_SUN_PATH);
+
+        let id24 = "a".repeat(24);
+        let mac = default_socket_file(
+            Path::new(STOCK_MACOS_TMPDIR),
+            &id24,
+            run_dir,
+            MACOS_MAX_SUN_PATH,
+        )
+        .unwrap();
+        assert_eq!(
+            mac,
+            PathBuf::from(format!(
+                "{STOCK_MACOS_TMPDIR}gsdmm-driverctl/{id24}-{}.sock",
+                hash8(run_dir)
+            ))
+        );
+        assert_eq!(mac.as_os_str().len(), MACOS_MAX_SUN_PATH);
+    }
+
+    #[test]
+    fn one_byte_over_the_limit_gives_the_fixed_length_name() {
+        let run_dir = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+        for (base, id_len, max) in [
+            ("/run/user/1000", 63, LINUX_MAX_SUN_PATH),
+            (STOCK_MACOS_TMPDIR, 25, MACOS_MAX_SUN_PATH),
+        ] {
+            let id = "a".repeat(id_len);
+            let got = default_socket_file(Path::new(base), &id, run_dir, max).unwrap();
+            assert_eq!(
+                got.parent().unwrap(),
+                Path::new(base).join(SOCKET_DIR_NAME),
+                "same private directory"
+            );
+            let stem = got.file_stem().unwrap().to_str().unwrap();
+            assert!(is_lower_hex16(stem), "{stem}");
+            assert_eq!(got.extension().unwrap(), "sock");
+            assert!(got.as_os_str().len() <= max);
+        }
+    }
+
+    #[test]
+    fn a_long_run_id_under_a_stock_macos_tmpdir_fits() {
+        let tmp = base(None, Some(STOCK_MACOS_TMPDIR), true).unwrap();
+        let id = "a".repeat(80);
+        let got = default_socket_file(
+            &tmp,
+            &id,
+            Path::new("/projects/a/.planning/meta-manager/drivers/x"),
+            MACOS_MAX_SUN_PATH,
+        )
+        .unwrap();
+        assert_eq!(got.as_os_str().len(), 86);
+        assert_eq!(got.parent().unwrap(), tmp.join(SOCKET_DIR_NAME));
+        let stem = got.file_stem().unwrap().to_str().unwrap();
+        assert!(is_lower_hex16(stem), "{stem}");
+        assert!(!stem.contains('-'), "{stem}");
+    }
+
+    #[test]
+    fn the_fixed_length_name_is_deterministic_and_input_sensitive() {
+        let id = "a".repeat(80);
+        let dir_a = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+        let dir_b = Path::new("/projects/b/.planning/meta-manager/drivers/x");
+        let pick = |id: &str, dir: &Path| {
+            default_socket_file(Path::new(STOCK_MACOS_TMPDIR), id, dir, MACOS_MAX_SUN_PATH).unwrap()
+        };
+        assert_eq!(pick(&id, dir_a), pick(&id, dir_a));
+        assert_ne!(pick(&id, dir_a), pick(&id, dir_b), "another run dir");
+        assert_ne!(
+            pick(&id, dir_a),
+            pick(&"b".repeat(80), dir_a),
+            "another run id"
+        );
+    }
+
+    #[test]
+    fn socket_name_hash_is_pinned_by_a_golden_value() {
+        // printf 'r27\000/p/r27' | sha256sum | cut -c1-16
+        assert_eq!(
+            socket_name_hash("r27", Path::new("/p/r27")),
+            "b3a230fed1e52760"
+        );
+    }
+
+    #[test]
+    fn a_base_of_65_bytes_fits_the_fixed_length_name_and_66_is_refused() {
+        let id = "a".repeat(80);
+        let run_dir = Path::new("/p/r");
+        let fits = PathBuf::from(format!("/{}", "b".repeat(64)));
+        assert_eq!(fits.as_os_str().len(), 65);
+        let got = default_socket_file(&fits, &id, run_dir, MACOS_MAX_SUN_PATH).unwrap();
+        assert_eq!(got.as_os_str().len(), MACOS_MAX_SUN_PATH);
+
+        let over = PathBuf::from(format!("/{}", "b".repeat(65)));
+        assert_eq!(over.as_os_str().len(), 66);
+        let err = default_socket_file(&over, &id, run_dir, MACOS_MAX_SUN_PATH).unwrap_err();
+        assert!(matches!(err, DriverctlError::SocketPath { .. }));
+        assert!(err.to_string().contains("103"), "{err}");
+    }
+
+    #[test]
+    fn socket_path_in_gives_a_long_run_id_the_fixed_length_name() {
+        let rt = runtime_dir();
+        let id = "a".repeat(80);
+        let run_dir = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+        let got = socket_path_in(Some(rt.path()), &id, run_dir).unwrap();
+        assert_eq!(
+            got,
+            default_socket_file(rt.path(), &id, run_dir, MAX_SUN_PATH).unwrap()
+        );
+        assert!(got.as_os_str().len() <= MAX_SUN_PATH);
+        let meta = fs::metadata(rt.path().join(SOCKET_DIR_NAME)).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o700);
     }
 
     // ---------------------------------------------------------------- misc
