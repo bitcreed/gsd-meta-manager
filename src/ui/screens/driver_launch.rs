@@ -225,9 +225,10 @@ impl LaunchForm {
 }
 
 /// A model name the form accepts, typed or recorded: the conservative rule
-/// `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` (T-30-17, T-30-30). A recorded connection is not
+/// `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}$` (T-30-17, T-30-30). A recorded connection is not
 /// trusted as an argument the user did not type, and a typed value that looks like a
-/// flag (`-x`, `--foreground`) never reaches the detached launch's argv.
+/// flag (`-x`, `--foreground`) never reaches the detached launch's argv. The brackets
+/// admit Claude Code's `[1m]` long-context suffix (WR-07).
 fn model_name_ok(model: &str) -> bool {
     let mut chars = model.chars();
     let Some(first) = chars.next() else {
@@ -235,7 +236,8 @@ fn model_name_ok(model: &str) -> bool {
     };
     first.is_ascii_alphanumeric()
         && model.chars().count() <= 64
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+        && chars
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-' | '[' | ']'))
 }
 
 /// The form for relaunching the run whose frontmatter is `fm` (D-21).
