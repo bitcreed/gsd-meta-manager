@@ -1656,6 +1656,43 @@ mod tests {
         );
     }
 
+    /// IN-04: at the height where the header and the question exactly fill the room, the
+    /// findings get no rows. They are left out, so the popup is not clipped and `y` applies.
+    #[test]
+    fn launcher_edit_the_lint_confirmation_confirms_when_its_findings_get_no_rows() {
+        use crate::ui::screens::confirm_popup::CLIPPED_HINT;
+        let findings: Vec<String> = (1..=10)
+            .map(|n| format!("DIRECTION.md:{n}: problem {n}"))
+            .collect();
+        let refs: Vec<&str> = findings.iter().map(String::as_str).collect();
+
+        let (width, room) = body_room(Rect::new(0, 0, 80, 7));
+        assert_eq!((width, room), (70, 2));
+        let fixed = wrapped_rows(
+            &[
+                Line::from("driver check found 10 problem(s) in your edit:"),
+                Line::from("Apply it anyway?"),
+            ],
+            width,
+        );
+        assert_eq!(fixed, room, "the findings' row budget is exactly 0");
+
+        let (mut screen, mut ctx, mut rx) = lint_confirm(&refs);
+        let text = draw(&screen, &ctx, 80, 7);
+        assert!(!screen.popup.clipped(), "{text}");
+        assert!(text.contains("Apply it anyway?"), "{text}");
+        assert!(!text.contains(CLIPPED_HINT), "{text}");
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(matches!(
+            rx.try_recv().ok(),
+            Some(Action::DriverEditApply {
+                accept_lint: true,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn launcher_steer_a_clipped_polite_stop_writes_nothing_on_y() {
         let dir = tempfile::tempdir().expect("temp dir");

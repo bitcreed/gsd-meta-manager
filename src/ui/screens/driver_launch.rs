@@ -1713,6 +1713,7 @@ mod tests {
             "",
             "a b",
             "-x",
+            "-opus[1m]",
         ] {
             for conn in &mut fm.connected {
                 conn.model = Some(model.to_string());
@@ -1722,9 +1723,11 @@ mod tests {
             assert!(form.defaulted.model);
         }
         for conn in &mut fm.connected {
-            conn.model = Some("claude-opus-4-7:1m".to_string());
+            conn.model = Some("opus[1m]".to_string());
         }
-        assert_eq!(relaunch_prefill(&fm).args.model, "claude-opus-4-7:1m");
+        let form = relaunch_prefill(&fm);
+        assert_eq!(form.args.model, "opus[1m]");
+        assert!(!form.defaulted.model);
         // A cap clap refuses falls back to the default instead of reaching the form.
         fm.caps.wall_clock_min.limit = Some(f64::INFINITY);
         let form = relaunch_prefill(&fm);
@@ -2670,15 +2673,53 @@ mod tests {
         ));
     }
 
+    /// IN-04: at the height where the header and the question exactly fill the room, the
+    /// problems get no rows. They are left out, so the popup is not clipped and `y` lives.
+    #[test]
+    fn launcher_launch_the_lint_popup_confirms_when_its_problems_get_no_rows() {
+        use crate::ui::screens::confirm_popup::{body_room, wrapped_rows, CLIPPED_HINT};
+        let header = "driver check found 6 problem(s). Launch is blocked until they are fixed:";
+        let (inner, room) = body_room(Rect::new(0, 0, 80, 8));
+        assert_eq!((inner, room), (70, 3));
+        let taken = wrapped_rows(
+            &[Line::from(header), Line::from("Edit it again now?")],
+            inner,
+        );
+        assert_eq!(taken, room, "the problems' row budget is exactly 0");
+
+        let (mut screen, mut ctx, mut rx) = lint_popup(6);
+        let drawn = draw(&screen, &ctx, 80, 8);
+        let prose = popup_prose(&drawn);
+        assert!(!screen.popup.clipped(), "{drawn}");
+        assert!(prose.contains("Edit it again now?"), "{prose}");
+        assert!(!prose.contains(CLIPPED_HINT), "{prose}");
+        assert!(matches!(
+            screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx),
+            ScreenAction::Pop
+        ));
+        assert!(matches!(
+            rx.try_recv().ok(),
+            Some(Action::DriverEditRequested { .. })
+        ));
+    }
+
     // ── Plan 30-09 Task 3: the form agrees with the launcher and the editor ──
 
-    /// WR-01: a typed model is judged by the rule a recorded model meets, so a value that
-    /// looks like a flag never reaches the detached launch's argv.
+    /// WR-01 and WR-07: a typed model is judged by the rule a recorded model meets, so a
+    /// value that looks like a flag never reaches the detached launch's argv, while the
+    /// `[1m]` long-context suffix and a provider-qualified id are accepted.
     #[test]
     fn launcher_launch_a_typed_model_that_looks_like_a_flag_is_refused() {
         let (mut screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
         press(&mut screen, &mut ctx, 'e');
-        for bad in ["-x", "--foreground", &"a".repeat(65), "a b", ".opus"] {
+        for bad in [
+            "-x",
+            "--foreground",
+            &"a".repeat(65),
+            "a b",
+            ".opus",
+            "-opus[1m]",
+        ] {
             screen.editing = Some(bad.to_string());
             screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
             assert_eq!(
@@ -2689,7 +2730,15 @@ mod tests {
             assert!(screen.editing.is_some(), "{bad:?}: editing continues");
             assert_eq!(screen.args().model, "opus", "{bad:?} is not stored");
         }
-        for good in ["opus", "sonnet", "claude-opus-4-5", "claude-opus-4-7:1m"] {
+        for good in [
+            "opus",
+            "sonnet",
+            "claude-opus-4-5",
+            "opus[1m]",
+            "sonnet[1m]",
+            "claude-sonnet-4-5[1m]",
+            "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        ] {
             screen.editing = Some(good.to_string());
             screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
             assert!(screen.editing.is_none(), "{good} is accepted");
