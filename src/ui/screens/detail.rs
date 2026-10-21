@@ -1561,53 +1561,17 @@ impl DetailScreen {
     /// only in the sign, and two copies of a clamp are two things to keep in
     /// agreement.
     fn move_driver_selection(&self, ctx: &mut AppContext, delta: isize) {
-        // Launcher runs are the list (30-01, D-01). Their detail is a pure function
-        // of the cache, so a move reschedules nothing: the selection is pinned to
-        // the run id so a refresh cannot move it onto another run.
-        if let Some(cache) = ctx
-            .view_cache
-            .get_mut(&self.alias)
-            .filter(|cache| !cache.launcher_runs.is_empty())
-        {
-            let last = cache.launcher_runs.len() - 1;
-            let next = if delta < 0 {
-                cache.launcher_selected.saturating_sub(delta.unsigned_abs())
-            } else {
-                cache.launcher_selected.saturating_add(delta as usize)
-            }
-            .min(last);
-            cache.launcher_selected = next;
-            cache.launcher_selected_id = cache.launcher_runs.get(next).map(|(id, _)| id.clone());
-            ctx.needs_redraw = true;
-            return;
-        }
-        let len = ctx
-            .view_cache
-            .get(&self.alias)
-            .map_or(0, |cache| cache.driver_runs.len());
-        let mut moved = false;
-        if len > 0 {
-            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-            let last = len - 1;
-            let next = if delta < 0 {
-                cache
-                    .driver_selected_run
-                    .saturating_sub(delta.unsigned_abs())
-            } else {
-                cache
-                    .driver_selected_run
-                    .saturating_add(delta as usize)
-                    .min(last)
-            }
-            .min(last);
-            if next != cache.driver_selected_run {
-                cache.driver_selected_run = next;
-                cache.driver_scroll_offset = 0;
-                cache.driver_follow = true;
-                moved = true;
-            }
-        }
-        if moved {
+        // One selection across launcher rows then (when shown) legacy rows (30-01,
+        // D-01). A launcher run's detail is a pure function of the cache, so moving
+        // among them reschedules nothing; landing on a legacy row reschedules the
+        // run-list scan, because the inbox and the journal that scan reads are the
+        // *selected* legacy run's, and leaving the previous run's messages under a
+        // new selection would attribute one run's steering history to another.
+        let on_legacy = super::driver_run::move_selection(
+            ctx.view_cache.entry(self.alias.clone()).or_default(),
+            delta,
+        );
+        if on_legacy {
             if let Some(path) = ctx.config.projects.get(&self.alias).map(|p| p.path.clone()) {
                 ctx.schedule_run_list_scan(&self.alias, &path);
             }
@@ -2269,15 +2233,9 @@ impl DetailScreen {
                     .first()
                     .is_none_or(|&first| c.defaults_selected <= first)
             }),
-            // Launcher rows come first (30-01, D-01): when there are any, the top
-            // is launcher row 0; the legacy selection only matters without them.
-            DetailSubView::Driver => cache.is_none_or(|c| {
-                if c.launcher_runs.is_empty() {
-                    c.driver_selected_run == 0
-                } else {
-                    c.launcher_selected == 0
-                }
-            }),
+            // Launcher rows come first, then the legacy rows when shown (30-01,
+            // D-01): the top is the first position of that one order.
+            DetailSubView::Driver => super::driver_run::selection_position(cache) == 0,
         }
     }
 }
@@ -5436,65 +5394,72 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(DriverStartScreen::new(self.alias.clone())))
             }
-            // `x`: stop, **through the existing confirmation** and never
-            // directly.
+            // `x`: kill the SELECTED launcher run's sandbox scope, **through the
+            // confirmation** and never directly (30-01, D-22).
             //
             // Tab-scoped, and the collision is deliberate: `x` is bound on the
             // Defaults tab (clear a value) and on the Queue tab (delete), both
-            // untouched, and per-tab reuse is the established pattern — `d` is
-            // already bound twice (D-15). Using `x` here matches the dashboard's
-            // `x` = stop run, and that verb/key consistency across the two
-            // surfaces is worth more than a unique letter.
+            // untouched, and per-tab reuse is the established pattern. It replaces
+            // the Phase 18 `x` (the legacy `DriverAction::Stop`), which is no longer
+            // reachable from the tab (UI-SPEC "What Phase 30 repeals").
+            //
+            // The id the prompt names is the id the key was pressed on
+            // (T-28-18). A run that is positively not running has nothing to kill,
+            // and a legacy row is read-only here: both set a message and open
+            // nothing, and the message-only half is asserted by test.
             KeyCode::Char('x') if current_view == DetailSubView::Driver => {
+                use super::driver_run::{entry_killable, selection, Selection};
                 ctx.needs_redraw = true;
-                ScreenAction::Push(Box::new(DriverConfirmScreen::new(
-                    self.alias.clone(),
-                    DriverAction::Stop,
-                )))
-            }
-            // `{` / `}`: move the highlight over the launcher runs listed under the
-            // Driver tab's run view (28-07, D-11). Tab-scoped like every key in this
-            // run, and chosen because all three of `{`, `}` and `X` are unbound on
-            // every other screen (`normal.rs`, `driver.rs` and the rest of this
-            // file), so no existing key was displaced. The legacy run selection
-            // (`j`/`k`) is untouched. Clamped at both ends; with no rows, inert.
-            KeyCode::Char('}') if current_view == DetailSubView::Driver => {
-                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                if let Some(last) = cache.launcher_runs.len().checked_sub(1) {
-                    cache.launcher_selected = (cache.launcher_selected + 1).min(last);
-                }
-                ctx.needs_redraw = true;
-                ScreenAction::None
-            }
-            KeyCode::Char('{') if current_view == DetailSubView::Driver => {
-                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                cache.launcher_selected = cache.launcher_selected.saturating_sub(1);
-                ctx.needs_redraw = true;
-                ScreenAction::None
-            }
-            // `X`: stop the highlighted launcher run, **through the existing driver
-            // confirmation** and never directly. Capital, because lower-case `x`
-            // is the legacy run stop two arms up and the two must not be confused.
-            // The confirmation names the run id it will send; with no rows there
-            // is nothing to name, so nothing opens.
-            KeyCode::Char('X') if current_view == DetailSubView::Driver => {
-                let target = ctx.view_cache.get(&self.alias).and_then(|cache| {
-                    let last = cache.launcher_runs.len().checked_sub(1)?;
-                    cache
-                        .launcher_runs
-                        .get(cache.launcher_selected.min(last))
-                        .map(|(run_id, _)| run_id.clone())
-                });
-                match target {
-                    Some(run_id) => {
-                        ctx.needs_redraw = true;
-                        ScreenAction::Push(Box::new(DriverConfirmScreen::new_launcher_stop(
-                            self.alias.clone(),
-                            run_id,
-                        )))
+                let cache = ctx.view_cache.get(&self.alias);
+                match selection(cache) {
+                    Selection::Launcher(index) => {
+                        let entry =
+                            &cache.expect("a selection implies a cache").launcher_runs[index];
+                        if entry_killable(entry) {
+                            return ScreenAction::Push(Box::new(
+                                DriverConfirmScreen::new_launcher_stop(
+                                    self.alias.clone(),
+                                    entry.0.clone(),
+                                ),
+                            ));
+                        }
+                        let message = format!(
+                            "{} is not running, so there is nothing to kill.",
+                            super::driver::shown_capped(&entry.0)
+                        );
+                        ctx.status_message = Some((message, std::time::Instant::now()));
+                        ScreenAction::None
                     }
-                    None => ScreenAction::None,
+                    Selection::Legacy(_) => {
+                        ctx.status_message = Some((
+                            super::driver_run::LEGACY_READ_ONLY.to_string(),
+                            std::time::Instant::now(),
+                        ));
+                        ScreenAction::None
+                    }
+                    Selection::Nothing => ScreenAction::None,
                 }
+            }
+            // `L`: show or hide the read-only legacy runs (30-01, D-01). Inert while
+            // the project has none. Landing the highlight on a legacy row (the only
+            // thing in the list) reschedules the scan its detail reads from.
+            KeyCode::Char('L') if current_view == DetailSubView::Driver => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if super::driver_run::toggle_legacy(cache) {
+                    let on_legacy = matches!(
+                        super::driver_run::selection(Some(cache)),
+                        super::driver_run::Selection::Legacy(_)
+                    );
+                    if on_legacy {
+                        if let Some(path) =
+                            ctx.config.projects.get(&self.alias).map(|p| p.path.clone())
+                        {
+                            ctx.schedule_run_list_scan(&self.alias, &path);
+                        }
+                    }
+                }
+                ctx.needs_redraw = true;
+                ScreenAction::None
             }
             // `o`: opt in, **through the same confirmation the dashboard's `o`
             // opens** and never by writing the registry from here.
@@ -6163,16 +6128,17 @@ impl DetailScreen {
             // pane and reschedules the scan; the tab has no Enter
             // ([inferred I-11]).
             DetailSubView::Driver => {
-                let current = ctx.view_cache.get(&self.alias).map_or(0, |c| {
-                    if c.launcher_runs.is_empty() {
-                        c.driver_selected_run
-                    } else {
-                        c.launcher_selected
-                    }
+                // The row index is the list as drawn (header included); map it
+                // into the one linear selection order.
+                let moves = ctx.view_cache.get(&self.alias).and_then(|cache| {
+                    let target = super::driver_run::position_for_row(cache, index)?;
+                    let current = super::driver_run::selection_position(Some(cache));
+                    (target != current).then(|| {
+                        isize::try_from(target).unwrap_or(isize::MAX)
+                            - isize::try_from(current).unwrap_or(isize::MAX)
+                    })
                 });
-                if index != current {
-                    let delta = isize::try_from(index).unwrap_or(isize::MAX)
-                        - isize::try_from(current).unwrap_or(isize::MAX);
+                if let Some(delta) = moves {
                     self.move_driver_selection(ctx, delta);
                 }
                 MouseArm::None
@@ -6390,30 +6356,17 @@ impl DetailScreen {
     /// [inferred I-11]). One method for both render paths, so neither can
     /// record less than the other.
     fn render_driver(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let cache = ctx.view_cache.get(&self.alias);
-        // The launcher-first composition (30-01, D-01) whenever the project has a
-        // launcher run; the shipped legacy render otherwise.
-        let drawn = if cache.is_some_and(|c| !c.launcher_runs.is_empty()) {
-            super::driver_run::render_launcher_tab(
-                frame,
-                area,
-                ctx,
-                &self.alias,
-                cache,
-                &self.driver_viewport,
-                &self.driver_list_offset,
-            )
-        } else {
-            super::driver::render_driver_tab(
-                frame,
-                area,
-                ctx,
-                &self.alias,
-                cache,
-                &self.driver_viewport,
-                &self.driver_list_offset,
-            )
-        };
+        // The launcher-first composition (30-01, D-01): launcher runs, then one
+        // collapsed row of read-only legacy runs.
+        let drawn = super::driver_run::render_launcher_tab(
+            frame,
+            area,
+            ctx,
+            &self.alias,
+            ctx.view_cache.get(&self.alias),
+            &self.driver_viewport,
+            &self.driver_list_offset,
+        );
         if let Some(list) = drawn.list {
             self.record_list(list);
         }
@@ -19264,6 +19217,9 @@ mod tests {
                 test_run("2026-07-29T21-40-00Z-3f2a"),
                 test_run("2026-07-28T09-00-00Z-aa11"),
             ];
+            // Legacy rows are selectable once the section is expanded (30-01).
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
         }
 
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
@@ -19386,9 +19342,29 @@ mod tests {
         }
     }
 
-    // ── 28-07: selecting and stopping a launcher run ──────────────────────
+    // ── 30-01: the launcher-first Driver tab ─────────────────────────────
 
-    /// The Driver tab with `n` launcher runs (`20261019-run0`, `-run1`, ...).
+    use crate::state_reader::driver_frontmatter::{DerivedStatus, DriverRunEntry, RunStatus};
+
+    /// A launcher row whose `DIRECTION.md` read fine and whose lock probe derived
+    /// `derived`.
+    fn launcher_row(id: &str, derived: DerivedStatus) -> DriverRunEntry {
+        let mut frontmatter = crate::state_reader::driver_frontmatter::parse_driver_frontmatter(
+            include_str!("../../../tests/fixtures/driverctl/direction/s003-run1b.md"),
+        )
+        .expect("the spike fixture parses");
+        frontmatter.run_id = id.to_string();
+        (
+            id.to_string(),
+            Ok(crate::state_reader::driver_frontmatter::DriverRunView {
+                frontmatter,
+                derived,
+            }),
+        )
+    }
+
+    /// The Driver tab with `n` launcher runs (`20261019-run0`, `-run1`, ...), all of
+    /// them `running` with their lock held.
     fn launcher_fixture(
         n: usize,
     ) -> (
@@ -19398,15 +19374,14 @@ mod tests {
     ) {
         let (screen, mut ctx, rx) = driver_action_fixture();
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        // The fixture's one legacy run is not under test here.
+        cache.driver_runs.clear();
+        cache.launcher_listed = true;
         cache.launcher_runs = (0..n)
             .map(|i| {
-                (
-                    format!("20261019-run{i}"),
-                    Err(
-                        crate::state_reader::driver_frontmatter::FrontmatterError::Io {
-                            detail: "x".to_string(),
-                        },
-                    ),
+                launcher_row(
+                    &format!("20261019-run{i}"),
+                    DerivedStatus::AsWritten(RunStatus::Running),
                 )
             })
             .collect();
@@ -19417,96 +19392,273 @@ mod tests {
         ctx.view_cache[TEST_ALIAS].launcher_selected
     }
 
+    /// Give the Driver tab one legacy run and leave the section collapsed.
+    fn add_legacy_run(ctx: &mut AppContext) {
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .driver_runs = vec![test_run("2026-07-29T21-40-00Z-3f2a")];
+    }
+
     #[test]
-    fn launcher_stop_braces_move_the_highlight_and_clamp_at_both_ends() {
+    fn launcher_view_j_and_k_move_the_launcher_selection_and_pin_its_id() {
         let (mut screen, mut ctx, _rx) = launcher_fixture(3);
-        assert_eq!(launcher_selected(&ctx), 0);
-
-        // `{` at the top stays at the top.
-        press(&mut screen, &mut ctx, KeyCode::Char('{'));
-        assert_eq!(launcher_selected(&ctx), 0);
-
-        // `}` twice then `{` leaves the highlight on the second row.
-        press(&mut screen, &mut ctx, KeyCode::Char('}'));
-        press(&mut screen, &mut ctx, KeyCode::Char('}'));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
         assert_eq!(launcher_selected(&ctx), 2);
-        press(&mut screen, &mut ctx, KeyCode::Char('{'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].launcher_selected_id.as_deref(),
+            Some("20261019-run2")
+        );
+        // Clamped at the end, and back up with `k`.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(launcher_selected(&ctx), 2);
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(launcher_selected(&ctx), 2);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(launcher_selected(&ctx), 1);
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(launcher_selected(&ctx), 0);
+    }
+
+    #[test]
+    fn launcher_view_k_from_launcher_row_zero_focuses_the_tab_bar() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(3);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(screen.focus, DetailFocus::Content, "row 1 -> row 0 first");
+        assert_eq!(launcher_selected(&ctx), 0);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    #[test]
+    fn launcher_view_l_toggles_the_legacy_section() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(2);
+        // Inert while there are no legacy runs.
+        press(&mut screen, &mut ctx, KeyCode::Char('L'));
+        assert!(!ctx.view_cache[TEST_ALIAS].legacy_expanded);
+
+        add_legacy_run(&mut ctx);
+        press(&mut screen, &mut ctx, KeyCode::Char('L'));
+        assert!(ctx.view_cache[TEST_ALIAS].legacy_expanded);
+        // The highlight stays on the launcher run it was on.
+        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
+        press(&mut screen, &mut ctx, KeyCode::Char('L'));
+        assert!(!ctx.view_cache[TEST_ALIAS].legacy_expanded);
+    }
+
+    #[test]
+    fn launcher_view_j_walks_into_legacy_rows_only_when_the_section_is_expanded() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(2);
+        add_legacy_run(&mut ctx);
+
+        // Collapsed: the walk stops at the last launcher row.
+        for _ in 0..4 {
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        assert_eq!(launcher_selected(&ctx), 1);
+        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
+
+        // Expanded: one more `j` crosses onto the legacy run, and `k` returns.
+        press(&mut screen, &mut ctx, KeyCode::Char('L'));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert!(ctx.view_cache[TEST_ALIAS].legacy_row_selected);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].driver_selected_run, 0,
+            "clamped at the last legacy row"
+        );
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
         assert_eq!(launcher_selected(&ctx), 1);
 
-        // `}` past the end stays on the last row.
-        for _ in 0..5 {
-            press(&mut screen, &mut ctx, KeyCode::Char('}'));
-        }
-        assert_eq!(launcher_selected(&ctx), 2);
+        // Collapsing while on a legacy row hands the highlight back.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert!(ctx.view_cache[TEST_ALIAS].legacy_row_selected);
+        press(&mut screen, &mut ctx, KeyCode::Char('L'));
+        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
     }
 
     #[test]
-    fn launcher_stop_braces_do_nothing_with_no_rows_and_leave_the_run_selection_alone() {
-        let (mut screen, mut ctx, _rx) = launcher_fixture(0);
-        press(&mut screen, &mut ctx, KeyCode::Char('}'));
-        press(&mut screen, &mut ctx, KeyCode::Char('{'));
-        assert_eq!(launcher_selected(&ctx), 0);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+    fn launcher_view_a_collapsed_row_renders_below_the_launcher_rows() {
+        let (screen, mut ctx, _rx) = launcher_fixture(2);
+        add_legacy_run(&mut ctx);
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 40);
+        let launcher_at = text.find("20261019-run1").expect("the last launcher row");
+        let legacy_at = text
+            .find("legacy runs (1), read-only")
+            .expect("the collapsed legacy row");
+        assert!(legacy_at > launcher_at, "{text}");
+        assert!(text.contains('\u{25B8}'), "collapsed glyph: {text}");
 
-        // And with rows they never touch the legacy run selection either.
-        let (mut screen, mut ctx, _rx) = launcher_fixture(3);
-        press(&mut screen, &mut ctx, KeyCode::Char('}'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .expect("cache")
+            .legacy_expanded = true;
+        let text = render_detail_to_text_at(&screen, &ctx, 140, 40);
+        assert!(text.contains('\u{25BE}'), "expanded glyph: {text}");
+    }
+
+    /// Run `x` and report the pushed screen's name plus the status line it left.
+    fn press_x(screen: &mut DetailScreen, ctx: &mut AppContext) -> (ScreenAction, Option<String>) {
+        ctx.status_message = None;
+        let action = screen.handle_key(KeyCode::Char('x'), KeyModifiers::NONE, ctx);
+        let status = ctx.status_message.as_ref().map(|(text, _)| text.clone());
+        (action, status)
     }
 
     #[test]
-    fn launcher_stop_capital_x_confirms_the_highlighted_run_and_the_request_names_it() {
-        let (mut screen, mut ctx, mut rx) = launcher_fixture(3);
-        press(&mut screen, &mut ctx, KeyCode::Char('}'));
-
-        let action = screen.handle_key(KeyCode::Char('X'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(
-            pushed_screen_name(&action).as_deref(),
-            Some("driver_confirm"),
-            "X opens the existing driver confirmation"
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "opening the prompt dispatches nothing"
-        );
-
-        // Confirming it sends the id of the highlighted row, not another.
-        let ScreenAction::Push(mut prompt) = action else {
-            unreachable!("checked above");
-        };
-        prompt.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
-        let sent = rx.try_recv().expect("a confirmed stop dispatches");
-        let crate::action::Action::LauncherStopRequested { alias, run_id } = sent else {
-            panic!("expected LauncherStopRequested, got {sent:?}");
-        };
-        assert_eq!(
-            (alias.as_str(), run_id.as_str()),
-            (TEST_ALIAS, "20261019-run1")
-        );
-    }
-
-    #[test]
-    fn launcher_stop_capital_x_with_no_rows_does_nothing() {
+    fn launcher_view_x_kills_a_live_crashed_or_unknown_run_through_the_confirmation() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(0);
-        let action = screen.handle_key(KeyCode::Char('X'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None));
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.launcher_runs = vec![
+            launcher_row(
+                "20261019-live",
+                DerivedStatus::AsWritten(RunStatus::Running),
+            ),
+            launcher_row(
+                "20261018-crashed",
+                DerivedStatus::Crashed {
+                    written: RunStatus::Running,
+                },
+            ),
+            launcher_row(
+                "20261017-unknown",
+                DerivedStatus::LivenessUnknown {
+                    written: RunStatus::Running,
+                },
+            ),
+        ];
+        for (row, id) in [
+            (0usize, "20261019-live"),
+            (1, "20261018-crashed"),
+            (2, "20261017-unknown"),
+        ] {
+            ctx.view_cache
+                .get_mut(TEST_ALIAS)
+                .expect("cache")
+                .launcher_selected = row;
+            let (action, _) = press_x(&mut screen, &mut ctx);
+            assert_eq!(
+                pushed_screen_name(&action).as_deref(),
+                Some("driver_confirm"),
+                "x on {id} opens the confirmation"
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "opening the prompt dispatches nothing"
+            );
+            // Confirming it kills the run the key was pressed on.
+            let ScreenAction::Push(mut prompt) = action else {
+                unreachable!("checked above");
+            };
+            prompt.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+            let sent = rx.try_recv().expect("a confirmed kill dispatches");
+            let crate::action::Action::LauncherStopRequested { alias, run_id } = sent else {
+                panic!("expected LauncherStopRequested, got {sent:?}");
+            };
+            assert_eq!((alias.as_str(), run_id.as_str()), (TEST_ALIAS, id));
+        }
+    }
+
+    #[test]
+    fn launcher_view_x_on_a_run_that_is_not_running_pushes_nothing() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(0);
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .launcher_runs = vec![
+            launcher_row(
+                "20261019-stopped",
+                DerivedStatus::AsWritten(RunStatus::Stopped),
+            ),
+            launcher_row("20261018-fresh", DerivedStatus::NotLaunched),
+            launcher_row("20261017-done", DerivedStatus::AsWritten(RunStatus::Done)),
+        ];
+        for (row, id) in [
+            (0usize, "20261019-stopped"),
+            (1, "20261018-fresh"),
+            (2, "20261017-done"),
+        ] {
+            ctx.view_cache
+                .get_mut(TEST_ALIAS)
+                .expect("cache")
+                .launcher_selected = row;
+            let (action, status) = press_x(&mut screen, &mut ctx);
+            assert!(matches!(action, ScreenAction::None), "{id}");
+            assert_eq!(
+                status.as_deref(),
+                Some(format!("{id} is not running, so there is nothing to kill.").as_str())
+            );
+        }
         assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn launcher_stop_keys_exist_only_on_the_driver_tab() {
-        // The Queue tab binds `x` (delete) and none of these three; off the Driver
-        // tab they must stay inert, whatever the cache holds.
+    fn launcher_view_x_on_a_legacy_row_pushes_nothing_and_says_read_only() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        add_legacy_run(&mut ctx);
+        press(&mut screen, &mut ctx, KeyCode::Char('L'));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert!(ctx.view_cache[TEST_ALIAS].legacy_row_selected);
+        let (action, status) = press_x(&mut screen, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(status.as_deref(), Some("Legacy runs are read-only here."));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_view_x_on_an_unreadable_run_may_still_kill_it() {
+        // Nothing establishes that a run whose DIRECTION.md cannot be read is not
+        // running, so the key is not taken away from it (`[inferred — audit]`).
+        let (mut screen, mut ctx, _rx) = launcher_fixture(0);
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .launcher_runs = vec![(
+            "20261019-bad".to_string(),
+            Err(
+                crate::state_reader::driver_frontmatter::FrontmatterError::Io {
+                    detail: "x".to_string(),
+                },
+            ),
+        )];
+        let (action, _) = press_x(&mut screen, &mut ctx);
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_confirm")
+        );
+    }
+
+    #[test]
+    fn launcher_view_the_brace_keys_and_capital_x_are_inert_on_the_driver_tab() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(3);
-        ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         for key in ['{', '}', 'X'] {
             let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
             assert!(
                 pushed_screen_name(&action).is_none(),
-                "{key} must not open a screen off the Driver tab"
+                "{key} must not open a screen"
             );
         }
+        assert_eq!(launcher_selected(&ctx), 0, "they move nothing");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_view_the_driver_keys_exist_only_on_the_driver_tab() {
+        // The Queue tab binds `x` (delete); off the Driver tab neither it nor `L`
+        // may reach the launcher rows, whatever the cache holds.
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(3);
+        add_legacy_run(&mut ctx);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        for key in ['L', 'X'] {
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+            assert!(pushed_screen_name(&action).is_none(), "{key}");
+        }
+        assert!(!ctx.view_cache[TEST_ALIAS].legacy_expanded);
         assert_eq!(launcher_selected(&ctx), 0);
         assert!(rx.try_recv().is_err());
     }
@@ -19633,12 +19785,13 @@ mod tests {
         assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_start"));
     }
 
-    /// `x` stops **through the existing confirmation** and never directly: the
-    /// whole process tree is torn down, and that is not a thing a single
-    /// keystroke may do.
+    /// `x` kills **through the existing confirmation** and never directly: the
+    /// whole sandbox scope is torn down, and that is not a thing a single
+    /// keystroke may do. (It killed a legacy run before 30-01; the legacy stop is
+    /// no longer reachable from the tab.)
     #[test]
-    fn pressing_x_on_the_driver_tab_pushes_the_stop_confirmation() {
-        let (mut screen, mut ctx, _rx) = driver_action_fixture();
+    fn pressing_x_on_the_driver_tab_pushes_the_kill_confirmation() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
         let action = screen.handle_key(KeyCode::Char('x'), KeyModifiers::NONE, &mut ctx);
         assert_eq!(
             pushed_screen_name(&action).as_deref(),
@@ -30474,6 +30627,12 @@ mod tests {
             .insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
         cache.driver_runs = (0..n).map(|i| test_run(&format!("run-{i:02}"))).collect();
+        // The legacy rows, expanded and selected, are what carries the output pane
+        // and the run list this test drives (30-01): the list is the section's
+        // header row followed by one row per run.
+        cache.legacy_expanded = true;
+        cache.legacy_row_selected = true;
+        cache.launcher_listed = true;
         cache.driver_selected_run = 0;
         cache.driver_follow = true;
         let mut ring = super::super::DriverOutput::for_run("run-00");
@@ -30519,12 +30678,12 @@ mod tests {
         render_detail_to_text_at(&screen, &ctx, 140, 40);
         mouse_wheel(&mut screen, &mut ctx, output.x + 5, output.y + 5, false);
         let list = mouse_list(&screen);
-        assert_eq!(list.len, 2);
-        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(list.len, 3, "the section header and the two runs");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 2);
         assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
         assert!(driver_following(&ctx), "a new run re-arms follow");
         // A double arms nothing: the tab has no Enter.
-        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 2);
         assert!(matches!(action, ScreenAction::None));
 
         // The wheel over the run list moves the selection.
@@ -30591,7 +30750,9 @@ mod tests {
             ctx,
             KeyCode::Char('j'),
             30,
-            |c| c.view_cache[TEST_ALIAS].driver_selected_run,
+            // The list is the legacy section's header row and then the runs, so the
+            // first visible row at offset N is run N - 1.
+            |c| c.view_cache[TEST_ALIAS].driver_selected_run + 1,
             "Driver",
         );
     }

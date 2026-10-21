@@ -52,7 +52,7 @@ use chrono::{DateTime, Local, Utc};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::detail::{clamp_scroll, tail_offset, ViewportMetrics};
@@ -64,7 +64,6 @@ use crate::driver::reconcile::RunVerdict;
 use crate::journal::inbox::InboxMessage;
 use crate::journal::reader::JournalRecord;
 use crate::journal::RunSummary;
-use crate::state_reader::driver_frontmatter::{DerivedStatus, DriverRunEntry};
 
 // ── Measured layout constants (the `STATUS_COLUMN_MIN_CELLS` discipline) ────
 
@@ -225,18 +224,6 @@ const MISSED_GLOSS_UNRECOGNISED: &str =
 /// given is stored and shown verbatim; a goal that was not given says so.
 const GOAL_NONE_GIVEN: &str = "(none given)";
 
-const NO_RUNS_OPTED_IN: &str = "No runs yet for";
-const NO_RUNS_OPTED_IN_NEXT: &str = "Press [s] to start one.";
-
-/// The next step for a project that has not been given permission to be driven.
-///
-/// It names no other surface, because `o` is now bound on **this** tab
-/// (`detail.rs`, the `Char('o') if current_view == DetailSubView::Driver` arm)
-/// and opens the same confirmation the dashboard's `o` opens. The sentence
-/// points at where the reader is already standing; sending them back to the
-/// dashboard to press a key that works right here was a navigation round-trip
-/// that existed for no reason.
-const NOT_OPTED_IN_NEXT: &str = "Press [o] to allow it.";
 const NO_JOURNAL_ENTRIES: &str = "No journal entries yet.";
 
 /// The right-aligned indicator while the pane is following a live tail.
@@ -606,12 +593,12 @@ fn local_date_time(started_at: &str) -> (String, String) {
 /// (`ESC` / C0 / `DEL` / C1). The invisible-formatting class —
 /// `General_Category=Cf` union `Default_Ignorable_Code_Point` — is `Cf`, not
 /// `Cc`, so `U+202E`, `U+00AD` and the `U+E0000..U+E007F` tag block passed
-/// through untouched into a `Paragraph`. This file's own `no_runs_lines` at the
-/// bottom of this module already states that neither class subsumes the other
-/// and composes the two.
+/// through untouched into a `Paragraph`. The empty-state copy this module then
+/// carried (`no_runs_lines`, replaced by `driver_run`'s empty state in 30-01)
+/// already stated that neither class subsumes the other and composed the two.
 ///
 /// It was invisible for as long as it was because `probe_ctx` left
-/// `driver_runs` empty, so the Driver tab rendered `no_runs_lines` — the ONE
+/// `driver_runs` empty, so the Driver tab rendered that empty state — the ONE
 /// site that was already composed — on every probe run. The red is quoted in
 /// `render_escape_guard::probe_ctx`'s doc.
 ///
@@ -700,7 +687,7 @@ pub fn run_list_row(
 }
 
 /// The identity of the selected run, for the narrow tier's pane title.
-fn run_list_title(summary: &RunSummary, index: usize, total: usize) -> String {
+pub(super) fn run_list_title(summary: &RunSummary, index: usize, total: usize) -> String {
     let (date, time) = local_date_time(&summary.started_at);
     // READ BY A HUMAN, through `Block::title` — the family that preserves the
     // invisible class most completely of the four measured in 21-23.
@@ -940,44 +927,6 @@ fn render_run_header(
     lines
 }
 
-/// The copy for a project with no runs, in its two opt-in variants.
-///
-/// Both name the next key, because an empty state that does not is a dead end.
-/// The two are genuinely different situations: one project is ready and has not
-/// been asked to do anything, the other has not been given permission.
-fn no_runs_lines(alias: &str, opted_in: bool) -> Vec<Line<'static>> {
-    // Two classes, two predicates, composed (CR-01): `sanitize_render_line`
-    // answers the ESC / C0 / DEL *control* question, `display_identity` answers
-    // the invisible-formatting one (`General_Category=Cf` union
-    // `Default_Ignorable_Code_Point`). Neither subsumes the other, and this is
-    // the only place a registry key is drawn on this path.
-    let alias = crate::text::display_identity(&sanitize_render_line(alias));
-    if opted_in {
-        vec![
-            Line::from(format!("  {NO_RUNS_OPTED_IN} \"{alias}\".")),
-            Line::from(Span::styled(
-                format!("  {NO_RUNS_OPTED_IN_NEXT}"),
-                label_style(),
-            )),
-        ]
-    } else {
-        vec![
-            Line::from(format!("  \"{alias}\" is not opted in to driving.")),
-            Line::from(Span::styled(
-                format!("  {NOT_OPTED_IN_NEXT}"),
-                label_style(),
-            )),
-        ]
-    }
-}
-
-/// Render the Driver tab (TRANS-05, OBS-03, OBS-05).
-///
-/// The layout is two panes — the run list and the run detail — on the 40/60
-/// split the Pipeline tab already uses, with the detail pane given a
-/// `Constraint::Min` floor rather than a percentage. Below
-/// [`DRIVER_TWO_PANE_MIN_CELLS`] the list is dropped and its identity moves into
-/// the detail pane's block title.
 /// The Driver pane's identity title, carrying D3's EXPERIMENTAL marker.
 ///
 /// **Unconditional, and that is correct**: since quick task 260917-fko this
@@ -1003,324 +952,6 @@ pub(super) const DRIVER_PANE_TITLE: &str = " Driver \u{2014} EXPERIMENTAL ";
 pub(super) struct DriverTabRegions {
     pub list: Option<crate::ui::mouse::ListRegion>,
     pub output: Option<Rect>,
-}
-
-pub(super) fn render_driver_tab(
-    frame: &mut Frame,
-    area: Rect,
-    ctx: &AppContext,
-    alias: &str,
-    cache: Option<&ProjectViewCache>,
-    viewport: &Cell<ViewportMetrics>,
-    list_offset: &Cell<usize>,
-) -> DriverTabRegions {
-    // The launcher section (28-07, D-30) takes only rows the legacy tiers can
-    // spare, from the bottom of the pane; every region the legacy render reports
-    // (list rows, output pane) lies in the part it was given.
-    let launcher: &[DriverRunEntry] = cache.map_or(&[], |c| c.launcher_runs.as_slice());
-    let legacy_empty = cache.is_none_or(|c| c.driver_runs.is_empty() && c.driver_dry_run.is_none());
-    let legacy_min = if legacy_empty {
-        LAUNCHER_LEGACY_EMPTY_MIN_HEIGHT
-    } else {
-        LAUNCHER_LEGACY_MIN_HEIGHT
-    };
-    let section = launcher_section_height(area.height, legacy_min, launcher.len());
-    let (top, bottom) = if section == 0 {
-        (area, None)
-    } else {
-        let split = Layout::vertical([Constraint::Min(0), Constraint::Length(section)]).split(area);
-        (split[0], Some(split[1]))
-    };
-    let regions = render_legacy_driver_tab(frame, top, ctx, alias, cache, viewport, list_offset);
-    if let Some(bottom) = bottom {
-        let selected = cache.map_or(0, |c| c.launcher_selected);
-        render_launcher_runs(frame, bottom, launcher, selected);
-    }
-    regions
-}
-
-/// The Driver tab as it was before the launcher section existed: the run list, the
-/// run detail and the dry-run preview.
-fn render_legacy_driver_tab(
-    frame: &mut Frame,
-    area: Rect,
-    ctx: &AppContext,
-    alias: &str,
-    cache: Option<&ProjectViewCache>,
-    viewport: &Cell<ViewportMetrics>,
-    list_offset: &Cell<usize>,
-) -> DriverTabRegions {
-    let mut regions = DriverTabRegions::default();
-    let runs: &[RunSummary] = cache.map_or(&[], |c| c.driver_runs.as_slice());
-
-    // The "no state / no data" early return, in the shape `render_pipeline_tab`
-    // established: one bordered block, one message, nothing else painted.
-    if runs.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(DRIVER_PANE_TITLE);
-        // A project with no runs at all is the *most* likely place to be
-        // starting one, so the preview has to survive this branch. Showing "no
-        // runs yet" over the top of a start the user is one keystroke from
-        // confirming would hide the blast radius exactly when it is newest.
-        if let Some(preview) = cache.and_then(|c| c.driver_dry_run.as_ref()) {
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            render_dry_run_preview(frame, inner, preview);
-            return regions;
-        }
-        let opted_in = ctx
-            .config
-            .projects
-            .get(alias)
-            .is_some_and(|project| project.driver_opt_in.is_some());
-        let message = Paragraph::new(no_runs_lines(alias, opted_in)).block(block);
-        frame.render_widget(message, area);
-        return regions;
-    }
-
-    let selected = cache
-        .map_or(0, |c| c.driver_selected_run)
-        .min(runs.len() - 1);
-    let summary = &runs[selected];
-
-    // The verdict applies only to the run the reconciliation scan is observing;
-    // every other row in the list is a finished run whose own `outcome` speaks
-    // for it. Applying an observed run's verdict to the wrong row would report
-    // one run's liveness as another's.
-    let observed = ctx.observed_runs.get(alias);
-    let verdict_for = |run: &RunSummary| -> Option<RunVerdict> {
-        observed
-            .filter(|run_observed| run_observed.run_id == run.run_id)
-            .map(|run_observed| run_observed.verdict())
-    };
-
-    let (list_area, detail_area) = driver_panes(area);
-
-    if let Some(list_area) = list_area {
-        let list_block = Block::default().borders(Borders::RIGHT).title(" Runs ");
-        let rows = list_block.inner(list_area);
-        let inner_width = rows.width;
-        let items: Vec<ListItem> = runs
-            .iter()
-            .map(|run| ListItem::new(run_list_row(run, verdict_for(run), inner_width)))
-            .collect();
-        let list = List::new(items)
-            .block(list_block)
-            .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan),
-            )
-            .highlight_symbol("> ");
-        // Persisted offset, so a clicked run stays under the pointer (quick
-        // 260926-kes, [inferred I-12]); the recorded rect is the block's
-        // inner area, where the rows are drawn.
-        let mut list_state = ListState::default().with_offset(list_offset.get());
-        list_state.select(Some(selected));
-        frame.render_stateful_widget(list, list_area, &mut list_state);
-        list_offset.set(list_state.offset());
-        regions.list = Some(crate::ui::mouse::ListRegion {
-            rect: rows,
-            offset: list_state.offset(),
-            len: runs.len(),
-        });
-    }
-
-    // At the narrow tier the selection has nowhere else to go, so it becomes the
-    // pane's title. `j`/`k` still move it; only the list's rendering is dropped.
-    let detail_block = if list_area.is_some() {
-        Block::default()
-            .borders(Borders::NONE)
-            .title(DRIVER_PANE_TITLE)
-    } else {
-        Block::default()
-            .borders(Borders::NONE)
-            .title(run_list_title(summary, selected, runs.len()))
-    };
-    let inner = detail_block.inner(detail_area);
-    frame.render_widget(detail_block, detail_area);
-
-    // The dry-run preview replaces the run detail while the start flow is at
-    // Step B, and replaces nothing else (D-26). See `render_dry_run_preview`.
-    match cache.and_then(|c| c.driver_dry_run.as_ref()) {
-        Some(preview) => render_dry_run_preview(frame, inner, preview),
-        None => {
-            render_run_detail(
-                frame,
-                inner,
-                ctx,
-                alias,
-                cache,
-                summary,
-                verdict_for(summary),
-                viewport,
-            );
-            regions.output = Some(detail_area);
-        }
-    }
-    regions
-}
-
-// ── The launcher runs section (28-07, D-30) ─────────────────────────────────
-
-/// The height the legacy Driver tab keeps for itself before the launcher section
-/// may take a row: the run detail's full height tier (`>= 14` rows, the first arm
-/// of the vertical split in `render_run_detail`) plus the one row its title takes
-/// off the top of the pane, so the section never pushes the detail down a tier.
-pub const LAUNCHER_LEGACY_MIN_HEIGHT: u16 = 15;
-
-/// The same floor when the legacy tab has no run and no preview to show: its
-/// bordered "no runs" block is two border rows and two message lines.
-pub const LAUNCHER_LEGACY_EMPTY_MIN_HEIGHT: u16 = 4;
-
-/// Pane width at or above which the section header also names its keys:
-/// `Launcher runs (20)` is 18 cells and the hint another 22.
-pub const LAUNCHER_HINT_MIN_CELLS: usize = 44;
-
-/// The badge on a run whose frontmatter says `sandbox: degraded` (D-30). One
-/// constant so the row and the collapsed line spell it the same.
-pub const UNSANDBOXED_BADGE: &str = "UNSANDBOXED";
-
-/// The badge's style: the warning yellow the rest of the pane uses, bold so it is
-/// not read as a status word.
-fn unsandboxed_style() -> Style {
-    Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD)
-}
-
-/// Rows the launcher section gets out of an `area_height`-row pane, given that the
-/// legacy tab keeps `legacy_min` and there are `runs` launcher runs.
-///
-/// Everything (a header and every run) when it fits; a window of rows when only
-/// part fits; one collapsed line when a single row is spare; nothing otherwise, so
-/// the legacy tiers keep their measured minimums.
-fn launcher_section_height(area_height: u16, legacy_min: u16, runs: usize) -> u16 {
-    if runs == 0 {
-        return 0;
-    }
-    let spare = area_height.saturating_sub(legacy_min);
-    let wanted = u16::try_from(runs.saturating_add(1)).unwrap_or(u16::MAX);
-    spare.min(wanted)
-}
-
-/// The status word shown for a launcher run: the one `read_driver_run` derived from
-/// the run lock, never the raw `status:` line (the Phase 30 hand-off).
-fn launcher_status_word(derived: &DerivedStatus) -> String {
-    match derived {
-        DerivedStatus::AsWritten(status) => shown_capped(status.as_str()),
-        DerivedStatus::Crashed { .. } => "crashed".to_owned(),
-        DerivedStatus::LivenessUnknown { .. } => "liveness unknown".to_owned(),
-        DerivedStatus::NotLaunched => "not launched".to_owned(),
-    }
-}
-
-/// Whether the run's frontmatter records the degraded (unsandboxed) posture.
-fn is_unsandboxed(entry: &DriverRunEntry) -> bool {
-    entry
-        .1
-        .as_ref()
-        .is_ok_and(|view| view.frontmatter.sandbox.as_deref() == Some("degraded"))
-}
-
-/// One launcher-run row: `  <run id>  <status>[  UNSANDBOXED]`, or
-/// `  <run id>  unreadable`. The run id gives way (ellipsised) before the status
-/// word or the badge do, so a narrow pane can never clip the posture off.
-fn launcher_run_line(entry: &DriverRunEntry, width: usize, selected: bool) -> Line<'static> {
-    let prefix = if selected { "> " } else { "  " };
-    let (word, badge) = match &entry.1 {
-        Ok(view) => (launcher_status_word(&view.derived), is_unsandboxed(entry)),
-        Err(_) => ("unreadable".to_owned(), false),
-    };
-    let tail_cells = 2
-        + word.chars().count()
-        + if badge {
-            2 + UNSANDBOXED_BADGE.chars().count()
-        } else {
-            0
-        };
-    let id_budget = width.saturating_sub(prefix.len() + tail_cells).max(1);
-    let id = shown_capped(&entry.0);
-    let id = if id.chars().count() > id_budget {
-        let mut cut: String = id.chars().take(id_budget.saturating_sub(1)).collect();
-        cut.push('\u{2026}');
-        cut
-    } else {
-        id
-    };
-
-    let text = format!("{prefix}{id}  {word}");
-    let mut spans = vec![if selected {
-        Span::styled(
-            text,
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::Cyan),
-        )
-    } else {
-        Span::raw(text)
-    }];
-    if badge {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(UNSANDBOXED_BADGE, unsandboxed_style()));
-    }
-    Line::from(spans)
-}
-
-/// Render the launcher section into `area`: a `Launcher runs` header and one line
-/// per run, a window of them when the pane is short, or the single collapsed line
-/// `launcher runs: <n>` when only one row is spare.
-fn render_launcher_runs(frame: &mut Frame, area: Rect, runs: &[DriverRunEntry], selected: usize) {
-    if area.height == 0 || runs.is_empty() {
-        return;
-    }
-    let width = usize::from(area.width);
-    let unsandboxed = runs.iter().filter(|entry| is_unsandboxed(entry)).count();
-    if area.height == 1 {
-        let mut spans = vec![Span::styled(
-            format!("launcher runs: {}", runs.len()),
-            label_style(),
-        )];
-        if unsandboxed > 0 {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                format!("({unsandboxed} {UNSANDBOXED_BADGE})"),
-                unsandboxed_style(),
-            ));
-        }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        return;
-    }
-
-    let rows_room = usize::from(area.height).saturating_sub(1);
-    let selected = selected.min(runs.len() - 1);
-    // A window that keeps the highlighted row on screen.
-    let first = if selected < rows_room {
-        0
-    } else {
-        selected + 1 - rows_room
-    };
-    let mut lines: Vec<Line> = Vec::with_capacity(usize::from(area.height));
-    // The keys are named where the rows are, because the footer's measured
-    // width tiers have no room for three more hints.
-    let hint = if width >= LAUNCHER_HINT_MIN_CELLS {
-        "  [{/}]select  [X]stop"
-    } else {
-        ""
-    };
-    lines.push(Line::from(Span::styled(
-        format!("Launcher runs ({}){hint}", runs.len()),
-        label_style(),
-    )));
-    lines.extend(
-        runs.iter()
-            .enumerate()
-            .skip(first)
-            .take(rows_room)
-            .map(|(index, entry)| launcher_run_line(entry, width, index == selected)),
-    );
-    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// Render the dry-run preview in place of the run detail (D-26).
@@ -1405,7 +1036,7 @@ pub(super) fn render_dry_run_preview(frame: &mut Frame, area: Rect, preview: &Dr
 /// dropped by the tier rather than squeezed to nothing, because a one-row
 /// section rule with no content under it reads as a section that failed to load.
 #[allow(clippy::too_many_arguments)]
-fn render_run_detail(
+pub(super) fn render_run_detail(
     frame: &mut Frame,
     area: Rect,
     ctx: &AppContext,
@@ -2278,6 +1909,38 @@ fn section_rule(name: &str, width: u16) -> Line<'static> {
 mod tests {
     use super::*;
 
+    /// The legacy surface through the shipped-by-Phase-30 composition: the collapsed
+    /// `legacy runs` row expanded and the highlight on the legacy run (30-01), with
+    /// the launcher listing landed so the pane does not read `Loading...`.
+    fn expand_legacy(cache: &mut ProjectViewCache) {
+        cache.legacy_expanded = true;
+        cache.legacy_row_selected = true;
+        cache.launcher_listed = true;
+    }
+
+    /// The Driver tab as the detail screen draws it. Kept under its former name so
+    /// the legacy tier tests below read as they did: it IS the same pane, now drawn
+    /// by the launcher-first composition.
+    fn render_driver_tab(
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &AppContext,
+        alias: &str,
+        cache: Option<&ProjectViewCache>,
+        viewport: &Cell<ViewportMetrics>,
+        list_offset: &Cell<usize>,
+    ) -> DriverTabRegions {
+        super::super::driver_run::render_launcher_tab(
+            frame,
+            area,
+            ctx,
+            alias,
+            cache,
+            viewport,
+            list_offset,
+        )
+    }
+
     fn summary(run_id: &str, outcome: Option<&str>) -> RunSummary {
         RunSummary {
             run_id: run_id.to_string(),
@@ -2770,14 +2433,19 @@ mod tests {
         // production call vanished, the zero below would mean "nothing to find"
         // rather than "all composed".
         //
-        // Measured over the slice at the time of writing: 5 needle-bearing
-        // logical units carrying 6 occurrences — `driver.rs` 2 units / 2
-        // occurrences, `driver_confirm.rs` 3 units / 4 occurrences (its first
-        // unit carries two). All 6 are judged composed by the innermost
+        // Measured over the slice at the time of writing: 4 needle-bearing
+        // logical units carrying 5 occurrences — `driver.rs` 1 unit / 1
+        // occurrence, `driver_confirm.rs` 3 units / 4 occurrences (its first
+        // unit carries two). All 5 are judged composed by the innermost
         // verdict, which is what makes the zero below non-vacuous.
-        const PRODUCTION_NEEDLE_UNITS: usize = 5;
-        const PRODUCTION_NEEDLE_OCCURRENCES: usize = 6;
-        const WHOLE_FILE_NEEDLE_LINES: usize = 7;
+        //
+        // Moved from (5, 6, 7) by 30-01: the empty-state copy `no_runs_lines`,
+        // which carried one composed call, was replaced by `driver_run`'s empty
+        // state, and that draws the registry key through `shown_capped` (which
+        // is itself defined here and is the one remaining call).
+        const PRODUCTION_NEEDLE_UNITS: usize = 4;
+        const PRODUCTION_NEEDLE_OCCURRENCES: usize = 5;
+        const WHOLE_FILE_NEEDLE_LINES: usize = 6;
 
         let mut units = 0usize;
         let mut occurrences = 0usize;
@@ -3020,24 +2688,6 @@ mod tests {
 
         // A duration the code cannot compute is not a duration of nothing.
         assert_eq!(elapsed_label("not a timestamp", now, None), "unknown");
-    }
-
-    #[test]
-    fn the_empty_run_list_copy_differs_by_opt_in_state() {
-        let opted_in: Vec<String> = no_runs_lines("meta-mgr", true).iter().map(text).collect();
-        let not_opted_in: Vec<String> = no_runs_lines("meta-mgr", false).iter().map(text).collect();
-
-        assert!(opted_in[0].contains("No runs yet for \"meta-mgr\"."));
-        assert!(opted_in[1].contains("[s]"));
-        assert!(not_opted_in[0].contains("is not opted in to driving"));
-        assert!(not_opted_in[1].contains("[o]"));
-        assert!(
-            !not_opted_in[1].contains("dashboard"),
-            "the line must not send the reader to another surface to press a \
-             key that works right here: an empty state whose only instruction \
-             is to go somewhere else is the dead end this change removes"
-        );
-        assert_ne!(opted_in, not_opted_in);
     }
 
     /// T-18-49: an escape sequence in a goal must not reach a `Span`.
@@ -4236,6 +3886,7 @@ mod tests {
             );
             let cache = ctx.view_cache.entry(alias.to_string()).or_default();
             cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
+            expand_legacy(cache);
 
             let viewport = Cell::default();
             let mut terminal =
@@ -4328,6 +3979,7 @@ mod tests {
             let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
             let cache = ctx.view_cache.entry(alias.to_string()).or_default();
             cache.driver_runs = runs;
+            expand_legacy(cache);
 
             let viewport = Cell::default();
             let mut terminal =
@@ -4536,6 +4188,7 @@ mod tests {
             .entry(alias.to_string())
             .or_default()
             .driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
+        expand_legacy(ctx.view_cache.get_mut(alias).expect("the cache entry"));
 
         let scrape = |ctx: &AppContext| -> String {
             let viewport = Cell::default();
@@ -4602,274 +4255,5 @@ mod tests {
             before,
             "leaving Step B must restore the normal run detail exactly"
         );
-    }
-
-    // ── 28-07: the launcher runs section ─────────────────────────────────
-
-    const LAUNCHER_FIXTURE: &str =
-        include_str!("../../../tests/fixtures/driverctl/direction/s003-run1b.md");
-
-    /// A launcher-run row as `list_driver_runs` would have produced it.
-    fn launcher_entry(id: &str, sandbox: Option<&str>, derived: DerivedStatus) -> DriverRunEntry {
-        let mut frontmatter =
-            crate::state_reader::driver_frontmatter::parse_driver_frontmatter(LAUNCHER_FIXTURE)
-                .expect("the spike fixture parses");
-        frontmatter.sandbox = sandbox.map(str::to_owned);
-        (
-            id.to_owned(),
-            Ok(crate::state_reader::driver_frontmatter::DriverRunView {
-                frontmatter,
-                derived,
-            }),
-        )
-    }
-
-    fn done() -> DerivedStatus {
-        DerivedStatus::AsWritten(crate::state_reader::driver_frontmatter::RunStatus::Done)
-    }
-
-    /// Render the Driver tab for `cache` into a `width` x `height` buffer and scrape
-    /// it back, one `String` per row.
-    fn scrape_driver_tab(cache: ProjectViewCache, width: u16, height: u16) -> Vec<String> {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let alias = super::super::driver_confirm::tests::ALIAS;
-        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
-        ctx.view_cache.insert(alias.to_string(), cache);
-        let viewport = Cell::default();
-        let mut terminal =
-            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_driver_tab(
-                    frame,
-                    area,
-                    &ctx,
-                    alias,
-                    ctx.view_cache.get(alias),
-                    &viewport,
-                    &Cell::new(0),
-                );
-            })
-            .expect("draw the driver tab");
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
-    fn launcher_cache(rows: Vec<DriverRunEntry>) -> ProjectViewCache {
-        ProjectViewCache {
-            launcher_runs: rows,
-            ..ProjectViewCache::default()
-        }
-    }
-
-    #[test]
-    fn launcher_rows_badge_a_degraded_run_and_not_a_sandboxed_one() {
-        let rows = vec![
-            launcher_entry("20261019-degraded", Some("degraded"), done()),
-            launcher_entry("20261018-sandboxed", Some("bwrap-scope"), done()),
-            launcher_entry("20261017-unknown", None, done()),
-        ];
-        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
-        println!("{}", scraped.join("\n"));
-
-        let row = |needle: &str| {
-            scraped
-                .iter()
-                .find(|row| row.contains(needle))
-                .unwrap_or_else(|| panic!("no row for {needle}: {scraped:#?}"))
-        };
-        assert!(row("Launcher runs (3)").contains("Launcher runs"));
-        assert!(row("20261019-degraded").contains("UNSANDBOXED"));
-        assert!(row("20261019-degraded").contains("done"));
-        assert!(!row("20261018-sandboxed").contains("UNSANDBOXED"));
-        assert!(!row("20261017-unknown").contains("UNSANDBOXED"));
-    }
-
-    #[test]
-    fn launcher_rows_use_the_derived_status_not_the_written_one() {
-        use crate::state_reader::driver_frontmatter::RunStatus;
-        let rows = vec![
-            launcher_entry(
-                "20261019-a",
-                None,
-                DerivedStatus::Crashed {
-                    written: RunStatus::Running,
-                },
-            ),
-            launcher_entry(
-                "20261018-b",
-                None,
-                DerivedStatus::LivenessUnknown {
-                    written: RunStatus::Running,
-                },
-            ),
-            launcher_entry("20261017-c", None, DerivedStatus::NotLaunched),
-        ];
-        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
-        let row = |needle: &str| scraped.iter().find(|row| row.contains(needle)).unwrap();
-        // The fixture's raw `status:` is `crashed`; the derived word is what shows.
-        assert!(row("20261019-a").contains("crashed"));
-        assert!(row("20261018-b").contains("liveness unknown"));
-        assert!(!row("20261018-b").contains("running"));
-        assert!(row("20261017-c").contains("not launched"));
-    }
-
-    #[test]
-    fn launcher_an_unreadable_run_reads_unreadable_and_hides_no_other_row() {
-        let rows = vec![
-            launcher_entry("20261019-ok", None, done()),
-            (
-                "20261018-bad".to_owned(),
-                Err(
-                    crate::state_reader::driver_frontmatter::FrontmatterError::Io {
-                        detail: "denied".to_owned(),
-                    },
-                ),
-            ),
-        ];
-        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
-        assert!(scraped
-            .iter()
-            .any(|row| row.contains("20261018-bad") && row.contains("unreadable")));
-        assert!(scraped
-            .iter()
-            .any(|row| row.contains("20261019-ok") && row.contains("done")));
-        assert!(
-            !scraped.iter().any(|row| row.contains("denied")),
-            "the error detail is not painted"
-        );
-    }
-
-    #[test]
-    fn launcher_a_hostile_run_id_and_status_word_reach_the_terminal_sanitized() {
-        use crate::state_reader::driver_frontmatter::RunStatus;
-        let rows = vec![launcher_entry(
-            "evil\u{1b}]0;pwned\u{7}\u{1b}[31mid",
-            Some("degraded"),
-            DerivedStatus::AsWritten(RunStatus::Unknown("up\u{1b}[2Jword".to_owned())),
-        )];
-        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 12);
-        for row in &scraped {
-            assert!(
-                !row.chars().any(char::is_control),
-                "a control character reached the buffer: {row:?}"
-            );
-        }
-        assert!(scraped
-            .iter()
-            .any(|row| row.contains("evil") && row.contains("UNSANDBOXED")));
-    }
-
-    #[test]
-    fn launcher_a_narrow_pane_shortens_the_run_id_before_it_clips_the_badge() {
-        let long = "20261019-an-extremely-long-run-identifier-that-cannot-fit-on-one-row";
-        let rows = vec![launcher_entry(long, Some("degraded"), done())];
-        let scraped = scrape_driver_tab(launcher_cache(rows), 40, 12);
-        let row = scraped
-            .iter()
-            .find(|row| row.contains("20261019-an"))
-            .expect("the row is drawn");
-        assert!(row.contains("UNSANDBOXED"), "{row:?}");
-        assert!(row.contains("done"), "{row:?}");
-        assert!(row.contains('\u{2026}'), "the id is ellipsised: {row:?}");
-    }
-
-    #[test]
-    fn launcher_a_project_with_only_launcher_runs_still_lists_them() {
-        // No legacy run at all: the early "no runs" block must not swallow them.
-        let rows = vec![launcher_entry("20261019-only", None, done())];
-        let scraped = scrape_driver_tab(launcher_cache(rows), 80, 10);
-        assert!(scraped.iter().any(|row| row.contains("20261019-only")));
-    }
-
-    #[test]
-    fn launcher_one_spare_row_collapses_the_section_to_a_count() {
-        let mut cache = launcher_cache(vec![
-            launcher_entry("20261019-a", Some("degraded"), done()),
-            launcher_entry("20261018-b", None, done()),
-            launcher_entry("20261017-c", None, done()),
-        ]);
-        cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
-        let scraped = scrape_driver_tab(cache, 80, LAUNCHER_LEGACY_MIN_HEIGHT + 1);
-        let last = scraped.last().unwrap();
-        assert!(last.starts_with("launcher runs: 3"), "{last:?}");
-        assert!(last.contains("(1 UNSANDBOXED)"), "{last:?}");
-        assert!(!scraped.iter().any(|row| row.contains("20261019-a")));
-    }
-
-    #[test]
-    fn launcher_a_pane_with_no_spare_row_renders_exactly_the_legacy_tab() {
-        let legacy = |launcher: Vec<DriverRunEntry>| {
-            let mut cache = launcher_cache(launcher);
-            cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
-            scrape_driver_tab(cache, 80, LAUNCHER_LEGACY_MIN_HEIGHT)
-        };
-        let without = legacy(Vec::new());
-        let with = legacy(vec![launcher_entry("20261019-a", Some("degraded"), done())]);
-        assert_eq!(
-            without, with,
-            "the legacy tiers keep their measured minimum"
-        );
-    }
-
-    #[test]
-    fn launcher_stop_highlight_marks_exactly_the_selected_row_with_a_chevron() {
-        let rows: Vec<DriverRunEntry> = (0..3)
-            .map(|i| launcher_entry(&format!("2026101{i}-run"), None, done()))
-            .collect();
-        let mut cache = launcher_cache(rows);
-        cache.launcher_selected = 1;
-        let scraped = scrape_driver_tab(cache, 80, 12);
-        let row = |needle: &str| scraped.iter().find(|row| row.contains(needle)).unwrap();
-        assert!(
-            row("20261011-run").starts_with("> "),
-            "{:?}",
-            row("20261011-run")
-        );
-        assert!(
-            row("20261010-run").starts_with("  2026"),
-            "{:?}",
-            row("20261010-run")
-        );
-        assert!(
-            row("20261012-run").starts_with("  2026"),
-            "{:?}",
-            row("20261012-run")
-        );
-        assert_eq!(
-            scraped
-                .iter()
-                .filter(|row| row.starts_with("> 2026"))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn launcher_a_short_pane_shows_a_window_that_keeps_the_highlight_in_view() {
-        let rows: Vec<DriverRunEntry> = (0..8)
-            .map(|i| launcher_entry(&format!("2026101{i}-run"), None, done()))
-            .collect();
-        let mut cache = launcher_cache(rows);
-        cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
-        cache.launcher_selected = 7;
-        // 3 spare rows: the header and two run rows.
-        let scraped = scrape_driver_tab(cache, 80, LAUNCHER_LEGACY_MIN_HEIGHT + 3);
-        assert!(scraped.iter().any(|row| row.contains("Launcher runs (8)")));
-        assert!(
-            scraped.iter().any(|row| row.contains("20261017-run")),
-            "the highlighted (last) row is on screen: {scraped:#?}"
-        );
-        assert!(!scraped.iter().any(|row| row.contains("20261010-run")));
     }
 }

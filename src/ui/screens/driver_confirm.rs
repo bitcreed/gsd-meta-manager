@@ -346,8 +346,9 @@ fn prompt_text(
             // are escaped, through the one composition.
             let run_id = crate::text::render_for_terminal(run_id);
             format!(
-                "Stop launcher run {run_id} on \"{alias}\"? This stops its whole sandbox \
-                 scope. [y/n]"
+                "Kill launcher run {run_id} on \"{alias}\"? Its whole sandbox scope is \
+                 stopped now, mid-dispatch, and the in-flight work is not reported. To let \
+                 the driver finish its current dispatch and end, use [c] then stop. [y/n]"
             )
         }
         DriverAction::ToggleOptIn => format!(
@@ -499,7 +500,7 @@ impl Screen for DriverConfirmScreen {
         let (title, accent) = match self.action {
             DriverAction::Start => ("Start driver run", Color::Yellow),
             DriverAction::Stop => ("Stop driver run", Color::Red),
-            DriverAction::StopLauncher => ("Stop launcher run", Color::Red),
+            DriverAction::StopLauncher => ("Kill driver run", Color::Red),
             DriverAction::ToggleOptIn if opted_in => ("Withdraw driver opt-in", Color::Red),
             DriverAction::ToggleOptIn => ("Allow driver", Color::Yellow),
         };
@@ -1458,7 +1459,9 @@ pub(crate) mod tests {
         assert_eq!(
             prompt,
             format!(
-                "Stop launcher run {RUN} on \"{ALIAS}\"? This stops its whole sandbox scope. [y/n]"
+                "Kill launcher run {RUN} on \"{ALIAS}\"? Its whole sandbox scope is stopped \
+                 now, mid-dispatch, and the in-flight work is not reported. To let the driver \
+                 finish its current dispatch and end, use [c] then stop. [y/n]"
             )
         );
     }
@@ -1474,7 +1477,7 @@ pub(crate) mod tests {
             hostile,
         );
         assert!(
-            prompt.starts_with("Stop launcher run "),
+            prompt.starts_with("Kill launcher run "),
             "the prompt was not built at all: {prompt:?}"
         );
         assert!(
@@ -1678,7 +1681,7 @@ pub(crate) mod tests {
             (DriverAction::Start, "Start driver run"),
             (DriverAction::Stop, "Stop driver run"),
             (DriverAction::ToggleOptIn, "Allow driver"),
-            (DriverAction::StopLauncher, "Stop launcher run"),
+            (DriverAction::StopLauncher, "Kill driver run"),
         ] {
             let screen = DriverConfirmScreen::new_launcher_stop(ALIAS.to_string(), RUN.to_string());
             let screen = if action == DriverAction::StopLauncher {

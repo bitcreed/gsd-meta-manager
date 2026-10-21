@@ -1186,6 +1186,13 @@ pub struct ProjectViewCache {
     /// above the selected one keeps this run selected; if the run is gone the index
     /// is clamped into range instead.
     pub launcher_selected_id: Option<String>,
+    /// Whether the collapsed `legacy runs` section is expanded (`L`, 30-01, D-01).
+    /// The section exists only while `driver_runs` is non-empty.
+    pub legacy_expanded: bool,
+    /// Whether the highlight is on a legacy run (`driver_selected_run` is then the
+    /// legacy index) rather than on a launcher run. Honoured only while the legacy
+    /// rows are shown; see `driver_run::selection`.
+    pub legacy_row_selected: bool,
     /// The running tally for the run whose journal is currently being tailed.
     ///
     /// Two facts the Driver tab's header and step timeline need are carried by

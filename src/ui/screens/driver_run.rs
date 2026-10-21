@@ -31,10 +31,13 @@ use ratatui::Frame;
 
 use super::detail::{fit_cells, ViewportMetrics};
 use super::driver::{
-    driver_panes, label_style, muted_style, shown_capped, DriverTabRegions, DRIVER_PANE_TITLE,
+    driver_panes, label_style, muted_style, render_dry_run_preview, render_run_detail,
+    run_list_row, run_list_title, shown_capped, DriverTabRegions, DRIVER_PANE_TITLE,
     DRY_RUN_LOADING,
 };
 use super::{AppContext, ProjectViewCache};
+use crate::driver::reconcile::RunVerdict;
+use crate::journal::RunSummary;
 use crate::state_reader::driver_frontmatter::{DerivedStatus, DriverRunEntry, RunStatus};
 
 // ── Run-status glyphs (fixed `&'static str`, `\u{…}` per PATTERNS S7) ───────
@@ -312,6 +315,168 @@ fn detail_lines(entry: &DriverRunEntry, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// What a steering, launch or kill key says when the highlight is on a legacy run.
+pub const LEGACY_READ_ONLY: &str = "Legacy runs are read-only here.";
+
+// ── Kill (D-22) ─────────────────────────────────────────────────────────────
+
+/// Whether `x` may kill a run with this derived status: it is live, it crashed
+/// (its scope may outlive the launcher), or the lock probe could not tell. A run
+/// that is positively not running has nothing to kill.
+pub fn kill_available(derived: &DerivedStatus) -> bool {
+    matches!(
+        derived,
+        DerivedStatus::AsWritten(RunStatus::Running | RunStatus::Starting)
+            | DerivedStatus::Crashed { .. }
+            | DerivedStatus::LivenessUnknown { .. }
+    )
+}
+
+/// Whether `x` may kill this row. An unreadable row has no derived status, so
+/// nothing establishes that it is not running: it is treated like
+/// `LivenessUnknown` rather than denied a kill key, because a runaway scope whose
+/// `DIRECTION.md` was corrupted or grown past the read cap must still be
+/// stoppable from here (`[inferred — audit]`; `stop_run` itself reports
+/// "the run is not running" when the lock is free).
+pub fn entry_killable(entry: &DriverRunEntry) -> bool {
+    entry
+        .1
+        .as_ref()
+        .map_or(true, |view| kill_available(&view.derived))
+}
+
+// ── Selection across launcher rows then legacy rows (D-01) ──────────────────
+
+/// What the highlight is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection {
+    /// A launcher run: an index into `launcher_runs`.
+    Launcher(usize),
+    /// A legacy journal run: an index into `driver_runs`.
+    Legacy(usize),
+    /// Nothing: no launcher run, and no legacy row shown and selected.
+    Nothing,
+}
+
+/// Whether the project has Phase 17/18 journal runs, so the collapsed section
+/// exists at all.
+fn has_legacy(cache: &ProjectViewCache) -> bool {
+    !cache.driver_runs.is_empty()
+}
+
+/// Whether the legacy rows themselves are in the list.
+fn legacy_rows_shown(cache: &ProjectViewCache) -> bool {
+    has_legacy(cache) && cache.legacy_expanded
+}
+
+/// Where the highlight is. A legacy selection counts only while the legacy rows
+/// are shown, so collapsing the section can never leave the detail pane on a row
+/// the list no longer draws.
+pub fn selection(cache: Option<&ProjectViewCache>) -> Selection {
+    let Some(cache) = cache else {
+        return Selection::Nothing;
+    };
+    if cache.legacy_row_selected && legacy_rows_shown(cache) {
+        return Selection::Legacy(cache.driver_selected_run.min(cache.driver_runs.len() - 1));
+    }
+    match cache.launcher_runs.len() {
+        0 => Selection::Nothing,
+        n => Selection::Launcher(cache.launcher_selected.min(n - 1)),
+    }
+}
+
+/// The highlight's place in the one linear order `j`/`k` walk: launcher rows
+/// first, then (when shown) the legacy rows. The collapsed-section header row is
+/// not a position.
+pub fn selection_position(cache: Option<&ProjectViewCache>) -> usize {
+    let launcher = cache.map_or(0, |c| c.launcher_runs.len());
+    match selection(cache) {
+        Selection::Launcher(index) => index,
+        Selection::Legacy(index) => launcher + index,
+        Selection::Nothing => 0,
+    }
+}
+
+/// The linear position of list row `row` (as drawn, header included), or `None`
+/// for the header row and rows past the end. The mouse's way into the same order.
+pub fn position_for_row(cache: &ProjectViewCache, row: usize) -> Option<usize> {
+    let launcher = cache.launcher_runs.len();
+    if row < launcher {
+        return Some(row);
+    }
+    if !legacy_rows_shown(cache) || row == launcher {
+        return None;
+    }
+    let position = row - 1;
+    (position - launcher < cache.driver_runs.len()).then_some(position)
+}
+
+/// Move the highlight `delta` places along the linear order, clamped at both ends,
+/// and keep the pins coherent. Pure: it touches the cache and nothing else.
+///
+/// Returns whether the highlight now sits on a legacy row, in which case the
+/// caller reschedules the run-list scan (the legacy detail's inbox and journal are
+/// the *selected* run's) exactly as the shipped `j`/`k` did. Moving onto a
+/// different legacy run resets the output pane to its tail with follow on (D-19).
+pub fn move_selection(cache: &mut ProjectViewCache, delta: isize) -> bool {
+    let launcher = cache.launcher_runs.len();
+    let legacy = if legacy_rows_shown(cache) {
+        cache.driver_runs.len()
+    } else {
+        0
+    };
+    let total = launcher + legacy;
+    if total == 0 {
+        return false;
+    }
+    let current = selection_position(Some(cache));
+    let next = if delta < 0 {
+        current.saturating_sub(delta.unsigned_abs())
+    } else {
+        current.saturating_add(delta as usize)
+    }
+    .min(total - 1);
+
+    if next < launcher {
+        cache.legacy_row_selected = false;
+        cache.launcher_selected = next;
+        cache.launcher_selected_id = cache.launcher_runs.get(next).map(|(id, _)| id.clone());
+        return false;
+    }
+    let index = next - launcher;
+    let moved = !cache.legacy_row_selected || cache.driver_selected_run != index;
+    cache.legacy_row_selected = true;
+    cache.driver_selected_run = index;
+    if moved {
+        cache.driver_scroll_offset = 0;
+        cache.driver_follow = true;
+    }
+    true
+}
+
+/// `L`: show or hide the legacy rows. Inert while there are no legacy runs.
+/// Returns whether anything changed.
+///
+/// Expanding a section that is the only thing in the list puts the highlight on
+/// its first row (there is no launcher row to keep it on); collapsing it returns
+/// the highlight to the launcher rows.
+pub fn toggle_legacy(cache: &mut ProjectViewCache) -> bool {
+    if !has_legacy(cache) {
+        return false;
+    }
+    cache.legacy_expanded = !cache.legacy_expanded;
+    if cache.legacy_expanded {
+        if cache.launcher_runs.is_empty() {
+            cache.legacy_row_selected = true;
+            cache.driver_scroll_offset = 0;
+            cache.driver_follow = true;
+        }
+    } else {
+        cache.legacy_row_selected = false;
+    }
+    true
+}
+
 // ── The composition ─────────────────────────────────────────────────────────
 
 /// The narrow tier's pane title: ` {run id} ({i}/{n}) `, sanitised and cut to the
@@ -343,22 +508,57 @@ fn render_empty_state(frame: &mut Frame, area: Rect, alias: &str) {
     frame.render_widget(message, area);
 }
 
+/// The collapsed (`▸`) or expanded (`▾`) legacy-section row, DarkGray.
+fn legacy_header_row(count: usize, expanded: bool) -> Line<'static> {
+    let glyph = if expanded {
+        LEGACY_EXPANDED
+    } else {
+        LEGACY_COLLAPSED
+    };
+    Line::from(Span::styled(
+        format!("  {glyph} legacy runs ({count}), read-only"),
+        label_style(),
+    ))
+}
+
+/// One legacy run row: the shipped `run_list_row` behind the same two-cell highlight
+/// column the launcher rows use.
+fn legacy_row(
+    summary: &RunSummary,
+    verdict: Option<RunVerdict>,
+    selected: bool,
+    inner_width: u16,
+) -> Line<'static> {
+    let prefix = if selected {
+        Span::styled("> ", selection_style())
+    } else {
+        Span::raw("  ")
+    };
+    let mut line = run_list_row(summary, verdict, inner_width.saturating_sub(2));
+    line.spans.insert(0, prefix);
+    line
+}
+
 /// Render the launcher-first Driver tab: the run list (two panes from
-/// `DRIVER_TWO_PANE_MIN_CELLS` columns) and, for the selected run, the status
-/// header.
+/// `DRIVER_TWO_PANE_MIN_CELLS` columns) and the selected run's detail.
+///
+/// The list is the launcher runs, newest first, then (only when Phase 17/18
+/// journal runs exist) one DarkGray `legacy runs` row that `L` expands into the
+/// shipped legacy rows. The detail pane shows the selected launcher run's header,
+/// or the shipped legacy run detail for a selected legacy row, or the dry-run
+/// preview while the legacy start flow is at Step B, or the empty state.
 ///
 /// Reads only `cache`; opens no file (D-25). Before the first
 /// `Action::LauncherRunsRefreshed` for the alias lands, the detail pane shows
 /// `Loading...` and no status glyph: an empty state there would claim there are no
 /// runs when nobody has looked yet. The list's rows are recorded for the mouse.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_launcher_tab(
     frame: &mut Frame,
     area: Rect,
-    _ctx: &AppContext,
+    ctx: &AppContext,
     alias: &str,
     cache: Option<&ProjectViewCache>,
-    _viewport: &Cell<ViewportMetrics>,
+    viewport: &Cell<ViewportMetrics>,
     list_offset: &Cell<usize>,
 ) -> DriverTabRegions {
     let mut regions = DriverTabRegions::default();
@@ -366,68 +566,130 @@ pub(super) fn render_launcher_tab(
         return regions;
     }
     let runs: &[DriverRunEntry] = cache.map_or(&[], |c| c.launcher_runs.as_slice());
+    let legacy: &[RunSummary] = cache.map_or(&[], |c| c.driver_runs.as_slice());
     let listed = cache.is_some_and(|c| c.launcher_listed);
+    let preview = cache.and_then(|c| c.driver_dry_run.as_ref());
 
-    if listed && runs.is_empty() {
+    // Nothing to list, nothing to preview, and the listing has landed: the whole
+    // tab is the empty state.
+    if listed && runs.is_empty() && legacy.is_empty() && preview.is_none() {
         render_empty_state(frame, area, alias);
         return regions;
     }
 
-    let selected = cache
-        .map_or(0, |c| c.launcher_selected)
-        .min(runs.len().saturating_sub(1));
+    let sel = selection(cache);
+    let expanded = cache.is_some_and(legacy_rows_shown);
     let (list_area, detail_area) = driver_panes(area);
+
+    // The verdict applies only to the run the reconciliation scan is observing;
+    // every other legacy row is a finished run whose own `outcome` speaks for it.
+    let observed = ctx.observed_runs.get(alias);
+    let verdict_for = |run: &RunSummary| -> Option<RunVerdict> {
+        observed
+            .filter(|observed| observed.run_id == run.run_id)
+            .map(|observed| observed.verdict())
+    };
 
     if let Some(list_area) = list_area {
         let list_block = Block::default().borders(Borders::RIGHT).title(" Runs ");
         let rows = list_block.inner(list_area);
-        let items: Vec<ListItem> = runs
+        let mut items: Vec<ListItem> = runs
             .iter()
             .enumerate()
-            .map(|(index, entry)| ListItem::new(run_row(entry, index == selected, rows.width)))
+            .map(|(index, entry)| {
+                ListItem::new(run_row(
+                    entry,
+                    sel == Selection::Launcher(index),
+                    rows.width,
+                ))
+            })
             .collect();
+        if !legacy.is_empty() {
+            items.push(ListItem::new(legacy_header_row(legacy.len(), expanded)));
+            if expanded {
+                items.extend(legacy.iter().enumerate().map(|(index, run)| {
+                    ListItem::new(legacy_row(
+                        run,
+                        verdict_for(run),
+                        sel == Selection::Legacy(index),
+                        rows.width,
+                    ))
+                }));
+            }
+        }
+        let len = items.len();
         // The row carries its own `"> "` highlight, so the widget needs none; the
         // state exists for the persisted offset, so a clicked row stays put.
         let mut list_state = ListState::default().with_offset(list_offset.get());
-        if !runs.is_empty() {
-            list_state.select(Some(selected));
-        }
+        list_state.select(match sel {
+            Selection::Launcher(index) => Some(index),
+            Selection::Legacy(index) => Some(runs.len() + 1 + index),
+            Selection::Nothing => None,
+        });
         frame.render_stateful_widget(
             List::new(items).block(list_block),
             list_area,
             &mut list_state,
         );
         list_offset.set(list_state.offset());
-        if !runs.is_empty() {
-            regions.list = Some(crate::ui::mouse::ListRegion {
-                rect: rows,
-                offset: list_state.offset(),
-                len: runs.len(),
-            });
-        }
+        regions.list = Some(crate::ui::mouse::ListRegion {
+            rect: rows,
+            offset: list_state.offset(),
+            len,
+        });
+    }
+
+    // The empty state beside a collapsed legacy row: a bordered block in the
+    // detail pane, `[inferred — audit]`.
+    if sel == Selection::Nothing && preview.is_none() && listed {
+        render_empty_state(frame, detail_area, alias);
+        return regions;
     }
 
     // At the narrow tier the selection has nowhere else to go, so its identity
     // becomes the pane's title. `j`/`k` still move it.
-    let detail_block = match (list_area, runs.get(selected)) {
-        (None, Some(entry)) => Block::default().borders(Borders::NONE).title(narrow_title(
-            entry,
-            selected,
-            runs.len(),
-            detail_area.width,
-        )),
-        _ => Block::default()
-            .borders(Borders::NONE)
-            .title(DRIVER_PANE_TITLE),
+    let title = match (list_area, sel) {
+        (None, Selection::Launcher(index)) => {
+            narrow_title(&runs[index], index, runs.len(), detail_area.width)
+        }
+        (None, Selection::Legacy(index)) => run_list_title(&legacy[index], index, legacy.len()),
+        _ => DRIVER_PANE_TITLE.to_string(),
     };
+    let detail_block = Block::default().borders(Borders::NONE).title(title);
     let inner = detail_block.inner(detail_area);
     frame.render_widget(detail_block, detail_area);
 
-    let lines = match (listed, runs.get(selected)) {
-        (false, _) | (true, None) => vec![Line::from(Span::styled(DRY_RUN_LOADING, muted_style()))],
-        (true, Some(entry)) => detail_lines(entry, usize::from(inner.width)),
-    };
-    frame.render_widget(Paragraph::new(lines), inner);
+    // The dry-run preview replaces the detail while the legacy start flow is at
+    // Step B, and replaces nothing else (D-26).
+    if let Some(preview) = preview {
+        render_dry_run_preview(frame, inner, preview);
+        return regions;
+    }
+    match sel {
+        Selection::Legacy(index) => {
+            let run = &legacy[index];
+            render_run_detail(
+                frame,
+                inner,
+                ctx,
+                alias,
+                cache,
+                run,
+                verdict_for(run),
+                viewport,
+            );
+            regions.output = Some(detail_area);
+        }
+        Selection::Launcher(index) => {
+            let lines = detail_lines(&runs[index], usize::from(inner.width));
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        Selection::Nothing => {
+            // Not listed yet.
+            let loading = Line::from(Span::styled(DRY_RUN_LOADING, muted_style()));
+            frame.render_widget(Paragraph::new(loading), inner);
+        }
+    }
     regions
 }
 
@@ -997,5 +1259,232 @@ mod tests {
             assert!(!row.chars().any(char::is_control), "{row:?}");
             assert!(!row.contains('\u{202e}'), "{row:?}");
         }
+    }
+
+    // ── kill availability, selection and the legacy section ────────────────
+
+    #[test]
+    fn kill_is_available_for_live_crashed_and_unknown_runs_only() {
+        use RunStatus::*;
+        for (derived, expected) in [
+            (DerivedStatus::AsWritten(Running), true),
+            (DerivedStatus::AsWritten(Starting), true),
+            (DerivedStatus::Crashed { written: Running }, true),
+            (DerivedStatus::LivenessUnknown { written: Running }, true),
+            (DerivedStatus::NotLaunched, false),
+            (DerivedStatus::AsWritten(Stopped), false),
+            (DerivedStatus::AsWritten(Done), false),
+            (DerivedStatus::AsWritten(Paused), false),
+            (DerivedStatus::AsWritten(Parked), false),
+            (DerivedStatus::AsWritten(Stalled), false),
+            (DerivedStatus::AsWritten(Crashed), false),
+        ] {
+            assert_eq!(kill_available(&derived), expected, "{derived:?}");
+        }
+    }
+
+    fn summary(run_id: &str) -> RunSummary {
+        RunSummary {
+            run_id: run_id.to_owned(),
+            started_at: "2026-07-29T21:40:00Z".to_owned(),
+            ended_at: None,
+            goal: "ship the tab".to_owned(),
+            gsd_command: "/gsd:execute-phase 18".to_owned(),
+            outcome: None,
+        }
+    }
+
+    fn mixed_cache(launcher: usize, legacy: usize) -> ProjectViewCache {
+        let mut cache = cache_of(
+            (0..launcher)
+                .map(|n| entry(&format!("2026102{n}-run"), running()))
+                .collect(),
+        );
+        cache.driver_runs = (0..legacy)
+            .map(|n| summary(&format!("2026-07-29T21-40-0{n}Z-3f2a")))
+            .collect();
+        cache
+    }
+
+    #[test]
+    fn the_selection_walks_launcher_rows_then_legacy_rows_only_when_expanded() {
+        let mut cache = mixed_cache(2, 2);
+        assert_eq!(selection(Some(&cache)), Selection::Launcher(0));
+        assert!(!move_selection(&mut cache, 1));
+        assert!(
+            !move_selection(&mut cache, 5),
+            "collapsed: stops at launcher 1"
+        );
+        assert_eq!(selection(Some(&cache)), Selection::Launcher(1));
+
+        cache.legacy_expanded = true;
+        assert!(move_selection(&mut cache, 1), "onto the first legacy row");
+        assert_eq!(selection(Some(&cache)), Selection::Legacy(0));
+        assert_eq!(selection_position(Some(&cache)), 2);
+        assert!(
+            move_selection(&mut cache, 9),
+            "clamped at the last legacy row"
+        );
+        assert_eq!(selection(Some(&cache)), Selection::Legacy(1));
+        assert!(!move_selection(&mut cache, -2), "back onto a launcher row");
+        assert_eq!(selection(Some(&cache)), Selection::Launcher(1));
+        assert_eq!(cache.launcher_selected_id.as_deref(), Some("20261021-run"));
+    }
+
+    #[test]
+    fn moving_onto_a_different_legacy_run_resets_the_output_pane() {
+        let mut cache = mixed_cache(0, 2);
+        cache.legacy_expanded = true;
+        cache.legacy_row_selected = true;
+        cache.driver_scroll_offset = 40;
+        cache.driver_follow = false;
+        assert!(move_selection(&mut cache, 1));
+        assert_eq!((cache.driver_scroll_offset, cache.driver_follow), (0, true));
+        // Staying on the same run leaves the pane where the user put it.
+        cache.driver_scroll_offset = 7;
+        cache.driver_follow = false;
+        assert!(move_selection(&mut cache, 1), "still a legacy row");
+        assert_eq!(
+            (cache.driver_scroll_offset, cache.driver_follow),
+            (7, false)
+        );
+    }
+
+    #[test]
+    fn a_legacy_selection_is_honoured_only_while_its_rows_are_shown() {
+        let mut cache = mixed_cache(1, 1);
+        cache.legacy_row_selected = true;
+        assert_eq!(
+            selection(Some(&cache)),
+            Selection::Launcher(0),
+            "collapsed: the stored flag cannot leave the detail on a hidden row"
+        );
+        cache.legacy_expanded = true;
+        assert_eq!(selection(Some(&cache)), Selection::Legacy(0));
+        assert_eq!(selection(None), Selection::Nothing);
+    }
+
+    #[test]
+    fn toggling_the_section_lands_the_highlight_sensibly() {
+        // Inert without legacy runs.
+        let mut cache = mixed_cache(1, 0);
+        assert!(!toggle_legacy(&mut cache));
+        assert!(!cache.legacy_expanded);
+
+        // With launcher rows the highlight stays on its launcher run.
+        let mut cache = mixed_cache(1, 1);
+        assert!(toggle_legacy(&mut cache));
+        assert_eq!(selection(Some(&cache)), Selection::Launcher(0));
+
+        // With nothing else in the list it goes onto the first legacy run, and
+        // collapsing gives it back.
+        let mut cache = mixed_cache(0, 1);
+        assert!(toggle_legacy(&mut cache));
+        assert_eq!(selection(Some(&cache)), Selection::Legacy(0));
+        assert!(toggle_legacy(&mut cache));
+        assert_eq!(selection(Some(&cache)), Selection::Nothing);
+    }
+
+    #[test]
+    fn a_clicked_row_maps_through_the_section_header() {
+        let mut cache = mixed_cache(2, 2);
+        // Collapsed: rows are launcher 0, launcher 1, header.
+        assert_eq!(position_for_row(&cache, 1), Some(1));
+        assert_eq!(position_for_row(&cache, 2), None, "the header");
+        assert_eq!(position_for_row(&cache, 3), None, "past the end");
+        // Expanded: rows are launcher 0, launcher 1, header, legacy 0, legacy 1.
+        cache.legacy_expanded = true;
+        assert_eq!(position_for_row(&cache, 2), None, "the header");
+        assert_eq!(position_for_row(&cache, 3), Some(2));
+        assert_eq!(position_for_row(&cache, 4), Some(3));
+        assert_eq!(position_for_row(&cache, 5), None);
+    }
+
+    #[test]
+    fn a_launcher_run_selected_beside_a_collapsed_legacy_row_shows_the_launcher_header() {
+        let (rows, _) = render(mixed_cache(2, 1), 140, 24);
+        let first = rows
+            .iter()
+            .position(|row| row.contains("20261020-run"))
+            .expect("the first launcher row");
+        let legacy = rows
+            .iter()
+            .position(|row| row.contains("legacy runs (1), read-only"))
+            .expect("the collapsed row");
+        assert!(legacy > first, "{rows:#?}");
+        assert!(rows[legacy].contains('\u{25B8}'));
+        assert!(
+            rows.iter().any(|row| row.contains("reason")),
+            "launcher header"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("steps")),
+            "no legacy detail"
+        );
+    }
+
+    #[test]
+    fn a_selected_legacy_row_renders_the_shipped_legacy_detail_and_no_launcher_header() {
+        let mut cache = mixed_cache(1, 1);
+        cache.legacy_expanded = true;
+        cache.legacy_row_selected = true;
+        let (rows, _) = render(cache, 140, 40);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("\u{25BE} legacy runs (1), read-only")),
+            "{rows:#?}"
+        );
+        // The shipped run detail's `steps` section rule.
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("\u{2500}\u{2500} steps ")),
+            "{rows:#?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("reason  ")),
+            "the launcher header must not draw over a legacy run: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn the_empty_state_sits_beside_a_collapsed_legacy_row() {
+        let (rows, _) = render(mixed_cache(0, 1), 140, 24);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("legacy runs (1), read-only")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("No driver runs yet for \"proj\".")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn the_dry_run_preview_replaces_the_detail_whatever_is_selected() {
+        let mut cache = mixed_cache(1, 0);
+        cache.driver_dry_run = Some(super::super::DryRunPreview {
+            command: "/gsd:execute-phase 18".to_owned(),
+            report: Some("Would run: /gsd:execute-phase 18\n".to_owned()),
+        });
+        let (rows, _) = render(cache, 140, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("Would run:")),
+            "{rows:#?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("reason  ")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn the_narrow_tier_titles_a_legacy_selection_with_its_run() {
+        let mut cache = mixed_cache(0, 1);
+        cache.legacy_expanded = true;
+        cache.legacy_row_selected = true;
+        let (rows, _) = render(cache, 50, 20);
+        assert!(rows[0].contains("(1/1)"), "{:?}", rows[0]);
     }
 }

@@ -1638,8 +1638,9 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
         "Driver tab, legacy runs",
         true,
-        "The shipped Phase 17/18 surface, reached by emptying `launcher_runs` so the tab \
-         falls back to the legacy render: the run list row and run header built from \
+        "The shipped Phase 17/18 surface, reached by expanding the collapsed `legacy runs` \
+         row (`legacy_expanded`) and putting the highlight on the legacy run \
+         (`legacy_row_selected`): the run list row and run header built from \
          `driver_runs[0]`'s `run_id`, `goal` and `gsd_command` — populated by 21-25 T2. \
          ALSO draws, since 21-28 T1, the LIVE OUTPUT PANE: `DriverOutputLine::text` for \
          each line of `ctx.driver_output[alias]`, whose bytes are the `exec_event` text \
@@ -1960,6 +1961,17 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
             phase_idx: 0,
         };
     }),
+    // The legacy Driver surface (30-01). The default `Driver tab` state draws the
+    // launcher-first composition, so the Phase 17/18 sites (run list, run detail,
+    // live output pane, injection rows) need their own state: the collapsed
+    // `legacy runs` row expanded, with the highlight on the legacy run.
+    ("Driver tab, legacy runs", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Driver);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        cache.legacy_expanded = true;
+        cache.legacy_row_selected = true;
+    }),
     // The DRY-RUN PREVIEW (21-28 T2). It is a separate state and not part of
     // `probe_ctx` for a load-bearing reason: `render_driver_tab` dispatches on
     // `driver_dry_run` being `Some` and the preview REPLACES the run detail, so
@@ -1983,19 +1995,6 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
     // unset there and the baseline draws chrome only. It also mirrors the real
     // report, which interpolates values read from the project rather than
     // authored ones.
-    // The legacy Driver surface (30-01). The default `Driver tab` state now draws the
-    // launcher-first composition, so the Phase 17/18 sites (run list, run detail,
-    // live output pane, injection rows) need their own state: emptying
-    // `launcher_runs` is what sends the tab down the legacy render.
-    ("Driver tab, legacy runs", |identity, ctx| {
-        ctx.detail_sub_view_per_project
-            .insert(identity.to_string(), crate::app::DetailSubView::Driver);
-        ctx.view_cache
-            .entry(identity.to_string())
-            .or_default()
-            .launcher_runs
-            .clear();
-    }),
     ("Driver tab, dry-run preview", |identity, ctx| {
         ctx.detail_sub_view_per_project
             .insert(identity.to_string(), crate::app::DetailSubView::Driver);
@@ -2003,9 +2002,6 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
         let Some(run) = cache.driver_runs.first() else {
             return;
         };
-        // The preview belongs to the legacy start flow (30-01): with launcher runs
-        // listed the tab draws the launcher composition instead.
-        cache.launcher_runs.clear();
         let (goal, command) = (run.goal.clone(), run.gsd_command.clone());
         cache.driver_dry_run = Some(super::DryRunPreview {
             command: command.clone(),
@@ -3531,7 +3527,8 @@ mod tests {
         {
             let cache = no_inbox.view_cache.entry(clean.clone()).or_default();
             cache.driver_inbox.clear();
-            cache.launcher_runs.clear();
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
         }
         let no_inbox_text = render_to_text(
             &crate::ui::screens::detail::DetailScreen::new(clean.clone()),

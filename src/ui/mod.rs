@@ -355,7 +355,7 @@ mod tests {
     /// is deliberate — the shrink is the property the census's doc discloses,
     /// and a disclosed property that cannot go red when it happens is prose.
     const MEASURED_REACH: [(&str, usize); 3] = [
-        ("src/ui/screens/driver.rs", 2),
+        ("src/ui/screens/driver.rs", 1),
         ("src/ui/screens/driver_confirm.rs", 4),
         ("src/ui/screens/render_escape_guard.rs", 2),
     ];
@@ -389,15 +389,16 @@ mod tests {
     ///
     /// # The MEASURED reach — what actually drives this assertion
     ///
-    /// Over all **sixteen** `.rs` files under `src/ui/`:
+    /// Over all **seventeen** `.rs` files under `src/ui/` (30-01 added `driver_run.rs`
+    /// and removed one composed call from `driver.rs`: its `no_runs_lines`):
     ///
     /// | File | Executable needle occurrences |
     /// |---|---|
     /// | `src/ui/screens/driver_confirm.rs` | 4 |
-    /// | `src/ui/screens/driver.rs` | 2 |
+    /// | `src/ui/screens/driver.rs` | 1 |
     /// | `src/ui/screens/render_escape_guard.rs` | 2 (the exempt probe module — both are oracles, not render sites) |
-    /// | the other **13** files, incl. `detail.rs` and `normal.rs` | 0 |
-    /// | **total** | **8** — six non-exempt, in **two of sixteen files** |
+    /// | the other **14** files, incl. `detail.rs`, `normal.rs` and `driver_run.rs` | 0 |
+    /// | **total** | **7** — five non-exempt, in **two of seventeen files** |
     ///
     /// **These numbers are PINNED, not asserted here.** [`MEASURED_REACH`] and
     /// [`UI_SOURCE_FLOOR`] are checked by this test below, as a `Vec` equality
