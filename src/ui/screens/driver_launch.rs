@@ -20,7 +20,8 @@
 //! [`crate::text::render_for_terminal`].
 
 use super::confirm_popup::{
-    click_as_key, dim_background, render_confirm_popup, ConfirmOutcome, ConfirmPopup,
+    body_room, click_as_key, dim_background, fit_list, render_confirm_popup, wrapped_rows,
+    ConfirmOutcome, ConfirmPopup,
 };
 use super::driver_confirm::dispatch;
 use super::{AppContext, Screen, ScreenAction};
@@ -487,8 +488,9 @@ fn lint_copy(count: usize) -> String {
     )
 }
 
-/// How many lint problems or warnings the form lists before `… k more`.
-const FORM_FINDINGS_SHOWN: usize = 3;
+/// The most rows the form gives its lint problems and warnings, the `… k more` count
+/// row included (the old 3 + 3 + one count row). `[inferred — audit]`
+const FORM_FINDINGS_MAX_ROWS: u16 = 7;
 
 // ── The launch form (D-19, D-20, D-21) ──────────────────────────────────────
 
@@ -774,8 +776,11 @@ impl LaunchFormScreen {
         ScreenAction::None
     }
 
-    /// The body lines of the popup.
-    fn body_lines(&self, ctx: &AppContext) -> Vec<Line<'static>> {
+    /// The rows the confirmation cannot be given without: the title, what a launch may
+    /// spend and that it keeps running, how it is sandboxed (or why it is refused), the
+    /// blockers, the six fields and the minutes hint. WR-05: these are what the user must
+    /// read before `y`, so they come first and are never the rows that give way.
+    fn essential_lines(&self, ctx: &AppContext) -> Vec<Line<'static>> {
         let yellow = Style::default().fg(Color::Yellow);
         let red = Style::default().fg(Color::Red);
         let mut lines: Vec<Line<'static>> = vec![Line::from(format!(
@@ -783,6 +788,74 @@ impl LaunchFormScreen {
             shown(&self.run_id),
             shown(&self.alias)
         ))];
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Each driver session may spend up to {} of Claude usage (claude --max-budget-usd). It runs detached and keeps running after you close this TUI.",
+                dollars(self.form.args.max_budget_usd)
+            ),
+            yellow,
+        )));
+        if self.form.args.loop_mode == DriverLoopMode::FreshPerItem {
+            lines.push(Line::from(Span::styled(
+                "fresh-per-item starts one session per item, so the run can spend a multiple of this.",
+                yellow,
+            )));
+        }
+        match self.preflight(ctx) {
+            None => lines.push(Line::from(Span::styled(SANDBOX_LOADING, muted()))),
+            Some(preflight) => {
+                if let Some(detail) = &preflight.claude_refusal {
+                    lines.push(Line::from(Span::styled(
+                        format!("Launch refused: {}", shown(detail)),
+                        red,
+                    )));
+                } else if !preflight.missing.is_empty() {
+                    let items = preflight
+                        .missing
+                        .iter()
+                        .map(|m| shown(m))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    lines.push(Line::from(Span::styled(
+                        format!("Sandbox unavailable: missing {items}."),
+                        red,
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "A sandboxed launch is refused on this host.",
+                        red,
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "[U] launch UNSANDBOXED instead (asks again)",
+                        yellow,
+                    )));
+                } else {
+                    lines.push(Line::from(SANDBOX_OK));
+                }
+                if let Some(word) = control_blocking(preflight) {
+                    lines.push(Line::from(Span::styled(control_copy(word), yellow)));
+                }
+                if !preflight.lint_problems.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        lint_copy(preflight.lint_problems.len()),
+                        red,
+                    )));
+                }
+            }
+        }
+        if let Some(refusal) = &self.refusal {
+            // A refusal whose text is already a row above (the claude refusal, the
+            // control row, the lint headline) is not said twice.
+            let said = lines.iter().any(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    == *refusal
+            });
+            if !said {
+                lines.push(Line::from(Span::styled(refusal.clone(), red)));
+            }
+        }
         let selection = Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
@@ -828,105 +901,60 @@ impl LaunchFormScreen {
                 yellow,
             )));
         }
-        match self.preflight(ctx) {
-            None => lines.push(Line::from(Span::styled(SANDBOX_LOADING, muted()))),
-            Some(preflight) => {
-                if let Some(detail) = &preflight.claude_refusal {
-                    lines.push(Line::from(Span::styled(
-                        format!("Launch refused: {}", shown(detail)),
-                        red,
-                    )));
-                } else if !preflight.missing.is_empty() {
-                    let items = preflight
-                        .missing
-                        .iter()
-                        .map(|m| shown(m))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    lines.push(Line::from(Span::styled(
-                        format!("Sandbox unavailable: missing {items}."),
-                        red,
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "A sandboxed launch is refused on this host.",
-                        red,
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "[U] launch UNSANDBOXED instead (asks again)",
-                        yellow,
-                    )));
-                } else {
-                    lines.push(Line::from(SANDBOX_OK));
-                }
-                if let Some(word) = control_blocking(preflight) {
-                    lines.push(Line::from(Span::styled(control_copy(word), yellow)));
-                }
-                if !preflight.lint_problems.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        lint_copy(preflight.lint_problems.len()),
-                        red,
-                    )));
-                    for problem in preflight.lint_problems.iter().take(FORM_FINDINGS_SHOWN) {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}", shown(problem)),
-                            red,
-                        )));
-                    }
-                    if preflight.lint_problems.len() > FORM_FINDINGS_SHOWN {
-                        lines.push(Line::from(Span::styled(
-                            format!(
-                                "  \u{2026} {} more",
-                                preflight.lint_problems.len() - FORM_FINDINGS_SHOWN
-                            ),
-                            muted(),
-                        )));
-                    }
-                }
-                for warning in preflight.lint_warnings.iter().take(FORM_FINDINGS_SHOWN) {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {}", shown(warning)),
-                        yellow,
-                    )));
-                }
-                if preflight.lint_warnings.len() > FORM_FINDINGS_SHOWN {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "  \u{2026} {} more",
-                            preflight.lint_warnings.len() - FORM_FINDINGS_SHOWN
-                        ),
-                        muted(),
-                    )));
-                }
-            }
-        }
-        if let Some(refusal) = &self.refusal {
-            // A refusal whose text is already a row above (the claude refusal, the
-            // control row, the lint headline) is not said twice.
-            let said = lines.iter().any(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-                    == *refusal
-            });
-            if !said {
-                lines.push(Line::from(Span::styled(refusal.clone(), red)));
-            }
-        }
-        lines.push(Line::from(Span::styled(
-            format!(
-                "Each driver session may spend up to {} of Claude usage (claude --max-budget-usd). It runs detached and keeps running after you close this TUI.",
-                dollars(self.form.args.max_budget_usd)
-            ),
-            yellow,
-        )));
-        if self.form.args.loop_mode == DriverLoopMode::FreshPerItem {
-            lines.push(Line::from(Span::styled(
-                "fresh-per-item starts one session per item, so the run can spend a multiple of this.",
-                yellow,
-            )));
-        }
+        lines
+    }
+
+    /// The `driver check` findings, one line each: the problems (Red), then the warnings
+    /// (Yellow). They are the rows that give way when the terminal is short.
+    fn finding_lines(&self, ctx: &AppContext) -> Vec<Line<'static>> {
+        let Some(preflight) = self.preflight(ctx) else {
+            return Vec::new();
+        };
+        let red = Style::default().fg(Color::Red);
+        let yellow = Style::default().fg(Color::Yellow);
+        let problems = preflight
+            .lint_problems
+            .iter()
+            .map(|problem| Line::from(Span::styled(format!("  {}", shown(problem)), red)));
+        let warnings = preflight
+            .lint_warnings
+            .iter()
+            .map(|warning| Line::from(Span::styled(format!("  {}", shown(warning)), yellow)));
+        problems.chain(warnings).collect()
+    }
+
+    /// Every body line, unfitted: the essentials, all the findings, the key row. Tests
+    /// read this; [`Self::fitted_body_lines`] is what is drawn.
+    #[cfg(test)]
+    fn body_lines(&self, ctx: &AppContext) -> Vec<Line<'static>> {
+        let mut lines = self.essential_lines(ctx);
+        lines.extend(self.finding_lines(ctx));
         lines.push(Line::from(Span::styled(KEY_ROW, muted())));
+        lines
+    }
+
+    /// The body as drawn in `area` (WR-05, UI D5): the essentials in full, then as many
+    /// findings as the rows left hold (at most [`FORM_FINDINGS_MAX_ROWS`]) with a
+    /// `… {k} more` row counting the rest, then the key row when a row is still free. The
+    /// findings always give way first. When the essentials alone exceed the room the
+    /// popup is clipped, and the popup guard keeps `y` inert.
+    fn fitted_body_lines(&self, ctx: &AppContext, area: Rect) -> Vec<Line<'static>> {
+        let (inner, room) = body_room(area);
+        let mut lines = self.essential_lines(ctx);
+        let left = room.saturating_sub(wrapped_rows(&lines, inner));
+        // No row left: no findings and no count row either (it would not fit, and a row
+        // too many would clip a confirmation whose essentials are all on screen).
+        if left > 0 {
+            lines.extend(fit_list(
+                self.finding_lines(ctx),
+                left.min(FORM_FINDINGS_MAX_ROWS),
+                inner,
+            ));
+        }
+        let key_row = Line::from(Span::styled(KEY_ROW, muted()));
+        if room > wrapped_rows(&lines, inner) {
+            lines.push(key_row);
+        }
         lines
     }
 }
@@ -1007,7 +1035,7 @@ impl Screen for LaunchFormScreen {
             frame,
             area,
             "Launch driver run",
-            self.body_lines(ctx),
+            self.fitted_body_lines(ctx, area),
             Color::Yellow,
             self.popup.focus,
         ));
@@ -1383,7 +1411,7 @@ impl Screen for SlugInputScreen {
 }
 
 /// How many problems the `Check DIRECTION.md` popup lists before `… k more`.
-const POPUP_PROBLEMS_SHOWN: usize = 8;
+const POPUP_PROBLEMS_SHOWN: u16 = 8;
 
 /// `Check DIRECTION.md`: `driver check` found problems in the new run's edited body.
 /// Launch is blocked until they are fixed. `y` opens the editor on the body again (the
@@ -1460,23 +1488,28 @@ impl Screen for LintPopupScreen {
         dim_background(frame, area);
         let n = self.problems.len();
         let red = Style::default().fg(Color::Red);
-        let mut body: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        let header = Line::from(Span::styled(
             format!("driver check found {n} problem(s). Launch is blocked until they are fixed:"),
             red,
-        ))];
-        for problem in self.problems.iter().take(POPUP_PROBLEMS_SHOWN) {
-            body.push(Line::from(Span::styled(
-                format!("  {}", shown(problem)),
-                red,
-            )));
-        }
-        if n > POPUP_PROBLEMS_SHOWN {
-            body.push(Line::from(Span::styled(
-                format!("  \u{2026} {} more", n - POPUP_PROBLEMS_SHOWN),
-                muted(),
-            )));
-        }
-        body.push(Line::from("Edit it again now?"));
+        ));
+        let question = Line::from("Edit it again now?");
+        // The problems give way, the question does not (WR-05, UI D5): they are fitted
+        // to the rows left after the header and the question, and at most
+        // `POPUP_PROBLEMS_SHOWN` plus a count row are listed on a tall terminal.
+        let (inner, room) = body_room(area);
+        let taken = wrapped_rows(&[header.clone(), question.clone()], inner);
+        let problems = self
+            .problems
+            .iter()
+            .map(|problem| Line::from(Span::styled(format!("  {}", shown(problem)), red)))
+            .collect();
+        let mut body: Vec<Line<'static>> = vec![header];
+        body.extend(fit_list(
+            problems,
+            room.saturating_sub(taken).min(POPUP_PROBLEMS_SHOWN + 1),
+            inner,
+        ));
+        body.push(question);
         self.popup.record(render_confirm_popup(
             frame,
             area,
@@ -1541,6 +1574,14 @@ mod tests {
             .iter()
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    /// The body row of `label`'s field (`> model           opus`), wherever the order puts it.
+    fn field_row<'a>(rows: &'a [String], label: &str) -> &'a str {
+        let padded = format!("{label:<16}");
+        rows.iter()
+            .find(|row| row.get(2..).is_some_and(|rest| rest.starts_with(&padded)))
+            .unwrap_or_else(|| panic!("no `{label}` row in {rows:?}"))
     }
 
     #[test]
@@ -1784,15 +1825,18 @@ mod tests {
     fn launcher_launch_the_form_shows_the_six_fields_and_the_loading_sandbox_row() {
         let (screen, ctx, _rx) = form_screen(LaunchKind::Relaunch, relaunch_prefill(&fm()));
         let rows = text_of(&screen.body_lines(&ctx));
+        // WR-05: the title, the spend paragraph and the sandbox row come before the
+        // fields; the key row is last.
         assert_eq!(rows[0], format!("Launch {RUN} on \"{ALIAS}\"?"));
-        assert_eq!(rows[1], "> model           opus");
-        assert_eq!(rows[2], "  loop mode       loop (default)");
-        assert_eq!(rows[3], "  spend ceiling   $10.00 (default)");
-        assert_eq!(rows[4], "  dispatches      10");
-        assert_eq!(rows[5], "  minutes         90");
-        assert_eq!(rows[6], "  gap rounds      2 per phase");
-        assert_eq!(rows[7], "Sandbox: Loading...");
-        assert!(rows.iter().any(|r| r == "[j/k] field  [e] edit field"));
+        assert!(rows[1].starts_with("Each driver session may spend up to $10.00"));
+        assert_eq!(rows[2], "Sandbox: Loading...");
+        assert_eq!(rows[3], "> model           opus");
+        assert_eq!(rows[4], "  loop mode       loop (default)");
+        assert_eq!(rows[5], "  spend ceiling   $10.00 (default)");
+        assert_eq!(rows[6], "  dispatches      10");
+        assert_eq!(rows[7], "  minutes         90");
+        assert_eq!(rows[8], "  gap rounds      2 per phase");
+        assert_eq!(rows.last().map(String::as_str), Some("[j/k] field  [e] edit field"));
     }
 
     #[test]
@@ -1866,11 +1910,12 @@ mod tests {
         press(&mut screen, &mut ctx, '0');
         screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         let rows = text_of(&screen.body_lines(&ctx));
+        let budget = field_row(&rows, "spend ceiling");
         assert!(
-            rows[3].contains("must be a positive number"),
+            budget.contains("must be a positive number"),
             "an invalid value shows the copy and editing continues: {rows:?}"
         );
-        assert!(rows[3].contains("0_"), "{rows:?}");
+        assert!(budget.contains("0_"), "{rows:?}");
         assert_eq!(screen.args().max_budget_usd, 10.0, "nothing was stored");
         // While editing, y and n are text: nothing is dispatched and the form stays.
         for c in ['y', 'n'] {
@@ -1889,7 +1934,7 @@ mod tests {
         screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         assert_eq!(screen.args().max_budget_usd, 25.5);
         let rows = text_of(&screen.body_lines(&ctx));
-        assert_eq!(rows[3], "> spend ceiling   $25.50");
+        assert_eq!(field_row(&rows, "spend ceiling"), "> spend ceiling   $25.50");
         // Esc cancels an edit without storing it.
         press(&mut screen, &mut ctx, 'e');
         press(&mut screen, &mut ctx, '9');
@@ -1956,7 +2001,7 @@ mod tests {
         assert!(screen.editing.is_none(), "no text box for a two-way choice");
         assert_eq!(screen.args().loop_mode, DriverLoopMode::FreshPerItem);
         let rows = text_of(&screen.body_lines(&ctx));
-        assert_eq!(rows[2], "> loop mode       fresh-per-item");
+        assert_eq!(field_row(&rows, "loop mode"), "> loop mode       fresh-per-item");
         press(&mut screen, &mut ctx, 'e');
         assert_eq!(screen.args().loop_mode, DriverLoopMode::Loop);
     }
@@ -2335,8 +2380,12 @@ mod tests {
         );
         let rows = text_of(&screen.body_lines(&ctx));
         assert!(rows.contains(&"driver check found 5 problem(s). Close this form, then fix them with [e] before launching.".to_string()), "{rows:?}");
-        assert!(rows.contains(&"  DIRECTION.md:1: placeholder {short title}".to_string()));
-        assert!(rows.contains(&"  \u{2026} 2 more".to_string()), "{rows:?}");
+        for n in 1..=5 {
+            assert!(
+                rows.contains(&format!("  DIRECTION.md:{n}: placeholder {{short title}}")),
+                "the unfitted body lists every problem: {rows:?}"
+            );
+        }
         assert!(rows.contains(&"  DIRECTION.md:9: warning: budget above the cap".to_string()));
         assert!(matches!(
             press(&mut screen, &mut ctx, 'y'),
@@ -2500,7 +2549,7 @@ mod tests {
             assert!(mid.contains(label), "{label}: {mid}");
         }
         let (shown, more) = warnings_shown(&mid);
-        assert!(shown >= 1 && shown < 6, "some warnings are cut: {mid}");
+        assert!((1..6).contains(&shown), "some warnings are cut: {mid}");
         assert_eq!(shown + more, 6, "the count row counts what was cut: {mid}");
         assert!(!screen.popup.clipped(), "the essentials fit: {mid}");
         assert!(matches!(
