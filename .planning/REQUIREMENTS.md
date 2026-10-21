@@ -242,7 +242,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   are driven, parked or crashed.
 - [x] **DTAB-03**: A user can set `control`, answer or un-hold a parked item, and open DIRECTION.md
   in `$EDITOR` from the tab. Every edit takes the shared flock and never touches the frontmatter.
-- [ ] **DTAB-04**: A user can start a new run, relaunch a crashed run, and tail LOG.md live from the
+- [x] **DTAB-04**: A user can start a new run, relaunch a crashed run, and tail LOG.md live from the
   tab.
 
 ### Retirement (RETIRE): Phase 31
@@ -365,7 +365,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | DTAB-01 | Phase 30 | Complete |
 | DTAB-02 | Phase 30 | Complete |
 | DTAB-03 | Phase 30 | Complete |
-| DTAB-04 | Phase 30 | Pending |
+| DTAB-04 | Phase 30 | Complete |
 | RETIRE-01 | Phase 31 | Pending |
 | RETIRE-02 | Phase 31 | Pending |
 | RETIRE-03 | Phase 31 | Pending |

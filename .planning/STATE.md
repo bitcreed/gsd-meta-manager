@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.14.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
-status: executing
-stopped_at: Completed 30-04-PLAN.md
-last_updated: "2026-10-21T02:24:07.030Z"
+status: verifying
+stopped_at: Completed 30-05-PLAN.md
+last_updated: "2026-10-21T03:05:10.192Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: 43f5986736b3959ccf91b9207b196fc01ea06fdd
+state_head: 15bcda21d45acd84512ff08622612a73227c3465
 progress:
   total_phases: 10
   completed_phases: 12
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 29 (Master Prompt & Run Templates) complete 2026-10-20: 8/8 plans, re-verification passed
   5/5 after the code-review fixes (01eb8c8), UAT 1/1 (operator sign-off accepting o1 ADJUST x2 and
   h2 H2-5 as a rubric setup flaw; no re-run). PRMT-01..05, DRIVE-03 and DRIVE-01 complete. Review
@@ -505,6 +505,7 @@ verify-phase if the gate is fixed.
 | Phase 30 P02 | 34 min | 3 tasks | 12 files |
 | Phase 30 P03 | 31 min | 3 tasks | 10 files |
 | Phase 30 P04 | 41 min | 3 tasks | 10 files |
+| Phase 30 P05 | 31 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -702,6 +703,9 @@ Recent decisions affecting current work:
 - [Phase 30]: 30-03: height tiers FULL (tab area >= 21 rows), MEDIUM (12-20), SUMMARY (1-11, one row per run); legacy detail at 8-13 rows drops pipeline row and steps together (WR-05 resolved by D-29)
 - [Phase 30]: 30-04: SC3 is met through write_body (DIRECTION.lock + exchange-verify); the 2 s lock-timeout fallback is surfaced in every written message, not hidden
 - [Phase 30]: 30-04: the control chooser's s replaces itself with the polite-stop confirmation; EditSession keyed by temp path in App::edit_sessions is the seam 30-05's new-run flow chains onto (DriverEditReady in, DriverEditDone out)
+- [Phase 30]: 30-05: The launch itself is covered by a fake LaunchSeams in-process plus the real binary with the same argv; launch_detached re-executes current_exe so it is never called in-process from a test (Pitfall 5).
+- [Phase 30]: 30-05: U (unsandboxed) and c (control chooser) replace the launch form (ScreenAction::Replace) so neither answer returns to a re-submittable form; the unsandboxed flag lives only in the confirmation's arguments and is never remembered.
+- [Phase 30]: 30-05: The new-run flow's flag is App::new_run_flow keyed by (alias, run id), copied into EditSession::then_launch when the edit temp is ready; it ends on a clean driver check, n, an editor failure, a discard or a launch.
 
 ### Roadmap Evolution
 
@@ -876,8 +880,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-21T02:24:06.231Z
-Stopped at: Completed 30-04-PLAN.md
+Last session: 2026-10-21T03:05:09.382Z
+Stopped at: Completed 30-05-PLAN.md
 Resume file: None
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md

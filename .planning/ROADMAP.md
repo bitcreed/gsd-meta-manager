@@ -1215,7 +1215,7 @@ DIRECTION.md.
 
      The Phase 18 stream-json injection UI is no longer the steering path.
 
-**Plans**: 4/5 plans executed
+**Plans**: 5/5 plans executed
 
 Plans:
 
@@ -1232,7 +1232,7 @@ Plans:
 - [x] 30-04-PLAN.md — steering through DIRECTION.md: control chooser, answer/un-hold, polite stop, `$EDITOR` body-only edit, injection key retired (DTAB-03, DTAB-04)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 30-05-PLAN.md — new run / launch / relaunch through the detached launcher, degraded-host second confirm, zero-spend e2e (DTAB-04)
+- [x] 30-05-PLAN.md — new run / launch / relaunch through the detached launcher, degraded-host second confirm, zero-spend e2e (DTAB-04)
 
 ### Phase 31: Retire Superseded Envelope & Goal-Layer Code
 
@@ -1351,7 +1351,7 @@ Plans:
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
-| 30. Driver Tab on DIRECTION.md | 4/5 | In Progress | - |
+| 30. Driver Tab on DIRECTION.md | 5/5 | In Progress | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
