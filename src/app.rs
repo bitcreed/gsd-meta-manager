@@ -680,16 +680,92 @@ pub fn editor_args(
     }
 }
 
-/// The program and argv that open `path` in `editor`.
+/// The program and argv that open `path` in the user's `editor` string (WR-06, D-17).
+///
+/// `$VISUAL` / `$EDITOR` may carry arguments (`code -w`, `emacs -nw`,
+/// `nvim -u NONE`), so the string is not always one program name. On unix this
+/// follows git's `prepare_shell_cmd` rule:
+///
+/// - a string that names **one existing file** (`Path::is_file`, e.g. an
+///   unquoted `/Applications/Sublime Text.app/Contents/SharedSupport/bin/subl`)
+///   is the program, exactly as it was spawned before;
+/// - otherwise a string with no shell-special character (space, tab, newline,
+///   `|&;<>()$` backtick, backslash, quotes, `*?[#~=%`) is the program too;
+/// - anything else runs as `sh -c '<editor> "$@"' '<editor>' <args...>`.
+///
+/// **The path is never interpolated into the script.** It (and the line
+/// argument) ride as separate argv elements after `$0`, so a run directory whose
+/// name holds `$(...)`, `;` or quotes reaches the editor as one literal
+/// argument and runs nothing (T-30-27). Line positioning is keyed on the file
+/// name of the string's first word, so `nvim -u NONE` still opens at the line.
+///
+/// A leading `~` (`~/bin/nvim`) never spawned directly (exec does no tilde
+/// expansion); it now goes through `sh` and expands. An empty string is `vi`.
+///
+/// Spawn-free: it builds no `Command` (the library stays off the spawn
+/// allowlist; the binary builds the process from this pair) and its only system
+/// call is the one `is_file` stat. Off unix the shipped pair is returned.
 pub fn editor_command(
     editor: &str,
     path: &std::path::Path,
     line: Option<usize>,
 ) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
-    (
-        std::ffi::OsString::from(editor),
-        editor_args(editor, path, line),
-    )
+    use std::ffi::OsString;
+    let editor = match editor.trim() {
+        "" => "vi",
+        trimmed => trimmed,
+    };
+    #[cfg(unix)]
+    if !std::path::Path::new(editor).is_file() && editor.contains(is_shell_special) {
+        let mut argv = vec![
+            OsString::from("-c"),
+            OsString::from(format!("{editor} \"$@\"")),
+            OsString::from(editor),
+        ];
+        argv.extend(editor_args(first_word(editor), path, line));
+        return (OsString::from("sh"), argv);
+    }
+    (OsString::from(editor), editor_args(editor, path, line))
+}
+
+/// Git's shell-special set: a string holding any of these is handed to `sh`.
+#[cfg(unix)]
+fn is_shell_special(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '|' | '&'
+                | ';'
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '$'
+                | '`'
+                | '\\'
+                | '"'
+                | '\''
+                | '*'
+                | '?'
+                | '['
+                | '#'
+                | '~'
+                | '='
+                | '%'
+        )
+}
+
+/// The first word of an editor string, surrounding quotes removed: `code -w` is
+/// `code`, `"/opt/My Editors/nvim" -u NONE` is `/opt/My Editors/nvim`.
+#[cfg(unix)]
+fn first_word(editor: &str) -> &str {
+    let editor = editor.trim_start();
+    for quote in ['"', '\''] {
+        if let Some(rest) = editor.strip_prefix(quote) {
+            return rest.split(quote).next().unwrap_or(rest);
+        }
+    }
+    editor.split_whitespace().next().unwrap_or(editor)
 }
 
 impl App {
@@ -4044,7 +4120,12 @@ mod tests {
     fn editor_command_never_puts_the_path_in_the_shell_script() {
         let hostile = "/runs/$(touch PWNED);`id`'\"x/DIRECTION.md";
         let p = std::path::Path::new(hostile);
-        for editor in ["code -w", "nvim -u NONE", "'/opt/My Ed/ed' --wait", "emacs -nw"] {
+        for editor in [
+            "code -w",
+            "nvim -u NONE",
+            "'/opt/My Ed/ed' --wait",
+            "emacs -nw",
+        ] {
             for line in [None, Some(3)] {
                 let (program, argv) = editor_command(editor, p, line);
                 assert_eq!(program, std::ffi::OsString::from("sh"), "{editor}");
@@ -4052,7 +4133,11 @@ mod tests {
                 let script = argv[1].to_string_lossy().into_owned();
                 assert_eq!(script, format!("{editor} \"$@\""), "{editor}");
                 assert!(!script.contains("PWNED"), "{script}");
-                assert_eq!(argv[2], std::ffi::OsString::from(editor), "$0 is the editor");
+                assert_eq!(
+                    argv[2],
+                    std::ffi::OsString::from(editor),
+                    "$0 is the editor"
+                );
                 assert!(
                     argv[3..]
                         .iter()

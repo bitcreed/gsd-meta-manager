@@ -843,10 +843,11 @@ async fn run_tui_loop(
                 .or_else(|_| std::env::var("EDITOR"))
                 .unwrap_or_else(|_| "vi".to_string());
 
-            // Spawn editor and wait for it to exit
-            let status = std::process::Command::new(&editor)
-                .args(gsd_meta_manager::app::editor_args(&editor, &path, line))
-                .status();
+            // Spawn editor and wait for it to exit. The library decides the program
+            // and argv (WR-06: `code -w` runs through `sh`, the path always a
+            // separate argument); this is the one place the process is built.
+            let (program, argv) = gsd_meta_manager::app::editor_command(&editor, &path, line);
+            let status = std::process::Command::new(&program).args(&argv).status();
 
             // The exit status also reaches the library: a DIRECTION.md edit temp is
             // applied (or kept, on a failed editor) by `App::after_editor`, not here.
