@@ -16,8 +16,8 @@
 //! [`crate::text::render_for_terminal`].
 
 use super::confirm_popup::{
-    click_as_key, dim_background, render_confirm_popup, strip_key_hint, ConfirmOutcome,
-    ConfirmPopup,
+    body_room, click_as_key, dim_background, fit_list, render_confirm_popup, strip_key_hint,
+    wrapped_rows, ConfirmOutcome, ConfirmPopup,
 };
 use super::driver_confirm::dispatch;
 use super::{AppContext, Screen, ScreenAction};
@@ -851,23 +851,31 @@ impl Screen for EditLintConfirmScreen {
         detail.render_main_only(frame, area, ctx);
         dim_background(frame, area);
         let n = self.findings.len();
-        let mut body: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        let header = Line::from(Span::styled(
             format!("driver check found {n} problem(s) in your edit:"),
             Style::default().fg(Color::Yellow),
-        ))];
-        for finding in self.findings.iter().take(LINT_FINDINGS_SHOWN) {
-            body.push(Line::from(Span::styled(
-                format!("  {}", crate::text::render_for_terminal(finding)),
-                Style::default().fg(Color::Red),
-            )));
-        }
-        if n > LINT_FINDINGS_SHOWN {
-            body.push(Line::from(Span::styled(
-                format!("  \u{2026} {} more", n - LINT_FINDINGS_SHOWN),
-                muted(),
-            )));
-        }
-        body.push(Line::from("Apply it anyway?"));
+        ));
+        let question = Line::from("Apply it anyway?");
+        // The header and the question always come first: the findings get what is left,
+        // at most `LINT_FINDINGS_SHOWN` of them plus the `… k more` row.
+        let (width, room) = body_room(area);
+        let fixed = wrapped_rows(&[header.clone(), question.clone()], width);
+        let rows = room
+            .saturating_sub(fixed)
+            .min(u16::try_from(LINT_FINDINGS_SHOWN + 1).unwrap_or(u16::MAX));
+        let findings: Vec<Line<'static>> = self
+            .findings
+            .iter()
+            .map(|finding| {
+                Line::from(Span::styled(
+                    format!("  {}", crate::text::render_for_terminal(finding)),
+                    Style::default().fg(Color::Red),
+                ))
+            })
+            .collect();
+        let mut body: Vec<Line<'static>> = vec![header];
+        body.extend(fit_list(findings, rows, width));
+        body.push(question);
         self.popup.record(render_confirm_popup(
             frame,
             area,
@@ -1559,7 +1567,10 @@ mod tests {
         assert!(screen.popup.clipped(), "{text}");
         let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
-        assert!(rx.try_recv().is_err(), "a clipped confirmation applies nothing");
+        assert!(
+            rx.try_recv().is_err(),
+            "a clipped confirmation applies nothing"
+        );
     }
 
     #[test]

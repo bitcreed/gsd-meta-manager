@@ -12,7 +12,12 @@
 //! - two buttons, `[ Yes ]` `[ No ]`, with **No focused by default** so a stray
 //!   Enter is safe;
 //! - `y` / `n` / `Esc` keep working as accelerators; Left/Right/Tab/BackTab (and
-//!   `h`/`l`) move focus; Enter activates the focused button.
+//!   `h`/`l`) move focus; Enter activates the focused button;
+//! - a body the area cannot show in full is **clipped** (UI D5 `[inferred — audit]`):
+//!   [`render_confirm_popup`] reports it in [`PopupLayout::clipped`], the popup's hint
+//!   row then reads [`CLIPPED_HINT`], and until the next render says otherwise `y`,
+//!   Enter on Yes and a click on Yes do nothing. `n`, `Esc` and a click on No still
+//!   cancel. A decision whose text is cut off is never confirmable.
 //!
 //! This module draws only text its caller hands it. Callers pass prompt bodies
 //! that are already escaped through `crate::text::render_for_terminal`, so the
@@ -82,7 +87,8 @@ impl ConfirmPopup {
         };
         let at = Position::new(column, row);
         if b.yes.contains(at) {
-            ConfirmOutcome::Confirm
+            // A cut-off body is not a decision the user has read.
+            self.confirm_unless_clipped()
         } else if b.no.contains(at) {
             ConfirmOutcome::Cancel
         } else {
@@ -101,12 +107,22 @@ impl ConfirmPopup {
         self.clipped.get()
     }
 
+    /// `Confirm`, unless the body was cut off: then nothing happens until the terminal
+    /// is enlarged (UI D5). Every way of saying yes goes through here.
+    fn confirm_unless_clipped(&self) -> ConfirmOutcome {
+        if self.clipped.get() {
+            ConfirmOutcome::Pending
+        } else {
+            ConfirmOutcome::Confirm
+        }
+    }
+
     pub fn on_key(&mut self, code: KeyCode) -> ConfirmOutcome {
         match code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => ConfirmOutcome::Confirm,
+            KeyCode::Char('y') | KeyCode::Char('Y') => self.confirm_unless_clipped(),
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => ConfirmOutcome::Cancel,
             KeyCode::Enter => match self.focus {
-                ConfirmFocus::Yes => ConfirmOutcome::Confirm,
+                ConfirmFocus::Yes => self.confirm_unless_clipped(),
                 ConfirmFocus::No => ConfirmOutcome::Cancel,
             },
             KeyCode::Left
@@ -212,7 +228,8 @@ fn button_rects(row: Rect) -> ConfirmButtons {
 /// Draw the popup. `title` is static text; `body` lines are pre-escaped.
 ///
 /// Returns where the buttons landed (`None` when the popup is too short to
-/// draw them) so the caller can hand it to [`ConfirmPopup::record`].
+/// draw them) and whether the body was cut off, so the caller can hand it to
+/// [`ConfirmPopup::record`].
 pub fn render_confirm_popup(
     frame: &mut Frame,
     area: Rect,
@@ -222,7 +239,8 @@ pub fn render_confirm_popup(
     focus: ConfirmFocus,
 ) -> PopupLayout {
     let inner_w = popup_width(area).saturating_sub(2);
-    let popup = popup_rect(area, wrapped_rows(&body, inner_w));
+    let body_rows = wrapped_rows(&body, inner_w);
+    let popup = popup_rect(area, body_rows);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -234,7 +252,11 @@ pub fn render_confirm_popup(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     if inner.height == 0 {
-        return PopupLayout::default();
+        // Not even a row to draw in: certainly cut off.
+        return PopupLayout {
+            buttons: None,
+            clipped: true,
+        };
     }
 
     // Bottom three inner rows: buttons, spacer-free hint. Body gets the rest.
@@ -255,17 +277,25 @@ pub fn render_confirm_popup(
         frame.render_widget(Paragraph::new(buttons).alignment(Alignment::Center), row);
         rects = Some(button_rects(row));
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
+    // The body is clipped when it needs more rows than the popup has, or when the popup
+    // has no room for its buttons at all. A clipped popup cannot be confirmed, and says
+    // so where the key hint would be.
+    let clipped = body_rows > body_h || rects.is_none();
+    let hint = if clipped {
+        Span::styled(CLIPPED_HINT, Style::default().fg(Color::Yellow))
+    } else {
+        Span::styled(
             "y/n \u{b7} \u{2190}/\u{2192} move \u{b7} Enter select \u{b7} Esc cancel",
             Style::default().fg(Color::DarkGray),
-        )))
-        .alignment(Alignment::Center),
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(hint)).alignment(Alignment::Center),
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
     PopupLayout {
         buttons: rects,
-        clipped: false,
+        clipped,
     }
 }
 
@@ -277,9 +307,45 @@ pub fn body_room(area: Rect) -> (u16, u16) {
     )
 }
 
-/// The longest prefix of `items` that fits `rows`, plus a muted `  … {k} more` row.
-pub fn fit_list(items: Vec<Line<'static>>, _rows: u16, _inner_width: u16) -> Vec<Line<'static>> {
-    items
+/// The longest prefix of `items` whose wrapped rows, plus one muted `  … {k} more` row for
+/// the items left out, fit `rows`. When everything fits, `items` is returned unchanged.
+/// When not even the `… {k} more` row fits, just that row is returned, so the caller's
+/// popup is taller than `rows` and clips (and is then not confirmable).
+pub fn fit_list(items: Vec<Line<'static>>, rows: u16, inner_width: u16) -> Vec<Line<'static>> {
+    let costs: Vec<usize> = items
+        .iter()
+        .map(|item| usize::from(wrapped_rows(std::slice::from_ref(item), inner_width)))
+        .collect();
+    let budget = usize::from(rows);
+    if costs.iter().sum::<usize>() <= budget {
+        return items;
+    }
+    let more = |left: usize| {
+        Line::from(Span::styled(
+            format!("  \u{2026} {left} more"),
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    let mut kept = 0usize;
+    let mut used = 0usize;
+    for cost in &costs {
+        let next = used + cost;
+        let left = costs.len() - (kept + 1);
+        let more_cost = if left > 0 {
+            usize::from(wrapped_rows(&[more(left)], inner_width))
+        } else {
+            0
+        };
+        if next + more_cost > budget {
+            break;
+        }
+        used = next;
+        kept += 1;
+    }
+    let left = costs.len() - kept;
+    let mut out: Vec<Line<'static>> = items.into_iter().take(kept).collect();
+    out.push(more(left));
+    out
 }
 
 /// Column and row of the first `needle` in newline-joined screen `text`.
@@ -508,11 +574,9 @@ mod tests {
 
     #[test]
     fn fit_list_keeps_the_rows_that_fit_and_counts_the_rest() {
-        let items = || -> Vec<Line<'static>> {
-            (1..=6).map(|n| Line::from(format!("item {n}"))).collect()
-        };
-        let texts =
-            |lines: &[Line<'_>]| -> Vec<String> { lines.iter().map(text_of).collect() };
+        let items =
+            || -> Vec<Line<'static>> { (1..=6).map(|n| Line::from(format!("item {n}"))).collect() };
+        let texts = |lines: &[Line<'_>]| -> Vec<String> { lines.iter().map(text_of).collect() };
         let cut = fit_list(items(), 4, 40);
         assert_eq!(
             texts(&cut),
@@ -523,16 +587,19 @@ mod tests {
         for rows in [6, 7, 40] {
             assert_eq!(texts(&fit_list(items(), rows, 40)).len(), 6, "rows {rows}");
         }
-        assert_eq!(texts(&fit_list(items(), 5, 40)).last().unwrap(), "  \u{2026} 2 more");
+        assert_eq!(
+            texts(&fit_list(items(), 5, 40)).last().unwrap(),
+            "  \u{2026} 2 more"
+        );
         // A wrapped item costs its wrapped rows.
         let wide = vec![
-            Line::from("aaaa bbbb cccc"),
-            Line::from("dddd"),
-            Line::from("eeee"),
+            Line::from("aaaa bbbb cccc dddd"),
+            Line::from("x"),
+            Line::from("y"),
         ];
         assert_eq!(
-            texts(&fit_list(wide, 4, 5)),
-            ["aaaa bbbb cccc", "  \u{2026} 2 more"]
+            texts(&fit_list(wide, 3, 16)),
+            ["aaaa bbbb cccc dddd", "  \u{2026} 2 more"]
         );
     }
 
