@@ -1215,7 +1215,7 @@ DIRECTION.md.
 
      The Phase 18 stream-json injection UI is no longer the steering path.
 
-**Plans**: 5/5 plans executed
+**Plans**: 5/9 plans executed (4 gap-closure plans planned)
 
 Plans:
 
@@ -1233,6 +1233,16 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [x] 30-05-PLAN.md — new run / launch / relaunch through the detached launcher, degraded-host second confirm, zero-spend e2e (DTAB-04)
+
+**Gap closure** (30-VERIFICATION.md gaps_found, 30-REVIEW WR-01..06 / IN-01..03, 30-UI-REVIEW warnings)
+
+**Wave 6** *(gap closure — blocked on Wave 5 completion; 30-06/07/08 touch disjoint files and run in parallel)*
+- [ ] 30-06-PLAN.md — confirm popups sized by real word wrap ("Nothing is killed." at every width), clipped popups disarm Yes, wrapped answer row, D-16 copy, kill confirm over the Driver tab (DTAB-03)
+- [ ] 30-07-PLAN.md — guarded run-dir opens (FIFO/symlink), no-op body writes leave DIRECTION.md alone, IN-01, FULL header Loading..., retired-`i` copy (DTAB-01..04)
+- [ ] 30-08-PLAN.md — `$EDITOR` with arguments via `sh -c` (path never in the script), ETXTBSY-free shim tests, Linux-only test helper (DTAB-03)
+
+**Wave 7** *(blocked on 30-06, 30-07, 30-08)*
+- [ ] 30-09-PLAN.md — launch form shows spend and sandbox first and fits findings, lint popup keeps its question, new-run copy/wrap/IN-02, preflight agrees with editor and launcher (WR-01/04, IN-03) (DTAB-03, DTAB-04)
 
 ### Phase 31: Retire Superseded Envelope & Goal-Layer Code
 
