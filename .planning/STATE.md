@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.14.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
-status: executing
-stopped_at: Completed 30-08-PLAN.md
-last_updated: "2026-10-21T04:47:10.279Z"
+status: verifying
+stopped_at: Completed 30-09-PLAN.md
+last_updated: "2026-10-21T05:00:27.941Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: 737e183bb081740b61133605606d09b44ea8d1a5
+state_head: 21ce046064499ee14ce2f2810ad406af9d302107
 progress:
   total_phases: 10
   completed_phases: 12
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 29 (Master Prompt & Run Templates) complete 2026-10-20: 8/8 plans, re-verification passed
   5/5 after the code-review fixes (01eb8c8), UAT 1/1 (operator sign-off accepting o1 ADJUST x2 and
   h2 H2-5 as a rubric setup flaw; no re-run). PRMT-01..05, DRIVE-03 and DRIVE-01 complete. Review
@@ -509,6 +509,7 @@ verify-phase if the gate is fixed.
 | Phase 30 P06 | 20 min | 3 tasks | 5 files |
 | Phase 30 P07 | 30 min | 3 tasks | 6 files |
 | Phase 30 P08 | 35 min | 2 tasks | 4 files |
+| Phase 30 P09 | 13 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -714,6 +715,8 @@ Recent decisions affecting current work:
 - [Phase 30]: 30-06: only DriverAction::StopLauncher paints the Driver tab behind its popup [inferred — audit]
 - [Phase 30]: 30-07: open_run_file (O_NOFOLLOW|O_NONBLOCK + handle type check) guards every run-dir read; Plan::Keep skips no-op DIRECTION.md writes; INJECTION_RETIRED = 'Injection is retired: use [c]ontrol, [a]nswer, [e]dit.' [inferred - audit]
 - [Phase 30]: 30-08: editor strings with arguments run via sh -c '<editor> "$@"' with the path only a separate argv element; an existing editor file spawns directly [inferred - audit]
+- [Phase 30]: [inferred — audit] 30-09: launch form body is spend and sandbox first, findings fitted to the rows left (max 7 rows); a form whose essentials cannot fit is cut off and y is inert
+- [Phase 30]: [inferred — audit] 30-09: typed model must match model_name_ok (64-char bound); form reads control with the launcher's control_line and compares exactly; lint lines numbered from the first body line
 
 ### Roadmap Evolution
 
@@ -888,8 +891,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-21T04:47:09.441Z
-Stopped at: Completed 30-08-PLAN.md
+Last session: 2026-10-21T05:00:27.111Z
+Stopped at: Completed 30-09-PLAN.md
 Resume file: None
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md

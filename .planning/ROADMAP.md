@@ -1215,7 +1215,7 @@ DIRECTION.md.
 
      The Phase 18 stream-json injection UI is no longer the steering path.
 
-**Plans**: 8/9 plans executed (4 gap-closure plans planned)
+**Plans**: 9/9 plans executed (4 gap-closure plans planned)
 
 Plans:
 
@@ -1242,7 +1242,7 @@ Plans:
 - [x] 30-08-PLAN.md — `$EDITOR` with arguments via `sh -c` (path never in the script), ETXTBSY-free shim tests, Linux-only test helper (DTAB-03)
 
 **Wave 7** *(blocked on 30-06, 30-07, 30-08)*
-- [ ] 30-09-PLAN.md — launch form shows spend and sandbox first and fits findings, lint popup keeps its question, new-run copy/wrap/IN-02, preflight agrees with editor and launcher (WR-01/04, IN-03) (DTAB-03, DTAB-04)
+- [x] 30-09-PLAN.md — launch form shows spend and sandbox first and fits findings, lint popup keeps its question, new-run copy/wrap/IN-02, preflight agrees with editor and launcher (WR-01/04, IN-03) (DTAB-03, DTAB-04)
 
 ### Phase 31: Retire Superseded Envelope & Goal-Layer Code
 
@@ -1361,7 +1361,7 @@ Plans:
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
-| 30. Driver Tab on DIRECTION.md | 8/9 | In Progress | - |
+| 30. Driver Tab on DIRECTION.md | 9/9 | In Progress | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
