@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: executing
-stopped_at: Phase 30 UI-SPEC approved
-last_updated: "2026-10-20T23:58:26.203Z"
+stopped_at: Completed 30-01-PLAN.md
+last_updated: "2026-10-21T00:30:41.097Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: b151d6b9ef370442289b36bfbc4088d64ee8bfd3
+state_head: 3cbdcb6bddb462f6acfbfb1bfaf6ec89d38976ea
 progress:
   total_phases: 10
   completed_phases: 12
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
-Status: Executing Phase 30
+Status: Ready to execute
   Phase 29 (Master Prompt & Run Templates) complete 2026-10-20: 8/8 plans, re-verification passed
   5/5 after the code-review fixes (01eb8c8), UAT 1/1 (operator sign-off accepting o1 ADJUST x2 and
   h2 H2-5 as a rubric setup flaw; no re-run). PRMT-01..05, DRIVE-03 and DRIVE-01 complete. Review
@@ -238,7 +238,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 30 (Driver Tab on DIRECTION.md) — EXECUTING
-Plan: 1 of 5
+Plan: 2 of 5
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -501,6 +501,7 @@ verify-phase if the gate is fixed.
 | Phase 29 P06 | 30min | 3 tasks | 7 files |
 | Phase 29 P07 | 23 min | 3 tasks | 5 files |
 | Phase 29 P08 | 3h (resumed) | 3 tasks | 7 files |
+| Phase 30 P01 | 31 min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -686,6 +687,10 @@ Recent decisions affecting current work:
 - [Phase 29]: 29-07: h2 carries a second item I-02 (after I-01) so a next dispatch exists for the pause to refuse (D-18, operator-confirmed 2026-10-19); H2-4 forbids a dispatch of any item after the pause save [inferred - audit]
 - [Phase 29]: 29-07: the rubric is pre-registered at acceb353a82dea32a56b17d943cad5073335ea94 and acceptance/prereg.txt holds that bare sha; Haiku reruns only after an infrastructure fault, o1 retries once after ADJUST, never a third
 - [Phase 29]: 29-08: h2 recorded FAIL (H2-5), not rerun; o1 two ADJUSTs, no third attempt; ledger 12.7557 of 25 [inferred - audit]
+- [Phase 30]: 30-01: launcher selection pinned to the run id; a legacy selection counts only while its rows are shown
+- [Phase 30]: 30-01: x on an unreadable launcher run still opens the kill confirmation (treated as liveness unknown) [inferred - audit]
+- [Phase 30]: 30-01: legacy-row footer suffix placed before [?]help so help is always last [inferred - audit]
+- [Phase 30]: 30-01: drivers/ watcher routing is an allowlist; the bare drivers dir is Ignored [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -860,9 +865,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-20T18:00:00.000Z
-Stopped at: Session resumed, proceeding to /gsd-execute-phase 30
-Resume file: .planning/phases/30-driver-tab-on-direction-md/30-01-PLAN.md
+Last session: 2026-10-21T00:30:40.417Z
+Stopped at: Completed 30-01-PLAN.md
+Resume file: None
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md
 `human_needed`). Phases 30-31 follow.
