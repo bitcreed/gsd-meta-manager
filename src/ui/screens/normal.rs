@@ -119,6 +119,15 @@ pub(super) const BADGE_NEEDS_HUMAN: &str = "\u{2691} ";
 /// lock probe raises it (never a stale heartbeat, never an unknown probe).
 pub(super) const BADGE_CRASHED: &str = "\u{2717} ";
 
+/// A launcher run is live but its heartbeat is older than the file's own threshold
+/// (30-03, D-12). `◈` WHITE DIAMOND CONTAINING BLACK SMALL DIAMOND, U+25C8, narrow
+/// and shape-distinct from the filled `◆` and the open `◇`.
+pub(super) const BADGE_STALE: &str = "\u{25C8} ";
+
+/// Whether a launcher run is alive could not be established: the lock probe failed
+/// (30-03, D-12). `◇` WHITE DIAMOND, U+25C7, the run list's own liveness-unknown glyph.
+pub(super) const BADGE_UNKNOWN: &str = "\u{25C7} ";
+
 /// Rank 3 — a non-empty HANDOFF. `‖` DOUBLE VERTICAL LINE. Shipped in v1.4.
 /// Was `⏸` U+23F8, which several terminals draw emoji-wide (2 cells) while
 /// `unicode-width` reports 1 — see `badge_glyphs_are_width_stable`.
@@ -176,16 +185,25 @@ struct BadgeInputs {
 /// **Badge priority, highest first** (Phase 18 UI-SPEC `## Surface 6`, D-24;
 /// extends the Phase 14 `### Badge Priority Rule`):
 ///
-/// 1. driven **and** live — `BADGE_DRIVEN`, Magenta + BOLD
-/// 2. needs a human — `BADGE_NEEDS_HUMAN`, Red + BOLD
-/// 3. paused — `BADGE_PAUSED`, Cyan
-/// 4. external job waiting — `BADGE_EXTERNAL_JOB`, Yellow
-/// 5. active Claude or Codex session — `BADGE_SESSION`, Green
-/// 6. none of the above — no badge; the alias renders flush
+/// Launcher-run markers (Phase 30, D-12) are folded in; the shipped ranks keep
+/// their relative order:
 ///
-/// **Driven-and-live outranks everything, and the reason is the whole point of
-/// the rank:** the user must never be unsure whether something is driving their
-/// repo. Ranks 3–5 keep their v1.0/v1.4/1.8.0 order beneath the two new ones.
+/// 1. a launcher run crashed — `BADGE_CRASHED`, Red + BOLD
+/// 2. a launcher run parked — `BADGE_NEEDS_HUMAN`, Red + BOLD
+/// 3. driven **and** live (a launcher run holding its lock with a fresh heartbeat,
+///    or the legacy observed run) — `BADGE_DRIVEN`, Magenta + BOLD
+/// 4. needs a human (the legacy predicate alone) — `BADGE_NEEDS_HUMAN`, Red + BOLD
+/// 5. a launcher run's heartbeat stale — `BADGE_STALE`, Yellow + BOLD
+/// 6. a launcher run's liveness unknown — `BADGE_UNKNOWN`, Yellow
+/// 7. paused — `BADGE_PAUSED`, Cyan
+/// 8. external job waiting — `BADGE_EXTERNAL_JOB`, Yellow
+/// 9. active Claude or Codex session — `BADGE_SESSION`, Green
+/// 10. none of the above — no badge; the alias renders flush
+///
+/// **A crash outranks everything, and driven-and-live outranks the legacy flag,
+/// and the reason is the whole point of the ranks:** the user must never be unsure
+/// whether something is driving their repo, nor whether a run died under them. The
+/// last three keep their v1.0/v1.4/1.8.0 order beneath the rest.
 ///
 /// **At most one badge ever renders**, and the single `Option` return is the
 /// *mechanism* that enforces it, not a stylistic choice — badges never stack, so
@@ -232,19 +250,43 @@ fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
             color: Color::Red,
             modifier: bold,
         })
-    } else if driven_and_live {
-        // An agent is driving this repo right now; nothing outranks that.
+    } else if launcher == Some(MarkerClass::Parked) {
+        // A launcher run stopped for a human, or is live with an item parked: the
+        // shipped flag, from a new source.
+        Some(AliasBadge {
+            glyph: BADGE_NEEDS_HUMAN,
+            color: Color::Red,
+            modifier: bold,
+        })
+    } else if driven_and_live || launcher == Some(MarkerClass::Driven) {
+        // An agent is driving this repo right now; nothing below outranks that.
         Some(AliasBadge {
             glyph: BADGE_DRIVEN,
             color: Color::Magenta,
             modifier: bold,
         })
     } else if needs_human {
-        // Waiting on the user, per 18-04's evidence predicate (D-14).
+        // Waiting on the user, per 18-04's evidence predicate (D-14). Rank 4: the
+        // legacy predicate alone, so a stale launcher project shows `◈` below and
+        // still sorts first (`needs_attention_for`).
         Some(AliasBadge {
             glyph: BADGE_NEEDS_HUMAN,
             color: Color::Red,
             modifier: bold,
+        })
+    } else if launcher == Some(MarkerClass::Stale) {
+        // Alive by its lock, silent by its heartbeat. Never worded as a crash.
+        Some(AliasBadge {
+            glyph: BADGE_STALE,
+            color: Color::Yellow,
+            modifier: bold,
+        })
+    } else if launcher == Some(MarkerClass::Unknown) {
+        // The lock probe failed: neither alive nor dead is claimed.
+        Some(AliasBadge {
+            glyph: BADGE_UNKNOWN,
+            color: Color::Yellow,
+            modifier: plain,
         })
     } else if is_paused {
         // Pause badge takes priority over the two lower indicators.
@@ -1416,7 +1458,10 @@ mod tests {
     /// presentation, non-Wide codepoints and render as exactly 2 cells.
     #[test]
     fn badge_glyphs_are_width_stable() {
-        const ALLOWED: [char; 5] = ['\u{25C6}', '\u{2691}', '\u{2016}', '\u{25F7}', '\u{25B6}'];
+        const ALLOWED: [char; 8] = [
+            '\u{25C6}', '\u{2691}', '\u{2016}', '\u{25F7}', '\u{25B6}', '\u{2717}', '\u{25C8}',
+            '\u{25C7}',
+        ];
         // Former glyphs, kept as regression witnesses (Wide / emoji-default).
         const FORBIDDEN: [char; 2] = ['\u{23F8}', '\u{23F3}'];
         let badges = [
@@ -1425,6 +1470,9 @@ mod tests {
             BADGE_PAUSED,
             BADGE_EXTERNAL_JOB,
             BADGE_SESSION,
+            BADGE_CRASHED,
+            BADGE_STALE,
+            BADGE_UNKNOWN,
         ];
         for b in badges {
             let mut chars = b.chars();
@@ -1457,6 +1505,25 @@ mod tests {
         ASYNC_BADGE,
         SESSION_BADGE,
     ];
+
+    /// The three badges Phase 30 adds for launcher-run markers (D-12). `◆` and `⚑`
+    /// are reused from the shipped table with new sources, so they are not here.
+    const CRASHED_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{2717} ",
+        color: Color::Red,
+        modifier: Modifier::BOLD,
+    };
+    const STALE_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{25C8} ",
+        color: Color::Yellow,
+        modifier: Modifier::BOLD,
+    };
+    const UNKNOWN_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{25C7} ",
+        color: Color::Yellow,
+        modifier: Modifier::empty(),
+    };
+    const LAUNCHER_BADGES: [AliasBadge; 3] = [CRASHED_BADGE, STALE_BADGE, UNKNOWN_BADGE];
 
     /// An `AppContext` with `aliases` registered, default state, nothing driven.
     ///
@@ -1842,26 +1909,128 @@ mod tests {
         }
 
         // The same property through the production selector, over the full
-        // 2^5 input space: no combination can produce a wider cell.
-        for bits in 0u8..32 {
-            let inputs = BadgeInputs {
-                driven_and_live: bits & 1 != 0,
-                needs_human: bits & 2 != 0,
-                is_paused: bits & 4 != 0,
-                external_job_waiting: bits & 8 != 0,
-                has_session: bits & 16 != 0,
-                launcher: None,
-            };
-            if let Some(badge) = alias_badge(inputs) {
-                assert_eq!(badge.glyph.chars().count(), 2, "{inputs:?}");
-                assert!(
-                    ALL_BADGES.contains(&badge),
-                    "{inputs:?} produced a badge outside the documented table"
-                );
-            } else {
-                assert_eq!(bits, 0, "only the all-false input may yield no badge");
+        // 2^5 input space crossed with every launcher class (and none): no
+        // combination can produce a wider cell.
+        let launchers = [
+            None,
+            Some(MarkerClass::Crashed),
+            Some(MarkerClass::Parked),
+            Some(MarkerClass::Driven),
+            Some(MarkerClass::Stale),
+            Some(MarkerClass::Unknown),
+        ];
+        for launcher in launchers {
+            for bits in 0u8..32 {
+                let inputs = BadgeInputs {
+                    driven_and_live: bits & 1 != 0,
+                    needs_human: bits & 2 != 0,
+                    is_paused: bits & 4 != 0,
+                    external_job_waiting: bits & 8 != 0,
+                    has_session: bits & 16 != 0,
+                    launcher,
+                };
+                if let Some(badge) = alias_badge(inputs) {
+                    assert_eq!(badge.glyph.chars().count(), 2, "{inputs:?}");
+                    assert!(
+                        ALL_BADGES.contains(&badge) || LAUNCHER_BADGES.contains(&badge),
+                        "{inputs:?} produced a badge outside the documented table"
+                    );
+                } else {
+                    assert!(
+                        bits == 0 && launcher.is_none(),
+                        "only the all-false input may yield no badge"
+                    );
+                }
             }
         }
+    }
+
+    /// The UI-SPEC rank table, one pair at a time: each rung beats every rung below
+    /// it, with the legacy inputs in the order the spec gives them.
+    #[test]
+    fn launcher_marker_badge_ranks_follow_the_ui_spec_table() {
+        // (launcher class, legacy needs-human, expected), highest rank first.
+        let crashed = Some(MarkerClass::Crashed);
+        let parked = Some(MarkerClass::Parked);
+        let driven = Some(MarkerClass::Driven);
+        let stale = Some(MarkerClass::Stale);
+        let unknown = Some(MarkerClass::Unknown);
+        let all_legacy = BadgeInputs {
+            driven_and_live: true,
+            needs_human: true,
+            is_paused: true,
+            external_job_waiting: true,
+            has_session: true,
+            launcher: None,
+        };
+
+        // 1 crashed beats everything, the legacy driven badge included.
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                launcher: crashed,
+                ..all_legacy
+            }),
+            Some(CRASHED_BADGE)
+        );
+        // 2 parked beats driven and the legacy flag.
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                launcher: parked,
+                ..all_legacy
+            }),
+            Some(NEEDS_HUMAN_BADGE)
+        );
+        // 3 a launcher-driven run reads as driven, with no legacy run at all...
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                launcher: driven,
+                ..BadgeInputs::default()
+            }),
+            Some(DRIVEN_BADGE)
+        );
+        // ...and outranks the legacy needs-human flag (rank 4).
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                launcher: driven,
+                needs_human: true,
+                ..BadgeInputs::default()
+            }),
+            Some(DRIVEN_BADGE)
+        );
+        // 4 the legacy needs-human flag outranks stale and unknown.
+        for launcher in [stale, unknown] {
+            assert_eq!(
+                alias_badge(BadgeInputs {
+                    launcher,
+                    needs_human: true,
+                    ..BadgeInputs::default()
+                }),
+                Some(NEEDS_HUMAN_BADGE),
+                "{launcher:?}"
+            );
+        }
+        // 5 stale, 6 unknown, then the shipped paused / external job / session.
+        let shipped_below = BadgeInputs {
+            is_paused: true,
+            external_job_waiting: true,
+            has_session: true,
+            ..BadgeInputs::default()
+        };
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                launcher: stale,
+                ..shipped_below
+            }),
+            Some(STALE_BADGE)
+        );
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                launcher: unknown,
+                ..shipped_below
+            }),
+            Some(UNKNOWN_BADGE)
+        );
+        assert_eq!(alias_badge(shipped_below), Some(PAUSE_BADGE));
     }
 
     #[test]
@@ -3644,5 +3813,81 @@ mod tests {
             &mut ctx,
         );
         assert_eq!(ctx.table_state.selected(), before);
+    }
+
+    /// Sets `alias`'s launcher-run marker as the 20-tick scan would.
+    fn mark(ctx: &mut AppContext, alias: &str, class: Option<MarkerClass>) {
+        ctx.view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .launcher_marker = Some(crate::ui::screens::driver_run::LauncherMarker {
+            class,
+            any_live: matches!(
+                class,
+                Some(MarkerClass::Driven | MarkerClass::Stale | MarkerClass::Parked)
+            ),
+        });
+    }
+
+    /// A stale project sorts first (it needs attention) while its badge is `◈`, and an
+    /// unknown project gets `◇` without moving: a failed probe is not a call for a human.
+    #[test]
+    fn launcher_marker_attention_first_sorts_a_stale_project_first_and_unknown_not_at_all() {
+        let mut ctx = ctx_with_aliases(&["alpha", "mike", "zulu"]).with_experimental(true);
+        ctx.sort_mode = SortMode::AttentionFirst;
+        mark(&mut ctx, "zulu", Some(MarkerClass::Stale));
+        mark(&mut ctx, "mike", Some(MarkerClass::Unknown));
+        assert_eq!(row_badge(&ctx, "zulu"), Some(STALE_BADGE));
+        assert_eq!(row_badge(&ctx, "mike"), Some(UNKNOWN_BADGE));
+        assert!(ctx.needs_attention_for("zulu"));
+        assert!(!ctx.needs_attention_for("mike"), "unknown never counts");
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["zulu".to_string(), "alpha".to_string(), "mike".to_string()]
+        );
+
+        // Crashed and parked count; a healthy driven run does not.
+        mark(&mut ctx, "mike", Some(MarkerClass::Crashed));
+        mark(&mut ctx, "alpha", Some(MarkerClass::Parked));
+        assert!(ctx.needs_attention_for("mike") && ctx.needs_attention_for("alpha"));
+        assert_eq!(row_badge(&ctx, "alpha"), Some(NEEDS_HUMAN_BADGE));
+        assert_eq!(row_badge(&ctx, "mike"), Some(CRASHED_BADGE));
+        mark(&mut ctx, "zulu", Some(MarkerClass::Driven));
+        assert!(!ctx.needs_attention_for("zulu"));
+        assert_eq!(row_badge(&ctx, "zulu"), Some(DRIVEN_BADGE));
+    }
+
+    /// With the experimental flag off no cached marker reaches the badge, the filter
+    /// or the sort, whatever an earlier scan stored.
+    #[test]
+    fn launcher_marker_flag_off_hides_the_badge_the_attention_flag_and_the_sort() {
+        let mut ctx = ctx_with_aliases(&["alpha", "zulu"]).with_experimental(false);
+        ctx.sort_mode = SortMode::AttentionFirst;
+        mark(&mut ctx, "zulu", Some(MarkerClass::Crashed));
+        assert_eq!(row_badge(&ctx, "zulu"), None);
+        assert!(!ctx.needs_attention_for("zulu"));
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["alpha".to_string(), "zulu".to_string()]
+        );
+    }
+
+    /// Before the first scan lands (no marker at all) and with a scan that found no
+    /// launcher runs, the badge falls through to the legacy ranks.
+    #[test]
+    fn launcher_marker_no_marker_and_an_empty_marker_fall_through_to_the_legacy_ranks() {
+        let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(true);
+        assert_eq!(row_badge(&ctx, "alpha"), None, "loading: nothing guessed");
+        mark(&mut ctx, "alpha", None);
+        assert_eq!(row_badge(&ctx, "alpha"), None, "empty: no new glyph");
+        ctx.project_states
+            .entry("alpha".to_string())
+            .or_default()
+            .paused = true;
+        assert_eq!(
+            row_badge(&ctx, "alpha"),
+            Some(NEEDS_HUMAN_BADGE),
+            "the legacy ranks answer as before"
+        );
     }
 }

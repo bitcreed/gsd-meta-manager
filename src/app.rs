@@ -1534,6 +1534,13 @@ impl App {
                                 } else {
                                     self.ctx.schedule_launcher_refresh(&alias, &project_path);
                                 }
+                            } else {
+                                // The Driver tab is not open for this project: its
+                                // dashboard marker is refreshed by a one-project
+                                // listing instead (30-03, D-13). When the tab IS on
+                                // top the refresh handlers recompute the marker from
+                                // the rows they just stored.
+                                self.ctx.schedule_launcher_marker(&alias, &project_path);
                             }
                         }
                         // The splice temps, `state.json`, the locks, editor swap
@@ -2243,6 +2250,7 @@ impl App {
                 detail,
                 log,
             } => {
+                let alias_for_marker = alias.clone();
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 // Pinned to the run id, not the index: a newer run landing above the
                 // selected one must not move the selection onto a different run.
@@ -2270,6 +2278,13 @@ impl App {
                 // or stale read can never show a line twice.
                 if let Some(log) = log {
                     crate::ui::screens::driver_run::apply_log_read(cache, *log);
+                }
+                // The dashboard marker follows the rows just stored (30-03, D-13).
+                if self
+                    .ctx
+                    .refresh_launcher_marker_from_cache(&alias_for_marker)
+                {
+                    self.ctx.recompute_filtered_aliases();
                 }
                 self.needs_redraw = true;
             }
@@ -2306,7 +2321,24 @@ impl App {
                         }
                     }
                 }
+                // The dashboard marker follows the row just replaced (30-03, D-13).
+                if self.ctx.refresh_launcher_marker_from_cache(&alias) {
+                    self.ctx.recompute_filtered_aliases();
+                }
                 self.needs_redraw = true;
+            }
+            // A one-project marker scan landed (30-03, D-13). Only a registered alias
+            // is accepted, so a scan answered after the project was removed leaves no
+            // cache entry behind.
+            Action::LauncherMarkerScanned { alias, marker } => {
+                if self.ctx.experimental && self.ctx.config.projects.contains_key(&alias) {
+                    let cache = self.ctx.view_cache.entry(alias).or_default();
+                    if cache.launcher_marker != Some(marker) {
+                        cache.launcher_marker = Some(marker);
+                        self.ctx.recompute_filtered_aliases();
+                        self.needs_redraw = true;
+                    }
+                }
             }
             // The report was built off the render thread and arrived (D-26).
             //
@@ -4638,9 +4670,11 @@ mod tests {
         );
     }
 
-    /// The same event for a tab that is not open schedules nothing.
+    /// The same event for a tab that is not open schedules no launcher listing, no
+    /// run read and no re-parse. Since 30-03 it does schedule the one-project marker
+    /// scan that keeps the dashboard badge current (D-13), and nothing else.
     #[tokio::test]
-    async fn launcher_view_a_driver_run_event_with_the_tab_closed_schedules_nothing() {
+    async fn launcher_view_a_driver_run_event_with_the_tab_closed_schedules_only_the_marker_scan() {
         let dir = tempfile::tempdir().expect("temp dir");
         launcher_project(dir.path());
         let (mut app, mut rx) = obs_app(dir.path());
@@ -4649,7 +4683,12 @@ mod tests {
 
         app.update(run_file_change(dir.path(), "LOG.md"));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        assert!(rx.try_recv().is_err(), "the dashboard is on top");
+        while let Ok(action) = rx.try_recv() {
+            assert!(
+                matches!(action, Action::LauncherMarkerScanned { .. }),
+                "the dashboard is on top: only the marker scan may follow, got {action:?}"
+            );
+        }
         assert_eq!(app.ctx.reparse_dispatches, 0);
     }
 
@@ -7356,5 +7395,109 @@ mod tests {
                 assert!(markers.is_empty(), "no launcher scan with the flag off");
             }
         }
+    }
+
+    /// A `DriverRun` event for a project whose Driver tab is not on top is answered by
+    /// a one-project marker scan (D-13): the badge changes without a slow tick, with no
+    /// launcher listing and no re-parse. With the flag off it schedules nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launcher_marker_a_driver_run_event_off_the_tab_rescans_the_one_project() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_dead_launcher_run(dir.path(), LAUNCHER_RUN);
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx.recompute_filtered_aliases();
+        app.ctx.table_state.select(Some(0));
+
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        let mut scanned = None;
+        while let Some(action) = next_action(&mut rx).await {
+            match action {
+                Action::LauncherMarkerScanned { .. } => {
+                    scanned = Some(action);
+                    break;
+                }
+                Action::LauncherRunsRefreshed { .. } | Action::LauncherRunRefreshed { .. } => {
+                    panic!("the tab is closed: no launcher listing may be scheduled")
+                }
+                _ => {}
+            }
+        }
+        app.update(scanned.expect("the marker scan reports"));
+        let marker = app.ctx.view_cache[OBS_ALIAS]
+            .launcher_marker
+            .expect("a marker");
+        assert_eq!(
+            marker.class,
+            Some(crate::ui::screens::driver_run::MarkerClass::Crashed)
+        );
+        assert!(!marker.any_live);
+        assert_eq!(
+            crate::ui::screens::normal::row_badge(&app.ctx, OBS_ALIAS).map(|b| b.glyph),
+            Some("\u{2717} ")
+        );
+        assert_eq!(app.ctx.reparse_dispatches, 0);
+
+        // Flag off: no launcher scan is scheduled at all.
+        app.ctx.experimental = false;
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(rx.try_recv().is_err(), "no launcher surface, no scan");
+    }
+
+    /// With the Driver tab on top the refresh handlers recompute the marker from the
+    /// rows they just stored, so no second listing is needed for the dashboard.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launcher_marker_the_open_tab_recomputes_the_marker_from_its_rows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_dead_launcher_run(dir.path(), LAUNCHER_RUN);
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS]
+                .launcher_marker
+                .and_then(|m| m.class),
+            Some(crate::ui::screens::driver_run::MarkerClass::Crashed)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        while let Ok(action) = rx.try_recv() {
+            assert!(
+                !matches!(action, Action::LauncherMarkerScanned { .. }),
+                "the open tab needs no separate marker scan"
+            );
+        }
+    }
+
+    /// A late marker scan for a project that has since been removed leaves no cache
+    /// entry behind, and one that changes nothing does not redraw.
+    #[tokio::test]
+    async fn launcher_marker_a_scan_for_an_unregistered_project_is_dropped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let marker = crate::ui::screens::driver_run::LauncherMarker {
+            class: Some(crate::ui::screens::driver_run::MarkerClass::Stale),
+            any_live: true,
+        };
+        app.update(Action::LauncherMarkerScanned {
+            alias: "gone".to_string(),
+            marker,
+        });
+        assert!(!app.ctx.view_cache.contains_key("gone"));
+
+        app.needs_redraw = false;
+        app.update(Action::LauncherMarkerScanned {
+            alias: OBS_ALIAS.to_string(),
+            marker,
+        });
+        assert!(app.needs_redraw);
+        app.needs_redraw = false;
+        app.update(Action::LauncherMarkerScanned {
+            alias: OBS_ALIAS.to_string(),
+            marker,
+        });
+        assert!(!app.needs_redraw, "an unchanged marker repaints nothing");
     }
 }

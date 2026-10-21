@@ -1907,6 +1907,26 @@ impl AppContext {
                     .is_some_and(|marker| marker.needs_attention()))
     }
 
+    /// Recompute `alias`'s marker from its cached launcher rows (30-03, D-13): what the
+    /// refresh handlers call while the Driver tab is open, so the dashboard behind it
+    /// agrees with the tab without a second listing. A no-op with the flag off. Returns
+    /// whether the marker changed.
+    pub fn refresh_launcher_marker_from_cache(&mut self, alias: &str) -> bool {
+        if !self.experimental {
+            return false;
+        }
+        let Some(cache) = self.view_cache.get_mut(alias) else {
+            return false;
+        };
+        let marker =
+            driver_run::launcher_marker(&cache.launcher_runs, std::time::SystemTime::now());
+        if cache.launcher_marker == Some(marker) {
+            return false;
+        }
+        cache.launcher_marker = Some(marker);
+        true
+    }
+
     /// Replace every registered project's launcher marker from one scan (30-03, D-13).
     ///
     /// Authoritative, so a registered alias absent from `markers` gets `None` (and an
@@ -2187,6 +2207,36 @@ impl AppContext {
                 detail,
                 log,
             });
+        });
+    }
+
+    /// Schedule the one-project launcher-marker scan (30-03, D-13): `list_driver_runs`
+    /// for `project_path` reduced by [`driver_run::launcher_marker`], on `spawn_blocking`,
+    /// answered by [`crate::action::Action::LauncherMarkerScanned`].
+    ///
+    /// For a `DriverRun` watcher event on a project whose Driver tab is not on top, so a
+    /// run that parks or ends while the user is elsewhere changes the dashboard badge at
+    /// once instead of at the next slow tick. A no-op with the experimental flag off (no
+    /// launcher surface exists then) and with no event channel, silently: it runs on
+    /// watcher events the user did not ask for, and the badge is still right as of the
+    /// last 20-tick scan.
+    pub fn schedule_launcher_marker(&self, alias: &str, project_path: &std::path::Path) {
+        if !self.experimental {
+            return;
+        }
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+        let tx = tx.clone();
+        let alias = alias.to_string();
+        let project = project_path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let entries = crate::state_reader::driver_frontmatter::list_driver_runs(
+                &project,
+                LAUNCHER_RUNS_LISTED,
+            );
+            let marker = driver_run::launcher_marker(&entries, std::time::SystemTime::now());
+            let _ = tx.send(crate::action::Action::LauncherMarkerScanned { alias, marker });
         });
     }
 

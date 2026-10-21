@@ -399,6 +399,19 @@ pub enum Action {
         /// The run's `LOG.md` delta, read in the same task (30-02, D-23).
         log: Option<Box<crate::ui::screens::driver_run::LogRead>>,
     },
+    /// One project's launcher-run marker was re-scanned off the render thread
+    /// (30-03, D-13).
+    ///
+    /// Sent by `AppContext::schedule_launcher_marker` for a `ChangeKind::DriverRun`
+    /// watcher event on a project whose Driver tab is NOT on top (when it is, the
+    /// launcher-run refresh handlers recompute the marker from the cached rows). One
+    /// `list_driver_runs` for one project, reduced by `launcher_marker`; the 20-tick
+    /// scan still replaces every marker wholesale. Plain data, so `Action` stays
+    /// `Clone`.
+    LauncherMarkerScanned {
+        alias: String,
+        marker: crate::ui::screens::driver_run::LauncherMarker,
+    },
     /// A dry-run report was built for `alias` and is ready to show (D-26).
     ///
     /// `report` is the already-rendered text from `dry_run::render`, not the
@@ -523,5 +536,14 @@ mod tests {
             log: None,
         };
         assert!(matches!(one.clone(), Action::LauncherRunRefreshed { .. }));
+
+        let scanned = Action::LauncherMarkerScanned {
+            alias: "proj".to_string(),
+            marker: crate::ui::screens::driver_run::LauncherMarker::default(),
+        };
+        assert!(matches!(
+            scanned.clone(),
+            Action::LauncherMarkerScanned { .. }
+        ));
     }
 }

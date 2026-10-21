@@ -48,7 +48,8 @@ use super::driver::{
     LABEL_MISSED, LABEL_QUEUED,
 };
 use super::normal::{
-    BADGE_DRIVEN, BADGE_EXTERNAL_JOB, BADGE_NEEDS_HUMAN, BADGE_PAUSED, BADGE_SESSION,
+    BADGE_CRASHED, BADGE_DRIVEN, BADGE_EXTERNAL_JOB, BADGE_NEEDS_HUMAN, BADGE_PAUSED,
+    BADGE_SESSION, BADGE_STALE, BADGE_UNKNOWN,
 };
 use super::{AppContext, Screen, ScreenAction};
 use crate::agents::unmerged::{GLYPH_UNMERGED, LABEL_ACTIVE, LABEL_UNMERGED};
@@ -76,14 +77,28 @@ pub(super) const MORE_INDICATOR: &str = "\u{25BE} more";
 const POPUP_WIDTH_PCT: u16 = 80;
 const POPUP_HEIGHT_PCT: u16 = 90;
 
-/// The five dashboard badges, in the priority order [`super::normal`] ranks
-/// them, each paired with what it actually means.
+/// The dashboard badges, in the priority order [`super::normal`] ranks them,
+/// each paired with what it actually means.
 ///
 /// The glyph column is the shipped constant rather than a retyped literal, so
-/// the legend cannot drift from the dashboard (T-18-63).
-const BADGE_LEGEND: [(&str, &str); 5] = [
+/// the legend cannot drift from the dashboard (T-18-63). The glyphs in
+/// [`DRIVER_ONLY_BADGES`] are the driver surface's own and are left out with the
+/// experimental features off.
+const BADGE_LEGEND: [(&str, &str); 8] = [
+    (
+        BADGE_CRASHED,
+        "driver run crashed - its lock is free, never finished",
+    ),
     (BADGE_DRIVEN, "an agent is driving this repo right now"),
-    (BADGE_NEEDS_HUMAN, "waiting on a human"),
+    (
+        BADGE_NEEDS_HUMAN,
+        "waiting on a human (a parked driver run too)",
+    ),
+    (BADGE_STALE, "driver heartbeat stale - alive but silent"),
+    (
+        BADGE_UNKNOWN,
+        "driver run liveness unknown - lock probe failed",
+    ),
     (BADGE_PAUSED, "paused - a current (non-stale) HANDOFF"),
     (BADGE_EXTERNAL_JOB, "blocked on an external job, not stuck"),
     (
@@ -91,6 +106,12 @@ const BADGE_LEGEND: [(&str, &str); 5] = [
         "an active Claude or Codex session in this directory",
     ),
 ];
+
+/// The badge glyphs only the driver surface can paint: with the experimental
+/// features off `row_badge` can never yield them, so documenting them would name
+/// a glyph nothing renders. (`⚑` stays: the legacy needs-a-human predicate paints
+/// it with the flag off too.)
+const DRIVER_ONLY_BADGES: [&str; 4] = [BADGE_CRASHED, BADGE_DRIVEN, BADGE_STALE, BADGE_UNKNOWN];
 
 /// The four states an injected message can be in, with the honest gloss.
 ///
@@ -430,10 +451,11 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
     ]);
 
     for (glyph, meaning) in BADGE_LEGEND {
-        // The driven badge is the dashboard's driver surface; with the
-        // experimental features off `row_badge` can never yield it, so
-        // documenting it would name a glyph nothing paints.
-        if !experimental && glyph == BADGE_DRIVEN {
+        // The driven, crashed, stale and unknown badges are the dashboard's
+        // driver surface; with the experimental features off `row_badge` can
+        // never yield them, so documenting them would name a glyph nothing
+        // paints.
+        if !experimental && DRIVER_ONLY_BADGES.contains(&glyph) {
             continue;
         }
         lines.push(Line::from(format!("  {glyph} {meaning}")));
@@ -1496,5 +1518,22 @@ mod tests {
             }
             assert!(text.contains("terminal-dependent"));
         }
+    }
+
+    /// 30-03: the legend names the crashed, stale and unknown launcher badges by their
+    /// constants with the flag on, and none of the three glyphs appears with it off.
+    #[test]
+    fn launcher_marker_the_badge_legend_gains_three_rows_gated_on_the_flag() {
+        let on = body_with(true);
+        let off = body_with(false);
+        for glyph in [BADGE_CRASHED, BADGE_STALE, BADGE_UNKNOWN] {
+            assert!(on.contains(glyph.trim()), "{glyph:?} missing:\n{on}");
+            assert!(
+                !off.contains(glyph.trim()),
+                "{glyph:?} documented with the flag off:\n{off}"
+            );
+        }
+        // The shipped flag glyph stays: the legacy predicate paints it either way.
+        assert!(off.contains(BADGE_NEEDS_HUMAN.trim()));
     }
 }

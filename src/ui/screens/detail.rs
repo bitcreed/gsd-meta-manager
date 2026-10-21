@@ -781,10 +781,21 @@ fn windowed_tab_titles(
 /// `Liveness` is a tri-state and [`crate::driver::reconcile::ObservedRun::is_live`]
 /// owns the distinction; `Liveness::Unknown` is **never** a synonym for dead
 /// (CR-05) and is resolved there, never re-derived here.
+///
+/// Also true when a **launcher** run of the project holds its run lock (30-03, D-12):
+/// the dashboard marker's `any_live`, so `D:Drive◆` lights for launcher runs
+/// `[inferred — audit]`. That half is the experimental flag's, like every launcher
+/// surface, and is false before the project's first marker scan lands.
 fn driver_live_for(ctx: &AppContext, alias: &str) -> bool {
     ctx.observed_runs
         .get(alias)
         .is_some_and(|run| run.is_live())
+        || (ctx.experimental
+            && ctx
+                .view_cache
+                .get(alias)
+                .and_then(|cache| cache.launcher_marker)
+                .is_some_and(|marker| marker.any_live))
 }
 
 pub struct DetailScreen {
@@ -31570,5 +31581,32 @@ mod tests {
         let text = render_detail_to_text_at(&screen, &ctx, 140, 30);
         assert!(text.contains("plans TBD"), "{text}");
         assert!(!text.contains("@phase-15"), "{text}");
+    }
+
+    /// 30-03 (D-12): the Driver tab's live marker also lights for a launcher run that
+    /// holds its lock, and only with the experimental flag on.
+    #[test]
+    fn launcher_marker_driver_live_for_lights_on_any_live() {
+        use crate::ui::screens::driver_run::{LauncherMarker, MarkerClass};
+        let (_screen, mut ctx, _rx) = driver_action_fixture();
+        assert!(!driver_live_for(&ctx, TEST_ALIAS), "nothing live yet");
+
+        let set = |ctx: &mut AppContext, class, any_live| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .launcher_marker = Some(LauncherMarker { class, any_live });
+        };
+        // A crashed run holds no lock: the marker lights nothing.
+        set(&mut ctx, Some(MarkerClass::Crashed), false);
+        assert!(!driver_live_for(&ctx, TEST_ALIAS));
+        // A live one lights it, fresh heartbeat or stale.
+        set(&mut ctx, Some(MarkerClass::Stale), true);
+        assert!(driver_live_for(&ctx, TEST_ALIAS));
+        set(&mut ctx, Some(MarkerClass::Driven), true);
+        assert!(driver_live_for(&ctx, TEST_ALIAS));
+        // The flag gates the launcher half.
+        ctx.experimental = false;
+        assert!(!driver_live_for(&ctx, TEST_ALIAS));
     }
 }
