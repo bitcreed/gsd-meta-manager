@@ -1856,6 +1856,22 @@ pub(crate) mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn steer_run_refuses_a_fifo_direction_without_blocking() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = tempfile::tempdir().expect("temp dir");
+        mkfifo(&dir.path().join("DIRECTION.md"));
+        let run = dir.path().to_path_buf();
+        let outcome = within_5s(move || steer_run(&run, &SteerOp::SetControl("pause".to_string())));
+        match outcome {
+            SteerOutcome::Failed(why) => assert!(why.contains("not a regular file"), "{why}"),
+            other => panic!("a FIFO DIRECTION.md must fail the steer, got {other:?}"),
+        }
+        // The worker let go of DIRECTION.lock.
+        assert!(crate::driver::direction::direction_lock(dir.path()).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn launcher_edit_a_temp_that_is_a_symlink_is_refused() {
         let dir = tempfile::tempdir().expect("temp dir");
         write_run(dir.path(), &clean_body());
