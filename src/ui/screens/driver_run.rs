@@ -459,6 +459,52 @@ pub fn detail_for<'a>(cache: Option<&'a ProjectViewCache>, run_id: &str) -> Opti
         .filter(|detail| detail.run_id == run_id)
 }
 
+/// The index the selection lands on after `runs` replaced the listing: the row of
+/// the pinned run id when it is still listed, else the old index clamped into range
+/// (0 for an empty list). The one rule both the off-thread task (to choose which
+/// run's detail to read) and the app handler (to move the selection) apply, so the
+/// detail read is always for the run the handler then selects.
+pub fn pinned_index(runs: &[DriverRunEntry], pinned_id: Option<&str>, old_index: usize) -> usize {
+    pinned_id
+        .and_then(|id| runs.iter().position(|(run_id, _)| run_id == id))
+        .unwrap_or_else(|| old_index.min(runs.len().saturating_sub(1)))
+}
+
+/// Keep the item cursor on a listed item of the cached detail: when the stored id is
+/// not one of its rows, pin the default (first parked, else `current_item`, else the
+/// first row). Called after the detail or the selection changed; pure.
+pub fn settle_item_cursor(cache: &mut ProjectViewCache) {
+    let Some(detail) = cache.launcher_detail.as_deref() else {
+        return;
+    };
+    let rows = merged_items(detail);
+    let listed = cache
+        .launcher_item_cursor
+        .as_deref()
+        .is_some_and(|id| rows.iter().any(|row| row.id == id));
+    if !listed {
+        let current = detail.view.frontmatter.current_item.as_deref();
+        cache.launcher_item_cursor = item_cursor_default(&rows, current);
+    }
+}
+
+/// Store `detail` as the selected run's when it is for the selected run; a result
+/// for any other run is dropped. A cached detail that is not the selected run's is
+/// cleared either way, so a run's items are never drawn under another run.
+pub fn store_detail(cache: &mut ProjectViewCache, detail: Option<Box<RunDetail>>) {
+    let selected = cache.launcher_selected_id.clone();
+    if let Some(detail) = detail.filter(|d| Some(&d.run_id) == selected.as_ref()) {
+        cache.launcher_detail = Some(detail);
+    } else if cache
+        .launcher_detail
+        .as_deref()
+        .is_some_and(|d| Some(&d.run_id) != selected.as_ref())
+    {
+        cache.launcher_detail = None;
+    }
+    settle_item_cursor(cache);
+}
+
 /// Move the item cursor of the selected launcher run by `delta` rows, clamped at
 /// both ends. Inert (returns `false`) with no items or no detail for the selected
 /// run. Pure: it touches the cache and nothing else.
@@ -870,7 +916,16 @@ pub fn move_selection(cache: &mut ProjectViewCache, delta: isize) -> bool {
     if next < launcher {
         cache.legacy_row_selected = false;
         cache.launcher_selected = next;
-        cache.launcher_selected_id = cache.launcher_runs.get(next).map(|(id, _)| id.clone());
+        let id = cache.launcher_runs.get(next).map(|(id, _)| id.clone());
+        if id != cache.launcher_selected_id {
+            // Another run: its items, its cursor and (30-02 Task 3) its LOG are not
+            // this run's. The detail is read again for the new selection.
+            cache.launcher_item_cursor = None;
+            if cache.launcher_detail.as_deref().map(|d| &d.run_id) != id.as_ref() {
+                cache.launcher_detail = None;
+            }
+        }
+        cache.launcher_selected_id = id;
         return false;
     }
     let index = next - launcher;
@@ -2469,5 +2524,72 @@ mod tests {
         let mut empty = cache_with_detail(detail_of("20261020-a", vec![], vec![], None));
         assert!(!move_item_cursor(&mut empty, 1));
         assert_eq!(empty.launcher_item_cursor, None);
+    }
+
+    #[test]
+    fn pinned_index_follows_the_id_and_clamps_the_index() {
+        let runs = vec![
+            entry("20261020-c", running()),
+            entry("20261019-b", running()),
+            entry("20261018-a", running()),
+        ];
+        assert_eq!(pinned_index(&runs, Some("20261018-a"), 0), 2);
+        assert_eq!(pinned_index(&runs, Some("20261001-gone"), 7), 2);
+        assert_eq!(pinned_index(&runs, None, 1), 1);
+        assert_eq!(pinned_index(&[], Some("x"), 4), 0);
+    }
+
+    #[test]
+    fn store_detail_keeps_only_the_selected_runs_detail_and_pins_the_cursor() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![
+                body_item("I-01", "a", None, None),
+                body_item("I-02", "b", None, None),
+            ],
+            vec![("I-02", state_entry(ItemState::Parked, 1, None))],
+            None,
+        );
+        let mut cache = cache_of(vec![entry("20261020-a", running())]);
+        cache.launcher_selected_id = Some("20261020-a".to_owned());
+        store_detail(&mut cache, Some(Box::new(detail.clone())));
+        assert_eq!(
+            cache.launcher_item_cursor.as_deref(),
+            Some("I-02"),
+            "first parked"
+        );
+        // A stored cursor that is still listed stays put.
+        cache.launcher_item_cursor = Some("I-01".to_owned());
+        store_detail(&mut cache, Some(Box::new(detail.clone())));
+        assert_eq!(cache.launcher_item_cursor.as_deref(), Some("I-01"));
+        // A detail for another run is dropped.
+        let mut other = detail.clone();
+        other.run_id = "20261019-other".to_owned();
+        store_detail(&mut cache, Some(Box::new(other)));
+        assert_eq!(
+            cache.launcher_detail.as_deref().map(|d| d.run_id.as_str()),
+            Some("20261020-a")
+        );
+        // The selection moved: the old run's detail is cleared, not shown.
+        cache.launcher_selected_id = Some("20261018-new".to_owned());
+        store_detail(&mut cache, None);
+        assert!(cache.launcher_detail.is_none());
+    }
+
+    #[test]
+    fn moving_the_launcher_selection_resets_the_cursor_and_drops_the_old_detail() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![body_item("I-01", "a", None, None)],
+            vec![],
+            None,
+        );
+        let mut cache = cache_with_detail(detail);
+        cache.launcher_runs.push(entry("20261019-b", running()));
+        cache.launcher_item_cursor = Some("I-01".to_owned());
+        assert!(!move_selection(&mut cache, 1));
+        assert_eq!(cache.launcher_selected_id.as_deref(), Some("20261019-b"));
+        assert_eq!(cache.launcher_item_cursor, None);
+        assert!(cache.launcher_detail.is_none());
     }
 }

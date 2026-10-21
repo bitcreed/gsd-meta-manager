@@ -1428,7 +1428,7 @@ impl App {
                         // does NOTHING ELSE: no re-parse (OBS-06), no `last_refresh`
                         // entry, so a heartbeat-rate stream of these cannot starve
                         // a genuine STATE.md re-parse of its 500 ms window.
-                        crate::journal::ChangeKind::DriverRun { .. } => {
+                        crate::journal::ChangeKind::DriverRun { run_id } => {
                             let on_top = self.screen_stack.last().is_some_and(|top| {
                                 driver_tab_is_on_top(
                                     top.name(),
@@ -1436,7 +1436,24 @@ impl App {
                                 )
                             });
                             if on_top && self.ctx.selected_alias().as_deref() == Some(&alias) {
-                                self.ctx.schedule_launcher_refresh(&alias, &project_path);
+                                // The selected run: one DIRECTION.md read and one lock
+                                // probe replace just that run (D-24, D-25). Any other
+                                // run changes only its list row, so the whole listing
+                                // is refreshed instead.
+                                let selected = self
+                                    .ctx
+                                    .view_cache
+                                    .get(&alias)
+                                    .and_then(|cache| cache.launcher_selected_id.as_deref());
+                                if selected == Some(run_id.as_str()) {
+                                    self.ctx.schedule_selected_run_refresh(
+                                        &alias,
+                                        &project_path,
+                                        &run_id,
+                                    );
+                                } else {
+                                    self.ctx.schedule_launcher_refresh(&alias, &project_path);
+                                }
                             }
                         }
                         // The splice temps, `state.json`, the locks, editor swap
@@ -2134,25 +2151,59 @@ impl App {
             Action::LauncherRunsRefreshed {
                 alias,
                 launcher_runs,
+                detail,
             } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 // Pinned to the run id, not the index: a newer run landing above the
                 // selected one must not move the selection onto a different run.
-                // The run being gone clamps the index into range instead.
-                let pinned = cache
-                    .launcher_selected_id
-                    .as_ref()
-                    .and_then(|id| launcher_runs.iter().position(|(run_id, _)| run_id == id));
-                cache.launcher_selected = pinned.unwrap_or_else(|| {
-                    cache
-                        .launcher_selected
-                        .min(launcher_runs.len().saturating_sub(1))
-                });
+                // The run being gone clamps the index into range instead. The same
+                // rule chose which run's detail the task read.
+                let before = cache.launcher_selected_id.clone();
+                cache.launcher_selected = crate::ui::screens::driver_run::pinned_index(
+                    &launcher_runs,
+                    before.as_deref(),
+                    cache.launcher_selected,
+                );
                 cache.launcher_selected_id = launcher_runs
                     .get(cache.launcher_selected)
                     .map(|(run_id, _)| run_id.clone());
+                if cache.launcher_selected_id != before {
+                    // The selected run is another one: its cursor starts over.
+                    cache.launcher_item_cursor = None;
+                }
                 cache.launcher_runs = launcher_runs;
                 cache.launcher_listed = true;
+                // Stored only for the run now selected; a stale result is dropped.
+                crate::ui::screens::driver_run::store_detail(cache, detail);
+                self.needs_redraw = true;
+            }
+            // One launcher run was re-read (30-02, D-24): its row and the cached
+            // detail are replaced, nothing else is touched. A read that failed, or a
+            // run that is not in the listing yet, is answered by a full re-listing,
+            // which yields the typed unreadable row (or the new row).
+            Action::LauncherRunRefreshed {
+                alias,
+                run_id,
+                detail,
+            } => {
+                let cache = self.ctx.view_cache.entry(alias.clone()).or_default();
+                let row = cache
+                    .launcher_runs
+                    .iter()
+                    .position(|(listed, _)| *listed == run_id);
+                match (detail, row) {
+                    (Ok(detail), Some(row)) => {
+                        cache.launcher_runs[row].1 = Ok(detail.view.clone());
+                        crate::ui::screens::driver_run::store_detail(cache, Some(detail));
+                    }
+                    _ => {
+                        if let Some(path) =
+                            self.ctx.config.projects.get(&alias).map(|p| p.path.clone())
+                        {
+                            self.ctx.schedule_launcher_refresh(&alias, &path);
+                        }
+                    }
+                }
                 self.needs_redraw = true;
             }
             // The report was built off the render thread and arrived (D-26).
@@ -4395,7 +4446,10 @@ mod tests {
     ) {
         loop {
             match next_action(rx).await {
-                Some(action @ Action::LauncherRunsRefreshed { .. }) => {
+                Some(
+                    action @ (Action::LauncherRunsRefreshed { .. }
+                    | Action::LauncherRunRefreshed { .. }),
+                ) => {
                     app.update(action);
                     return;
                 }
@@ -4457,6 +4511,140 @@ mod tests {
         assert!(text.contains("\u{25C6} running"), "{text}");
         assert!(!text.contains("\u{2717} crashed"), "{text}");
         assert_eq!(app.ctx.reparse_dispatches, 0, "no project re-parse");
+    }
+
+    /// A run dir whose body lists I-01 and I-02 and whose frontmatter records I-01 as
+    /// parked and I-09 as done (an item the body no longer lists).
+    fn write_items_run(root: &std::path::Path, extra_body: &str) {
+        use crate::state_reader::driver_frontmatter::{
+            parse_driver_frontmatter, ItemState, ItemStateEntry, ItemStates, RunStatus,
+            DRIVER_RUNS_REL,
+        };
+        let run_dir = root.join(DRIVER_RUNS_REL).join(LAUNCHER_RUN);
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let mut frontmatter = parse_driver_frontmatter(include_str!(
+            "../tests/fixtures/driverctl/direction/s003-run1b.md"
+        ))
+        .expect("the spike fixture parses");
+        frontmatter.run_id = LAUNCHER_RUN.to_string();
+        frontmatter.status = RunStatus::Paused;
+        frontmatter.item_states = ItemStates(vec![
+            (
+                "I-01".to_string(),
+                ItemStateEntry {
+                    state: ItemState::Parked,
+                    dispatches: 2,
+                    outcome: Some("needs a socket path".to_string()),
+                },
+            ),
+            (
+                "I-09".to_string(),
+                ItemStateEntry {
+                    state: ItemState::Done,
+                    dispatches: 1,
+                    outcome: None,
+                },
+            ),
+        ]);
+        let body = format!(
+            "\n# Driver direction: x\n\n## Direction\n\n- control: run\n\n## Items\n\n\
+             ### I-01 first thing\n\n- hold: false\n\n### I-02 second thing\n\n- hold: false\n{extra_body}"
+        );
+        std::fs::write(
+            run_dir.join("DIRECTION.md"),
+            format!("{}{body}", frontmatter.emit()),
+        )
+        .expect("DIRECTION.md");
+    }
+
+    /// D-06 end to end: a body with I-01 and I-02 and a frontmatter with I-01 parked
+    /// and I-09 done give one merged list; the cursor starts on the parked item; and a
+    /// later edit to DIRECTION.md re-reads only the selected run.
+    #[tokio::test]
+    async fn launcher_view_items_merge_body_and_frontmatter() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_items_run(dir.path(), "");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.ctx.experimental = true;
+
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        let row = |needle: &str| {
+            text.lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("no row contains {needle:?}:\n{text}"))
+                .to_string()
+        };
+        assert!(
+            row("I-01 \u{2691} parked").contains("> I-01"),
+            "the cursor starts on the parked item:\n{text}"
+        );
+        assert!(row("I-02 \u{B7} unseen").contains("second thing"), "{text}");
+        let nine = row("I-09 \u{25CF} done");
+        assert!(nine.contains("[not in DIRECTION]"), "{nine}");
+        assert!(row("I-01 parked").contains("needs a socket path"), "{text}");
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS]
+                .launcher_item_cursor
+                .as_deref(),
+            Some("I-01")
+        );
+
+        // The next event names the SELECTED run: one run is re-read, no re-listing.
+        write_items_run(dir.path(), "\n### I-03 third thing\n\n- hold: true\n");
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        let refreshed = next_action(&mut rx).await;
+        match &refreshed {
+            Some(Action::LauncherRunRefreshed { run_id, detail, .. }) => {
+                assert_eq!(run_id, LAUNCHER_RUN);
+                assert_eq!(detail.as_ref().expect("the run reads").items.len(), 3);
+            }
+            other => panic!("expected the single-run refresh, got {other:?}"),
+        }
+        app.update(refreshed.expect("checked above"));
+        let text = render_top_screen(&app);
+        let three = text
+            .lines()
+            .find(|l| l.contains("I-03"))
+            .expect("the new item");
+        assert!(
+            three.contains("hold") && three.contains("third thing"),
+            "{text}"
+        );
+        assert_eq!(app.ctx.reparse_dispatches, 0, "no project re-parse");
+    }
+
+    /// A single-run refresh for a run that is not the selected one is dropped, and a
+    /// failed read is answered by a re-listing.
+    #[tokio::test]
+    async fn launcher_view_a_single_run_result_for_another_run_is_not_stored() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_items_run(dir.path(), "");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let stored = app.ctx.view_cache[OBS_ALIAS]
+            .launcher_detail
+            .clone()
+            .expect("the selected run's detail was stored");
+
+        let mut other = (*stored).clone();
+        other.run_id = "20261018-other".to_string();
+        let row_before = app.ctx.view_cache[OBS_ALIAS].launcher_runs.len();
+        app.update(Action::LauncherRunRefreshed {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "20261018-other".to_string(),
+            detail: Ok(Box::new(other)),
+        });
+        let cache = &app.ctx.view_cache[OBS_ALIAS];
+        assert_eq!(cache.launcher_runs.len(), row_before);
+        assert_eq!(
+            cache.launcher_detail.as_deref().map(|d| d.run_id.as_str()),
+            Some(LAUNCHER_RUN),
+            "a result for another run must not replace the selected run's detail"
+        );
+        drop(rx);
     }
 
     /// The gate really refuses: a dashboard with no Driver tab open pays nothing
@@ -4971,6 +5159,7 @@ mod tests {
         Action::LauncherRunsRefreshed {
             alias: OBS_ALIAS.to_string(),
             launcher_runs: ids.iter().map(|id| launcher_entry(id)).collect(),
+            detail: None,
         }
     }
 
@@ -5171,6 +5360,7 @@ mod tests {
                 Some(Action::LauncherRunsRefreshed {
                     alias,
                     launcher_runs,
+                    ..
                 }) => launcher = Some((alias, launcher_runs)),
                 Some(Action::DriverRunsListed { .. }) => journal_listed = true,
                 Some(_) => {}

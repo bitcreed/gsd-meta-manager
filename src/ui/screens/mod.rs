@@ -1995,17 +1995,90 @@ impl AppContext {
         };
         let tx = tx.clone();
         let project = project_path.to_path_buf();
+        let (pinned_id, old_index) = self.view_cache.get(alias).map_or((None, 0), |cache| {
+            (cache.launcher_selected_id.clone(), cache.launcher_selected)
+        });
         let alias = alias.to_string();
         tokio::task::spawn_blocking(move || {
             let launcher_runs = crate::state_reader::driver_frontmatter::list_driver_runs(
                 &project,
                 LAUNCHER_RUNS_LISTED,
             );
+            // The run the app will select once this listing lands (the same rule),
+            // read once more for its items: the list's own read did not keep the body.
+            let detail = driver_run::pinned_index(&launcher_runs, pinned_id.as_deref(), old_index);
+            let detail = launcher_runs.get(detail).and_then(|(run_id, _)| {
+                let dir = project
+                    .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+                    .join(run_id);
+                driver_run::load_run_detail(&dir, run_id).ok().map(Box::new)
+            });
             let _ = tx.send(crate::action::Action::LauncherRunsRefreshed {
                 alias,
                 launcher_runs,
+                detail,
             });
         });
+    }
+
+    /// Schedule the re-read of **one** launcher run (30-02, D-24, D-25): its
+    /// `DIRECTION.md` (one read, the lock probe) on `spawn_blocking`, answered by
+    /// [`crate::action::Action::LauncherRunRefreshed`].
+    ///
+    /// For a `DriverRun` watcher event that names the selected run, so a heartbeat
+    /// rate stream of events costs one small read each rather than a re-listing of
+    /// twenty runs. `run_id` may come from a watcher path, so it is checked to be one
+    /// plain path component before it is joined onto the drivers directory.
+    pub fn schedule_selected_run_refresh(
+        &mut self,
+        alias: &str,
+        project_path: &std::path::Path,
+        run_id: &str,
+    ) {
+        if !crate::state_reader::driver_frontmatter::is_plain_run_id(run_id) {
+            return;
+        }
+        let Some(tx) = &self.event_tx else {
+            self.error_message = Some(format!(
+                "Could not read the driver run for '{alias}': no event channel."
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let dir = project_path
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(run_id);
+        let alias = alias.to_string();
+        let run_id = run_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let detail = driver_run::load_run_detail(&dir, &run_id).map(Box::new);
+            let _ = tx.send(crate::action::Action::LauncherRunRefreshed {
+                alias,
+                run_id,
+                detail,
+            });
+        });
+    }
+
+    /// Re-read the selected launcher run when the cache holds no detail **for it**
+    /// (30-02): after the highlight moved onto a run, or back from the legacy rows.
+    /// A no-op when the selection is not a launcher run or its detail is present.
+    pub fn refresh_selected_run_if_missing(&mut self, alias: &str) {
+        let Some(cache) = self.view_cache.get(alias) else {
+            return;
+        };
+        let driver_run::Selection::Launcher(index) = driver_run::selection(Some(cache)) else {
+            return;
+        };
+        let run_id = cache.launcher_runs[index].0.clone();
+        if driver_run::detail_for(Some(cache), &run_id).is_some() {
+            return;
+        }
+        let Some(path) = self.config.projects.get(alias).map(|p| p.path.clone()) else {
+            return;
+        };
+        self.schedule_selected_run_refresh(alias, &path, &run_id);
     }
 
     /// Schedule the dry-run preview for `alias` and `command` (D-26, D-28).

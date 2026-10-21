@@ -363,6 +363,23 @@ pub enum Action {
     LauncherRunsRefreshed {
         alias: String,
         launcher_runs: Vec<crate::state_reader::driver_frontmatter::DriverRunEntry>,
+        /// The selected run's `DIRECTION.md` read in the same blocking task (30-02,
+        /// D-06, D-25): the run the pinned selection resolves to once the listing is
+        /// known. `None` when that run could not be read (its row is then an `Err`).
+        /// Applied only when `detail.run_id` is still the selected run's.
+        detail: Option<Box<crate::ui::screens::driver_run::RunDetail>>,
+    },
+    /// One launcher run was re-read off the render thread (30-02, D-24, D-25).
+    ///
+    /// Sent by `AppContext::schedule_selected_run_refresh` for a `DriverRun` watcher
+    /// event that names the *selected* run: one `DIRECTION.md` read with the lock
+    /// probe replaces that run's list row and the cached detail, instead of
+    /// re-listing all twenty. `Err` carries the reader's display text; the handler
+    /// answers it with a full re-listing, which produces the typed unreadable row.
+    LauncherRunRefreshed {
+        alias: String,
+        run_id: String,
+        detail: Result<Box<crate::ui::screens::driver_run::RunDetail>, String>,
     },
     /// A dry-run report was built for `alias` and is ready to show (D-26).
     ///
@@ -473,10 +490,18 @@ mod tests {
         let refreshed = Action::LauncherRunsRefreshed {
             alias: "proj".to_string(),
             launcher_runs: Vec::new(),
+            detail: None,
         };
         assert!(matches!(
             refreshed.clone(),
             Action::LauncherRunsRefreshed { .. }
         ));
+
+        let one = Action::LauncherRunRefreshed {
+            alias: "proj".to_string(),
+            run_id: "20261020-a".to_string(),
+            detail: Err("no frontmatter block".to_string()),
+        };
+        assert!(matches!(one.clone(), Action::LauncherRunRefreshed { .. }));
     }
 }

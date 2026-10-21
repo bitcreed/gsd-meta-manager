@@ -1575,6 +1575,10 @@ impl DetailScreen {
             if let Some(path) = ctx.config.projects.get(&self.alias).map(|p| p.path.clone()) {
                 ctx.schedule_run_list_scan(&self.alias, &path);
             }
+        } else {
+            // A launcher run: its items come from one read of its own DIRECTION.md
+            // (30-02), made now if the cache holds no detail for the new selection.
+            ctx.refresh_selected_run_if_missing(&self.alias);
         }
         ctx.needs_redraw = true;
     }
@@ -5387,6 +5391,23 @@ impl Screen for DetailScreen {
                     }
                 }
             }
+            // `[` / `]`: move the item cursor of the SELECTED launcher run (30-02,
+            // D-06). Driver-tab only and only on a launcher row: a legacy row has no
+            // items and the Driver tab has no sub-tab pair for these keys to mean.
+            // Inert (but harmless) when the run has no items; the move is by item id,
+            // clamped at both ends, and touches only the cache.
+            KeyCode::Char(key @ ('[' | ']')) if current_view == DetailSubView::Driver => {
+                let delta = if key == '[' { -1 } else { 1 };
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if matches!(
+                    super::driver_run::selection(Some(cache)),
+                    super::driver_run::Selection::Launcher(_)
+                ) {
+                    super::driver_run::move_item_cursor(cache, delta);
+                }
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
             // `s`: the start flow (Surface 5), which asks for the command and
             // the goal before it reaches the confirmation the dashboard's `r`
             // reaches directly.
@@ -5456,6 +5477,8 @@ impl Screen for DetailScreen {
                         {
                             ctx.schedule_run_list_scan(&self.alias, &path);
                         }
+                    } else {
+                        ctx.refresh_selected_run_if_missing(&self.alias);
                     }
                 }
                 ctx.needs_redraw = true;
@@ -19624,6 +19647,74 @@ mod tests {
         assert_eq!(launcher_selected(&ctx), 1);
         press(&mut screen, &mut ctx, KeyCode::Up);
         assert_eq!(launcher_selected(&ctx), 0);
+    }
+
+    /// Give launcher run `index` a cached detail with items `I-01..I-03`.
+    fn give_items(ctx: &mut AppContext, index: usize) {
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        let (run_id, entry) = cache.launcher_runs[index].clone();
+        cache.launcher_detail = Some(Box::new(super::super::driver_run::RunDetail {
+            run_id,
+            view: entry.expect("the fixture row reads"),
+            body_control: None,
+            items: (1..=3)
+                .map(|n| crate::driver::steer::BodyItem {
+                    id: format!("I-0{n}"),
+                    title: "t".to_string(),
+                    hold: None,
+                    answer: None,
+                })
+                .collect(),
+        }));
+    }
+
+    #[test]
+    fn launcher_view_brackets_move_the_item_cursor_by_id_and_clamp() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(2);
+        give_items(&mut ctx, 0);
+        let cursor = |ctx: &AppContext| ctx.view_cache[TEST_ALIAS].launcher_item_cursor.clone();
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(cursor(&ctx).as_deref(), Some("I-02"));
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(cursor(&ctx).as_deref(), Some("I-03"), "clamped at the last");
+        press(&mut screen, &mut ctx, KeyCode::Char('['));
+        assert_eq!(cursor(&ctx).as_deref(), Some("I-02"));
+        press(&mut screen, &mut ctx, KeyCode::Char('['));
+        press(&mut screen, &mut ctx, KeyCode::Char('['));
+        assert_eq!(
+            cursor(&ctx).as_deref(),
+            Some("I-01"),
+            "clamped at the first"
+        );
+    }
+
+    #[test]
+    fn launcher_view_brackets_are_inert_without_items_on_a_legacy_row_or_off_the_tab() {
+        // No detail for the selected run: nothing moves.
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_item_cursor, None);
+
+        // A legacy row selected: the cursor of the launcher run does not move.
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
+        give_items(&mut ctx, 0);
+        add_legacy_run(&mut ctx);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
+        }
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_item_cursor, None);
+
+        // On another sub-view the keys keep their shipped meaning.
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
+        give_items(&mut ctx, 0);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_item_cursor, None);
     }
 
     #[test]

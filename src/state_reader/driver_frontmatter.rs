@@ -848,6 +848,13 @@ const PLAIN_RUN_ID_RE: &str = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$";
 static PLAIN_RUN_ID: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(PLAIN_RUN_ID_RE).expect("static regex"));
 
+/// Whether `name` is the shape of a run id the launcher will touch: one plain path
+/// component. The check a caller makes before joining an id it did not list itself
+/// (a watcher event's path part) onto the drivers directory.
+pub fn is_plain_run_id(name: &str) -> bool {
+    PLAIN_RUN_ID.is_match(name)
+}
+
 /// One row of [`list_driver_runs`]: the run id (its directory name) and what
 /// [`read_driver_run`] made of it. An unreadable `DIRECTION.md` is that row's
 /// `Err`, never a reason to drop the other rows.
