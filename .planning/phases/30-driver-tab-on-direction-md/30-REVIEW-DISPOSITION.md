@@ -17,7 +17,7 @@ findings:
     title: "A lint popup whose findings get zero rows is forced into the clipped, unconfirmable state"
   - id: IN-05
     severity: info
-    disposition: open
+    disposition: deferred
     title: "Body-relative `DIRECTION.md:<line>` in the TUI now differs from `driver check` and the launcher's own refusal"
   - id: WR-01
     severity: warning
@@ -51,9 +51,9 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 4
+open: 3
 total: 12
-recorded: 2026-10-21T05:15:20.217Z
+recorded: 2026-10-21T05:15:32.882Z
 ---
 
 # Phase 30: Code Review Disposition
@@ -63,7 +63,7 @@ recorded: 2026-10-21T05:15:20.217Z
 | WR-02 | warning | open | - |
 | WR-07 | warning | open | - |
 | IN-04 | info | open | - |
-| IN-05 | info | open | - |
+| IN-05 | info | deferred | [inferred — audit] only visible if DIRECTION.md changes between preflight and launch; body-relative numbering is the D-17/D-18 editor contract; relabel or re-base in a later cleanup |
 | WR-01 | warning | fixed | fixed by 30-09 9ad47bd (model_name_ok in commit_edit); re-review e05ad64 confirms (not in the current review) |
 | WR-03 | warning | fixed | fixed by 30-07 4df4dd1 (Plan::Keep); re-review e05ad64 confirms (not in the current review) |
 | WR-04 | warning | fixed | fixed by 30-09 9ad47bd for TUI paths; cross-tool remainder tracked as IN-05 (not in the current review) |
