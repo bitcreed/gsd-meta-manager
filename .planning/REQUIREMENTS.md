@@ -240,7 +240,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   - `connected[]`.
 - [x] **DTAB-02**: Crashed runs and stale heartbeats are flagged. The dashboard marks projects that
   are driven, parked or crashed.
-- [ ] **DTAB-03**: A user can set `control`, answer or un-hold a parked item, and open DIRECTION.md
+- [x] **DTAB-03**: A user can set `control`, answer or un-hold a parked item, and open DIRECTION.md
   in `$EDITOR` from the tab. Every edit takes the shared flock and never touches the frontmatter.
 - [ ] **DTAB-04**: A user can start a new run, relaunch a crashed run, and tail LOG.md live from the
   tab.
@@ -364,7 +364,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | PRMT-05 | Phase 29 | Complete |
 | DTAB-01 | Phase 30 | Complete |
 | DTAB-02 | Phase 30 | Complete |
-| DTAB-03 | Phase 30 | Pending |
+| DTAB-03 | Phase 30 | Complete |
 | DTAB-04 | Phase 30 | Pending |
 | RETIRE-01 | Phase 31 | Pending |
 | RETIRE-02 | Phase 31 | Pending |
