@@ -40,7 +40,7 @@ use super::driver::{
 use super::{AppContext, DriverLineKind, DriverOutput, LauncherLogTail, ProjectViewCache};
 use crate::driver::reconcile::RunVerdict;
 use crate::driver::steer::BodyItem;
-use crate::journal::reader::{tail_lines, TailCursor};
+use crate::journal::reader::{tail_file, TailCursor};
 use crate::journal::RunSummary;
 use crate::state_reader::driver_frontmatter::{
     Connection, DerivedStatus, DriverFrontmatter, DriverRunEntry, DriverRunView, ItemState,
@@ -1663,7 +1663,7 @@ pub const PARK_RULES: [&str; 8] = [
 /// directory could name any number of items; the map stays bounded (T-30-07).
 const PARK_RULES_MAX: usize = 256;
 
-/// How many `tail_lines` calls one refresh makes: each reads at most
+/// How many `tail_file` calls one refresh makes: each reads at most
 /// `MAX_TAIL_BYTES` (4 MiB), so a refresh reads at most 16 MiB (T-30-07).
 const LOG_READS_PER_REFRESH: usize = 4;
 
@@ -1714,7 +1714,10 @@ pub fn log_cursor_for(cache: &ProjectViewCache, run_id: &str) -> (TailCursor, Op
 /// differs from the known `ident` (replaced) sets `reset` and is read from the
 /// start. On a read from offset 0 the template preamble is dropped by discarding
 /// lines until the first one `driverctl::log::parse_log` recognises as an event
-/// header. A path that is not a regular file is treated as unreadable, not opened.
+/// header. `LOG.md` is opened once with `open_run_file` (no link followed, no FIFO
+/// waited on); the type check, the `(dev, ino)` and every tail read use that one
+/// handle, so a path that is not a regular file is unreadable and nothing is
+/// re-opened by name after a check.
 ///
 /// The `(dev, ino)` read is `#[cfg(unix)]`; elsewhere `ident` is `None` and only
 /// truncation is detected.
@@ -1734,22 +1737,24 @@ pub fn read_log_delta(
         reset: false,
         missing: false,
     };
-    // `symlink_metadata`: a link planted at LOG.md is not followed, and a FIFO or
-    // device is not opened (it could block this worker forever).
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
+    // One open, vetted on the handle (T-30-23, T-30-24): `open_run_file` refuses a
+    // link (`O_NOFOLLOW`), never blocks on a FIFO (`O_NONBLOCK`) and checks the type
+    // of what it opened. A missing log is `missing`; any other refusal leaves the
+    // read untouched.
+    let mut file = match crate::state_reader::driver_frontmatter::open_run_file(&path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             read.missing = true;
             return read;
         }
         Err(_) => return read,
     };
-    if !meta.file_type().is_file() {
-        return read;
-    }
     #[cfg(unix)]
     let now_ident = {
         use std::os::unix::fs::MetadataExt;
+        let Ok(meta) = file.metadata() else {
+            return read;
+        };
         Some((meta.dev(), meta.ino()))
     };
     #[cfg(not(unix))]
@@ -1765,7 +1770,7 @@ pub fn read_log_delta(
     let mut lines: Vec<String> = Vec::new();
     let mut from_start = cursor.offset == 0;
     for _ in 0..LOG_READS_PER_REFRESH {
-        let Ok(batch) = tail_lines(&path, cursor) else {
+        let Ok(batch) = tail_file(&mut file, cursor) else {
             break;
         };
         if batch.restarted {

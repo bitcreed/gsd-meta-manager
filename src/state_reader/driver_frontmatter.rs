@@ -769,11 +769,59 @@ pub fn derive_status(
 /// worker.
 pub const DIRECTION_READ_MAX_BYTES: u64 = 1 << 20;
 
-/// Open a file in a run directory for reading (WR-02, D-09, D-25).
+/// Open a file in a run directory for reading, once, and check its type on the handle
+/// (WR-02, D-09, D-25).
 ///
-/// SKELETON (RED): opens by path with no guard yet.
+/// A run directory is writable by sibling sandboxes and by `--unsandboxed` runs, so
+/// `DIRECTION.md`, `LOG.md` and the edit temp are untrusted names. On unix the open
+/// carries `O_NOFOLLOW` (a symlink at the name fails instead of being followed) and
+/// `O_NONBLOCK` (a FIFO with no writer opens at once instead of parking a
+/// `spawn_blocking` worker forever). The type check then runs on the **open handle**,
+/// so a name swapped in between a check and a read cannot be followed: anything that
+/// is not a regular file is [`std::io::ErrorKind::InvalidData`] "not a regular file".
+/// A missing name stays [`std::io::ErrorKind::NotFound`].
+///
+/// Callers read, size-check and `(dev, ino)`-check the returned handle and never
+/// re-open the path. Same precedent as `config_write::read_bounded`.
 pub fn open_run_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    std::fs::File::open(path)
+    let not_regular = |what: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("not a regular file ({what})"),
+        )
+    };
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flags = rustix::fs::OFlags::NOFOLLOW.bits() | rustix::fs::OFlags::NONBLOCK.bits();
+        let custom = i32::try_from(flags)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "open flags"))?;
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(custom)
+            .open(path)
+        {
+            Ok(file) => file,
+            // `O_NOFOLLOW` on a symbolic link fails with ELOOP.
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
+                return Err(not_regular("a symbolic link"));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    #[cfg(not(unix))]
+    let file = {
+        // No `O_NOFOLLOW` here: refuse a link by name, then open. A narrower guard
+        // than the unix one (the name can still be swapped between the two calls).
+        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(not_regular("a symbolic link"));
+        }
+        std::fs::File::open(path)?
+    };
+    if !file.metadata()?.file_type().is_file() {
+        return Err(not_regular("a FIFO, device or directory"));
+    }
+    Ok(file)
 }
 
 /// Read a run directory: its `DIRECTION.md` frontmatter and the derived status.
@@ -805,7 +853,7 @@ pub fn read_driver_run_text(
     let io_err = |e: std::io::Error| FrontmatterError::Io {
         detail: format!("{}: {e}", path.display()),
     };
-    let file = std::fs::File::open(&path).map_err(io_err)?;
+    let file = open_run_file(&path).map_err(io_err)?;
     // T-30-04: the size is read from the open handle, so a file swapped in after
     // the check cannot dodge it, and the read itself is bounded by `take`.
     let len = file.metadata().map_err(io_err)?.len();
@@ -1138,7 +1186,10 @@ mod tests {
 
         let dir = bad.clone();
         let result = within_5s(move || read_driver_run_text(&dir).map(|_| ()));
-        assert!(matches!(result, Err(FrontmatterError::Io { .. })), "{result:?}");
+        assert!(
+            matches!(result, Err(FrontmatterError::Io { .. })),
+            "{result:?}"
+        );
 
         // The run list shows it as an unreadable row beside the good one.
         let root = tmp.path().to_path_buf();

@@ -132,23 +132,12 @@ pub struct TailRead {
     pub skipped_oversize: bool,
 }
 
-/// Read every complete line after `cursor` from an already-open handle.
-///
-/// SKELETON (RED).
-pub fn tail_file(file: &mut File, cursor: TailCursor) -> io::Result<TailRead> {
-    let _ = file;
-    Ok(TailRead {
-        cursor,
-        ..Default::default()
-    })
-}
-
 /// Read every complete line after `cursor`, leaving a torn tail unconsumed.
 ///
 /// Four edge cases are handled deliberately, each marked at its branch:
 /// a missing file, a file shorter than the cursor, a file growing during the
 /// read, and a non-UTF-8 fragment.
-pub fn tail_lines(path: &Path, mut cursor: TailCursor) -> io::Result<TailRead> {
+pub fn tail_lines(path: &Path, cursor: TailCursor) -> io::Result<TailRead> {
     // (a) The file may not exist yet: the run directory is created before the
     //     first append, so a watcher can fire on the directory first.
     let mut f = match File::open(path) {
@@ -161,7 +150,16 @@ pub fn tail_lines(path: &Path, mut cursor: TailCursor) -> io::Result<TailRead> {
         }
         Err(e) => return Err(e),
     };
+    tail_file(&mut f, cursor)
+}
 
+/// [`tail_lines`] over a file the caller already opened.
+///
+/// Everything [`tail_lines`] does after its open: the same four edge cases, the same
+/// cursor rules. A caller that must vet the handle itself (type, `(dev, ino)`) opens
+/// the file once, checks it, and tails that handle, so no check is separated from the
+/// read by a second open of the path (T-30-24). The handle's position is moved.
+pub fn tail_file(f: &mut File, mut cursor: TailCursor) -> io::Result<TailRead> {
     let len = f.metadata()?.len();
 
     // (b) Truncation or rotation: the file is shorter than where we left off.
@@ -185,7 +183,7 @@ pub fn tail_lines(path: &Path, mut cursor: TailCursor) -> io::Result<TailRead> {
     //     grown since the metadata call, and cannot fail if it shrank. `.take()`
     //     bounds the read.
     let mut buf = Vec::new();
-    (&mut f).take(MAX_TAIL_BYTES).read_to_end(&mut buf)?;
+    f.take(MAX_TAIL_BYTES).read_to_end(&mut buf)?;
 
     match buf.iter().rposition(|&b| b == b'\n') {
         Some(idx) => {
@@ -438,7 +436,10 @@ mod tests {
         assert_eq!(by_handle.lines, vec!["{\"seq\":1}", "{\"seq\":2}"]);
         assert_eq!(by_handle.lines, by_path.lines);
         assert_eq!(by_handle.cursor.offset, by_path.cursor.offset);
-        assert_eq!(by_handle.cursor.offset, 20, "the torn tail is left unconsumed");
+        assert_eq!(
+            by_handle.cursor.offset, 20,
+            "the torn tail is left unconsumed"
+        );
 
         // The same handle keeps working after an append (one open, many reads).
         append(&journal, "}\n");

@@ -613,7 +613,8 @@ pub enum PrepareError {
 /// the same cap the edit flow uses (30-05). **Blocking: `spawn_blocking` only.**
 pub fn read_direction(run_dir: &Path) -> Result<String, String> {
     let path = run_dir.join(crate::driver::direction::DIRECTION_FILE);
-    let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = crate::state_reader::driver_frontmatter::open_run_file(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     read_capped(file, &path)
 }
 
@@ -736,26 +737,28 @@ fn not_written_reason(outcome: SpliceOutcome) -> &'static str {
 /// the outcome is [`EditOutcome::Conflict`], the other change stands and the temp is
 /// kept (T-30-10). The `---` tool block is never touched.
 ///
-/// `temp` must be a regular file (not a symlink) of at most [`EDIT_TEMP_MAX_BYTES`]
+/// `temp` must be a regular file (not a symlink; refused on the open handle) of at most [`EDIT_TEMP_MAX_BYTES`]
 /// holding UTF-8. `accept_lint` is the user's "apply it anyway" after a
 /// [`EditOutcome::LintProblems`].
 ///
 /// **Blocking: `spawn_blocking` only.**
 pub fn apply_edit(run_dir: &Path, temp: &Path, base: &str, accept_lint: bool) -> EditOutcome {
-    let meta = match std::fs::symlink_metadata(temp) {
-        Ok(meta) => meta,
+    // One open for the whole check-and-read (T-30-24): the type is checked on the
+    // handle `open_run_file` returns, the size comes from it, and `read_capped` reads
+    // it. The path is never opened a second time, so a link swapped in after the
+    // check is never followed.
+    let file = match crate::state_reader::driver_frontmatter::open_run_file(temp) {
+        Ok(file) => file,
         Err(e) => return EditOutcome::Failed(format!("{}: {e}", temp.display())),
     };
-    if !meta.file_type().is_file() {
-        return EditOutcome::Failed(format!("{} is not a regular file", temp.display()));
+    match file.metadata() {
+        Ok(meta) if meta.len() > EDIT_TEMP_MAX_BYTES => {
+            return EditOutcome::Failed(format!("{} is larger than 1 MiB", temp.display()));
+        }
+        Ok(_) => {}
+        Err(e) => return EditOutcome::Failed(format!("{}: {e}", temp.display())),
     }
-    if meta.len() > EDIT_TEMP_MAX_BYTES {
-        return EditOutcome::Failed(format!("{} is larger than 1 MiB", temp.display()));
-    }
-    let edited = match std::fs::File::open(temp)
-        .map_err(|e| format!("{}: {e}", temp.display()))
-        .and_then(|file| read_capped(file, temp))
-    {
+    let edited = match read_capped(file, temp) {
         Ok(text) => text,
         Err(error) => return EditOutcome::Failed(error),
     };
