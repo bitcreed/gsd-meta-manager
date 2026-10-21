@@ -361,7 +361,14 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             row("", "$VISUAL/$EDITOR must be a terminal editor or"),
             row("", "a blocking wrapper script; a GUI editor that"),
             row("", "returns at once sees an unchanged file."),
-            row("s", "Start a run: command, then optional goal"),
+            row(
+                "s",
+                "Start a new run: name it, edit it, check it, launch it",
+            ),
+            row(
+                "R",
+                "Launch or relaunch this run (asks first, shows the spend ceiling)",
+            ),
             row("x", "Kill this run's sandbox now (asks first)"),
             row("L", "Show or hide legacy runs (read-only)"),
             // Both surfaces bind `o` for the same action and the help lists
@@ -619,7 +626,14 @@ mod tests {
             ),
             ("u", "Take the item under the cursor off hold"),
             ("e", "Edit this run's DIRECTION.md in $EDITOR"),
-            ("s", "Start a run: command, then optional goal"),
+            (
+                "s",
+                "Start a new run: name it, edit it, check it, launch it",
+            ),
+            (
+                "R",
+                "Launch or relaunch this run (asks first, shows the spend ceiling)",
+            ),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("L", "Show or hide legacy runs (read-only)"),
             ("o", "Toggle driver opt-in for this project"),
@@ -808,10 +822,16 @@ mod tests {
         let a = at("Answer the item under the cursor (also sets hold: false)");
         let u = at("Take the item under the cursor off hold");
         let e = at("Edit this run's DIRECTION.md in $EDITOR");
-        let s = at("Start a run");
+        let s = at("Start a new run: name it, edit it, check it, launch it");
+        let r = at("Launch or relaunch this run (asks first, shows the spend ceiling)");
         assert!(
-            g < c && c < a && a < u && u < e && e < s,
+            g < c && c < a && a < u && u < e && e < s && s < r,
             "UI-SPEC order:\n{on}"
+        );
+        // The old start row is gone: `s` no longer asks for a command and a goal.
+        assert!(
+            !on.contains("Start a run: command, then optional goal"),
+            "{on}"
         );
         // The continuation rows warn that the editor must block (Pitfall 7).
         let flow = flowed();
@@ -826,6 +846,8 @@ mod tests {
             "Answer the item under the cursor",
             "Take the item under the cursor off hold",
             "Edit this run's DIRECTION.md in $EDITOR",
+            "Start a new run: name it, edit it, check it, launch it",
+            "Launch or relaunch this run",
         ] {
             assert!(!off.contains(description), "{description}:\n{off}");
         }
@@ -942,7 +964,14 @@ mod tests {
             ),
             ("u", "Take the item under the cursor off hold"),
             ("e", "Edit this run's DIRECTION.md in $EDITOR"),
-            ("s", "Start a run: command, then optional goal"),
+            (
+                "s",
+                "Start a new run: name it, edit it, check it, launch it",
+            ),
+            (
+                "R",
+                "Launch or relaunch this run (asks first, shows the spend ceiling)",
+            ),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("L", "Show or hide legacy runs (read-only)"),
             ("o", "Toggle driver opt-in for this project"),

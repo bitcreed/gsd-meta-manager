@@ -2788,7 +2788,8 @@ pub struct DriverKeys {
     pub legacy: bool,
     /// A legacy row is selected: the tab is read-only for it.
     pub legacy_row: bool,
-    /// `s`: bound (it opens the shipped start flow until plan 30-05 rebinds it).
+    /// `s`: start a new run (30-05, D-18); Linux only, because creating the run and
+    /// editing its body are Linux-only writes.
     pub start: bool,
     /// `PgUp`/`PgDn`/`f`: there is a pane to scroll: the LOG tail of a launcher run
     /// (30-02) or the output pane of a legacy run.
@@ -2826,7 +2827,7 @@ pub fn driver_keys(ctx: &AppContext, alias: &str) -> DriverKeys {
         },
         legacy: cache.is_some_and(has_legacy),
         legacy_row: matches!(sel, Selection::Legacy(_)),
-        start: true,
+        start: super::driver_steer::can_steer(),
         scroll: !matches!(sel, Selection::Nothing),
         item: match (sel, cache) {
             (Selection::Launcher(index), Some(cache)) => {

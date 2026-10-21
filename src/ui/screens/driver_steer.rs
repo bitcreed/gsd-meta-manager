@@ -406,7 +406,7 @@ pub fn answer_rejected_copy(rule: AnswerRule) -> &'static str {
 
 /// The last cells of `text` that fit `cols` terminal cells, led by `…` when cut, so
 /// the caret end of a long answer stays visible.
-fn tail_cells(text: &str, cols: usize) -> String {
+pub(super) fn tail_cells(text: &str, cols: usize) -> String {
     if Span::raw(text).width() <= cols {
         return text.to_string();
     }

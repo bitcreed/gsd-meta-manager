@@ -379,6 +379,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
     ("HelpScreen", "src/ui/screens/help.rs"),
     ("LaunchFormScreen", "src/ui/screens/driver_launch.rs"),
+    ("LintPopupScreen", "src/ui/screens/driver_launch.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
     ("PoliteStopScreen", "src/ui/screens/driver_steer.rs"),
     ("PreferencesScreen", "src/ui/screens/preferences.rs"),
@@ -386,6 +387,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
         "QueueDeleteConfirmScreen",
         "src/ui/screens/queue_delete_confirm.rs",
     ),
+    ("SlugInputScreen", "src/ui/screens/driver_launch.rs"),
     (
         "UnsandboxedConfirmScreen",
         "src/ui/screens/driver_launch.rs",
@@ -2401,6 +2403,44 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             }
             states.push(one_state("model being typed", typing_ctx, Box::new(typing)));
             states
+        }),
+
+        // The new-run slug input (30-05): the hostile identity is the typed buffer (typed
+        // through the real key handler, so the state is one the keyboard can produce) and,
+        // in a second set of states, the id the App says already exists.
+        "SlugInputScreen" => Some(|identity| {
+            use super::driver_launch::{NewRunStatus, SlugInputScreen};
+            use crossterm::event::{KeyCode, KeyModifiers};
+            let mut states = states_over_sub_views(identity, &|identity, ctx| {
+                let mut screen = SlugInputScreen::new(identity.to_string());
+                for ch in identity.chars() {
+                    screen.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, ctx);
+                }
+                Box::new(screen)
+            });
+            let mut ctx = probe_ctx(identity);
+            ctx.view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .new_run_status = Some(NewRunStatus::Exists(identity.to_string()));
+            states.push(one_state(
+                "the run already exists",
+                ctx,
+                Box::new(SlugInputScreen::new(identity.to_string())),
+            ));
+            states
+        }),
+
+        // The `Check DIRECTION.md` popup (30-05): the hostile identity is a finding, as
+        // it is when the edited body quotes it. The run id is dispatched, never drawn.
+        "LintPopupScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(super::driver_launch::LintPopupScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    vec![format!("DIRECTION.md:3: {identity}"), identity.to_string()],
+                ))
+            })
         }),
 
         // The unsandboxed-launch confirmation (30-05): the hostile identity is the run

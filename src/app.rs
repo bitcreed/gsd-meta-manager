@@ -572,6 +572,9 @@ pub struct EditSession {
     pub run_id: String,
     pub run_dir: PathBuf,
     pub base: String,
+    /// The edit belongs to the new-run flow (30-05, D-18): once it is applied or found
+    /// unchanged, `driver check` runs over the body and the launch form follows.
+    pub then_launch: bool,
 }
 
 /// The two process-facing calls the Driver tab's launch makes, injectable so a test can
@@ -616,6 +619,12 @@ pub struct App {
     /// The DIRECTION.md edit sessions awaiting their editor's exit, keyed by the temp's
     /// path (30-04, D-17). A path here is what makes [`App::after_editor`] apply it.
     pub edit_sessions: HashMap<PathBuf, EditSession>,
+    /// The runs `(alias, run id)` whose next editor session is the new-run flow's
+    /// (30-05, D-18): inserted when `s` creates the run, read when the edit temp is
+    /// ready (it becomes [`EditSession::then_launch`]), and removed when the flow ends:
+    /// the check is clean, the user leaves the run unlaunched, the editor fails, the
+    /// kept text is discarded, or the run is launched.
+    pub new_run_flow: std::collections::HashSet<(String, String)>,
     /// The host check and the launch call the launch form reaches (30-05).
     #[cfg(target_os = "linux")]
     pub launch_seams: LaunchSeams,
@@ -702,6 +711,9 @@ impl App {
             }
             EditorExit::Failed(status) | EditorExit::SpawnError(status) => {
                 self.edit_sessions.remove(path);
+                // An editor failure ends the new-run flow with the run left unlaunched.
+                self.new_run_flow
+                    .remove(&(session.alias.clone(), session.run_id.clone()));
                 self.ctx.error_message = Some(
                     crate::ui::screens::driver_steer::editor_failed_message(&status, path),
                 );
@@ -836,6 +848,7 @@ impl App {
             session_poll_counter: 0,
             pending_editor: None,
             edit_sessions: HashMap::new(),
+            new_run_flow: std::collections::HashSet::new(),
             #[cfg(target_os = "linux")]
             launch_seams: LaunchSeams::default(),
             mouse_capture,
@@ -1332,10 +1345,183 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// `Enter` on a usable slug (30-05, D-18): create the run directory with the same
+    /// `driver_templates::create_run_dir` `driver new` calls, on `spawn_blocking`, and
+    /// answer [`Action::DriverNewRunCreated`]. `Exists` is its own failure so the input
+    /// can stay open. A build that cannot write refuses with the read-only copy.
+    fn request_new_run(&mut self, alias: &str, slug: &str) {
+        if !self.ctx.experimental {
+            return;
+        }
+        if !crate::ui::screens::driver_steer::can_steer() {
+            self.refuse_steering(
+                crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+            );
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let Some(project) = self.project_path_for(alias) else {
+                return;
+            };
+            let Some(tx) = self.ctx.event_tx.clone() else {
+                self.refuse_steering(crate::ui::screens::driver_launch::create_failed_copy(
+                    "this session has no event channel. Nothing was created.",
+                ));
+                return;
+            };
+            let (alias, slug) = (alias.to_string(), slug.to_string());
+            tokio::task::spawn_blocking(move || {
+                use crate::action::NewRunFailure;
+                use crate::driver_templates::{create_run_dir, mint_run_id, NewRunError};
+                let now = chrono::Utc::now();
+                let result = match create_run_dir(&project, &slug, now) {
+                    Ok(run) => Ok(run.run_id),
+                    Err(NewRunError::Exists(_)) => Err(NewRunFailure::Exists(
+                        mint_run_id(&slug, now).unwrap_or_else(|_| slug.clone()),
+                    )),
+                    Err(other) => Err(NewRunFailure::Other(other.to_string())),
+                };
+                let _ = tx.send(Action::DriverNewRunCreated {
+                    alias,
+                    slug,
+                    result,
+                });
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (alias, slug);
+    }
+
+    /// A run was created (30-05, D-18): leave the slug input, select the new run, say so,
+    /// mark the run's next editor session as the flow's, and open the editor on its body
+    /// through the same temp-and-apply path `e` uses. An id that exists keeps the input
+    /// open with the buffer; any other failure closes it and says why.
+    fn finish_new_run(
+        &mut self,
+        alias: &str,
+        result: Result<String, crate::action::NewRunFailure>,
+    ) {
+        use crate::action::NewRunFailure;
+        use crate::ui::screens::driver_launch::{create_failed_copy, created_copy, NewRunStatus};
+        let slug_on_top = self
+            .screen_stack
+            .last()
+            .is_some_and(|screen| screen.name() == "driver_slug_input");
+        match result {
+            Err(NewRunFailure::Exists(run_id)) => {
+                self.ctx
+                    .view_cache
+                    .entry(alias.to_string())
+                    .or_default()
+                    .new_run_status = Some(NewRunStatus::Exists(run_id));
+            }
+            Err(NewRunFailure::Other(error)) => {
+                if slug_on_top {
+                    self.screen_stack.pop();
+                }
+                self.ctx.error_message = Some(create_failed_copy(&error));
+            }
+            Ok(run_id) => {
+                if slug_on_top {
+                    self.screen_stack.pop();
+                }
+                self.new_run_flow
+                    .insert((alias.to_string(), run_id.clone()));
+                let cache = self.ctx.view_cache.entry(alias.to_string()).or_default();
+                cache.new_run_status = None;
+                cache.legacy_row_selected = false;
+                cache.launcher_selected_id = Some(run_id.clone());
+                if let Some(path) = self.ctx.config.projects.get(alias).map(|p| p.path.clone()) {
+                    self.ctx.schedule_launcher_refresh(alias, &path);
+                }
+                self.ctx.status_message = Some((created_copy(&run_id), std::time::Instant::now()));
+                self.request_edit(alias, &run_id);
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// `driver check` over the new run's edited DIRECTION.md, on `spawn_blocking`
+    /// (30-05, D-18). Answers [`Action::DriverNewRunChecked`].
+    #[cfg(target_os = "linux")]
+    fn request_new_run_check(&mut self, alias: &str, run_id: &str) {
+        let Some((_project, run_dir, tx)) = self.launch_target(alias, run_id) else {
+            return;
+        };
+        let (alias, run_id) = (alias.to_string(), run_id.to_string());
+        tokio::task::spawn_blocking(move || {
+            use crate::driver_templates::lint::lint_direction;
+            let (problems, warnings) = match crate::driver::steer::read_direction(&run_dir) {
+                Ok(text) => {
+                    let report = lint_direction(&text);
+                    (
+                        report.problems.iter().map(ToString::to_string).collect(),
+                        report.warnings.iter().map(|f| f.as_warning()).collect(),
+                    )
+                }
+                Err(error) => (
+                    vec![format!("DIRECTION.md could not be read: {error}")],
+                    Vec::new(),
+                ),
+            };
+            let _ = tx.send(Action::DriverNewRunChecked {
+                alias,
+                run_id,
+                problems,
+                warnings,
+            });
+        });
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn request_new_run_check(&mut self, _alias: &str, _run_id: &str) {
+        self.refuse_steering(crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string());
+    }
+
+    /// The check finished: problems open the `Check DIRECTION.md` popup (launch stays
+    /// blocked), a clean body opens the launch form with the CLI defaults and asks for
+    /// its host check. The warnings are listed by the form's own preflight.
+    fn finish_new_run_check(&mut self, alias: &str, run_id: &str, problems: Vec<String>) {
+        use crate::ui::screens::driver_launch::{
+            LaunchForm, LaunchFormScreen, LaunchKind, LintPopupScreen,
+        };
+        if !problems.is_empty() {
+            self.screen_stack.push(Box::new(LintPopupScreen::new(
+                alias.to_string(),
+                run_id.to_string(),
+                problems,
+            )));
+            self.needs_redraw = true;
+            return;
+        }
+        // The flow's editing is over: a later `e` on this run is an ordinary edit.
+        self.new_run_flow
+            .remove(&(alias.to_string(), run_id.to_string()));
+        self.ctx
+            .view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .launch_preflight = None;
+        self.screen_stack.push(Box::new(LaunchFormScreen::new(
+            alias.to_string(),
+            run_id.to_string(),
+            LaunchKind::Launch,
+            LaunchForm::fresh(),
+        )));
+        self.update(Action::DriverLaunchPreflightRequested {
+            alias: alias.to_string(),
+            run_id: run_id.to_string(),
+        });
+        self.needs_redraw = true;
+    }
+
     /// Show a finished launch and re-list the runs so the row's status catches up.
     fn finish_launch(&mut self, alias: &str, run_id: &str, result: Result<u32, String>) {
         match result {
             Ok(_pid) => {
+                self.new_run_flow
+                    .remove(&(alias.to_string(), run_id.to_string()));
                 self.ctx.status_message = Some((
                     format!(
                         "{}: launched {}. It runs detached and keeps running if you close this TUI.",
@@ -1521,6 +1707,8 @@ impl App {
         };
         self.edit_sessions
             .retain(|_, session| !(session.alias == alias && session.run_id == run_id));
+        self.new_run_flow
+            .remove(&(alias.to_string(), run_id.to_string()));
         let (alias, run_id) = (alias.to_string(), run_id.to_string());
         tokio::task::spawn_blocking(move || {
             let error = crate::driver::steer::discard_edit(&run_dir).err();
@@ -1547,6 +1735,12 @@ impl App {
         use crate::ui::screens::driver_steer::{
             edit_done_message, ChooserReason, EditChooserScreen, EditLintConfirmScreen,
         };
+        // Read before the session is dropped: the new-run flow checks the body once the
+        // edit is applied or found unchanged.
+        let then_launch = self
+            .edit_sessions
+            .get(&temp)
+            .is_some_and(|session| session.then_launch);
         match &outcome {
             EditOutcome::Conflict | EditOutcome::Insane => {
                 self.edit_sessions.remove(&temp);
@@ -1583,6 +1777,9 @@ impl App {
                     if let Some(path) = self.ctx.config.projects.get(alias).map(|p| p.path.clone())
                     {
                         self.ctx.schedule_selected_run_refresh(alias, &path, run_id);
+                    }
+                    if then_launch {
+                        self.request_new_run_check(alias, run_id);
                     }
                 }
             }
@@ -2729,6 +2926,7 @@ impl App {
                     .get(&alias)
                     .and_then(|project| Self::launcher_run_dir(&project.path, &run_id));
                 if let Some(run_dir) = run_dir {
+                    let then_launch = self.new_run_flow.contains(&(alias.clone(), run_id.clone()));
                     self.edit_sessions.insert(
                         temp.clone(),
                         EditSession {
@@ -2736,6 +2934,7 @@ impl App {
                             run_id,
                             run_dir,
                             base,
+                            then_launch,
                         },
                     );
                     self.pending_editor = Some((temp, None));
@@ -2866,6 +3065,34 @@ impl App {
                 result,
             } => {
                 self.finish_launch(&alias, &run_id, result);
+            }
+            // 30-05, D-18: `s` minted a slug; create the run, edit it, check it, then
+            // offer the launch.
+            Action::DriverNewRunRequested { alias, slug } => {
+                self.request_new_run(&alias, &slug);
+            }
+            Action::DriverNewRunCreated {
+                alias,
+                slug: _,
+                result,
+            } => {
+                self.finish_new_run(&alias, result);
+            }
+            Action::DriverNewRunChecked {
+                alias,
+                run_id,
+                problems,
+                warnings: _,
+            } => {
+                self.finish_new_run_check(&alias, &run_id, problems);
+            }
+            Action::DriverNewRunLeft { alias, run_id } => {
+                self.new_run_flow.remove(&(alias, run_id.clone()));
+                self.ctx.status_message = Some((
+                    crate::ui::screens::driver_launch::left_unlaunched_copy(&run_id),
+                    std::time::Instant::now(),
+                ));
+                self.needs_redraw = true;
             }
             // ── The Driver surface's four messages ────────────────────
             //
@@ -9458,5 +9685,495 @@ mod tests {
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0].0.run_id, run.run_id);
         assert_eq!(calls[0].0.limits.wall_clock_min, Some(60.0));
+    }
+
+    // ── 30-05: a new run from the Driver tab (D-18) ─────────────────────────
+
+    /// Today's UTC date, as the run id the slug input previews.
+    #[cfg(target_os = "linux")]
+    fn today() -> String {
+        chrono::Utc::now().format("%Y%m%d").to_string()
+    }
+
+    /// A GSD project (`.planning/` exists) on the Driver tab, nothing listed yet, with
+    /// the fake launch seams.
+    #[cfg(target_os = "linux")]
+    fn new_run_app(root: &Path) -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>) {
+        std::fs::create_dir_all(root.join(".planning")).unwrap();
+        let (mut app, rx) = app_on_the_driver_tab(root);
+        app.launch_seams = LaunchSeams {
+            launch: fake_launch,
+            detect: fake_detect_ready,
+        };
+        (app, rx)
+    }
+
+    /// `s`, a slug, Enter, and the App's answer: the run exists, the slug input is gone
+    /// and the editor is about to open on the new run's body. Returns the run id and the
+    /// edit temp's path.
+    #[cfg(target_os = "linux")]
+    async fn create_a_run(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        slug: &str,
+    ) -> (String, PathBuf) {
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(app), "driver_slug_input");
+        for c in slug.chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let request =
+            next_matching(rx, |a| matches!(a, Action::DriverNewRunRequested { .. })).await;
+        app.update(request);
+        let created = next_matching(rx, |a| matches!(a, Action::DriverNewRunCreated { .. })).await;
+        let Action::DriverNewRunCreated { result, .. } = &created else {
+            unreachable!()
+        };
+        let run_id = result.clone().expect("the run is created");
+        app.update(created);
+        assert_eq!(top_screen_name(app), "detail", "the slug input is gone");
+        let ready = next_matching(rx, |a| matches!(a, Action::DriverEditReady { .. })).await;
+        app.update(ready);
+        let (temp, line) = app.pending_editor.take().expect("the editor is requested");
+        assert_eq!(line, None);
+        (run_id, temp)
+    }
+
+    /// The editor "exits" with the temp as it is, and the apply and the check are driven
+    /// to their answers.
+    #[cfg(target_os = "linux")]
+    async fn finish_the_editor(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        temp: &Path,
+    ) {
+        app.after_editor(temp, EditorExit::Success);
+        let done = next_matching(rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        let checked = next_matching(rx, |a| matches!(a, Action::DriverNewRunChecked { .. })).await;
+        app.update(checked);
+    }
+
+    /// The whole flow, through the key handler and the App: `s` mints and creates the
+    /// run (selected, with its DIRECTION.md and LOG.md), the editor opens on its body;
+    /// an unedited template fails `driver check` and opens `Check DIRECTION.md`; `y`
+    /// re-opens the editor; a clean body opens the launch form, whose `y` launches the
+    /// new run through the fake seam. Zero spend.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_new_run_s_creates_edits_checks_and_launches() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = new_run_app(dir.path());
+        let (run_id, temp) = create_a_run(&mut app, &mut rx, "tab").await;
+        assert_eq!(run_id, format!("{}-tab", today()));
+
+        let run_dir = dir
+            .path()
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(&run_id);
+        assert!(run_dir.join("DIRECTION.md").is_file());
+        assert!(run_dir.join("LOG.md").is_file());
+        assert_eq!(
+            temp,
+            run_dir.join(crate::driver::steer::EDIT_TEMP_NAME),
+            "the body-only edit temp of the new run"
+        );
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS]
+                .launcher_selected_id
+                .as_deref(),
+            Some(run_id.as_str()),
+            "the new run is selected"
+        );
+        assert_eq!(
+            app.ctx.status_message.clone().expect("a status message").0,
+            format!("Created run {run_id}. It is checked before launch.")
+        );
+        let session = app.edit_sessions.get(&temp).expect("a session");
+        assert!(session.then_launch, "the edit belongs to the new-run flow");
+
+        // The editor leaves the template as it was: placeholders are problems.
+        finish_the_editor(&mut app, &mut rx, &temp).await;
+        assert_eq!(top_screen_name(&app), "driver_lint_popup");
+        let text = render_top_screen(&app);
+        assert!(text.contains("Check DIRECTION.md"), "{text}");
+        assert!(text.contains("Launch is blocked until they are"), "{text}");
+        assert!(
+            app.new_run_flow
+                .contains(&(OBS_ALIAS.to_string(), run_id.clone())),
+            "the flow is not over"
+        );
+
+        // y: the editor opens again, still the flow's.
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail");
+        let request =
+            next_matching(&mut rx, |a| matches!(a, Action::DriverEditRequested { .. })).await;
+        app.update(request);
+        let ready = next_matching(&mut rx, |a| matches!(a, Action::DriverEditReady { .. })).await;
+        app.update(ready);
+        let (temp, _) = app
+            .pending_editor
+            .take()
+            .expect("the editor is requested again");
+        assert!(app.edit_sessions.get(&temp).expect("a session").then_launch);
+
+        // This time the user writes a clean body.
+        std::fs::write(&temp, crate::driver::steer::tests::clean_body()).unwrap();
+        finish_the_editor(&mut app, &mut rx, &temp).await;
+        assert_eq!(top_screen_name(&app), "driver_launch_form");
+        assert!(
+            app.new_run_flow.is_empty(),
+            "a clean check ends the editing half of the flow"
+        );
+        let preflighted = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverLaunchPreflighted { .. })
+        })
+        .await;
+        app.update(preflighted);
+        let form = render_top_screen(&app);
+        assert!(form.contains(&run_id), "{form}");
+        assert!(form.contains("Sandbox: bwrap + systemd scope"), "{form}");
+        assert!(form.contains("dispatches      10"), "the defaults:\n{form}");
+
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverLaunchRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let launched = next_matching(&mut rx, |a| matches!(a, Action::DriverLaunched { .. })).await;
+        app.update(launched);
+        let calls = launches_for(dir.path());
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].0.run_id, run_id);
+        assert!(!calls[0].0.unsandboxed);
+    }
+
+    /// `n` on the popup leaves the run created and unlaunched, says so and ends the flow.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_new_run_n_leaves_the_run_unlaunched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = new_run_app(dir.path());
+        let (run_id, temp) = create_a_run(&mut app, &mut rx, "keep").await;
+        finish_the_editor(&mut app, &mut rx, &temp).await;
+        assert_eq!(top_screen_name(&app), "driver_lint_popup");
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail");
+        let left = next_matching(&mut rx, |a| matches!(a, Action::DriverNewRunLeft { .. })).await;
+        app.update(left);
+        assert_eq!(
+            app.ctx.status_message.clone().expect("a status message").0,
+            format!("{run_id} is created but not launched. Select it and press [R] to launch it.")
+        );
+        assert!(app.new_run_flow.is_empty());
+        assert!(no_launch_requested(&mut rx));
+        assert!(launches_for(dir.path()).is_empty());
+    }
+
+    /// A second `s` with the same slug on the same day finds the run: the input stays
+    /// open with the buffer, says so, and the existing run is not touched.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_new_run_the_same_slug_twice_says_the_run_exists_and_keeps_the_buffer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = new_run_app(dir.path());
+        let (run_id, _temp) = create_a_run(&mut app, &mut rx, "twice").await;
+        let direction = dir
+            .path()
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(&run_id)
+            .join("DIRECTION.md");
+        let before = std::fs::read_to_string(&direction).unwrap();
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        for c in "twice".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverNewRunRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let created =
+            next_matching(&mut rx, |a| matches!(a, Action::DriverNewRunCreated { .. })).await;
+        let Action::DriverNewRunCreated { result, .. } = &created else {
+            unreachable!()
+        };
+        assert_eq!(
+            *result,
+            Err(crate::action::NewRunFailure::Exists(run_id.clone()))
+        );
+        app.update(created);
+        assert_eq!(
+            top_screen_name(&app),
+            "driver_slug_input",
+            "the input stays open"
+        );
+        let text = render_top_screen(&app);
+        assert!(
+            text.contains("New run slug> twice_"),
+            "the buffer is kept:\n{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "A run named {run_id} already exists. Pick another slug."
+            )),
+            "{text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&direction).unwrap(),
+            before,
+            "never overwritten"
+        );
+        // Esc closes it.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail");
+    }
+
+    /// Any other creation failure closes the input and says why.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_new_run_another_failure_closes_the_input_and_says_why() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = new_run_app(dir.path());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_slug_input");
+        app.update(Action::DriverNewRunCreated {
+            alias: OBS_ALIAS.to_string(),
+            slug: "x".to_string(),
+            result: Err(crate::action::NewRunFailure::Other("disk full".to_string())),
+        });
+        assert_eq!(top_screen_name(&app), "detail");
+        assert_eq!(
+            app.ctx.error_message.as_deref(),
+            Some("Could not create the run: disk full")
+        );
+        assert!(app.new_run_flow.is_empty());
+    }
+
+    /// A project that is not a GSD project (no `.planning/`) is refused by the creation
+    /// itself, with nothing created.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_new_run_a_directory_that_is_not_a_gsd_project_creates_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        for c in "nope".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverNewRunRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let created =
+            next_matching(&mut rx, |a| matches!(a, Action::DriverNewRunCreated { .. })).await;
+        app.update(created);
+        assert_eq!(top_screen_name(&app), "detail");
+        let message = app.ctx.error_message.clone().expect("an error");
+        assert!(
+            message.starts_with("Could not create the run: "),
+            "{message}"
+        );
+        assert!(message.contains("not a GSD project"), "{message}");
+        assert!(
+            !dir.path().join(".planning").exists(),
+            "nothing was created"
+        );
+    }
+
+    /// A failed editor ends the flow with the run left unlaunched.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_new_run_an_editor_failure_ends_the_flow() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = new_run_app(dir.path());
+        let (_run_id, temp) = create_a_run(&mut app, &mut rx, "fails").await;
+        app.after_editor(&temp, EditorExit::Failed("exit status: 1".to_string()));
+        assert!(app.new_run_flow.is_empty());
+        assert!(app.edit_sessions.is_empty());
+        let message = app.ctx.error_message.clone().expect("a message");
+        assert!(
+            message.starts_with("The editor exited with exit status: 1."),
+            "{message}"
+        );
+        assert!(temp.exists(), "the text is kept");
+    }
+
+    /// The footer names `[R]elaunch` on a crashed row and `[R]launch` on a never-launched
+    /// one, and `s` never opens the legacy start flow.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_new_run_the_footer_names_launch_or_relaunch_for_the_selected_row() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (app, _rx, _run_dir) = launch_fixture(dir.path()).await;
+        let crashed = render_top_screen(&app);
+        assert!(crashed.contains("[R]elaunch"), "{crashed}");
+        assert!(crashed.contains("[s]tart"), "{crashed}");
+        drop(app);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = new_run_app(dir.path());
+        let (_run_id, _temp) = create_a_run(&mut app, &mut rx, "fresh").await;
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let fresh = render_top_screen(&app);
+        assert!(fresh.contains("[R]launch"), "{fresh}");
+        assert!(!fresh.contains("[R]elaunch"), "{fresh}");
+
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_ne!(
+            top_screen_name(&app),
+            "driver_start",
+            "s never opens the legacy flow"
+        );
+        assert_eq!(top_screen_name(&app), "driver_slug_input");
+    }
+
+    /// The Driver tab's keys shadow no global key (D-02, D-03, UI-SPEC "Keymap
+    /// collision check"): `q`, `?`, `M`, `D` and the digits act on the Driver tab exactly
+    /// as on another tab, Ctrl+C still quits, `c a u R L [ ]` keep their shipped meaning
+    /// on the tabs that already bind them (the Roadmap's wave brackets are pinned in
+    /// `detail.rs`, where its fixtures live), and lower-case `r` never opens the launch
+    /// form.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_view_driver_keys_shadow_no_global_key() {
+        use crate::ui::screens::detail::DetailScreen;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run_dir = dir
+            .path()
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(LAUNCHER_RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::create_dir_all(dir.path().join(".planning")).unwrap();
+        crate::driver::steer::tests::write_run(
+            &run_dir,
+            &crate::driver::steer::tests::clean_body(),
+        );
+
+        // A fresh App on `tab`, with the launcher run listed and selected.
+        let fresh = |tab: DetailSubView| -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>) {
+            let (mut app, rx) = obs_app(dir.path());
+            app.ctx.recompute_filtered_aliases();
+            app.ctx.table_state.select(Some(0));
+            app.screen_stack
+                .push(Box::new(DetailScreen::new(OBS_ALIAS.to_string())));
+            app.ctx
+                .detail_sub_view_per_project
+                .insert(OBS_ALIAS.to_string(), tab);
+            let view = crate::state_reader::driver_frontmatter::read_driver_run(&run_dir)
+                .expect("the run reads");
+            let cache = app.ctx.view_cache.entry(OBS_ALIAS.to_string()).or_default();
+            cache.launcher_runs = vec![(LAUNCHER_RUN.to_string(), Ok(view))];
+            cache.launcher_listed = true;
+            cache.launcher_selected_id = Some(LAUNCHER_RUN.to_string());
+            (app, rx)
+        };
+        // What a key leaves behind: the top screen, whether the app is quitting, the mouse
+        // state, and whether the tab bar has focus (its footer).
+        let observe = |app: &App| {
+            (
+                top_screen_name(app),
+                app.should_quit,
+                app.mouse_capture,
+                render_top_screen(app).contains("[\u{2193}/Enter]open"),
+            )
+        };
+        let sub_view = |app: &App| app.ctx.detail_sub_view_per_project.get(OBS_ALIAS).cloned();
+
+        // (a) The tab-independent detail keys act exactly as they do on another tab.
+        for key in ['q', '?', 'M', 'D', '1', '2', '3', '4', '5', '6', '7', '8'] {
+            let modifiers = if key.is_ascii_uppercase() {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            let (mut driver, _rx1) = fresh(DetailSubView::Driver);
+            let (mut other, _rx2) = fresh(DetailSubView::GitHistory);
+            driver.handle_key(KeyCode::Char(key), modifiers);
+            other.handle_key(KeyCode::Char(key), modifiers);
+            assert_eq!(
+                observe(&driver),
+                observe(&other),
+                "{key:?} acts differently on the Driver tab"
+            );
+            if key.is_ascii_digit() || key == 'D' {
+                // A tab jump lands on the same tab from either side.
+                assert_eq!(
+                    sub_view(&driver),
+                    sub_view(&other),
+                    "{key:?} lands elsewhere"
+                );
+            } else {
+                // Everything else leaves the tab it was pressed on exactly where it was.
+                assert_eq!(sub_view(&driver), Some(DetailSubView::Driver), "{key:?}");
+                assert_eq!(sub_view(&other), Some(DetailSubView::GitHistory), "{key:?}");
+            }
+        }
+        // Ctrl+C still quits from the Driver tab and opens nothing.
+        let (mut driver, _rx) = fresh(DetailSubView::Driver);
+        driver.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(driver.should_quit);
+        assert!(
+            driver
+                .screen_stack
+                .iter()
+                .all(|s| s.name() != "driver_control"),
+            "Ctrl+C must not open the control chooser"
+        );
+
+        // (b) The keys this phase added keep their shipped meaning where they already had
+        // one: `[` / `]` switch the Sessions / Agents sub-tab, `a` adds to the queue.
+        let (mut sessions, _rx) = fresh(DetailSubView::Sessions);
+        sessions.handle_key(KeyCode::Char(']'), KeyModifiers::NONE);
+        assert_eq!(
+            sessions.ctx.detail_sub_view_per_project.get(OBS_ALIAS),
+            Some(&DetailSubView::Agents)
+        );
+        sessions.handle_key(KeyCode::Char('['), KeyModifiers::NONE);
+        assert_eq!(
+            sessions.ctx.detail_sub_view_per_project.get(OBS_ALIAS),
+            Some(&DetailSubView::Sessions)
+        );
+        let (mut queue, _rx) = fresh(DetailSubView::Queue);
+        queue.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            top_screen_name(&queue),
+            "enqueue",
+            "`a` on Queue still adds"
+        );
+        // On a tab that binds none of the seven, none of them reaches a Driver screen or
+        // sets a Driver status copy.
+        for key in ['c', 'a', 'u', 'R', 'L', '[', ']'] {
+            let (mut other, _rx) = fresh(DetailSubView::GitHistory);
+            other.handle_key(KeyCode::Char(key), KeyModifiers::NONE);
+            let name = top_screen_name(&other);
+            assert!(
+                !matches!(
+                    name.as_str(),
+                    "driver_control" | "driver_answer" | "driver_launch_form" | "driver_slug_input"
+                ),
+                "`{key}` opened {name} on GitHistory"
+            );
+            assert!(
+                other.ctx.status_message.is_none(),
+                "`{key}` set a status on GitHistory"
+            );
+            assert!(other.ctx.error_message.is_none());
+        }
+
+        // (c) Lower-case `r` on the Driver tab never opens the launch form; `R` does.
+        let (mut driver, _rx) = fresh(DetailSubView::Driver);
+        driver.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&driver), "detail");
+        driver.handle_key(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(top_screen_name(&driver), "driver_launch_form");
     }
 }

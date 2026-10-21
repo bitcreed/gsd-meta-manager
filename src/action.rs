@@ -45,6 +45,15 @@ impl From<&crate::driver::kill::StopOutcome> for StopDisposition {
     }
 }
 
+/// Why creating a new run produced no run directory (30-05, D-18).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewRunFailure {
+    /// The run id (carried) already exists; nothing was written.
+    Exists(String),
+    /// Anything else, already worded for the status line.
+    Other(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum Action {
     Tick,
@@ -560,6 +569,35 @@ pub enum Action {
         alias: String,
         run_id: String,
         args: crate::cli::LaunchArgs,
+    },
+    /// Enter on a valid slug in the new-run input (30-05, D-18). The handler mints the
+    /// run id from today's UTC date and creates the run directory with the same
+    /// `driver_templates::create_run_dir` that `driver new` calls, on `spawn_blocking`,
+    /// and answers [`Action::DriverNewRunCreated`].
+    DriverNewRunRequested {
+        alias: String,
+        slug: String,
+    },
+    /// The run was created (`Ok(run id)`) or was not. An id that already exists is its
+    /// own failure so the input can stay open with the buffer kept.
+    DriverNewRunCreated {
+        alias: String,
+        slug: String,
+        result: Result<String, NewRunFailure>,
+    },
+    /// The new run's DIRECTION.md was edited and `driver check` ran over it: the
+    /// problems block the launch, the warnings do not.
+    DriverNewRunChecked {
+        alias: String,
+        run_id: String,
+        problems: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// `n` on the `Check DIRECTION.md` popup: the new-run flow ends with the run created
+    /// and not launched.
+    DriverNewRunLeft {
+        alias: String,
+        run_id: String,
     },
     /// A launch finished. `Ok` carries the daemon's pid; `Err` is the already-worded
     /// failure (`launch_error_copy`), every one of which says nothing was started.

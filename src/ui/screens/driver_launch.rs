@@ -36,6 +36,7 @@ use ratatui::text::{Line, Span};
 use ratatui::Frame;
 #[cfg(target_os = "linux")]
 use std::path::Path;
+use std::sync::LazyLock;
 
 fn bold() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
@@ -1139,6 +1140,364 @@ impl Screen for UnsandboxedConfirmScreen {
     }
 }
 
+// ── A new run (D-18) ────────────────────────────────────────────────────────
+
+/// What the slug input says besides its preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewRunStatus {
+    /// The run id the slug would make exists already; nothing was written.
+    Exists(String),
+}
+
+static SLUG: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(crate::driver_templates::SLUG_RE).expect("static regex"));
+
+/// Why a slug cannot make a run id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlugProblem {
+    /// Nothing typed yet.
+    Empty,
+    /// It fails the slug pattern: ASCII, one path component, no leading `.` or `-`.
+    NotUsable,
+    /// The slug is fine but `<yyyymmdd>-<slug>` would pass the 80-byte run-id bound.
+    TooLong,
+}
+
+/// `<yyyymmdd>-<slug>` when `slug` makes a usable run id: the same two checks
+/// `driver new` makes (`SLUG_RE`, then the run-id shape with its 80-byte bound), so the
+/// input never offers an id the creation would refuse.
+pub fn slug_run_id(slug: &str, date: &str) -> Result<String, SlugProblem> {
+    if slug.is_empty() {
+        return Err(SlugProblem::Empty);
+    }
+    if !SLUG.is_match(slug) {
+        return Err(SlugProblem::NotUsable);
+    }
+    let run_id = format!("{date}-{slug}");
+    if !crate::state_reader::driver_frontmatter::is_plain_run_id(&run_id) {
+        return Err(SlugProblem::TooLong);
+    }
+    Ok(run_id)
+}
+
+/// The Red row for a slug that cannot be used.
+const SLUG_NOT_USABLE: &str =
+    "not usable: use letters, digits, \".\", \"_\" or \"-\", starting with a letter or digit";
+const SLUG_TOO_LONG: &str = "not usable: the run id <yyyymmdd>-<slug> may be at most 80 bytes";
+
+/// `A run named {run id} already exists. Pick another slug.`
+pub fn exists_copy(run_id: &str) -> String {
+    format!(
+        "A run named {} already exists. Pick another slug.",
+        shown(run_id)
+    )
+}
+
+/// `Created run {run id}. It is checked before launch.`
+pub fn created_copy(run_id: &str) -> String {
+    format!(
+        "Created run {}. It is checked before launch.",
+        shown(run_id)
+    )
+}
+
+/// `{run id} is created but not launched. Select it and press [R] to launch it.`
+pub fn left_unlaunched_copy(run_id: &str) -> String {
+    format!(
+        "{} is created but not launched. Select it and press [R] to launch it.",
+        shown(run_id)
+    )
+}
+
+/// `Could not create the run: {err}`
+pub fn create_failed_copy(error: &str) -> String {
+    format!("Could not create the run: {}", shown(error))
+}
+
+/// The longest slug the input takes: well past anything that makes a usable id, so the
+/// not-usable row can explain a too-long one instead of the keys going dead.
+const SLUG_INPUT_MAX_CHARS: usize = 90;
+
+/// `s`: the slug input, `New run slug> {buffer}_   [Enter] create  [Esc] cancel`, and
+/// under it the run id the slug would make (UTC date), or why it cannot.
+///
+/// Enter on an empty, unusable or already-submitted slug does nothing; a usable one
+/// dispatches [`Action::DriverNewRunRequested`] and waits for the App's answer. The App
+/// pops this screen when the run is created; when the id already exists it leaves the
+/// screen open and sets [`NewRunStatus::Exists`], which this screen shows under the
+/// buffer it kept.
+pub struct SlugInputScreen {
+    alias: String,
+    buffer: String,
+    /// A request is in flight: Enter does nothing until the App answers.
+    pending: bool,
+}
+
+impl SlugInputScreen {
+    pub fn new(alias: String) -> Self {
+        Self {
+            alias,
+            buffer: String::new(),
+            pending: false,
+        }
+    }
+
+    fn date() -> String {
+        chrono::Utc::now().format("%Y%m%d").to_string()
+    }
+}
+
+crate::ui::screens::adjudicate_screen!(
+    SlugInputScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints the Driver tab behind its footer rows (the registry alias and the run \
+     list), echoes the slug the operator typed or pasted, and names the run id an \
+     existing run already has (a directory name a cloned repository or a sibling \
+     sandbox chooses). Fixture states: the hostile identity as the buffer and as the \
+     existing run id.",
+);
+
+impl Screen for SlugInputScreen {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        // The App answered a request with "exists": the input is open again.
+        if ctx
+            .view_cache
+            .get(&self.alias)
+            .is_some_and(|cache| cache.new_run_status.is_some())
+        {
+            self.pending = false;
+        }
+        let edited = |this: &mut Self, ctx: &mut AppContext| {
+            this.pending = false;
+            if let Some(cache) = ctx.view_cache.get_mut(&this.alias) {
+                cache.new_run_status = None;
+            }
+            ctx.needs_redraw = true;
+        };
+        match code {
+            KeyCode::Esc => {
+                ctx.needs_redraw = true;
+                ScreenAction::Pop
+            }
+            KeyCode::Backspace => {
+                self.buffer.pop();
+                edited(self, ctx);
+                ScreenAction::None
+            }
+            KeyCode::Char(c) => {
+                if self.buffer.chars().count() < SLUG_INPUT_MAX_CHARS {
+                    self.buffer.push(c);
+                    edited(self, ctx);
+                }
+                ScreenAction::None
+            }
+            KeyCode::Enter => {
+                // An id that exists is final until the slug changes: the row under the
+                // buffer says to pick another one.
+                let exists = ctx
+                    .view_cache
+                    .get(&self.alias)
+                    .is_some_and(|cache| cache.new_run_status.is_some());
+                if self.pending || exists || slug_run_id(&self.buffer, &Self::date()).is_err() {
+                    return ScreenAction::None;
+                }
+                self.pending = true;
+                dispatch(
+                    ctx,
+                    Action::DriverNewRunRequested {
+                        alias: self.alias.clone(),
+                        slug: self.buffer.clone(),
+                    },
+                    &self.alias,
+                );
+                ScreenAction::None
+            }
+            _ => ScreenAction::None,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let hint = "   [Enter] create  [Esc] cancel";
+        let prompt = "  New run slug> ";
+        let room = usize::from(area.width)
+            .saturating_sub(Span::raw(prompt).width())
+            .saturating_sub(1)
+            .saturating_sub(Span::raw(hint).width());
+        let echoed = super::driver_steer::tail_cells(
+            crate::text::render_for_terminal(&self.buffer).as_ref(),
+            room,
+        );
+        let first = Line::from(vec![
+            Span::styled(prompt, bold()),
+            Span::raw(echoed),
+            Span::raw("_"),
+            Span::styled(hint, muted()),
+        ]);
+        let exists = ctx
+            .view_cache
+            .get(&self.alias)
+            .and_then(|cache| cache.new_run_status.as_ref());
+        let date = Self::date();
+        let second = match (exists, slug_run_id(&self.buffer, &date)) {
+            (Some(NewRunStatus::Exists(run_id)), _) => Line::from(Span::styled(
+                format!("      {}", exists_copy(run_id)),
+                Style::default().fg(Color::Red),
+            )),
+            (None, Ok(run_id)) => Line::from(Span::styled(
+                format!("      run id: {}", shown(&run_id)),
+                muted(),
+            )),
+            (None, Err(SlugProblem::Empty)) => {
+                Line::from(Span::styled(format!("      run id: {date}-"), muted()))
+            }
+            (None, Err(SlugProblem::NotUsable)) => Line::from(Span::styled(
+                format!("      {SLUG_NOT_USABLE}"),
+                Style::default().fg(Color::Red),
+            )),
+            (None, Err(SlugProblem::TooLong)) => Line::from(Span::styled(
+                format!("      {SLUG_TOO_LONG}"),
+                Style::default().fg(Color::Red),
+            )),
+        };
+        let chunks = ratatui::layout::Layout::vertical([
+            ratatui::layout::Constraint::Min(0),
+            ratatui::layout::Constraint::Length(2),
+        ])
+        .split(area);
+        let detail = super::detail::DetailScreen::new(self.alias.clone());
+        detail.render_main_only(frame, chunks[0], ctx);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(vec![first, second]),
+            chunks[1],
+        );
+    }
+
+    fn name(&self) -> &str {
+        "driver_slug_input"
+    }
+}
+
+/// How many problems the `Check DIRECTION.md` popup lists before `… k more`.
+const POPUP_PROBLEMS_SHOWN: usize = 8;
+
+/// `Check DIRECTION.md`: `driver check` found problems in the new run's edited body.
+/// Launch is blocked until they are fixed. `y` opens the editor on the body again (the
+/// new-run flow carries on from the edit), `n` and Esc leave the run created and
+/// unlaunched. A Red `ConfirmPopup`, default focus No.
+pub struct LintPopupScreen {
+    alias: String,
+    run_id: String,
+    problems: Vec<String>,
+    popup: ConfirmPopup,
+}
+
+impl LintPopupScreen {
+    pub fn new(alias: String, run_id: String, problems: Vec<String>) -> Self {
+        Self {
+            alias,
+            run_id,
+            problems,
+            popup: ConfirmPopup::default(),
+        }
+    }
+}
+
+crate::ui::screens::adjudicate_screen!(
+    LintPopupScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints the Driver tab behind a dimmed popup (the registry alias and the run list) \
+     and lists the `driver check` findings of the new run's DIRECTION.md, each quoting \
+     text from a file the operator edited and drawn through `render_for_terminal`. The \
+     run id is carried for the dispatch and never drawn. Fixture states: the hostile \
+     identity as a finding.",
+);
+
+impl Screen for LintPopupScreen {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => {
+                dispatch(
+                    ctx,
+                    Action::DriverEditRequested {
+                        alias: self.alias.clone(),
+                        run_id: self.run_id.clone(),
+                    },
+                    &self.alias,
+                );
+                ScreenAction::Pop
+            }
+            ConfirmOutcome::Cancel => {
+                dispatch(
+                    ctx,
+                    Action::DriverNewRunLeft {
+                        alias: self.alias.clone(),
+                        run_id: self.run_id.clone(),
+                    },
+                    &self.alias,
+                );
+                ScreenAction::Pop
+            }
+            ConfirmOutcome::Pending => {
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let detail = super::detail::DetailScreen::new(self.alias.clone());
+        detail.render_main_only(frame, area, ctx);
+        dim_background(frame, area);
+        let n = self.problems.len();
+        let red = Style::default().fg(Color::Red);
+        let mut body: Vec<Line<'static>> = vec![Line::from(Span::styled(
+            format!("driver check found {n} problem(s). Launch is blocked until they are fixed:"),
+            red,
+        ))];
+        for problem in self.problems.iter().take(POPUP_PROBLEMS_SHOWN) {
+            body.push(Line::from(Span::styled(
+                format!("  {}", shown(problem)),
+                red,
+            )));
+        }
+        if n > POPUP_PROBLEMS_SHOWN {
+            body.push(Line::from(Span::styled(
+                format!("  \u{2026} {} more", n - POPUP_PROBLEMS_SHOWN),
+                muted(),
+            )));
+        }
+        body.push(Line::from("Edit it again now?"));
+        self.popup.record(render_confirm_popup(
+            frame,
+            area,
+            "Check DIRECTION.md",
+            body,
+            Color::Red,
+            self.popup.focus,
+        ));
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
+    }
+
+    fn name(&self) -> &str {
+        "driver_lint_popup"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2191,6 +2550,268 @@ mod tests {
                     || copy.ends_with("Nothing was started.")
                     || copy.contains("Nothing was started."),
                 "every failure says nothing was started, or that it was refused: {copy}"
+            );
+        }
+    }
+
+    // ── Task 3: a new run (D-18) ─────────────────────────────────────────────
+
+    fn slug_screen() -> (SlugInputScreen, AppContext, UnboundedReceiver<Action>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, rx) = ctx_with_project(dir.path());
+        (SlugInputScreen::new(ALIAS.to_string()), ctx, rx)
+    }
+
+    fn type_slug(screen: &mut SlugInputScreen, ctx: &mut AppContext, text: &str) {
+        for c in text.chars() {
+            screen.handle_key(KeyCode::Char(c), KeyModifiers::NONE, ctx);
+        }
+    }
+
+    #[test]
+    fn launcher_new_run_the_slug_makes_a_run_id_or_says_why_not() {
+        assert_eq!(
+            slug_run_id("tab", "20261020"),
+            Ok("20261020-tab".to_string())
+        );
+        assert_eq!(
+            slug_run_id("a.b_c-d", "20261020").unwrap(),
+            "20261020-a.b_c-d"
+        );
+        assert_eq!(slug_run_id("", "20261020"), Err(SlugProblem::Empty));
+        for bad in ["-x", ".x", "_x", "a/b", "a b", "a\u{e4}", "x\u{1b}", "a\nb"] {
+            assert_eq!(
+                slug_run_id(bad, "20261020"),
+                Err(SlugProblem::NotUsable),
+                "{bad:?}"
+            );
+        }
+        // 9 bytes of `yyyymmdd-` plus the slug: 71 is the longest, 72 is one too many.
+        assert!(slug_run_id(&"a".repeat(71), "20261020").is_ok());
+        assert_eq!(
+            slug_run_id(&"a".repeat(72), "20261020"),
+            Err(SlugProblem::TooLong)
+        );
+    }
+
+    /// The input never offers an id `driver new` would refuse.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_new_run_the_preview_agrees_with_the_id_driver_new_mints() {
+        use chrono::TimeZone;
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 20, 12, 0, 0)
+            .single()
+            .expect("an instant");
+        let long = "a".repeat(72);
+        for slug in [
+            "tab",
+            "a.b",
+            "-x",
+            ".x",
+            "a/b",
+            "",
+            "x y",
+            &"b".repeat(71),
+            long.as_str(),
+            "Z9",
+        ] {
+            assert_eq!(
+                slug_run_id(slug, "20261020").ok(),
+                crate::driver_templates::mint_run_id(slug, now).ok(),
+                "{slug:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn launcher_new_run_the_input_previews_the_id_and_shows_the_not_usable_copy() {
+        let (mut screen, mut ctx, _rx) = slug_screen();
+        let date = chrono::Utc::now().format("%Y%m%d").to_string();
+        let text = draw(&screen, &ctx, 100, 20);
+        assert!(
+            text.contains("New run slug> _   [Enter] create  [Esc] cancel"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("run id: {date}-")), "{text}");
+        type_slug(&mut screen, &mut ctx, "tab");
+        let text = draw(&screen, &ctx, 100, 20);
+        assert!(text.contains("New run slug> tab_"), "{text}");
+        assert!(text.contains(&format!("run id: {date}-tab")), "{text}");
+        for bad in ["-x", ".x", "a/b"] {
+            let (mut screen, mut ctx, _rx) = slug_screen();
+            type_slug(&mut screen, &mut ctx, bad);
+            let text = draw(&screen, &ctx, 120, 20);
+            assert!(
+                text.contains(
+                    "not usable: use letters, digits, \".\", \"_\" or \"-\", starting with a letter or digit"
+                ),
+                "{bad}:\n{text}"
+            );
+        }
+        let (mut screen, mut ctx, _rx) = slug_screen();
+        type_slug(&mut screen, &mut ctx, &"a".repeat(72));
+        let text = draw(&screen, &ctx, 120, 20);
+        assert!(text.contains("not usable: the run id"), "{text}");
+        assert!(text.contains("may be at most 80 bytes"), "{text}");
+    }
+
+    #[test]
+    fn launcher_new_run_enter_on_an_empty_or_unusable_slug_does_nothing() {
+        for slug in ["", "-x", "a/b"] {
+            let (mut screen, mut ctx, mut rx) = slug_screen();
+            type_slug(&mut screen, &mut ctx, slug);
+            let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::None), "{slug:?}");
+            assert!(rx.try_recv().is_err(), "{slug:?} dispatches nothing");
+        }
+    }
+
+    #[test]
+    fn launcher_new_run_enter_dispatches_once_and_a_second_enter_while_pending_is_inert() {
+        let (mut screen, mut ctx, mut rx) = slug_screen();
+        type_slug(&mut screen, &mut ctx, "tab");
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "the screen stays until the App answers"
+        );
+        let Some(Action::DriverNewRunRequested { alias, slug }) = rx.try_recv().ok() else {
+            panic!("Enter must dispatch the creation");
+        };
+        assert_eq!((alias.as_str(), slug.as_str()), (ALIAS, "tab"));
+        screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(rx.try_recv().is_err(), "pending: a second Enter is inert");
+    }
+
+    #[test]
+    fn launcher_new_run_an_existing_run_keeps_the_buffer_and_asks_for_another_slug() {
+        let (mut screen, mut ctx, mut rx) = slug_screen();
+        type_slug(&mut screen, &mut ctx, "tab");
+        screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        let _ = rx.try_recv();
+        // The App's answer.
+        ctx.view_cache
+            .entry(ALIAS.to_string())
+            .or_default()
+            .new_run_status = Some(NewRunStatus::Exists("20261020-tab".to_string()));
+        let text = draw(&screen, &ctx, 100, 20);
+        assert!(
+            text.contains("New run slug> tab_"),
+            "the buffer is kept:\n{text}"
+        );
+        assert!(
+            text.contains("A run named 20261020-tab already exists. Pick another slug."),
+            "{text}"
+        );
+        // Enter on the same slug does nothing; editing clears the row and re-arms Enter.
+        screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(rx.try_recv().is_err());
+        type_slug(&mut screen, &mut ctx, "2");
+        assert!(ctx.view_cache[ALIAS].new_run_status.is_none());
+        screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        let Some(Action::DriverNewRunRequested { slug, .. }) = rx.try_recv().ok() else {
+            panic!("another slug can be submitted");
+        };
+        assert_eq!(slug, "tab2");
+    }
+
+    #[test]
+    fn launcher_new_run_escape_cancels_and_backspace_edits() {
+        let (mut screen, mut ctx, mut rx) = slug_screen();
+        type_slug(&mut screen, &mut ctx, "abc");
+        screen.handle_key(KeyCode::Backspace, KeyModifiers::NONE, &mut ctx);
+        let text = draw(&screen, &ctx, 100, 20);
+        assert!(text.contains("New run slug> ab_"), "{text}");
+        assert!(matches!(
+            screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx),
+            ScreenAction::Pop
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_new_run_the_copy_is_the_spec_text() {
+        assert_eq!(
+            created_copy("20261020-tab"),
+            "Created run 20261020-tab. It is checked before launch."
+        );
+        assert_eq!(
+            exists_copy("20261020-tab"),
+            "A run named 20261020-tab already exists. Pick another slug."
+        );
+        assert_eq!(
+            left_unlaunched_copy("20261020-tab"),
+            "20261020-tab is created but not launched. Select it and press [R] to launch it."
+        );
+        assert_eq!(
+            create_failed_copy("disk full"),
+            "Could not create the run: disk full"
+        );
+        assert!(!created_copy("a\u{1b}b").contains('\u{1b}'));
+    }
+
+    fn lint_popup(problems: usize) -> (LintPopupScreen, AppContext, UnboundedReceiver<Action>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, rx) = ctx_with_project(dir.path());
+        (
+            LintPopupScreen::new(
+                ALIAS.to_string(),
+                RUN.to_string(),
+                (1..=problems)
+                    .map(|n| format!("DIRECTION.md:{n}: unfilled placeholder {{short title}}"))
+                    .collect(),
+            ),
+            ctx,
+            rx,
+        )
+    }
+
+    #[test]
+    fn launcher_new_run_the_lint_popup_lists_the_problems_and_blocks_launch() {
+        let (screen, ctx, _rx) = lint_popup(10);
+        let text = draw(&screen, &ctx, 110, 36);
+        assert!(text.contains("Check DIRECTION.md"), "{text}");
+        assert!(
+            text.contains("driver check found 10 problem(s). Launch is blocked until they are"),
+            "{text}"
+        );
+        assert!(text.contains("fixed:"), "{text}");
+        assert!(
+            text.contains("DIRECTION.md:1: unfilled placeholder"),
+            "{text}"
+        );
+        assert!(
+            text.contains("DIRECTION.md:8: unfilled placeholder"),
+            "{text}"
+        );
+        assert!(!text.contains("DIRECTION.md:9:"), "cut at eight:\n{text}");
+        assert!(text.contains("\u{2026} 2 more"), "{text}");
+        assert!(text.contains("Edit it again now?"), "{text}");
+    }
+
+    #[test]
+    fn launcher_new_run_y_edits_again_and_n_leaves_the_run_unlaunched() {
+        let (mut screen, mut ctx, mut rx) = lint_popup(2);
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        let Some(Action::DriverEditRequested { alias, run_id }) = rx.try_recv().ok() else {
+            panic!("y must re-open the editor");
+        };
+        assert_eq!((alias.as_str(), run_id.as_str()), (ALIAS, RUN));
+        assert!(rx.try_recv().is_err());
+
+        for key in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Enter] {
+            let (mut screen, mut ctx, mut rx) = lint_popup(2);
+            let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::Pop), "{key:?}");
+            let Some(Action::DriverNewRunLeft { run_id, .. }) = rx.try_recv().ok() else {
+                panic!("{key:?} must end the flow");
+            };
+            assert_eq!(run_id, RUN);
+            assert!(
+                rx.try_recv().is_err(),
+                "{key:?} never opens the editor or the form"
             );
         }
     }

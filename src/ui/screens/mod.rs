@@ -1255,6 +1255,10 @@ pub struct ProjectViewCache {
     /// a result whose run id is not its own. The R key clears it before it opens a form,
     /// so a form never shows the verdict of an earlier one.
     pub launch_preflight: Option<(String, driver_launch::LaunchPreflight)>,
+    /// What the new-run slug input shows besides its preview (30-05, D-18): today only
+    /// that the run it asked for already exists. Cleared when the input opens and on
+    /// every edit of the slug.
+    pub new_run_status: Option<driver_launch::NewRunStatus>,
     /// Whether the collapsed `legacy runs` section is expanded (`L`, 30-01, D-01).
     /// The section exists only while `driver_runs` is non-empty.
     pub legacy_expanded: bool,

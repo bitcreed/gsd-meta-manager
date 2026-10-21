@@ -1,5 +1,4 @@
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
-use super::driver_start::DriverStartScreen;
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
@@ -5483,12 +5482,27 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
-            // `s`: the start flow (Surface 5), which asks for the command and
-            // the goal before it reaches the confirmation the dashboard's `r`
-            // reaches directly.
+            // `s`: start a NEW RUN (30-05, D-02, D-18): ask for a slug, create the run,
+            // open its DIRECTION.md in the editor, check it, then offer the launch. It no
+            // longer opens the legacy command-and-goal start flow (that screen stays
+            // compiled for Phase 31; the dashboard's `r` is untouched). The handler opens
+            // a screen and touches no file; a build that cannot write is inert and says so.
             KeyCode::Char('s') if current_view == DetailSubView::Driver => {
                 ctx.needs_redraw = true;
-                ScreenAction::Push(Box::new(DriverStartScreen::new(self.alias.clone())))
+                if !super::driver_steer::can_steer() {
+                    ctx.status_message = Some((
+                        super::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+                        std::time::Instant::now(),
+                    ));
+                    return ScreenAction::None;
+                }
+                ctx.view_cache
+                    .entry(self.alias.clone())
+                    .or_default()
+                    .new_run_status = None;
+                ScreenAction::Push(Box::new(super::driver_launch::SlugInputScreen::new(
+                    self.alias.clone(),
+                )))
             }
             // `R`: launch or relaunch the SELECTED launcher run through the launch form
             // (30-05, D-19, D-21). Capital `R` only: lower-case `r` is the dashboard's
@@ -20742,11 +20756,39 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn pressing_s_on_the_driver_tab_pushes_the_start_flow() {
+    fn pressing_s_on_the_driver_tab_pushes_the_new_run_slug_input_not_the_start_flow() {
+        let (mut screen, mut ctx, _rx) = driver_action_fixture();
+        let alias = screen.alias.clone();
+        ctx.view_cache
+            .entry(alias.clone())
+            .or_default()
+            .new_run_status = Some(crate::ui::screens::driver_launch::NewRunStatus::Exists(
+            "stale".to_string(),
+        ));
+        let action = screen.handle_key(KeyCode::Char('s'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_slug_input"),
+            "`s` starts a new run, not the legacy command-and-goal flow"
+        );
+        assert!(
+            ctx.view_cache[&alias].new_run_status.is_none(),
+            "an earlier input's `already exists` does not carry over"
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn pressing_s_on_a_build_that_cannot_write_is_inert_and_says_why() {
         let (mut screen, mut ctx, _rx) = driver_action_fixture();
         let action = screen.handle_key(KeyCode::Char('s'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_start"));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.map(|(text, _)| text).as_deref(),
+            Some("read-only: steering needs Linux")
+        );
     }
 
     /// `x` kills **through the existing confirmation** and never directly: the
@@ -26086,6 +26128,28 @@ mod tests {
             Some(phase_target("23")),
             "wraps backwards"
         );
+    }
+
+    /// 30-05 (keymap collision check): the Driver tab's `c a u R L s` keys are scoped to
+    /// that tab. On the Roadmap they open nothing and set nothing, and the wave brackets
+    /// move the cursor exactly as `roadmap_l_and_brackets_follow_edges_and_waves` has it.
+    #[test]
+    fn launcher_view_driver_only_keys_leave_the_roadmap_alone() {
+        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
+        set_roadmap_cursor(&mut ctx, phase_target("22"));
+        for key in ['c', 'a', 'u', 'R', 'L', 's'] {
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+            assert!(
+                pushed_screen_name(&action).is_none(),
+                "`{key}` opened a screen on the Roadmap"
+            );
+            assert!(ctx.status_message.is_none(), "`{key}` set a status message");
+        }
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")));
+        press(&mut screen, &mut ctx, KeyCode::Char(']'));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("23")));
+        press(&mut screen, &mut ctx, KeyCode::Char('['));
+        assert_eq!(resolved_cursor(&ctx), Some(phase_target("22")));
     }
 
     #[test]
