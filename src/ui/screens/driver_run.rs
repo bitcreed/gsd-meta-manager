@@ -2807,6 +2807,10 @@ pub struct DriverKeys {
     /// This build cannot steer (not Linux): `c`, `a`, `u`, `e` are absent and the
     /// footer says why (D-14).
     pub read_only_platform: bool,
+    /// `R`: the selected launcher run may be launched (`Launch`, never launched) or
+    /// relaunched (`Relaunch`), and this build can launch (30-05, D-21). `None` for a
+    /// running run, an unknown liveness, a done run, a legacy row or a non-Linux build.
+    pub launch: Option<super::driver_launch::LaunchKind>,
 }
 
 /// The keys available for `alias`'s current selection. Pure over the context.
@@ -2840,6 +2844,15 @@ pub fn driver_keys(ctx: &AppContext, alias: &str) -> DriverKeys {
         edit: super::driver_steer::can_steer()
             && matches!(steer_target(cache), SteerTarget::Run { .. }),
         read_only_platform: !super::driver_steer::can_steer(),
+        launch: match (sel, cache) {
+            (Selection::Launcher(index), Some(cache)) if super::driver_steer::can_steer() => cache
+                .launcher_runs[index]
+                .1
+                .as_ref()
+                .ok()
+                .and_then(|view| super::driver_launch::launch_kind_for(&view.derived).ok()),
+            _ => None,
+        },
     }
 }
 

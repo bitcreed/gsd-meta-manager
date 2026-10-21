@@ -6,6 +6,7 @@ pub mod detail;
 pub mod driver;
 pub mod driver_confirm;
 pub mod driver_inject;
+pub mod driver_launch;
 pub mod driver_run;
 pub mod driver_start;
 pub mod driver_steer;
@@ -1247,6 +1248,13 @@ pub struct ProjectViewCache {
     /// parked item, else `current_item`, else the first row when the selection
     /// changes or the id is no longer listed.
     pub launcher_item_cursor: Option<String>,
+    /// The launch form's host check and `driver check` verdict for the run the form is
+    /// open on (30-05, D-20): the run id it was computed for, and the plain-data result.
+    ///
+    /// Written by `Action::DriverLaunchPreflighted` and read by the form, which ignores
+    /// a result whose run id is not its own. The R key clears it before it opens a form,
+    /// so a form never shows the verdict of an earlier one.
+    pub launch_preflight: Option<(String, driver_launch::LaunchPreflight)>,
     /// Whether the collapsed `legacy runs` section is expanded (`L`, 30-01, D-01).
     /// The section exists only while `driver_runs` is non-empty.
     pub legacy_expanded: bool,

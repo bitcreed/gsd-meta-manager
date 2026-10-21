@@ -5490,6 +5490,81 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(DriverStartScreen::new(self.alias.clone())))
             }
+            // `R`: launch or relaunch the SELECTED launcher run through the launch form
+            // (30-05, D-19, D-21). Capital `R` only: lower-case `r` is the dashboard's
+            // key and means nothing here. A run that is running, whose liveness is
+            // unknown, or that is done opens no form and says why; a legacy row is
+            // read-only. The handler opens a screen and dispatches the host check; it
+            // starts nothing (D-25) and a build that cannot launch (not Linux) is inert.
+            KeyCode::Char('R') if current_view == DetailSubView::Driver => {
+                use super::driver_launch::{
+                    launch_kind_for, refusal_copy, relaunch_prefill, LaunchForm, LaunchFormScreen,
+                    LaunchKind,
+                };
+                use super::driver_run::{selection, Selection};
+                ctx.needs_redraw = true;
+                if !super::driver_steer::can_steer() {
+                    ctx.status_message = Some((
+                        super::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+                        std::time::Instant::now(),
+                    ));
+                    return ScreenAction::None;
+                }
+                let cache = ctx.view_cache.get(&self.alias);
+                let opened = match (selection(cache), cache) {
+                    (Selection::Launcher(index), Some(cache)) => {
+                        let (run_id, entry) = &cache.launcher_runs[index];
+                        match entry {
+                            Err(_) => Err(format!(
+                                "{} could not be read, so it cannot be launched.",
+                                super::driver::shown_capped(run_id)
+                            )),
+                            Ok(view) => match launch_kind_for(&view.derived) {
+                                Ok(kind) => {
+                                    let form = match kind {
+                                        LaunchKind::Relaunch => relaunch_prefill(&view.frontmatter),
+                                        LaunchKind::Launch => LaunchForm::fresh(),
+                                    };
+                                    Ok((run_id.clone(), kind, form))
+                                }
+                                Err(refusal) => Err(refusal_copy(run_id, &refusal)),
+                            },
+                        }
+                    }
+                    (Selection::Legacy(_), _) => {
+                        Err(super::driver_run::LEGACY_READ_ONLY.to_string())
+                    }
+                    _ => return ScreenAction::None,
+                };
+                match opened {
+                    Err(message) => {
+                        ctx.status_message = Some((message, std::time::Instant::now()));
+                        ScreenAction::None
+                    }
+                    Ok((run_id, kind, form)) => {
+                        // A form never shows an earlier form's verdict: clear it, ask
+                        // again, and let `Sandbox: Loading...` stand until it lands.
+                        ctx.view_cache
+                            .entry(self.alias.clone())
+                            .or_default()
+                            .launch_preflight = None;
+                        super::driver_confirm::dispatch(
+                            ctx,
+                            Action::DriverLaunchPreflightRequested {
+                                alias: self.alias.clone(),
+                                run_id: run_id.clone(),
+                            },
+                            &self.alias,
+                        );
+                        ScreenAction::Push(Box::new(LaunchFormScreen::new(
+                            self.alias.clone(),
+                            run_id,
+                            kind,
+                            form,
+                        )))
+                    }
+                }
+            }
             // `x`: kill the SELECTED launcher run's sandbox scope, **through the
             // confirmation** and never directly (30-01, D-22).
             //
@@ -10628,6 +10703,15 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
     }
     if keys.start {
         tokens.push(FooterToken::hint("[s]", "tart  ", 2));
+    }
+    match keys.launch {
+        Some(super::driver_launch::LaunchKind::Launch) => {
+            tokens.push(FooterToken::hint("[R]", "launch  ", 1));
+        }
+        Some(super::driver_launch::LaunchKind::Relaunch) => {
+            tokens.push(FooterToken::hint("[R]", "elaunch  ", 1));
+        }
+        None => {}
     }
     if keys.kill {
         tokens.push(FooterToken::hint("[x]", "kill  ", 1));
@@ -17318,6 +17402,7 @@ mod tests {
             unhold: false,
             edit: false,
             read_only_platform: false,
+            launch: None,
         }
     }
 
@@ -17423,6 +17508,7 @@ mod tests {
             unhold: false,
             edit: false,
             read_only_platform: false,
+            launch: None,
         };
         let text = driver_footer_text(200, &on_legacy);
         assert!(text.contains("legacy run: read-only"), "{text}");
@@ -17434,7 +17520,7 @@ mod tests {
     /// five widths the UI-SPEC names, for every combination of available keys.
     #[test]
     fn the_driver_footer_fits_its_width_and_always_ends_with_help() {
-        for bits in 0u16..2048 {
+        for bits in 0u16..8192 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17447,6 +17533,11 @@ mod tests {
                 answer: bits & 256 != 0,
                 unhold: bits & 512 != 0,
                 edit: bits & 1024 != 0,
+                launch: match (bits >> 11) & 3 {
+                    1 => Some(super::super::driver_launch::LaunchKind::Launch),
+                    2 => Some(super::super::driver_launch::LaunchKind::Relaunch),
+                    _ => None,
+                },
             };
             for width in [40u16, 60, 80, 100, 160] {
                 let text = driver_footer_text(width, &keys);
@@ -17477,6 +17568,7 @@ mod tests {
             unhold: false,
             edit: false,
             read_only_platform: false,
+            launch: None,
         };
         // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 10 + 7 = 98 cells.
         let full = driver_footer_text(98, &keys);
@@ -17511,7 +17603,7 @@ mod tests {
 
     #[test]
     fn the_driver_footer_names_no_retired_key_at_any_width() {
-        for bits in 0u16..2048 {
+        for bits in 0u16..8192 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17524,6 +17616,11 @@ mod tests {
                 answer: bits & 256 != 0,
                 unhold: bits & 512 != 0,
                 edit: bits & 1024 != 0,
+                launch: match (bits >> 11) & 3 {
+                    1 => Some(super::super::driver_launch::LaunchKind::Launch),
+                    2 => Some(super::super::driver_launch::LaunchKind::Relaunch),
+                    _ => None,
+                },
             };
             for width in [40u16, 60, 80, 100, 160, 300] {
                 let text = driver_footer_text(width, &keys);

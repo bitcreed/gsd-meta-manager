@@ -378,6 +378,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("EditLintConfirmScreen", "src/ui/screens/driver_steer.rs"),
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
     ("HelpScreen", "src/ui/screens/help.rs"),
+    ("LaunchFormScreen", "src/ui/screens/driver_launch.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
     ("PoliteStopScreen", "src/ui/screens/driver_steer.rs"),
     ("PreferencesScreen", "src/ui/screens/preferences.rs"),
@@ -2327,6 +2328,75 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     vec![format!("DIRECTION.md:3: {identity}"), identity.to_string()],
                 ))
             })
+        }),
+
+        // The launch form (30-05): the hostile identity is the run id, the alias, the
+        // model, a missing sandbox piece, the live control word and a lint finding, over
+        // every detail tab. Extra states draw the claude refusal and a field being
+        // typed into, which echoes the buffer.
+        "LaunchFormScreen" => Some(|identity| {
+            use super::driver_launch::{LaunchForm, LaunchFormScreen, LaunchKind, LaunchPreflight};
+            use crossterm::event::{KeyCode, KeyModifiers};
+            let seed = |identity: &str, ctx: &mut AppContext, preflight: LaunchPreflight| {
+                ctx.view_cache
+                    .entry(identity.to_string())
+                    .or_default()
+                    .launch_preflight = Some((identity.to_string(), preflight));
+            };
+            let hostile_form = |identity: &str| {
+                let mut form = LaunchForm::fresh();
+                form.args.model = identity.to_string();
+                form
+            };
+            let degraded = |identity: &str| LaunchPreflight {
+                missing: vec![identity.to_string()],
+                claude_refusal: None,
+                control: Some(identity.to_string()),
+                lint_problems: vec![format!("DIRECTION.md:3: {identity}")],
+                lint_warnings: vec![format!("DIRECTION.md:4: warning: {identity}")],
+            };
+            let mut states = states_over_sub_views(identity, &|identity, ctx| {
+                seed(identity, ctx, degraded(identity));
+                Box::new(LaunchFormScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    LaunchKind::Relaunch,
+                    hostile_form(identity),
+                ))
+            });
+            let mut refused_ctx = probe_ctx(identity);
+            seed(
+                identity,
+                &mut refused_ctx,
+                LaunchPreflight {
+                    claude_refusal: Some(identity.to_string()),
+                    ..LaunchPreflight::default()
+                },
+            );
+            states.push(one_state(
+                "claude refusal",
+                refused_ctx,
+                Box::new(LaunchFormScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    LaunchKind::Launch,
+                    hostile_form(identity),
+                )),
+            ));
+            let mut typing_ctx = probe_ctx(identity);
+            seed(identity, &mut typing_ctx, LaunchPreflight::default());
+            let mut typing = LaunchFormScreen::new(
+                identity.to_string(),
+                identity.to_string(),
+                LaunchKind::Launch,
+                LaunchForm::fresh(),
+            );
+            typing.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut typing_ctx);
+            for ch in identity.chars() {
+                typing.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, &mut typing_ctx);
+            }
+            states.push(one_state("model being typed", typing_ctx, Box::new(typing)));
+            states
         }),
 
         // The polite-stop confirmation (30-04): the hostile identity is the run id its

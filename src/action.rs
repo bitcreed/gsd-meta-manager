@@ -536,6 +536,38 @@ pub enum Action {
         run_id: String,
         error: Option<String>,
     },
+    /// `R` opened the launch form for `run_id` (30-05, D-20): run the host check and the
+    /// `driver check` lint on `spawn_blocking` and answer
+    /// [`Action::DriverLaunchPreflighted`]. Until that answer arrives the form shows
+    /// `Sandbox: Loading...` and `y` does nothing.
+    DriverLaunchPreflightRequested {
+        alias: String,
+        run_id: String,
+    },
+    /// The preflight finished. Plain data, stored on the project's view cache under the
+    /// run id it was computed for.
+    DriverLaunchPreflighted {
+        alias: String,
+        run_id: String,
+        preflight: crate::ui::screens::driver_launch::LaunchPreflight,
+    },
+    /// `y` on the launch form (30-05, D-19). `args` is the confirmed `driver launch`
+    /// argument set (plain data; `unsandboxed` is true only from the separate
+    /// confirmation). The handler builds the launcher options and calls the launcher
+    /// library's detached launch on `spawn_blocking`, then answers
+    /// [`Action::DriverLaunched`]. The run it starts outlives this process.
+    DriverLaunchRequested {
+        alias: String,
+        run_id: String,
+        args: crate::cli::LaunchArgs,
+    },
+    /// A launch finished. `Ok` carries the daemon's pid; `Err` is the already-worded
+    /// failure (`launch_error_copy`), every one of which says nothing was started.
+    DriverLaunched {
+        alias: String,
+        run_id: String,
+        result: Result<u32, String>,
+    },
 }
 
 #[cfg(test)]

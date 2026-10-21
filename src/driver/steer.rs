@@ -608,7 +608,10 @@ pub enum PrepareError {
 }
 
 /// Read `<run_dir>/DIRECTION.md` whole, refusing one past [`EDIT_TEMP_MAX_BYTES`].
-fn read_direction(run_dir: &Path) -> Result<String, String> {
+///
+/// Public so the Driver tab's launch preflight and new-run check read the file under
+/// the same cap the edit flow uses (30-05). **Blocking: `spawn_blocking` only.**
+pub fn read_direction(run_dir: &Path) -> Result<String, String> {
     let path = run_dir.join(crate::driver::direction::DIRECTION_FILE);
     let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     read_capped(file, &path)

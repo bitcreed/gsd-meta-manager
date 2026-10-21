@@ -573,6 +573,43 @@ pub struct LaunchArgs {
     pub unsandboxed: bool,
 }
 
+/// `driver launch`'s own parser, reachable without a command line (30-05, D-19).
+///
+/// The Driver tab's launch form needs the launch defaults and a per-field validity
+/// verdict, and both belong to clap: a TUI copy of `10.0`, `60.0` or the bounds of
+/// `positive_finite` would be a second judge of the same values. Flattening
+/// [`LaunchArgs`] into a private parser lets the form ask the real one.
+#[derive(Parser, Debug)]
+#[command(name = "launch", disable_help_flag = true, disable_version_flag = true)]
+struct LaunchFieldParser {
+    #[command(flatten)]
+    args: LaunchArgs,
+}
+
+/// The two positionals every launch parse needs. The caller never uses them: the form
+/// carries the run's real id and project itself.
+const LAUNCH_PLACEHOLDERS: [&str; 3] = ["launch", "_", "_"];
+
+/// What `driver launch <project> <run>` means with no flag given: the clap defaults of
+/// [`LaunchArgs`]. `project` and `run_id` hold placeholders.
+pub fn launch_defaults() -> LaunchArgs {
+    LaunchFieldParser::try_parse_from(LAUNCH_PLACEHOLDERS)
+        .expect("the launch defaults always parse")
+        .args
+}
+
+/// Parse `driver launch` with one flag set, e.g. `("--cap-minutes", "45")`, and report
+/// clap's own verdict on it. The form uses `.is_ok()`; the error text is clap's.
+///
+/// The flag and value travel as one `--flag=value` word, so a value that starts with
+/// `-` is a value, not another flag.
+pub fn parse_launch_field(flag: &str, value: &str) -> Result<LaunchArgs, String> {
+    let word = format!("{flag}={value}");
+    LaunchFieldParser::try_parse_from(LAUNCH_PLACEHOLDERS.into_iter().chain([word.as_str()]))
+        .map(|parsed| parsed.args)
+        .map_err(|error| error.to_string())
+}
+
 /// The sandbox-side verbs of `driverctl`.
 ///
 /// Each returns a process exit code, because the Claude hook protocol and the
@@ -1173,6 +1210,73 @@ mod tests {
         assert_eq!(args.cap_gap_rounds, DEFAULT_CAP_GAP_ROUNDS);
         assert_eq!(DEFAULT_CAP_GAP_ROUNDS, 2, "D-14: the shipped launcher cap");
         assert_eq!(args.prompt_file, None);
+    }
+
+    #[test]
+    fn the_launch_form_defaults_are_the_documented_clap_defaults() {
+        let defaults = launch_defaults();
+        assert_eq!(defaults.model, "opus");
+        assert_eq!(defaults.loop_mode, DriverLoopMode::Loop);
+        assert_eq!(defaults.max_budget_usd, 10.0);
+        assert_eq!(defaults.cap_dispatches, 10);
+        assert_eq!(defaults.cap_minutes, 60.0);
+        assert_eq!(defaults.cap_gap_rounds, DEFAULT_CAP_GAP_ROUNDS);
+        assert!(!defaults.unsandboxed, "a sandboxed launch is the default");
+        assert!(!defaults.foreground && !defaults.daemon_child);
+        assert_eq!(defaults.prompt_file, None);
+    }
+
+    #[test]
+    fn launch_field_values_are_judged_by_the_launch_parser() {
+        assert_eq!(
+            parse_launch_field("--cap-dispatches", "12")
+                .expect("12 is a dispatch cap")
+                .cap_dispatches,
+            12
+        );
+        assert_eq!(
+            parse_launch_field("--cap-minutes", "45.5")
+                .expect("45.5 is a minute cap")
+                .cap_minutes,
+            45.5
+        );
+        assert_eq!(
+            parse_launch_field("--loop-mode", "fresh-per-item")
+                .expect("a loop mode")
+                .loop_mode,
+            DriverLoopMode::FreshPerItem
+        );
+        for (flag, value) in [
+            ("--max-budget-usd", "0"),
+            ("--max-budget-usd", "-3"),
+            ("--max-budget-usd", "nan"),
+            ("--max-budget-usd", "100001"),
+            ("--cap-minutes", "nan"),
+            ("--cap-minutes", "inf"),
+            ("--cap-minutes", "525601"),
+            ("--cap-dispatches", "-1"),
+            ("--cap-dispatches", "ten"),
+            ("--cap-gap-rounds", "1.5"),
+            ("--loop-mode", "never"),
+        ] {
+            let refused = parse_launch_field(flag, value).expect_err(&format!("{flag}={value}"));
+            assert!(
+                refused.contains(flag.trim_start_matches("--")) || refused.contains("invalid"),
+                "clap's own error text for {flag}={value}: {refused}"
+            );
+        }
+        // `--max-budget-usd 0` is clap's error text, not a TUI paraphrase.
+        let text = parse_launch_field("--max-budget-usd", "0").unwrap_err();
+        assert!(text.contains("the budget must be a finite number greater than 0"));
+    }
+
+    #[test]
+    fn a_field_value_that_looks_like_a_flag_is_a_value() {
+        // Joined as `--flag=value`, so `--model --foreground` sets the model to that
+        // text and cannot turn on a different flag.
+        let args = parse_launch_field("--model", "--foreground").expect("a model name");
+        assert_eq!(args.model, "--foreground");
+        assert!(!args.foreground);
     }
 
     #[test]

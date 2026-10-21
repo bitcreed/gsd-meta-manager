@@ -574,6 +574,35 @@ pub struct EditSession {
     pub base: String,
 }
 
+/// The two process-facing calls the Driver tab's launch makes, injectable so a test can
+/// replace them with fakes (30-05, D-26).
+///
+/// `launch` is the launcher library's *detached* start: it re-executes `current_exe`, so
+/// calling it from a unit test would start the test binary again (RESEARCH Pitfall 5).
+/// The production value is the real function; the tests' value records the options it
+/// is given and returns a pid, and the real path is proven through the real binary with
+/// the same argv in `tests/driver_tab_launch_e2e.rs`. `detect` is the host probe, which
+/// runs `bwrap`, `systemd-run`, `systemctl` and `claude --version`.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+pub struct LaunchSeams {
+    pub launch: fn(
+        &crate::launcher::run::LaunchOptions,
+        Option<&Path>,
+    ) -> Result<u32, crate::launcher::LauncherError>,
+    pub detect: fn() -> crate::launcher::host::HostCaps,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for LaunchSeams {
+    fn default() -> Self {
+        Self {
+            launch: crate::launcher::run::launch_detached,
+            detect: crate::launcher::host::detect,
+        }
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
     pub needs_redraw: bool,
@@ -587,6 +616,9 @@ pub struct App {
     /// The DIRECTION.md edit sessions awaiting their editor's exit, keyed by the temp's
     /// path (30-04, D-17). A path here is what makes [`App::after_editor`] apply it.
     pub edit_sessions: HashMap<PathBuf, EditSession>,
+    /// The host check and the launch call the launch form reaches (30-05).
+    #[cfg(target_os = "linux")]
+    pub launch_seams: LaunchSeams,
     /// The DESIRED terminal mouse-capture state (quick 260926-dyf, D-06).
     ///
     /// Initialised from `preferences.mouse` and flipped by `M`; the binary's
@@ -804,6 +836,8 @@ impl App {
             session_poll_counter: 0,
             pending_editor: None,
             edit_sessions: HashMap::new(),
+            #[cfg(target_os = "linux")]
+            launch_seams: LaunchSeams::default(),
             mouse_capture,
             click_tracker: crate::ui::mouse::ClickTracker::default(),
         }
@@ -1192,6 +1226,133 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// What a launch needs before it can start: the experimental gate, a registered
+    /// project, a run id that names a plain directory, and a channel to report on. A
+    /// failure is refused visibly (S4) and says that nothing was started.
+    #[cfg(target_os = "linux")]
+    fn launch_target(
+        &mut self,
+        alias: &str,
+        run_id: &str,
+    ) -> Option<(PathBuf, PathBuf, UnboundedSender<Action>)> {
+        if !self.ctx.experimental {
+            return None;
+        }
+        let project = self.project_path_for(alias)?;
+        let Some(run_dir) = Self::launcher_run_dir(&project, run_id) else {
+            self.refuse_steering(format!(
+                "Could not launch '{}': it is not a run directory name. Nothing was started.",
+                crate::text::render_for_terminal(run_id)
+            ));
+            return None;
+        };
+        let Some(tx) = self.ctx.event_tx.clone() else {
+            self.refuse_steering(format!(
+                "Could not launch {}: this session has no event channel. Nothing was started.",
+                crate::text::render_for_terminal(run_id)
+            ));
+            return None;
+        };
+        Some((project, run_dir, tx))
+    }
+
+    /// The launch form opened: run the host check and the `driver check` lint off the
+    /// render thread and answer [`Action::DriverLaunchPreflighted`]. The host probes go
+    /// through the `detect` seam.
+    #[cfg(target_os = "linux")]
+    fn request_launch_preflight(&mut self, alias: &str, run_id: &str) {
+        let Some((_project, run_dir, tx)) = self.launch_target(alias, run_id) else {
+            return;
+        };
+        let detect = self.launch_seams.detect;
+        let (alias, run_id) = (alias.to_string(), run_id.to_string());
+        tokio::task::spawn_blocking(move || {
+            let caps = detect();
+            let preflight = crate::ui::screens::driver_launch::launch_preflight(&run_dir, &caps);
+            let _ = tx.send(Action::DriverLaunchPreflighted {
+                alias,
+                run_id,
+                preflight,
+            });
+        });
+    }
+
+    /// `y` on the launch form (30-05, D-19): build the launcher options exactly as
+    /// `driver launch` does and call the launcher library's detached start through the
+    /// `launch` seam, on `spawn_blocking` (it waits up to the daemon's budget for the
+    /// run lock). The registry path travels with it so the daemon resolves the same
+    /// registry.
+    ///
+    /// The registry reads (`open_pr`, the project's opt-in) happen BEFORE the spawn, on
+    /// this thread; the closure owns plain data. This process starts a daemon and holds
+    /// nothing of the run afterwards, so closing the TUI never stops a launched run.
+    #[cfg(target_os = "linux")]
+    fn request_launch(&mut self, alias: &str, run_id: &str, mut args: crate::cli::LaunchArgs) {
+        let Some((project, _run_dir, tx)) = self.launch_target(alias, run_id) else {
+            return;
+        };
+        // The id and project are the ones the form named, whatever the arguments carry.
+        args.run_id = run_id.to_string();
+        args.project = alias.to_string();
+        let open_pr = self.ctx.config.preferences.driver_open_pr();
+        let opt_in = self
+            .ctx
+            .config
+            .projects
+            .get(alias)
+            .and_then(|project| project.driver_opt_in.clone());
+        let config_path = self.ctx.config_path.clone();
+        let launch = self.launch_seams.launch;
+        let (alias_for_task, run_id_for_task) = (alias.to_string(), run_id.to_string());
+        tokio::task::spawn_blocking(move || {
+            let options = crate::ui::screens::driver_launch::launch_options_for(
+                &alias_for_task,
+                &project,
+                &args,
+                open_pr,
+                opt_in.as_ref(),
+            );
+            let result = launch(&options, Some(&config_path)).map_err(|error| {
+                crate::ui::screens::driver_launch::launch_error_copy(&run_id_for_task, &error)
+            });
+            let _ = tx.send(Action::DriverLaunched {
+                alias: alias_for_task,
+                run_id: run_id_for_task,
+                result,
+            });
+        });
+        self.ctx.status_message = Some((
+            format!(
+                "Launching {} on {}",
+                crate::text::render_for_terminal(run_id),
+                crate::text::render_for_terminal(alias)
+            ),
+            std::time::Instant::now(),
+        ));
+        self.needs_redraw = true;
+    }
+
+    /// Show a finished launch and re-list the runs so the row's status catches up.
+    fn finish_launch(&mut self, alias: &str, run_id: &str, result: Result<u32, String>) {
+        match result {
+            Ok(_pid) => {
+                self.ctx.status_message = Some((
+                    format!(
+                        "{}: launched {}. It runs detached and keeps running if you close this TUI.",
+                        crate::text::render_for_terminal(alias),
+                        crate::text::render_for_terminal(run_id)
+                    ),
+                    std::time::Instant::now(),
+                ));
+            }
+            Err(copy) => self.ctx.error_message = Some(copy),
+        }
+        if let Some(path) = self.ctx.config.projects.get(alias).map(|p| p.path.clone()) {
+            self.ctx.schedule_launcher_refresh(alias, &path);
+        }
+        self.needs_redraw = true;
+    }
+
     /// The run directory of launcher run `run_id` of project `project`, or `None` when
     /// the id is not a plain directory name. The id came from the listing or from a
     /// watcher path, so it is validated before it names a directory (30-02).
@@ -1207,6 +1368,17 @@ impl App {
     /// reported, or that this build cannot make, says so and writes nothing.
     fn refuse_steering(&mut self, message: String) {
         self.ctx.error_message = Some(message);
+        self.needs_redraw = true;
+    }
+
+    /// A launch request reached a build that cannot launch (not Linux): say so and
+    /// start nothing.
+    #[cfg(not(target_os = "linux"))]
+    fn refuse_unsupported_launch(&mut self) {
+        self.ctx.error_message = Some(format!(
+            "{} Nothing was started.",
+            crate::launcher::LauncherError::UnsupportedPlatform
+        ));
         self.needs_redraw = true;
     }
 
@@ -2650,6 +2822,50 @@ impl App {
                     }
                 }
                 self.needs_redraw = true;
+            }
+            // 30-05, D-19, D-20: the launch form's host check, and the launch itself
+            // through the launcher library's detached start. Linux-only, like the
+            // launcher; the other arms say so and start nothing.
+            Action::DriverLaunchPreflightRequested { alias, run_id } => {
+                #[cfg(target_os = "linux")]
+                self.request_launch_preflight(&alias, &run_id);
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = (alias, run_id);
+                    self.refuse_unsupported_launch();
+                }
+            }
+            Action::DriverLaunchPreflighted {
+                alias,
+                run_id,
+                preflight,
+            } => {
+                self.ctx
+                    .view_cache
+                    .entry(alias)
+                    .or_default()
+                    .launch_preflight = Some((run_id, preflight));
+                self.needs_redraw = true;
+            }
+            Action::DriverLaunchRequested {
+                alias,
+                run_id,
+                args,
+            } => {
+                #[cfg(target_os = "linux")]
+                self.request_launch(&alias, &run_id, args);
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = (alias, run_id, args);
+                    self.refuse_unsupported_launch();
+                }
+            }
+            Action::DriverLaunched {
+                alias,
+                run_id,
+                result,
+            } => {
+                self.finish_launch(&alias, &run_id, result);
             }
             // ── The Driver surface's four messages ────────────────────
             //
@@ -8787,5 +9003,212 @@ mod tests {
             Some("read-only: steering needs Linux")
         );
         assert!(app.pending_editor.is_none());
+    }
+
+    // ── 30-05: launching and relaunching from the Driver tab ────────────────
+
+    /// What the fake `launch` seam was given, per call: the options and the `--config`
+    /// path. A `static` because the seam is a `fn` pointer and the call happens on a
+    /// `spawn_blocking` thread; tests tell their own calls apart by the project path.
+    #[cfg(target_os = "linux")]
+    type RecordedLaunch = (crate::launcher::run::LaunchOptions, Option<PathBuf>);
+
+    #[cfg(target_os = "linux")]
+    static RECORDED_LAUNCHES: std::sync::Mutex<Vec<RecordedLaunch>> =
+        std::sync::Mutex::new(Vec::new());
+
+    #[cfg(target_os = "linux")]
+    fn fake_launch(
+        options: &crate::launcher::run::LaunchOptions,
+        config: Option<&Path>,
+    ) -> Result<u32, crate::launcher::LauncherError> {
+        RECORDED_LAUNCHES
+            .lock()
+            .expect("the recorder")
+            .push((options.clone(), config.map(Path::to_path_buf)));
+        Ok(4242)
+    }
+
+    /// A host that passes every check, with the minimum claude.
+    #[cfg(target_os = "linux")]
+    fn fake_detect_ready() -> crate::launcher::host::HostCaps {
+        crate::launcher::host::HostCaps {
+            missing: Vec::new(),
+            claude_version: Some((2, 1, 295)),
+        }
+    }
+
+    /// The launches the fake seam recorded for the project at `root`.
+    #[cfg(target_os = "linux")]
+    fn launches_for(root: &Path) -> Vec<RecordedLaunch> {
+        RECORDED_LAUNCHES
+            .lock()
+            .expect("the recorder")
+            .iter()
+            .filter(|(options, _)| options.project == root)
+            .cloned()
+            .collect()
+    }
+
+    /// An `App` on the Driver tab over a crashed-looking launcher run holding a lint-clean
+    /// body, with the fake launch seam and a host that passes, the run listed.
+    #[cfg(target_os = "linux")]
+    async fn launch_fixture(
+        root: &Path,
+    ) -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>, PathBuf) {
+        let run_dir = root
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(LAUNCHER_RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        crate::driver::steer::tests::write_run(
+            &run_dir,
+            &crate::driver::steer::tests::clean_body(),
+        );
+        let (mut app, mut rx) = app_on_the_driver_tab(root);
+        app.launch_seams = LaunchSeams {
+            launch: fake_launch,
+            detect: fake_detect_ready,
+        };
+        app.update(run_file_change(root, "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        (app, rx, run_dir)
+    }
+
+    fn top_screen_name(app: &App) -> String {
+        app.screen_stack
+            .last()
+            .map(|s| s.name().to_string())
+            .unwrap_or_default()
+    }
+
+    /// `R`, through the key handler and the App, until the form has its host check.
+    #[cfg(target_os = "linux")]
+    async fn open_the_launch_form(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+    ) {
+        app.handle_key(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(top_screen_name(app), "driver_launch_form");
+        let request = next_matching(rx, |a| {
+            matches!(a, Action::DriverLaunchPreflightRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let preflighted =
+            next_matching(rx, |a| matches!(a, Action::DriverLaunchPreflighted { .. })).await;
+        app.update(preflighted);
+    }
+
+    /// The tracer (D-19, D-21, D-26): `R` on a crashed run opens a form prefilled from
+    /// the run, the host check arrives through the injected `detect`, and `y` relaunches
+    /// the SAME run id through the injected `launch` with the recorded caps, sandboxed,
+    /// the registry path travelling with it. The status names the run.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_r_then_y_relaunches_the_same_run_through_the_seam() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, _run_dir) = launch_fixture(dir.path()).await;
+
+        // Before the host check answers, the form says so and `y` does nothing.
+        app.handle_key(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(top_screen_name(&app), "driver_launch_form");
+        let loading = render_top_screen(&app);
+        assert!(loading.contains("Sandbox: Loading..."), "{loading}");
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_launch_form", "y is inert");
+        assert!(launches_for(dir.path()).is_empty());
+        // Close it and start again through the helper (the first request is still in
+        // flight; its answer is for the same run and is simply stored).
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail");
+
+        open_the_launch_form(&mut app, &mut rx).await;
+        let form = render_top_screen(&app);
+        assert!(form.contains("Launch driver run"), "{form}");
+        assert!(form.contains(LAUNCHER_RUN), "{form}");
+        assert!(
+            form.contains("dispatches      10"),
+            "the recorded cap:\n{form}"
+        );
+        assert!(
+            form.contains("minutes         90"),
+            "the recorded cap:\n{form}"
+        );
+        assert!(
+            form.contains("Sandbox: bwrap + systemd scope (host check passed)"),
+            "{form}"
+        );
+
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail", "the form closes on y");
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverLaunchRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let launched = next_matching(&mut rx, |a| matches!(a, Action::DriverLaunched { .. })).await;
+        let Action::DriverLaunched { result, .. } = &launched else {
+            unreachable!()
+        };
+        assert_eq!(*result, Ok(4242));
+        app.update(launched);
+
+        let calls = launches_for(dir.path());
+        assert_eq!(calls.len(), 1, "exactly one launch: {calls:?}");
+        let (options, config) = &calls[0];
+        assert_eq!(options.run_id, LAUNCHER_RUN);
+        assert_eq!(options.alias, OBS_ALIAS);
+        assert!(!options.unsandboxed);
+        assert_eq!(options.prompt_file, None);
+        assert_eq!(options.model, "opus");
+        assert_eq!(options.limits.dispatches, Some(10));
+        assert_eq!(options.limits.wall_clock_min, Some(90.0));
+        assert_eq!(options.limits.gap_rounds, Some(2));
+        assert_eq!(config.as_deref(), Some(app.ctx.config_path.as_path()));
+        let (status, _) = app.ctx.status_message.clone().expect("a status message");
+        assert_eq!(
+            status,
+            format!(
+                "{OBS_ALIAS}: launched {LAUNCHER_RUN}. It runs detached and keeps running if you close this TUI."
+            )
+        );
+        // The rows are re-listed so the run's status catches up.
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+    }
+
+    /// A failed launch is an error that names the run and says nothing was started.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_a_failed_launch_says_nothing_was_started() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx, _run_dir) = launch_fixture(dir.path()).await;
+        let copy = crate::ui::screens::driver_launch::launch_error_copy(
+            LAUNCHER_RUN,
+            &crate::launcher::LauncherError::Locked {
+                detail: "held".to_string(),
+            },
+        );
+        app.update(Action::DriverLaunched {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+            result: Err(copy.clone()),
+        });
+        assert_eq!(app.ctx.error_message.as_deref(), Some(copy.as_str()));
+        assert!(copy.contains(LAUNCHER_RUN) && copy.ends_with("Nothing was started."));
+        assert!(app.ctx.status_message.is_none());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn launcher_launch_a_non_linux_build_refuses_and_starts_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::DriverLaunchRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+            args: crate::cli::launch_defaults(),
+        });
+        let message = app.ctx.error_message.clone().expect("a refusal");
+        assert!(message.ends_with("Nothing was started."), "{message}");
     }
 }
