@@ -1063,7 +1063,10 @@ mod tests {
         let nested = rt.path().join("x".repeat(60));
         fs::create_dir(&nested).unwrap();
         let err = socket_path_in(Some(&nested), &long_id, Path::new("/p/r")).unwrap_err();
-        assert!(err.to_string().contains("107"), "{err}");
+        assert!(
+            err.to_string().contains(&MAX_SUN_PATH.to_string()),
+            "{err}"
+        );
         // Refused before the directory was created.
         assert!(!nested.join(SOCKET_DIR_NAME).exists());
     }
@@ -1075,6 +1078,100 @@ mod tests {
         assert!(check_sun_len(&exact).is_ok());
         let over = PathBuf::from(format!("/{}", "a".repeat(MAX_SUN_PATH)));
         assert!(check_sun_len(&over).is_err());
+    }
+
+    // ------------------------------------------------- socket base (D-31, D-21)
+
+    fn base(
+        xdg: Option<&str>,
+        tmp: Option<&str>,
+        allow_tmpdir: bool,
+    ) -> Result<PathBuf, DriverctlError> {
+        socket_base_dir(
+            xdg.map(std::ffi::OsStr::new),
+            tmp.map(std::ffi::OsStr::new),
+            allow_tmpdir,
+        )
+    }
+
+    #[test]
+    fn socket_base_prefers_xdg_runtime_dir_on_every_platform() {
+        for allow in [false, true] {
+            let got = base(Some("/run/user/1000"), Some("/var/folders/ab/cd/T/"), allow).unwrap();
+            assert_eq!(got, PathBuf::from("/run/user/1000"));
+        }
+    }
+
+    #[test]
+    fn socket_base_ignores_tmpdir_off_macos() {
+        for xdg in [None, Some("")] {
+            let err = base(xdg, Some("/var/folders/ab/cd/T/"), false).unwrap_err();
+            assert!(matches!(err, DriverctlError::SocketPath { .. }));
+            let text = err.to_string();
+            assert!(text.contains("XDG_RUNTIME_DIR"), "{text}");
+            assert!(text.contains("/tmp"), "{text}");
+            assert!(!text.contains("TMPDIR"), "{text}");
+        }
+    }
+
+    #[test]
+    fn socket_base_falls_back_to_an_absolute_tmpdir_when_allowed() {
+        for xdg in [None, Some("")] {
+            let got = base(xdg, Some("/var/folders/ab/cd/T/"), true).unwrap();
+            assert_eq!(got, PathBuf::from("/var/folders/ab/cd/T/"));
+        }
+    }
+
+    #[test]
+    fn socket_base_refuses_a_relative_tmpdir() {
+        let err = base(None, Some("tmp/x"), true).unwrap_err();
+        assert!(matches!(err, DriverctlError::SocketPath { .. }));
+        let text = err.to_string();
+        assert!(text.contains("TMPDIR"), "{text}");
+        assert!(text.contains("absolute"), "{text}");
+    }
+
+    #[test]
+    fn socket_base_with_neither_variable_names_both_and_never_tmp() {
+        for xdg in [None, Some("")] {
+            for tmp in [None, Some("")] {
+                let err = base(xdg, tmp, true).unwrap_err();
+                assert!(matches!(err, DriverctlError::SocketPath { .. }));
+                let text = err.to_string();
+                assert!(text.contains("XDG_RUNTIME_DIR"), "{text}");
+                assert!(text.contains("TMPDIR"), "{text}");
+                assert!(text.contains("/tmp"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn socket_base_refuses_a_relative_xdg_runtime_dir_without_falling_back() {
+        let err = base(Some("run/user"), Some("/var/folders/ab/cd/T/"), true).unwrap_err();
+        assert!(matches!(err, DriverctlError::SocketPath { .. }));
+        let text = err.to_string();
+        assert!(text.contains("XDG_RUNTIME_DIR"), "{text}");
+        assert!(text.contains("absolute"), "{text}");
+    }
+
+    #[test]
+    fn a_tmpdir_base_gets_the_same_private_directory_checks() {
+        let rt = runtime_dir();
+        let tmp = rt.path().to_str().unwrap();
+        let resolved = base(None, Some(tmp), true).unwrap();
+        let sock = socket_path_in(Some(&resolved), "r27", Path::new("/p/r27")).unwrap();
+        assert_eq!(sock.parent().unwrap(), rt.path().join(SOCKET_DIR_NAME));
+        let meta = fs::metadata(rt.path().join(SOCKET_DIR_NAME)).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o700);
+
+        // A pre-created group-accessible subdir under a TMPDIR base is refused.
+        let rt2 = runtime_dir();
+        let dir = rt2.path().join(SOCKET_DIR_NAME);
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
+        let resolved2 = base(None, Some(rt2.path().to_str().unwrap()), true).unwrap();
+        let err = socket_path_in(Some(&resolved2), "r27", Path::new("/p/r27")).unwrap_err();
+        assert!(err.to_string().contains("group or others"), "{err}");
     }
 
     // ---------------------------------------------------------------- misc
