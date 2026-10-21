@@ -662,8 +662,9 @@ Sandbox: bwrap + systemd scope (host check passed)
 - Lint problems (Red, they block) and warnings (Yellow) are listed under the fields, fitted to the rows left.
   Their `DIRECTION.md:<line>:` numbers count from the first body line, the numbering the body-only edit temp
   shows in the editor `[inferred — audit]`.
-- A typed model must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` (the rule a recorded model meets, and one
-  clap accepts as a value); anything else is refused in the form with `must be a model name`.
+- A typed model must match `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}$` (the rule a recorded model meets, and one
+  clap accepts as a value; the brackets admit the `[1m]` long-context suffix, WR-07, while the leading
+  alphanumeric keeps flag-shaped values out); anything else is refused in the form with `must be a model name`.
 - `y` → `launch_detached` (28 D-04) on `spawn_blocking`. **The TUI never binds the run socket or embeds
   `RunStore`** (D-19).
 

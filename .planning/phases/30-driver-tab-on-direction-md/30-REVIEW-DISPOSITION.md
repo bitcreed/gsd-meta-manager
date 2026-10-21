@@ -5,15 +5,15 @@ titles: json
 findings:
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Run-directory files are opened without a file-type guard, although the phase hardens one reader against exactly that"
   - id: WR-07
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The model rule is narrower than `claude --model`, so the form refuses `opus[1m]`-style names that the CLI accepts"
   - id: IN-04
     severity: info
-    disposition: open
+    disposition: fixed
     title: "A lint popup whose findings get zero rows is forced into the clipped, unconfirmable state"
   - id: IN-05
     severity: info
@@ -51,7 +51,7 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 3
+open: 0
 total: 12
 recorded: 2026-10-21T05:15:32.882Z
 ---
@@ -60,9 +60,9 @@ recorded: 2026-10-21T05:15:32.882Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-02 | warning | open | - |
-| WR-07 | warning | open | - |
-| IN-04 | info | open | - |
+| WR-02 | warning | fixed | fixed by quick 261021-101 64f73e7 (run_loop opens DIRECTION.md and the exchanged temp through open_run_file) |
+| WR-07 | warning | fixed | fixed by quick 261021-101 a3201ba (model_name_ok admits [ and ]; relaunch_prefill shares the predicate) |
+| IN-04 | info | fixed | fixed by quick 261021-101 ce352c0 (both lint popups skip fit_list at a zero row budget) |
 | IN-05 | info | deferred | [inferred — audit] only visible if DIRECTION.md changes between preflight and launch; body-relative numbering is the D-17/D-18 editor contract; relabel or re-base in a later cleanup |
 | WR-01 | warning | fixed | fixed by 30-09 9ad47bd (model_name_ok in commit_edit); re-review e05ad64 confirms (not in the current review) |
 | WR-03 | warning | fixed | fixed by 30-07 4df4dd1 (Plan::Keep); re-review e05ad64 confirms (not in the current review) |
