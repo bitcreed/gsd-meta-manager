@@ -129,3 +129,11 @@ assert_fs = "1"
 # disappearance. The sweep additionally carries its own committed
 # `format_seen >= 150` non-vacuity floor for the same reason.
 unicode-properties = { version = "0.1.4", features = ["general-category"] }
+# The SECOND, independent width oracle for the glyph registry
+# (`src/ui/glyphs.rs` tests), beside `icu_properties`' East_Asian_Width class.
+# It is already locked as ratatui's `=`-pinned transitive dependency (0.2.0), so
+# naming it here adds a dev-only edge and fetches nothing new. `cjk` is named
+# explicitly even though it is a default feature: `width_cjk` is half of the
+# check, and a default-feature change upstream should fail resolution instead of
+# silently removing it.
+unicode-width = { version = "0.2", features = ["cjk"] }

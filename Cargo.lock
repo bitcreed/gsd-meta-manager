@@ -979,6 +979,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-textarea",
  "unicode-properties",
+ "unicode-width 0.2.0",
  "uuid",
 ]
 
