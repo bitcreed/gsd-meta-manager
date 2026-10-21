@@ -177,6 +177,22 @@ SC6's example names macOS ("a macOS host without bwrap/systemd runs degraded"). 
 
 The phase verifier should read SC6's "(macOS)" example with this narrowing. The non-Linux arm could not be compiled here (only `x86_64-unknown-linux-gnu` is installed): it is a three-line arm using only types that exist on every platform, but it is unverified until a macOS runner does `cargo check`.
 
+**D-31 re-assessment (2026-10-21, quick 261021-0jg)** `[inferred — audit]`: macOS `driver launch --unsandboxed` is now supported at the code level. This supersedes the "no renamex_np splice yet" narrowing above. Evidence:
+
+- The DIRECTION.md splice is portable: `src/driver/direction.rs:408` and `:476` gate on linux+macos, and rustix 1.1.5 maps `RenameFlags::EXCHANGE` to `RENAME_SWAP` via `renameatx_np` (`rustix-1.1.5/src/backend/libc/fs/types.rs:544-545`, `syscalls.rs:594-616`).
+- The stop path is flock-based (`src/launcher/stop.rs`) and `signal_group` is POSIX (`src/driver/kill.rs:183`).
+- The socket base falls back to an absolute `$TMPDIR` on macOS when `XDG_RUNTIME_DIR` is unset (`src/driverctl/serve.rs:291` `socket_base_dir`, called from `socket_path` at `:274`). `src/launcher/run.rs:622` and `driverctl serve` (`src/driverctl/serve.rs:862`) both reach it through `socket_path`; the `gsdmm-driverctl` subdir keeps the 0700 / real-dir / owner / no-group-other checks. Linux never consults `TMPDIR`.
+- `MAX_SUN_PATH` is 103 on macOS (`src/driverctl/serve.rs:90`; 107 elsewhere at `:94`).
+
+Remaining caveats:
+
+- Runtime is unverified without a Mac (`28-UAT.md:23`, item 2).
+- Liveness reports Unknown off Linux (`src/driver/liveness.rs:56`, `LIVENESS_SUPPORTED`).
+- Store `host_name` is None off Linux (`src/driverctl/store.rs:430` reads `/proc/sys/kernel/hostname`).
+- `RENAME_SWAP` needs APFS; `ENOTSUP` surfaces as an error and is not a partial write.
+- TUI-side launch is still Linux-gated (the `cfg(target_os = "linux")` launch arms in `src/app.rs`, e.g. `:589`, and `src/ui/screens/driver_launch.rs:38`).
+- Under a stock `/var/folders` TMPDIR (about 48 bytes) the 103-byte limit leaves roughly 24 bytes for the run id. A longer id is refused with the typed length error, and `driver launch` has no `--sock` override `[inferred — audit]`.
+
 ## Verification
 
 - Full `cargo test --no-fail-fast`: **3343 passed, 1 failed, 22 ignored.** The one failure is the expected local `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`.
