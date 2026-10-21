@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: executing
-stopped_at: Completed 30-01-PLAN.md
-last_updated: "2026-10-21T00:30:41.097Z"
+stopped_at: Completed 30-02-PLAN.md
+last_updated: "2026-10-21T01:06:43.756Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: 3cbdcb6bddb462f6acfbfb1bfaf6ec89d38976ea
+state_head: 13bbcc4ef5a694be8f680c5e31c9b5b1f874168d
 progress:
   total_phases: 10
   completed_phases: 12
@@ -238,7 +238,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 30 (Driver Tab on DIRECTION.md) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -502,6 +502,7 @@ verify-phase if the gate is fixed.
 | Phase 29 P07 | 23 min | 3 tasks | 5 files |
 | Phase 29 P08 | 3h (resumed) | 3 tasks | 7 files |
 | Phase 30 P01 | 31 min | 3 tasks | 13 files |
+| Phase 30 P02 | 34 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -691,6 +692,9 @@ Recent decisions affecting current work:
 - [Phase 30]: 30-01: x on an unreadable launcher run still opens the kill confirmation (treated as liveness unknown) [inferred - audit]
 - [Phase 30]: 30-01: legacy-row footer suffix placed before [?]help so help is always last [inferred - audit]
 - [Phase 30]: 30-01: drivers/ watcher routing is an allowlist; the bare drivers dir is Ignored [inferred - audit]
+- [Phase 30]: 30-02: heartbeat_stale(fm, derived, now) is the one stale rule (live and age > the file's heartbeat_stale_after_s); a stale live run reads stale, never crashed
+- [Phase 30]: 30-02: park rules reach plan 30-04 via ProjectViewCache::launcher_log.park_rules (item id -> rule from the closed set), valid only for the selected run's tail
+- [Phase 30]: 30-02: a failed single-run read is answered by a full re-listing; the LOG pane shares the legacy output pane's follow/scroll state [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -865,8 +869,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-21T00:30:40.417Z
-Stopped at: Completed 30-01-PLAN.md
+Last session: 2026-10-21T01:06:43.014Z
+Stopped at: Completed 30-02-PLAN.md
 Resume file: None
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md

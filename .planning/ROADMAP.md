@@ -1215,7 +1215,7 @@ DIRECTION.md.
 
      The Phase 18 stream-json injection UI is no longer the steering path.
 
-**Plans**: 1/5 plans executed
+**Plans**: 2/5 plans executed
 
 Plans:
 
@@ -1223,7 +1223,7 @@ Plans:
 - [x] 30-01-PLAN.md — launcher runs are the Driver tab's run list: derived-status header, drivers/ watcher route, legacy runs collapsed, 28-07 section retired, `x` kill re-hosted (DTAB-01, DTAB-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 30-02-PLAN.md — selected-run view: merged items, header rows, heartbeat age/stale, caps + audit, connected[], live LOG.md tail (DTAB-01, DTAB-02, DTAB-04)
+- [x] 30-02-PLAN.md — selected-run view: merged items, header rows, heartbeat age/stale, caps + audit, connected[], live LOG.md tail (DTAB-01, DTAB-02, DTAB-04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 30-03-PLAN.md — dashboard crashed/parked/driven/stale markers (OBS-02/07) and height tiers with no orphaned header (DTAB-02, DTAB-01)
@@ -1351,7 +1351,7 @@ Plans:
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
-| 30. Driver Tab on DIRECTION.md | 1/5 | In Progress | - |
+| 30. Driver Tab on DIRECTION.md | 2/5 | In Progress | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
