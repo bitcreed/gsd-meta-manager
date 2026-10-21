@@ -4285,10 +4285,10 @@ mod tests {
             "the hold flag"
         );
         assert_eq!(lines[3].spans[2].style.fg, Some(Color::DarkGray), "unseen");
-        assert_eq!(
-            lines[4].spans.last().unwrap().style.fg,
-            Some(Color::DarkGray)
-        );
+        // `[not in DIRECTION]` is the Muted role: DIM on the default foreground.
+        let not_in_direction = lines[4].spans.last().unwrap();
+        assert_eq!(not_in_direction.style.fg, None);
+        assert!(not_in_direction.style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -4983,7 +4983,7 @@ mod tests {
         let control = row_with(&rows, "control ");
         assert!(control.contains("pause (pending)"), "{control}");
         assert!(!control.contains("paused"), "{control}");
-        // `(pending)` is DarkGray.
+        // `(pending)` is the Muted role: DIM on the default foreground.
         let y = rows
             .iter()
             .position(|r| r.contains("pause (pending)"))
@@ -4995,7 +4995,8 @@ mod tests {
                 u16::try_from(y).unwrap(),
             ))
             .unwrap();
-        assert_eq!(cell.fg, Color::DarkGray);
+        assert_eq!(cell.fg, Color::Reset);
+        assert!(cell.modifier.contains(Modifier::DIM), "{cell:?}");
     }
 
     /// The `y`, column and cells of the first row containing `needle`.
@@ -5032,7 +5033,8 @@ mod tests {
             "the heartbeat is unchanged: {control}"
         );
         for cell in cells_of(&rows, &buffer, "Loading...") {
-            assert_eq!(cell.fg, Color::DarkGray, "{cell:?}");
+            assert_eq!(cell.fg, Color::Reset, "{cell:?}");
+            assert!(cell.modifier.contains(Modifier::DIM), "{cell:?}");
         }
     }
 
@@ -5202,7 +5204,7 @@ mod tests {
         assert!(!text[1].contains('\u{2588}') && !text[1].contains('\u{2591}'));
         let lines = caps_section(&fm, 60);
         let no_limit = lines[1].spans.last().unwrap();
-        assert_eq!(no_limit.style.fg, Some(Color::DarkGray));
+        assert_eq!(no_limit.style.fg, None);
         assert!(no_limit.style.add_modifier.contains(Modifier::DIM));
     }
 
@@ -6033,20 +6035,22 @@ mod tests {
         let mut cache = log_cache();
         refresh_log(&mut cache, dir.path());
         let lines = log_body_lines(&cache.launcher_log);
-        // Header: margin, the time in DarkGray, then the rest in the default style.
+        // Header: margin, the time DIM on the default foreground, then the rest in the default style.
         let time = local_hms("2026-10-20T14:02:11Z");
         assert_eq!(
             text_of(&lines[0]),
             format!("  {time} I-01 report status=done")
         );
-        assert_eq!(lines[0].spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(lines[0].spans[1].style.fg, None);
+        assert!(lines[0].spans[1].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(
             lines[0].spans[2].style.fg, None,
             "no colour chosen from log content"
         );
-        // Detail: indented 4 cells beyond the margin, all DarkGray.
+        // Detail: indented 4 cells beyond the margin, all DIM.
         assert_eq!(text_of(&lines[1]), "      status: done");
-        assert_eq!(lines[1].spans[0].style.fg, Some(Color::DarkGray));
+        assert_eq!(lines[1].spans[0].style.fg, None);
+        assert!(lines[1].spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -6508,10 +6512,11 @@ mod tests {
         assert!(style_of("MISMATCH").add_modifier.contains(Modifier::BOLD));
         assert_eq!(style_of("UNSANDBOXED").fg, Some(Color::Yellow));
         assert_eq!(style_of("cap!").fg, Some(Color::Yellow));
-        assert_eq!(style_of("(pending)").fg, Some(Color::DarkGray));
+        assert_eq!(style_of("(pending)").fg, None);
+        assert!(style_of("(pending)").add_modifier.contains(Modifier::DIM));
         assert_eq!(style_of("prompt custom").fg, Some(Color::Yellow));
 
-        // A matching audit is the benign DarkGray form, after `cap!`.
+        // A matching audit is the benign DIM form, after `cap!`.
         let ok = token_entry("20261020-b", false);
         let spans = status_tokens(&ok, None, SystemTime::now(), usize::MAX);
         let text = spans_text(&spans);
@@ -6520,15 +6525,9 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("MISMATCH"));
-        assert_eq!(
-            spans
-                .iter()
-                .find(|s| s.content == "audit 7/7/0")
-                .unwrap()
-                .style
-                .fg,
-            Some(Color::DarkGray)
-        );
+        let audit = spans.iter().find(|s| s.content == "audit 7/7/0").unwrap();
+        assert_eq!(audit.style.fg, None);
+        assert!(audit.style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

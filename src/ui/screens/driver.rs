@@ -312,14 +312,26 @@ pub(super) const DRY_RUN_LOADING: &str = "Loading...";
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 
+/// The Label role: a field name, a section rule, a timestamp. `Modifier::DIM` on
+/// the terminal's own default foreground, with no fg colour set [inferred — audit]
+/// (quick 261021-1id).
+///
+/// DIM dims whatever foreground the terminal uses, so it adapts to light and dark
+/// themes. Bright-black (`Color::DarkGray`) equals the background in
+/// Solarized-Dark-family palettes, and ANSI white (`Color::Gray`) nearly vanishes
+/// on light themes. A terminal without SGR 2 shows the label at full intensity,
+/// which is still legible. The inert-state colour (unlaunched, stopped, pending,
+/// unseen, `[not live]`, killed) stays `Color::DarkGray`: a state's colour is one
+/// third of its (glyph, word, colour) triple.
 pub(super) fn label_style() -> Style {
-    Style::default().fg(Color::DarkGray)
+    Style::default().add_modifier(Modifier::DIM)
 }
 
+/// The Muted role: secondary copy. Renders the same as [`label_style`] (DIM on the
+/// default foreground, see there); muted rows stay distinguishable by their
+/// parenthesised copy.
 pub(super) fn muted_style() -> Style {
-    Style::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::DIM)
+    Style::default().add_modifier(Modifier::DIM)
 }
 
 /// The glyph, run-list word and colour for one run's state.
