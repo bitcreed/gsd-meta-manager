@@ -1081,18 +1081,13 @@ pub(super) fn render_run_detail(
         .split(area)
         .to_vec()
     } else if area.height >= 8 {
-        // Every section is still present, at one row each. **No section is ever
-        // allocated zero rows** — a section that cannot fit is dropped by the
-        // tier, never squeezed to nothing, because an empty section rule reads
-        // as a section that failed to load.
-        Layout::vertical([
-            Constraint::Length(2),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(3),
-        ])
-        .split(area)
-        .to_vec()
+        // The header and the output, and nothing between them. The pipeline row and
+        // the steps section are dropped TOGETHER (Phase 18 WR-05, folded into D-29):
+        // squeezed to one row each they were a blank pipeline row and a bare `steps`
+        // rule with no content under it, which reads as a section that failed to load.
+        Layout::vertical([Constraint::Length(2), Constraint::Min(3)])
+            .split(area)
+            .to_vec()
     } else {
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)])
             .split(area)
@@ -1124,6 +1119,14 @@ pub(super) fn render_run_detail(
         Paragraph::new(header.into_iter().take(header_budget).collect::<Vec<_>>()),
         chunks[0],
     );
+
+    if area.height < 14 {
+        // 8..=13 rows: header (2) + output only (WR-05).
+        render_output_section(
+            frame, chunks[1], ctx, alias, cache, summary, verdict, now, viewport,
+        );
+        return;
+    }
 
     render_pipeline_row(frame, chunks[1], inference);
     render_steps(frame, chunks[2], summary, verdict, turns);
@@ -4268,5 +4271,68 @@ mod tests {
             before,
             "leaving Step B must restore the normal run detail exactly"
         );
+    }
+
+    /// Phase 18 WR-05, folded into D-29 (30-03): between 8 and 13 rows the legacy run
+    /// detail draws its header (2 rows) and the output pane, and drops the pipeline
+    /// row and the steps section TOGETHER. Squeezed to one row each they were a blank
+    /// pipeline row and a bare `steps` rule with nothing under it. From 14 rows the
+    /// full stack is unchanged.
+    #[test]
+    fn legacy_wr05_orphan_free_detail_between_eight_and_thirteen_rows() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
+        let alias = super::super::driver_confirm::tests::ALIAS;
+        let run = summary("2026-07-29T21-40-00Z-3f2a", None);
+        for height in 8..=30u16 {
+            let mut terminal =
+                Terminal::new(TestBackend::new(80, height)).expect("TestBackend terminal");
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_run_detail(frame, area, &ctx, alias, None, &run, None, &Cell::default());
+                })
+                .expect("draw the legacy run detail");
+            let buffer = terminal.backend().buffer().clone();
+            let rows: Vec<String> = (0..height)
+                .map(|y| {
+                    (0..80)
+                        .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                        .collect::<String>()
+                })
+                .collect();
+            let steps = rows.iter().any(|r| r.contains("\u{2500}\u{2500} steps"));
+            assert!(
+                rows.iter().any(|r| r.contains("\u{2500}\u{2500} output")),
+                "H={height}: the output pane is always drawn:\n{}",
+                rows.join("\n")
+            );
+            if height < 14 {
+                assert!(
+                    !steps,
+                    "H={height}: steps dropped with the pipeline row:\n{}",
+                    rows.join("\n")
+                );
+            } else {
+                assert!(
+                    steps,
+                    "H={height}: the full stack is unchanged:\n{}",
+                    rows.join("\n")
+                );
+            }
+            for (y, row) in rows.iter().enumerate() {
+                if row.trim_start().starts_with("\u{2500}\u{2500}") {
+                    let next = rows.get(y + 1).map(|r| r.trim());
+                    assert!(
+                        next.is_some_and(|n| !n.is_empty() && !n.starts_with("\u{2500}\u{2500}")),
+                        "H={height}: the rule at row {y} has no content under it:\n{}",
+                        rows.join("\n")
+                    );
+                }
+            }
+        }
     }
 }

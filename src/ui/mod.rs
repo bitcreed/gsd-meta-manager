@@ -357,7 +357,7 @@ mod tests {
     const MEASURED_REACH: [(&str, usize); 3] = [
         ("src/ui/screens/driver.rs", 1),
         ("src/ui/screens/driver_confirm.rs", 4),
-        ("src/ui/screens/render_escape_guard.rs", 2),
+        ("src/ui/screens/render_escape_guard.rs", 3),
     ];
 
     /// How many `.rs` files the walk must find under `src/ui/` for the reach
@@ -396,9 +396,9 @@ mod tests {
     /// |---|---|
     /// | `src/ui/screens/driver_confirm.rs` | 4 |
     /// | `src/ui/screens/driver.rs` | 1 |
-    /// | `src/ui/screens/render_escape_guard.rs` | 2 (the exempt probe module — both are oracles, not render sites) |
+    /// | `src/ui/screens/render_escape_guard.rs` | 3 (the exempt probe module — all three are oracles, not render sites; 30-03 added the third, the escaped form its SUMMARY-row and MEDIUM-token-row test expects) |
     /// | the other **14** files, incl. `detail.rs`, `normal.rs` and `driver_run.rs` | 0 |
-    /// | **total** | **7** — five non-exempt, in **two of seventeen files** |
+    /// | **total** | **8** — five non-exempt, in **two of seventeen files** |
     ///
     /// **These numbers are PINNED, not asserted here.** [`MEASURED_REACH`] and
     /// [`UI_SOURCE_FLOOR`] are checked by this test below, as a `Vec` equality

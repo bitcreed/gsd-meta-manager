@@ -3694,6 +3694,82 @@ mod tests {
         );
     }
 
+    /// **The SUMMARY row and the MEDIUM token row are REACHED and ESCAPED** (30-03,
+    /// D-10, T-30-05).
+    ///
+    /// The default `Driver tab` state draws the FULL tier at the probe's height, so the
+    /// two shorter tiers' sites (`summary_row`'s run id and status word, `token_row`'s
+    /// `ctl {word}`) would pass the escape assertions by silence. The same state is
+    /// drawn here into a shorter area: 14 rows is the SUMMARY tier (tab area of 10) and
+    /// 22 rows the MEDIUM one (tab area of 18). The clean identity must arrive on the row
+    /// each tier adds, and the hostile one must arrive escaped: neither raw nor with an
+    /// invisible-class character in a cell.
+    #[test]
+    fn the_summary_row_and_the_medium_token_row_render_escaped() {
+        let clean = clean_identity();
+        let hostile = hostile_identity();
+        let escaped = display_identity(&hostile);
+        let state_for = |identity: &str| {
+            let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
+                Box::new(crate::ui::screens::detail::DetailScreen::new(
+                    identity.to_string(),
+                ))
+            };
+            states_over_sub_views(identity, &build)
+                .into_iter()
+                .find(|s| s.label == "Driver tab")
+                .expect("the Driver tab state exists")
+        };
+        for (rows, token_marker, tier) in [(14u16, "ctl ", "SUMMARY"), (22u16, "  ctl ", "MEDIUM")]
+        {
+            let draw = |state: &ProbeState| {
+                render_into_probe_buffer(|frame, area| {
+                    state.screen.render(
+                        frame,
+                        ratatui::layout::Rect {
+                            height: rows,
+                            ..area
+                        },
+                        &state.ctx,
+                    )
+                })
+            };
+            let clean_text = draw(&state_for(&clean));
+            // The row this tier adds carries the identity (run id and status word)
+            // and the `ctl` token (the body's control word is the identity).
+            assert!(
+                clean_text
+                    .lines()
+                    .any(|line| line.contains(&clean) && line.contains(token_marker)),
+                "the {tier} tier did not reach its row with {token_marker:?}: a new render \
+                 site is not probed, so its escape assertion passes by silence. \
+                 Rendered:\n{clean_text}"
+            );
+            assert!(
+                !clean_text.contains("\u{2500}\u{2500} caps "),
+                "the {tier} tier drew the FULL tier's caps rule"
+            );
+
+            let hostile_text = draw(&state_for(&hostile));
+            assert!(
+                invisible_chars(&hostile_text).is_empty(),
+                "{tier} tier: an invisible-class character reached a cell: {:?}",
+                invisible_chars(&hostile_text)
+            );
+            assert!(
+                !hostile_text.contains(hostile.as_str()),
+                "{tier} tier: the RAW hostile identity reached the buffer:\n{hostile_text}"
+            );
+            assert!(
+                hostile_text
+                    .lines()
+                    .any(|line| line.contains(escaped.as_str()) && line.contains(token_marker)),
+                "{tier} tier: the escaped identity {escaped:?} is not on the row with \
+                 {token_marker:?}:\n{hostile_text}"
+            );
+        }
+    }
+
     /// **The Defaults string-edit state reaches the POPUP BRANCH, not merely
     /// the field** (21-30 T1).
     ///

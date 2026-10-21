@@ -703,11 +703,12 @@ fn audit_row(
     clip_line(Line::from(spans), width)
 }
 
-/// The caps section: its rule, the three caps, and the audit row.
-pub fn caps_section(fm: &DriverFrontmatter, width: usize) -> Vec<Line<'static>> {
+/// The three cap rows, each self-labelled (`dispatches`, `minutes`, `gap rounds`).
+/// The MEDIUM tier draws exactly these (no rule, no audit row: the audit lives in the
+/// status tokens); the FULL tier wraps them in [`caps_section`].
+pub fn cap_rows(fm: &DriverFrontmatter, width: usize) -> Vec<Line<'static>> {
     let caps = &fm.caps;
     vec![
-        section_rule("caps", width),
         cap_row(
             "dispatches",
             u64::from(caps.dispatches.used),
@@ -732,8 +733,34 @@ pub fn caps_section(fm: &DriverFrontmatter, width: usize) -> Vec<Line<'static>> 
                 .map(|phase| format!("phase {}", shown_capped(phase))),
             width,
         ),
-        audit_row(&fm.dispatch_audit, width),
     ]
+}
+
+/// Whether any cap is at or over its limit, judged on the displayed whole numbers
+/// exactly as [`cap_row`] judges it (the `cap!` status token).
+fn any_cap_at_limit(fm: &DriverFrontmatter) -> bool {
+    let caps = &fm.caps;
+    caps.dispatches
+        .limit
+        .is_some_and(|limit| cap_at_limit(u64::from(caps.dispatches.used), u64::from(limit)))
+        || caps.wall_clock_min.limit.is_some_and(|limit| {
+            cap_at_limit(
+                whole_minutes(caps.wall_clock_min.used),
+                whole_minutes(limit),
+            )
+        })
+        || caps
+            .gap_rounds
+            .limit
+            .is_some_and(|limit| cap_at_limit(u64::from(caps.gap_rounds.used), u64::from(limit)))
+}
+
+/// The caps section (FULL): its rule, the three caps, and the audit row.
+pub fn caps_section(fm: &DriverFrontmatter, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![section_rule("caps", width)];
+    lines.extend(cap_rows(fm, width));
+    lines.push(audit_row(&fm.dispatch_audit, width));
+    lines
 }
 
 // ── Connected (D-09) ────────────────────────────────────────────────────────
@@ -782,18 +809,42 @@ pub fn connected_section(
     now: SystemTime,
     width: usize,
 ) -> Vec<Line<'static>> {
+    connected_section_fit(fm, now, width, usize::MAX)
+}
+
+/// [`connected_section`] in at most `rows` lines (the rule counts). With room for
+/// everything it is the full section; with less, `… {k} more` takes the last line and
+/// the connections before it shrink to fit; with room for the rule and one line, it
+/// shows the first connection alone. `rows` below 2 would be a bare rule, which the
+/// tiers never allot (D-29).
+pub fn connected_section_fit(
+    fm: &DriverFrontmatter,
+    now: SystemTime,
+    width: usize,
+    rows: usize,
+) -> Vec<Line<'static>> {
     let mut lines = vec![section_rule("connected", width)];
     if fm.connected.is_empty() {
         lines.push(Line::from(Span::styled("  (none recorded)", muted_style())));
         return lines;
     }
-    for conn in fm.connected.iter().take(CONNECTED_MAX_ROWS) {
+    let total = fm.connected.len();
+    let want = total.min(CONNECTED_MAX_ROWS);
+    let demand = want + usize::from(total > want);
+    let avail = rows.saturating_sub(1).max(1);
+    let (shown, more) = if avail >= demand {
+        (want, total > want)
+    } else if avail >= 2 {
+        (avail - 1, true)
+    } else {
+        (1, false)
+    };
+    for conn in fm.connected.iter().take(shown) {
         lines.push(connection_row(conn, now, width));
     }
-    let hidden = fm.connected.len().saturating_sub(CONNECTED_MAX_ROWS);
-    if hidden > 0 {
+    if more {
         lines.push(Line::from(Span::styled(
-            format!("  \u{2026} {hidden} more"),
+            format!("  \u{2026} {} more", total - shown),
             muted_style(),
         )));
     }
@@ -1498,6 +1549,26 @@ pub fn items_section(
     park_rules: Option<&std::collections::BTreeMap<String, String>>,
     width: usize,
 ) -> Vec<Line<'static>> {
+    items_section_fit(detail, cursor, park_rules, width, usize::MAX, true)
+}
+
+/// [`items_section`] in at most `rows` lines (the rule counts), with or without the
+/// trailing cursor-item row (FULL draws it, MEDIUM does not).
+///
+/// With room for every item row (at most [`ITEMS_MAX_ROWS`]) and the `… {k} more
+/// items` row, that is the whole section. With less, the last item line becomes `…
+/// {k} more items` and the item rows before it shrink to fit, the window keeping the
+/// cursor on screen; with room for one line only, it is the cursor's own row. A
+/// section is never header-only: the rule always has at least one line under it, and
+/// the callers never allot fewer than two rows (D-29).
+pub fn items_section_fit(
+    detail: Option<&RunDetail>,
+    cursor: Option<&str>,
+    park_rules: Option<&std::collections::BTreeMap<String, String>>,
+    width: usize,
+    rows_budget: usize,
+    cursor_row: bool,
+) -> Vec<Line<'static>> {
     let mut lines = vec![section_rule("items", width)];
     let Some(detail) = detail else {
         lines.push(Line::from(Span::styled(
@@ -1518,23 +1589,36 @@ pub fn items_section(
     let at = resolved_item_cursor(&rows, cursor, current)
         .and_then(|id| rows.iter().position(|row| row.id == id))
         .unwrap_or(0);
-    let shown = rows.len().min(ITEMS_MAX_ROWS);
+    let want = rows.len().min(ITEMS_MAX_ROWS);
+    let demand = want + usize::from(rows.len() > want);
+    // The lines under the rule that the item rows (and the `more` row) may use.
+    let avail = rows_budget
+        .saturating_sub(1 + usize::from(cursor_row))
+        .max(1);
+    let (shown, more) = if avail >= demand {
+        (want, rows.len() > want)
+    } else if avail >= 2 {
+        (avail - 1, true)
+    } else {
+        (1, false)
+    };
     // The smallest window that keeps the cursor row on screen.
     let start = (at + 1).saturating_sub(shown);
     for (offset, row) in rows[start..start + shown].iter().enumerate() {
         lines.push(item_row(row, start + offset == at, width));
     }
-    let hidden = rows.len() - shown;
-    if hidden > 0 {
+    if more {
         lines.push(Line::from(Span::styled(
-            format!("  \u{2026} {hidden} more items"),
+            format!("  \u{2026} {} more items", rows.len() - shown),
             muted_style(),
         )));
     }
-    let rule = park_rules
-        .and_then(|rules| rules.get(&rows[at].id))
-        .map(String::as_str);
-    lines.push(cursor_item_line(&rows[at], rule, width));
+    if cursor_row {
+        let rule = park_rules
+            .and_then(|rules| rules.get(&rows[at].id))
+            .map(String::as_str);
+        lines.push(cursor_item_line(&rows[at], rule, width));
+    }
     lines
 }
 
@@ -1892,60 +1976,501 @@ fn render_log_section(
     }
 }
 
-/// The detail pane's lines for the selected run, top to bottom: the six header rows,
-/// the items, the caps with the audit row, and the connections (plan 30-03 tiers this
-/// layout by height; the LOG tail is drawn below it by the caller).
+// ── Status tokens (D-10, shared by MEDIUM header row 2 and the SUMMARY rows) ──
+
+/// One status token: its spans, and whether it is a flag (something the operator
+/// should not miss) rather than a benign fact.
+struct Token {
+    spans: Vec<Span<'static>>,
+    flag: bool,
+}
+
+impl Token {
+    fn width(&self) -> usize {
+        self.spans.iter().map(Span::width).sum()
+    }
+}
+
+/// The separator between two status tokens.
+const TOKEN_SEP: &str = "  ";
+
+fn flag_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Every status token a readable run has, in the UI-SPEC order:
 ///
-/// An unreadable entry gets the UI-SPEC unreadable copy: the error in Red and the
-/// promise that the run is read again on the next change to its directory.
-fn detail_lines(
+/// 1. `ctl {word}` (+ ` (pending)` / ` (at next launch)`)
+/// 2. `hb {age}` (+ ` stale`, Yellow BOLD)
+/// 3. `audit {l}/{o}/{d} MISMATCH` (Red, `MISMATCH` BOLD)
+/// 4. `UNSANDBOXED` (Yellow BOLD)
+/// 5. `cap!` (Yellow BOLD)
+/// 6. `audit {l}/{o}/{d}` (DarkGray)
+/// 7. `prompt custom` (Yellow)
+///
+/// `detail` is the cached read of THIS run (the caller passes it only when its run id
+/// matches), whose body gives the live `control` word. Without it the frontmatter's
+/// echo is all there is, so a run with neither shows no `ctl` token rather than a
+/// claim about a body nobody read `[inferred — audit]`. An unreadable run has none.
+fn status_token_list(
+    entry: &DriverRunEntry,
+    detail: Option<&RunDetail>,
+    now: SystemTime,
+) -> Vec<Token> {
+    let Ok(view) = &entry.1 else {
+        return Vec::new();
+    };
+    let fm = &view.frontmatter;
+    let live = is_live(&view.derived);
+    let mut tokens: Vec<Token> = Vec::new();
+
+    // 1. control.
+    let control = match detail {
+        Some(detail) => Some(control_shown(
+            detail.body_control.as_deref(),
+            fm.control.as_deref(),
+            live,
+        )),
+        None => fm
+            .control
+            .as_deref()
+            .map(|echo| control_shown(Some(echo), Some(echo), live)),
+    };
+    if let Some((word, suffix)) = control {
+        let unlined = detail.is_some_and(|d| d.body_control.is_none());
+        let mut spans = vec![Span::styled(
+            format!("ctl {word}"),
+            if unlined {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            },
+        )];
+        if let Some(suffix) = suffix {
+            spans.push(Span::styled(format!(" {suffix}"), label_style()));
+        }
+        tokens.push(Token { spans, flag: false });
+    }
+
+    // 2. heartbeat age, with the stale flag.
+    if live {
+        if let Some(age) =
+            heartbeat_source(fm).and_then(|(stamp, _)| heartbeat_age_secs(&stamp, now))
+        {
+            let stale = heartbeat_stale(fm, &view.derived, now);
+            let mut spans = vec![Span::raw(format!("hb {}", format_age(age)))];
+            if stale {
+                spans.push(Span::styled(" stale", flag_style()));
+            }
+            tokens.push(Token { spans, flag: stale });
+        }
+    }
+
+    // 3 / 6. the audit: a mismatch is a flag, a match is a benign fact.
+    let audit = &fm.dispatch_audit;
+    let counts = format!("{}/{}/{}", audit.logged, audit.observed, audit.denied);
+    let mismatch = audit.logged != audit.observed;
+    if mismatch {
+        tokens.push(Token {
+            spans: vec![
+                Span::styled(format!("audit {counts} "), Style::default().fg(Color::Red)),
+                Span::styled(
+                    "MISMATCH",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+            ],
+            flag: true,
+        });
+    }
+
+    // 4. the sandbox posture.
+    if fm.sandbox.as_deref() == Some("degraded") {
+        tokens.push(Token {
+            spans: vec![Span::styled("UNSANDBOXED", flag_style())],
+            flag: true,
+        });
+    }
+
+    // 5. a cap at or over its limit.
+    if any_cap_at_limit(fm) {
+        tokens.push(Token {
+            spans: vec![Span::styled("cap!", flag_style())],
+            flag: true,
+        });
+    }
+
+    if !mismatch {
+        tokens.push(Token {
+            spans: vec![Span::styled(format!("audit {counts}"), label_style())],
+            flag: false,
+        });
+    }
+
+    // 7. an operator-supplied prompt.
+    if fm
+        .prompt_version
+        .as_deref()
+        .is_some_and(|version| version.starts_with("custom:"))
+    {
+        tokens.push(Token {
+            spans: vec![Span::styled(
+                "prompt custom",
+                Style::default().fg(Color::Yellow),
+            )],
+            flag: false,
+        });
+    }
+    tokens
+}
+
+/// The status tokens that fit `cells` whole, joined by two spaces, never split.
+///
+/// When they do not all fit, benign tokens are dropped first and flag tokens last,
+/// each group from the end of the UI-SPEC order, so `MISMATCH`, `UNSANDBOXED`, `cap!`
+/// and a stale heartbeat outlive `audit {l}/{o}/{d}`, `prompt custom`, a fresh
+/// heartbeat and even the `ctl` token that heads the order `[inferred — audit]` (the
+/// UI-SPEC says both "dropped from the end" and "a flag always outlives a benign one",
+/// and only this reading satisfies both). With room for none of them, nothing is drawn.
+pub fn status_tokens(
+    entry: &DriverRunEntry,
+    detail: Option<&RunDetail>,
+    now: SystemTime,
+    cells: usize,
+) -> Vec<Span<'static>> {
+    let tokens = status_token_list(entry, detail, now);
+    let mut keep = vec![true; tokens.len()];
+    let used = |keep: &[bool]| -> usize {
+        let kept: Vec<usize> = (0..tokens.len()).filter(|i| keep[*i]).collect();
+        kept.iter().map(|i| tokens[*i].width()).sum::<usize>()
+            + Span::raw(TOKEN_SEP).width() * kept.len().saturating_sub(1)
+    };
+    while used(&keep) > cells {
+        let victim = (0..tokens.len())
+            .rev()
+            .find(|i| keep[*i] && !tokens[*i].flag)
+            .or_else(|| (0..tokens.len()).rev().find(|i| keep[*i]));
+        match victim {
+            Some(index) => keep[index] = false,
+            None => break,
+        }
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (index, token) in tokens.into_iter().enumerate() {
+        if !keep[index] {
+            continue;
+        }
+        if !spans.is_empty() {
+            spans.push(Span::raw(TOKEN_SEP));
+        }
+        spans.extend(token.spans);
+    }
+    spans
+}
+
+/// MEDIUM header row 2: the status tokens behind a two-cell indent.
+fn token_row(
+    entry: &DriverRunEntry,
+    detail: Option<&RunDetail>,
+    now: SystemTime,
+    width: usize,
+) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ")];
+    spans.extend(status_tokens(entry, detail, now, width.saturating_sub(2)));
+    Line::from(spans)
+}
+
+// ── SUMMARY rows (D-10) ─────────────────────────────────────────────────────
+
+/// Cells the run id keeps before the status tokens may take the rest of a SUMMARY row.
+const SUMMARY_ID_MIN_CELLS: usize = 12;
+
+/// One SUMMARY row, `> ◆ running    20261020-driver-tab  ctl pause (pending)  hb 3:10
+/// stale`: highlight, glyph, word padded to [`RUN_WORD_CELLS`], the run id cut by
+/// display width, then the status tokens that fit whole.
+///
+/// The run id yields to the tokens down to [`SUMMARY_ID_MIN_CELLS`] cells, so a flag
+/// token is not pushed off a narrow row by a long id. An unreadable run reads
+/// `unreadable` with no tokens. Everything untrusted goes through `shown_capped`
+/// first and `fit_cells` second.
+pub fn summary_row(
+    entry: &DriverRunEntry,
+    detail: Option<&RunDetail>,
+    selected: bool,
+    now: SystemTime,
+    width: usize,
+) -> Line<'static> {
+    let cell = status_cell_at(entry, now);
+    let (prefix, id_style) = if selected {
+        ("> ", selection_style())
+    } else {
+        ("  ", Style::default())
+    };
+    let word = pad_cells(&fit_cells(&cell.list_word, RUN_WORD_CELLS), RUN_WORD_CELLS);
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled(prefix, selection_style()),
+        Span::styled(cell.glyph, cell.style),
+        Span::raw(" "),
+        Span::styled(word, cell.style),
+        Span::raw(" "),
+    ];
+    let used: usize = spans.iter().map(Span::width).sum();
+    let room = width.saturating_sub(used);
+    let id = shown_capped(&entry.0);
+    let id_cells = Span::raw(id.as_str()).width();
+    let sep = Span::raw(TOKEN_SEP).width();
+
+    let all = status_tokens(entry, detail, now, usize::MAX);
+    let all_cells: usize = all.iter().map(Span::width).sum();
+    let token_room = if all.is_empty() || id_cells + sep + all_cells <= room {
+        all_cells
+    } else {
+        room.saturating_sub(id_cells.min(SUMMARY_ID_MIN_CELLS) + sep)
+    };
+    let tokens = if all_cells <= token_room {
+        all
+    } else {
+        status_tokens(entry, detail, now, token_room)
+    };
+    let tokens_cells: usize = tokens.iter().map(Span::width).sum();
+    let id_room = if tokens.is_empty() {
+        room
+    } else {
+        room.saturating_sub(tokens_cells + sep)
+    };
+    spans.push(Span::styled(fit_cells(&id, id_room), id_style));
+    if !tokens.is_empty() {
+        spans.push(Span::raw(TOKEN_SEP));
+        spans.extend(tokens);
+    }
+    // Below the fixed part's own width (a pane no tab ever gives) the row is cut, not
+    // allowed to spill.
+    clip_line(Line::from(spans), width)
+}
+
+// ── Height tiers (D-10, D-29) ───────────────────────────────────────────────
+
+/// Detail **inner** height (the pane's rows below its one-row title) at which the FULL
+/// tier starts: header 6, items 3 (rule + one item + the cursor-item row), caps 5
+/// (rule + three caps + audit), connected 2 (rule + one row), LOG 4 (rule +
+/// [`LOG_MIN_ROWS`]): `6 + 3 + 5 + 2 + 4 = 20`.
+pub const DRIVER_FULL_MIN_ROWS: u16 = 20;
+
+/// Detail inner height at which the MEDIUM tier starts: header 2, caps 3 (self-labelled,
+/// no rule), items 2 (rule + one item), LOG 4: `2 + 3 + 2 + 4 = 11`. Below it the tab
+/// is one summary row per run.
+pub const DRIVER_MEDIUM_MIN_ROWS: u16 = 11;
+
+const FULL_HEADER_ROWS: usize = 6;
+const FULL_ITEMS_FLOOR: usize = 3;
+const FULL_CAPS_ROWS: usize = 5;
+const FULL_CONNECTED_FLOOR: usize = 2;
+const MEDIUM_HEADER_ROWS: usize = 2;
+const MEDIUM_CAPS_ROWS: usize = 3;
+const MEDIUM_ITEMS_FLOOR: usize = 2;
+/// The LOG section's floor in both tiers: its rule and [`LOG_MIN_ROWS`] body rows.
+const LOG_FLOOR_ROWS: usize = 1 + LOG_MIN_ROWS;
+
+const _: () = assert!(
+    FULL_HEADER_ROWS + FULL_ITEMS_FLOOR + FULL_CAPS_ROWS + FULL_CONNECTED_FLOOR + LOG_FLOOR_ROWS
+        == DRIVER_FULL_MIN_ROWS as usize
+);
+const _: () = assert!(
+    MEDIUM_HEADER_ROWS + MEDIUM_CAPS_ROWS + MEDIUM_ITEMS_FLOOR + LOG_FLOOR_ROWS
+        == DRIVER_MEDIUM_MIN_ROWS as usize
+);
+
+/// Which layout the tab area's height selects (D-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeightTier {
+    /// `H == 0`: nothing is drawn.
+    None,
+    /// `1 <= H <= 11`: no sections, one summary row per run across the whole width.
+    Summary,
+    /// `12 <= H <= 20`.
+    Medium,
+    /// `H >= 21`.
+    Full,
+}
+
+/// The tier for a tab area `h` rows tall. The detail pane's title takes one row, so its
+/// inner height is `h - 1`, and the tiers are named by that: FULL at
+/// [`DRIVER_FULL_MIN_ROWS`] inner rows (`h >= 21`), MEDIUM at [`DRIVER_MEDIUM_MIN_ROWS`]
+/// (`h >= 12`).
+pub fn height_tier(h: u16) -> HeightTier {
+    let inner = h.saturating_sub(1);
+    if h == 0 {
+        HeightTier::None
+    } else if inner >= DRIVER_FULL_MIN_ROWS {
+        HeightTier::Full
+    } else if inner >= DRIVER_MEDIUM_MIN_ROWS {
+        HeightTier::Medium
+    } else {
+        HeightTier::Summary
+    }
+}
+
+/// How the rows of a tier are shared out (the rest are fixed: header, caps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TierRows {
+    /// Rows of the items section, its rule included.
+    pub items: usize,
+    /// Rows of the connected section, its rule included (always 0 in MEDIUM).
+    pub connected: usize,
+    /// Rows of the LOG section, its rule included.
+    pub log: usize,
+}
+
+/// Share `inner` rows between the sections of `tier` (D-10, D-29).
+///
+/// Every section first gets its floor (or its whole demand when that is smaller, so a
+/// section with nothing to show does not hold rows back). Spare rows then go to the items
+/// (up to what they can show), then, in FULL only, to the connections, and every row
+/// that remains goes to the LOG. A section that cannot get its floor is dropped by the
+/// tier, never squeezed: the callers use FULL only from [`DRIVER_FULL_MIN_ROWS`] and
+/// MEDIUM only from [`DRIVER_MEDIUM_MIN_ROWS`], where every floor fits.
+pub fn allocate_rows(
+    tier: HeightTier,
+    inner: usize,
+    items_demand: usize,
+    connected_demand: usize,
+) -> TierRows {
+    match tier {
+        HeightTier::Full => {
+            let fixed = FULL_HEADER_ROWS + FULL_CAPS_ROWS;
+            let items_floor = items_demand.min(FULL_ITEMS_FLOOR);
+            let connected_floor = connected_demand.min(FULL_CONNECTED_FLOOR);
+            let spare =
+                inner.saturating_sub(fixed + items_floor + connected_floor + LOG_FLOOR_ROWS);
+            let items_extra = spare.min(items_demand - items_floor);
+            let connected_extra = (spare - items_extra).min(connected_demand - connected_floor);
+            let items = items_floor + items_extra;
+            let connected = connected_floor + connected_extra;
+            TierRows {
+                items,
+                connected,
+                log: inner.saturating_sub(fixed + items + connected),
+            }
+        }
+        HeightTier::Medium => {
+            let fixed = MEDIUM_HEADER_ROWS + MEDIUM_CAPS_ROWS;
+            let items_floor = items_demand.min(MEDIUM_ITEMS_FLOOR);
+            let spare = inner.saturating_sub(fixed + items_floor + LOG_FLOOR_ROWS);
+            let items = items_floor + spare.min(items_demand - items_floor);
+            TierRows {
+                items,
+                connected: 0,
+                log: inner.saturating_sub(fixed + items),
+            }
+        }
+        HeightTier::None | HeightTier::Summary => TierRows {
+            items: 0,
+            connected: 0,
+            log: 0,
+        },
+    }
+}
+
+/// What the tiered composition draws for the selected launcher run: the lines above
+/// the LOG, and whether the LOG takes the rows below them.
+struct Composition {
+    top: Vec<Line<'static>>,
+    log: bool,
+}
+
+/// An unreadable run's detail: the error in Red and the promise that the run is read
+/// again on the next change to its directory (UI-SPEC). No sections, so no LOG.
+fn unreadable_lines(
+    entry: &DriverRunEntry,
+    error: &crate::state_reader::driver_frontmatter::FrontmatterError,
+    now: SystemTime,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let message = format!(
+        "DIRECTION.md could not be read: {}",
+        shown_capped(&error.to_string())
+    );
+    vec![
+        header_row_1(entry, now, width),
+        Line::from(Span::styled(
+            fit_cells(&message, width),
+            Style::default().fg(Color::Red),
+        )),
+        Line::from(Span::styled(
+            "It is read again on the next change to the run directory.",
+            muted_style(),
+        )),
+    ]
+}
+
+/// The tiered detail composition for the selected launcher run (D-10, D-29).
+///
+/// FULL: header 6, items (rule + item rows + the cursor-item row), caps 5, connected,
+/// then the LOG. MEDIUM: header 2 (row 1 and the status tokens), the three self-labelled
+/// caps, items (rule + item rows), then the LOG. `inner_height` is the pane's rows
+/// below its title; `tier` is FULL or MEDIUM (SUMMARY has its own renderer).
+fn compose_selected(
     entry: &DriverRunEntry,
     cache: Option<&ProjectViewCache>,
     now: SystemTime,
     width: usize,
-) -> Vec<Line<'static>> {
-    match &entry.1 {
-        Ok(view) => {
-            let detail = detail_for(cache, &entry.0);
-            let mut lines = header_rows(
-                entry,
-                view,
-                detail.and_then(|d| d.body_control.as_deref()),
-                now,
-                width,
-            );
-            lines.extend(items_section(
-                detail,
-                cache.and_then(|c| c.launcher_item_cursor.as_deref()),
-                // The log's park rules, only from the tail of THIS run.
-                cache
-                    .map(|c| &c.launcher_log)
-                    .filter(|tail| tail.run_id == entry.0)
-                    .map(|tail| &tail.park_rules),
-                width,
-            ));
-            lines.extend(caps_section(&view.frontmatter, width));
-            lines.extend(connected_section(&view.frontmatter, now, width));
-            lines
-        }
+    inner_height: usize,
+    tier: HeightTier,
+) -> Composition {
+    let view = match &entry.1 {
+        Ok(view) => view,
         Err(error) => {
-            let message = format!(
-                "DIRECTION.md could not be read: {}",
-                shown_capped(&error.to_string())
-            );
-            vec![
-                header_row_1(entry, now, width),
-                Line::from(Span::styled(
-                    fit_cells(&message, width),
-                    Style::default().fg(Color::Red),
-                )),
-                Line::from(Span::styled(
-                    "It is read again on the next change to the run directory.",
-                    muted_style(),
-                )),
-            ]
+            return Composition {
+                top: unreadable_lines(entry, error, now, width),
+                log: false,
+            }
         }
-    }
+    };
+    let detail = detail_for(cache, &entry.0);
+    let cursor = cache.and_then(|c| c.launcher_item_cursor.as_deref());
+    // The log's park rules, only from the tail of THIS run.
+    let rules = cache
+        .map(|c| &c.launcher_log)
+        .filter(|tail| tail.run_id == entry.0)
+        .map(|tail| &tail.park_rules);
+    let full = tier == HeightTier::Full;
+    let items_demand = items_section_fit(detail, cursor, rules, width, usize::MAX, full).len();
+    let connected_demand = if full {
+        connected_section_fit(&view.frontmatter, now, width, usize::MAX).len()
+    } else {
+        0
+    };
+    let rows = allocate_rows(tier, inner_height, items_demand, connected_demand);
+    let items = items_section_fit(detail, cursor, rules, width, rows.items, full);
+
+    let top = if full {
+        let mut lines = header_rows(
+            entry,
+            view,
+            detail.and_then(|d| d.body_control.as_deref()),
+            now,
+            width,
+        );
+        lines.extend(items);
+        lines.extend(caps_section(&view.frontmatter, width));
+        lines.extend(connected_section_fit(
+            &view.frontmatter,
+            now,
+            width,
+            rows.connected,
+        ));
+        lines
+    } else {
+        let mut lines = vec![
+            header_row_1(entry, now, width),
+            token_row(entry, detail, now, width),
+        ];
+        lines.extend(cap_rows(&view.frontmatter, width));
+        lines.extend(items);
+        lines
+    };
+    Composition { top, log: true }
 }
 
 /// What a steering, launch or kill key says when the highlight is on a legacy run.
@@ -2380,6 +2905,7 @@ pub(super) fn render_launcher_tab(
 
     let sel = selection(cache);
     let expanded = cache.is_some_and(legacy_rows_shown);
+    let tier = height_tier(area.height);
     let (list_area, detail_area) = driver_panes(area);
 
     // The verdict applies only to the run the reconciliation scan is observing;
@@ -2390,6 +2916,62 @@ pub(super) fn render_launcher_tab(
             .filter(|observed| observed.run_id == run.run_id)
             .map(|observed| observed.verdict())
     };
+
+    // SUMMARY (D-10): no sections, so no header can be orphaned. Both panes give way
+    // to one row per run across the whole width, windowed to keep the selection on
+    // screen. The dry-run preview (the retired start flow's Step B) keeps the pane.
+    if tier == HeightTier::Summary && preview.is_none() {
+        // No LOG is drawn, so the scroll keys must not act on a stale viewport.
+        viewport.set(ViewportMetrics::default());
+        if runs.is_empty() && legacy.is_empty() {
+            // Nothing listed yet (the listed-and-empty case returned above).
+            let loading = Line::from(Span::styled(DRY_RUN_LOADING, muted_style()));
+            frame.render_widget(Paragraph::new(loading), area);
+            return regions;
+        }
+        let width = usize::from(area.width);
+        let mut items: Vec<ListItem> = runs
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                ListItem::new(summary_row(
+                    entry,
+                    detail_for(cache, &entry.0),
+                    sel == Selection::Launcher(index),
+                    now,
+                    width,
+                ))
+            })
+            .collect();
+        if !legacy.is_empty() {
+            items.push(ListItem::new(legacy_header_row(legacy.len(), expanded)));
+            if expanded {
+                items.extend(legacy.iter().enumerate().map(|(index, run)| {
+                    ListItem::new(legacy_row(
+                        run,
+                        verdict_for(run),
+                        sel == Selection::Legacy(index),
+                        area.width,
+                    ))
+                }));
+            }
+        }
+        let len = items.len();
+        let mut list_state = ListState::default().with_offset(list_offset.get());
+        list_state.select(match sel {
+            Selection::Launcher(index) => Some(index),
+            Selection::Legacy(index) => Some(runs.len() + 1 + index),
+            Selection::Nothing => None,
+        });
+        frame.render_stateful_widget(List::new(items), area, &mut list_state);
+        list_offset.set(list_state.offset());
+        regions.list = Some(crate::ui::mouse::ListRegion {
+            rect: area,
+            offset: list_state.offset(),
+            len,
+        });
+        return regions;
+    }
 
     if let Some(list_area) = list_area {
         let list_block = Block::default().borders(Borders::RIGHT).title(" Runs ");
@@ -2484,25 +3066,25 @@ pub(super) fn render_launcher_tab(
         }
         Selection::Launcher(index) => {
             let entry = &runs[index];
-            let lines = detail_lines(entry, cache, now, usize::from(inner.width));
-            // The LOG tail takes the rows below the sections: its rule and at least
-            // [`LOG_MIN_ROWS`] rows. Where the pane is too short for both, the
-            // sections keep the rows (plan 30-03 owns the height tiers).
-            let log_rows = u16::try_from(1 + LOG_MIN_ROWS).unwrap_or(u16::MAX);
-            let readable = entry.1.is_ok();
-            let top_rows = if readable && inner.height > log_rows {
-                u16::try_from(lines.len())
-                    .unwrap_or(u16::MAX)
-                    .min(inner.height - log_rows)
-            } else {
-                inner.height
-            };
+            let comp = compose_selected(
+                entry,
+                cache,
+                now,
+                usize::from(inner.width),
+                usize::from(inner.height),
+                tier,
+            );
+            // The sections take the rows the tier gave them; the LOG tail takes every
+            // row below, its rule and at least [`LOG_MIN_ROWS`] under it (D-29).
+            let top_rows = u16::try_from(comp.top.len())
+                .unwrap_or(u16::MAX)
+                .min(inner.height);
             let top = Rect {
                 height: top_rows,
                 ..inner
             };
-            frame.render_widget(Paragraph::new(lines), top);
-            if readable && inner.height > top_rows {
+            frame.render_widget(Paragraph::new(comp.top), top);
+            if comp.log && inner.height > top_rows {
                 let log_area = Rect {
                     y: inner.y + top_rows,
                     height: inner.height - top_rows,
@@ -4243,9 +4825,11 @@ mod tests {
         detail.body_control = Some("pause".to_owned());
         let mut cache = cache_with_detail(detail);
         cache.launcher_runs = vec![entry];
-        let lines = detail_lines(
-            &cache.launcher_runs[0].clone(),
-            Some(&cache),
+        let entry = cache.launcher_runs[0].clone();
+        let lines = header_rows(
+            &entry,
+            entry.1.as_ref().expect("readable"),
+            Some("pause"),
             SystemTime::now(),
             52,
         );
@@ -5504,6 +6088,751 @@ mod tests {
         assert_eq!(
             launcher_marker(&[bad], SystemTime::now()),
             LauncherMarker::default()
+        );
+    }
+
+    // ── Task 3: height tiers, status tokens, SUMMARY rows (30-03, D-10, D-29) ──
+
+    #[test]
+    fn the_height_tier_follows_the_ui_spec_boundaries() {
+        for (h, tier) in [
+            (0, HeightTier::None),
+            (1, HeightTier::Summary),
+            (11, HeightTier::Summary),
+            (12, HeightTier::Medium),
+            (20, HeightTier::Medium),
+            (21, HeightTier::Full),
+            (40, HeightTier::Full),
+        ] {
+            assert_eq!(height_tier(h), tier, "H = {h}");
+        }
+        // The constants are the detail INNER heights: the tab area is one row taller
+        // (the pane title).
+        assert_eq!(DRIVER_FULL_MIN_ROWS, 20);
+        assert_eq!(DRIVER_MEDIUM_MIN_ROWS, 11);
+        assert_eq!(height_tier(DRIVER_FULL_MIN_ROWS + 1), HeightTier::Full);
+        assert_eq!(height_tier(DRIVER_FULL_MIN_ROWS), HeightTier::Medium);
+        assert_eq!(height_tier(DRIVER_MEDIUM_MIN_ROWS + 1), HeightTier::Medium);
+        assert_eq!(height_tier(DRIVER_MEDIUM_MIN_ROWS), HeightTier::Summary);
+    }
+
+    #[test]
+    fn allocation_gives_every_section_its_floor_at_the_tier_minimum() {
+        // FULL at 20 inner rows: header 6 + items 3 + caps 5 + connected 2 + log 4.
+        let full = allocate_rows(HeightTier::Full, 20, 11, 5);
+        assert_eq!(
+            full,
+            TierRows {
+                items: 3,
+                connected: 2,
+                log: 4
+            }
+        );
+        assert_eq!(6 + full.items + 5 + full.connected + full.log, 20);
+        // MEDIUM at 11: header 2 + caps 3 + items 2 + log 4.
+        let medium = allocate_rows(HeightTier::Medium, 11, 11, 0);
+        assert_eq!(
+            medium,
+            TierRows {
+                items: 2,
+                connected: 0,
+                log: 4
+            }
+        );
+        assert_eq!(2 + 3 + medium.items + medium.log, 11);
+    }
+
+    #[test]
+    fn allocation_spare_rows_go_to_items_then_connections_then_the_log() {
+        // Five spare rows: all to the items (which can take eight more).
+        let a = allocate_rows(HeightTier::Full, 25, 11, 5);
+        assert_eq!((a.items, a.connected, a.log), (8, 2, 4));
+        // Items satisfied at 4 rows, then the connections up to their demand, then
+        // every remaining row to the LOG.
+        let b = allocate_rows(HeightTier::Full, 30, 4, 5);
+        assert_eq!((b.items, b.connected, b.log), (4, 5, 10));
+        // A section with nothing to show holds no rows back.
+        let c = allocate_rows(HeightTier::Full, 20, 2, 2);
+        assert_eq!((c.items, c.connected), (2, 2));
+        assert_eq!(6 + c.items + 5 + c.connected + c.log, 20);
+        // MEDIUM: items first, the rest to the LOG.
+        let d = allocate_rows(HeightTier::Medium, 19, 9, 0);
+        assert_eq!((d.items, d.log), (9, 5));
+    }
+
+    #[test]
+    fn allocation_always_adds_up_and_never_starves_the_log() {
+        for inner in 20..=60usize {
+            for items in [2usize, 3, 4, 9, 12] {
+                for conn in [2usize, 3, 5] {
+                    let r = allocate_rows(HeightTier::Full, inner, items, conn);
+                    assert_eq!(6 + r.items + 5 + r.connected + r.log, inner);
+                    assert!(r.log >= LOG_FLOOR_ROWS, "{inner} {items} {conn}: {r:?}");
+                    assert!(r.items <= items && r.connected <= conn);
+                }
+            }
+        }
+        for inner in 11..=60usize {
+            for items in [2usize, 3, 9, 12] {
+                let r = allocate_rows(HeightTier::Medium, inner, items, 0);
+                assert_eq!(2 + 3 + r.items + r.log, inner);
+                assert!(r.log >= LOG_FLOOR_ROWS, "{inner} {items}: {r:?}");
+            }
+        }
+    }
+
+    /// A readable running run with every status token present: a stale heartbeat, a
+    /// pending `pause`, an audit mismatch, a degraded sandbox, a cap at its limit and
+    /// a custom prompt.
+    fn token_entry(id: &str, mismatch: bool) -> DriverRunEntry {
+        entry_edit(id, running(), |fm| {
+            fm.control = Some("run".to_owned());
+            fm.heartbeat_stale_after_s = 120;
+            for conn in &mut fm.connected {
+                conn.last_heartbeat = Some(stamp_ago(190));
+            }
+            fm.dispatch_audit = crate::state_reader::driver_frontmatter::DispatchAudit {
+                logged: 7,
+                observed: if mismatch { 6 } else { 7 },
+                denied: 0,
+            };
+            fm.sandbox = Some("degraded".to_owned());
+            fm.caps.dispatches.used = 10;
+            fm.caps.dispatches.limit = Some(10);
+            fm.prompt_version = Some("custom:3fa9c0d1".to_owned());
+        })
+    }
+
+    fn token_detail(id: &str) -> RunDetail {
+        let mut detail = detail_of(id, vec![], vec![], None);
+        detail.body_control = Some("pause".to_owned());
+        detail
+    }
+
+    fn spans_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn the_status_tokens_follow_the_ui_spec_order_and_styles() {
+        let entry = token_entry("20261020-a", true);
+        let detail = token_detail("20261020-a");
+        let spans = status_tokens(&entry, Some(&detail), SystemTime::now(), usize::MAX);
+        assert_eq!(
+            spans_text(&spans),
+            "ctl pause (pending)  hb 3:10 stale  audit 7/6/0 MISMATCH  UNSANDBOXED  cap!  \
+             prompt custom"
+                .replace("3:10", &format_age(190))
+        );
+        let style_of = |needle: &str| {
+            spans
+                .iter()
+                .find(|span| span.content.contains(needle))
+                .map(|span| span.style)
+                .unwrap_or_else(|| panic!("no span with {needle:?}"))
+        };
+        assert_eq!(style_of(" stale").fg, Some(Color::Yellow));
+        assert!(style_of(" stale").add_modifier.contains(Modifier::BOLD));
+        assert_eq!(style_of("MISMATCH").fg, Some(Color::Red));
+        assert!(style_of("MISMATCH").add_modifier.contains(Modifier::BOLD));
+        assert_eq!(style_of("UNSANDBOXED").fg, Some(Color::Yellow));
+        assert_eq!(style_of("cap!").fg, Some(Color::Yellow));
+        assert_eq!(style_of("(pending)").fg, Some(Color::DarkGray));
+        assert_eq!(style_of("prompt custom").fg, Some(Color::Yellow));
+
+        // A matching audit is the benign DarkGray form, after `cap!`.
+        let ok = token_entry("20261020-b", false);
+        let spans = status_tokens(&ok, None, SystemTime::now(), usize::MAX);
+        let text = spans_text(&spans);
+        assert!(
+            text.contains("  cap!  audit 7/7/0  prompt custom"),
+            "{text}"
+        );
+        assert!(!text.contains("MISMATCH"));
+        assert_eq!(
+            spans
+                .iter()
+                .find(|s| s.content == "audit 7/7/0")
+                .unwrap()
+                .style
+                .fg,
+            Some(Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn the_status_tokens_are_dropped_whole_benign_first_and_never_split() {
+        let entry = token_entry("20261020-a", true);
+        let detail = token_detail("20261020-a");
+        let full = spans_text(&status_tokens(
+            &entry,
+            Some(&detail),
+            SystemTime::now(),
+            usize::MAX,
+        ));
+        let whole: Vec<String> = full.split("  ").map(str::to_owned).collect();
+        assert_eq!(whole.len(), 6, "{whole:?}");
+
+        let mut previous: Option<Vec<String>> = None;
+        for cells in (0..=full.chars().count() + 2).rev() {
+            let spans = status_tokens(&entry, Some(&detail), SystemTime::now(), cells);
+            let text = spans_text(&spans);
+            assert!(
+                Span::raw(text.as_str()).width() <= cells,
+                "{cells}: {text:?}"
+            );
+            let kept: Vec<String> = if text.is_empty() {
+                Vec::new()
+            } else {
+                text.split("  ").map(str::to_owned).collect()
+            };
+            // Never split: every kept piece is a whole token, and the order holds.
+            let positions: Vec<usize> = kept
+                .iter()
+                .map(|piece| {
+                    whole
+                        .iter()
+                        .position(|w| w == piece)
+                        .unwrap_or_else(|| panic!("{cells}: {piece:?} is a split token"))
+                })
+                .collect();
+            assert!(
+                positions.windows(2).all(|w| w[0] < w[1]),
+                "{cells}: {kept:?}"
+            );
+            // Shrinking only ever removes tokens.
+            if let Some(previous) = &previous {
+                assert!(kept.iter().all(|k| previous.contains(k)), "{cells}");
+            }
+            // A flag outlives a benign token: if a flag is gone, every benign one is.
+            let flags = ["hb ", "audit 7/6/0 MISMATCH", "UNSANDBOXED", "cap!"];
+            let is_flag = |token: &str| flags.iter().any(|f| token.starts_with(f));
+            let dropped_flag = whole.iter().any(|t| is_flag(t) && !kept.contains(t));
+            if dropped_flag {
+                assert!(
+                    kept.iter().all(|t| is_flag(t)),
+                    "{cells}: a benign token outlived a dropped flag: {kept:?}"
+                );
+            }
+            previous = Some(kept);
+        }
+        // Specifically: at 40 cells MISMATCH and UNSANDBOXED outlive `prompt custom`
+        // and the benign audit.
+        let at_40 = spans_text(&status_tokens(&entry, Some(&detail), SystemTime::now(), 40));
+        assert!(at_40.contains("MISMATCH"), "{at_40:?}");
+        assert!(!at_40.contains("prompt custom"), "{at_40:?}");
+        let ok = token_entry("20261020-b", false);
+        let at_30 = spans_text(&status_tokens(&ok, None, SystemTime::now(), 30));
+        assert!(at_30.contains("UNSANDBOXED"), "{at_30:?}");
+        assert!(!at_30.contains("audit 7/7/0") && !at_30.contains("prompt custom"));
+    }
+
+    #[test]
+    fn the_status_tokens_for_a_quiet_run_are_the_control_and_the_audit_only() {
+        let quiet = entry_edit("20261020-a", running(), |fm| {
+            fm.control = Some("run".to_owned());
+        });
+        let text = spans_text(&status_tokens(&quiet, None, SystemTime::now(), usize::MAX));
+        assert!(text.starts_with("ctl run  hb 0:0"), "{text}");
+        assert!(
+            text.ends_with("  audit 7/7/0") || text.contains("  audit "),
+            "{text}"
+        );
+        assert!(!text.contains("UNSANDBOXED") && !text.contains("cap!"));
+        // No control anywhere and no detail: no `ctl` claim at all.
+        let none = entry_edit("20261020-a", running(), |fm| fm.control = None);
+        let text = spans_text(&status_tokens(&none, None, SystemTime::now(), usize::MAX));
+        assert!(!text.contains("ctl"), "{text}");
+        // An unreadable run has no tokens.
+        let bad: DriverRunEntry = (
+            "20261020-a".to_owned(),
+            Err(FrontmatterError::Io { detail: "x".into() }),
+        );
+        assert!(status_tokens(&bad, None, SystemTime::now(), usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn summary_row_is_highlight_glyph_word_id_and_the_tokens_that_fit() {
+        let entry = entry_edit("20261020-driver-tab", running(), |fm| {
+            fm.control = Some("run".to_owned());
+        });
+        let mut detail = detail_of("20261020-driver-tab", vec![], vec![], None);
+        detail.body_control = Some("pause".to_owned());
+        let now = SystemTime::now();
+        let line = summary_row(&entry, Some(&detail), true, now, 100);
+        let text = text_of(&line);
+        assert!(
+            text.starts_with("> \u{25C6} running    20261020-driver-tab  ctl pause (pending)"),
+            "{text:?}"
+        );
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(Color::Cyan),
+            "the highlight is Selection"
+        );
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(Color::Magenta),
+            "the glyph keeps the status colour"
+        );
+        let plain = text_of(&summary_row(&entry, None, false, now, 100));
+        assert!(
+            plain.starts_with("  \u{25C6} running    20261020-driver-tab  ctl run"),
+            "{plain:?}"
+        );
+
+        // Never wider than the row, at any width; the id yields before a flag does.
+        let flagged = token_entry("20261020-driver-tab", true);
+        for width in 12..=120 {
+            let text = text_of(&summary_row(&flagged, None, false, now, width));
+            assert!(
+                Span::raw(text.as_str()).width() <= width,
+                "{width}: {text:?}"
+            );
+        }
+        let wide = text_of(&summary_row(&flagged, None, false, now, 90));
+        assert!(
+            wide.contains("MISMATCH") && wide.contains("UNSANDBOXED"),
+            "{wide:?}"
+        );
+        let narrow = text_of(&summary_row(&flagged, None, false, now, 40));
+        assert!(
+            narrow.contains("20261020-dr"),
+            "the id keeps its floor: {narrow:?}"
+        );
+    }
+
+    #[test]
+    fn summary_row_cuts_the_id_by_display_width_and_reads_unreadable_plainly() {
+        let wide = "\u{4E2D}\u{6587}".repeat(20);
+        let entry = entry(&wide, running());
+        for width in [20usize, 33, 47] {
+            let text = text_of(&summary_row(&entry, None, false, SystemTime::now(), width));
+            assert!(
+                Span::raw(text.as_str()).width() <= width,
+                "{width}: {text:?}"
+            );
+        }
+        let bad: DriverRunEntry = (
+            "20261020-a".to_owned(),
+            Err(FrontmatterError::Io { detail: "x".into() }),
+        );
+        let text = text_of(&summary_row(&bad, None, false, SystemTime::now(), 60));
+        assert!(
+            text.contains("unreadable") && text.contains("20261020-a"),
+            "{text:?}"
+        );
+    }
+
+    // ── The tiered composition, rendered ───────────────────────────────────
+
+    /// The shared fixture of the sweeps: a launcher run with ten items, four
+    /// connections, a stale heartbeat, an audit mismatch, a degraded sandbox, a cap at
+    /// its limit and fifty LOG lines, beside two other runs.
+    const SWEEP_RUN: &str = "20261020-driver-tab";
+
+    fn sweep_cache(dir: &Path) -> ProjectViewCache {
+        let selected = entry_edit(SWEEP_RUN, running(), |fm| {
+            fm.control = Some("run".to_owned());
+            fm.heartbeat_stale_after_s = 120;
+            for conn in &mut fm.connected {
+                conn.last_heartbeat = Some(stamp_ago(900));
+            }
+            while fm.connected.len() < 4 {
+                let mut extra = fm.connected[0].clone();
+                extra.role = format!("worker-{}", fm.connected.len());
+                fm.connected.push(extra);
+            }
+            fm.dispatch_audit = crate::state_reader::driver_frontmatter::DispatchAudit {
+                logged: 7,
+                observed: 6,
+                denied: 1,
+            };
+            fm.sandbox = Some("degraded".to_owned());
+            fm.sandbox_missing = Some(vec!["bwrap".to_owned()]);
+            fm.caps.dispatches.used = 10;
+            fm.caps.dispatches.limit = Some(10);
+            fm.caps.gap_rounds.phase = Some("30".to_owned());
+            fm.prompt_version = Some("custom:3fa9c0d1".to_owned());
+            fm.current_item = Some("I-03".to_owned());
+        });
+        let items: Vec<BodyItem> = (1..=10)
+            .map(|n| {
+                body_item(
+                    &format!("I-{n:02}"),
+                    &format!("Item number {n} of the run"),
+                    None,
+                    None,
+                )
+            })
+            .collect();
+        let states: Vec<(String, ItemStateEntry)> = vec![
+            (
+                "I-01".to_owned(),
+                state_entry(ItemState::Done, 2, Some("shipped")),
+            ),
+            ("I-02".to_owned(), state_entry(ItemState::Done, 1, None)),
+            (
+                "I-03".to_owned(),
+                state_entry(ItemState::Parked, 2, Some("which socket path?")),
+            ),
+        ];
+        let mut detail = detail_of(SWEEP_RUN, items, vec![], Some("I-03"));
+        detail.view = selected.1.clone().expect("readable");
+        detail.view.frontmatter.item_states = ItemStates(states);
+        detail.body_control = Some("pause".to_owned());
+        let runs = vec![
+            selected,
+            entry("20261019-older", crashed()),
+            entry("20261018-oldest", DerivedStatus::AsWritten(RunStatus::Done)),
+        ];
+        let mut cache = cache_of(runs);
+        cache.launcher_selected_id = Some(SWEEP_RUN.to_owned());
+        cache.launcher_detail = Some(Box::new(detail));
+        let mut log = template_log_for(SWEEP_RUN);
+        for n in 0..50 {
+            log.push_str(&log_header(
+                "2026-10-20T14:02:11Z",
+                "I-03",
+                "dispatched",
+                &format!(" | step=execute n={n}"),
+            ));
+        }
+        std::fs::write(dir.join("LOG.md"), log).expect("LOG.md");
+        let (cursor, ident) = log_cursor_for(&cache, SWEEP_RUN);
+        apply_log_read(&mut cache, read_log_delta(dir, SWEEP_RUN, cursor, ident));
+        cache
+    }
+
+    fn template_log_for(run_id: &str) -> String {
+        crate::driver_templates::LOG_TEMPLATE.replace(crate::driver_templates::RUN_ID_TOKEN, run_id)
+    }
+
+    /// The same fixture with a legacy run expanded and selected instead.
+    fn legacy_sweep_cache(dir: &Path) -> ProjectViewCache {
+        let mut cache = sweep_cache(dir);
+        cache.driver_runs = vec![crate::journal::RunSummary {
+            run_id: "2026-07-20T09-00-00Z-beef".to_owned(),
+            started_at: "2026-07-20T09:00:00Z".to_owned(),
+            ended_at: None,
+            goal: "a goal long enough to need a row of its own in the header".to_owned(),
+            gsd_command: "/gsd-execute-phase 3".to_owned(),
+            outcome: None,
+        }];
+        cache.legacy_expanded = true;
+        cache.legacy_row_selected = true;
+        cache.driver_selected_run = 0;
+        cache
+    }
+
+    /// The detail pane's text per tab row: every cell right of the list pane.
+    fn detail_rows(buffer: &Buffer, width: u16, height: u16) -> Vec<String> {
+        let (_, detail) = driver_panes(Rect::new(0, 0, width, height));
+        (0..height)
+            .map(|y| {
+                (detail.x..width)
+                    .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// D-29: no row that is a section rule or the pane's title header is the last row
+    /// of the area, or is followed by a rule or an empty row; a LOG rule has its
+    /// minimum body under it.
+    fn assert_no_orphans(rows: &[String], height: u16, label: &str) {
+        let tier = height_tier(height);
+        let titled = matches!(tier, HeightTier::Medium | HeightTier::Full);
+        for (y, row) in rows.iter().enumerate() {
+            let row = row.trim_end();
+            let is_rule = row.starts_with("\u{2500}\u{2500}");
+            let is_title = y == 0 && titled;
+            if !(is_rule || is_title) {
+                continue;
+            }
+            let next = rows.get(y + 1).map(|r| r.trim_end());
+            assert!(
+                next.is_some_and(|n| !n.trim().is_empty() && !n.starts_with("\u{2500}\u{2500}")),
+                "{label}: the {} at row {y} has no content under it:\n{}",
+                if is_rule { "rule" } else { "title" },
+                rows.join("\n")
+            );
+            if row.starts_with("\u{2500}\u{2500} log ") {
+                assert!(
+                    y + LOG_MIN_ROWS < rows.len(),
+                    "{label}: the LOG rule at row {y} has fewer than {LOG_MIN_ROWS} rows:\n{}",
+                    rows.join("\n")
+                );
+            }
+        }
+        assert!(
+            !rows
+                .last()
+                .is_some_and(|r| r.trim_end().starts_with("\u{2500}\u{2500}")),
+            "{label}: the bottom row is a rule:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    fn sweep_render(cache: ProjectViewCache, width: u16, height: u16) -> Vec<String> {
+        let (_, buffer) = render(cache, width, height);
+        detail_rows(&buffer, width, height)
+    }
+
+    /// The backstop for the launcher layout: at no height from 1 to 40 and no width
+    /// of 40, 60, 80 or 120 does a section rule or header render without content
+    /// directly under it, and the bottom row is never a rule.
+    #[test]
+    fn launcher_orphan_sweep_no_rule_or_header_without_content_at_any_height() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut rules_seen = 0usize;
+        for width in [40u16, 60, 80, 120] {
+            for height in 1..=40u16 {
+                let rows = sweep_render(sweep_cache(dir.path()), width, height);
+                assert_no_orphans(&rows, height, &format!("launcher W={width} H={height}"));
+                rules_seen += rows
+                    .iter()
+                    .filter(|r| r.starts_with("\u{2500}\u{2500}"))
+                    .count();
+            }
+        }
+        // The sweep is not vacuous: the taller heights did draw rules.
+        assert!(rules_seen > 100, "{rules_seen}");
+    }
+
+    /// The same for a selected legacy row, whose detail drops the pipeline row and
+    /// the steps section together between 8 and 13 rows (Phase 18 WR-05).
+    #[test]
+    fn legacy_orphan_sweep_no_rule_or_header_without_content_at_any_height() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for width in [40u16, 60, 80, 120] {
+            for height in 1..=40u16 {
+                let rows = sweep_render(legacy_sweep_cache(dir.path()), width, height);
+                assert_no_orphans(&rows, height, &format!("legacy W={width} H={height}"));
+                if (12..=14).contains(&height) {
+                    assert!(
+                        !rows.iter().any(|r| r.contains("steps")),
+                        "legacy W={width} H={height}: the steps section is dropped with the pipeline row:\n{}",
+                        rows.join("\n")
+                    );
+                }
+            }
+        }
+    }
+
+    fn rule_names(rows: &[String]) -> Vec<String> {
+        rows.iter()
+            .filter_map(|r| r.strip_prefix("\u{2500}\u{2500} "))
+            .filter_map(|r| r.split_whitespace().next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_tiers_draw_the_sections_the_ui_spec_names() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // FULL (H >= 21): items, caps, connected, log.
+        let rows = sweep_render(sweep_cache(dir.path()), 100, 21);
+        assert_eq!(
+            rule_names(&rows),
+            ["items", "caps", "connected", "log"],
+            "{rows:#?}"
+        );
+        // MEDIUM (12..=20): no caps or connected rule; the caps are self-labelled rows
+        // between the tokens and the items, and the cursor-item row is gone.
+        let rows = sweep_render(sweep_cache(dir.path()), 200, 20);
+        assert_eq!(rule_names(&rows), ["items", "log"], "{rows:#?}");
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {rows:#?}"))
+        };
+        assert!(at("ctl ") < at("dispatches"));
+        assert!(at("dispatches") < at("minutes") && at("minutes") < at("gap rounds"));
+        assert!(at("gap rounds") < at("\u{2500}\u{2500} items"));
+        assert!(!rows
+            .iter()
+            .any(|r| r.contains("answer:") || r.contains("I-03 parked")));
+        assert!(
+            !rows.iter().any(|r| r.contains("audit  ")),
+            "no audit row in MEDIUM"
+        );
+        // SUMMARY (H <= 11): one row per run across the whole width, no sections.
+        let (rows, _) = render(sweep_cache(dir.path()), 100, 11);
+        assert!(
+            rows[0].starts_with("> \u{25C6}") || rows[0].starts_with("> \u{25C8}"),
+            "{rows:#?}"
+        );
+        assert!(rows[0].contains(SWEEP_RUN), "{rows:#?}");
+        assert!(rows[1].contains("20261019-older") && rows[1].contains("crashed"));
+        assert!(rows[2].contains("20261018-oldest") && rows[2].contains("done"));
+        assert!(!rows
+            .iter()
+            .any(|r| r.contains("\u{2500}\u{2500}") || r.contains("Runs")));
+        // H == 0 draws nothing at all.
+        let regions = {
+            let dir2 = tempfile::tempdir().expect("temp dir");
+            let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir2.path());
+            ctx.view_cache.insert(
+                super::super::driver_confirm::tests::ALIAS.to_string(),
+                sweep_cache(dir.path()),
+            );
+            let mut terminal = Terminal::new(TestBackend::new(60, 1)).expect("terminal");
+            let mut drew = None;
+            terminal
+                .draw(|frame| {
+                    drew = Some(render_launcher_tab(
+                        frame,
+                        Rect::new(0, 0, 60, 0),
+                        &ctx,
+                        super::super::driver_confirm::tests::ALIAS,
+                        ctx.view_cache
+                            .get(super::super::driver_confirm::tests::ALIAS),
+                        &Cell::default(),
+                        &Cell::new(0),
+                    ));
+                })
+                .expect("draw");
+            drew.expect("rendered")
+        };
+        assert!(regions.list.is_none() && regions.output.is_none());
+    }
+
+    #[test]
+    fn the_medium_header_row_two_is_the_status_tokens() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rows = sweep_render(sweep_cache(dir.path()), 200, 20);
+        // Row 0 is the pane title, row 1 the run header, row 2 the tokens.
+        assert!(rows[1].contains(SWEEP_RUN), "{rows:#?}");
+        assert!(rows[2].starts_with("  ctl pause (pending)"), "{rows:#?}");
+        assert!(
+            rows[2].contains("MISMATCH") && rows[2].contains("UNSANDBOXED"),
+            "{rows:#?}"
+        );
+    }
+
+    /// W = 60 is the 39-cell detail floor: every cap row keeps its whole 10-cell bar
+    /// and the `MISMATCH` and `UNSANDBOXED` words are not clipped.
+    #[test]
+    fn cap_bars_and_flag_tokens_are_whole_at_the_detail_floor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for height in [21u16, 30, 40] {
+            let rows = sweep_render(sweep_cache(dir.path()), 60, height);
+            for label in ["dispatches", "minutes", "gap rounds"] {
+                let row = rows
+                    .iter()
+                    .find(|r| r.trim_start().starts_with(label))
+                    .unwrap_or_else(|| panic!("{label}: {rows:#?}"));
+                let cells = row
+                    .chars()
+                    .filter(|c| matches!(c, '\u{2588}' | '\u{2591}'))
+                    .count();
+                assert_eq!(cells, CAP_BAR_CELLS, "{label} at H={height}: {row:?}");
+            }
+            assert!(
+                rows.iter().any(|r| r.contains("MISMATCH")),
+                "H={height}: {rows:#?}"
+            );
+            assert!(
+                rows.iter().any(|r| r.contains("UNSANDBOXED")),
+                "H={height}: {rows:#?}"
+            );
+        }
+        // And at MEDIUM the token row keeps its flags whole at the same width.
+        let rows = sweep_render(sweep_cache(dir.path()), 60, 20);
+        let tokens = &rows[2];
+        for flag in ["MISMATCH", "UNSANDBOXED"] {
+            assert!(
+                tokens.contains(flag) || !tokens.contains(&flag[..3]),
+                "{flag}: {tokens:?}"
+            );
+        }
+        assert!(tokens.contains("MISMATCH"), "{tokens:?}");
+    }
+
+    #[test]
+    fn a_short_items_budget_ends_in_a_more_row_and_keeps_the_cursor_visible() {
+        let items: Vec<BodyItem> = (1..=10)
+            .map(|n| body_item(&format!("I-{n:02}"), "title", None, None))
+            .collect();
+        let detail = detail_of("20261020-a", items, vec![], None);
+        // rule + 3 rows (2 items and `more`), no cursor-item row.
+        let lines = text_lines(&items_section_fit(
+            Some(&detail),
+            Some("I-07"),
+            None,
+            60,
+            4,
+            false,
+        ));
+        assert_eq!(lines.len(), 4, "{lines:#?}");
+        assert!(
+            lines[1].contains("I-06") && lines[2].contains("I-07"),
+            "{lines:#?}"
+        );
+        assert!(lines[3].contains("8 more items"), "{lines:#?}");
+        // One line under the rule: the cursor's own row, nothing else.
+        let lines = text_lines(&items_section_fit(
+            Some(&detail),
+            Some("I-07"),
+            None,
+            60,
+            2,
+            false,
+        ));
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("I-07"), "{lines:#?}");
+        // With the cursor-item row, one item row remains at the FULL floor of 3.
+        let lines = text_lines(&items_section_fit(
+            Some(&detail),
+            Some("I-01"),
+            None,
+            60,
+            3,
+            true,
+        ));
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        assert!(
+            lines[1].contains("I-01") && lines[2].contains("I-01"),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_short_connected_budget_ends_in_a_more_row() {
+        let (_, entry) = entry("20261020-a", running());
+        let mut fm = entry.expect("readable").frontmatter;
+        while fm.connected.len() < 5 {
+            let extra = fm.connected[0].clone();
+            fm.connected.push(extra);
+        }
+        let now = SystemTime::now();
+        let lines = text_lines(&connected_section_fit(&fm, now, 80, 3));
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        assert!(lines[2].contains("4 more"), "{lines:#?}");
+        let lines = text_lines(&connected_section_fit(&fm, now, 80, 2));
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        let full = text_lines(&connected_section_fit(&fm, now, 80, usize::MAX));
+        assert_eq!(full.len(), 1 + CONNECTED_MAX_ROWS + 1);
+    }
+
+    #[test]
+    fn the_summary_tier_keeps_the_selection_in_view_and_records_the_mouse_region() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cache = sweep_cache(dir.path());
+        for n in 0..12 {
+            cache
+                .launcher_runs
+                .push(entry(&format!("20261001-run-{n:02}"), running()));
+        }
+        cache.launcher_selected_id = Some("20261001-run-11".to_owned());
+        cache.launcher_selected = cache.launcher_runs.len() - 1;
+        let (rows, _) = render(cache, 80, 5);
+        assert_eq!(rows.len(), 5);
+        assert!(
+            rows.iter()
+                .any(|r| r.starts_with("> ") && r.contains("20261001-run-11")),
+            "the selected row is windowed into view: {rows:#?}"
         );
     }
 }
