@@ -1229,12 +1229,10 @@ pub fn created_copy(run_id: &str) -> String {
     )
 }
 
-/// `{run id} is created but not launched. Select it and press [R] to launch it.`
+/// `{run id} created, not launched: [R] launches it.` (58 cells for an 18-character id,
+/// inside the 62-cell status room at 80 columns; UI D4 `[inferred — audit]`).
 pub fn left_unlaunched_copy(run_id: &str) -> String {
-    format!(
-        "{} is created but not launched. Select it and press [R] to launch it.",
-        shown(run_id)
-    )
+    format!("{} created, not launched: [R] launches it.", shown(run_id))
 }
 
 /// `Could not create the run: {err}`
@@ -1392,17 +1390,29 @@ impl Screen for SlugInputScreen {
                 Style::default().fg(Color::Red),
             )),
         };
+        // The second row wraps (UI D8): the not-usable copy is longer than 80 columns
+        // with its indent. The footer is one input row plus the rows that wrap needs,
+        // never more than half the screen. It is not a scrolling pane.
+        let second =
+            ratatui::widgets::Paragraph::new(second).wrap(ratatui::widgets::Wrap { trim: false });
+        let second_rows = u16::try_from(second.line_count(area.width.max(1))).unwrap_or(u16::MAX);
+        let footer_rows = 1u16
+            .saturating_add(second_rows)
+            .min((area.height / 2).max(2));
         let chunks = ratatui::layout::Layout::vertical([
             ratatui::layout::Constraint::Min(0),
-            ratatui::layout::Constraint::Length(2),
+            ratatui::layout::Constraint::Length(footer_rows),
         ])
         .split(area);
         let detail = super::detail::DetailScreen::new(self.alias.clone());
         detail.render_main_only(frame, chunks[0], ctx);
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(vec![first, second]),
-            chunks[1],
-        );
+        let rows = ratatui::layout::Layout::vertical([
+            ratatui::layout::Constraint::Length(1),
+            ratatui::layout::Constraint::Min(0),
+        ])
+        .split(chunks[1]);
+        frame.render_widget(ratatui::widgets::Paragraph::new(first), rows[0]);
+        frame.render_widget(second, rows[1]);
     }
 
     fn name(&self) -> &str {
@@ -1836,7 +1846,10 @@ mod tests {
         assert_eq!(rows[6], "  dispatches      10");
         assert_eq!(rows[7], "  minutes         90");
         assert_eq!(rows[8], "  gap rounds      2 per phase");
-        assert_eq!(rows.last().map(String::as_str), Some("[j/k] field  [e] edit field"));
+        assert_eq!(
+            rows.last().map(String::as_str),
+            Some("[j/k] field  [e] edit field")
+        );
     }
 
     #[test]
@@ -1934,7 +1947,10 @@ mod tests {
         screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         assert_eq!(screen.args().max_budget_usd, 25.5);
         let rows = text_of(&screen.body_lines(&ctx));
-        assert_eq!(field_row(&rows, "spend ceiling"), "> spend ceiling   $25.50");
+        assert_eq!(
+            field_row(&rows, "spend ceiling"),
+            "> spend ceiling   $25.50"
+        );
         // Esc cancels an edit without storing it.
         press(&mut screen, &mut ctx, 'e');
         press(&mut screen, &mut ctx, '9');
@@ -2001,7 +2017,10 @@ mod tests {
         assert!(screen.editing.is_none(), "no text box for a two-way choice");
         assert_eq!(screen.args().loop_mode, DriverLoopMode::FreshPerItem);
         let rows = text_of(&screen.body_lines(&ctx));
-        assert_eq!(field_row(&rows, "loop mode"), "> loop mode       fresh-per-item");
+        assert_eq!(
+            field_row(&rows, "loop mode"),
+            "> loop mode       fresh-per-item"
+        );
         press(&mut screen, &mut ctx, 'e');
         assert_eq!(screen.args().loop_mode, DriverLoopMode::Loop);
     }
@@ -2625,7 +2644,10 @@ mod tests {
         let (mut screen, mut ctx, mut rx) = lint_popup(6);
         let prose = popup_prose(&draw(&screen, &ctx, 80, 12));
         assert!(prose.contains("Edit it again now?"), "{prose}");
-        assert!(prose.contains("DIRECTION.md:1: unfilled placeholder"), "{prose}");
+        assert!(
+            prose.contains("DIRECTION.md:1: unfilled placeholder"),
+            "{prose}"
+        );
         let more: usize = prose
             .split("\u{2026} ")
             .nth(1)
@@ -2898,10 +2920,15 @@ mod tests {
             footer.contains(SLUG_NOT_USABLE),
             "the whole copy, to its last word, at 80 columns:\n{narrow}"
         );
-        assert!(footer.ends_with("starting with a letter or digit"), "{footer}");
+        assert!(
+            footer.ends_with("starting with a letter or digit"),
+            "{footer}"
+        );
         // The input row is unchanged: it starts the same and is one row.
         assert!(
-            narrow.lines().any(|row| row.starts_with("  New run slug> -x_")),
+            narrow
+                .lines()
+                .any(|row| row.starts_with("  New run slug> -x_")),
             "{narrow}"
         );
 

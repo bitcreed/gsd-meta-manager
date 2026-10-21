@@ -622,19 +622,27 @@ Both use the shipped `ConfirmPopup` (default focus **No**). Copy in `## Copywrit
 
 ### Launch form (D-19, D-20, D-21)
 
-A `ConfirmPopup`, title `Launch driver run` (Yellow accent), default focus No:
+A `ConfirmPopup`, title `Launch driver run` (Yellow accent), default focus No. The body is built in priority
+order (30-09 gap closure, WR-05; `[inferred — audit]`: this deviates from the earlier sketch, which put the
+spend line last): the title, the spend paragraph, the fresh-per-item line when that mode is on, the sandbox
+row(s) (or the claude refusal), the control / lint / refusal blockers, the six field rows and the minutes hint.
+Only then the lint problems and warnings, fitted to the rows left with `… {k} more` (at most 7 rows), and the
+key row last, only when a row is left. Findings are always clipped before the spend and sandbox rows, and a
+form whose essential rows cannot all fit is cut off, so its `y` is inert.
 
 ```
 Launch 20261020-driver-tab on "meta-mgr"?
+Each driver session may spend up to $10.00 of Claude usage (claude
+--max-budget-usd). It runs detached and keeps running after you close this TUI.
+Sandbox: bwrap + systemd scope (host check passed)
 > model           opus
   loop mode       loop
   spend ceiling   $10.00
   dispatches      10
   minutes         60
   gap rounds      2 per phase
-Sandbox: bwrap + systemd scope (host check passed)
-This run may spend up to $10.00 of Claude usage. It runs detached and keeps
-running after you close this TUI.
+  DIRECTION.md:12: warning: item I-02 has no budget
+  … 2 more
 [j/k] field  [e] edit field
 ```
 
@@ -648,9 +656,14 @@ running after you close this TUI.
 - Host check (28 D-28) runs on `spawn_blocking` when the form opens. Until it returns: `Sandbox: Loading...`
   DarkGray, and `y` is inert.
 - If the run's body `control` is `pause` or `stop`: a Yellow row
-  `control is {word}: the driver will end before its first dispatch. Set control: run with [c] first.`
-  `[inferred — audit]`.
-- Lint warnings (new-run flow): listed Yellow above the spend line.
+  `control is {word}: the launcher refuses to start a run whose DIRECTION.md says control: {word}. Set control: run with [c] first.`
+  `[inferred — audit]`. The word is read with the launcher's own reader (`control_line`, the first
+  `- control:` under `## Direction`) and blocks exactly when the launcher would (`word != "run"`).
+- Lint problems (Red, they block) and warnings (Yellow) are listed under the fields, fitted to the rows left.
+  Their `DIRECTION.md:<line>:` numbers count from the first body line, the numbering the body-only edit temp
+  shows in the editor `[inferred — audit]`.
+- A typed model must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` (the rule a recorded model meets, and one
+  clap accepts as a value); anything else is refused in the form with `must be a model name`.
 - `y` → `launch_detached` (28 D-04) on `spawn_blocking`. **The TUI never binds the run socket or embeds
   `RunStore`** (D-19).
 
@@ -757,7 +770,7 @@ spinner.
 | Control written, run not live | `control: {word} written to DIRECTION.md. It applies at the next launch.` |
 | Control unchanged | `control is already {word} in DIRECTION.md. Nothing was written.` |
 | Answer written | `Answer written to {id} and hold set to false. The driver re-reads it before its next dispatch.` |
-| Answer written, non-needs-human park (D-16) | `Answer written to {id}, but it is parked by {rule}: an answer alone will not resume it. Raise its budget with [e] or relaunch with higher caps with [R].` |
+| Answer written, non-needs-human park (D-16) | `{id} answered; {rule} parks it: [e] budget, [R] caps.` `[inferred — audit]` (30-06 gap closure: fits the 62-cell status room at 80 columns; the long explanation stays in the answer input's second row) |
 | Answer rejected | `An answer must be one line with no control characters. Nothing was written.` |
 | Un-hold written | `{id}: hold set to false. The driver re-reads it before its next dispatch.` |
 | Edit applied | `DIRECTION.md updated. The driver re-reads it before its next dispatch.` |
@@ -768,20 +781,20 @@ spinner.
 | Edit lint confirm | title `Apply this edit?` / `driver check found {n} problem(s) in your edit:` + findings / `Apply it anyway? [y/n]` |
 | Write failed | `Could not write DIRECTION.md: {err}. The file was not changed. Try again.` |
 | Slug preview | `run id: {yyyymmdd}-{slug}` |
-| Slug not usable | `not usable: use letters, digits, ".", "_" or "-", starting with a letter or digit` |
+| Slug not usable | `not usable: use letters, digits, ".", "_" or "-", starting with a letter or digit` (the slug input's second row wraps, so it reads to its last word at 80 columns) `[inferred — audit]` (30-09 gap closure) |
 | Run exists | `A run named {run id} already exists. Pick another slug.` |
 | Run created | `Created run {run id}. It is checked before launch.` |
 | Create failed | `Could not create the run: {err}` |
-| Left unlaunched | `{run id} is created but not launched. Select it and press [R] to launch it.` |
+| Left unlaunched | `{run id} created, not launched: [R] launches it.` `[inferred — audit]` (30-09 gap closure: fits the 62-cell status room at 80 columns) |
 | Lint popup | title `Check DIRECTION.md` / `driver check found {n} problem(s). Launch is blocked until they are fixed:` + findings / `Edit it again now? [y/n]` |
-| Launch spend line | `This run may spend up to ${budget} of Claude usage. It runs detached and keeps running after you close this TUI.` |
+| Launch spend line | `Each driver session may spend up to ${budget} of Claude usage (claude --max-budget-usd). It runs detached and keeps running after you close this TUI.` `[inferred — audit]` (D-19: `--max-budget-usd` is per `claude` session, not a per-run ceiling) |
 | Launched | `{alias}: launched {run id}. It runs detached and keeps running if you close this TUI.` |
 | Launch failed | `Could not launch {run id}: {err}. Nothing was started.` |
 | Sandbox refused | `Launch refused: this host cannot sandbox the driver (missing: {items}). Press [U] to launch it unsandboxed instead.` |
 | Relaunch refused (lock held) | `{run id} is still running (its run lock is held). Stop it first.` |
 | Relaunch refused (unknown) | `Cannot tell whether {run id} is running (the lock probe failed), so it was not relaunched.` |
 | Stop result | `{alias}: {StopReport}` (shipped `LauncherStopped` copy) |
-| Injection retired (`i`) | `Message injection is retired. Steer this run through DIRECTION.md: [c] control, [a] answer, [e] edit.` |
+| Injection retired (`i`) | `Injection is retired: use [c]ontrol, [a]nswer, [e]dit.` `[inferred — audit]` (30-07 gap closure: fits the 62-cell status room at 80 columns) |
 | Key unavailable | `{id} is not parked or on hold, so there is nothing to answer.` · `{id} is not on hold.` · `Legacy runs are read-only here.` |
 | Error state (general rule) | Every error names the problem and the next step, as in the rows above |
 
@@ -791,7 +804,8 @@ spinner.
 |---|---|
 | Kill (`x`) | title `Kill driver run` (Red): `Kill launcher run {run id} on "{alias}"? Its whole sandbox scope is stopped now, mid-dispatch, and the in-flight work is not reported. To let the driver finish its current dispatch and end, use [c] then stop. [y/n]` (replaces the 28-07 `StopLauncher` prompt) |
 | Polite stop (`c` → `s`) | title `Stop driver run` (Yellow): `Set control: stop for {run id}? The driver dispatches nothing new, records the in-flight report, then ends. Nothing is killed. [y/n]` |
-| Launch / relaunch | title `Launch driver run` (Yellow): `Launch {run id} on "{alias}"?` + the fields + the spend line |
+| Launch / relaunch | title `Launch driver run` (Yellow): `Launch {run id} on "{alias}"?` + the spend line + the sandbox row + the fields (see "Launch form" for the row order) |
+| Any confirmation whose body is cut off | the hint row reads `Cut off: enlarge the terminal to confirm · Esc cancel` and Yes (`y`, Enter on Yes, a click) is inert; `n` and `Esc` still cancel `[inferred — audit]` (30-06 gap closure, applied to the launch form and `Check DIRECTION.md` in 30-09) |
 | Unsandboxed launch | title `Launch UNSANDBOXED` (Red): `Launch {run id} on "{alias}" WITHOUT a sandbox? The driver runs as an ordinary process group with your full user permissions: no bwrap, no systemd scope. Missing: {items}. [y/n]` |
 | Discard an edit (`d` in the chooser) | No second prompt: the explicit key is the confirmation and `Esc` (keep) is the safe default `[inferred — audit]` |
 

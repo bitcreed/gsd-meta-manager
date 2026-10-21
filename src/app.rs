@@ -1449,13 +1449,26 @@ impl App {
         }
         #[cfg(target_os = "linux")]
         {
-            let Some(project) = self.project_path_for(alias) else {
+            use crate::action::NewRunFailure;
+            // A request refused before it starts goes through the one answer path, so
+            // the slug input closes and says why instead of waiting for a creation that
+            // never began (IN-02).
+            let Some(project) = self.ctx.config.projects.get(alias).map(|p| p.path.clone()) else {
+                self.finish_new_run(
+                    alias,
+                    Err(NewRunFailure::Other(
+                        "this project is no longer registered. Nothing was created.".to_string(),
+                    )),
+                );
                 return;
             };
             let Some(tx) = self.ctx.event_tx.clone() else {
-                self.refuse_steering(crate::ui::screens::driver_launch::create_failed_copy(
-                    "this session has no event channel. Nothing was created.",
-                ));
+                self.finish_new_run(
+                    alias,
+                    Err(NewRunFailure::Other(
+                        "this session has no event channel. Nothing was created.".to_string(),
+                    )),
+                );
                 return;
             };
             let (alias, slug) = (alias.to_string(), slug.to_string());
@@ -10188,7 +10201,10 @@ mod tests {
         });
         assert_eq!(top_screen_name(&app), "detail", "the input is closed");
         let message = app.ctx.error_message.clone().expect("an error");
-        assert!(message.starts_with("Could not create the run: "), "{message}");
+        assert!(
+            message.starts_with("Could not create the run: "),
+            "{message}"
+        );
         assert!(message.contains("Nothing was created."), "{message}");
 
         // A session with no event channel cannot hear the answer.
