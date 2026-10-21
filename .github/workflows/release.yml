@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 
-# Both jobs pin ubuntu-24.04 rather than ubuntu-latest. The publish job's tests
+# Every job pins ubuntu-24.04 rather than ubuntu-latest. The publish job's tests
 # are environment-sensitive (the git-version witness in src/envelope/policy.rs
 # is derived against the runner's ambient git), and
 # scripts/pre-tag-check.Dockerfile is built FROM ubuntu:24.04 to mirror this
@@ -45,10 +45,62 @@ jobs:
       - name: Compile every target on the declared floor
         run: cargo check --all-targets --locked
 
+  # The crate must still build for macOS and Windows: v1.14 shipped Linux-only
+  # code ungated and `cargo install` broke on both. Like everything in this
+  # workflow it runs only on a tag push, and `publish` needs it, so a crate that
+  # does not compile there never reaches crates.io.
+  #
+  # It runs on ubuntu with rustup targets rather than on macOS/Windows runners:
+  # `cargo check` and clippy stop before the linker, so no foreign runner minutes
+  # are spent. Windows is checked as x86_64-pc-windows-gnu because the crate has
+  # no `target_env` cfg, which makes it cfg-equivalent to msvc, and gnu is the
+  # target verified locally.
+  #
+  # Clippy covers --lib --bins only. Two test-only helpers (in src/app.rs and
+  # src/ui/screens/detail.rs) are dead code under the macOS/Windows cfg until the
+  # fix for them lands on master; widen clippy to --all-targets once it does.
+  #
+  # scripts/pre-tag-check.sh does not mirror this gate yet; that is a follow-up.
+  cross-target-check:
+    name: Check non-Linux targets compile (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            check_args: --all-targets
+            clippy: true
+          - target: x86_64-apple-darwin
+            check_args: --all-targets
+            clippy: true
+          - target: x86_64-pc-windows-gnu
+            check_args: --all-targets
+            clippy: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install stable toolchain with the target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Check
+        run: cargo check --locked --target "${{ matrix.target }}" ${{ matrix.check_args }}
+
+      - name: Clippy
+        if: matrix.clippy
+        run: cargo clippy --locked --target "${{ matrix.target }}" --lib --bins -- -D warnings
+
   publish:
     name: Verify and publish to crates.io
     runs-on: ubuntu-24.04
-    needs: msrv
+    needs: [msrv, cross-target-check]
     steps:
       - uses: actions/checkout@v7
 
