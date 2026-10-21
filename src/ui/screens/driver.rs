@@ -247,7 +247,7 @@ const SCROLLED_DISPLAY_MAX: usize = 999;
 /// beginning of the output; a pane that silently loses lines is the named
 /// "looks done but isn't" failure. The count is monotonic over the session, so
 /// the sentence stays true after any number of wraps.
-fn ring_overflow_notice(dropped: u64) -> String {
+pub(super) fn ring_overflow_notice(dropped: u64) -> String {
     format!("\u{2026} {dropped} earlier lines dropped (buffer holds {DRIVER_OUTPUT_RING_LINES})")
 }
 
@@ -1314,7 +1314,20 @@ pub fn follow_indicator(
 /// interesting. At a width too narrow for both, the dashes give way first and
 /// the indicator is what survives.
 fn output_header_line(width: u16, indicator: &str, color: Color) -> Line<'static> {
-    let head = "\u{2500}\u{2500} output ";
+    pane_header_line("output", width, indicator, color)
+}
+
+/// A scrolling pane's header: a DarkGray `── {name} ───` rule with the follow
+/// indicator on its right. [`output_header_line`] is this with the name `output`;
+/// the launcher run's LOG.md pane (30-02) is the same rule with the name `log`, so
+/// the two panes share one construction and one narrow-width rule.
+pub(super) fn pane_header_line(
+    name: &str,
+    width: u16,
+    indicator: &str,
+    color: Color,
+) -> Line<'static> {
+    let head = format!("\u{2500}\u{2500} {name} ");
     let tail_cells = indicator.chars().count() + 4; // ` ` + indicator + ` ──`
     let pad = usize::from(width)
         .saturating_sub(head.chars().count())

@@ -1264,6 +1264,27 @@ fn probe_ctx(identity: &str) -> AppContext {
     cache.launcher_selected_id = Some(identity.to_string());
     cache.launcher_item_cursor = Some(identity.to_string());
     cache.launcher_selected = 0;
+    // The LOG.md tail (30-02, D-23, T-30-05): an event header whose value carries the
+    // identity, a worker-report detail line, and a line that is no event at all, all
+    // fed through the production reader's apply path (`push_record`).
+    super::driver_run::apply_log_read(
+        cache,
+        super::driver_run::LogRead {
+            run_id: identity.to_string(),
+            from_offset: 0,
+            cursor: crate::journal::reader::TailCursor { offset: 1 },
+            ident: None,
+            lines: vec![
+                format!(
+                    "- 2026-10-20T14:02:11Z | I-01 | status | state=parked | rule=needs-human | outcome={identity}"
+                ),
+                format!("    {identity}"),
+                identity.to_string(),
+            ],
+            reset: true,
+            missing: false,
+        },
+    );
     // Without this the detail pane reads `Loading...` and the list and header rows
     // that draw the hostile identity are never reached (30-01).
     cache.launcher_listed = true;
@@ -3652,6 +3673,10 @@ mod tests {
             "\u{2691} parked",
             "parked: ",
             "answer: ",
+            // The LOG pane: its rule, the reset notice, and a rewritten header.
+            "\u{2500}\u{2500} log ",
+            "! LOG.md was truncated or replaced",
+            " I-01 status state=parked rule=needs-human",
         ] {
             assert!(
                 text.contains(token),

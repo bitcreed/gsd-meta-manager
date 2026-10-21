@@ -31,15 +31,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::detail::{fit_cells, ViewportMetrics};
+use super::detail::{clamp_scroll, fit_cells, tail_offset, ViewportMetrics};
 use super::driver::{
-    driver_panes, label_style, muted_style, render_dry_run_preview, render_run_detail,
-    run_list_row, run_list_title, shown_capped, DriverTabRegions, DRIVER_PANE_TITLE,
-    DRY_RUN_LOADING,
+    driver_panes, follow_indicator, label_style, muted_style, pane_header_line,
+    render_dry_run_preview, render_run_detail, ring_overflow_notice, run_list_row, run_list_title,
+    shown_capped, DriverTabRegions, DRIVER_PANE_TITLE, DRY_RUN_LOADING,
 };
-use super::{AppContext, ProjectViewCache};
+use super::{AppContext, DriverLineKind, DriverOutput, LauncherLogTail, ProjectViewCache};
 use crate::driver::reconcile::RunVerdict;
 use crate::driver::steer::BodyItem;
+use crate::journal::reader::{tail_lines, TailCursor};
 use crate::journal::RunSummary;
 use crate::state_reader::driver_frontmatter::{
     Connection, DerivedStatus, DriverFrontmatter, DriverRunEntry, DriverRunView, ItemState,
@@ -1429,6 +1430,360 @@ pub fn items_section(
     lines
 }
 
+// ── The LOG.md tail (D-23, D-16, D-25) ─────────────────────────────────────
+
+/// The `rule=` values the LOG template documents for a `status state=parked` event.
+/// A park rule is recorded only from this closed set (T-30-06): anything else a
+/// log line claims is ignored, never shown as a reason.
+pub const PARK_RULES: [&str; 8] = [
+    "budget",
+    "gap-rounds",
+    "divergence",
+    "no-progress",
+    "needs-human",
+    "scope",
+    "run-budget",
+    "launcher-cap",
+];
+
+/// How many park rules one tail remembers. A log is tool-written, but a hostile run
+/// directory could name any number of items; the map stays bounded (T-30-07).
+const PARK_RULES_MAX: usize = 256;
+
+/// How many `tail_lines` calls one refresh makes: each reads at most
+/// `MAX_TAIL_BYTES` (4 MiB), so a refresh reads at most 16 MiB (T-30-07).
+const LOG_READS_PER_REFRESH: usize = 4;
+
+/// The name of the log file inside a run directory. The pane reads this file and
+/// nothing else: not the stream-json transcript, not the launcher's own log (D-23).
+const LOG_FILE_NAME: &str = "LOG.md";
+
+/// What one blocking read of `LOG.md` found: plain data carried by the refresh
+/// actions to the app (D-25).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogRead {
+    /// The run the file belongs to.
+    pub run_id: String,
+    /// The cursor offset this read **started from**, as the cache held it when the
+    /// read was scheduled. The app applies a result only if the cache's cursor is
+    /// still exactly here, so a duplicated or stale read shows no line twice.
+    pub from_offset: u64,
+    /// Where the next read starts.
+    pub cursor: TailCursor,
+    /// `(dev, ino)` of the file read (unix; `None` elsewhere).
+    pub ident: Option<(u64, u64)>,
+    /// The complete new lines, the template preamble already dropped.
+    pub lines: Vec<String>,
+    /// The file was truncated, or replaced by another file: the ring starts over.
+    pub reset: bool,
+    /// The run has no `LOG.md`.
+    pub missing: bool,
+}
+
+/// The cursor and file identity to read from for `run_id`: the tail's own when it
+/// is the tail of that run, else the start of the file. The one rule the blocking
+/// tasks apply, so a read for a newly selected run can never inherit another run's
+/// offset.
+pub fn log_cursor_for(cache: &ProjectViewCache, run_id: &str) -> (TailCursor, Option<(u64, u64)>) {
+    let tail = &cache.launcher_log;
+    if tail.run_id == run_id {
+        (tail.cursor, tail.ident)
+    } else {
+        (TailCursor::default(), None)
+    }
+}
+
+/// Read what was appended to `<run_dir>/LOG.md` since `cursor` (D-23).
+///
+/// **Blocking file I/O: call it only inside `spawn_blocking`** (D-25). It reads the
+/// log by byte offset, so an append costs only the new bytes. A file that is gone
+/// is `missing`; a file shorter than the cursor (`restarted`) or whose `(dev, ino)`
+/// differs from the known `ident` (replaced) sets `reset` and is read from the
+/// start. On a read from offset 0 the template preamble is dropped by discarding
+/// lines until the first one `driverctl::log::parse_log` recognises as an event
+/// header. A path that is not a regular file is treated as unreadable, not opened.
+///
+/// The `(dev, ino)` read is `#[cfg(unix)]`; elsewhere `ident` is `None` and only
+/// truncation is detected.
+pub fn read_log_delta(
+    run_dir: &Path,
+    run_id: &str,
+    cursor: TailCursor,
+    ident: Option<(u64, u64)>,
+) -> LogRead {
+    let path = run_dir.join(LOG_FILE_NAME);
+    let mut read = LogRead {
+        run_id: run_id.to_owned(),
+        from_offset: cursor.offset,
+        cursor,
+        ident,
+        lines: Vec::new(),
+        reset: false,
+        missing: false,
+    };
+    // `symlink_metadata`: a link planted at LOG.md is not followed, and a FIFO or
+    // device is not opened (it could block this worker forever).
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            read.missing = true;
+            return read;
+        }
+        Err(_) => return read,
+    };
+    if !meta.file_type().is_file() {
+        return read;
+    }
+    #[cfg(unix)]
+    let now_ident = {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    };
+    #[cfg(not(unix))]
+    let now_ident: Option<(u64, u64)> = None;
+
+    let mut cursor = cursor;
+    if ident.is_some_and(|known| Some(known) != now_ident) {
+        cursor = TailCursor::default();
+        read.reset = true;
+    }
+    read.ident = now_ident;
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut from_start = cursor.offset == 0;
+    for _ in 0..LOG_READS_PER_REFRESH {
+        let Ok(batch) = tail_lines(&path, cursor) else {
+            break;
+        };
+        if batch.restarted {
+            // Whatever was gathered came from the file as it was before it shrank.
+            lines.clear();
+            read.reset = true;
+            from_start = true;
+        }
+        cursor = batch.cursor;
+        let progressed = !batch.lines.is_empty() || batch.skipped_oversize;
+        lines.extend(batch.lines);
+        if !progressed {
+            break;
+        }
+    }
+    if from_start {
+        // The template preamble: everything before the first event header.
+        let first = lines
+            .iter()
+            .position(|line| !crate::driverctl::log::parse_log(line).is_empty())
+            .unwrap_or(lines.len());
+        lines.drain(..first);
+    }
+    read.cursor = cursor;
+    read.lines = lines;
+    read
+}
+
+/// Whether `item` is plausibly an item id from the log (`I-NN`), bounded so a
+/// hostile log cannot grow the park-rule map with arbitrary keys.
+fn is_item_key(item: &str) -> bool {
+    item.len() <= 32
+        && item.starts_with("I-")
+        && item.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Append one log line to the tail's ring through `push_record`, the only
+/// sanitising append, and record a park rule when the line is a `status` event
+/// with `state=parked` and a `rule` from [`PARK_RULES`].
+///
+/// An event header is rewritten as `{HH:MM:SS local} {item} {event} {k=v ...}` and
+/// pushed as [`DriverLineKind::Output`]; any other line (a worker report's detail
+/// line) as [`DriverLineKind::Stderr`] with its own four-space indent removed. No
+/// colour or glyph is ever chosen from the text: the kinds only say header or not.
+fn push_log_line(tail: &mut LauncherLogTail, line: &str) {
+    let Some(event) = crate::driverctl::log::parse_log(line).into_iter().next() else {
+        tail.ring.push_record(
+            DriverLineKind::Stderr,
+            line.strip_prefix("    ").unwrap_or(line),
+        );
+        return;
+    };
+    if event.event == "status" && event.get("state") == Some("parked") && is_item_key(&event.item) {
+        if let Some(rule) = event.get("rule").filter(|rule| PARK_RULES.contains(rule)) {
+            if tail.park_rules.len() < PARK_RULES_MAX || tail.park_rules.contains_key(&event.item) {
+                tail.park_rules.insert(event.item.clone(), rule.to_owned());
+            }
+        }
+    }
+    let time = chrono::DateTime::parse_from_rfc3339(&event.at)
+        .map(|at| {
+            at.with_timezone(&chrono::Local)
+                .format("%H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|_| "--:--:--".to_owned());
+    let mut text = format!("{time} {} {}", event.item, event.event);
+    for (key, value) in &event.kv {
+        text.push_str(&format!(" {key}={value}"));
+    }
+    tail.ring.push_record(DriverLineKind::Output, &text);
+}
+
+/// Apply one off-thread read to the cache. Returns whether it was applied.
+///
+/// A read is dropped unless its run is the selected launcher run **and** it started
+/// where the cache's cursor now stands (a read for a run the tail has not seen
+/// starts a fresh tail, and must itself have started at 0). A `reset` replaces the
+/// ring and sets the notice. Selecting another run starts the new run's tail with
+/// follow on and the scroll at the tail (D-23).
+pub fn apply_log_read(cache: &mut ProjectViewCache, read: LogRead) -> bool {
+    if cache.launcher_selected_id.as_deref() != Some(read.run_id.as_str()) {
+        return false;
+    }
+    if cache.launcher_log.run_id == read.run_id {
+        if read.from_offset != cache.launcher_log.cursor.offset {
+            return false;
+        }
+    } else {
+        if read.from_offset != 0 {
+            return false;
+        }
+        cache.launcher_log = LauncherLogTail {
+            run_id: read.run_id.clone(),
+            ring: DriverOutput::for_run(&read.run_id),
+            ..LauncherLogTail::default()
+        };
+        cache.driver_follow = true;
+        cache.driver_scroll_offset = 0;
+    }
+    let tail = &mut cache.launcher_log;
+    if read.reset {
+        tail.ring = DriverOutput::for_run(&read.run_id);
+        tail.park_rules.clear();
+        tail.reset_notice = true;
+    }
+    tail.cursor = read.cursor;
+    tail.ident = read.ident;
+    tail.missing = read.missing;
+    for line in &read.lines {
+        push_log_line(tail, line);
+    }
+    true
+}
+
+/// The log body: the reset notice, the ring-overflow notice, then the ring's lines
+/// (or the empty-state copy). A header line is a DarkGray `HH:MM:SS` then the rest
+/// in the default style; any other line is indented 4 cells and DarkGray. The
+/// ring's text reaches a `Span` only through [`crate::text::Untrusted::shown`].
+fn log_body_lines(tail: &LauncherLogTail) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if tail.reset_notice {
+        lines.push(Line::from(Span::styled(
+            "! LOG.md was truncated or replaced, reading it from the start",
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    if tail.ring.dropped() > 0 {
+        lines.push(Line::from(Span::styled(
+            ring_overflow_notice(tail.ring.dropped()),
+            muted_style(),
+        )));
+    }
+    if tail.ring.is_empty() {
+        let copy = if tail.missing {
+            "This run has no LOG.md."
+        } else {
+            "No events logged yet."
+        };
+        lines.push(Line::from(Span::styled(format!("  {copy}"), muted_style())));
+        return lines;
+    }
+    for line in tail.ring.lines() {
+        let text: String = line.text.shown().into();
+        match line.kind {
+            DriverLineKind::Output => {
+                // `HH:MM:SS` is 8 ASCII cells written by `push_log_line`.
+                let split = text.char_indices().nth(8).map_or(text.len(), |(at, _)| at);
+                let (time, rest) = text.split_at(split);
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(time.to_owned(), label_style()),
+                    Span::raw(rest.to_owned()),
+                ]));
+            }
+            _ => lines.push(Line::from(Span::styled(
+                format!("      {text}"),
+                label_style(),
+            ))),
+        }
+    }
+    lines
+}
+
+/// Draw the LOG pane into `area` (its rule row, then the scrolling body).
+///
+/// The viewer is the legacy output pane's shape: the whole `Vec<Line>` is built,
+/// `total_lines` taken from it, the metrics recorded into `viewport` during the
+/// render pass, and `Paragraph::scroll` applied with **no `Wrap`**. The follow bit
+/// resolves here through the one shared [`clamp_scroll`]/[`tail_offset`]; the keys
+/// (`PgUp`/`PgDn`/`f`/`G`) read the same `driver_scroll_offset`, `driver_follow` and
+/// viewport the legacy pane uses, so the UIFIX-04 clamp order is not re-implemented.
+///
+/// The indicator is `[following]` (Green) or `[scrolled +N]` (Yellow, capped) for a
+/// live run and `[not live]` (DarkGray) otherwise. It never says `paused`.
+fn render_log_section(
+    frame: &mut Frame,
+    area: Rect,
+    cache: Option<&ProjectViewCache>,
+    run_id: &str,
+    live: bool,
+    viewport: &Cell<ViewportMetrics>,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let rule_area = Rect { height: 1, ..area };
+    let body_area = Rect {
+        y: area.y + 1,
+        height: area.height - 1,
+        ..area
+    };
+    // A tail left over from another run is never drawn under this one.
+    let tail = cache
+        .map(|c| &c.launcher_log)
+        .filter(|tail| tail.run_id == run_id);
+    let body = match tail {
+        Some(tail) => log_body_lines(tail),
+        None => vec![Line::from(Span::styled(
+            format!("  {DRY_RUN_LOADING}"),
+            muted_style(),
+        ))],
+    };
+    let total_lines = u16::try_from(body.len()).unwrap_or(u16::MAX);
+    let metrics = ViewportMetrics {
+        total_lines,
+        visible_height: body_area.height,
+    };
+    viewport.set(metrics);
+    let following = cache.is_some_and(|c| c.driver_follow);
+    let requested = if following {
+        u16::MAX
+    } else {
+        cache.map_or(0, |c| c.driver_scroll_offset)
+    };
+    let scroll = clamp_scroll(requested, total_lines, body_area.height);
+    let below = usize::from(tail_offset(metrics).saturating_sub(scroll));
+    let (indicator, color) = if live {
+        follow_indicator(true, following, below, None, false)
+    } else {
+        ("[not live]".to_owned(), Color::DarkGray)
+    };
+    frame.render_widget(
+        Paragraph::new(pane_header_line("log", rule_area.width, &indicator, color)),
+        rule_area,
+    );
+    if body_area.height > 0 {
+        frame.render_widget(Paragraph::new(body).scroll((scroll, 0)), body_area);
+    }
+}
+
 /// The detail pane's lines for the selected run, top to bottom: the six header rows,
 /// the items, the caps with the audit row, and the connections (plan 30-03 tiers this
 /// layout by height; the LOG tail is drawn below it by the caller).
@@ -1454,7 +1809,11 @@ fn detail_lines(
             lines.extend(items_section(
                 detail,
                 cache.and_then(|c| c.launcher_item_cursor.as_deref()),
-                None,
+                // The log's park rules, only from the tail of THIS run.
+                cache
+                    .map(|c| &c.launcher_log)
+                    .filter(|tail| tail.run_id == entry.0)
+                    .map(|tail| &tail.park_rules),
                 width,
             ));
             lines.extend(caps_section(&view.frontmatter, width));
@@ -1616,16 +1975,23 @@ pub fn move_selection(cache: &mut ProjectViewCache, delta: isize) -> bool {
     .min(total - 1);
 
     if next < launcher {
+        let from_legacy = cache.legacy_row_selected;
         cache.legacy_row_selected = false;
         cache.launcher_selected = next;
         let id = cache.launcher_runs.get(next).map(|(id, _)| id.clone());
         if id != cache.launcher_selected_id {
-            // Another run: its items, its cursor and (30-02 Task 3) its LOG are not
-            // this run's. The detail is read again for the new selection.
+            // Another run: its items, its cursor and its LOG are not this run's.
+            // The detail and the tail are read again for the new selection.
             cache.launcher_item_cursor = None;
             if cache.launcher_detail.as_deref().map(|d| &d.run_id) != id.as_ref() {
                 cache.launcher_detail = None;
             }
+        }
+        if id != cache.launcher_selected_id || from_legacy {
+            // The pane starts at its tail with follow on (D-23): the scroll state
+            // is shared with the legacy output pane and belongs to neither run.
+            cache.driver_scroll_offset = 0;
+            cache.driver_follow = true;
         }
         cache.launcher_selected_id = id;
         return false;
@@ -1680,9 +2046,11 @@ pub struct DriverKeys {
     pub legacy_row: bool,
     /// `s`: bound (it opens the shipped start flow until plan 30-05 rebinds it).
     pub start: bool,
-    /// `PgUp`/`PgDn`/`f`: there is an output pane to scroll, which is the legacy
-    /// run's (plan 30-02 extends it to the LOG pane).
+    /// `PgUp`/`PgDn`/`f`: there is a pane to scroll: the LOG tail of a launcher run
+    /// (30-02) or the output pane of a legacy run.
     pub scroll: bool,
+    /// `[` / `]`: the selected launcher run has items to move the cursor over.
+    pub item: bool,
 }
 
 /// The keys available for `alias`'s current selection. Pure over the context.
@@ -1699,7 +2067,14 @@ pub fn driver_keys(ctx: &AppContext, alias: &str) -> DriverKeys {
         legacy: cache.is_some_and(has_legacy),
         legacy_row: matches!(sel, Selection::Legacy(_)),
         start: true,
-        scroll: matches!(sel, Selection::Legacy(_)),
+        scroll: !matches!(sel, Selection::Nothing),
+        item: match (sel, cache) {
+            (Selection::Launcher(index), Some(cache)) => {
+                detail_for(Some(cache), &cache.launcher_runs[index].0)
+                    .is_some_and(|detail| !merged_items(detail).is_empty())
+            }
+            _ => false,
+        },
     }
 }
 
@@ -1760,6 +2135,35 @@ pub const RUN_STATES_LEGEND: [(&str, &str, &str); 12] = [
         GLYPH_RUN_UNKNOWN,
         "unreadable",
         "its DIRECTION.md could not be read",
+    ),
+];
+
+/// One row of the `Driver Item States` help legend per UI-SPEC item row: the glyph
+/// (a fixed constant), the word, and a one-line gloss that claims no more than the
+/// body and the driver's recorded state can establish.
+pub const ITEM_STATES_LEGEND: [(&str, &str, &str); 7] = [
+    (
+        GLYPH_RUN_UNLAUNCHED,
+        "pending",
+        "recorded by the driver, not started",
+    ),
+    (GLYPH_RUN_LIVE, "running", "recorded as being worked on"),
+    (GLYPH_RUN_DONE, "done", "recorded as finished"),
+    (
+        GLYPH_RUN_PARKED,
+        "parked",
+        "the driver stopped on it: it needs a human",
+    ),
+    (GLYPH_RUN_CRASHED, "failed", "recorded as failed"),
+    (
+        GLYPH_ITEM_UNSEEN,
+        "unseen",
+        "in DIRECTION.md; the driver has recorded no state for it",
+    ),
+    (
+        "\u{2013}",
+        "not in DIRECTION",
+        "recorded by the driver; DIRECTION.md no longer lists it",
     ),
 ];
 
@@ -1971,8 +2375,35 @@ pub(super) fn render_launcher_tab(
             regions.output = Some(detail_area);
         }
         Selection::Launcher(index) => {
-            let lines = detail_lines(&runs[index], cache, now, usize::from(inner.width));
-            frame.render_widget(Paragraph::new(lines), inner);
+            let entry = &runs[index];
+            let lines = detail_lines(entry, cache, now, usize::from(inner.width));
+            // The LOG tail takes the rows below the sections: its rule and at least
+            // [`LOG_MIN_ROWS`] rows. Where the pane is too short for both, the
+            // sections keep the rows (plan 30-03 owns the height tiers).
+            let log_rows = u16::try_from(1 + LOG_MIN_ROWS).unwrap_or(u16::MAX);
+            let readable = entry.1.is_ok();
+            let top_rows = if readable && inner.height > log_rows {
+                u16::try_from(lines.len())
+                    .unwrap_or(u16::MAX)
+                    .min(inner.height - log_rows)
+            } else {
+                inner.height
+            };
+            let top = Rect {
+                height: top_rows,
+                ..inner
+            };
+            frame.render_widget(Paragraph::new(lines), top);
+            if readable && inner.height > top_rows {
+                let log_area = Rect {
+                    y: inner.y + top_rows,
+                    height: inner.height - top_rows,
+                    ..inner
+                };
+                let live = entry.1.as_ref().is_ok_and(|view| is_live(&view.derived));
+                render_log_section(frame, log_area, cache, &entry.0, live, viewport);
+                regions.output = Some(log_area);
+            }
         }
         Selection::Nothing => {
             // Not listed yet.
@@ -3298,10 +3729,25 @@ mod tests {
         let mut cache = cache_with_detail(detail);
         cache.launcher_runs.push(entry("20261019-b", running()));
         cache.launcher_item_cursor = Some("I-01".to_owned());
+        cache.driver_follow = false;
+        cache.driver_scroll_offset = 9;
         assert!(!move_selection(&mut cache, 1));
         assert_eq!(cache.launcher_selected_id.as_deref(), Some("20261019-b"));
         assert_eq!(cache.launcher_item_cursor, None);
         assert!(cache.launcher_detail.is_none());
+        assert_eq!(
+            (cache.driver_follow, cache.driver_scroll_offset),
+            (true, 0),
+            "another run's LOG starts at its tail with follow on"
+        );
+        // Staying on the same run leaves the pane where the user put it.
+        cache.driver_follow = false;
+        cache.driver_scroll_offset = 4;
+        assert!(!move_selection(&mut cache, 0));
+        assert_eq!(
+            (cache.driver_follow, cache.driver_scroll_offset),
+            (false, 4)
+        );
     }
 
     // ── Task 2: control, heartbeat, caps, audit, connected ─────────────────
@@ -4055,5 +4501,629 @@ mod tests {
             "{rows:#?}"
         );
         assert!(!rows.iter().any(|r| r.contains("stale")), "{rows:#?}");
+    }
+
+    // ── Task 3: the LOG.md tail (launcher_log_) ────────────────────────────
+
+    const LOG_RUN: &str = "20261020-log";
+
+    /// The parts of a cache the render reads, copied (the cache is not `Clone`).
+    fn copy_of(cache: &ProjectViewCache) -> ProjectViewCache {
+        ProjectViewCache {
+            launcher_runs: cache.launcher_runs.clone(),
+            launcher_listed: cache.launcher_listed,
+            launcher_selected_id: cache.launcher_selected_id.clone(),
+            launcher_selected: cache.launcher_selected,
+            launcher_detail: cache.launcher_detail.clone(),
+            launcher_item_cursor: cache.launcher_item_cursor.clone(),
+            launcher_log: cache.launcher_log.clone(),
+            driver_follow: cache.driver_follow,
+            driver_scroll_offset: cache.driver_scroll_offset,
+            ..ProjectViewCache::default()
+        }
+    }
+
+    fn log_header(at: &str, item: &str, event: &str, kv: &str) -> String {
+        format!("- {at} | {item} | {event}{kv}\n")
+    }
+
+    fn template_log() -> String {
+        crate::driver_templates::LOG_TEMPLATE
+            .replace(crate::driver_templates::RUN_ID_TOKEN, LOG_RUN)
+    }
+
+    fn log_cache() -> ProjectViewCache {
+        let mut cache = cache_of(vec![entry(LOG_RUN, running())]);
+        cache.launcher_selected_id = Some(LOG_RUN.to_owned());
+        cache
+    }
+
+    /// One scheduled-and-delivered refresh: read from the cache's cursor, apply.
+    fn refresh_log(cache: &mut ProjectViewCache, dir: &Path) -> bool {
+        let (cursor, ident) = log_cursor_for(cache, LOG_RUN);
+        apply_log_read(cache, read_log_delta(dir, LOG_RUN, cursor, ident))
+    }
+
+    fn ring_texts(cache: &ProjectViewCache) -> Vec<String> {
+        cache
+            .launcher_log
+            .ring
+            .lines()
+            .map(|line| String::from(line.text.shown()))
+            .collect()
+    }
+
+    fn local_hms(at: &str) -> String {
+        chrono::DateTime::parse_from_rfc3339(at)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%H:%M:%S")
+            .to_string()
+    }
+
+    fn append(dir: &Path, text: &str) {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("LOG.md"))
+            .unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn launcher_log_an_append_reads_only_the_new_bytes_and_never_a_line_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = log_header(
+            "2026-10-20T14:02:11Z",
+            "I-01",
+            "dispatched",
+            " | step=execute",
+        );
+        let second = log_header("2026-10-20T14:02:12Z", "I-01", "report", " | status=done");
+        std::fs::write(
+            dir.path().join("LOG.md"),
+            format!("{}{first}{second}", template_log()),
+        )
+        .unwrap();
+        let mut cache = log_cache();
+        assert!(refresh_log(&mut cache, dir.path()));
+        // The template preamble is skipped; the two events are the whole ring.
+        assert_eq!(
+            ring_texts(&cache),
+            vec![
+                format!(
+                    "{} I-01 dispatched step=execute",
+                    local_hms("2026-10-20T14:02:11Z")
+                ),
+                format!(
+                    "{} I-01 report status=done",
+                    local_hms("2026-10-20T14:02:12Z")
+                ),
+            ]
+        );
+        let before = cache.launcher_log.cursor.offset;
+        assert_eq!(
+            before,
+            (template_log().len() + first.len() + second.len()) as u64
+        );
+
+        // Nothing appended: nothing new, nothing repeated.
+        assert!(refresh_log(&mut cache, dir.path()));
+        assert_eq!(ring_texts(&cache).len(), 2);
+
+        append(
+            dir.path(),
+            &log_header("2026-10-20T14:09:40Z", "RUN", "end", " | reason=pause"),
+        );
+        assert!(refresh_log(&mut cache, dir.path()));
+        let texts = ring_texts(&cache);
+        assert_eq!(texts.len(), 3, "only the third was pushed: {texts:?}");
+        assert_eq!(
+            texts[2],
+            format!("{} RUN end reason=pause", local_hms("2026-10-20T14:09:40Z"))
+        );
+    }
+
+    #[test]
+    fn launcher_log_a_detail_line_keeps_under_its_header_and_loses_its_own_indent() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            "{}{}    status: done\n    next: ship\n",
+            template_log(),
+            log_header("2026-10-20T14:02:11Z", "I-03", "report", " | status=done")
+        );
+        std::fs::write(dir.path().join("LOG.md"), text).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        let texts = ring_texts(&cache);
+        assert_eq!(texts[1], "status: done");
+        assert_eq!(texts[2], "next: ship");
+        let kinds: Vec<DriverLineKind> = cache.launcher_log.ring.lines().map(|l| l.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                DriverLineKind::Output,
+                DriverLineKind::Stderr,
+                DriverLineKind::Stderr
+            ]
+        );
+    }
+
+    #[test]
+    fn launcher_log_a_torn_last_line_waits_for_its_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("LOG.md"), template_log()).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        append(dir.path(), "- 2026-10-20T14:02:11Z | I-01 | disp");
+        refresh_log(&mut cache, dir.path());
+        assert!(ring_texts(&cache).is_empty(), "a torn line is not shown");
+        let torn_at = cache.launcher_log.cursor.offset;
+        append(dir.path(), "atched | step=plan\n");
+        refresh_log(&mut cache, dir.path());
+        let texts = ring_texts(&cache);
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].ends_with("I-01 dispatched step=plan"), "{texts:?}");
+        assert!(cache.launcher_log.cursor.offset > torn_at);
+    }
+
+    #[test]
+    fn launcher_log_a_truncation_resets_the_ring_and_reads_from_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = format!(
+            "{}{}{}",
+            template_log(),
+            log_header("2026-10-20T14:02:11Z", "I-01", "dispatched", ""),
+            log_header("2026-10-20T14:02:12Z", "I-01", "report", "")
+        );
+        std::fs::write(dir.path().join("LOG.md"), &big).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        assert_eq!(ring_texts(&cache).len(), 2);
+        assert!(!cache.launcher_log.reset_notice);
+
+        // Rewritten shorter, in place (the same inode).
+        let small = log_header("2026-10-20T15:00:00Z", "RUN", "start", "");
+        assert!(small.len() < big.len());
+        std::fs::write(dir.path().join("LOG.md"), &small).unwrap();
+        refresh_log(&mut cache, dir.path());
+        assert!(cache.launcher_log.reset_notice);
+        let texts = ring_texts(&cache);
+        assert_eq!(texts.len(), 1, "the old lines are gone: {texts:?}");
+        assert!(texts[0].ends_with("RUN start"));
+        let (rows, _) = render(
+            {
+                let mut c = copy_of(&cache);
+                c.driver_follow = true;
+                c
+            },
+            140,
+            40,
+        );
+        assert!(
+            rows.iter().any(
+                |r| r.contains("! LOG.md was truncated or replaced, reading it from the start")
+            ),
+            "{rows:#?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launcher_log_a_replacement_is_detected_by_device_and_inode() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = format!(
+            "{}{}",
+            template_log(),
+            log_header("2026-10-20T14:02:11Z", "I-01", "dispatched", "")
+        );
+        std::fs::write(dir.path().join("LOG.md"), &first).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        let known = cache.launcher_log.ident.expect("the identity is recorded");
+
+        // A NEW file, as long as the old one plus one event, renamed over LOG.md:
+        // the length alone would read as an ordinary append.
+        let replacement = format!(
+            "{}{}{}",
+            template_log(),
+            log_header("2026-10-20T16:00:00Z", "I-09", "other", ""),
+            log_header("2026-10-20T16:00:01Z", "I-09", "more", "")
+        );
+        assert!(replacement.len() > first.len());
+        let staged = dir.path().join("LOG.md.new");
+        std::fs::write(&staged, &replacement).unwrap();
+        std::fs::rename(&staged, dir.path().join("LOG.md")).unwrap();
+        refresh_log(&mut cache, dir.path());
+        assert_ne!(cache.launcher_log.ident, Some(known));
+        assert!(cache.launcher_log.reset_notice);
+        let texts = ring_texts(&cache);
+        assert_eq!(
+            texts.len(),
+            2,
+            "re-read from the start, preamble dropped: {texts:?}"
+        );
+        assert!(texts[0].ends_with("I-09 other"));
+    }
+
+    #[test]
+    fn launcher_log_a_stale_read_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            "{}{}",
+            template_log(),
+            log_header("2026-10-20T14:02:11Z", "I-01", "dispatched", "")
+        );
+        std::fs::write(dir.path().join("LOG.md"), text).unwrap();
+        let mut cache = log_cache();
+        // Two reads scheduled from the same cursor (0): the first applies...
+        let a = read_log_delta(dir.path(), LOG_RUN, TailCursor::default(), None);
+        let b = read_log_delta(dir.path(), LOG_RUN, TailCursor::default(), None);
+        assert!(apply_log_read(&mut cache, a));
+        let shown = ring_texts(&cache).len();
+        // ...the second started at 0 but the cursor has moved: discarded, no repeat.
+        assert!(!apply_log_read(&mut cache, b));
+        assert_eq!(ring_texts(&cache).len(), shown);
+        // A read for a run that is not the selected one is dropped too.
+        let mut other = read_log_delta(dir.path(), LOG_RUN, cache.launcher_log.cursor, None);
+        other.run_id = "20261019-other".to_owned();
+        assert!(!apply_log_read(&mut cache, other));
+        // And a first read for a newly selected run must have started at 0.
+        cache.launcher_selected_id = Some("20261019-new".to_owned());
+        let mut fresh = read_log_delta(dir.path(), LOG_RUN, TailCursor { offset: 5 }, None);
+        fresh.run_id = "20261019-new".to_owned();
+        assert!(!apply_log_read(&mut cache, fresh));
+        assert_eq!(
+            cache.launcher_log.run_id, LOG_RUN,
+            "the tail was not hijacked"
+        );
+    }
+
+    #[test]
+    fn launcher_log_the_shipped_template_has_no_events_and_a_missing_file_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("LOG.md"), template_log()).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        assert!(ring_texts(&cache).is_empty(), "the preamble is not events");
+        let (rows, _) = render(copy_of(&cache), 140, 40);
+        assert!(
+            rows.iter().any(|r| r.contains("No events logged yet.")),
+            "{rows:#?}"
+        );
+        assert!(!rows
+            .iter()
+            .any(|r| r.contains("HUMAN-OWNED") || r.contains("TOOL-WRITTEN")));
+
+        let empty = tempfile::tempdir().unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, empty.path());
+        assert!(cache.launcher_log.missing);
+        let (rows, _) = render(copy_of(&cache), 140, 40);
+        assert!(
+            rows.iter().any(|r| r.contains("This run has no LOG.md.")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn launcher_log_a_hostile_header_and_detail_line_render_escaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            "{}{}    detail\u{1b}]0;pwned\u{7}\u{202e}x\n",
+            template_log(),
+            log_header(
+                "2026-10-20T14:02:11Z",
+                "I-01",
+                "dispatched",
+                " | step=a\u{1b}[2Jb\u{202e}c"
+            )
+        );
+        std::fs::write(dir.path().join("LOG.md"), text).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        let (rows, _) = render(copy_of(&cache), 140, 40);
+        for row in &rows {
+            assert!(!row.chars().any(char::is_control), "{row:?}");
+            assert!(!row.contains('\u{202e}'), "{row:?}");
+        }
+        assert!(
+            rows.iter().any(|r| r.contains("I-01 dispatched step=")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn launcher_log_park_rules_come_only_from_the_closed_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            "{}{}{}{}{}",
+            template_log(),
+            log_header(
+                "2026-10-20T14:02:11Z",
+                "I-01",
+                "status",
+                " | state=parked | rule=gap-rounds | outcome=x"
+            ),
+            log_header(
+                "2026-10-20T14:02:12Z",
+                "I-02",
+                "status",
+                " | state=parked | rule=bogus"
+            ),
+            log_header(
+                "2026-10-20T14:02:13Z",
+                "I-03",
+                "status",
+                " | state=running | rule=budget"
+            ),
+            log_header(
+                "2026-10-20T14:02:14Z",
+                "RUN",
+                "status",
+                " | state=parked | rule=budget"
+            ),
+        );
+        std::fs::write(dir.path().join("LOG.md"), text).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        let rules = &cache.launcher_log.park_rules;
+        assert_eq!(rules.get("I-01").map(String::as_str), Some("gap-rounds"));
+        assert_eq!(rules.get("I-02"), None, "an unknown rule is ignored");
+        assert_eq!(
+            rules.get("I-03"),
+            None,
+            "only a parked status records a rule"
+        );
+        assert_eq!(rules.get("RUN"), None, "only item ids");
+        assert_eq!(rules.len(), 1);
+        // And the cursor-item row names it.
+        let mut detail = detail_of(
+            LOG_RUN,
+            vec![body_item("I-01", "a", None, None)],
+            vec![("I-01", state_entry(ItemState::Parked, 1, Some("stuck")))],
+            None,
+        );
+        detail.run_id = LOG_RUN.to_owned();
+        cache.launcher_detail = Some(Box::new(detail));
+        cache.launcher_item_cursor = Some("I-01".to_owned());
+        let (rows, _) = render(copy_of(&cache), 140, 40);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("I-01 parked by gap-rounds: stuck")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn launcher_log_a_reset_forgets_the_old_park_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = format!(
+            "{}{}",
+            template_log(),
+            log_header(
+                "2026-10-20T14:02:11Z",
+                "I-01",
+                "status",
+                " | state=parked | rule=budget"
+            )
+        );
+        std::fs::write(dir.path().join("LOG.md"), &first).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        assert!(cache.launcher_log.park_rules.contains_key("I-01"));
+        std::fs::write(
+            dir.path().join("LOG.md"),
+            log_header("2026-10-20T15:00:00Z", "RUN", "start", ""),
+        )
+        .unwrap();
+        refresh_log(&mut cache, dir.path());
+        assert!(cache.launcher_log.park_rules.is_empty());
+    }
+
+    #[test]
+    fn launcher_log_more_than_the_ring_holds_shows_the_overflow_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut text = template_log();
+        for n in 0..2001 {
+            text.push_str(&log_header(
+                "2026-10-20T14:02:11Z",
+                "I-01",
+                "tick",
+                &format!(" | n={n}"),
+            ));
+        }
+        std::fs::write(dir.path().join("LOG.md"), text).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        assert_eq!(
+            cache.launcher_log.ring.len(),
+            crate::ui::screens::DRIVER_OUTPUT_RING_LINES
+        );
+        let mut shown = copy_of(&cache);
+        shown.driver_follow = false;
+        shown.driver_scroll_offset = 0;
+        let (rows, _) = render(shown, 140, 40);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("\u{2026} 1 earlier lines dropped (buffer holds 2000)")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn launcher_log_a_log_that_is_not_a_regular_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory named LOG.md: not a file, opened by nobody.
+        std::fs::create_dir(dir.path().join("LOG.md")).unwrap();
+        let read = read_log_delta(dir.path(), LOG_RUN, TailCursor::default(), None);
+        assert!(read.lines.is_empty() && !read.missing && !read.reset);
+        #[cfg(unix)]
+        {
+            let other = tempfile::tempdir().unwrap();
+            let target = other.path().join("secret.txt");
+            std::fs::write(
+                &target,
+                log_header("2026-10-20T14:02:11Z", "I-01", "leak", ""),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(&target, other.path().join("LOG.md")).unwrap();
+            let read = read_log_delta(other.path(), LOG_RUN, TailCursor::default(), None);
+            assert!(
+                read.lines.is_empty(),
+                "a link planted at LOG.md is not followed"
+            );
+        }
+    }
+
+    #[test]
+    fn launcher_log_the_pane_reads_log_md_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("worker-output.txt"),
+            log_header("2026-10-20T14:02:11Z", "I-01", "from-another-file", ""),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("transcript.jsonl"), "{\"type\":\"x\"}\n").unwrap();
+        let read = read_log_delta(dir.path(), LOG_RUN, TailCursor::default(), None);
+        assert!(
+            read.missing,
+            "no LOG.md means missing, whatever else is in the directory"
+        );
+        assert!(read.lines.is_empty());
+    }
+
+    #[test]
+    fn launcher_log_the_rule_shows_following_scrolled_or_not_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut text = template_log();
+        for n in 0..60 {
+            text.push_str(&log_header(
+                "2026-10-20T14:02:11Z",
+                "I-01",
+                "tick",
+                &format!(" | n={n}"),
+            ));
+        }
+        std::fs::write(dir.path().join("LOG.md"), text).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+
+        // Following: Green `[following]`, and the newest line is on screen.
+        let mut following = copy_of(&cache);
+        following.driver_follow = true;
+        let (rows, buffer) = render(following, 140, 30);
+        let rule = row_with(&rows, "\u{2500}\u{2500} log ");
+        assert!(rule.contains("[following]"), "{rule}");
+        assert!(rows.iter().any(|r| r.contains("n=59")), "{rows:#?}");
+        let y = rows.iter().position(|r| r.contains("[following]")).unwrap();
+        let col = rows[y].find("[following]").unwrap();
+        let cell = buffer
+            .cell((
+                u16::try_from(rows[y][..col].chars().count()).unwrap(),
+                u16::try_from(y).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(cell.fg, Color::Green);
+
+        // Scrolled to the top: Yellow `[scrolled +N]` and the oldest line shows.
+        let mut scrolled = copy_of(&cache);
+        scrolled.driver_follow = false;
+        scrolled.driver_scroll_offset = 0;
+        let (rows, _) = render(scrolled, 140, 30);
+        let rule = row_with(&rows, "\u{2500}\u{2500} log ");
+        assert!(rule.contains("[scrolled +"), "{rule}");
+        assert!(!rule.contains("paused"), "{rule}");
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("n=0 ") || r.ends_with("n=0")),
+            "{rows:#?}"
+        );
+
+        // A run that is not live: DarkGray `[not live]`.
+        let mut dead = copy_of(&cache);
+        dead.launcher_runs = vec![entry(LOG_RUN, DerivedStatus::AsWritten(RunStatus::Done))];
+        let (rows, buffer) = render(dead, 140, 30);
+        let rule = row_with(&rows, "\u{2500}\u{2500} log ");
+        assert!(rule.contains("[not live]"), "{rule}");
+        let y = rows.iter().position(|r| r.contains("[not live]")).unwrap();
+        let col = rows[y].find("[not live]").unwrap();
+        let cell = buffer
+            .cell((
+                u16::try_from(rows[y][..col].chars().count()).unwrap(),
+                u16::try_from(y).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(cell.fg, Color::DarkGray);
+    }
+
+    #[test]
+    fn launcher_log_a_header_is_a_dark_gray_time_then_default_text_and_detail_is_indented() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            "{}{}    status: done\n",
+            template_log(),
+            log_header("2026-10-20T14:02:11Z", "I-01", "report", " | status=done")
+        );
+        std::fs::write(dir.path().join("LOG.md"), text).unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        let lines = log_body_lines(&cache.launcher_log);
+        // Header: margin, the time in DarkGray, then the rest in the default style.
+        let time = local_hms("2026-10-20T14:02:11Z");
+        assert_eq!(
+            text_of(&lines[0]),
+            format!("  {time} I-01 report status=done")
+        );
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(
+            lines[0].spans[2].style.fg, None,
+            "no colour chosen from log content"
+        );
+        // Detail: indented 4 cells beyond the margin, all DarkGray.
+        assert_eq!(text_of(&lines[1]), "      status: done");
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn launcher_log_selecting_another_run_starts_its_tail_at_the_bottom_with_follow_on() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("LOG.md"),
+            format!(
+                "{}{}",
+                template_log(),
+                log_header("2026-10-20T14:02:11Z", "I-01", "start", "")
+            ),
+        )
+        .unwrap();
+        let mut cache = log_cache();
+        refresh_log(&mut cache, dir.path());
+        cache.driver_follow = false;
+        cache.driver_scroll_offset = 7;
+
+        // The user moves onto another run: its cursor starts at 0, and when the
+        // read lands the pane is reset to the tail with follow on.
+        cache.launcher_runs.push(entry("20261019-other", running()));
+        cache.launcher_selected_id = Some("20261019-other".to_owned());
+        let (cursor, ident) = log_cursor_for(&cache, "20261019-other");
+        assert_eq!((cursor, ident), (TailCursor::default(), None));
+        let read = read_log_delta(dir.path(), "20261019-other", cursor, ident);
+        assert!(apply_log_read(&mut cache, read));
+        assert_eq!(cache.launcher_log.run_id, "20261019-other");
+        assert!(cache.driver_follow);
+        assert_eq!(cache.driver_scroll_offset, 0);
+        // Until then the pane never draws the previous run's lines under it.
+        let mut waiting = log_cache();
+        waiting.launcher_log = LauncherLogTail {
+            run_id: "20261019-previous".into(),
+            ..LauncherLogTail::default()
+        };
+        let (rows, _) = render(waiting, 140, 40);
+        assert!(
+            !rows.iter().any(|r| r.contains("No events logged yet.")),
+            "{rows:#?}"
+        );
     }
 }

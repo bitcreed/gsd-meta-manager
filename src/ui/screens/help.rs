@@ -377,9 +377,10 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             Line::from(""),
             row("Shift+D", "Jump to the Driver tab from any detail tab"),
             row("j / k", "Move the run selection"),
-            row("PgUp / PgDn", "Scroll the output pane"),
-            row("f", "Toggle following the live tail"),
-            row("G", "Jump to the output tail and follow again"),
+            row("[ / ]", "Move the item cursor in the selected run"),
+            row("PgUp / PgDn", "Scroll the LOG.md tail"),
+            row("f", "Toggle following the LOG.md tail"),
+            row("G", "Jump to the LOG.md tail and follow again"),
             row("i", "Inject a message into the live run"),
             row("s", "Start a run: command, then optional goal"),
             row("x", "Kill this run's sandbox now (asks first)"),
@@ -399,6 +400,14 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             Line::from(""),
         ]);
         for (glyph, word, gloss) in super::driver_run::RUN_STATES_LEGEND {
+            lines.push(Line::from(format!("  {glyph} {word:<16} {gloss}")));
+        }
+        lines.push(Line::from(""));
+        // ── The item-state legend (30-02, D-06): every state an item row can show,
+        // glyphs from the `driver_run` constants.
+        lines.push(heading("Driver Item States"));
+        lines.push(Line::from(""));
+        for (glyph, word, gloss) in super::driver_run::ITEM_STATES_LEGEND {
             lines.push(Line::from(format!("  {glyph} {word:<16} {gloss}")));
         }
         lines.push(Line::from(""));
@@ -636,9 +645,10 @@ mod tests {
         for (key, description) in [
             ("Shift+D", "Jump to the Driver tab from any detail tab"),
             ("j / k", "Move the run selection"),
-            ("PgUp / PgDn", "Scroll the output pane"),
-            ("f", "Toggle following the live tail"),
-            ("G", "Jump to the output tail and follow again"),
+            ("[ / ]", "Move the item cursor in the selected run"),
+            ("PgUp / PgDn", "Scroll the LOG.md tail"),
+            ("f", "Toggle following the LOG.md tail"),
+            ("G", "Jump to the LOG.md tail and follow again"),
             ("i", "Inject a message into the live run"),
             ("s", "Start a run: command, then optional goal"),
             ("x", "Kill this run's sandbox now (asks first)"),
@@ -948,9 +958,10 @@ mod tests {
             ("o", "Toggle driver opt-in (dashboard)"),
             ("Shift+D", "Jump to the Driver tab from any detail tab"),
             ("j / k", "Move the run selection"),
-            ("PgUp / PgDn", "Scroll the output pane"),
-            ("f", "Toggle following the live tail"),
-            ("G", "Jump to the output tail and follow again"),
+            ("[ / ]", "Move the item cursor in the selected run"),
+            ("PgUp / PgDn", "Scroll the LOG.md tail"),
+            ("f", "Toggle following the LOG.md tail"),
+            ("G", "Jump to the LOG.md tail and follow again"),
             ("i", "Inject a message into the live run"),
             ("s", "Start a run: command, then optional goal"),
             ("x", "Kill this run's sandbox now (asks first)"),
@@ -1012,6 +1023,42 @@ mod tests {
         assert!(RUN_STATES_LEGEND
             .iter()
             .all(|(_, word, gloss)| !word.is_empty() && !gloss.is_empty()));
+    }
+
+    /// 30-02: the item-state legend names every state an item row can show, with the
+    /// glyph the row draws, and goes with the Driver section when the flag is off.
+    #[test]
+    fn the_driver_item_states_legend_names_every_item_state_with_its_glyph() {
+        use crate::ui::screens::driver_run::ITEM_STATES_LEGEND;
+        let text = body_with(true);
+        assert!(
+            text.lines().any(|line| line == "Driver Item States"),
+            "the legend heading is missing:\n{text}"
+        );
+        assert_eq!(
+            ITEM_STATES_LEGEND.len(),
+            7,
+            "the seven item rows of the UI-SPEC"
+        );
+        for (glyph, word, gloss) in ITEM_STATES_LEGEND {
+            assert!(!word.is_empty() && !gloss.is_empty());
+            let form = format!("  {glyph} {word:<16} ");
+            assert!(
+                text.lines().any(|line| line.starts_with(&form)),
+                "the legend row for {word:?} is missing:\n{text}"
+            );
+        }
+        for word in ["pending", "running", "done", "parked", "failed", "unseen"] {
+            assert!(
+                ITEM_STATES_LEGEND.iter().any(|(_, w, _)| *w == word),
+                "{word}"
+            );
+        }
+        let off = body_with(false);
+        assert!(
+            !off.contains("Driver Item States"),
+            "the item legend documents a tab the user cannot open:\n{off}"
+        );
     }
 
     #[test]

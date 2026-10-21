@@ -2191,6 +2191,7 @@ impl App {
                 alias,
                 launcher_runs,
                 detail,
+                log,
             } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 // Pinned to the run id, not the index: a newer run landing above the
@@ -2214,6 +2215,12 @@ impl App {
                 cache.launcher_listed = true;
                 // Stored only for the run now selected; a stale result is dropped.
                 crate::ui::screens::driver_run::store_detail(cache, detail);
+                // The log delta: applied only if it started where the tail stands
+                // (`LogRead::from_offset` equals the tail's cursor), so a duplicated
+                // or stale read can never show a line twice.
+                if let Some(log) = log {
+                    crate::ui::screens::driver_run::apply_log_read(cache, *log);
+                }
                 self.needs_redraw = true;
             }
             // One launcher run was re-read (30-02, D-24): its row and the cached
@@ -2224,8 +2231,14 @@ impl App {
                 alias,
                 run_id,
                 detail,
+                log,
             } => {
                 let cache = self.ctx.view_cache.entry(alias.clone()).or_default();
+                // The log first: a re-listing scheduled below must start from the
+                // cursor this read advanced.
+                if let Some(log) = log {
+                    crate::ui::screens::driver_run::apply_log_read(cache, *log);
+                }
                 let row = cache
                     .launcher_runs
                     .iter()
@@ -4786,6 +4799,60 @@ mod tests {
         assert_eq!(app.ctx.reparse_dispatches, 0, "no project re-parse");
     }
 
+    /// D-23 end to end: appended LOG.md bytes arrive through the refresh actions, only
+    /// the new bytes are read, and a read whose `from_offset` is not the tail's cursor
+    /// is discarded when it is delivered as an action.
+    #[tokio::test]
+    async fn launcher_log_appends_arrive_once_through_the_refresh_actions() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_items_run(dir.path(), "");
+        let log_path = dir
+            .path()
+            .join(".planning/meta-manager/drivers")
+            .join(LAUNCHER_RUN)
+            .join("LOG.md");
+        let preamble = crate::driver_templates::LOG_TEMPLATE
+            .replace(crate::driver_templates::RUN_ID_TOKEN, LAUNCHER_RUN);
+        let event = |n: u32| format!("- 2026-10-20T14:02:1{n}Z | I-01 | tick | n={n}\n");
+        std::fs::write(&log_path, format!("{preamble}{}{}", event(1), event(2))).unwrap();
+
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.update(run_file_change(dir.path(), "LOG.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let log_lines = |app: &App| app.ctx.view_cache[OBS_ALIAS].launcher_log.ring.len();
+        assert_eq!(log_lines(&app), 2, "the preamble is not an event");
+        let first_end = app.ctx.view_cache[OBS_ALIAS].launcher_log.cursor.offset;
+
+        // One more event, delivered by the single-run refresh a LOG.md event causes.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .unwrap()
+            .write_all(event(3).as_bytes())
+            .unwrap();
+        app.update(run_file_change(dir.path(), "LOG.md"));
+        let refreshed = next_action(&mut rx).await.expect("a single-run refresh");
+        let Action::LauncherRunRefreshed {
+            log: Some(read), ..
+        } = &refreshed
+        else {
+            panic!("expected the single-run refresh with a log read, got {refreshed:?}");
+        };
+        assert_eq!(
+            read.from_offset, first_end,
+            "it started where the tail stood"
+        );
+        assert_eq!(read.lines.len(), 1, "only the new bytes were read");
+        let duplicate = refreshed.clone();
+        app.update(refreshed);
+        assert_eq!(log_lines(&app), 3);
+
+        // The same read delivered again started at the OLD cursor: discarded.
+        app.update(duplicate);
+        assert_eq!(log_lines(&app), 3, "no line is shown twice");
+    }
+
     /// A single-run refresh for a run that is not the selected one is dropped, and a
     /// failed read is answered by a re-listing.
     #[tokio::test]
@@ -4807,6 +4874,7 @@ mod tests {
             alias: OBS_ALIAS.to_string(),
             run_id: "20261018-other".to_string(),
             detail: Ok(Box::new(other)),
+            log: None,
         });
         let cache = &app.ctx.view_cache[OBS_ALIAS];
         assert_eq!(cache.launcher_runs.len(), row_before);
@@ -5331,6 +5399,7 @@ mod tests {
             alias: OBS_ALIAS.to_string(),
             launcher_runs: ids.iter().map(|id| launcher_entry(id)).collect(),
             detail: None,
+            log: None,
         }
     }
 

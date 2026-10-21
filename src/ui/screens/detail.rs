@@ -10510,6 +10510,9 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
     let mut tokens: Vec<FooterToken> = vec![FooterToken::hint("[Esc]", "back  ", 2)];
     tokens.push(FooterToken::hint("[1-8/D]", "tabs  ", 3));
     tokens.push(FooterToken::hint("[j/k]", "runs  ", 1));
+    if keys.item {
+        tokens.push(FooterToken::hint("[[/]]", "item  ", 3));
+    }
     if keys.start {
         tokens.push(FooterToken::hint("[s]", "tart  ", 2));
     }
@@ -17193,6 +17196,7 @@ mod tests {
             legacy_row: false,
             start: true,
             scroll: false,
+            item: false,
         }
     }
 
@@ -17226,6 +17230,65 @@ mod tests {
     }
 
     #[test]
+    fn launcher_view_the_footer_names_the_item_key_only_when_the_run_has_items() {
+        let with_items = DriverKeys {
+            item: true,
+            ..live_run_keys()
+        };
+        let text = driver_footer_text(160, &with_items);
+        assert!(text.contains("[[/]]item"), "{text}");
+        assert!(!driver_footer_text(160, &live_run_keys()).contains("[[/]]item"));
+        // It is a priority-3 token: it goes before any benign priority-2 one.
+        let narrow = driver_footer_text(60, &with_items);
+        assert!(narrow.ends_with("[?]help"), "{narrow}");
+        assert!(!narrow.contains("[[/]]item"), "{narrow}");
+        assert!(narrow.contains("[j/k]runs"), "{narrow}");
+    }
+
+    /// 30-02: on a launcher row the scroll keys act on the LOG tail through the same
+    /// state the legacy output pane uses, in the shipped UIFIX-04 order.
+    #[test]
+    fn launcher_view_the_scroll_keys_drive_the_log_tail() {
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
+        screen.driver_viewport.set(ViewportMetrics {
+            total_lines: 100,
+            visible_height: 10,
+        });
+        let tail = 90u16;
+        let state = |ctx: &AppContext| {
+            let cache = &ctx.view_cache[TEST_ALIAS];
+            (cache.driver_follow, cache.driver_scroll_offset)
+        };
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .driver_follow = true;
+
+        // Up from the tail: clamp first (to the tail), subtract, follow off.
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        let (follow, offset) = state(&ctx);
+        assert!(!follow);
+        assert_eq!(offset, tail - PAGE_SCROLL_LINES);
+
+        // Down: add then clamp; reaching the tail re-arms follow.
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(state(&ctx), (true, tail));
+
+        // `f` off leaves the viewport where it is; `f` on follows again.
+        press(&mut screen, &mut ctx, KeyCode::Char('f'));
+        assert_eq!(state(&ctx), (false, tail));
+        press(&mut screen, &mut ctx, KeyCode::Char('f'));
+        assert!(state(&ctx).0);
+
+        // `G` jumps to the tail and follows again from anywhere.
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert!(!state(&ctx).0);
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        assert_eq!(state(&ctx), (true, tail));
+    }
+
+    #[test]
     fn the_driver_footer_says_legacy_runs_are_read_only_only_on_a_legacy_row() {
         let on_legacy = DriverKeys {
             kill: false,
@@ -17233,6 +17296,7 @@ mod tests {
             legacy_row: true,
             start: true,
             scroll: true,
+            item: false,
         };
         let text = driver_footer_text(200, &on_legacy);
         assert!(text.contains("legacy run: read-only"), "{text}");
@@ -17244,13 +17308,14 @@ mod tests {
     /// five widths the UI-SPEC names, for every combination of available keys.
     #[test]
     fn the_driver_footer_fits_its_width_and_always_ends_with_help() {
-        for bits in 0u8..32 {
+        for bits in 0u8..64 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
                 legacy_row: bits & 4 != 0,
                 start: bits & 8 != 0,
                 scroll: bits & 16 != 0,
+                item: bits & 32 != 0,
             };
             for width in [40u16, 60, 80, 100, 160] {
                 let text = driver_footer_text(width, &keys);
@@ -17275,6 +17340,7 @@ mod tests {
             legacy_row: false,
             start: true,
             scroll: true,
+            item: false,
         };
         // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 10 + 7 = 98 cells.
         let full = driver_footer_text(98, &keys);
@@ -17309,13 +17375,14 @@ mod tests {
 
     #[test]
     fn the_driver_footer_names_no_retired_key_at_any_width() {
-        for bits in 0u8..32 {
+        for bits in 0u8..64 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
                 legacy_row: bits & 4 != 0,
                 start: bits & 8 != 0,
                 scroll: bits & 16 != 0,
+                item: bits & 32 != 0,
             };
             for width in [40u16, 60, 80, 100, 160, 300] {
                 let text = driver_footer_text(width, &keys);

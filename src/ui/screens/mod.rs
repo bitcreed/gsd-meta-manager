@@ -659,6 +659,39 @@ impl DriverOutput {
     }
 }
 
+/// The live tail of the selected launcher run's `LOG.md` (30-02, D-23).
+///
+/// One per project view, on [`ProjectViewCache::launcher_log`]. It holds the byte
+/// cursor of the last read, the identity of the file that cursor belongs to, the
+/// bounded ring of lines already shown, and the park rules the log recorded. Owned
+/// strings and plain numbers only: **never a file handle**, so it clones and moves
+/// across threads freely.
+///
+/// A read result is applied only when it started where this cursor now stands, so a
+/// stale or duplicated read can never show a line twice
+/// ([`driver_run::apply_log_read`]).
+#[derive(Debug, Default, Clone)]
+pub struct LauncherLogTail {
+    /// The run this tail speaks for; empty before the first read.
+    pub run_id: String,
+    /// Where the next read starts.
+    pub cursor: crate::journal::reader::TailCursor,
+    /// `(dev, ino)` of the `LOG.md` the cursor belongs to; a different one means the
+    /// file was replaced (unix; `None` elsewhere, where truncation alone is detected).
+    pub ident: Option<(u64, u64)>,
+    /// The lines shown, through the one sanitising append.
+    pub ring: DriverOutput,
+    /// Item id to the `rule` of its last `status state=parked` event in the log
+    /// (D-16). `item_states` carries no rule, so the log is the only tool-written
+    /// source of why an item parked. Only rules from the log template's closed set
+    /// are recorded.
+    pub park_rules: std::collections::BTreeMap<String, String>,
+    /// The log was truncated or replaced and is being read again from the start.
+    pub reset_notice: bool,
+    /// The run has no `LOG.md`.
+    pub missing: bool,
+}
+
 /// Make one string from disk safe to hand to the terminal.
 ///
 /// **Every string this phase renders that originated on disk is untrusted**, and
@@ -1196,6 +1229,8 @@ pub struct ProjectViewCache {
     ///
     /// [`RunDetail::run_id`]: driver_run::RunDetail::run_id
     pub launcher_detail: Option<Box<driver_run::RunDetail>>,
+    /// The live tail of the selected launcher run's `LOG.md` (30-02, D-23).
+    pub launcher_log: LauncherLogTail,
     /// The id of the item the item cursor is on (`[` / `]`), an identity rather than
     /// an index so a refresh that reorders rows keeps it. Re-defaulted to the first
     /// parked item, else `current_item`, else the first row when the selection
@@ -1998,6 +2033,13 @@ impl AppContext {
         let (pinned_id, old_index) = self.view_cache.get(alias).map_or((None, 0), |cache| {
             (cache.launcher_selected_id.clone(), cache.launcher_selected)
         });
+        // The LOG tail's place, copied now: the task decides below which run it is
+        // for, and reads from here only if that is the run the tail belongs to.
+        let tail = self
+            .view_cache
+            .get(alias)
+            .map(|cache| cache.launcher_log.clone())
+            .unwrap_or_default();
         let alias = alias.to_string();
         tokio::task::spawn_blocking(move || {
             let launcher_runs = crate::state_reader::driver_frontmatter::list_driver_runs(
@@ -2006,17 +2048,39 @@ impl AppContext {
             );
             // The run the app will select once this listing lands (the same rule),
             // read once more for its items: the list's own read did not keep the body.
-            let detail = driver_run::pinned_index(&launcher_runs, pinned_id.as_deref(), old_index);
-            let detail = launcher_runs.get(detail).and_then(|(run_id, _)| {
-                let dir = project
+            let selected =
+                driver_run::pinned_index(&launcher_runs, pinned_id.as_deref(), old_index);
+            let selected = launcher_runs
+                .get(selected)
+                .map(|(run_id, _)| run_id.as_str());
+            let dir = |run_id: &str| {
+                project
                     .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
-                    .join(run_id);
-                driver_run::load_run_detail(&dir, run_id).ok().map(Box::new)
+                    .join(run_id)
+            };
+            let detail = selected.and_then(|run_id| {
+                driver_run::load_run_detail(&dir(run_id), run_id)
+                    .ok()
+                    .map(Box::new)
+            });
+            let log = selected.map(|run_id| {
+                let (cursor, ident) = if tail.run_id == run_id {
+                    (tail.cursor, tail.ident)
+                } else {
+                    (Default::default(), None)
+                };
+                Box::new(driver_run::read_log_delta(
+                    &dir(run_id),
+                    run_id,
+                    cursor,
+                    ident,
+                ))
             });
             let _ = tx.send(crate::action::Action::LauncherRunsRefreshed {
                 alias,
                 launcher_runs,
                 detail,
+                log,
             });
         });
     }
@@ -2049,14 +2113,24 @@ impl AppContext {
         let dir = project_path
             .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
             .join(run_id);
+        let (cursor, ident) = self
+            .view_cache
+            .get(alias)
+            .map_or((Default::default(), None), |cache| {
+                driver_run::log_cursor_for(cache, run_id)
+            });
         let alias = alias.to_string();
         let run_id = run_id.to_string();
         tokio::task::spawn_blocking(move || {
             let detail = driver_run::load_run_detail(&dir, &run_id).map(Box::new);
+            let log = Some(Box::new(driver_run::read_log_delta(
+                &dir, &run_id, cursor, ident,
+            )));
             let _ = tx.send(crate::action::Action::LauncherRunRefreshed {
                 alias,
                 run_id,
                 detail,
+                log,
             });
         });
     }

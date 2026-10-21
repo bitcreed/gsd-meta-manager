@@ -368,6 +368,10 @@ pub enum Action {
         /// known. `None` when that run could not be read (its row is then an `Err`).
         /// Applied only when `detail.run_id` is still the selected run's.
         detail: Option<Box<crate::ui::screens::driver_run::RunDetail>>,
+        /// What was appended to that run's `LOG.md` since the cursor the cache held
+        /// when the task was scheduled (30-02, D-23). Applied only if the cache's
+        /// cursor is still where the read started.
+        log: Option<Box<crate::ui::screens::driver_run::LogRead>>,
     },
     /// One launcher run was re-read off the render thread (30-02, D-24, D-25).
     ///
@@ -380,6 +384,8 @@ pub enum Action {
         alias: String,
         run_id: String,
         detail: Result<Box<crate::ui::screens::driver_run::RunDetail>, String>,
+        /// The run's `LOG.md` delta, read in the same task (30-02, D-23).
+        log: Option<Box<crate::ui::screens::driver_run::LogRead>>,
     },
     /// A dry-run report was built for `alias` and is ready to show (D-26).
     ///
@@ -491,6 +497,7 @@ mod tests {
             alias: "proj".to_string(),
             launcher_runs: Vec::new(),
             detail: None,
+            log: None,
         };
         assert!(matches!(
             refreshed.clone(),
@@ -501,6 +508,7 @@ mod tests {
             alias: "proj".to_string(),
             run_id: "20261020-a".to_string(),
             detail: Err("no frontmatter block".to_string()),
+            log: None,
         };
         assert!(matches!(one.clone(), Action::LauncherRunRefreshed { .. }));
     }
