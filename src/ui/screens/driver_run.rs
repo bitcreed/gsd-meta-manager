@@ -22,6 +22,7 @@
 //! never overflow its row.
 
 use std::cell::Cell;
+use std::path::Path;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -37,8 +38,11 @@ use super::driver::{
 };
 use super::{AppContext, ProjectViewCache};
 use crate::driver::reconcile::RunVerdict;
+use crate::driver::steer::BodyItem;
 use crate::journal::RunSummary;
-use crate::state_reader::driver_frontmatter::{DerivedStatus, DriverRunEntry, RunStatus};
+use crate::state_reader::driver_frontmatter::{
+    DerivedStatus, DriverRunEntry, DriverRunView, ItemState, RunStatus,
+};
 
 // ── Run-status glyphs (fixed `&'static str`, `\u{…}` per PATTERNS S7) ───────
 //
@@ -85,6 +89,30 @@ const HEADER_LABEL_CELLS: usize = 10;
 
 /// Posture cell: the run's frontmatter says `sandbox: degraded`.
 const POSTURE_DEGRADED: &str = "!";
+
+/// `·` U+00B7 — an item that is in the DIRECTION body but that the driver has not
+/// recorded a state for yet.
+pub const GLYPH_ITEM_UNSEEN: &str = "\u{00B7}";
+
+/// Item rows shown before the `… {k} more items` row (UI-SPEC `ITEMS_MAX_ROWS`).
+pub const ITEMS_MAX_ROWS: usize = 8;
+
+/// The item id column: `I-NNN` is five cells.
+const ITEM_ID_CELLS: usize = 5;
+
+/// The item state-word column: `unseen`/`pending`/`running` are at most seven
+/// cells, padded to eight so the dispatch count has a gap before it.
+const ITEM_WORD_CELLS: usize = 8;
+
+/// The marker after a frontmatter-only item's (empty) title.
+const NOT_IN_DIRECTION: &str = "[not in DIRECTION]";
+
+/// The cells every item row spends before its title, from the UI-SPEC row
+/// `cursor(2) · id(5) · glyph(1) · gap(1) · word(8) · "{n}d" in 3 · gap(1) · flag(4)
+/// · gap(2)`: `2 + 5 + 1 + 1 + 8 + 3 + 1 + 4 + 2 = 27`. The title gets whatever the
+/// pane has beyond this, measured from the rendered spans rather than from the
+/// constant, so a wider dispatch count cannot push it off the row.
+pub const ITEM_ROW_FIXED_CELLS: usize = 27;
 
 // ── Status vocabulary (D-04) ────────────────────────────────────────────────
 
@@ -289,14 +317,416 @@ fn header_row_2(
     ])
 }
 
+// ── The selected run's detail: one read of its own files (D-06, D-25) ──────
+
+/// Everything the selected-run view needs from one read of the run's `DIRECTION.md`:
+/// the frontmatter with its derived status, the live `control` word and the items
+/// from the body.
+///
+/// Plain data (`Clone`, no handle), because it travels from a `spawn_blocking` task
+/// to the app as an `Action` payload. It is display data only: the frontmatter in it
+/// is as forgeable as any other (28-SECURITY), so nothing here decides liveness.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunDetail {
+    /// The run directory name the read was made for.
+    pub run_id: String,
+    /// The frontmatter and the status derived from the run lock.
+    pub view: DriverRunView,
+    /// The live `control` word of the DIRECTION **body** (`parse_direction`,
+    /// lower-cased), not the frontmatter's echo of it (D-05).
+    pub body_control: Option<String>,
+    /// The body's items in document order: ids, titles, `hold`, `answer`.
+    pub items: Vec<BodyItem>,
+}
+
+/// Read `run_dir` once and split it into [`RunDetail`].
+///
+/// **Blocking file I/O (the file read and the lock probe): call it only inside
+/// `spawn_blocking`** (D-25), never from a render function or a key handler. The
+/// error is the reader's own display text, shown as the unreadable copy.
+pub fn load_run_detail(run_dir: &Path, run_id: &str) -> Result<RunDetail, String> {
+    let (view, text) = crate::state_reader::driver_frontmatter::read_driver_run_text(run_dir)
+        .map_err(|error| error.to_string())?;
+    let (_, body) = crate::driver::direction::split_frontmatter(&text);
+    Ok(RunDetail {
+        run_id: run_id.to_owned(),
+        view,
+        body_control: crate::driver::direction::parse_direction(body).control,
+        items: crate::driver::steer::read_items(body),
+    })
+}
+
+/// How an item row relates the two sources (D-06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemMark {
+    /// In the body, and the driver recorded this state for it.
+    Seen(ItemState),
+    /// In the body only: the driver has not recorded a state for it.
+    Unseen,
+    /// In the frontmatter only: the driver knows it, the body no longer lists it.
+    NotInDirection(ItemState),
+}
+
+/// One row of the merged item list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemRow {
+    pub id: String,
+    /// The `### I-NN` heading text; `None` for a frontmatter-only item.
+    pub title: Option<String>,
+    pub mark: ItemMark,
+    /// Dispatches the frontmatter counted for this item (0 when unseen).
+    pub dispatches: u32,
+    /// The body says `- hold: true`.
+    pub hold: bool,
+    /// The frontmatter's `outcome` for this item.
+    pub outcome: Option<String>,
+    /// The body's non-empty `- answer:`.
+    pub answer: Option<String>,
+}
+
+/// Merge the body's items with the frontmatter's `item_states` (D-06): body items in
+/// body order, then frontmatter-only items in `item_states` order. An id in both is
+/// one row. A repeated body id keeps its first heading (the lint flags the repeat).
+pub fn merged_items(detail: &RunDetail) -> Vec<ItemRow> {
+    let states = &detail.view.frontmatter.item_states.0;
+    let state_of = |id: &str| states.iter().find(|(key, _)| key == id).map(|(_, e)| e);
+    let mut rows: Vec<ItemRow> = Vec::with_capacity(detail.items.len());
+    for item in &detail.items {
+        if rows.iter().any(|row| row.id == item.id) {
+            continue;
+        }
+        let entry = state_of(&item.id);
+        rows.push(ItemRow {
+            id: item.id.clone(),
+            title: Some(item.title.clone()),
+            mark: entry.map_or(ItemMark::Unseen, |e| ItemMark::Seen(e.state)),
+            dispatches: entry.map_or(0, |e| e.dispatches),
+            hold: item.is_on_hold(),
+            outcome: entry.and_then(|e| e.outcome.clone()),
+            answer: item.answer.clone(),
+        });
+    }
+    for (id, entry) in states {
+        if rows.iter().any(|row| &row.id == id) {
+            continue;
+        }
+        rows.push(ItemRow {
+            id: id.clone(),
+            title: None,
+            mark: ItemMark::NotInDirection(entry.state),
+            dispatches: entry.dispatches,
+            hold: false,
+            outcome: entry.outcome.clone(),
+            answer: None,
+        });
+    }
+    rows
+}
+
+/// Where the item cursor starts on selecting a run: the first `parked` item, else
+/// `current_item` when it is listed, else the first row (UI-SPEC, D-06).
+pub fn item_cursor_default(rows: &[ItemRow], current_item: Option<&str>) -> Option<String> {
+    let parked = |mark: ItemMark| {
+        matches!(
+            mark,
+            ItemMark::Seen(ItemState::Parked) | ItemMark::NotInDirection(ItemState::Parked)
+        )
+    };
+    rows.iter()
+        .find(|row| parked(row.mark))
+        .or_else(|| current_item.and_then(|id| rows.iter().find(|row| row.id == id)))
+        .or_else(|| rows.first())
+        .map(|row| row.id.clone())
+}
+
+/// The item cursor id to use: `cursor` when it is still listed, else the default.
+pub fn resolved_item_cursor(
+    rows: &[ItemRow],
+    cursor: Option<&str>,
+    current_item: Option<&str>,
+) -> Option<String> {
+    cursor
+        .filter(|id| rows.iter().any(|row| row.id == *id))
+        .map(str::to_owned)
+        .or_else(|| item_cursor_default(rows, current_item))
+}
+
+/// The detail of the run `run_id`, when the cache holds one **for that run**. A
+/// detail left over from the previously selected run is never shown under another.
+pub fn detail_for<'a>(cache: Option<&'a ProjectViewCache>, run_id: &str) -> Option<&'a RunDetail> {
+    cache
+        .and_then(|c| c.launcher_detail.as_deref())
+        .filter(|detail| detail.run_id == run_id)
+}
+
+/// Move the item cursor of the selected launcher run by `delta` rows, clamped at
+/// both ends. Inert (returns `false`) with no items or no detail for the selected
+/// run. Pure: it touches the cache and nothing else.
+pub fn move_item_cursor(cache: &mut ProjectViewCache, delta: isize) -> bool {
+    let Selection::Launcher(index) = selection(Some(cache)) else {
+        return false;
+    };
+    let run_id = cache.launcher_runs[index].0.clone();
+    let Some(detail) = detail_for(Some(cache), &run_id) else {
+        return false;
+    };
+    let rows = merged_items(detail);
+    if rows.is_empty() {
+        return false;
+    }
+    let current = detail.view.frontmatter.current_item.clone();
+    let at = resolved_item_cursor(
+        &rows,
+        cache.launcher_item_cursor.as_deref(),
+        current.as_deref(),
+    )
+    .and_then(|id| rows.iter().position(|row| row.id == id))
+    .unwrap_or(0);
+    let next = if delta < 0 {
+        at.saturating_sub(delta.unsigned_abs())
+    } else {
+        at.saturating_add(delta.unsigned_abs())
+    }
+    .min(rows.len() - 1);
+    cache.launcher_item_cursor = Some(rows[next].id.clone());
+    true
+}
+
+// ── The items section (D-06) ────────────────────────────────────────────────
+
+/// A section rule: `── {name} ───…`, DarkGray, padded to `width` cells.
+fn section_rule(name: &str, width: usize) -> Line<'static> {
+    let lead = format!("\u{2500}\u{2500} {name} ");
+    let fill = width.saturating_sub(Span::raw(lead.as_str()).width());
+    Line::from(Span::styled(
+        format!("{lead}{}", "\u{2500}".repeat(fill)),
+        label_style(),
+    ))
+}
+
+/// `text` padded with spaces to `cells` display cells (never cut).
+fn pad_cells(text: &str, cells: usize) -> String {
+    let pad = cells.saturating_sub(Span::raw(text).width());
+    format!("{text}{}", " ".repeat(pad))
+}
+
+/// The glyph, word and colour of an item mark. Fixed constants and the closed
+/// `ItemState` enum only: nothing a file wrote reaches a glyph or a colour.
+fn item_look(mark: ItemMark) -> (&'static str, &'static str, Color) {
+    let state = match mark {
+        ItemMark::Unseen => return (GLYPH_ITEM_UNSEEN, "unseen", Color::DarkGray),
+        ItemMark::Seen(state) | ItemMark::NotInDirection(state) => state,
+    };
+    match state {
+        ItemState::Pending => (GLYPH_RUN_UNLAUNCHED, "pending", Color::DarkGray),
+        ItemState::Running => (GLYPH_RUN_LIVE, "running", Color::Magenta),
+        ItemState::Done => (GLYPH_RUN_DONE, "done", Color::Green),
+        ItemState::Parked => (GLYPH_RUN_PARKED, "parked", Color::Red),
+        ItemState::Failed => (GLYPH_RUN_CRASHED, "failed", Color::Red),
+    }
+}
+
+/// One item row (UI-SPEC D-06):
+/// `cursor(2) · id(5) · glyph · word(8) · "{n}d"(3) · gap · hold(4) · gap(2) · title`.
+///
+/// The title is sanitised first (`shown_capped`) and cut by display width second
+/// (`fit_cells`) to the room measured from the spans already placed, never to a
+/// fixed number: when `room > 1` it is cut to `room - 1`, and when `room <= 1` the
+/// title span is dropped entirely, so an orphan `…` cannot appear. A
+/// frontmatter-only item carries ` [not in DIRECTION]` in DarkGray after its title.
+pub fn item_row(row: &ItemRow, selected: bool, width: usize) -> Line<'static> {
+    let (glyph, word, color) = item_look(row.mark);
+    let state_style = Style::default().fg(color);
+    let id_style = if selected {
+        selection_style()
+    } else {
+        Style::default()
+    };
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled(if selected { "> " } else { "  " }, selection_style()),
+        Span::styled(
+            pad_cells(
+                &fit_cells(&shown_capped(&row.id), ITEM_ID_CELLS),
+                ITEM_ID_CELLS,
+            ),
+            id_style,
+        ),
+        Span::styled(glyph, state_style),
+        Span::raw(" "),
+        Span::styled(pad_cells(word, ITEM_WORD_CELLS), state_style),
+        Span::raw(format!("{:>3}", format!("{}d", row.dispatches))),
+        Span::raw(" "),
+        if row.hold {
+            Span::styled("hold", Style::default().fg(Color::Yellow))
+        } else {
+            Span::raw("    ")
+        },
+        Span::raw("  "),
+    ];
+    let used: usize = spans.iter().map(Span::width).sum();
+    let foreign = matches!(row.mark, ItemMark::NotInDirection(_));
+    let marker_cells = if foreign { NOT_IN_DIRECTION.len() } else { 0 };
+    let title = row
+        .title
+        .as_deref()
+        .map(shown_capped)
+        .filter(|title| !title.is_empty());
+    // A separating space only when a title precedes the marker.
+    let room = width.saturating_sub(used + marker_cells + usize::from(foreign));
+    let mut placed_title = false;
+    if let Some(title) = title {
+        if room > 1 {
+            spans.push(Span::raw(fit_cells(&title, room - 1)));
+            placed_title = true;
+        }
+    }
+    if foreign {
+        if placed_title {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(NOT_IN_DIRECTION, label_style()));
+    }
+    Line::from(spans)
+}
+
+/// The cursor-item row under the item rows: `{id} {state}: {outcome}` plus
+/// `  answer: {answer}` when the body has one, else `{id}: no outcome recorded`
+/// muted (UI-SPEC). Task 3 of plan 30-02 adds the park rule.
+fn cursor_item_line(row: &ItemRow, park_rule: Option<&str>, width: usize) -> Line<'static> {
+    let (_, word, color) = item_look(row.mark);
+    let id = shown_capped(&row.id);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    match row
+        .outcome
+        .as_deref()
+        .filter(|o| crate::text::carries_visible_content(o))
+    {
+        Some(outcome) => {
+            let by = park_rule
+                .filter(|_| {
+                    matches!(
+                        row.mark,
+                        ItemMark::Seen(ItemState::Parked)
+                            | ItemMark::NotInDirection(ItemState::Parked)
+                    )
+                })
+                .map(|rule| format!(" by {}", shown_capped(rule)))
+                .unwrap_or_default();
+            spans.push(Span::raw(format!("  {id} ")));
+            spans.push(Span::styled(
+                format!("{word}{by}"),
+                Style::default().fg(color),
+            ));
+            spans.push(Span::raw(format!(": {}", shown_capped(outcome))));
+        }
+        None => {
+            spans.push(Span::styled(
+                format!("  {id}: no outcome recorded"),
+                muted_style(),
+            ));
+        }
+    }
+    if let Some(answer) = row.answer.as_deref() {
+        spans.push(Span::raw(format!("  answer: {}", shown_capped(answer))));
+    }
+    let line = Line::from(spans);
+    clip_line(line, width)
+}
+
+/// `line` cut to `width` display cells, the cut marked with `…`. Spans keep their
+/// styles; text is only ever dropped from the right.
+fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+    let mut left = width;
+    for span in line.spans {
+        let w = span.width();
+        if w <= left {
+            left -= w;
+            spans.push(span);
+            continue;
+        }
+        spans.push(Span::styled(fit_cells(&span.content, left), span.style));
+        break;
+    }
+    Line::from(spans)
+}
+
+/// The lines of the items section for the selected run: its rule, the item rows
+/// (at most [`ITEMS_MAX_ROWS`], the window keeping the cursor visible, then `… {k}
+/// more items`), and the cursor-item row.
+///
+/// With no detail yet the section reads `Loading...`; with no items in either
+/// source, `No items in DIRECTION.md yet. Add one with [e].`, so the section is
+/// never header-only (D-29).
+pub fn items_section(
+    detail: Option<&RunDetail>,
+    cursor: Option<&str>,
+    park_rules: Option<&std::collections::BTreeMap<String, String>>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![section_rule("items", width)];
+    let Some(detail) = detail else {
+        lines.push(Line::from(Span::styled(
+            format!("  {DRY_RUN_LOADING}"),
+            muted_style(),
+        )));
+        return lines;
+    };
+    let rows = merged_items(detail);
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No items in DIRECTION.md yet. Add one with [e].",
+            muted_style(),
+        )));
+        return lines;
+    }
+    let current = detail.view.frontmatter.current_item.as_deref();
+    let at = resolved_item_cursor(&rows, cursor, current)
+        .and_then(|id| rows.iter().position(|row| row.id == id))
+        .unwrap_or(0);
+    let shown = rows.len().min(ITEMS_MAX_ROWS);
+    // The smallest window that keeps the cursor row on screen.
+    let start = (at + 1).saturating_sub(shown);
+    for (offset, row) in rows[start..start + shown].iter().enumerate() {
+        lines.push(item_row(row, start + offset == at, width));
+    }
+    let hidden = rows.len() - shown;
+    if hidden > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  \u{2026} {hidden} more items"),
+            muted_style(),
+        )));
+    }
+    let rule = park_rules
+        .and_then(|rules| rules.get(&rows[at].id))
+        .map(String::as_str);
+    lines.push(cursor_item_line(&rows[at], rule, width));
+    lines
+}
+
 /// The detail pane's lines for the selected run, top to bottom.
 ///
 /// An unreadable entry gets the UI-SPEC unreadable copy: the error in Red and the
 /// promise that the run is read again on the next change to its directory.
-fn detail_lines(entry: &DriverRunEntry, width: usize) -> Vec<Line<'static>> {
+fn detail_lines(
+    entry: &DriverRunEntry,
+    cache: Option<&ProjectViewCache>,
+    width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = vec![header_row_1(entry, width)];
     match &entry.1 {
-        Ok(view) => lines.push(header_row_2(view, width)),
+        Ok(view) => {
+            lines.push(header_row_2(view, width));
+            lines.extend(items_section(
+                detail_for(cache, &entry.0),
+                cache.and_then(|c| c.launcher_item_cursor.as_deref()),
+                None,
+                width,
+            ));
+        }
         Err(error) => {
             let message = format!(
                 "DIRECTION.md could not be read: {}",
@@ -780,7 +1210,7 @@ pub(super) fn render_launcher_tab(
             regions.output = Some(detail_area);
         }
         Selection::Launcher(index) => {
-            let lines = detail_lines(&runs[index], usize::from(inner.width));
+            let lines = detail_lines(&runs[index], cache, usize::from(inner.width));
             frame.render_widget(Paragraph::new(lines), inner);
         }
         Selection::Nothing => {
@@ -1585,5 +2015,459 @@ mod tests {
         cache.legacy_row_selected = true;
         let (rows, _) = render(cache, 50, 20);
         assert!(rows[0].contains("(1/1)"), "{:?}", rows[0]);
+    }
+
+    // ── the merged item list (D-06) ────────────────────────────────────────
+
+    use crate::state_reader::driver_frontmatter::{ItemStateEntry, ItemStates};
+
+    fn body_item(id: &str, title: &str, hold: Option<&str>, answer: Option<&str>) -> BodyItem {
+        BodyItem {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            hold: hold.map(str::to_owned),
+            answer: answer.map(str::to_owned),
+        }
+    }
+
+    fn state_entry(state: ItemState, dispatches: u32, outcome: Option<&str>) -> ItemStateEntry {
+        ItemStateEntry {
+            state,
+            dispatches,
+            outcome: outcome.map(str::to_owned),
+        }
+    }
+
+    fn detail_of(
+        id: &str,
+        items: Vec<BodyItem>,
+        states: Vec<(&str, ItemStateEntry)>,
+        current_item: Option<&str>,
+    ) -> RunDetail {
+        let (_, entry) = entry(id, running());
+        let mut view = entry.expect("the fixture parses");
+        view.frontmatter.item_states = ItemStates(
+            states
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        );
+        view.frontmatter.current_item = current_item.map(str::to_owned);
+        RunDetail {
+            run_id: id.to_owned(),
+            view,
+            body_control: Some("run".to_owned()),
+            items,
+        }
+    }
+
+    #[test]
+    fn merged_items_keep_body_order_then_frontmatter_only_in_item_states_order() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![
+                body_item("I-02", "second", None, None),
+                body_item("I-01", "first", Some("true"), Some("use /run")),
+            ],
+            vec![
+                ("I-09", state_entry(ItemState::Done, 3, Some("shipped"))),
+                (
+                    "I-01",
+                    state_entry(ItemState::Parked, 2, Some("needs a socket path")),
+                ),
+                ("I-07", state_entry(ItemState::Failed, 1, None)),
+            ],
+            None,
+        );
+        let rows = merged_items(&detail);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["I-02", "I-01", "I-09", "I-07"],
+            "an id in both is one row"
+        );
+        assert_eq!(rows[0].mark, ItemMark::Unseen, "body-only");
+        assert_eq!(rows[0].dispatches, 0);
+        assert_eq!(rows[1].mark, ItemMark::Seen(ItemState::Parked), "in both");
+        assert_eq!(rows[1].dispatches, 2);
+        assert!(rows[1].hold);
+        assert_eq!(rows[1].answer.as_deref(), Some("use /run"));
+        assert_eq!(rows[1].outcome.as_deref(), Some("needs a socket path"));
+        assert_eq!(rows[2].mark, ItemMark::NotInDirection(ItemState::Done));
+        assert_eq!(rows[2].title, None);
+        assert_eq!(rows[3].mark, ItemMark::NotInDirection(ItemState::Failed));
+    }
+
+    #[test]
+    fn a_repeated_body_id_is_one_row() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![
+                body_item("I-01", "a", None, None),
+                body_item("I-01", "again", None, None),
+            ],
+            vec![],
+            None,
+        );
+        assert_eq!(merged_items(&detail).len(), 1);
+    }
+
+    #[test]
+    fn the_item_cursor_starts_on_the_first_parked_item_else_current_else_first() {
+        let rows = |states: Vec<(&str, ItemStateEntry)>| {
+            merged_items(&detail_of(
+                "20261020-a",
+                vec![
+                    body_item("I-01", "a", None, None),
+                    body_item("I-02", "b", None, None),
+                    body_item("I-03", "c", None, None),
+                ],
+                states,
+                None,
+            ))
+        };
+        let parked = rows(vec![
+            ("I-02", state_entry(ItemState::Running, 1, None)),
+            ("I-03", state_entry(ItemState::Parked, 1, None)),
+        ]);
+        assert_eq!(
+            item_cursor_default(&parked, Some("I-02")).as_deref(),
+            Some("I-03")
+        );
+        let none_parked = rows(vec![("I-02", state_entry(ItemState::Running, 1, None))]);
+        assert_eq!(
+            item_cursor_default(&none_parked, Some("I-02")).as_deref(),
+            Some("I-02")
+        );
+        assert_eq!(
+            item_cursor_default(&none_parked, Some("I-77")).as_deref(),
+            Some("I-01"),
+            "an unlisted current item falls to the first row"
+        );
+        assert_eq!(item_cursor_default(&[], Some("I-01")), None);
+        // A stored cursor wins while it is listed, and re-defaults when it is not.
+        assert_eq!(
+            resolved_item_cursor(&parked, Some("I-01"), None).as_deref(),
+            Some("I-01")
+        );
+        assert_eq!(
+            resolved_item_cursor(&parked, Some("I-99"), None).as_deref(),
+            Some("I-03")
+        );
+    }
+
+    fn text_lines(lines: &[Line<'_>]) -> Vec<String> {
+        lines.iter().map(text_of).collect()
+    }
+
+    #[test]
+    fn item_rows_carry_the_glyph_word_dispatches_hold_and_title() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![
+                body_item("I-03", "Wire the run list", Some("true"), None),
+                body_item("I-04", "Steering transforms", None, None),
+                body_item("I-05", "Dashboard marker", None, None),
+            ],
+            vec![
+                (
+                    "I-03",
+                    state_entry(ItemState::Parked, 2, Some("which socket path?")),
+                ),
+                ("I-04", state_entry(ItemState::Running, 1, None)),
+                ("I-09", state_entry(ItemState::Done, 4, Some("shipped"))),
+            ],
+            None,
+        );
+        let lines = items_section(Some(&detail), None, None, 70);
+        let text = text_lines(&lines);
+        assert!(text[0].starts_with("\u{2500}\u{2500} items "), "{text:#?}");
+        assert_eq!(
+            text[1].trim_end(),
+            "> I-03 \u{2691} parked   2d hold  Wire the run list"
+        );
+        assert_eq!(
+            text[2].trim_end(),
+            "  I-04 \u{25C6} running  1d       Steering transforms"
+        );
+        assert_eq!(
+            text[3].trim_end(),
+            "  I-05 \u{B7} unseen   0d       Dashboard marker"
+        );
+        assert!(
+            text[4].starts_with("  I-09 \u{25CF} done     4d")
+                && text[4].ends_with("[not in DIRECTION]"),
+            "{:?}",
+            text[4]
+        );
+        // The cursor-item row: the parked item, its outcome.
+        assert_eq!(text[5], "  I-03 parked: which socket path?");
+        // Colours come from the closed enum only.
+        let parked = &lines[1];
+        assert_eq!(parked.spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(
+            parked.spans[2].style.fg,
+            Some(Color::Red),
+            "the parked glyph"
+        );
+        assert_eq!(
+            parked.spans[7].style.fg,
+            Some(Color::Yellow),
+            "the hold flag"
+        );
+        assert_eq!(lines[3].spans[2].style.fg, Some(Color::DarkGray), "unseen");
+        assert_eq!(
+            lines[4].spans.last().unwrap().style.fg,
+            Some(Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn the_cursor_item_row_names_the_answer_or_that_no_outcome_is_recorded() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![
+                body_item("I-01", "a", None, Some("use /run/user")),
+                body_item("I-02", "b", None, None),
+            ],
+            vec![(
+                "I-01",
+                state_entry(ItemState::Parked, 1, Some("needs a path")),
+            )],
+            None,
+        );
+        let with_answer = text_lines(&items_section(Some(&detail), Some("I-01"), None, 80));
+        assert_eq!(
+            with_answer.last().unwrap(),
+            "  I-01 parked: needs a path  answer: use /run/user"
+        );
+        let none = text_lines(&items_section(Some(&detail), Some("I-02"), None, 80));
+        assert_eq!(
+            none.last().unwrap().trim_end(),
+            "  I-02: no outcome recorded"
+        );
+        // The rule from the LOG, when one is known, is named.
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert("I-01".to_owned(), "needs-human".to_owned());
+        let by = text_lines(&items_section(
+            Some(&detail),
+            Some("I-01"),
+            Some(&rules),
+            80,
+        ));
+        assert!(
+            by.last()
+                .unwrap()
+                .contains("parked by needs-human: needs a path"),
+            "{by:#?}"
+        );
+    }
+
+    #[test]
+    fn no_items_in_either_source_gives_the_placeholder_and_no_detail_gives_loading() {
+        let empty = detail_of("20261020-a", vec![], vec![], None);
+        let text = text_lines(&items_section(Some(&empty), None, None, 60));
+        assert_eq!(text.len(), 2, "{text:?}");
+        assert_eq!(
+            text[1].trim(),
+            "No items in DIRECTION.md yet. Add one with [e]."
+        );
+        let loading = text_lines(&items_section(None, None, None, 60));
+        assert_eq!(loading[1].trim(), "Loading...");
+    }
+
+    #[test]
+    fn more_items_than_rows_show_a_more_row_and_keep_the_cursor_visible() {
+        let items: Vec<BodyItem> = (1..=12)
+            .map(|n| body_item(&format!("I-{n:02}"), &format!("item {n}"), None, None))
+            .collect();
+        let detail = detail_of("20261020-a", items, vec![], None);
+        let at = |cursor: &str| text_lines(&items_section(Some(&detail), Some(cursor), None, 60));
+        let top = at("I-01");
+        assert!(top[1].starts_with("> I-01"), "{top:#?}");
+        assert_eq!(top.iter().filter(|l| l.contains("more items")).count(), 1);
+        assert!(
+            top.iter().any(|l| l.trim() == "\u{2026} 4 more items"),
+            "{top:#?}"
+        );
+        let low = at("I-12");
+        assert!(low.iter().any(|l| l.starts_with("> I-12")), "{low:#?}");
+        assert!(
+            !low.iter().any(|l| l.contains("I-01 ")),
+            "the window scrolled: {low:#?}"
+        );
+        let rows_shown = low.iter().filter(|l| l.contains(" item ")).count();
+        assert_eq!(rows_shown, ITEMS_MAX_ROWS, "{low:#?}");
+    }
+
+    #[test]
+    fn a_long_title_is_cut_by_display_width_and_a_cramped_row_drops_it() {
+        let wide =
+            "配線を確認するための非常に長い見出しです配線を確認するための非常に長い見出しです";
+        let emoji = "🚀".repeat(40);
+        for title in [
+            wide.to_owned(),
+            emoji,
+            "an ordinary but rather long item title".repeat(3),
+        ] {
+            let row = ItemRow {
+                id: "I-01".to_owned(),
+                title: Some(title.clone()),
+                mark: ItemMark::Seen(ItemState::Running),
+                dispatches: 1,
+                hold: true,
+                outcome: None,
+                answer: None,
+            };
+            for width in [28usize, 29, 30, 39, 60, 80] {
+                let line = item_row(&row, false, width);
+                assert!(
+                    line.width() <= width,
+                    "{title:?} at {width} measured {}: {:?}",
+                    line.width(),
+                    text_of(&line)
+                );
+            }
+            // Room 1 or 0: no title span and no orphan ellipsis.
+            let cramped = text_of(&item_row(&row, false, ITEM_ROW_FIXED_CELLS + 1));
+            assert!(!cramped.contains('\u{2026}'), "{cramped:?}");
+            // Room 2: one cell of title plus the ellipsis is the smallest cut.
+            let tight = text_of(&item_row(&row, false, ITEM_ROW_FIXED_CELLS + 3));
+            assert!(tight.contains('\u{2026}'), "{tight:?}");
+        }
+    }
+
+    #[test]
+    fn a_foreign_item_keeps_its_marker_when_the_pane_is_cramped() {
+        let row = ItemRow {
+            id: "I-09".to_owned(),
+            title: None,
+            mark: ItemMark::NotInDirection(ItemState::Done),
+            dispatches: 0,
+            hold: false,
+            outcome: None,
+            answer: None,
+        };
+        assert!(text_of(&item_row(&row, false, 60)).ends_with("[not in DIRECTION]"));
+    }
+
+    #[test]
+    fn a_hostile_item_title_and_id_reach_the_rows_sanitised() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![body_item(
+                "I-01",
+                "evil\u{1b}[2J\u{202e}title",
+                None,
+                Some("a\u{7}b"),
+            )],
+            vec![(
+                "I-0\u{1b}]0;x\u{7}9",
+                state_entry(ItemState::Done, 1, Some("o\u{1b}[31mk")),
+            )],
+            None,
+        );
+        for cursor in ["I-01", "I-0\u{1b}]0;x\u{7}9"] {
+            for line in items_section(Some(&detail), Some(cursor), None, 80) {
+                let text = text_of(&line);
+                assert!(!text.chars().any(char::is_control), "{text:?}");
+                assert!(!text.contains('\u{202e}'), "{text:?}");
+            }
+        }
+    }
+
+    // ── the selected run's items through the composition ───────────────────
+
+    fn cache_with_detail(detail: RunDetail) -> ProjectViewCache {
+        let run = detail.run_id.clone();
+        let mut cache = cache_of(vec![entry(&run, running())]);
+        cache.launcher_selected_id = Some(run);
+        cache.launcher_detail = Some(Box::new(detail));
+        cache
+    }
+
+    #[test]
+    fn the_items_render_under_the_selected_run_and_only_for_its_own_detail() {
+        let detail = detail_of(
+            "20261020-a",
+            vec![body_item("I-01", "first thing", None, None)],
+            vec![("I-01", state_entry(ItemState::Parked, 2, Some("stuck")))],
+            None,
+        );
+        let (rows, _) = render(cache_with_detail(detail.clone()), 100, 24);
+        assert!(
+            row_with(&rows, "I-01").contains("\u{2691} parked"),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("\u{2500}\u{2500} items")),
+            "{rows:#?}"
+        );
+
+        // A detail left over from another run is not drawn under this one.
+        let mut stale = cache_with_detail(detail);
+        stale.launcher_detail.as_mut().unwrap().run_id = "20261019-other".to_owned();
+        let (rows, _) = render(stale, 100, 24);
+        assert!(!rows.iter().any(|r| r.contains("first thing")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("Loading...")), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_cjk_and_emoji_title_never_overflows_the_row_at_60_columns() {
+        let wide =
+            "配線を確認するための非常に長い見出しです配線を確認するための非常に長い見出しです";
+        let emoji = "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀";
+        let detail = detail_of(
+            "20261020-a",
+            vec![
+                body_item("I-01", wide, None, None),
+                body_item("I-02", emoji, None, None),
+            ],
+            vec![],
+            None,
+        );
+        let (rows, _) = render(cache_with_detail(detail.clone()), 60, 24);
+        let first = row_with(&rows, "I-01");
+        assert!(
+            first.contains('\u{2026}'),
+            "the long title is cut with an ellipsis: {first:?}"
+        );
+        let second = row_with(&rows, "I-02");
+        assert!(second.contains('\u{2026}'), "{second:?}");
+        // The pane floor is 39 cells; no item row is wider than the pane, whatever the
+        // title's script (a wide glyph counts two cells).
+        for width in [39usize, 45, 60] {
+            for line in items_section(Some(&detail), None, None, width)
+                .iter()
+                .skip(1)
+            {
+                assert!(line.width() <= width, "{width}: {:?}", text_of(line));
+            }
+        }
+    }
+
+    #[test]
+    fn the_item_cursor_moves_by_id_and_clamps() {
+        let detail = detail_of(
+            "20261020-a",
+            (1..=3)
+                .map(|n| body_item(&format!("I-0{n}"), "t", None, None))
+                .collect(),
+            vec![],
+            None,
+        );
+        let mut cache = cache_with_detail(detail);
+        assert!(move_item_cursor(&mut cache, 1));
+        assert_eq!(cache.launcher_item_cursor.as_deref(), Some("I-02"));
+        assert!(move_item_cursor(&mut cache, 9));
+        assert_eq!(cache.launcher_item_cursor.as_deref(), Some("I-03"));
+        assert!(move_item_cursor(&mut cache, -9));
+        assert_eq!(cache.launcher_item_cursor.as_deref(), Some("I-01"));
+        // Inert with no detail, and with no items.
+        cache.launcher_detail = None;
+        assert!(!move_item_cursor(&mut cache, 1));
+        let mut empty = cache_with_detail(detail_of("20261020-a", vec![], vec![], None));
+        assert!(!move_item_cursor(&mut empty, 1));
+        assert_eq!(empty.launcher_item_cursor, None);
     }
 }

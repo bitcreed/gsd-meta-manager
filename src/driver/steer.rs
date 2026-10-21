@@ -47,9 +47,7 @@ fn key_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let rest = line.trim_start().strip_prefix('-')?;
     let rest = rest.strip_prefix([' ', '\t'])?.trim_start();
     let (name, value) = rest.split_once(':')?;
-    name.trim()
-        .eq_ignore_ascii_case(key)
-        .then(|| value.trim())
+    name.trim().eq_ignore_ascii_case(key).then(|| value.trim())
 }
 
 /// The items of a DIRECTION body in document order.
@@ -161,7 +159,8 @@ mod tests {
 
     #[test]
     fn an_item_heading_outside_items_is_not_an_item() {
-        let body = "## Direction\n\n### I-05 misplaced\n- hold: true\n\n## Items\n\n### I-01 real\n";
+        let body =
+            "## Direction\n\n### I-05 misplaced\n- hold: true\n\n## Items\n\n### I-01 real\n";
         let items = read_items(body);
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(items[0].id, "I-01");
@@ -197,7 +196,10 @@ mod tests {
         let body = "## Items\n\n### I-01 a\n- hold: true\n### Notes\n- answer: stray\n### I-02 b\n";
         let items = read_items(body);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].answer, None, "a non-item `###` heading ends the item");
+        assert_eq!(
+            items[0].answer, None,
+            "a non-item `###` heading ends the item"
+        );
         assert_eq!(items[1].hold, None);
     }
 

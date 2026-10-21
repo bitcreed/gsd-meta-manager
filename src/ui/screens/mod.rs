@@ -1186,6 +1186,21 @@ pub struct ProjectViewCache {
     /// above the selected one keeps this run selected; if the run is gone the index
     /// is clamped into range instead.
     pub launcher_selected_id: Option<String>,
+    /// What the last read of the **selected** launcher run's `DIRECTION.md` found:
+    /// the frontmatter, the live body `control` and the body's items (30-02, D-06).
+    ///
+    /// Filled off the render thread by `schedule_launcher_refresh` and
+    /// `schedule_selected_run_refresh` and stored only when its `run_id` is still the
+    /// selected run's, so a late result for a run the user has moved off is dropped.
+    /// The renderer shows it only under the run it names ([`RunDetail::run_id`]).
+    ///
+    /// [`RunDetail::run_id`]: driver_run::RunDetail::run_id
+    pub launcher_detail: Option<Box<driver_run::RunDetail>>,
+    /// The id of the item the item cursor is on (`[` / `]`), an identity rather than
+    /// an index so a refresh that reorders rows keeps it. Re-defaulted to the first
+    /// parked item, else `current_item`, else the first row when the selection
+    /// changes or the id is no longer listed.
+    pub launcher_item_cursor: Option<String>,
     /// Whether the collapsed `legacy runs` section is expanded (`L`, 30-01, D-01).
     /// The section exists only while `driver_runs` is non-empty.
     pub legacy_expanded: bool,
