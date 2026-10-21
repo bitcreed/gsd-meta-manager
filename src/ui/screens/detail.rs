@@ -3312,6 +3312,10 @@ fn switch_to_sub_view(
     if new_view == DetailSubView::Driver {
         if let Some(path) = ctx.config.projects.get(alias).map(|p| p.path.clone()) {
             ctx.schedule_run_list_scan(alias, &path);
+            // The launcher runs are listed by their own off-thread task (30-01,
+            // D-13): the selected run's status comes from the frontmatter plus the
+            // run-lock probe, so it too is re-read on every visit.
+            ctx.schedule_launcher_refresh(alias, &path);
         }
     }
 

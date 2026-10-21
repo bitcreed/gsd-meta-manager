@@ -948,6 +948,10 @@ impl App {
             return;
         };
         self.ctx.schedule_run_list_scan(&alias, &path);
+        // The launcher rows ride the same slow tick (D-13): a lock released by
+        // SIGKILL emits no file event, so this is what turns that run into
+        // `crashed` within one tick while the tab is open.
+        self.ctx.schedule_launcher_refresh(&alias, &path);
     }
 
     /// Resolve one alias's `.planning/` directory, or refuse visibly (S4).
@@ -2002,6 +2006,7 @@ impl App {
                 self.ctx.status_message = Some((line, std::time::Instant::now()));
                 if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
                     self.ctx.schedule_run_list_scan(&alias, &path);
+                    self.ctx.schedule_launcher_refresh(&alias, &path);
                 }
                 self.needs_redraw = true;
             }
@@ -2089,7 +2094,6 @@ impl App {
                 runs,
                 inbox,
                 journal,
-                launcher_runs,
             } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 // Clamped rather than reset: a scan that lands while the user is
@@ -2103,14 +2107,33 @@ impl App {
                 // The journal carries its own run id, so the renderer can refuse
                 // to show it under a run it is not about.
                 cache.driver_journal = journal;
-                // Replaced, never merged, like `driver_runs`: a run directory no
-                // longer on disk is expressed by its absence.
-                // Clamped, like the run selection above: a list that shrank under
-                // the highlight must not leave it dangling.
-                cache.launcher_selected = cache
-                    .launcher_selected
-                    .min(launcher_runs.len().saturating_sub(1));
+                self.needs_redraw = true;
+            }
+            // The launcher rows have exactly one producer
+            // (`AppContext::schedule_launcher_refresh`) and are replaced, never
+            // merged: a run directory no longer on disk is expressed by its absence.
+            Action::LauncherRunsRefreshed {
+                alias,
+                launcher_runs,
+            } => {
+                let cache = self.ctx.view_cache.entry(alias).or_default();
+                // Pinned to the run id, not the index: a newer run landing above the
+                // selected one must not move the selection onto a different run.
+                // The run being gone clamps the index into range instead.
+                let pinned = cache
+                    .launcher_selected_id
+                    .as_ref()
+                    .and_then(|id| launcher_runs.iter().position(|(run_id, _)| run_id == id));
+                cache.launcher_selected = pinned.unwrap_or_else(|| {
+                    cache
+                        .launcher_selected
+                        .min(launcher_runs.len().saturating_sub(1))
+                });
+                cache.launcher_selected_id = launcher_runs
+                    .get(cache.launcher_selected)
+                    .map(|(run_id, _)| run_id.clone());
                 cache.launcher_runs = launcher_runs;
+                cache.launcher_listed = true;
                 self.needs_redraw = true;
             }
             // The report was built off the render thread and arrived (D-26).
@@ -4230,6 +4253,58 @@ mod tests {
         );
     }
 
+    /// Drain `rx` until the launcher listing reports back, and return its rows.
+    async fn launcher_listing_reported(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+    ) -> Option<Vec<crate::state_reader::driver_frontmatter::DriverRunEntry>> {
+        for _ in 0..200 {
+            while let Ok(action) = rx.try_recv() {
+                if let Action::LauncherRunsRefreshed { launcher_runs, .. } = action {
+                    return Some(launcher_runs);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        None
+    }
+
+    /// D-13: a lock released by SIGKILL emits no file event, so the slow tick is the
+    /// only thing that can turn that run into `crashed` while the tab is open.
+    #[tokio::test]
+    async fn launcher_view_the_slow_tick_schedules_the_launcher_refresh() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+
+        for _ in 0..19 {
+            app.update(Action::Tick);
+        }
+        while let Ok(action) = rx.try_recv() {
+            assert!(
+                !matches!(action, Action::LauncherRunsRefreshed { .. }),
+                "the launcher refresh must ride the existing 20-tick block"
+            );
+        }
+        app.update(Action::Tick);
+        let rows = launcher_listing_reported(&mut rx)
+            .await
+            .expect("the twentieth tick must re-list the launcher runs");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, LAUNCHER_RUN);
+    }
+
+    /// S4: no event channel means a visible refusal, never a silent return.
+    #[tokio::test]
+    async fn launcher_view_a_refresh_without_an_event_channel_refuses_visibly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.event_tx = None;
+        app.needs_redraw = false;
+        app.ctx.schedule_launcher_refresh(OBS_ALIAS, dir.path());
+        let message = app.ctx.error_message.clone().expect("a visible refusal");
+        assert!(message.contains(OBS_ALIAS), "{message}");
+    }
+
     /// The gate really refuses: a dashboard with no Driver tab open pays nothing
     /// for it. The scan is three blocking reads, so an ungated rescan would cost
     /// the whole fleet for one pane's freshness.
@@ -4710,7 +4785,6 @@ mod tests {
                 text: "steer".to_string(),
             }],
             journal: None,
-            launcher_runs: Vec::new(),
         });
 
         let cache = app
@@ -4727,40 +4801,69 @@ mod tests {
         );
     }
 
-    /// `DriverRunsListed` replaces the launcher rows wholesale (28-07, D-30).
+    /// An unreadable launcher run row: enough to be listed, no file needed.
+    fn launcher_entry(id: &str) -> crate::state_reader::driver_frontmatter::DriverRunEntry {
+        (
+            id.to_string(),
+            Err(
+                crate::state_reader::driver_frontmatter::FrontmatterError::Io {
+                    detail: "x".to_string(),
+                },
+            ),
+        )
+    }
+
+    fn launcher_refreshed(ids: &[&str]) -> Action {
+        Action::LauncherRunsRefreshed {
+            alias: OBS_ALIAS.to_string(),
+            launcher_runs: ids.iter().map(|id| launcher_entry(id)).collect(),
+        }
+    }
+
+    /// `LauncherRunsRefreshed` replaces the launcher rows wholesale (28-07, D-30).
     #[tokio::test]
     async fn a_run_list_result_replaces_the_launcher_runs_never_merges() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
-        let listed = |ids: &[&str]| Action::DriverRunsListed {
-            alias: OBS_ALIAS.to_string(),
-            runs: Vec::new(),
-            inbox: Vec::new(),
-            journal: None,
-            launcher_runs: ids
-                .iter()
-                .map(|id| {
-                    (
-                        (*id).to_string(),
-                        Err(
-                            crate::state_reader::driver_frontmatter::FrontmatterError::Io {
-                                detail: "x".to_string(),
-                            },
-                        ),
-                    )
-                })
-                .collect(),
-        };
 
-        app.update(listed(&["20261019-a", "20261018-b"]));
+        app.update(launcher_refreshed(&["20261019-a", "20261018-b"]));
         assert_eq!(app.ctx.view_cache[OBS_ALIAS].launcher_runs.len(), 2);
-        app.update(listed(&["20261019-a"]));
+        assert!(
+            app.ctx.view_cache[OBS_ALIAS].launcher_listed,
+            "the first listing must clear the Loading state"
+        );
+        app.update(launcher_refreshed(&["20261019-a"]));
         let ids: Vec<&str> = app.ctx.view_cache[OBS_ALIAS]
             .launcher_runs
             .iter()
             .map(|(id, _)| id.as_str())
             .collect();
         assert_eq!(ids, ["20261019-a"], "a run gone from disk must disappear");
+    }
+
+    /// Selection is pinned to the run id: a newer run landing above the selected
+    /// one must not move the selection onto a different run.
+    #[tokio::test]
+    async fn launcher_view_a_newer_run_above_the_selection_keeps_the_same_run_selected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(launcher_refreshed(&["20261019-a", "20261018-b"]));
+        {
+            let cache = app.ctx.view_cache.get_mut(OBS_ALIAS).unwrap();
+            cache.launcher_selected = 1;
+            cache.launcher_selected_id = Some("20261018-b".to_string());
+        }
+
+        app.update(launcher_refreshed(&["20261020-new", "20261019-a", "20261018-b"]));
+        let cache = &app.ctx.view_cache[OBS_ALIAS];
+        assert_eq!(cache.launcher_selected, 2, "still on 20261018-b");
+        assert_eq!(cache.launcher_selected_id.as_deref(), Some("20261018-b"));
+
+        // The selected run vanishing clamps the index into range and re-pins.
+        app.update(launcher_refreshed(&["20261020-new"]));
+        let cache = &app.ctx.view_cache[OBS_ALIAS];
+        assert_eq!(cache.launcher_selected, 0);
+        assert_eq!(cache.launcher_selected_id.as_deref(), Some("20261020-new"));
     }
 
     // ── 28-07: stopping a launcher run from the Driver tab ───────────────
@@ -4901,14 +5004,22 @@ mod tests {
         );
         assert!(app.needs_redraw);
 
-        let Some(Action::DriverRunsListed {
-            alias,
-            launcher_runs,
-            ..
-        }) = next_action(&mut rx).await
-        else {
-            panic!("a re-list of the Driver runs must follow");
-        };
+        // Both listings follow: the journal runs, and the launcher rows whose
+        // derived status is what the stop just changed.
+        let mut launcher = None;
+        let mut journal_listed = false;
+        while launcher.is_none() || !journal_listed {
+            match next_action(&mut rx).await {
+                Some(Action::LauncherRunsRefreshed {
+                    alias,
+                    launcher_runs,
+                }) => launcher = Some((alias, launcher_runs)),
+                Some(Action::DriverRunsListed { .. }) => journal_listed = true,
+                Some(_) => {}
+                None => panic!("a re-list of the Driver runs must follow"),
+            }
+        }
+        let (alias, launcher_runs) = launcher.unwrap();
         assert_eq!(alias, OBS_ALIAS);
         assert_eq!(launcher_runs.len(), 1);
         assert_eq!(launcher_runs[0].0, LAUNCHER_RUN);
@@ -4936,29 +5047,10 @@ mod tests {
             .or_default()
             .launcher_selected = 5;
 
-        app.update(Action::DriverRunsListed {
-            alias: OBS_ALIAS.to_string(),
-            runs: Vec::new(),
-            inbox: Vec::new(),
-            journal: None,
-            launcher_runs: vec![(
-                "20261019-a".to_string(),
-                Err(
-                    crate::state_reader::driver_frontmatter::FrontmatterError::Io {
-                        detail: "x".to_string(),
-                    },
-                ),
-            )],
-        });
+        app.update(launcher_refreshed(&["20261019-a"]));
         assert_eq!(app.ctx.view_cache[OBS_ALIAS].launcher_selected, 0);
 
-        app.update(Action::DriverRunsListed {
-            alias: OBS_ALIAS.to_string(),
-            runs: Vec::new(),
-            inbox: Vec::new(),
-            journal: None,
-            launcher_runs: Vec::new(),
-        });
+        app.update(launcher_refreshed(&[]));
         assert_eq!(app.ctx.view_cache[OBS_ALIAS].launcher_selected, 0);
     }
 
@@ -4979,7 +5071,6 @@ mod tests {
             runs: vec![run_summary("2026-07-29T12-02-00Z-a1b2")],
             inbox: Vec::new(),
             journal: None,
-            launcher_runs: Vec::new(),
         });
 
         assert_eq!(

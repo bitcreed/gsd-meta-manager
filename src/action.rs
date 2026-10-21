@@ -350,7 +350,18 @@ pub enum Action {
         runs: Vec<crate::journal::RunSummary>,
         inbox: Vec<crate::journal::inbox::InboxMessage>,
         journal: Option<Box<crate::ui::screens::DriverRunJournal>>,
-        /// The project's launcher runs with their derived status (28-07, D-30).
+    },
+    /// The project's launcher runs were listed off the render thread (30-01, D-13).
+    ///
+    /// The whole result, **replaced and never merged** into
+    /// `ProjectViewCache::launcher_runs`: a run directory no longer on disk is
+    /// expressed by its absence. Each row carries the status `read_driver_run`
+    /// derived from the run lock, so a lock released by `SIGKILL` (which emits no
+    /// file event) reads as crashed on the next listing. Produced only by
+    /// `AppContext::schedule_launcher_refresh`, the single producer of launcher
+    /// rows: `DriverRunsListed` no longer carries them.
+    LauncherRunsRefreshed {
+        alias: String,
         launcher_runs: Vec<crate::state_reader::driver_frontmatter::DriverRunEntry>,
     },
     /// A dry-run report was built for `alias` and is ready to show (D-26).
@@ -448,9 +459,17 @@ mod tests {
             runs: Vec::new(),
             inbox: Vec::new(),
             journal: None,
-            launcher_runs: Vec::new(),
         };
         assert!(matches!(listed.clone(), Action::DriverRunsListed { .. }));
+
+        let refreshed = Action::LauncherRunsRefreshed {
+            alias: "proj".to_string(),
+            launcher_runs: Vec::new(),
+        };
+        assert!(matches!(
+            refreshed.clone(),
+            Action::LauncherRunsRefreshed { .. }
+        ));
 
         let stopped = Action::DriverStopped {
             alias: "proj".to_string(),

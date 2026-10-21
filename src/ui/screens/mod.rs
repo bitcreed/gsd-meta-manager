@@ -1166,16 +1166,25 @@ pub struct ProjectViewCache {
     /// The project's **launcher** runs (`.planning/meta-manager/drivers/<run-id>/`),
     /// newest first, at most 20 (28-07, D-30).
     ///
-    /// Filled by the same off-thread listing that fills `driver_runs`
-    /// ([`AppContext::schedule_run_list_scan`]) from
+    /// Filled by its own off-thread listing
+    /// ([`AppContext::schedule_launcher_refresh`], 30-01) from
     /// [`crate::state_reader::driver_frontmatter::list_driver_runs`], and replaced
-    /// wholesale by `Action::DriverRunsListed`. Each row carries the status
+    /// wholesale by `Action::LauncherRunsRefreshed`. Each row carries the status
     /// `read_driver_run` derived from the run lock, never the raw `status:` word.
     /// An unreadable `DIRECTION.md` is that row's `Err`.
     pub launcher_runs: Vec<crate::state_reader::driver_frontmatter::DriverRunEntry>,
-    /// Index into `launcher_runs` of the highlighted row (28-07, D-11); clamped
-    /// whenever `Action::DriverRunsListed` replaces the rows.
+    /// Index into `launcher_runs` of the highlighted row (28-07, D-11); re-pinned to
+    /// [`Self::launcher_selected_id`] whenever `Action::LauncherRunsRefreshed`
+    /// replaces the rows.
     pub launcher_selected: usize,
+    /// Whether the first `Action::LauncherRunsRefreshed` for this alias has landed.
+    /// Until it has, the detail pane shows `Loading...` rather than an empty state
+    /// that would claim there are no runs.
+    pub launcher_listed: bool,
+    /// The id of the run the selection is pinned to. A refresh that adds a newer run
+    /// above the selected one keeps this run selected; if the run is gone the index
+    /// is clamped into range instead.
+    pub launcher_selected_id: Option<String>,
     /// The running tally for the run whose journal is currently being tailed.
     ///
     /// Two facts the Driver tab's header and step timeline need are carried by
@@ -1844,7 +1853,6 @@ impl AppContext {
         };
         let tx = tx.clone();
         let planning_dir = project_path.join(".planning");
-        let project_for_task = project_path.to_path_buf();
         let alias_for_task = alias.to_string();
         let selected = self
             .view_cache
@@ -1933,18 +1941,45 @@ impl AppContext {
                 })
             });
 
-            // The launcher's runs ride the same task: one more blocking read, off
-            // the render thread, replaced wholesale by the handler (28-07, D-30).
-            let launcher_runs = crate::state_reader::driver_frontmatter::list_driver_runs(
-                &project_for_task,
-                LAUNCHER_RUNS_LISTED,
-            );
-
             let _ = tx.send(crate::action::Action::DriverRunsListed {
                 alias: alias_for_task,
                 runs,
                 inbox,
                 journal,
+            });
+        });
+    }
+
+    /// Schedule the off-thread listing of `alias`'s launcher runs (30-01, D-13, D-25).
+    ///
+    /// The listing, every `DIRECTION.md` read inside it and every run-lock probe are
+    /// blocking file work, so they run on `spawn_blocking` and come back as
+    /// [`crate::action::Action::LauncherRunsRefreshed`]; no render function and no
+    /// key handler on the Driver tab opens a file. This is the **single producer** of
+    /// launcher rows. Its callers are the Driver tab's `switch_to_tab` arm, a
+    /// `ChangeKind::DriverRun` watcher event for the open tab, and the slow-tick
+    /// rescan, which is what turns a lock released by `SIGKILL` into `crashed`
+    /// without any file event.
+    ///
+    /// With no event channel it refuses visibly (S4), like its sibling.
+    pub fn schedule_launcher_refresh(&mut self, alias: &str, project_path: &std::path::Path) {
+        let Some(tx) = &self.event_tx else {
+            self.error_message = Some(format!(
+                "Could not list the driver runs for '{alias}': no event channel."
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let project = project_path.to_path_buf();
+        let alias = alias.to_string();
+        tokio::task::spawn_blocking(move || {
+            let launcher_runs = crate::state_reader::driver_frontmatter::list_driver_runs(
+                &project,
+                LAUNCHER_RUNS_LISTED,
+            );
+            let _ = tx.send(crate::action::Action::LauncherRunsRefreshed {
+                alias,
                 launcher_runs,
             });
         });
