@@ -10081,7 +10081,7 @@ mod tests {
         app.update(left);
         assert_eq!(
             app.ctx.status_message.clone().expect("a status message").0,
-            format!("{run_id} is created but not launched. Select it and press [R] to launch it.")
+            format!("{run_id} created, not launched: [R] launches it.")
         );
         assert!(app.new_run_flow.is_empty());
         assert!(no_launch_requested(&mut rx));
@@ -10168,6 +10168,47 @@ mod tests {
             Some("Could not create the run: disk full")
         );
         assert!(app.new_run_flow.is_empty());
+    }
+
+    /// IN-02: a new-run request the App refuses before it starts (an alias that is no
+    /// longer registered, a session with no event channel) closes the slug input and
+    /// says why; the input is never left pending with Enter dead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_new_run_a_refused_request_closes_the_slug_input() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        // The alias the request names is not registered.
+        let (mut app, _rx) = new_run_app(dir.path());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_slug_input");
+        app.update(Action::DriverNewRunRequested {
+            alias: "ghost".to_string(),
+            slug: "x".to_string(),
+        });
+        assert_eq!(top_screen_name(&app), "detail", "the input is closed");
+        let message = app.ctx.error_message.clone().expect("an error");
+        assert!(message.starts_with("Could not create the run: "), "{message}");
+        assert!(message.contains("Nothing was created."), "{message}");
+
+        // A session with no event channel cannot hear the answer.
+        let (mut app, _rx) = new_run_app(dir.path());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_slug_input");
+        app.ctx.event_tx = None;
+        app.update(Action::DriverNewRunRequested {
+            alias: OBS_ALIAS.to_string(),
+            slug: "x".to_string(),
+        });
+        assert_eq!(top_screen_name(&app), "detail", "the input is closed");
+        let message = app.ctx.error_message.clone().expect("an error");
+        assert!(message.contains("Nothing was created."), "{message}");
+        assert!(
+            !dir.path()
+                .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+                .exists(),
+            "nothing was created"
+        );
     }
 
     /// A project that is not a GSD project (no `.planning/`) is refused by the creation

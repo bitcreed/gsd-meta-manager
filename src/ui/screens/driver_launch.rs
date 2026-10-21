@@ -2880,6 +2880,50 @@ mod tests {
         assert!(text.contains("may be at most 80 bytes"), "{text}");
     }
 
+    /// UI D8: the not-usable row wraps instead of being cut at the window's edge.
+    #[test]
+    fn launcher_new_run_the_not_usable_copy_wraps_to_its_last_word() {
+        let (mut screen, mut ctx, _rx) = slug_screen();
+        type_slug(&mut screen, &mut ctx, "-x");
+        let narrow = draw(&screen, &ctx, 80, 24);
+        let footer = narrow
+            .lines()
+            .skip(20)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            footer.contains(SLUG_NOT_USABLE),
+            "the whole copy, to its last word, at 80 columns:\n{narrow}"
+        );
+        assert!(footer.ends_with("starting with a letter or digit"), "{footer}");
+        // The input row is unchanged: it starts the same and is one row.
+        assert!(
+            narrow.lines().any(|row| row.starts_with("  New run slug> -x_")),
+            "{narrow}"
+        );
+
+        // A wide terminal keeps the copy on one row.
+        let wide = draw(&screen, &ctx, 120, 40);
+        assert!(
+            wide.lines().any(|row| row.contains(SLUG_NOT_USABLE)),
+            "one row at 120 columns:\n{wide}"
+        );
+    }
+
+    /// UI D4: the left-unlaunched copy fits the 62-cell status room at 80 columns.
+    #[test]
+    fn launcher_new_run_the_unlaunched_copy_fits_the_status_bar() {
+        let copy = left_unlaunched_copy("20261019-0042-abcd");
+        assert_eq!(
+            copy,
+            "20261019-0042-abcd created, not launched: [R] launches it."
+        );
+        assert!(Span::raw(copy.as_str()).width() <= 62, "{copy}");
+    }
+
     #[test]
     fn launcher_new_run_enter_on_an_empty_or_unusable_slug_does_nothing() {
         for slug in ["", "-x", "a/b"] {
@@ -2966,7 +3010,7 @@ mod tests {
         );
         assert_eq!(
             left_unlaunched_copy("20261020-tab"),
-            "20261020-tab is created but not launched. Select it and press [R] to launch it."
+            "20261020-tab created, not launched: [R] launches it."
         );
         assert_eq!(
             create_failed_copy("disk full"),
