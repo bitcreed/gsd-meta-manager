@@ -366,6 +366,7 @@ type FixtureRow = (&'static str, &'static str);
 
 const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("AddProjectScreen", "src/ui/screens/add_project.rs"),
+    ("AnswerScreen", "src/ui/screens/driver_steer.rs"),
     ("ControlChooserScreen", "src/ui/screens/driver_steer.rs"),
     ("CreateProjectScreen", "src/ui/screens/create_project.rs"),
     ("DeleteConfirmScreen", "src/ui/screens/delete_confirm.rs"),
@@ -376,6 +377,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
     ("HelpScreen", "src/ui/screens/help.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
+    ("PoliteStopScreen", "src/ui/screens/driver_steer.rs"),
     ("PreferencesScreen", "src/ui/screens/preferences.rs"),
     (
         "QueueDeleteConfirmScreen",
@@ -2277,6 +2279,54 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     Some(identity.to_string()),
                 ))
             })
+        }),
+
+        // The polite-stop confirmation (30-04): the hostile identity is the run id its
+        // prompt names, over every detail tab.
+        "PoliteStopScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(super::driver_steer::PoliteStopScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                ))
+            })
+        }),
+
+        // The answer input (30-04): the hostile identity is the item id, the park rule
+        // (so the Yellow OQ-R1 row draws it) and the typed buffer. The buffer is typed
+        // through the real key handler, so what the probe renders is a state the
+        // keyboard can produce. A second set of states presses Enter on a refused
+        // buffer, so the error row is drawn too.
+        "AnswerScreen" => Some(|identity| {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            let build = |identity: &str, ctx: &mut AppContext, refused: bool| -> Box<dyn Screen> {
+                let mut screen = super::driver_steer::AnswerScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    identity.to_string(),
+                    Some(identity.to_string()),
+                );
+                for ch in identity.chars() {
+                    screen.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, ctx);
+                }
+                if refused {
+                    for ch in "<!--".chars() {
+                        screen.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, ctx);
+                    }
+                    screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+                }
+                Box::new(screen)
+            };
+            let mut states =
+                states_over_sub_views(identity, &|identity, ctx| build(identity, ctx, false));
+            let mut ctx = probe_ctx(identity);
+            let refused = build(identity, &mut ctx, true);
+            states.push(one_state(
+                "refused answer, with its error row",
+                ctx,
+                refused,
+            ));
+            states
         }),
 
         // Both wizard steps. Step B is reached by driving the real state

@@ -24,28 +24,21 @@
 //!
 //! ## Why the legends are built from constants
 //!
-//! The badge legend interpolates the five `BADGE_*` constants `normal.rs`
-//! renders and the injection legend interpolates the four `GLYPH_*`/`LABEL_*`
-//! constants `driver.rs` renders. Retyping the glyphs as literals here would let
+//! The badge legend interpolates the `BADGE_*` constants `normal.rs`
+//! renders. Retyping the glyphs as literals here would let
 //! the documentation drift silently away from what the dashboard actually paints
 //! (T-18-63); interpolating them means a renamed or re-pointed glyph fails a
 //! test instead.
 //!
-//! **The injection gloss is a safety property, not copy** (D-07, D-10). The
-//! words *sent*, *received*, *read* and *acknowledged* are forbidden for an
-//! injected message: `delivered` means the write to the agent's stdin returned
-//! without error and **it may be about a minute before the agent picks it up**;
-//! `acted-on` means the agent **dequeued** it. Every legend row is a glyph plus
-//! a text label, so no meaning is carried by colour alone, and there is no
+//! **The Phase 18 injection legend is gone** (30-04, D-02): no key on the Driver tab
+//! can produce an injected message any more, so the `i` row and the `Injected Message
+//! States` legend are removed, with the flag on and off. Every legend row is a glyph
+//! plus a text label, so no meaning is carried by colour alone, and there is no
 //! spinner and no animation anywhere on this surface.
 
 use super::detail::{
     clamp_scroll, ViewportMetrics, PAGE_SCROLL_LINES, WAVES_GLYPH_DONE, WAVES_GLYPH_RUNNING,
     WAVES_GLYPH_STALLED,
-};
-use super::driver::{
-    GLYPH_ACTED_ON, GLYPH_DELIVERED, GLYPH_MISSED, GLYPH_QUEUED, LABEL_ACTED_ON, LABEL_DELIVERED,
-    LABEL_MISSED, LABEL_QUEUED,
 };
 use super::normal::{
     BADGE_CRASHED, BADGE_DRIVEN, BADGE_EXTERNAL_JOB, BADGE_NEEDS_HUMAN, BADGE_PAUSED,
@@ -112,52 +105,6 @@ const BADGE_LEGEND: [(&str, &str); 8] = [
 /// a glyph nothing renders. (`⚑` stays: the legacy needs-a-human predicate paints
 /// it with the flag off too.)
 const DRIVER_ONLY_BADGES: [&str; 4] = [BADGE_CRASHED, BADGE_DRIVEN, BADGE_STALE, BADGE_UNKNOWN];
-
-/// The four states an injected message can be in, with the honest gloss.
-///
-/// The third column is wrapped by hand across the rows below rather than by a
-/// `Paragraph::wrap`, because the popup's own scroll offset is measured in
-/// rendered lines and soft wrapping would make the two disagree.
-const INJECTION_LEGEND: [(&str, &str, &str); 4] = [
-    (
-        GLYPH_QUEUED,
-        LABEL_QUEUED,
-        "durably on disk; nothing has read it yet",
-    ),
-    (
-        GLYPH_DELIVERED,
-        LABEL_DELIVERED,
-        "written to the agent's stdin; it may be a minute",
-    ),
-    (
-        GLYPH_ACTED_ON,
-        LABEL_ACTED_ON,
-        "the agent dequeued it and is running it as its",
-    ),
-    (
-        GLYPH_MISSED,
-        LABEL_MISSED,
-        // **Not "the run closed its input"** (CR-03). That is one of two
-        // reasons a message can be undeliverable; the other is a stdin write
-        // that failed while the run was still live. Naming only the first here
-        // would contradict the gloss the pane prints on the message's own third
-        // row, and would tell a user the run had stopped listening when it may
-        // still be running.
-        "undeliverable and never retried; the row under",
-    ),
-];
-
-/// The continuation row for each legend entry above, or `""` for none.
-///
-/// Indexed in lockstep with [`INJECTION_LEGEND`]; a test joins the two and
-/// asserts the resulting sentences, so a row split differently still passes and
-/// a row whose gloss changes meaning does not.
-const INJECTION_LEGEND_CONT: [&str; 4] = [
-    "",
-    "before the agent picks it up",
-    "own turn",
-    "the message says why",
-];
 
 pub struct HelpScreen {
     /// How far the popup is scrolled, in rendered lines.
@@ -402,7 +349,12 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             row("PgUp / PgDn", "Scroll the LOG.md tail"),
             row("f", "Toggle following the LOG.md tail"),
             row("G", "Jump to the LOG.md tail and follow again"),
-            row("i", "Inject a message into the live run"),
+            row("c", "Set control: run, pause or stop (writes DIRECTION.md)"),
+            row(
+                "a",
+                "Answer the item under the cursor (also sets hold: false)",
+            ),
+            row("u", "Take the item under the cursor off hold"),
             row("s", "Start a run: command, then optional goal"),
             row("x", "Kill this run's sandbox now (asks first)"),
             row("L", "Show or hide legacy runs (read-only)"),
@@ -469,23 +421,6 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         lines.push(row(&key, &meaning));
     }
     lines.push(Line::from(""));
-
-    // ── The injection legend, with the honest gloss (D-07, D-10). Injection is
-    // reachable only from the Driver tab's `i` key, so the whole section —
-    // heading, blank and loop — goes with it. The blank pushed above is the one
-    // that survives, leaving exactly one before the closing hint either way.
-    if experimental {
-        lines.push(heading("Injected Message States"));
-        lines.push(Line::from(""));
-        for (index, (glyph, label, gloss)) in INJECTION_LEGEND.into_iter().enumerate() {
-            lines.push(Line::from(format!("  {glyph} {label:<11} {gloss}")));
-            let continuation = INJECTION_LEGEND_CONT[index];
-            if !continuation.is_empty() {
-                lines.push(Line::from(format!("  {:<14}{continuation}", "")));
-            }
-        }
-        lines.push(Line::from(""));
-    }
 
     lines.push(Line::from(Span::styled(
         "Press ? or Esc to close   j/k, PgUp/PgDn scroll".to_string(),
@@ -671,7 +606,12 @@ mod tests {
             ("PgUp / PgDn", "Scroll the LOG.md tail"),
             ("f", "Toggle following the LOG.md tail"),
             ("G", "Jump to the LOG.md tail and follow again"),
-            ("i", "Inject a message into the live run"),
+            ("c", "Set control: run, pause or stop (writes DIRECTION.md)"),
+            (
+                "a",
+                "Answer the item under the cursor (also sets hold: false)",
+            ),
+            ("u", "Take the item under the cursor off hold"),
             ("s", "Start a run: command, then optional goal"),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("L", "Show or hide legacy runs (read-only)"),
@@ -807,90 +747,82 @@ mod tests {
         }
     }
 
+    /// Phase 30 retired message injection (D-02): there is no `i` row and no
+    /// `Injected Message States` legend, with the experimental features on or off.
     #[test]
-    fn the_injection_legend_names_all_four_states_and_carries_the_honest_gloss() {
-        let text = body();
-        let flow = flowed();
-
-        for (glyph, label) in [
-            (GLYPH_QUEUED, LABEL_QUEUED),
-            (GLYPH_DELIVERED, LABEL_DELIVERED),
-            (GLYPH_ACTED_ON, LABEL_ACTED_ON),
-            (GLYPH_MISSED, LABEL_MISSED),
-        ] {
+    fn launcher_steer_the_help_has_no_injection_row_and_no_injected_message_legend() {
+        use super::super::driver::{
+            GLYPH_ACTED_ON, GLYPH_DELIVERED, GLYPH_MISSED, GLYPH_QUEUED, LABEL_ACTED_ON,
+            LABEL_DELIVERED, LABEL_MISSED, LABEL_QUEUED,
+        };
+        for experimental in [true, false] {
+            let text = body_with(experimental);
             assert!(
-                text.contains(glyph),
-                "the injection legend must name the glyph {glyph:?}:\n{text}"
+                !text.contains("Injected Message States"),
+                "experimental={experimental}:\n{text}"
             );
+            let inject_row = row("i", "Inject a message into the live run").spans[0]
+                .content
+                .to_string();
             assert!(
-                text.contains(label),
-                "the injection legend must name the label {label:?}:\n{text}"
+                !text.lines().any(|line| line == inject_row),
+                "experimental={experimental}:\n{text}"
             );
+            assert!(!text.contains("Inject a message"), "{text}");
+            for (glyph, label) in [
+                (GLYPH_QUEUED, LABEL_QUEUED),
+                (GLYPH_DELIVERED, LABEL_DELIVERED),
+                (GLYPH_ACTED_ON, LABEL_ACTED_ON),
+                (GLYPH_MISSED, LABEL_MISSED),
+            ] {
+                let legend_form = format!("{glyph} {label}");
+                assert!(
+                    !text.contains(&legend_form),
+                    "the legend row {legend_form:?} survived (experimental={experimental}):\n{text}"
+                );
+            }
         }
+    }
 
-        assert!(
-            flow.contains(
-                "written to the agent's stdin; it may be a minute before the agent picks it up"
-            ),
-            "`delivered` must state honestly that the pickup may be about a \
-             minute away — the echo arrives at DEQUEUE, measured roughly \
-             fifty-five seconds after the write:\n{flow}"
-        );
-        assert!(
-            flow.contains("the agent dequeued it and is running it as its own turn"),
-            "`acted-on` must say DEQUEUED, which is the only observation the \
-             protocol actually makes:\n{flow}"
-        );
-        assert!(
-            flow.contains("undeliverable and never retried; the row under the message says why"),
-            "`missed` must not pin itself to ONE cause (CR-03): a failed stdin \
-             write on a run that is still live is missed too, and the pane \
-             prints a different gloss for it:\n{flow}"
-        );
-        assert!(
-            !flow.contains("the run closed its input"),
-            "and the legend must not name the after-close cause as if it were \
-             the only one:\n{flow}"
-        );
+    /// The Driver section documents the steering keys, in the UI-SPEC order, with the
+    /// flag on, and none of them with it off.
+    #[test]
+    fn launcher_steer_the_help_documents_c_a_and_u_only_with_the_flag_on() {
+        let on = body_with(true);
+        let lines: Vec<&str> = on.lines().collect();
+        let at = |description: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(description))
+                .unwrap_or_else(|| panic!("no row says {description:?}:\n{on}"))
+        };
+        let g = at("Jump to the LOG.md tail and follow again");
+        let c = at("Set control: run, pause or stop (writes DIRECTION.md)");
+        let a = at("Answer the item under the cursor (also sets hold: false)");
+        let u = at("Take the item under the cursor off hold");
+        let s = at("Start a run");
+        assert!(g < c && c < a && a < u && u < s, "UI-SPEC order:\n{on}");
+        let off = body_with(false);
+        for description in [
+            "Set control: run, pause or stop",
+            "Answer the item under the cursor",
+            "Take the item under the cursor off hold",
+        ] {
+            assert!(!off.contains(description), "{description}:\n{off}");
+        }
     }
 
     #[test]
-    fn the_help_screen_never_says_sent_received_read_or_acknowledged() {
+    fn the_help_screen_never_says_sent_received_or_acknowledged() {
         let text = flowed().to_lowercase();
-        // Three words that would each promise an observation the protocol
-        // cannot make: the echo arrives at DEQUEUE, roughly fifty-five seconds
-        // after the stdin write.
+        // The steering rows must not promise an observation the protocol cannot
+        // make: a write to DIRECTION.md is not the driver having applied it (D-28).
         for forbidden in ["sent", "received", "acknowledged"] {
             assert!(
                 !text.contains(forbidden),
-                "the word {forbidden:?} is forbidden for an injected message \
-                 (D-07, D-10):\n{text}"
+                "the word {forbidden:?} is forbidden on this surface (D-28):\n{text}"
             );
         }
-        // `read` is allowed exactly once, in the queued gloss, where it says
-        // that nothing has read the message — the opposite claim.
-        //
-        // Neither the legacy-runs row's `read-only` nor the run-state legend
-        // (30-01) is about injected messages: the legend's `unreadable` row names
-        // a `DIRECTION.md` that could not be opened. They are taken out before the
-        // count rather than the words being dropped from the vocabulary the Driver
-        // tab shows.
-        let injected_surface = match (text.find("driver run states"), text.find("filter syntax")) {
-            (Some(start), Some(end)) if start < end => {
-                format!("{}{}", &text[..start], &text[end..])
-            }
-            _ => text.clone(),
-        }
-        .replace("read-only", "");
-        assert_eq!(
-            injected_surface.matches("read").count(),
-            1,
-            "`read` may appear only in the queued gloss:\n{injected_surface}"
-        );
-        assert!(
-            text.contains("nothing has read it yet"),
-            "and that one occurrence must be the queued gloss:\n{text}"
-        );
     }
 
     #[test]
@@ -984,7 +916,12 @@ mod tests {
             ("PgUp / PgDn", "Scroll the LOG.md tail"),
             ("f", "Toggle following the LOG.md tail"),
             ("G", "Jump to the LOG.md tail and follow again"),
-            ("i", "Inject a message into the live run"),
+            ("c", "Set control: run, pause or stop (writes DIRECTION.md)"),
+            (
+                "a",
+                "Answer the item under the cursor (also sets hold: false)",
+            ),
+            ("u", "Take the item under the cursor off hold"),
             ("s", "Start a run: command, then optional goal"),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("L", "Show or hide legacy runs (read-only)"),
@@ -1105,29 +1042,8 @@ mod tests {
         );
         assert!(
             !text.contains("Injected Message States"),
-            "injection is reachable only from the Driver tab's `i` key, so its \
-             legend goes too:\n{text}"
+            "no injection legend exists any more:\n{text}"
         );
-        for (glyph, label) in [
-            (GLYPH_QUEUED, LABEL_QUEUED),
-            (GLYPH_DELIVERED, LABEL_DELIVERED),
-            (GLYPH_ACTED_ON, LABEL_ACTED_ON),
-            (GLYPH_MISSED, LABEL_MISSED),
-        ] {
-            // The legend's `{glyph} {label}` form, not the bare glyph: `◐` and
-            // `●` are also the Work State legend's unmerged/done glyphs (quick
-            // 260929-szq), which stay with the flag off. The label check below
-            // still catches any surviving injection row.
-            let legend_form = format!("{glyph} {label}");
-            assert!(
-                !text.contains(&legend_form),
-                "the legend row {legend_form:?} survived:\n{text}"
-            );
-            assert!(
-                !text.contains(label),
-                "the label {label:?} survived:\n{text}"
-            );
-        }
         assert!(
             !text.contains(BADGE_DRIVEN.trim()),
             "the driven badge cannot be painted with the flag off, so naming \

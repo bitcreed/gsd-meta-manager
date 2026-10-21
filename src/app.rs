@@ -1185,7 +1185,24 @@ impl App {
                     .as_ref()
                     .is_ok_and(|view| crate::ui::screens::driver_run::is_live(&view.derived))
             });
-        let (text, is_error) = crate::ui::screens::driver_steer::steered_message(op, outcome, live);
+        // The rule the LOG recorded for an answered item, valid only while the cached
+        // tail is for this very run (D-16).
+        let park_rule = match op {
+            crate::driver::steer::SteerOp::Answer { item, .. } => self
+                .ctx
+                .view_cache
+                .get(alias)
+                .filter(|cache| cache.launcher_log.run_id == run_id)
+                .and_then(|cache| cache.launcher_log.park_rules.get(item))
+                .cloned(),
+            _ => None,
+        };
+        let (text, is_error) = crate::ui::screens::driver_steer::steered_message(
+            op,
+            outcome,
+            live,
+            park_rule.as_deref(),
+        );
         if is_error {
             self.ctx.error_message = Some(text);
         } else {
@@ -7805,5 +7822,156 @@ mod tests {
         let message = app.ctx.error_message.clone().expect("a visible refusal");
         assert!(message.contains("not a run directory name"), "{message}");
         assert!(rx.try_recv().is_err(), "nothing was scheduled");
+    }
+
+    /// D-15 and D-16 end to end: `a` on the parked cursor item opens the answer input,
+    /// Enter writes `- answer:` and `- hold: false` into that item's segment through
+    /// `write_body`, every item survives, and when the LOG recorded a park rule an
+    /// answer does not lift, the status says so.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_steer_a_then_enter_answers_the_parked_item_and_warns_about_the_rule() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_items_run(dir.path(), "");
+        let run_dir = dir
+            .path()
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(LAUNCHER_RUN);
+        let before = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        let (fm_before, body_before) = crate::driver::direction::split_frontmatter(&before);
+        let ids_before: Vec<String> = crate::driver::steer::read_items(body_before)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        // The LOG recorded that I-01 parked by a rule an answer does not lift.
+        {
+            let cache = app.ctx.view_cache.get_mut(OBS_ALIAS).expect("cache");
+            cache.launcher_log.run_id = LAUNCHER_RUN.to_string();
+            cache
+                .launcher_log
+                .park_rules
+                .insert("I-01".to_string(), "gap-rounds".to_string());
+        }
+
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("driver_answer")
+        );
+        let text = render_top_screen(&app);
+        assert!(
+            text.contains("I-01 is parked by gap-rounds: an answer alone will not resume it."),
+            "{text}"
+        );
+        for ch in "raise the budget".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("detail")
+        );
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverSteerRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let steered = next_matching(&mut rx, |a| matches!(a, Action::DriverSteered { .. })).await;
+        app.update(steered);
+
+        let (status, _) = app.ctx.status_message.clone().expect("a status message");
+        assert!(
+            status.starts_with("Answer written to I-01, but it is parked by gap-rounds"),
+            "{status}"
+        );
+        let after = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        let (fm_after, body_after) = crate::driver::direction::split_frontmatter(&after);
+        assert_eq!(fm_after, fm_before, "the tool block is byte-identical");
+        let items = crate::driver::steer::read_items(body_after);
+        assert_eq!(
+            items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            ids_before,
+            "every item survives"
+        );
+        assert_eq!(items[0].answer.as_deref(), Some("raise the budget"));
+        assert_eq!(items[0].hold.as_deref(), Some("false"));
+        assert_eq!(items[1].answer, None, "the other item is untouched");
+    }
+
+    /// `u` writes `hold: false` at once for the held cursor item, with no screen between.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_steer_u_takes_the_held_item_off_hold() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_items_run(dir.path(), "\n### I-03 third thing\n\n- hold: true\n");
+        let run_dir = dir
+            .path()
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(LAUNCHER_RUN);
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        // Move the cursor from the parked I-01 to the held I-03.
+        for _ in 0..2 {
+            app.handle_key(KeyCode::Char(']'), KeyModifiers::NONE);
+        }
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS]
+                .launcher_item_cursor
+                .as_deref(),
+            Some("I-03")
+        );
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::NONE);
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverSteerRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let steered = next_matching(&mut rx, |a| matches!(a, Action::DriverSteered { .. })).await;
+        app.update(steered);
+        assert_eq!(
+            app.ctx.status_message.clone().expect("a status message").0,
+            "I-03: hold set to false. The driver re-reads it before its next dispatch."
+        );
+        let text = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        let items =
+            crate::driver::steer::read_items(crate::driver::direction::split_frontmatter(&text).1);
+        assert_eq!(items[2].id, "I-03");
+        assert!(!items[2].is_on_hold());
+    }
+
+    /// A failed write is shown as an error that says nothing changed (the UI error
+    /// row): here the item vanished from the body between the key and the write.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_steer_a_refused_write_is_an_error_not_a_success() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_items_run(dir.path(), "");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.update(Action::DriverSteerRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+            op: crate::driver::steer::SteerOp::Unhold {
+                item: "I-77".to_string(),
+            },
+        });
+        let steered = next_matching(&mut rx, |a| matches!(a, Action::DriverSteered { .. })).await;
+        app.update(steered);
+        let message = app.ctx.error_message.clone().expect("an error message");
+        assert!(
+            message.starts_with("Nothing was written: I-77"),
+            "{message}"
+        );
+        assert!(app.ctx.status_message.is_none(), "not reported as success");
     }
 }

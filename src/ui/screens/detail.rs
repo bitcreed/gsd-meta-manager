@@ -1,5 +1,4 @@
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
-use super::driver_inject::DriverInjectScreen;
 use super::driver_start::DriverStartScreen;
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
@@ -5336,71 +5335,17 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
-            // `i`: open the injection input — **only when there is a live run**
-            // (STEER-01, D-22).
-            //
-            // `DriverInjectScreen`'s contract is that it is constructed with the
-            // id of a run that is live *now*, so the refusal belongs here rather
-            // than inside it. The refusal sets the pinned message and
-            // **dispatches nothing**: a screen that set a message and dispatched
-            // anyway would pass a test that only checked the message, which is
-            // the shape `driver_confirm.rs:479-486` records as the load-bearing
-            // half.
-            //
-            // Liveness is `ObservedRun::is_live` — positively observed running —
-            // and never `LivenessUnknown`, because opening an input aimed at a
-            // run nothing can speak for would queue a message that may already
-            // be undeliverable.
-            //
-            // **The target is the SELECTED run, not merely the observed one**
-            // (WR-01). `j`/`k` move the selection freely across the whole run
-            // history while `observed_runs` holds only the run this session is
-            // tailing, so reading the id out of that map alone aimed the input
-            // at today's live run while the user was looking at last week's.
-            // Worse, `cache.driver_inbox` is the **selected** run's inbox, so
-            // the queued message did not appear anywhere on the surface they
-            // were looking at. Requiring the two to agree is what keeps the
-            // target and the pane the same run.
+            // `i`: **retired** (30-04, D-02, UI-SPEC "What Phase 30 repeals"). It opens
+            // nothing and dispatches nothing; it points at the DIRECTION.md keys that
+            // steer a run now. `DriverInjectScreen` and the journal's injection kinds
+            // stay compiled for Phase 31, but no key reaches them from this tab.
             KeyCode::Char('i') if current_view == DetailSubView::Driver => {
-                let selected_run_id = ctx.view_cache.get(&self.alias).and_then(|cache| {
-                    cache
-                        .driver_runs
-                        .get(cache.driver_selected_run)
-                        .map(|run| run.run_id.clone())
-                });
-                let live_run_id = ctx
-                    .observed_runs
-                    .get(&self.alias)
-                    .filter(|observed| observed.is_live())
-                    .map(|observed| observed.run_id.clone());
+                ctx.status_message = Some((
+                    super::driver_run::INJECTION_RETIRED.to_string(),
+                    std::time::Instant::now(),
+                ));
                 ctx.needs_redraw = true;
-                match live_run_id {
-                    // The one case that opens the input: a live run, and it is
-                    // the one on screen.
-                    Some(run_id) if Some(&run_id) == selected_run_id.as_ref() => {
-                        ScreenAction::Push(Box::new(DriverInjectScreen::new(
-                            self.alias.clone(),
-                            run_id,
-                        )))
-                    }
-                    // A live run exists, but not the one being reviewed. Saying
-                    // "no live run" here would contradict a run list that
-                    // visibly contains one.
-                    Some(_) => {
-                        ctx.status_message = Some((
-                            super::driver_inject::not_the_selected_run_message(&self.alias),
-                            std::time::Instant::now(),
-                        ));
-                        ScreenAction::None
-                    }
-                    None => {
-                        ctx.status_message = Some((
-                            super::driver_inject::no_live_run_message(&self.alias),
-                            std::time::Instant::now(),
-                        ));
-                        ScreenAction::None
-                    }
-                }
+                ScreenAction::None
             }
             // `c`: the control chooser for the SELECTED launcher run (30-04, D-15).
             //
@@ -5429,6 +5374,96 @@ impl Screen for DetailScreen {
                         ),
                     )),
                     _ => ScreenAction::None,
+                }
+            }
+            // `a`: answer the item under the cursor (30-04, D-15, D-16). Tab-scoped, so
+            // the Queue tab's `a` (add) keeps its meaning. The screen opens only for a
+            // parked item or one with `hold: true` that has a heading in the body (an
+            // item only the frontmatter knows has no segment to write into); every
+            // other case says why and opens nothing.
+            KeyCode::Char('a') if current_view == DetailSubView::Driver => {
+                use super::driver_run::{
+                    cursor_item_row, park_rule_for, steer_refusal, steer_target, SteerTarget,
+                };
+                ctx.needs_redraw = true;
+                let cache = ctx.view_cache.get(&self.alias);
+                let target = steer_target(cache);
+                if let Some(message) = steer_refusal(&target) {
+                    ctx.status_message = Some((message, std::time::Instant::now()));
+                    return ScreenAction::None;
+                }
+                let SteerTarget::Run { run_id, .. } = target else {
+                    return ScreenAction::None;
+                };
+                let message = match cursor_item_row(cache) {
+                    None => "This run has no items, so there is nothing to answer.".to_string(),
+                    Some(row) if !row.answerable() => format!(
+                        "{} is not parked or on hold, so there is nothing to answer.",
+                        super::driver::shown_capped(&row.id)
+                    ),
+                    Some(row) if !row.in_body() => format!(
+                        "{} is not in DIRECTION.md, so it cannot be answered. Add it with [e].",
+                        super::driver::shown_capped(&row.id)
+                    ),
+                    Some(row) => {
+                        let park_rule = park_rule_for(cache, &run_id, &row.id);
+                        return ScreenAction::Push(Box::new(
+                            super::driver_steer::AnswerScreen::new(
+                                self.alias.clone(),
+                                run_id,
+                                row.id,
+                                park_rule,
+                            ),
+                        ));
+                    }
+                };
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+            // `u`: take the item under the cursor off hold, at once (30-04, D-15): the
+            // edit is `hold: false`, reversible by editing, so there is no confirmation.
+            // The request is dispatched; the write happens on `spawn_blocking`.
+            KeyCode::Char('u') if current_view == DetailSubView::Driver => {
+                use super::driver_run::{
+                    cursor_item_row, steer_refusal, steer_target, SteerTarget,
+                };
+                ctx.needs_redraw = true;
+                let cache = ctx.view_cache.get(&self.alias);
+                let target = steer_target(cache);
+                if let Some(message) = steer_refusal(&target) {
+                    ctx.status_message = Some((message, std::time::Instant::now()));
+                    return ScreenAction::None;
+                }
+                let SteerTarget::Run { run_id, .. } = target else {
+                    return ScreenAction::None;
+                };
+                match cursor_item_row(cache) {
+                    Some(row) if row.hold && row.in_body() => {
+                        super::driver_confirm::dispatch(
+                            ctx,
+                            Action::DriverSteerRequested {
+                                alias: self.alias.clone(),
+                                run_id,
+                                op: crate::driver::steer::SteerOp::Unhold { item: row.id },
+                            },
+                            &self.alias,
+                        );
+                        ScreenAction::None
+                    }
+                    Some(row) => {
+                        let message =
+                            format!("{} is not on hold.", super::driver::shown_capped(&row.id));
+                        ctx.status_message = Some((message, std::time::Instant::now()));
+                        ScreenAction::None
+                    }
+                    None => {
+                        ctx.status_message = Some((
+                            "This run has no items, so there is nothing to take off hold."
+                                .to_string(),
+                            std::time::Instant::now(),
+                        ));
+                        ScreenAction::None
+                    }
                 }
             }
             // `[` / `]`: move the item cursor of the SELECTED launcher run (30-02,
@@ -10555,6 +10590,12 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
     }
     if keys.control {
         tokens.push(FooterToken::hint("[c]", "ontrol  ", 1));
+    }
+    if keys.answer {
+        tokens.push(FooterToken::hint("[a]", "nswer  ", 1));
+    }
+    if keys.unhold {
+        tokens.push(FooterToken::hint("[u]", "nhold  ", 2));
     }
     if keys.start {
         tokens.push(FooterToken::hint("[s]", "tart  ", 2));
@@ -17244,6 +17285,8 @@ mod tests {
             scroll: false,
             item: false,
             control: false,
+            answer: false,
+            unhold: false,
             read_only_platform: false,
         }
     }
@@ -17346,6 +17389,8 @@ mod tests {
             scroll: true,
             item: false,
             control: false,
+            answer: false,
+            unhold: false,
             read_only_platform: false,
         };
         let text = driver_footer_text(200, &on_legacy);
@@ -17358,7 +17403,7 @@ mod tests {
     /// five widths the UI-SPEC names, for every combination of available keys.
     #[test]
     fn the_driver_footer_fits_its_width_and_always_ends_with_help() {
-        for bits in 0u16..256 {
+        for bits in 0u16..1024 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17368,6 +17413,8 @@ mod tests {
                 item: bits & 32 != 0,
                 control: bits & 64 != 0,
                 read_only_platform: bits & 128 != 0,
+                answer: bits & 256 != 0,
+                unhold: bits & 512 != 0,
             };
             for width in [40u16, 60, 80, 100, 160] {
                 let text = driver_footer_text(width, &keys);
@@ -17394,6 +17441,8 @@ mod tests {
             scroll: true,
             item: false,
             control: false,
+            answer: false,
+            unhold: false,
             read_only_platform: false,
         };
         // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 10 + 7 = 98 cells.
@@ -17429,7 +17478,7 @@ mod tests {
 
     #[test]
     fn the_driver_footer_names_no_retired_key_at_any_width() {
-        for bits in 0u16..256 {
+        for bits in 0u16..1024 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17439,6 +17488,8 @@ mod tests {
                 item: bits & 32 != 0,
                 control: bits & 64 != 0,
                 read_only_platform: bits & 128 != 0,
+                answer: bits & 256 != 0,
+                unhold: bits & 512 != 0,
             };
             for width in [40u16, 60, 80, 100, 160, 300] {
                 let text = driver_footer_text(width, &keys);
@@ -19914,6 +19965,208 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// Give launcher run 0 a cached detail with items `I-01..I-03` where `held` are
+    /// `hold: true` in the body and `parked` are recorded `parked` in the frontmatter
+    /// (`I-09` is a frontmatter-only parked item when listed).
+    fn give_steering_items(ctx: &mut AppContext, held: &[&str], parked: &[&str]) {
+        use crate::state_reader::driver_frontmatter::{ItemState, ItemStateEntry, ItemStates};
+        give_items(ctx, 0);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        let detail = cache.launcher_detail.as_mut().expect("a detail");
+        for item in detail.items.iter_mut() {
+            if held.contains(&item.id.as_str()) {
+                item.hold = Some("true".to_string());
+            }
+        }
+        detail.view.frontmatter.item_states = ItemStates(
+            parked
+                .iter()
+                .map(|id| {
+                    (
+                        (*id).to_string(),
+                        ItemStateEntry {
+                            state: ItemState::Parked,
+                            dispatches: 1,
+                            outcome: None,
+                        },
+                    )
+                })
+                .collect(),
+        );
+        cache.launcher_item_cursor = None;
+        super::super::driver_run::settle_item_cursor(cache);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_steer_a_opens_the_answer_screen_for_a_parked_or_a_held_item() {
+        // The cursor starts on the first parked item.
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &[], &["I-02"]);
+        let action = screen.handle_key(KeyCode::Char('a'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_answer")
+        );
+        assert!(rx.try_recv().is_err(), "opening the input writes nothing");
+
+        // A held item that is not parked is answerable too.
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &["I-01"], &[]);
+        let action = screen.handle_key(KeyCode::Char('a'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_answer")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_steer_a_says_why_when_there_is_nothing_to_answer() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &[], &[]);
+        let action = screen.handle_key(KeyCode::Char('a'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.clone().expect("a refusal").0,
+            "I-01 is not parked or on hold, so there is nothing to answer."
+        );
+        assert!(rx.try_recv().is_err());
+
+        // A parked item only the frontmatter knows has no segment to write into.
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &[], &["I-09"]);
+        let action = screen.handle_key(KeyCode::Char('a'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        let message = ctx.status_message.clone().expect("a refusal").0;
+        assert!(message.contains("I-09 is not in DIRECTION.md"), "{message}");
+
+        // No detail cached yet: no items, nothing to answer.
+        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
+        let action = screen.handle_key(KeyCode::Char('a'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(ctx.status_message.is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_steer_u_dispatches_an_unhold_for_a_held_item_and_says_why_otherwise() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &["I-01"], &[]);
+        let action = screen.handle_key(KeyCode::Char('u'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "no screen: it writes at once"
+        );
+        let Some(crate::action::Action::DriverSteerRequested { alias, run_id, op }) =
+            rx.try_recv().ok()
+        else {
+            panic!("u on a held item dispatches the request");
+        };
+        assert_eq!(alias, TEST_ALIAS);
+        assert_eq!(run_id, "20261019-run0");
+        assert_eq!(
+            op,
+            crate::driver::steer::SteerOp::Unhold {
+                item: "I-01".to_string()
+            }
+        );
+
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &["I-02"], &[]);
+        screen.handle_key(KeyCode::Char('u'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            ctx.status_message.clone().expect("a refusal").0,
+            "I-01 is not on hold."
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_steer_a_and_u_refuse_on_a_legacy_row_and_off_the_driver_tab() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &["I-01"], &["I-01"]);
+        add_legacy_run(&mut ctx);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
+        }
+        for key in ['a', 'u'] {
+            ctx.status_message = None;
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::None), "{key}");
+            assert_eq!(
+                ctx.status_message.clone().expect("a refusal").0,
+                "Legacy runs are read-only here.",
+                "{key}"
+            );
+        }
+        assert!(rx.try_recv().is_err());
+
+        // On the Queue tab `a` keeps its shipped meaning: the answer input never opens.
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        give_steering_items(&mut ctx, &["I-01"], &["I-01"]);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+        for key in ['a', 'u'] {
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+            assert_ne!(
+                pushed_screen_name(&action).as_deref(),
+                Some("driver_answer")
+            );
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_steer_the_answer_and_unhold_keys_follow_the_cursor_item() {
+        let keys = |held: &[&str], parked: &[&str]| {
+            let (_screen, mut ctx, _rx) = launcher_fixture(1);
+            give_steering_items(&mut ctx, held, parked);
+            super::super::driver_run::driver_keys(&ctx, TEST_ALIAS)
+        };
+        let linux = cfg!(target_os = "linux");
+        let none = keys(&[], &[]);
+        assert!(!none.answer && !none.unhold);
+        let parked = keys(&[], &["I-02"]);
+        assert_eq!((parked.answer, parked.unhold), (linux, false));
+        let held = keys(&["I-01"], &[]);
+        assert_eq!((held.answer, held.unhold), (linux, linux));
+        // A frontmatter-only parked item cannot be answered.
+        let only_fm = keys(&[], &["I-09"]);
+        assert!(!only_fm.answer);
+    }
+
+    #[test]
+    fn launcher_steer_the_footer_orders_and_drops_the_answer_and_unhold_tokens() {
+        let keys = DriverKeys {
+            control: true,
+            answer: true,
+            unhold: true,
+            ..live_run_keys()
+        };
+        let text = driver_footer_text(160, &keys);
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {text}"))
+        };
+        assert!(
+            at("[c]ontrol") < at("[a]nswer") && at("[a]nswer") < at("[u]nhold"),
+            "{text}"
+        );
+        assert!(at("[u]nhold") < at("[s]tart"), "{text}");
+        // `[u]nhold` is priority 2 and goes before the priority-1 control and answer.
+        let narrow = driver_footer_text(60, &keys);
+        assert!(
+            narrow.contains("[a]nswer") && narrow.contains("[c]ontrol"),
+            "{narrow:?}"
+        );
+        let tight = driver_footer_text(52, &keys);
+        assert!(!tight.contains("[u]nhold"), "{tight:?}");
+        assert!(tight.contains("[a]nswer"), "{tight:?}");
+    }
+
     #[test]
     fn launcher_steer_the_footer_lists_control_only_when_the_key_can_act() {
         let on = DriverKeys {
@@ -20216,119 +20469,55 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// CTRL-03 at the affordance layer, in the shape `driver_confirm.rs`
-    /// records: the **second** assertion is the load-bearing one. A binding that
-    /// set the message and opened the screen anyway would pass a test that
-    /// checked only the message, and the user would be typing into an input
-    /// aimed at a run that is not there.
+    /// `i` is retired (30-04, D-02): it opens nothing, dispatches nothing, and names the
+    /// keys that steer a run now. The **second** assertion is the load-bearing one
+    /// (CTRL-03's shape): a binding that set the message and opened the screen anyway
+    /// would pass a test that checked only the message. It holds whatever the tab
+    /// holds: a live observed run, a launcher run, a legacy row, nothing at all.
     #[test]
-    fn pressing_i_with_no_live_run_sets_a_message_and_dispatches_nothing() {
+    fn launcher_steer_i_is_retired_opens_nothing_and_names_the_steering_keys() {
+        const MESSAGE: &str = "Message injection is retired. Steer this run through DIRECTION.md: [c] control, [a] answer, [e] edit.";
+        assert_eq!(super::super::driver_run::INJECTION_RETIRED, MESSAGE);
+
+        // A live observed run, as the Phase 18 key required.
         let (mut screen, mut ctx, mut rx) = driver_action_fixture();
-        assert!(ctx.observed_runs.is_empty(), "the fixture has no live run");
-
-        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert!(
-            matches!(action, ScreenAction::None),
-            "the injection screen must not open"
-        );
-
-        let message = ctx
-            .status_message
-            .as_ref()
-            .map(|(text, _)| text.clone())
-            .expect("the refusal must be visible, not silent");
-        assert_eq!(
-            message,
-            crate::ui::screens::driver_inject::no_live_run_message(TEST_ALIAS),
-            "the copy lives in one place so the screen and its opener cannot drift"
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "the refusal must dispatch nothing at all"
-        );
-
-        // A run that is merely *observed* is not enough: an undeterminable
-        // liveness answer is not a live run (CR-05's narrow reading).
-        let mut unknown = observed_live_run("2026-07-29T21-40-00Z-3f2a");
-        unknown.liveness = crate::driver::liveness::Liveness::Unknown;
-        ctx.observed_runs.insert(TEST_ALIAS.to_string(), unknown);
-        ctx.status_message = None;
-        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None));
-        assert!(ctx.status_message.is_some());
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn pressing_i_with_a_live_run_pushes_the_injection_screen() {
-        let (mut screen, mut ctx, _rx) = driver_action_fixture();
         ctx.observed_runs.insert(
             TEST_ALIAS.to_string(),
             observed_live_run("2026-07-29T21-40-00Z-3f2a"),
         );
+        // A launcher run selected, and a legacy row selected.
+        let (mut launcher, mut launcher_ctx, mut launcher_rx) = launcher_fixture(2);
+        let (mut legacy, mut legacy_ctx, mut legacy_rx) = launcher_fixture(1);
+        add_legacy_run(&mut legacy_ctx);
+        {
+            let cache = legacy_ctx
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default();
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
+        }
 
-        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(
-            pushed_screen_name(&action).as_deref(),
-            Some("driver_inject")
-        );
-        assert!(
-            ctx.status_message.is_none(),
-            "a run that IS live gets no refusal"
-        );
-    }
-
-    /// WR-01: the target of `i` is the run the user is **looking at**.
-    ///
-    /// `j`/`k` move the selection freely across the whole run history while
-    /// `observed_runs` holds only the run this session is tailing. Reading the
-    /// id out of that map alone aimed the input at today's live run while the
-    /// user was reviewing last week's — and because `cache.driver_inbox` is the
-    /// **selected** run's inbox, the queued message then appeared nowhere on the
-    /// surface they were looking at. Two facts silently disagreeing, with the
-    /// user's own steering intent as the payload.
-    #[test]
-    fn pressing_i_while_reviewing_a_different_run_refuses_and_says_which_condition() {
-        const LIVE: &str = "2026-07-29T21-40-00Z-3f2a";
-        const OLD: &str = "2026-07-20T09-00-00Z-beef";
-
-        let (mut screen, mut ctx, mut rx) = driver_action_fixture();
-        ctx.observed_runs
-            .insert(TEST_ALIAS.to_string(), observed_live_run(LIVE));
-        // The pane is showing an older run — the state `j` leaves behind.
-        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-        cache.driver_runs = vec![test_run(OLD), test_run(LIVE)];
-        cache.driver_selected_run = 0;
-
-        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert!(
-            matches!(action, ScreenAction::None),
-            "the input must not open aimed at a run the pane is not showing"
-        );
-        let message = ctx
-            .status_message
-            .as_ref()
-            .map(|(text, _)| text.clone())
-            .expect("the refusal must be visible, not silent");
-        assert_eq!(
-            message,
-            crate::ui::screens::driver_inject::not_the_selected_run_message(TEST_ALIAS),
-            "and it must name THIS condition: a live run exists, so saying \
-             \"no live run\" over a run list that visibly contains one would \
-             read as a bug in the tool"
-        );
-        assert!(rx.try_recv().is_err(), "the refusal dispatches nothing");
-
-        // Selecting the live run is what makes `i` work again.
-        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-        cache.driver_selected_run = 1;
-        ctx.status_message = None;
-        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(
-            pushed_screen_name(&action).as_deref(),
-            Some("driver_inject")
-        );
-        assert!(ctx.status_message.is_none());
+        let mut cases = [
+            (&mut screen, &mut ctx, &mut rx),
+            (&mut launcher, &mut launcher_ctx, &mut launcher_rx),
+            (&mut legacy, &mut legacy_ctx, &mut legacy_rx),
+        ];
+        for (screen, ctx, rx) in cases.iter_mut() {
+            ctx.status_message = None;
+            let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, ctx);
+            assert!(
+                matches!(action, ScreenAction::None),
+                "the injection screen must not open"
+            );
+            let message = ctx
+                .status_message
+                .as_ref()
+                .map(|(text, _)| text.clone())
+                .expect("the retirement must be said, not silent");
+            assert_eq!(message, MESSAGE);
+            assert!(rx.try_recv().is_err(), "and nothing is dispatched");
+        }
     }
 
     #[test]

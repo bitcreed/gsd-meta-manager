@@ -1259,6 +1259,27 @@ pub fn merged_items(detail: &RunDetail) -> Vec<ItemRow> {
     rows
 }
 
+impl ItemRow {
+    /// The driver recorded this item as parked.
+    pub fn is_parked(&self) -> bool {
+        matches!(
+            self.mark,
+            ItemMark::Seen(ItemState::Parked) | ItemMark::NotInDirection(ItemState::Parked)
+        )
+    }
+
+    /// The item has a `### I-NN` heading in the body, so a steering edit has a segment
+    /// to write into. A frontmatter-only item has none.
+    pub fn in_body(&self) -> bool {
+        !matches!(self.mark, ItemMark::NotInDirection(_))
+    }
+
+    /// `a` has something to answer: the item is parked or on hold.
+    pub fn answerable(&self) -> bool {
+        self.is_parked() || self.hold
+    }
+}
+
 /// Where the item cursor starts on selecting a run: the first `parked` item, else
 /// `current_item` when it is listed, else the first row (UI-SPEC, D-06).
 pub fn item_cursor_default(rows: &[ItemRow], current_item: Option<&str>) -> Option<String> {
@@ -2473,6 +2494,10 @@ fn compose_selected(
     Composition { top, log: true }
 }
 
+/// What `i` says on the Driver tab since Phase 30 (D-02): the injection input is
+/// retired, and these are the keys that steer a run now.
+pub const INJECTION_RETIRED: &str = "Message injection is retired. Steer this run through DIRECTION.md: [c] control, [a] answer, [e] edit.";
+
 /// What a steering, launch or kill key says when the highlight is on a legacy run.
 pub const LEGACY_READ_ONLY: &str = "Legacy runs are read-only here.";
 
@@ -2616,6 +2641,31 @@ pub fn steer_refusal(target: &SteerTarget) -> Option<String> {
     }
 }
 
+/// The item under the item cursor of the selected launcher run: the merged row the
+/// cursor resolves to (the first parked item, else `current_item`, else the first,
+/// until `[`/`]` moved it). `None` with no launcher selection, no cached detail for
+/// the selected run, or no items.
+pub fn cursor_item_row(cache: Option<&ProjectViewCache>) -> Option<ItemRow> {
+    let cache = cache?;
+    let Selection::Launcher(index) = selection(Some(cache)) else {
+        return None;
+    };
+    let detail = detail_for(Some(cache), &cache.launcher_runs[index].0)?;
+    let rows = merged_items(detail);
+    let current = detail.view.frontmatter.current_item.as_deref();
+    let id = resolved_item_cursor(&rows, cache.launcher_item_cursor.as_deref(), current)?;
+    rows.into_iter().find(|row| row.id == id)
+}
+
+/// The rule the selected run's LOG recorded for `item`'s last park, valid only while
+/// the cached tail speaks for `run_id` (30-02, D-16).
+pub fn park_rule_for(cache: Option<&ProjectViewCache>, run_id: &str, item: &str) -> Option<String> {
+    cache
+        .filter(|cache| cache.launcher_log.run_id == run_id)
+        .and_then(|cache| cache.launcher_log.park_rules.get(item))
+        .cloned()
+}
+
 /// The highlight's place in the one linear order `j`/`k` walk: launcher rows
 /// first, then (when shown) the legacy rows. The collapsed-section header row is
 /// not a position.
@@ -2747,6 +2797,11 @@ pub struct DriverKeys {
     pub item: bool,
     /// `c`: a readable launcher run is selected and this build can steer (Linux).
     pub control: bool,
+    /// `a`: the item under the cursor is parked or on hold, is in the body, and this
+    /// build can steer.
+    pub answer: bool,
+    /// `u`: the item under the cursor is on hold and this build can steer.
+    pub unhold: bool,
     /// This build cannot steer (not Linux): `c`, `a`, `u`, `e` are absent and the
     /// footer says why (D-14).
     pub read_only_platform: bool,
@@ -2776,6 +2831,10 @@ pub fn driver_keys(ctx: &AppContext, alias: &str) -> DriverKeys {
         },
         control: super::driver_steer::can_steer()
             && matches!(steer_target(cache), SteerTarget::Run { .. }),
+        answer: super::driver_steer::can_steer()
+            && cursor_item_row(cache).is_some_and(|row| row.in_body() && row.answerable()),
+        unhold: super::driver_steer::can_steer()
+            && cursor_item_row(cache).is_some_and(|row| row.in_body() && row.hold),
         read_only_platform: !super::driver_steer::can_steer(),
     }
 }
