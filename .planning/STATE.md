@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: executing
-stopped_at: Completed 30-06-PLAN.md
-last_updated: "2026-10-21T04:15:55.471Z"
+stopped_at: Completed 30-07-PLAN.md
+last_updated: "2026-10-21T04:36:54.111Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: 3bf6b8fb16967be1f86f22466232293dbec6ec77
+state_head: d41e23d7bb7078e02ef7d587ba1a49caaadba147
 progress:
   total_phases: 10
   completed_phases: 12
@@ -238,7 +238,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 30 (Driver Tab on DIRECTION.md) — EXECUTING
-Plan: 7 of 9
+Plan: 8 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -507,6 +507,7 @@ verify-phase if the gate is fixed.
 | Phase 30 P04 | 41 min | 3 tasks | 10 files |
 | Phase 30 P05 | 31 min | 3 tasks | 12 files |
 | Phase 30 P06 | 20 min | 3 tasks | 5 files |
+| Phase 30 P07 | 30 min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -710,6 +711,7 @@ Recent decisions affecting current work:
 - [Phase 30]: 30-06: a clipped ConfirmPopup disarms y / Enter-on-Yes / Yes click and shows CLIPPED_HINT; popup height comes from Paragraph::line_count [inferred — audit]
 - [Phase 30]: 30-06: D-16 answer status copy shortened to '{id} answered; {rule} parks it: [e] budget, [R] caps.' (<=62 cells) [inferred — audit]
 - [Phase 30]: 30-06: only DriverAction::StopLauncher paints the Driver tab behind its popup [inferred — audit]
+- [Phase 30]: 30-07: open_run_file (O_NOFOLLOW|O_NONBLOCK + handle type check) guards every run-dir read; Plan::Keep skips no-op DIRECTION.md writes; INJECTION_RETIRED = 'Injection is retired: use [c]ontrol, [a]nswer, [e]dit.' [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -884,8 +886,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-21T04:15:54.451Z
-Stopped at: Completed 30-06-PLAN.md
+Last session: 2026-10-21T04:36:53.292Z
+Stopped at: Completed 30-07-PLAN.md
 Resume file: None
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md
