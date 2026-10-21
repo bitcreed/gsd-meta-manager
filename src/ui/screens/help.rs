@@ -382,7 +382,8 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             row("G", "Jump to the output tail and follow again"),
             row("i", "Inject a message into the live run"),
             row("s", "Start a run: command, then optional goal"),
-            row("x", "Stop the live run (asks first)"),
+            row("x", "Kill this run's sandbox now (asks first)"),
+            row("L", "Show or hide legacy runs (read-only)"),
             // Both surfaces bind `o` for the same action and the help lists
             // both, which is what makes the consistency visible instead of
             // coincidental. The two descriptions must not be byte-identical,
@@ -392,7 +393,15 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             // throughout.
             row("o", "Toggle driver opt-in for this project"),
             Line::from(""),
+            // ── The run-state legend (30-01, D-04): glyph, word and gloss for every
+            // status the run list can show, glyphs from the `driver_run` constants.
+            heading("Driver Run States"),
+            Line::from(""),
         ]);
+        for (glyph, word, gloss) in super::driver_run::RUN_STATES_LEGEND {
+            lines.push(Line::from(format!("  {glyph} {word:<16} {gloss}")));
+        }
+        lines.push(Line::from(""));
     }
 
     lines.extend([
@@ -632,7 +641,8 @@ mod tests {
             ("G", "Jump to the output tail and follow again"),
             ("i", "Inject a message into the live run"),
             ("s", "Start a run: command, then optional goal"),
-            ("x", "Stop the live run (asks first)"),
+            ("x", "Kill this run's sandbox now (asks first)"),
+            ("L", "Show or hide legacy runs (read-only)"),
             ("o", "Toggle driver opt-in for this project"),
         ] {
             let expected = row(key, description).spans[0].content.to_string();
@@ -827,10 +837,23 @@ mod tests {
         }
         // `read` is allowed exactly once, in the queued gloss, where it says
         // that nothing has read the message — the opposite claim.
+        //
+        // Neither the legacy-runs row's `read-only` nor the run-state legend
+        // (30-01) is about injected messages: the legend's `unreadable` row names
+        // a `DIRECTION.md` that could not be opened. They are taken out before the
+        // count rather than the words being dropped from the vocabulary the Driver
+        // tab shows.
+        let injected_surface = match (text.find("driver run states"), text.find("filter syntax")) {
+            (Some(start), Some(end)) if start < end => {
+                format!("{}{}", &text[..start], &text[end..])
+            }
+            _ => text.clone(),
+        }
+        .replace("read-only", "");
         assert_eq!(
-            text.matches("read").count(),
+            injected_surface.matches("read").count(),
             1,
-            "`read` may appear only in the queued gloss:\n{text}"
+            "`read` may appear only in the queued gloss:\n{injected_surface}"
         );
         assert!(
             text.contains("nothing has read it yet"),
@@ -930,7 +953,8 @@ mod tests {
             ("G", "Jump to the output tail and follow again"),
             ("i", "Inject a message into the live run"),
             ("s", "Start a run: command, then optional goal"),
-            ("x", "Stop the live run (asks first)"),
+            ("x", "Kill this run's sandbox now (asks first)"),
+            ("L", "Show or hide legacy runs (read-only)"),
             ("o", "Toggle driver opt-in for this project"),
         ]
         .into_iter()
@@ -948,6 +972,59 @@ mod tests {
                  reach with the flag off:\n{text}"
             );
         }
+    }
+
+    /// 30-01: the Driver tab's run-state legend names every status the run list
+    /// can show, with its glyph, and the glyphs are the `driver_run` constants.
+    #[test]
+    fn the_driver_run_states_legend_names_every_run_status_with_its_glyph() {
+        use crate::ui::screens::driver_run::{
+            GLYPH_RUN_CRASHED, GLYPH_RUN_DONE, GLYPH_RUN_LIVE, GLYPH_RUN_PARKED, GLYPH_RUN_UNKNOWN,
+            GLYPH_RUN_UNLAUNCHED, RUN_STATES_LEGEND,
+        };
+        let text = body_with(true);
+        assert!(
+            text.lines().any(|line| line == "Driver Run States"),
+            "the legend heading is missing:\n{text}"
+        );
+        for (glyph, word, _) in RUN_STATES_LEGEND {
+            let form = format!("  {glyph} {word:<16} ");
+            assert!(
+                text.lines().any(|line| line.starts_with(&form)),
+                "the legend row for {word:?} is missing:\n{text}"
+            );
+        }
+        // The rows the failing and the waiting states live on, by glyph and word.
+        for (glyph, word) in [
+            (GLYPH_RUN_LIVE, "running"),
+            (GLYPH_RUN_CRASHED, "crashed"),
+            (GLYPH_RUN_UNKNOWN, "liveness unknown"),
+            (GLYPH_RUN_UNLAUNCHED, "not launched"),
+            (GLYPH_RUN_PARKED, "parked"),
+            (GLYPH_RUN_DONE, "done"),
+        ] {
+            assert!(
+                text.contains(&format!("{glyph} {word}")),
+                "{glyph} {word}:\n{text}"
+            );
+        }
+        // Glyph, word and gloss: no row carries its meaning in a glyph alone.
+        assert!(RUN_STATES_LEGEND
+            .iter()
+            .all(|(_, word, gloss)| !word.is_empty() && !gloss.is_empty()));
+    }
+
+    #[test]
+    fn the_help_screen_has_no_driver_run_states_legend_when_off() {
+        let text = body_with(false);
+        assert!(
+            !text.contains("Driver Run States"),
+            "the run-state legend documents a tab the user cannot open:\n{text}"
+        );
+        assert!(
+            !text.contains("liveness unknown") && !text.contains("not launched"),
+            "a legend row survived:\n{text}"
+        );
     }
 
     #[test]

@@ -477,6 +477,105 @@ pub fn toggle_legacy(cache: &mut ProjectViewCache) -> bool {
     true
 }
 
+// ── Which keys act on the current selection (the footer's input) ───────────
+
+/// Which Driver-tab keys are available for the current selection, so the footer
+/// names only keys that do something and no hint promises a no-op.
+///
+/// Later plans add their own fields (control, answer, edit, relaunch).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DriverKeys {
+    /// `x`: a launcher row is selected and its run may be killed.
+    pub kill: bool,
+    /// `L`: legacy runs exist.
+    pub legacy: bool,
+    /// A legacy row is selected: the tab is read-only for it.
+    pub legacy_row: bool,
+    /// `s`: bound (it opens the shipped start flow until plan 30-05 rebinds it).
+    pub start: bool,
+    /// `PgUp`/`PgDn`/`f`: there is an output pane to scroll, which is the legacy
+    /// run's (plan 30-02 extends it to the LOG pane).
+    pub scroll: bool,
+}
+
+/// The keys available for `alias`'s current selection. Pure over the context.
+pub fn driver_keys(ctx: &AppContext, alias: &str) -> DriverKeys {
+    let cache = ctx.view_cache.get(alias);
+    let sel = selection(cache);
+    DriverKeys {
+        kill: match (sel, cache) {
+            (Selection::Launcher(index), Some(cache)) => {
+                entry_killable(&cache.launcher_runs[index])
+            }
+            _ => false,
+        },
+        legacy: cache.is_some_and(has_legacy),
+        legacy_row: matches!(sel, Selection::Legacy(_)),
+        start: true,
+        scroll: matches!(sel, Selection::Legacy(_)),
+    }
+}
+
+// ── The help legend ─────────────────────────────────────────────────────────
+
+/// One row of the `Driver Run States` help legend per UI-SPEC run status: the glyph
+/// (a fixed constant), the detail word, and a one-line gloss that promises no more
+/// than the lock probe and the written status can establish.
+pub const RUN_STATES_LEGEND: [(&str, &str, &str); 12] = [
+    (
+        GLYPH_RUN_LIVE,
+        "running",
+        "run lock held; the driver is working",
+    ),
+    (
+        GLYPH_RUN_LIVE,
+        "starting",
+        "run lock held; the driver has not begun",
+    ),
+    (
+        GLYPH_RUN_CRASHED,
+        "crashed",
+        "run lock free with no final status written",
+    ),
+    (
+        GLYPH_RUN_UNKNOWN,
+        "liveness unknown",
+        "lock probe failed: neither crashed nor running",
+    ),
+    (
+        GLYPH_RUN_UNLAUNCHED,
+        "not launched",
+        "minted and never launched",
+    ),
+    (
+        GLYPH_RUN_PARKED,
+        "parked",
+        "stopped itself: it needs a human",
+    ),
+    (GLYPH_RUN_PAUSED, "paused", "held by an operator"),
+    (
+        GLYPH_RUN_STOPPED,
+        "stopped",
+        "ended by a stop or a tripped cap",
+    ),
+    (GLYPH_RUN_DONE, "done", "finished all its items"),
+    (
+        GLYPH_RUN_CRASHED,
+        "stalled",
+        "ended its turn with a worker unreported",
+    ),
+    (
+        GLYPH_RUN_UNKNOWN,
+        "other word",
+        "a status word this build does not know",
+    ),
+    (
+        GLYPH_RUN_UNKNOWN,
+        "unreadable",
+        "its DIRECTION.md could not be read",
+    ),
+];
+
 // ── The composition ─────────────────────────────────────────────────────────
 
 /// The narrow tier's pane title: ` {run id} ({i}/{n}) `, sanitised and cut to the

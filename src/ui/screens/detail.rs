@@ -5802,7 +5802,10 @@ impl Screen for DetailScreen {
         } else if backlog_focused {
             Paragraph::new(Line::from(backlog_focused_footer_spans()))
         } else {
-            build_footer(&sub_view, footer_area.width, ctx.experimental)
+            // The Driver tab's hints follow the selection (30-01): only keys that
+            // act on it are named.
+            let keys = super::driver_run::driver_keys(ctx, &self.alias);
+            build_footer(&sub_view, footer_area.width, ctx.experimental, &keys)
         };
         frame.render_widget(footer, footer_area);
     }
@@ -10435,61 +10438,97 @@ fn child_line(
     agent_line(indent, child.liveness, false, &label, tail, line_cells)
 }
 
-/// Width at or above which the Driver footer shows every hint.
+/// One footer token: its spans, their width in cells, and its drop priority.
 ///
-/// **101, not the UI-SPEC's 100.** The spec's own table gives the full form's
-/// measured width as 101 cells and its condition as `width >= 100`, which are
-/// inconsistent by one: at exactly 100 columns the trailing `p` of `[?]help`
-/// falls off the right edge. That is the `STATUS_COLUMN_MIN_CELLS` bug in
-/// miniature — a threshold that does not match the render — so the threshold is
-/// the measured width, and `each_driver_footer_form_fits_the_width_that_selects_it`
-/// keeps the two equal.
-const DRIVER_FOOTER_FULL_CELLS: u16 = 101;
+/// `drop_priority` 3 goes first when the footer is too wide, then 2, then 1;
+/// within a priority the rightmost goes first. `0` is never dropped.
+struct FooterToken {
+    spans: Vec<Span<'static>>,
+    cells: usize,
+    drop_priority: u8,
+}
 
-/// Width at or above which the Driver footer shows the medium form (69 cells).
-const DRIVER_FOOTER_MEDIUM_CELLS: u16 = 70;
+impl FooterToken {
+    /// A key hint in the shipped construction: `Span::styled("[x]", BOLD)` then
+    /// `Span::raw("kill  ")`.
+    fn hint(key: &'static str, rest: &'static str, drop_priority: u8) -> Self {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        FooterToken {
+            cells: Span::raw(key).width() + Span::raw(rest).width(),
+            spans: vec![Span::styled(key, bold), Span::raw(rest)],
+            drop_priority,
+        }
+    }
 
-/// The Driver tab's footer hints, in three measured width forms.
+    fn muted(text: &'static str, drop_priority: u8) -> Self {
+        FooterToken {
+            cells: Span::raw(text).width(),
+            spans: vec![Span::styled(text, Style::default().fg(Color::DarkGray))],
+            drop_priority,
+        }
+    }
+}
+
+/// The Driver tab's footer hints (30-01, UI-SPEC "Footer").
 ///
-/// The hints are ordered by how often they are needed, so truncation drops the
-/// least useful first: the tab-switching and paging hints go before the four
-/// verbs that only this tab offers. Measured against the shipped
-/// `Span::styled("[k]", BOLD)` + `Span::raw("ey-word  ")` convention: 101 cells
-/// full, 69 medium, 48 short.
-fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
-    let b = Style::default().add_modifier(Modifier::BOLD);
-    let mut spans: Vec<Span<'static>> = Vec::new();
+/// **Context-sensitive: a token appears only when its key is available for the
+/// current selection** ([`DriverKeys`]), so no hint promises a no-op. Tokens are
+/// laid out left to right; when the line is wider than `width`, whole tokens are
+/// dropped by priority (3 first, then 2, then 1; the rightmost first within a
+/// priority) and a token is never split. The lead and `[?]help` are never dropped,
+/// so `[?]help` ends the line at every width. `[i]nject`, `[X]` and `[{/}]` are
+/// retired and appear at no width.
+///
+/// The legacy-row suffix sits just before `[?]help` rather than after it
+/// (`[inferred — audit]`): the plan's rule that the footer always ends with
+/// `[?]help` and the UI-SPEC's token table disagree about where that suffix goes,
+/// and the key a user is looking for when lost is the help key.
+fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<Span<'static>> {
+    let mut tokens: Vec<FooterToken> = vec![FooterToken::hint("[Esc]", "back  ", 2)];
+    tokens.push(FooterToken::hint("[1-8/D]", "tabs  ", 3));
+    tokens.push(FooterToken::hint("[j/k]", "runs  ", 1));
+    if keys.start {
+        tokens.push(FooterToken::hint("[s]", "tart  ", 2));
+    }
+    if keys.kill {
+        tokens.push(FooterToken::hint("[x]", "kill  ", 1));
+    }
+    if keys.scroll {
+        tokens.push(FooterToken::hint("[PgUp/PgDn]", "log  ", 3));
+        tokens.push(FooterToken::hint("[f]", "ollow  ", 3));
+    }
+    if keys.legacy {
+        tokens.push(FooterToken::hint("[L]", "egacy  ", 3));
+    }
+    if keys.legacy_row {
+        tokens.push(FooterToken::muted("legacy run: read-only  ", 1));
+    }
 
-    if width >= DRIVER_FOOTER_MEDIUM_CELLS {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled("[Esc]", b));
-        spans.push(Span::raw("back  "));
-    } else {
-        spans.push(Span::raw("  "));
+    let fixed = Span::raw("  ").width() + Span::raw("[?]help").width();
+    let mut total = fixed + tokens.iter().map(|token| token.cells).sum::<usize>();
+    while total > usize::from(width) {
+        let Some(highest) = tokens.iter().map(|token| token.drop_priority).max() else {
+            break;
+        };
+        // Priority 0 would mean "never dropped"; none is created, but the guard
+        // keeps a future one from looping.
+        if highest == 0 {
+            break;
+        }
+        let Some(index) = tokens
+            .iter()
+            .rposition(|token| token.drop_priority == highest)
+        else {
+            break;
+        };
+        total -= tokens.remove(index).cells;
     }
-    if width >= DRIVER_FOOTER_FULL_CELLS {
-        spans.push(Span::styled("[1-8/D]", b));
-        spans.push(Span::raw("tabs  "));
-    }
-    spans.push(Span::styled("[j/k]", b));
-    spans.push(Span::raw("runs  "));
-    if width >= DRIVER_FOOTER_FULL_CELLS {
-        spans.push(Span::styled("[PgUp/PgDn]", b));
-        spans.push(Span::raw("output  "));
-    }
-    if width >= DRIVER_FOOTER_MEDIUM_CELLS {
-        spans.push(Span::styled("[f]", b));
-        spans.push(Span::raw("ollow  "));
-    }
-    spans.push(Span::styled("[i]", b));
-    spans.push(Span::raw("nject  "));
-    spans.push(Span::styled("[s]", b));
-    spans.push(Span::raw("tart  "));
-    spans.push(Span::styled("[x]", b));
-    spans.push(Span::raw("stop  "));
-    spans.push(Span::styled("[?]", b));
+
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+    spans.extend(tokens.into_iter().flat_map(|token| token.spans));
+    spans.push(Span::styled("[?]", bold));
     spans.push(Span::raw("help"));
-
     spans
 }
 
@@ -10544,9 +10583,14 @@ fn tab_bar_footer_spans(experimental: bool) -> Vec<Span<'static>> {
 /// discoverable from anywhere ([inferred I-14]).
 ///
 /// The digit range is the eight tabs' (D-B10): `9` and `0` are inert.
-fn footer_spans(sub_view: &DetailSubView, width: u16, experimental: bool) -> Vec<Span<'static>> {
+fn footer_spans(
+    sub_view: &DetailSubView,
+    width: u16,
+    experimental: bool,
+    driver_keys: &super::driver_run::DriverKeys,
+) -> Vec<Span<'static>> {
     if matches!(sub_view, DetailSubView::Driver) {
-        return driver_footer_spans(width);
+        return driver_footer_spans(width, driver_keys);
     }
 
     let b = Style::default().add_modifier(Modifier::BOLD);
@@ -10749,8 +10793,18 @@ fn backlog_focused_footer_spans() -> Vec<Span<'static>> {
 }
 
 /// Build the content-level footer line with tab-appropriate key hints.
-fn build_footer(sub_view: &DetailSubView, width: u16, experimental: bool) -> Paragraph<'static> {
-    Paragraph::new(Line::from(footer_spans(sub_view, width, experimental)))
+fn build_footer(
+    sub_view: &DetailSubView,
+    width: u16,
+    experimental: bool,
+    driver_keys: &super::driver_run::DriverKeys,
+) -> Paragraph<'static> {
+    Paragraph::new(Line::from(footer_spans(
+        sub_view,
+        width,
+        experimental,
+        driver_keys,
+    )))
 }
 
 // --- Defaults tab helpers ---
@@ -17001,10 +17055,15 @@ mod tests {
     }
 
     fn footer_text_at(sub_view: &DetailSubView, width: u16, experimental: bool) -> String {
-        footer_spans(sub_view, width, experimental)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
+        footer_spans(
+            sub_view,
+            width,
+            experimental,
+            &super::super::driver_run::DriverKeys::default(),
+        )
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
     }
 
     #[test]
@@ -17093,42 +17152,188 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_driver_footer_has_three_measured_width_forms() {
-        assert_eq!(
-            footer_text_at(&DetailSubView::Driver, 120, true),
-            "  [Esc]back  [1-8/D]tabs  [j/k]runs  [PgUp/PgDn]output  [f]ollow  [i]nject  \
-             [s]tart  [x]stop  [?]help"
-        );
-        assert_eq!(
-            footer_text_at(&DetailSubView::Driver, 80, true),
-            "  [Esc]back  [j/k]runs  [f]ollow  [i]nject  [s]tart  [x]stop  [?]help"
-        );
-        assert_eq!(
-            footer_text_at(&DetailSubView::Driver, 50, true),
-            "  [j/k]runs  [i]nject  [s]tart  [x]stop  [?]help"
-        );
+    use super::super::driver_run::DriverKeys;
+
+    /// The Driver footer's text for `keys` at `width`.
+    fn driver_footer_text(width: u16, keys: &DriverKeys) -> String {
+        driver_footer_spans(width, keys)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
     }
 
-    /// Each form must fit the narrowest width that selects it — the whole point
-    /// of tiering is that the last hint is not clipped off the right edge.
-    ///
-    /// The short form (48 cells) is the floor the UI-SPEC defines: below 48
-    /// columns there is no further tier, because the remaining five hints are
-    /// the tab's whole vocabulary and dropping one would leave a key with no
-    /// discoverable name at all. A terminal that narrow clips the `[?]help`
-    /// hint, which is the least-bad outcome available and is not a defect this
-    /// function can fix.
-    #[test]
-    fn each_driver_footer_form_fits_the_width_that_selects_it() {
-        for width in [DRIVER_FOOTER_FULL_CELLS, DRIVER_FOOTER_MEDIUM_CELLS, 48] {
-            let text = footer_text_at(&DetailSubView::Driver, width, true);
-            assert!(
-                text.chars().count() <= usize::from(width),
-                "the driver footer at width {width} is {} cells: {text}",
-                text.chars().count()
-            );
+    /// The keys for a live launcher run selected, legacy runs present.
+    fn live_run_keys() -> DriverKeys {
+        DriverKeys {
+            kill: true,
+            legacy: true,
+            legacy_row: false,
+            start: true,
+            scroll: false,
         }
+    }
+
+    #[test]
+    fn the_driver_footer_names_only_the_keys_the_selection_can_use() {
+        assert_eq!(
+            driver_footer_text(160, &live_run_keys()),
+            "  [Esc]back  [1-8/D]tabs  [j/k]runs  [s]tart  [x]kill  [L]egacy  [?]help"
+        );
+        // A run that is not running has nothing to kill: no `[x]kill`.
+        let stopped = DriverKeys {
+            kill: false,
+            ..live_run_keys()
+        };
+        assert!(!driver_footer_text(160, &stopped).contains("[x]kill"));
+        // No legacy runs: no `[L]egacy`.
+        let no_legacy = DriverKeys {
+            legacy: false,
+            ..live_run_keys()
+        };
+        assert!(!driver_footer_text(160, &no_legacy).contains("[L]egacy"));
+        // The scroll tokens come with an output pane to scroll.
+        let scrolling = DriverKeys {
+            scroll: true,
+            ..live_run_keys()
+        };
+        let text = driver_footer_text(160, &scrolling);
+        assert!(text.contains("[PgUp/PgDn]log"), "{text}");
+        assert!(text.contains("[f]ollow"), "{text}");
+        assert!(!driver_footer_text(160, &live_run_keys()).contains("[f]ollow"));
+    }
+
+    #[test]
+    fn the_driver_footer_says_legacy_runs_are_read_only_only_on_a_legacy_row() {
+        let on_legacy = DriverKeys {
+            kill: false,
+            legacy: true,
+            legacy_row: true,
+            start: true,
+            scroll: true,
+        };
+        let text = driver_footer_text(200, &on_legacy);
+        assert!(text.contains("legacy run: read-only"), "{text}");
+        assert!(!text.contains("[x]kill"), "{text}");
+        assert!(!driver_footer_text(200, &live_run_keys()).contains("legacy run: read-only"));
+    }
+
+    /// The footer never exceeds its width and always ends with `[?]help`, at the
+    /// five widths the UI-SPEC names, for every combination of available keys.
+    #[test]
+    fn the_driver_footer_fits_its_width_and_always_ends_with_help() {
+        for bits in 0u8..32 {
+            let keys = DriverKeys {
+                kill: bits & 1 != 0,
+                legacy: bits & 2 != 0,
+                legacy_row: bits & 4 != 0,
+                start: bits & 8 != 0,
+                scroll: bits & 16 != 0,
+            };
+            for width in [40u16, 60, 80, 100, 160] {
+                let text = driver_footer_text(width, &keys);
+                assert!(
+                    text.chars().count() <= usize::from(width),
+                    "width {width}, {keys:?}: {} cells: {text:?}",
+                    text.chars().count()
+                );
+                assert!(
+                    text.ends_with("[?]help"),
+                    "width {width}, {keys:?}: {text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_driver_footer_drops_whole_tokens_by_priority_and_never_splits_one() {
+        let keys = DriverKeys {
+            kill: true,
+            legacy: true,
+            legacy_row: false,
+            start: true,
+            scroll: true,
+        };
+        // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 10 + 7 = 98 cells.
+        let full = driver_footer_text(98, &keys);
+        for token in [
+            "[Esc]back",
+            "[1-8/D]tabs",
+            "[j/k]runs",
+            "[s]tart",
+            "[x]kill",
+            "[PgUp/PgDn]log",
+            "[f]ollow",
+            "[L]egacy",
+        ] {
+            assert!(full.contains(token), "{token} missing at 98: {full:?}");
+        }
+        assert_eq!(full.chars().count(), 98, "{full:?}");
+
+        // One cell short: a priority-3 token goes, the rightmost first.
+        let short = driver_footer_text(97, &keys);
+        assert!(!short.contains("[L]egacy"), "{short:?}");
+        assert!(short.contains("[f]ollow"), "{short:?}");
+
+        // The priority-1 keys outlive every priority-2 and -3 token.
+        let narrow = driver_footer_text(35, &keys);
+        assert!(narrow.contains("[j/k]runs"), "{narrow:?}");
+        assert!(narrow.contains("[x]kill"), "{narrow:?}");
+        assert!(!narrow.contains("[Esc]back"), "{narrow:?}");
+        assert!(!narrow.contains("[s]tart"), "{narrow:?}");
+        assert!(!narrow.contains("tabs"), "{narrow:?}");
+        assert!(narrow.ends_with("[?]help"), "{narrow:?}");
+    }
+
+    #[test]
+    fn the_driver_footer_names_no_retired_key_at_any_width() {
+        for bits in 0u8..32 {
+            let keys = DriverKeys {
+                kill: bits & 1 != 0,
+                legacy: bits & 2 != 0,
+                legacy_row: bits & 4 != 0,
+                start: bits & 8 != 0,
+                scroll: bits & 16 != 0,
+            };
+            for width in [40u16, 60, 80, 100, 160, 300] {
+                let text = driver_footer_text(width, &keys);
+                for retired in ["[i]nject", "nject", "[X]", "[{/}]", "[x]stop"] {
+                    assert!(
+                        !text.contains(retired),
+                        "width {width}, {keys:?}: retired token {retired:?} in {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The footer the screen actually draws follows the selection.
+    #[test]
+    fn launcher_view_the_rendered_footer_follows_the_selected_run() {
+        let (screen, mut ctx, _rx) = launcher_fixture(0);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.launcher_runs = vec![
+                launcher_row(
+                    "20261019-live",
+                    DerivedStatus::AsWritten(RunStatus::Running),
+                ),
+                launcher_row("20261018-done", DerivedStatus::AsWritten(RunStatus::Done)),
+            ];
+        }
+        let live = render_detail_to_text_at(&screen, &ctx, 160, 30);
+        assert!(live.contains("[x]kill"), "{live}");
+        assert!(!live.contains("[i]nject"), "{live}");
+
+        ctx.view_cache
+            .get_mut(TEST_ALIAS)
+            .expect("cache")
+            .launcher_selected = 1;
+        let done = render_detail_to_text_at(&screen, &ctx, 160, 30);
+        assert!(
+            !done.contains("[x]kill"),
+            "a finished run cannot be killed: {done}"
+        );
+        assert!(done.contains("[?]help"), "{done}");
     }
 
     /// The tab index and the sub-view must agree in both directions, for every
@@ -24554,10 +24759,11 @@ mod tests {
 
     #[test]
     fn roadmap_graph_tab_footer_advertises_v() {
-        let footer: String = footer_spans(&DetailSubView::RoadmapViz, 200, false)
-            .iter()
-            .map(|s| s.content.to_string())
-            .collect();
+        let footer: String =
+            footer_spans(&DetailSubView::RoadmapViz, 200, false, &Default::default())
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect();
         assert!(footer.contains("[v]"), "{footer}");
         assert!(footer.contains("[e]"), "{footer}");
     }
@@ -24565,10 +24771,15 @@ mod tests {
     #[test]
     fn roadmap_footer_advertises_edges_and_fold() {
         for experimental in [true, false] {
-            let footer: String = footer_spans(&DetailSubView::RoadmapViz, 200, experimental)
-                .iter()
-                .map(|s| s.content.to_string())
-                .collect();
+            let footer: String = footer_spans(
+                &DetailSubView::RoadmapViz,
+                200,
+                experimental,
+                &Default::default(),
+            )
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
             for hint in ["[h/l]", "[Space]", "[v]", "[e]"] {
                 assert!(footer.contains(hint), "{hint} missing: {footer}");
             }
