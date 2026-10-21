@@ -69,6 +69,9 @@ pub mod dry_run;
 // the `renameat2(RENAME_EXCHANGE)` functions are gated inside the module itself
 // (D-12, D-13). Shared by the driverctl writer and Phase 30's steering edits.
 pub mod direction;
+// Pure body readers (and later transforms) beside [`direction`], for the same reason:
+// no file, no clock, no platform facility, so it compiles everywhere (D-06, D-15).
+pub mod steer;
 // Outside the block for a third reason, and the plainest one: both modules are
 // **pure**. They open no file, spawn no process and read no clock — the caller
 // captures the state and hands it in (D-11) — so there is nothing platform-

@@ -141,7 +141,10 @@ pub struct DirectionInfo {
     pub items: Vec<DirectionItem>,
 }
 
-fn control_re() -> &'static Regex {
+/// The `- control: <word>` matcher. `pub(crate)` because [`parse_direction`] is not
+/// its only caller: `driver::steer` reads the same line, and a second regex would let
+/// the two disagree about which line is the human's control (WR-01).
+pub(crate) fn control_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // Deliberately looser than the lint's `- control: <word>`: the human's pause is a
     // safety control, so an indented line, extra spaces or any letter case still read.
@@ -163,7 +166,9 @@ pub fn control_hold(word: &str) -> Option<&'static str> {
     }
 }
 
-fn item_re() -> &'static Regex {
+/// The `### I-NN` item-heading matcher. `pub(crate)` for the same reason as
+/// [`control_re`]: `driver::steer` is the second caller of the one reader (WR-01).
+pub(crate) fn item_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?m)^### (I-\d+)\b").expect("item regex"))
 }

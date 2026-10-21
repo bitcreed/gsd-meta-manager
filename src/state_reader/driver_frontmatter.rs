@@ -777,7 +777,23 @@ pub const DIRECTION_READ_MAX_BYTES: u64 = 1 << 20;
 /// afterwards (D-07). On a platform without `flock` liveness cannot be probed, so
 /// `running` and a launched `starting` derive [`DerivedStatus::LivenessUnknown`]
 /// rather than a guess.
+///
+/// A delegate of [`read_driver_run_text`], which also hands back the file text.
 pub fn read_driver_run(run_dir: &std::path::Path) -> Result<DriverRunView, FrontmatterError> {
+    read_driver_run_text(run_dir).map(|(view, _text)| view)
+}
+
+/// [`read_driver_run`] plus the whole `DIRECTION.md` text it parsed (D-06, D-25).
+///
+/// The selected-run view needs the frontmatter, the derived status **and** the body
+/// (live `control`, item titles, `hold`, `answer`), and they must come from one read
+/// of one file: two reads could straddle a splice and pair a new frontmatter with an
+/// old body. The 1 MiB cap (T-30-04) applies exactly as for [`read_driver_run`].
+///
+/// Blocking file I/O: call it only inside `spawn_blocking`.
+pub fn read_driver_run_text(
+    run_dir: &std::path::Path,
+) -> Result<(DriverRunView, String), FrontmatterError> {
     let path = run_dir.join("DIRECTION.md");
     let io_err = |e: std::io::Error| FrontmatterError::Io {
         detail: format!("{}: {e}", path.display()),
@@ -810,10 +826,13 @@ pub fn read_driver_run(run_dir: &std::path::Path) -> Result<DriverRunView, Front
     #[cfg(not(unix))]
     let derived = derive(&frontmatter, Seen::Unknown);
 
-    Ok(DriverRunView {
-        frontmatter,
-        derived,
-    })
+    Ok((
+        DriverRunView {
+            frontmatter,
+            derived,
+        },
+        text,
+    ))
 }
 
 /// Where a project's launcher run directories live, relative to the project root
@@ -1010,6 +1029,30 @@ mod tests {
         let pad = DIRECTION_READ_MAX_BYTES as usize - ok.len();
         std::fs::write(dir.join("DIRECTION.md"), format!("{ok}{}", "x".repeat(pad))).unwrap();
         assert!(read_driver_run(&dir).is_ok());
+    }
+
+    #[test]
+    fn read_driver_run_text_returns_the_same_view_and_the_whole_file_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(DRIVER_RUNS_REL).join("20261019-text");
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = format!(
+            "{}\n## Direction\n\n- control: pause\n\n## Items\n",
+            RUN1B.replace("s003-run1b", "20261019-text")
+        );
+        std::fs::write(dir.join("DIRECTION.md"), &text).unwrap();
+        let plain = read_driver_run(&dir).expect("plain read");
+        let (with_text, read_text) = read_driver_run_text(&dir).expect("text read");
+        assert_eq!(plain, with_text);
+        assert_eq!(read_text, text);
+        // The cap holds for the text reader too.
+        let mut big = text.clone();
+        big.push_str(&"x".repeat(DIRECTION_READ_MAX_BYTES as usize));
+        std::fs::write(dir.join("DIRECTION.md"), &big).unwrap();
+        assert!(matches!(
+            read_driver_run_text(&dir),
+            Err(FrontmatterError::Io { .. })
+        ));
     }
 
     #[cfg(target_os = "linux")]
