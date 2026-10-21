@@ -148,16 +148,19 @@ fn popup_rect(area: Rect, body_rows: u16) -> Rect {
     )
 }
 
-fn wrapped_rows(lines: &[Line<'_>], inner_width: u16) -> u16 {
-    let w = inner_width.max(1) as usize;
-    lines
-        .iter()
-        .map(|l| {
-            let n: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
-            n.div_ceil(w).max(1)
-        })
-        .sum::<usize>()
-        .min(u16::MAX as usize) as u16
+/// The rows `lines` take once word-wrapped to `inner_width` cells.
+///
+/// This asks ratatui's own wrapper (`Paragraph::line_count` with
+/// `Wrap { trim: false }`) rather than dividing a character count by the width: word
+/// wrap moves a whole word to the next row, so the count is routinely larger than
+/// `ceil(chars / width)`, and a popup sized by the smaller number lost its last words
+/// (the polite-stop prompt's "Nothing is killed.", D-22). It is the same wrap
+/// [`render_confirm_popup`] draws the body with, so the two cannot disagree.
+pub fn wrapped_rows(lines: &[Line<'_>], inner_width: u16) -> u16 {
+    let rows = Paragraph::new(lines.to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width.max(1));
+    u16::try_from(rows).unwrap_or(u16::MAX)
 }
 
 fn button(label: &'static str, focused: bool, accent: Color) -> Span<'static> {
