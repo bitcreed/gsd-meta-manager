@@ -1710,6 +1710,52 @@ pub(crate) mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn read_direction_refuses_a_fifo_without_blocking() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = tempfile::tempdir().expect("temp dir");
+        mkfifo(&dir.path().join("DIRECTION.md"));
+        let run = dir.path().to_path_buf();
+        let result = within_5s(move || read_direction(&run));
+        let why = result.expect_err("a FIFO is not read");
+        assert!(why.contains("not a regular file"), "{why}");
+
+        // A symlinked DIRECTION.md is refused too, even onto a valid body.
+        let other = tempfile::tempdir().expect("temp dir");
+        write_run(other.path(), &clean_body());
+        let linked = tempfile::tempdir().expect("temp dir");
+        std::os::unix::fs::symlink(
+            other.path().join("DIRECTION.md"),
+            linked.path().join("DIRECTION.md"),
+        )
+        .unwrap();
+        assert!(read_direction(linked.path()).is_err());
+        assert!(live_body(linked.path()).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_a_temp_that_is_a_symlink_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let base = clean_body();
+        // A link onto a perfectly good edited body: still not read.
+        let outside = dir.path().join("elsewhere.md");
+        std::fs::write(&outside, base.replace("Prove it", "changed")).unwrap();
+        let temp = dir.path().join(EDIT_TEMP_NAME);
+        std::os::unix::fs::symlink(&outside, &temp).unwrap();
+        let before = live_text(dir.path());
+
+        let outcome = apply_edit(dir.path(), &temp, &base, false);
+        let EditOutcome::Failed(why) = outcome else {
+            panic!("a symlinked temp must fail, got {outcome:?}");
+        };
+        assert!(why.contains("not a regular file"), "{why}");
+        assert_eq!(live_text(dir.path()), before, "nothing was written");
+        assert!(temp.symlink_metadata().is_ok(), "the link is kept");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn launcher_edit_a_planted_symlink_is_a_stale_temp_and_never_followed() {
         let dir = tempfile::tempdir().expect("temp dir");
         write_run(dir.path(), &clean_body());

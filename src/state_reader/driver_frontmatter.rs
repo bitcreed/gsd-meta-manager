@@ -769,6 +769,13 @@ pub fn derive_status(
 /// worker.
 pub const DIRECTION_READ_MAX_BYTES: u64 = 1 << 20;
 
+/// Open a file in a run directory for reading (WR-02, D-09, D-25).
+///
+/// SKELETON (RED): opens by path with no guard yet.
+pub fn open_run_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 /// Read a run directory: its `DIRECTION.md` frontmatter and the derived status.
 ///
 /// Reads `<run_dir>/DIRECTION.md` and, on unix, probes `<run_dir>/launcher.lock`
@@ -892,6 +899,35 @@ pub fn list_driver_runs(project_root: &std::path::Path, limit: usize) -> Vec<Dri
             (name, view)
         })
         .collect()
+}
+
+/// Shared helpers for the tests that plant a FIFO in a run directory (WR-02).
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) mod fifo_test_support {
+    use std::path::Path;
+
+    /// Create a FIFO (no reader, no writer) at `path`.
+    pub(crate) fn mkfifo(path: &Path) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .expect("mkfifo");
+    }
+
+    /// Run `f` on its own thread and give it five seconds: a regression that blocks
+    /// on the FIFO fails this assertion instead of hanging the suite.
+    pub(crate) fn within_5s<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the call blocked on a FIFO for five seconds")
+    }
 }
 
 #[cfg(test)]
@@ -1058,6 +1094,76 @@ mod tests {
         std::fs::write(dir.join("DIRECTION.md"), &big).unwrap();
         assert!(matches!(
             read_driver_run_text(&dir),
+            Err(FrontmatterError::Io { .. })
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn open_run_file_refuses_a_fifo_without_blocking() {
+        use super::fifo_test_support::{mkfifo, within_5s};
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("DIRECTION.md");
+        mkfifo(&fifo);
+        let result = within_5s(move || open_run_file(&fifo).map(|_| ()));
+        let error = result.expect_err("a FIFO is not a regular file");
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_run_file_refuses_a_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("real.md");
+        std::fs::write(&target, "x").unwrap();
+        let link = tmp.path().join("DIRECTION.md");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let error = open_run_file(&link).expect_err("a link is not followed");
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        // A regular file opens, and a missing one stays NotFound.
+        assert!(open_run_file(&target).is_ok());
+        let missing = open_run_file(&tmp.path().join("nope")).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_driver_run_text_refuses_a_fifo_direction_without_blocking() {
+        use super::fifo_test_support::{mkfifo, within_5s};
+        let tmp = tempfile::tempdir().unwrap();
+        write_run(tmp.path(), "20261019-good");
+        let bad = tmp.path().join(DRIVER_RUNS_REL).join("20261020-fifo");
+        std::fs::create_dir_all(&bad).unwrap();
+        mkfifo(&bad.join("DIRECTION.md"));
+
+        let dir = bad.clone();
+        let result = within_5s(move || read_driver_run_text(&dir).map(|_| ()));
+        assert!(matches!(result, Err(FrontmatterError::Io { .. })), "{result:?}");
+
+        // The run list shows it as an unreadable row beside the good one.
+        let root = tmp.path().to_path_buf();
+        let rows = within_5s(move || list_driver_runs(&root, 20));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "20261020-fifo");
+        assert!(rows[0].1.is_err());
+        assert!(rows[1].1.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_driver_run_text_refuses_a_symlinked_direction() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_run(tmp.path(), "20261019-real");
+        let real = tmp
+            .path()
+            .join(DRIVER_RUNS_REL)
+            .join("20261019-real")
+            .join("DIRECTION.md");
+        let linked = tmp.path().join(DRIVER_RUNS_REL).join("20261020-link");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(&real, linked.join("DIRECTION.md")).unwrap();
+        assert!(matches!(
+            read_driver_run_text(&linked),
             Err(FrontmatterError::Io { .. })
         ));
     }

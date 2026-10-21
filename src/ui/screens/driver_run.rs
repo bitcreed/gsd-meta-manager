@@ -5815,6 +5815,38 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_log_delta_skips_a_fifo_log_without_blocking() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = tempfile::tempdir().unwrap();
+        mkfifo(&dir.path().join("LOG.md"));
+        let run = dir.path().to_path_buf();
+        let cursor = TailCursor { offset: 7 };
+        let read = within_5s(move || read_log_delta(&run, LOG_RUN, cursor, None));
+        assert!(read.lines.is_empty());
+        assert!(!read.missing, "a FIFO is not an absent log");
+        assert!(!read.reset);
+        assert_eq!(read.cursor, cursor, "the cursor is untouched");
+        assert_eq!(read.ident, None);
+
+        // A regular log still tails incrementally on the one handle, and a replaced
+        // one (a different inode) still resets.
+        let plain = tempfile::tempdir().unwrap();
+        let log = plain.path().join("LOG.md");
+        std::fs::write(&log, log_header("2026-10-20T14:02:11Z", "I-01", "one", "")).unwrap();
+        let first = read_log_delta(plain.path(), LOG_RUN, TailCursor::default(), None);
+        assert!(!first.lines.is_empty(), "{first:?}");
+        assert!(first.ident.is_some());
+        let again = read_log_delta(plain.path(), LOG_RUN, first.cursor, first.ident);
+        assert!(again.lines.is_empty() && !again.reset);
+        std::fs::remove_file(&log).unwrap();
+        std::fs::write(&log, log_header("2026-10-20T14:09:00Z", "I-02", "two", "")).unwrap();
+        let replaced = read_log_delta(plain.path(), LOG_RUN, first.cursor, first.ident);
+        assert!(replaced.reset, "{replaced:?}");
+        assert!(!replaced.lines.is_empty());
+    }
+
     #[test]
     fn launcher_log_the_pane_reads_log_md_only() {
         let dir = tempfile::tempdir().unwrap();

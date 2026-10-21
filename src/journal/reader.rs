@@ -132,6 +132,17 @@ pub struct TailRead {
     pub skipped_oversize: bool,
 }
 
+/// Read every complete line after `cursor` from an already-open handle.
+///
+/// SKELETON (RED).
+pub fn tail_file(file: &mut File, cursor: TailCursor) -> io::Result<TailRead> {
+    let _ = file;
+    Ok(TailRead {
+        cursor,
+        ..Default::default()
+    })
+}
+
 /// Read every complete line after `cursor`, leaving a torn tail unconsumed.
 ///
 /// Four edge cases are handled deliberately, each marked at its branch:
@@ -413,6 +424,34 @@ mod tests {
             .open(path)
             .expect("open");
         f.write_all(bytes).expect("write");
+    }
+
+    #[test]
+    fn tail_file_reads_from_an_open_handle() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let journal = dir.path().join("journal.jsonl");
+        append(&journal, "{\"seq\":1}\n{\"seq\":2}\n{\"seq\":3");
+
+        let mut file = File::open(&journal).expect("open");
+        let by_handle = tail_file(&mut file, TailCursor::default()).expect("tail");
+        let by_path = tail_lines(&journal, TailCursor::default()).expect("tail");
+        assert_eq!(by_handle.lines, vec!["{\"seq\":1}", "{\"seq\":2}"]);
+        assert_eq!(by_handle.lines, by_path.lines);
+        assert_eq!(by_handle.cursor.offset, by_path.cursor.offset);
+        assert_eq!(by_handle.cursor.offset, 20, "the torn tail is left unconsumed");
+
+        // The same handle keeps working after an append (one open, many reads).
+        append(&journal, "}\n");
+        let next = tail_file(&mut file, by_handle.cursor).expect("tail");
+        assert_eq!(next.lines, vec!["{\"seq\":3}"]);
+
+        // A handle on a file shorter than the cursor restarts from 0.
+        let short = dir.path().join("short.jsonl");
+        append(&short, "{\"a\":1}\n");
+        let mut handle = File::open(&short).expect("open");
+        let read = tail_file(&mut handle, TailCursor { offset: 99 }).expect("tail");
+        assert!(read.restarted);
+        assert_eq!(read.lines, vec!["{\"a\":1}"]);
     }
 
     #[test]
