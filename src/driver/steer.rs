@@ -1081,6 +1081,125 @@ pub(crate) mod tests {
         );
     }
 
+    /// `(inode, mtime)` of the run's DIRECTION.md, and whether any splice temp is left.
+    #[cfg(target_os = "linux")]
+    fn file_identity(dir: &Path) -> (u64, std::time::SystemTime) {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(dir.join("DIRECTION.md")).unwrap();
+        (meta.ino(), meta.modified().unwrap())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn no_splice_temp(dir: &Path) -> bool {
+        std::fs::read_dir(dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(crate::driver::direction::TEMP_PREFIX)
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn steer_run_unchanged_and_refused_leave_the_inode_alone() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let before = file_identity(dir.path());
+        let text = live_text(dir.path());
+
+        // The body already says `run` (the template's control word).
+        let outcome = steer_run(dir.path(), &SteerOp::SetControl("run".to_string()));
+        assert_eq!(outcome, SteerOutcome::Unchanged);
+        assert_eq!(
+            file_identity(dir.path()),
+            before,
+            "an unchanged body is not rewritten"
+        );
+
+        let outcome = steer_run(
+            dir.path(),
+            &SteerOp::Answer {
+                item: "I-99".to_string(),
+                text: "nope".to_string(),
+            },
+        );
+        assert!(matches!(outcome, SteerOutcome::Refused(_)), "{outcome:?}");
+        assert_eq!(
+            file_identity(dir.path()),
+            before,
+            "a refusal is not rewritten"
+        );
+
+        let outcome = steer_run(dir.path(), &SteerOp::SetControl("halt".to_string()));
+        assert!(matches!(outcome, SteerOutcome::Refused(_)), "{outcome:?}");
+        assert_eq!(file_identity(dir.path()), before);
+        assert_eq!(live_text(dir.path()), text);
+        assert!(no_splice_temp(dir.path()));
+
+        // A real change still writes: the inode moves.
+        let outcome = steer_run(dir.path(), &SteerOp::SetControl("pause".to_string()));
+        assert!(
+            matches!(outcome, SteerOutcome::Written { .. }),
+            "{outcome:?}"
+        );
+        assert_ne!(file_identity(dir.path()).0, before.0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn apply_edit_conflict_leaves_the_inode_alone() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let prepared = prepare_edit(dir.path()).expect("prepare");
+        std::fs::write(&prepared.temp, prepared.base.replace("Prove it", "edited")).unwrap();
+        // Someone else changes the body while the editor is open.
+        let raced = clean_body().replace("It works.", "It works, raced.");
+        write_run(dir.path(), &raced);
+        let before = file_identity(dir.path());
+
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, false);
+
+        assert_eq!(outcome, EditOutcome::Conflict);
+        assert_eq!(
+            file_identity(dir.path()),
+            before,
+            "the raced file is not rewritten"
+        );
+        assert!(no_splice_temp(dir.path()));
+        assert!(prepared.temp.exists(), "the user's text is kept");
+    }
+
+    #[test]
+    fn answer_on_an_unterminated_last_heading_writes_a_line_of_its_own() {
+        let body = "## Direction\n\n- control: run\n\n## Items\n\n### I-05 last title";
+        let new = answer(body, "I-05", "foo").expect("an answer on the last heading");
+        assert!(
+            new.ends_with("### I-05 last title\n- answer: foo\n- hold: false\n"),
+            "{new:?}"
+        );
+        let items = read_items(&new);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].title, "last title");
+        assert_eq!(items[0].answer.as_deref(), Some("foo"));
+        assert_eq!(items[0].hold.as_deref(), Some("false"));
+
+        let freed = unhold(body, "I-05").expect("un-hold on the last heading");
+        assert!(
+            freed.ends_with("### I-05 last title\n- hold: false\n"),
+            "{freed:?}"
+        );
+        assert_eq!(read_items(&freed)[0].hold.as_deref(), Some("false"));
+
+        // The same shape with CRLF line ends keeps its terminator.
+        let crlf = "## Direction\r\n\r\n- control: run\r\n\r\n## Items\r\n\r\n### I-05 last title";
+        let new = answer(crlf, "I-05", "foo").expect("answer on a CRLF body");
+        assert!(
+            new.ends_with("### I-05 last title\r\n- answer: foo\r\n- hold: false\r\n"),
+            "{new:?}"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn launcher_steer_a_missing_file_and_an_insane_body_are_not_written() {

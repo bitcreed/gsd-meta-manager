@@ -1005,6 +1005,28 @@ mod tests {
         }
 
         #[test]
+        fn write_body_leaves_the_file_alone_when_the_body_is_unchanged() {
+            use std::os::unix::fs::MetadataExt;
+            let seeded = format!("{}{BODY}", block(4));
+            let dir = run_dir_with(&seeded);
+            let path = dir.path().join(DIRECTION_FILE);
+            let before = std::fs::metadata(&path).expect("stat");
+
+            let report = write_body(dir.path(), |live| live.to_string()).expect("write_body");
+
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+            let after = std::fs::metadata(&path).expect("stat");
+            assert_eq!(
+                after.ino(),
+                before.ino(),
+                "same inode: nothing was exchanged"
+            );
+            assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+            assert_eq!(read(&dir), seeded);
+            assert!(no_temps_left(&dir), "no .DIRECTION.md.fm.* temp was made");
+        }
+
+        #[test]
         fn write_body_refuses_an_insane_body() {
             let seeded = format!("{}{BODY}", block(4));
             let dir = run_dir_with(&seeded);
