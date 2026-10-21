@@ -441,8 +441,15 @@ impl Screen for DriverConfirmScreen {
         let is_start = matches!(self.action, DriverAction::Start);
         let goal = goal_row(self.goal.as_deref().filter(|_| is_start));
 
-        // The dashboard stays rendered, dimmed, behind the popup.
-        super::normal::NormalScreen::new().render(frame, area, ctx);
+        // The screen it was opened from stays rendered, dimmed, behind the popup. The
+        // kill confirmation (`x`) is opened from the Driver tab, so it keeps that tab in
+        // view (UI D6 `[inferred — audit]`); every other action is also opened from the
+        // dashboard and keeps the dashboard.
+        if matches!(self.action, DriverAction::StopLauncher) {
+            super::detail::DetailScreen::new(self.alias.clone()).render_main_only(frame, area, ctx);
+        } else {
+            super::normal::NormalScreen::new().render(frame, area, ctx);
+        }
         super::confirm_popup::dim_background(frame, area);
         let mut body: Vec<Line<'static>> = Vec::new();
         let mut disclosure: Option<String> = None;

@@ -30,7 +30,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 use std::path::{Path, PathBuf};
 
@@ -115,8 +115,11 @@ pub fn steered_message(
         ),
         (SteerOp::Answer { item, .. }, SteerOutcome::Written { lock_timed_out }) => {
             let text = match park_rule.filter(|rule| *rule != NEEDS_HUMAN_RULE) {
+                // Short enough for the 62 cells the status bar has at 80 columns, so
+                // the key hints survive; the long OQ-R1 sentence is the answer input's
+                // second row (D-16 `[inferred — audit]`).
                 Some(rule) => format!(
-                    "Answer written to {}, but it is parked by {}: an answer alone will not resume it. Raise its budget with [e] or relaunch with higher caps with [R].",
+                    "{} answered; {} parks it: [e] budget, [R] caps.",
                     render(item),
                     render(rule)
                 ),
@@ -546,29 +549,44 @@ impl Screen for AnswerScreen {
             crate::text::render_for_terminal(&self.buffer).as_ref(),
             room,
         );
-        let mut rows = vec![Line::from(vec![
+        let input_row = Line::from(vec![
             Span::styled(prompt, bold()),
             Span::raw(echoed),
             Span::raw("_"),
             Span::styled(hint, muted()),
-        ])];
+        ]);
+        // Rows 2+ (the Red refusal and the Yellow OQ-R1 warning) are sentences, not a
+        // scroll pane: they wrap onto as many footer rows as they need, so they end
+        // visibly (UI D3). Both are already escaped by their builders.
+        let mut notes: Vec<Line<'static>> = Vec::new();
         if let Some(error) = &self.error {
-            rows.push(Line::from(Span::styled(
+            notes.push(Line::from(Span::styled(
                 format!("    {error}"),
                 Style::default().fg(Color::Red),
             )));
         }
         if let Some(note) = park_warning(&self.item, self.park_rule.as_deref()) {
-            rows.push(Line::from(Span::styled(
+            notes.push(Line::from(Span::styled(
                 format!("    {note}"),
                 Style::default().fg(Color::Yellow),
             )));
         }
-        let height = u16::try_from(rows.len()).unwrap_or(1);
+        let note_rows = if notes.is_empty() {
+            0
+        } else {
+            Paragraph::new(notes.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(area.width.max(1))
+        };
+        let notes = Paragraph::new(notes).wrap(Wrap { trim: false });
+        let cap = usize::from((area.height / 2).max(2));
+        let height = u16::try_from((1 + note_rows).min(cap)).unwrap_or(1);
         let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).split(area);
         let detail = super::detail::DetailScreen::new(self.alias.clone());
         detail.render_main_only(frame, chunks[0], ctx);
-        frame.render_widget(Paragraph::new(rows), chunks[1]);
+        let footer = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(chunks[1]);
+        frame.render_widget(Paragraph::new(input_row), footer[0]);
+        frame.render_widget(notes, footer[1]);
     }
 
     fn name(&self) -> &str {
