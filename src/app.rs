@@ -335,6 +335,25 @@ pub fn driver_elapsed_redraw_wanted(
     driver_tab_is_on_top(top_screen_name, sub_view) && run.is_some_and(|run| run.is_live())
 }
 
+/// Whether the selected launcher run's heartbeat age needs a frame this tick (D-08).
+///
+/// The age is `now − heartbeat`, recomputed at render time, so it changes every
+/// second a live run is on screen and a frame only on a file event would freeze it
+/// (and with it the `stale` flag). Same shape as [`driver_elapsed_redraw_wanted`]:
+/// the Driver tab is on top **and** the highlighted launcher run is live, so an idle
+/// fleet, a finished run and every other tab repaint nothing. It rides the existing
+/// 250 ms tick (no new timer) and reads only the cache (no file I/O per tick).
+///
+/// Pure, so its truth table is assertable without a terminal.
+pub fn launcher_heartbeat_redraw_wanted(
+    top_screen_name: &str,
+    sub_view: Option<&DetailSubView>,
+    cache: Option<&crate::ui::screens::ProjectViewCache>,
+) -> bool {
+    driver_tab_is_on_top(top_screen_name, sub_view)
+        && crate::ui::screens::driver_run::selected_run_is_live(cache)
+}
+
 /// Whether the Driver tab is the surface the user is actually looking at.
 ///
 /// Shared with [`driver_elapsed_redraw_wanted`] rather than written twice: the
@@ -907,6 +926,21 @@ impl App {
         )
     }
 
+    /// Gather the facts [`launcher_heartbeat_redraw_wanted`] decides on (30-02, D-08).
+    fn launcher_heartbeat_redraw_due(&self) -> bool {
+        let Some(top) = self.screen_stack.last() else {
+            return false;
+        };
+        let Some(alias) = self.ctx.selected_alias() else {
+            return false;
+        };
+        launcher_heartbeat_redraw_wanted(
+            top.name(),
+            self.ctx.detail_sub_view_per_project.get(&alias),
+            self.ctx.view_cache.get(&alias),
+        )
+    }
+
     /// Rescan the selected project's run list, inbox and journal **if the
     /// Driver tab is the surface on screen** (CR-04).
     ///
@@ -1267,6 +1301,11 @@ impl App {
                 // The predicate is a pure function so its truth table is
                 // assertable without a terminal.
                 if self.driver_elapsed_redraw_due() {
+                    self.needs_redraw = true;
+                }
+                // The selected launcher run's heartbeat age (30-02, D-08): the same
+                // gate shape, the same tick, no timer of its own.
+                if self.launcher_heartbeat_redraw_due() {
                     self.needs_redraw = true;
                 }
 
@@ -4292,6 +4331,135 @@ mod tests {
         ));
     }
 
+    /// D-08: the heartbeat age is recomputed at render time, so a frame is wanted every
+    /// tick while the Driver tab shows a live launcher run, and in no other case.
+    #[test]
+    fn the_launcher_heartbeat_gate_truth_table() {
+        use crate::state_reader::driver_frontmatter::{
+            parse_driver_frontmatter, DerivedStatus, DriverRunView, RunStatus,
+        };
+        use crate::ui::screens::detail::DetailScreen;
+        use crate::ui::screens::ProjectViewCache;
+
+        let cache_with = |derived: DerivedStatus| {
+            let frontmatter = parse_driver_frontmatter(include_str!(
+                "../tests/fixtures/driverctl/direction/s003-run1b.md"
+            ))
+            .expect("the spike fixture parses");
+            ProjectViewCache {
+                launcher_runs: vec![(
+                    "20261020-a".to_string(),
+                    Ok(DriverRunView {
+                        frontmatter,
+                        derived,
+                    }),
+                )],
+                launcher_listed: true,
+                ..ProjectViewCache::default()
+            }
+        };
+        let live = cache_with(DerivedStatus::AsWritten(RunStatus::Running));
+        let starting = cache_with(DerivedStatus::AsWritten(RunStatus::Starting));
+        let driver = Some(&DetailSubView::Driver);
+
+        assert!(launcher_heartbeat_redraw_wanted(
+            DetailScreen::NAME,
+            driver,
+            Some(&live)
+        ));
+        assert!(launcher_heartbeat_redraw_wanted(
+            DetailScreen::NAME,
+            driver,
+            Some(&starting)
+        ));
+        // Not on the Driver tab, or not on the detail screen.
+        assert!(!launcher_heartbeat_redraw_wanted(
+            "normal",
+            driver,
+            Some(&live)
+        ));
+        assert!(!launcher_heartbeat_redraw_wanted(
+            DetailScreen::NAME,
+            Some(&DetailSubView::Pipeline),
+            Some(&live)
+        ));
+        assert!(!launcher_heartbeat_redraw_wanted(
+            DetailScreen::NAME,
+            None,
+            Some(&live)
+        ));
+        // A run that is not live has a frozen age: no frame.
+        for derived in [
+            DerivedStatus::Crashed {
+                written: RunStatus::Running,
+            },
+            DerivedStatus::NotLaunched,
+            DerivedStatus::LivenessUnknown {
+                written: RunStatus::Running,
+            },
+            DerivedStatus::AsWritten(RunStatus::Done),
+            DerivedStatus::AsWritten(RunStatus::Parked),
+        ] {
+            let cache = cache_with(derived.clone());
+            assert!(
+                !launcher_heartbeat_redraw_wanted(DetailScreen::NAME, driver, Some(&cache)),
+                "{derived:?}"
+            );
+        }
+        // No cache, an empty one, or a legacy row selected: nothing to age.
+        assert!(!launcher_heartbeat_redraw_wanted(
+            DetailScreen::NAME,
+            driver,
+            None
+        ));
+        assert!(!launcher_heartbeat_redraw_wanted(
+            DetailScreen::NAME,
+            driver,
+            Some(&ProjectViewCache::default())
+        ));
+        let mut legacy_selected = cache_with(DerivedStatus::AsWritten(RunStatus::Running));
+        legacy_selected.driver_runs = vec![crate::journal::RunSummary {
+            run_id: "2026-07-29T21-40-00Z-3f2a".to_string(),
+            started_at: "2026-07-29T21:40:00Z".to_string(),
+            ended_at: None,
+            goal: "g".to_string(),
+            gsd_command: "/gsd:execute-phase 18".to_string(),
+            outcome: None,
+        }];
+        legacy_selected.legacy_expanded = true;
+        legacy_selected.legacy_row_selected = true;
+        assert!(!launcher_heartbeat_redraw_wanted(
+            DetailScreen::NAME,
+            driver,
+            Some(&legacy_selected)
+        ));
+    }
+
+    /// The tick turns the gate into a redraw request, and only for a live selected run.
+    #[tokio::test]
+    async fn launcher_view_a_tick_redraws_for_a_live_selected_run_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_items_run(dir.path(), "");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        // `write_items_run` writes a paused run: not live, so a tick draws nothing.
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(!app.needs_redraw, "a paused run has a frozen age");
+
+        // Make the selected row live and tick again.
+        let cache = app.ctx.view_cache.get_mut(OBS_ALIAS).expect("the cache");
+        if let Ok(view) = &mut cache.launcher_runs[0].1 {
+            view.derived = crate::state_reader::driver_frontmatter::DerivedStatus::AsWritten(
+                crate::state_reader::driver_frontmatter::RunStatus::Running,
+            );
+        }
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(app.needs_redraw, "a live run's age advances every tick");
+    }
+
     /// CR-04's first failure: the tab froze at the moment it was entered.
     ///
     /// `schedule_run_list_scan` had exactly two call sites — tab entry and
@@ -4482,6 +4650,9 @@ mod tests {
         frontmatter.status = RunStatus::Running;
         frontmatter.status_reason = None;
         frontmatter.launches = 1;
+        // A held lock must read `running`, not stale: the fixture's own heartbeat
+        // stamps are fixed dates.
+        crate::ui::screens::driver_run::refresh_heartbeats(&mut frontmatter);
         std::fs::write(
             run_dir.join("DIRECTION.md"),
             format!(

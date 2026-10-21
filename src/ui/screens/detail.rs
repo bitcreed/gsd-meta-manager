@@ -19582,6 +19582,7 @@ mod tests {
         )
         .expect("the spike fixture parses");
         frontmatter.run_id = id.to_string();
+        super::super::driver_run::refresh_heartbeats(&mut frontmatter);
         (
             id.to_string(),
             Ok(crate::state_reader::driver_frontmatter::DriverRunView {

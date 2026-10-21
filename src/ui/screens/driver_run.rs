@@ -23,6 +23,7 @@
 
 use std::cell::Cell;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -41,7 +42,8 @@ use crate::driver::reconcile::RunVerdict;
 use crate::driver::steer::BodyItem;
 use crate::journal::RunSummary;
 use crate::state_reader::driver_frontmatter::{
-    DerivedStatus, DriverRunEntry, DriverRunView, ItemState, RunStatus,
+    Connection, DerivedStatus, DriverFrontmatter, DriverRunEntry, DriverRunView, ItemState,
+    RunStatus,
 };
 
 // ── Run-status glyphs (fixed `&'static str`, `\u{…}` per PATTERNS S7) ───────
@@ -104,6 +106,40 @@ const ITEM_ID_CELLS: usize = 5;
 /// cells, padded to eight so the dispatch count has a gap before it.
 const ITEM_WORD_CELLS: usize = 8;
 
+/// `◈` U+25C8 — a run whose lock is held but whose heartbeat is older than the
+/// file's own threshold (D-08). Never `crashed`: the lock is the liveness authority.
+pub const GLYPH_RUN_STALE: &str = "\u{25C8}";
+
+/// `█` U+2588 — a filled cap-bar cell.
+const GLYPH_BAR_FILLED: &str = "\u{2588}";
+/// `░` U+2591 — an empty cap-bar cell.
+const GLYPH_BAR_EMPTY: &str = "\u{2591}";
+
+/// Cells in a cap bar: one cell is 10 % of the limit.
+pub const CAP_BAR_CELLS: usize = 10;
+
+/// The fixed cells of a cap row: indent 2 + label 10 + gap 1 + value 9 (`9999/9999`,
+/// right-aligned) + gap 1 + bar 10 = 33. Must stay `<= DRIVER_DETAIL_MIN_CELLS` (39)
+/// so the bar is complete at the narrowest detail pane; a test asserts it.
+pub const CAP_ROW_FIXED_CELLS: u16 = 33;
+
+/// The value column of a cap row, wide enough for `9999/9999`.
+const CAP_VALUE_CELLS: usize = 9;
+
+/// Connection rows shown before the `… {k} more` row.
+pub const CONNECTED_MAX_ROWS: usize = 3;
+
+/// LOG tail content rows, below its rule (the layout tiers of plan 30-03 reserve it).
+pub const LOG_MIN_ROWS: usize = 3;
+
+/// The role column of a connection row (`launcher`, `driver`).
+const CONNECTED_ROLE_CELLS: usize = 9;
+/// The state column of a connection row.
+const CONNECTED_STATE_CELLS: usize = 12;
+
+/// The separator between the two halves of a header row.
+const HEADER_SEP: &str = "  \u{B7}  ";
+
 /// The marker after a frontmatter-only item's (empty) title.
 const NOT_IN_DIRECTION: &str = "[not in DIRECTION]";
 
@@ -152,6 +188,27 @@ fn crashed_cell() -> StatusCell {
 /// `LivenessUnknown` carry the written word for the header's reason row, not for
 /// this cell. An entry that could not be read is `unreadable`, Yellow.
 pub fn status_cell(entry: &DriverRunEntry) -> StatusCell {
+    status_cell_at(entry, SystemTime::now())
+}
+
+/// [`status_cell`] at a given instant: the same table, plus the stale case (D-08). A
+/// run whose lock is held (`running`/`starting`) and whose heartbeat is older than the
+/// file's own `heartbeat_stale_after_s` reads `◈ stale` in Yellow, with the written
+/// word kept for the detail header. It is never called crashed.
+pub fn status_cell_at(entry: &DriverRunEntry, now: SystemTime) -> StatusCell {
+    let cell = base_status_cell(entry);
+    match &entry.1 {
+        Ok(view) if heartbeat_stale(&view.frontmatter, &view.derived, now) => StatusCell {
+            glyph: GLYPH_RUN_STALE,
+            list_word: "stale".to_owned(),
+            style: Style::default().fg(Color::Yellow),
+            ..cell
+        },
+        _ => cell,
+    }
+}
+
+fn base_status_cell(entry: &DriverRunEntry) -> StatusCell {
     let Ok(view) = &entry.1 else {
         return plain_cell(GLYPH_RUN_UNKNOWN, "unreadable", Color::Yellow);
     };
@@ -223,7 +280,17 @@ fn is_degraded(entry: &DriverRunEntry) -> bool {
 /// posture cell is `!` (Yellow, BOLD) when the frontmatter says `sandbox:
 /// degraded`, else a space.
 pub fn run_row(entry: &DriverRunEntry, selected: bool, inner_width: u16) -> Line<'static> {
-    let cell = status_cell(entry);
+    run_row_at(entry, selected, inner_width, SystemTime::now())
+}
+
+/// [`run_row`] at a given instant (the stale word depends on it).
+pub fn run_row_at(
+    entry: &DriverRunEntry,
+    selected: bool,
+    inner_width: u16,
+    now: SystemTime,
+) -> Line<'static> {
+    let cell = status_cell_at(entry, now);
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(6);
     let mut used = 0usize;
 
@@ -261,11 +328,374 @@ pub fn run_row(entry: &DriverRunEntry, selected: bool, inner_width: u16) -> Line
     Line::from(spans)
 }
 
-// ── The selected run's header (rows 1-2) ────────────────────────────────────
+// ── Control, heartbeat and the stale rule (D-05, D-08) ──────────────────────
+
+/// Whether a derived status is a live one: the run lock is held and the written
+/// status is `running` or `starting`. The only liveness the stale rule accepts.
+pub fn is_live(derived: &DerivedStatus) -> bool {
+    matches!(
+        derived,
+        DerivedStatus::AsWritten(RunStatus::Running | RunStatus::Starting)
+    )
+}
+
+/// Where a heartbeat stamp came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatSource {
+    /// The `last_heartbeat` of the `connected[]` entry with `role: driver`.
+    Driver,
+    /// The newest `last_heartbeat` of any connection: the launcher's own, which is
+    /// all there is until the driver's first heartbeat lands (the store records the
+    /// driver entry at launch with `last_heartbeat: None`). `[inferred — audit]`
+    LauncherStart,
+}
+
+/// The heartbeat stamp to age: the `role: driver` entry's `last_heartbeat`, else the
+/// newest stamp among all connections, tagged [`HeartbeatSource::LauncherStart`].
+/// `None` when no connection carries a stamp. "Newest" compares parsed instants; a
+/// stamp that does not parse ranks below any that does.
+pub fn heartbeat_source(fm: &DriverFrontmatter) -> Option<(String, HeartbeatSource)> {
+    if let Some(stamp) = fm
+        .connected
+        .iter()
+        .find(|c| c.role == "driver")
+        .and_then(|c| c.last_heartbeat.as_deref())
+    {
+        return Some((stamp.to_owned(), HeartbeatSource::Driver));
+    }
+    let rank = |stamp: &str| crate::driverctl::log::epoch_seconds(stamp).unwrap_or(f64::MIN);
+    let mut newest: Option<&str> = None;
+    for stamp in fm
+        .connected
+        .iter()
+        .filter_map(|c| c.last_heartbeat.as_deref())
+    {
+        if newest.is_none_or(|best| rank(stamp) > rank(best)) {
+            newest = Some(stamp);
+        }
+    }
+    newest.map(|stamp| (stamp.to_owned(), HeartbeatSource::LauncherStart))
+}
+
+/// `now − stamp` in whole seconds, rounded down. A stamp in the future (clock skew)
+/// is `0`; one that does not parse is `None`, never a panic.
+pub fn heartbeat_age_secs(stamp: &str, now: SystemTime) -> Option<u64> {
+    let at = crate::driverctl::log::epoch_seconds(stamp)?;
+    let now = now.duration_since(UNIX_EPOCH).ok()?.as_secs_f64();
+    let age = now - at;
+    Some(if age.is_finite() && age > 0.0 {
+        age.floor() as u64
+    } else {
+        0
+    })
+}
+
+/// An age in seconds as `m:ss` under an hour, `h:mm:ss` under a day, `{d}d {h}h`
+/// beyond.
+pub fn format_age(secs: u64) -> String {
+    match secs {
+        0..=3599 => format!("{}:{:02}", secs / 60, secs % 60),
+        3600..=86_399 => format!("{}:{:02}:{:02}", secs / 3600, secs % 3600 / 60, secs % 60),
+        _ => format!("{}d {}h", secs / 86_400, secs % 86_400 / 3600),
+    }
+}
+
+/// An RFC 3339 UTC stamp `ago_secs` before now. Test fixtures use it because the
+/// shared fixture file's heartbeats are fixed dates, which a live run would read as
+/// stale against the real clock.
+#[cfg(test)]
+pub(crate) fn stamp_ago(ago_secs: u64) -> String {
+    let at = SystemTime::now() - std::time::Duration::from_secs(ago_secs);
+    crate::driverctl::log::utc_string(chrono::DateTime::<chrono::Utc>::from(at))
+}
+
+/// Give every connection of a fixture frontmatter a heartbeat of right now.
+#[cfg(test)]
+pub(crate) fn refresh_heartbeats(fm: &mut DriverFrontmatter) {
+    for conn in &mut fm.connected {
+        conn.last_heartbeat = Some(stamp_ago(1));
+    }
+}
+
+/// The one stale rule (D-08), reused by the run list, the header and the status
+/// tokens: the run is live (`AsWritten(Running | Starting)`, which the reader returns
+/// only while the run lock is held) **and** its heartbeat is older than the file's own
+/// `heartbeat_stale_after_s`. The threshold is never a TUI constant, and a run that is
+/// not live is never judged: its age is information, not a verdict. No heartbeat
+/// stamp, or one that does not parse, is not stale either: there is nothing to age.
+pub fn heartbeat_stale(fm: &DriverFrontmatter, derived: &DerivedStatus, now: SystemTime) -> bool {
+    is_live(derived)
+        && heartbeat_source(fm)
+            .and_then(|(stamp, _)| heartbeat_age_secs(&stamp, now))
+            .is_some_and(|age| age > fm.heartbeat_stale_after_s)
+}
+
+/// The control word to show, and its pending suffix (D-05, D-28). `body_control` is
+/// the LIVE word from the DIRECTION body; `fm_control` is what the frontmatter last
+/// echoed.
+///
+/// Equal words (case-insensitive) show the word alone. Different words show the BODY
+/// word with `(pending)` on a live run (the driver reads it before its next dispatch)
+/// or `(at next launch)` on one that is not live; never `paused` or `stopped` for a
+/// write nothing has echoed. No `control:` line in the body is `(no control line)`.
+pub fn control_shown(
+    body_control: Option<&str>,
+    fm_control: Option<&str>,
+    live: bool,
+) -> (String, Option<&'static str>) {
+    let Some(body) = body_control else {
+        return ("(no control line)".to_owned(), None);
+    };
+    let echoed = fm_control.is_some_and(|fm| fm.trim().eq_ignore_ascii_case(body.trim()));
+    let suffix = match (echoed, live) {
+        (true, _) => None,
+        (false, true) => Some("(pending)"),
+        (false, false) => Some("(at next launch)"),
+    };
+    (shown_capped(body), suffix)
+}
+
+// ── Caps (D-07) ─────────────────────────────────────────────────────────────
+
+/// A 10-cell bar: `filled = min(10, used * 10 / limit)` with floor division. A limit
+/// of `0` is a full bar (and at-limit), never a division by zero. `[inferred — audit]`
+pub fn cap_bar(used: u64, limit: u64) -> String {
+    // A limit of 0 has no ratio: the bar is full rather than a division by zero.
+    let filled = used
+        .saturating_mul(10)
+        .checked_div(limit)
+        .map_or(CAP_BAR_CELLS, |cells| {
+            usize::try_from(cells)
+                .unwrap_or(CAP_BAR_CELLS)
+                .min(CAP_BAR_CELLS)
+        });
+    format!(
+        "{}{}",
+        GLYPH_BAR_FILLED.repeat(filled),
+        GLYPH_BAR_EMPTY.repeat(CAP_BAR_CELLS - filled)
+    )
+}
+
+/// Whether a cap is at or over its limit: `used >= limit`, and a limit of `0` always.
+pub fn cap_at_limit(used: u64, limit: u64) -> bool {
+    limit == 0 || used >= limit
+}
+
+/// A fractional minutes figure as whole minutes, rounded down.
+fn whole_minutes(value: f64) -> u64 {
+    if value.is_finite() && value > 0.0 {
+        value.floor() as u64
+    } else {
+        0
+    }
+}
+
+/// One cap row: `indent 2 · label 10 · gap · value right-aligned 9 · gap · bar 10`,
+/// then `extra` after the bar. A cap at or over its limit is Yellow throughout with
+/// the value BOLD; a cap with no limit shows `{used}/–` and `no limit` muted instead
+/// of a bar.
+fn cap_row(
+    label: &str,
+    used: u64,
+    limit: Option<u64>,
+    extra: Option<String>,
+    width: usize,
+) -> Line<'static> {
+    let at_limit = limit.is_some_and(|limit| cap_at_limit(used, limit));
+    let base = if at_limit {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+    let value = match limit {
+        Some(limit) => format!("{used}/{limit}"),
+        None => format!("{used}/\u{2013}"),
+    };
+    let value_style = if at_limit {
+        base.add_modifier(Modifier::BOLD)
+    } else {
+        base
+    };
+    let mut spans = vec![
+        Span::styled(format!("  {} ", pad_cells(label, 10)), base),
+        Span::styled(format!("{value:>CAP_VALUE_CELLS$}"), value_style),
+        Span::styled(" ", base),
+    ];
+    spans.push(match limit {
+        Some(limit) => Span::styled(cap_bar(used, limit), base),
+        None => Span::styled("no limit", muted_style()),
+    });
+    if let Some(extra) = extra {
+        spans.push(Span::styled(format!("  {extra}"), label_style()));
+    }
+    clip_line(Line::from(spans), width)
+}
+
+/// The audit row (D-07): `logged · observed · denied`. `logged != observed` makes the
+/// whole row Red followed by ` MISMATCH` (Red, BOLD); `denied > 0` makes the denied
+/// value Yellow. The widest form that fits `width` with its `MISMATCH` is used, so
+/// the flag is never clipped off a narrow pane.
+fn audit_row(
+    audit: &crate::state_reader::driver_frontmatter::DispatchAudit,
+    width: usize,
+) -> Line<'static> {
+    let mismatch = audit.logged != audit.observed;
+    let base = if mismatch {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default()
+    };
+    let flag_cells = if mismatch { " MISMATCH".len() } else { 0 };
+    let (l, o, d) = (audit.logged, audit.observed, audit.denied);
+    let forms: [[String; 6]; 3] = [
+        [
+            "logged ".into(),
+            l.to_string(),
+            "  \u{B7}  observed ".into(),
+            o.to_string(),
+            "  \u{B7}  denied ".into(),
+            d.to_string(),
+        ],
+        [
+            "logged ".into(),
+            l.to_string(),
+            " \u{B7} observed ".into(),
+            o.to_string(),
+            " \u{B7} denied ".into(),
+            d.to_string(),
+        ],
+        [
+            String::new(),
+            l.to_string(),
+            "/".into(),
+            o.to_string(),
+            "/".into(),
+            d.to_string(),
+        ],
+    ];
+    let label = format!("  {:<7} ", "audit");
+    let room = width.saturating_sub(Span::raw(label.as_str()).width() + flag_cells);
+    let form = forms
+        .iter()
+        .find(|form| form.iter().map(|part| part.chars().count()).sum::<usize>() <= room)
+        .unwrap_or(&forms[2]);
+    let denied_style = if d > 0 { base.fg(Color::Yellow) } else { base };
+    let mut spans = vec![Span::styled(
+        label,
+        if mismatch { base } else { label_style() },
+    )];
+    for (index, part) in form.iter().enumerate() {
+        let style = if index == 5 { denied_style } else { base };
+        spans.push(Span::styled(part.clone(), style));
+    }
+    if mismatch {
+        spans.push(Span::styled(" MISMATCH", base.add_modifier(Modifier::BOLD)));
+    }
+    clip_line(Line::from(spans), width)
+}
+
+/// The caps section: its rule, the three caps, and the audit row.
+pub fn caps_section(fm: &DriverFrontmatter, width: usize) -> Vec<Line<'static>> {
+    let caps = &fm.caps;
+    vec![
+        section_rule("caps", width),
+        cap_row(
+            "dispatches",
+            u64::from(caps.dispatches.used),
+            caps.dispatches.limit.map(u64::from),
+            None,
+            width,
+        ),
+        cap_row(
+            "minutes",
+            whole_minutes(caps.wall_clock_min.used),
+            caps.wall_clock_min.limit.map(whole_minutes),
+            None,
+            width,
+        ),
+        cap_row(
+            "gap rounds",
+            u64::from(caps.gap_rounds.used),
+            caps.gap_rounds.limit.map(u64::from),
+            caps.gap_rounds
+                .phase
+                .as_deref()
+                .map(|phase| format!("phase {}", shown_capped(phase))),
+            width,
+        ),
+        audit_row(&fm.dispatch_audit, width),
+    ]
+}
+
+// ── Connected (D-09) ────────────────────────────────────────────────────────
+
+/// One connection row: `role (9) · state (12) · model · pid {pid} · hb {age} ·
+/// {scope_unit} · {session_id first 8}`, absent fields omitted, every field through
+/// `shown_capped`. No connection field decides liveness (D-09); `state` is the
+/// driver's own word, shown as content.
+fn connection_row(conn: &Connection, now: SystemTime, width: usize) -> Line<'static> {
+    let cut = |text: &str, cells: usize| pad_cells(&fit_cells(&shown_capped(text), cells), cells);
+    let mut text = format!(
+        "  {} {}",
+        cut(&conn.role, CONNECTED_ROLE_CELLS),
+        cut(&conn.state, CONNECTED_STATE_CELLS)
+    );
+    let mut push = |field: String| {
+        text.push_str("  ");
+        text.push_str(&field);
+    };
+    if let Some(model) = conn.model.as_deref() {
+        push(shown_capped(model));
+    }
+    if let Some(pid) = conn.pid {
+        push(format!("pid {pid}"));
+    }
+    if let Some(age) = conn
+        .last_heartbeat
+        .as_deref()
+        .and_then(|stamp| heartbeat_age_secs(stamp, now))
+    {
+        push(format!("hb {}", format_age(age)));
+    }
+    if let Some(unit) = conn.scope_unit.as_deref() {
+        push(shown_capped(unit));
+    }
+    if let Some(session) = conn.session_id.as_deref() {
+        push(shown_capped(&session.chars().take(8).collect::<String>()));
+    }
+    clip_line(Line::from(text), width)
+}
+
+/// The connected section: its rule, at most [`CONNECTED_MAX_ROWS`] rows then `… {k}
+/// more`, or `(none recorded)` for an empty list.
+pub fn connected_section(
+    fm: &DriverFrontmatter,
+    now: SystemTime,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![section_rule("connected", width)];
+    if fm.connected.is_empty() {
+        lines.push(Line::from(Span::styled("  (none recorded)", muted_style())));
+        return lines;
+    }
+    for conn in fm.connected.iter().take(CONNECTED_MAX_ROWS) {
+        lines.push(connection_row(conn, now, width));
+    }
+    let hidden = fm.connected.len().saturating_sub(CONNECTED_MAX_ROWS);
+    if hidden > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  \u{2026} {hidden} more"),
+            muted_style(),
+        )));
+    }
+    lines
+}
+
+// ── The selected run's header (rows 1-6) ────────────────────────────────────
 
 /// Header row 1: `glyph · detail word · run id`.
-fn header_row_1(entry: &DriverRunEntry, width: usize) -> Line<'static> {
-    let cell = status_cell(entry);
+fn header_row_1(entry: &DriverRunEntry, now: SystemTime, width: usize) -> Line<'static> {
+    let cell = status_cell_at(entry, now);
     let lead = format!("{} {}  ", cell.glyph, cell.detail_word);
     let room = width.saturating_sub(Span::raw(lead.as_str()).width());
     Line::from(vec![
@@ -281,10 +711,7 @@ fn header_row_1(entry: &DriverRunEntry, width: usize) -> Line<'static> {
 /// {written})` in Yellow, and any other run its `status_reason` or `(none
 /// recorded)` muted. The `{written}` word is the frontmatter's own status line,
 /// shown here and nowhere else as the thing the lock contradicts.
-fn header_row_2(
-    view: &crate::state_reader::driver_frontmatter::DriverRunView,
-    width: usize,
-) -> Line<'static> {
+fn header_row_2(view: &DriverRunView, width: usize) -> Line<'static> {
     let room = width.saturating_sub(HEADER_LABEL_CELLS);
     let (text, style) = match &view.derived {
         DerivedStatus::Crashed { written } => (
@@ -315,6 +742,255 @@ fn header_row_2(
         Span::styled(format!("  {:<7} ", "reason"), label_style()),
         Span::styled(fit_cells(&text, room), style),
     ])
+}
+
+/// `  {label:<7} ` — the label column of a header row; values start at column 10.
+fn label_span(label: &str) -> Span<'static> {
+    Span::styled(format!("  {label:<7} "), label_style())
+}
+
+/// How much of the heartbeat half to draw, widest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeartbeatForm {
+    /// `heartbeat 3:10 ago (launcher start) stale (after 5:00)`.
+    Full,
+    /// `heartbeat 3:10 ago stale`: the tags that are context, not flags, dropped.
+    Short,
+    /// `hb 3:10 stale`: for the narrowest detail pane.
+    Tiny,
+}
+
+/// The heartbeat half of header row 3 (D-08): `heartbeat {age} ago` with the
+/// `(launcher start)` tag after a fallback stamp, and on a stale live run ` stale`
+/// (Yellow, BOLD) and ` (after {threshold})` (DarkGray). A run that is not live shows
+/// the age DarkGray with no judgement. No usable stamp is `heartbeat (none recorded)`.
+/// The narrower forms drop the context tags and never the `stale` flag.
+fn heartbeat_spans(
+    view: &DriverRunView,
+    now: SystemTime,
+    form: HeartbeatForm,
+) -> Vec<Span<'static>> {
+    let fm = &view.frontmatter;
+    let Some(age) = heartbeat_source(fm)
+        .and_then(|(stamp, source)| heartbeat_age_secs(&stamp, now).map(|age| (age, source)))
+    else {
+        let text = if form == HeartbeatForm::Tiny {
+            "hb (none)"
+        } else {
+            "heartbeat (none recorded)"
+        };
+        return vec![Span::styled(text, muted_style())];
+    };
+    let (age, source) = age;
+    let live = is_live(&view.derived);
+    let body = if live {
+        Style::default()
+    } else {
+        label_style()
+    };
+    let lead = match form {
+        HeartbeatForm::Tiny => format!("hb {}", format_age(age)),
+        _ => format!("heartbeat {} ago", format_age(age)),
+    };
+    let mut spans = vec![Span::styled(lead, body)];
+    if source == HeartbeatSource::LauncherStart && form == HeartbeatForm::Full {
+        spans.push(Span::styled(" (launcher start)", label_style()));
+    }
+    if heartbeat_stale(fm, &view.derived, now) {
+        spans.push(Span::styled(
+            " stale",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        if form == HeartbeatForm::Full {
+            spans.push(Span::styled(
+                format!(" (after {})", format_age(fm.heartbeat_stale_after_s)),
+                label_style(),
+            ));
+        }
+    }
+    spans
+}
+
+/// Header row 3: the live control word (from the body) and the heartbeat.
+///
+/// When the pair does not fit, the control word gives way before the heartbeat does:
+/// first the heartbeat sheds its context tags (never `stale`), and the control word
+/// is cut to the room left, so a flag outlives a benign word.
+fn header_row_3(
+    view: &DriverRunView,
+    body_control: Option<&str>,
+    now: SystemTime,
+    width: usize,
+) -> Line<'static> {
+    let live = is_live(&view.derived);
+    let (word, suffix) = control_shown(body_control, view.frontmatter.control.as_deref(), live);
+    let suffix_text = suffix.map(|s| format!(" {s}")).unwrap_or_default();
+    let control_cells = Span::raw(word.as_str()).width() + Span::raw(suffix_text.as_str()).width();
+    let sep_cells = Span::raw(HEADER_SEP).width();
+    let word_style = if body_control.is_none() {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+    let forms = [
+        HeartbeatForm::Full,
+        HeartbeatForm::Short,
+        HeartbeatForm::Tiny,
+    ];
+    let room_for = |heartbeat: &[Span<'static>]| {
+        let cells: usize = heartbeat.iter().map(Span::width).sum();
+        width.saturating_sub(HEADER_LABEL_CELLS + sep_cells + cells)
+    };
+    // The widest form that leaves the whole control word room; failing that, the
+    // widest that leaves it six cells; failing that, the narrowest.
+    let candidates: Vec<Vec<Span<'static>>> = forms
+        .iter()
+        .map(|form| heartbeat_spans(view, now, *form))
+        .collect();
+    let heartbeat = candidates
+        .iter()
+        .find(|hb| room_for(hb) >= control_cells)
+        .or_else(|| candidates.iter().find(|hb| room_for(hb) >= 6))
+        .unwrap_or(&candidates[2])
+        .clone();
+    let room = room_for(&heartbeat);
+    let mut spans = vec![label_span("control")];
+    if room >= control_cells {
+        spans.push(Span::styled(word, word_style));
+        if suffix.is_some() {
+            spans.push(Span::styled(suffix_text, label_style()));
+        }
+    } else {
+        spans.push(Span::styled(
+            fit_cells(&format!("{word}{suffix_text}"), room),
+            word_style,
+        ));
+    }
+    spans.push(Span::styled(HEADER_SEP, label_style()));
+    spans.extend(heartbeat);
+    clip_line(Line::from(spans), width)
+}
+
+/// Header row 4: the sandbox posture and the prompt version. `UNSANDBOXED` (Yellow,
+/// BOLD) with the `missing:` list (DarkGray) for a degraded run; a `custom:` prompt is
+/// Yellow. Absent values are `(not recorded)` muted.
+fn header_row_4(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
+    let mut spans = vec![label_span("sandbox")];
+    match fm.sandbox.as_deref() {
+        Some("degraded") => {
+            spans.push(Span::styled(
+                "UNSANDBOXED",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            if let Some(missing) = fm.sandbox_missing.as_ref().filter(|m| !m.is_empty()) {
+                let list = missing
+                    .iter()
+                    .map(|item| shown_capped(item))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                spans.push(Span::styled(format!(" missing: {list}"), label_style()));
+            }
+        }
+        Some(other) => spans.push(Span::raw(shown_capped(other))),
+        None => spans.push(Span::styled("(not recorded)", muted_style())),
+    }
+    spans.push(Span::styled(HEADER_SEP, label_style()));
+    match fm.prompt_version.as_deref() {
+        Some(version) => {
+            let custom = version.starts_with("custom:");
+            spans.push(Span::raw("prompt "));
+            spans.push(Span::styled(
+                shown_capped(version),
+                if custom {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                },
+            ));
+        }
+        None => spans.push(Span::styled("prompt (not recorded)", muted_style())),
+    }
+    clip_line(Line::from(spans), width)
+}
+
+/// Header row 5: `current_item · phase {current_phase} · {current_step}`, absent
+/// parts omitted; none at all is `(no item in progress)` muted.
+fn header_row_5(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(item) = fm.current_item.as_deref() {
+        parts.push(shown_capped(item));
+    }
+    if let Some(phase) = fm.current_phase.as_deref() {
+        parts.push(format!("phase {}", shown_capped(phase)));
+    }
+    if let Some(step) = fm.current_step.as_deref() {
+        parts.push(shown_capped(step));
+    }
+    let value = if parts.is_empty() {
+        Span::styled("(no item in progress)", muted_style())
+    } else {
+        Span::raw(parts.join(HEADER_SEP))
+    };
+    clip_line(Line::from(vec![label_span("at"), value]), width)
+}
+
+/// Header row 6: `{HH:MM local} {item} {event}: {summary}`; the time DarkGray, the
+/// rest default; none at all is `(no events yet)` muted.
+fn header_row_6(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
+    let event = &fm.last_event;
+    let time = event.at.as_deref().and_then(|at| {
+        chrono::DateTime::parse_from_rfc3339(at)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
+    });
+    let head: Vec<String> = [event.item.as_deref(), event.event.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(shown_capped)
+        .collect();
+    let summary = event.summary.as_deref().map(shown_capped);
+    if time.is_none() && head.is_empty() && summary.is_none() {
+        return Line::from(vec![
+            label_span("last"),
+            Span::styled("(no events yet)", muted_style()),
+        ]);
+    }
+    let mut text = head.join(" ");
+    if let Some(summary) = summary {
+        if text.is_empty() {
+            text = summary;
+        } else {
+            text = format!("{text}: {summary}");
+        }
+    }
+    let mut spans = vec![label_span("last")];
+    if let Some(time) = time {
+        spans.push(Span::styled(format!("{time} "), label_style()));
+    }
+    spans.push(Span::raw(text));
+    clip_line(Line::from(spans), width)
+}
+
+/// The six header rows of the FULL tier (UI-SPEC "Header — FULL").
+pub fn header_rows(
+    entry: &DriverRunEntry,
+    view: &DriverRunView,
+    body_control: Option<&str>,
+    now: SystemTime,
+    width: usize,
+) -> Vec<Line<'static>> {
+    vec![
+        header_row_1(entry, now, width),
+        header_row_2(view, width),
+        header_row_3(view, body_control, now, width),
+        header_row_4(&view.frontmatter, width),
+        header_row_5(&view.frontmatter, width),
+        header_row_6(&view.frontmatter, width),
+    ]
 }
 
 // ── The selected run's detail: one read of its own files (D-06, D-25) ──────
@@ -753,42 +1429,56 @@ pub fn items_section(
     lines
 }
 
-/// The detail pane's lines for the selected run, top to bottom.
+/// The detail pane's lines for the selected run, top to bottom: the six header rows,
+/// the items, the caps with the audit row, and the connections (plan 30-03 tiers this
+/// layout by height; the LOG tail is drawn below it by the caller).
 ///
 /// An unreadable entry gets the UI-SPEC unreadable copy: the error in Red and the
 /// promise that the run is read again on the next change to its directory.
 fn detail_lines(
     entry: &DriverRunEntry,
     cache: Option<&ProjectViewCache>,
+    now: SystemTime,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![header_row_1(entry, width)];
     match &entry.1 {
         Ok(view) => {
-            lines.push(header_row_2(view, width));
+            let detail = detail_for(cache, &entry.0);
+            let mut lines = header_rows(
+                entry,
+                view,
+                detail.and_then(|d| d.body_control.as_deref()),
+                now,
+                width,
+            );
             lines.extend(items_section(
-                detail_for(cache, &entry.0),
+                detail,
                 cache.and_then(|c| c.launcher_item_cursor.as_deref()),
                 None,
                 width,
             ));
+            lines.extend(caps_section(&view.frontmatter, width));
+            lines.extend(connected_section(&view.frontmatter, now, width));
+            lines
         }
         Err(error) => {
             let message = format!(
                 "DIRECTION.md could not be read: {}",
                 shown_capped(&error.to_string())
             );
-            lines.push(Line::from(Span::styled(
-                fit_cells(&message, width),
-                Style::default().fg(Color::Red),
-            )));
-            lines.push(Line::from(Span::styled(
-                "It is read again on the next change to the run directory.",
-                muted_style(),
-            )));
+            vec![
+                header_row_1(entry, now, width),
+                Line::from(Span::styled(
+                    fit_cells(&message, width),
+                    Style::default().fg(Color::Red),
+                )),
+                Line::from(Span::styled(
+                    "It is read again on the next change to the run directory.",
+                    muted_style(),
+                )),
+            ]
         }
     }
-    lines
 }
 
 /// What a steering, launch or kill key says when the highlight is on a legacy run.
@@ -858,6 +1548,18 @@ pub fn selection(cache: Option<&ProjectViewCache>) -> Selection {
     match cache.launcher_runs.len() {
         0 => Selection::Nothing,
         n => Selection::Launcher(cache.launcher_selected.min(n - 1)),
+    }
+}
+
+/// Whether the highlighted row is a launcher run whose lock is held
+/// (`AsWritten(Running | Starting)`). The input of the heartbeat-age redraw gate.
+pub fn selected_run_is_live(cache: Option<&ProjectViewCache>) -> bool {
+    match (selection(cache), cache) {
+        (Selection::Launcher(index), Some(cache)) => cache.launcher_runs[index]
+            .1
+            .as_ref()
+            .is_ok_and(|view| is_live(&view.derived)),
+        _ => false,
     }
 }
 
@@ -1149,6 +1851,9 @@ pub(super) fn render_launcher_tab(
     if area.width == 0 || area.height == 0 {
         return regions;
     }
+    // One clock read per frame: the heartbeat ages and the stale flag of every row
+    // and of the header are judged against the same instant. No file is touched.
+    let now = SystemTime::now();
     let runs: &[DriverRunEntry] = cache.map_or(&[], |c| c.launcher_runs.as_slice());
     let legacy: &[RunSummary] = cache.map_or(&[], |c| c.driver_runs.as_slice());
     let listed = cache.is_some_and(|c| c.launcher_listed);
@@ -1181,10 +1886,11 @@ pub(super) fn render_launcher_tab(
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                ListItem::new(run_row(
+                ListItem::new(run_row_at(
                     entry,
                     sel == Selection::Launcher(index),
                     rows.width,
+                    now,
                 ))
             })
             .collect();
@@ -1265,7 +1971,7 @@ pub(super) fn render_launcher_tab(
             regions.output = Some(detail_area);
         }
         Selection::Launcher(index) => {
-            let lines = detail_lines(&runs[index], cache, usize::from(inner.width));
+            let lines = detail_lines(&runs[index], cache, now, usize::from(inner.width));
             frame.render_widget(Paragraph::new(lines), inner);
         }
         Selection::Nothing => {
@@ -1299,6 +2005,11 @@ mod tests {
         frontmatter.run_id = id.to_owned();
         frontmatter.sandbox = sandbox.map(str::to_owned);
         frontmatter.status_reason = reason.map(str::to_owned);
+        // The fixture's own stamps are fixed dates: a live run would read stale.
+        refresh_heartbeats(&mut frontmatter);
+        // And its last event's summary says `status=crashed`, which a test that asserts
+        // a run is never called crashed must not trip over.
+        frontmatter.last_event.summary = Some("rc=0".to_owned());
         (
             id.to_owned(),
             Ok(DriverRunView {
@@ -2451,7 +3162,7 @@ mod tests {
         );
         let (rows, _) = render(cache_with_detail(detail.clone()), 100, 24);
         assert!(
-            row_with(&rows, "I-01").contains("\u{2691} parked"),
+            row_with(&rows, "I-01 \u{2691}").contains("parked"),
             "{rows:#?}"
         );
         assert!(
@@ -2591,5 +3302,758 @@ mod tests {
         assert_eq!(cache.launcher_selected_id.as_deref(), Some("20261019-b"));
         assert_eq!(cache.launcher_item_cursor, None);
         assert!(cache.launcher_detail.is_none());
+    }
+
+    // ── Task 2: control, heartbeat, caps, audit, connected ─────────────────
+
+    /// An entry built from the fixture with `edit` applied to its frontmatter (after
+    /// the heartbeats were refreshed), for the header, caps and connected tests.
+    fn entry_edit(
+        id: &str,
+        derived: DerivedStatus,
+        edit: impl FnOnce(&mut DriverFrontmatter),
+    ) -> DriverRunEntry {
+        let (id, entry) = entry(id, derived);
+        let mut view = entry.expect("the fixture parses");
+        edit(&mut view.frontmatter);
+        (id, Ok(view))
+    }
+
+    fn at(secs_after_epoch: u64) -> SystemTime {
+        UNIX_EPOCH + std::time::Duration::from_secs(secs_after_epoch)
+    }
+
+    #[test]
+    fn the_control_table_follows_the_ui_spec() {
+        // Equal words, case-insensitively: the word alone, live or not.
+        assert_eq!(
+            control_shown(Some("pause"), Some("pause"), true),
+            ("pause".into(), None)
+        );
+        assert_eq!(
+            control_shown(Some("pause"), Some("Pause"), false),
+            ("pause".into(), None)
+        );
+        // Different, live: the body word, pending.
+        assert_eq!(
+            control_shown(Some("pause"), Some("run"), true),
+            ("pause".into(), Some("(pending)"))
+        );
+        // Different, not live: the body word, at next launch. [inferred — audit]
+        assert_eq!(
+            control_shown(Some("stop"), Some("run"), false),
+            ("stop".into(), Some("(at next launch)"))
+        );
+        // The frontmatter never echoed one: still different.
+        assert_eq!(
+            control_shown(Some("run"), None, true),
+            ("run".into(), Some("(pending)"))
+        );
+        // No control line in the body.
+        assert_eq!(
+            control_shown(None, Some("run"), true),
+            ("(no control line)".into(), None)
+        );
+        // Never the words the driver has not echoed.
+        for (body, fm, live) in [
+            ("pause", "run", true),
+            ("stop", "run", false),
+            ("pause", "stop", true),
+        ] {
+            let (word, suffix) = control_shown(Some(body), Some(fm), live);
+            assert_eq!(word, body, "the body word, never `paused`/`stopped`");
+            assert!(suffix.is_some());
+        }
+    }
+
+    #[test]
+    fn age_formats_cross_each_unit_boundary() {
+        for (secs, text) in [
+            (0, "0:00"),
+            (59, "0:59"),
+            (60, "1:00"),
+            (190, "3:10"),
+            (3599, "59:59"),
+            (3600, "1:00:00"),
+            (86_399, "23:59:59"),
+            (86_400, "1d 0h"),
+            (90_000, "1d 1h"),
+        ] {
+            assert_eq!(format_age(secs), text, "{secs}");
+        }
+    }
+
+    #[test]
+    fn the_age_is_whole_seconds_rounded_down_with_future_and_garbage_handled() {
+        let now = at(1_000_000_000);
+        let stamp = |secs: u64| {
+            crate::driverctl::log::utc_string(chrono::DateTime::<chrono::Utc>::from(at(secs)))
+        };
+        assert_eq!(
+            heartbeat_age_secs(&stamp(1_000_000_000 - 190), now),
+            Some(190)
+        );
+        // A fraction of a second is rounded down.
+        let fractional = "2001-09-09T01:46:39.900Z"; // 999_999_999.9 s after the epoch
+        assert_eq!(heartbeat_age_secs(fractional, now), Some(0));
+        // A heartbeat stamped in the future (clock skew) is 0:00, never negative.
+        assert_eq!(heartbeat_age_secs(&stamp(1_000_000_500), now), Some(0));
+        // An unparseable stamp is None, never a panic.
+        for garbage in ["", "yesterday", "2026-13-45T99:00:00Z", "\u{1b}[2J"] {
+            assert_eq!(heartbeat_age_secs(garbage, now), None, "{garbage:?}");
+        }
+    }
+
+    #[test]
+    fn the_stale_boundary_is_the_files_threshold_and_the_age_must_exceed_it() {
+        let now = at(2_000_000_000);
+        let stamp = |ago: u64| {
+            crate::driverctl::log::utc_string(chrono::DateTime::<chrono::Utc>::from(at(
+                2_000_000_000 - ago,
+            )))
+        };
+        let fm_with = |ago: u64, threshold: u64| {
+            let (_, entry) = entry_edit("20261020-a", running(), |fm| {
+                fm.heartbeat_stale_after_s = threshold;
+                for conn in &mut fm.connected {
+                    conn.last_heartbeat = Some(stamp(ago));
+                }
+            });
+            entry.expect("readable").frontmatter
+        };
+        assert!(
+            !heartbeat_stale(&fm_with(300, 300), &running(), now),
+            "exactly 300 s is not stale"
+        );
+        assert!(
+            heartbeat_stale(&fm_with(301, 300), &running(), now),
+            "301 s is stale"
+        );
+        // The threshold is the file's, not a constant.
+        assert!(heartbeat_stale(&fm_with(121, 120), &running(), now));
+        assert!(!heartbeat_stale(&fm_with(121, 600), &running(), now));
+        // Starting counts as live; nothing else does.
+        assert!(heartbeat_stale(
+            &fm_with(999, 300),
+            &DerivedStatus::AsWritten(RunStatus::Starting),
+            now
+        ));
+        for derived in [
+            crashed(),
+            DerivedStatus::NotLaunched,
+            DerivedStatus::LivenessUnknown {
+                written: RunStatus::Running,
+            },
+            DerivedStatus::AsWritten(RunStatus::Parked),
+            DerivedStatus::AsWritten(RunStatus::Done),
+            DerivedStatus::AsWritten(RunStatus::Paused),
+        ] {
+            assert!(
+                !heartbeat_stale(&fm_with(99_999, 300), &derived, now),
+                "{derived:?} is not live, so it is never judged stale"
+            );
+        }
+        // No stamp at all: nothing to age.
+        let (_, none) = entry_edit("20261020-a", running(), |fm| {
+            for conn in &mut fm.connected {
+                conn.last_heartbeat = None;
+            }
+        });
+        assert!(!heartbeat_stale(
+            &none.unwrap().frontmatter,
+            &running(),
+            now
+        ));
+    }
+
+    #[test]
+    fn the_heartbeat_comes_from_the_driver_entry_else_the_newest_stamp_tagged_launcher_start() {
+        let (_, e) = entry_edit("20261020-a", running(), |fm| {
+            fm.connected[0].last_heartbeat = Some("2026-10-20T10:00:05Z".into()); // launcher
+            fm.connected[1].last_heartbeat = Some("2026-10-20T10:00:01Z".into());
+            // driver, OLDER
+        });
+        let fm = e.unwrap().frontmatter;
+        assert_eq!(
+            heartbeat_source(&fm),
+            Some(("2026-10-20T10:00:01Z".into(), HeartbeatSource::Driver)),
+            "the driver's own stamp wins even when the launcher's is newer"
+        );
+        let (_, e) = entry_edit("20261020-a", running(), |fm| {
+            fm.connected[0].last_heartbeat = Some("2026-10-20T10:00:05Z".into());
+            fm.connected[1].last_heartbeat = None; // the driver has not beaten yet
+        });
+        assert_eq!(
+            heartbeat_source(&e.unwrap().frontmatter),
+            Some((
+                "2026-10-20T10:00:05Z".into(),
+                HeartbeatSource::LauncherStart
+            ))
+        );
+        let (_, e) = entry_edit("20261020-a", running(), |fm| {
+            fm.connected.clear();
+        });
+        assert_eq!(heartbeat_source(&e.unwrap().frontmatter), None);
+    }
+
+    fn rendered_rows(entry: DriverRunEntry, width: u16, height: u16) -> Vec<String> {
+        render(cache_of(vec![entry]), width, height).0
+    }
+
+    #[test]
+    fn the_full_header_has_six_rows_with_the_ui_spec_content() {
+        let entry = entry_edit("20261020-driver-tab", running(), |fm| {
+            fm.status_reason = Some("driver dispatched I-03".into());
+            fm.control = Some("run".into());
+            fm.sandbox = Some("degraded".into());
+            fm.sandbox_missing = Some(vec!["bwrap".into(), "systemd-run".into()]);
+            fm.prompt_version = Some("custom:3fa9c0d1".into());
+            fm.current_item = Some("I-03".into());
+            fm.current_phase = Some("30".into());
+            fm.current_step = Some("execute".into());
+            fm.last_event = crate::state_reader::driver_frontmatter::LastEvent {
+                at: Some("2026-10-20T14:02:11Z".into()),
+                item: Some("I-03".into()),
+                event: Some("dispatched".into()),
+                summary: Some("plan 30-02".into()),
+            };
+            fm.connected[1].last_heartbeat = Some(stamp_ago(42));
+        });
+        let rows = rendered_rows(entry, 140, 30);
+        let find = |needle: &str| {
+            row_with(&rows, needle)
+                .split('\u{2502}')
+                .next_back()
+                .unwrap()
+                .trim_end()
+                .to_owned()
+        };
+        assert!(find("reason").contains("driver dispatched I-03"));
+        // No body detail yet: the body has no control line.
+        let control = find("control ");
+        assert!(control.contains("(no control line)"), "{control}");
+        assert!(control.contains("heartbeat 0:4"), "{control}");
+        assert!(control.contains(" ago"), "{control}");
+        assert_eq!(
+            find("sandbox"),
+            "  sandbox UNSANDBOXED missing: bwrap, systemd-run  \u{B7}  prompt custom:3fa9c0d1"
+        );
+        assert_eq!(
+            find("  at "),
+            "  at      I-03  \u{B7}  phase 30  \u{B7}  execute"
+        );
+        let local = chrono::DateTime::parse_from_rfc3339("2026-10-20T14:02:11Z")
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%H:%M")
+            .to_string();
+        assert_eq!(
+            find("  last "),
+            format!("  last    {local} I-03 dispatched: plan 30-02")
+        );
+    }
+
+    #[test]
+    fn empty_header_fields_render_their_named_placeholders() {
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.sandbox = None;
+            fm.prompt_version = None;
+            fm.current_item = None;
+            fm.current_phase = None;
+            fm.current_step = None;
+            fm.last_event = Default::default();
+            fm.connected.clear();
+        });
+        let rows = rendered_rows(entry, 140, 30);
+        let find = |needle: &str| {
+            row_with(&rows, needle)
+                .split('\u{2502}')
+                .next_back()
+                .unwrap()
+                .trim_end()
+                .to_owned()
+        };
+        assert_eq!(
+            find("sandbox"),
+            "  sandbox (not recorded)  \u{B7}  prompt (not recorded)"
+        );
+        assert_eq!(find("  at "), "  at      (no item in progress)");
+        assert_eq!(find("  last "), "  last    (no events yet)");
+        assert!(find("control ").contains("heartbeat (none recorded)"));
+        assert!(rows.iter().any(|r| r.contains("(none recorded)")));
+    }
+
+    #[test]
+    fn a_live_run_with_an_old_heartbeat_reads_stale_with_the_threshold_and_never_crashed() {
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.heartbeat_stale_after_s = 120;
+            fm.connected[1].last_heartbeat = Some(stamp_ago(190));
+        });
+        let rows = rendered_rows(entry, 140, 30);
+        let control = row_with(&rows, "control ");
+        assert!(control.contains("heartbeat 3:1"), "{control}");
+        assert!(control.contains("ago stale (after 2:00)"), "{control}");
+        let list = row_with(&rows, "20261020-a");
+        assert!(
+            list.contains("\u{25C8}"),
+            "the list glyph is the stale one: {list}"
+        );
+        assert!(list.contains("stale"), "{list}");
+        assert!(!rows.iter().any(|r| r.contains("crashed")), "{rows:#?}");
+        // `stale` is Yellow and BOLD in the header.
+        let (_, buffer) = render(
+            cache_of(vec![entry_edit("20261020-a", running(), |fm| {
+                fm.heartbeat_stale_after_s = 120;
+                fm.connected[1].last_heartbeat = Some(stamp_ago(190));
+            })]),
+            140,
+            30,
+        );
+        let mut found = false;
+        for y in 0..30u16 {
+            let line: String = (0..140u16)
+                .map(|x| buffer.cell((x, y)).map_or(" ", |c| c.symbol()))
+                .collect();
+            if let Some(col) = line.find(" stale (after") {
+                let cell = buffer.cell((u16::try_from(col + 1).unwrap(), y)).unwrap();
+                assert_eq!(cell.fg, Color::Yellow);
+                assert!(cell.modifier.contains(Modifier::BOLD));
+                found = true;
+            }
+        }
+        assert!(found, "no stale flag drawn");
+    }
+
+    #[test]
+    fn a_run_that_is_not_live_shows_the_age_without_a_stale_judgement() {
+        for derived in [
+            DerivedStatus::AsWritten(RunStatus::Done),
+            DerivedStatus::AsWritten(RunStatus::Paused),
+        ] {
+            let entry = entry_edit("20261020-a", derived, |fm| {
+                fm.connected[1].last_heartbeat = Some(stamp_ago(9_000));
+            });
+            let rows = rendered_rows(entry, 140, 30);
+            let control = row_with(&rows, "control ");
+            assert!(control.contains("heartbeat 2:30:0"), "{control}");
+            assert!(!control.contains("stale"), "{control}");
+        }
+    }
+
+    #[test]
+    fn the_launcher_start_fallback_is_labelled() {
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.connected[1].last_heartbeat = None;
+            fm.connected[0].last_heartbeat = Some(stamp_ago(20));
+        });
+        let rows = rendered_rows(entry, 140, 30);
+        let control = row_with(&rows, "control ");
+        assert!(control.contains("ago (launcher start)"), "{control}");
+    }
+
+    #[test]
+    fn a_body_control_the_frontmatter_has_not_echoed_is_pending_never_paused() {
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.control = Some("run".into())
+        });
+        let mut detail = detail_of("20261020-a", vec![], vec![], None);
+        detail.body_control = Some("pause".to_owned());
+        let mut cache = cache_with_detail(detail);
+        cache.launcher_runs = vec![entry];
+        let (rows, buffer) = render(cache, 140, 30);
+        let control = row_with(&rows, "control ");
+        assert!(control.contains("pause (pending)"), "{control}");
+        assert!(!control.contains("paused"), "{control}");
+        // `(pending)` is DarkGray.
+        let y = rows
+            .iter()
+            .position(|r| r.contains("pause (pending)"))
+            .unwrap();
+        let col = rows[y].find("(pending)").unwrap();
+        let cell = buffer
+            .cell((
+                u16::try_from(rows[y][..col].chars().count()).unwrap(),
+                u16::try_from(y).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(cell.fg, Color::DarkGray);
+    }
+
+    #[test]
+    fn a_narrow_pane_cuts_the_control_word_before_the_heartbeat_flag() {
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.heartbeat_stale_after_s = 120;
+            fm.connected[1].last_heartbeat = Some(stamp_ago(400));
+        });
+        let mut detail = detail_of("20261020-a", vec![], vec![], None);
+        detail.body_control = Some("pause".to_owned());
+        let mut cache = cache_with_detail(detail);
+        cache.launcher_runs = vec![entry];
+        let lines = detail_lines(
+            &cache.launcher_runs[0].clone(),
+            Some(&cache),
+            SystemTime::now(),
+            52,
+        );
+        let row = text_of(&lines[2]);
+        assert!(Span::raw(row.as_str()).width() <= 52, "{row:?}");
+        assert!(
+            row.contains("stale"),
+            "the flag survives a narrow pane: {row:?}"
+        );
+    }
+
+    #[test]
+    fn cap_bars_use_floor_division_and_limit_zero_is_full() {
+        for (used, limit, filled) in [
+            (0, 10, 0),
+            (1, 10, 1),
+            (7, 10, 7),
+            (9, 10, 9),
+            (10, 10, 10),
+            (47, 60, 7),
+            (3, 7, 4),
+            (2, 7, 2),
+            (99, 10, 10),
+            (5, 0, 10),
+        ] {
+            let bar = cap_bar(used, limit);
+            assert_eq!(bar.chars().count(), CAP_BAR_CELLS);
+            assert_eq!(
+                bar.chars().filter(|c| *c == '\u{2588}').count(),
+                filled,
+                "{used}/{limit}"
+            );
+        }
+        assert!(cap_at_limit(10, 10));
+        assert!(!cap_at_limit(9, 10));
+        assert!(
+            cap_at_limit(0, 0),
+            "limit 0 is at-limit, never a division by zero"
+        );
+        assert!(cap_at_limit(11, 10));
+    }
+
+    #[test]
+    fn the_cap_row_arithmetic_fits_the_detail_floor() {
+        // indent 2 + label 10 + gap 1 + value 9 + gap 1 + bar 10.
+        assert_eq!(
+            usize::from(CAP_ROW_FIXED_CELLS),
+            2 + 10 + 1 + CAP_VALUE_CELLS + 1 + CAP_BAR_CELLS
+        );
+        const { assert!(CAP_ROW_FIXED_CELLS <= super::super::driver::DRIVER_DETAIL_MIN_CELLS) };
+    }
+
+    fn caps_text(fm: &DriverFrontmatter, width: usize) -> Vec<String> {
+        caps_section(fm, width).iter().map(text_of).collect()
+    }
+
+    fn fm_with_caps(edit: impl FnOnce(&mut DriverFrontmatter)) -> DriverFrontmatter {
+        let (_, entry) = entry_edit("20261020-a", running(), edit);
+        entry.unwrap().frontmatter
+    }
+
+    #[test]
+    fn caps_show_used_over_limit_bars_whole_minutes_and_the_gap_phase() {
+        let fm = fm_with_caps(|fm| {
+            fm.caps.dispatches = crate::state_reader::driver_frontmatter::Cap {
+                used: 7,
+                limit: Some(10),
+            };
+            fm.caps.wall_clock_min = crate::state_reader::driver_frontmatter::WallClockCap {
+                used: 47.9,
+                limit: Some(60.0),
+            };
+            fm.caps.gap_rounds = crate::state_reader::driver_frontmatter::GapCap {
+                used: 1,
+                limit: Some(2),
+                phase: Some("30".into()),
+            };
+        });
+        let text = caps_text(&fm, 60);
+        assert!(text[0].starts_with("\u{2500}\u{2500} caps "));
+        assert_eq!(text[1].trim_end(), "  dispatches      7/10 \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}");
+        assert_eq!(text[2].trim_end(), "  minutes        47/60 \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}");
+        assert_eq!(text[3].trim_end(), "  gap rounds       1/2 \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}  phase 30");
+    }
+
+    #[test]
+    fn a_cap_at_its_limit_is_yellow_with_a_bold_value_and_one_below_is_plain() {
+        let fm = fm_with_caps(|fm| {
+            fm.caps.dispatches = crate::state_reader::driver_frontmatter::Cap {
+                used: 10,
+                limit: Some(10),
+            };
+            fm.caps.wall_clock_min = crate::state_reader::driver_frontmatter::WallClockCap {
+                used: 59.0,
+                limit: Some(60.0),
+            };
+        });
+        let lines = caps_section(&fm, 60);
+        let at_limit = &lines[1];
+        assert!(
+            at_limit
+                .spans
+                .iter()
+                .all(|s| s.style.fg == Some(Color::Yellow)),
+            "{at_limit:?}"
+        );
+        assert!(
+            at_limit.spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "the value is BOLD"
+        );
+        let below = &lines[2];
+        assert!(
+            below.spans.iter().all(|s| s.style.fg.is_none()),
+            "{below:?}"
+        );
+    }
+
+    #[test]
+    fn a_cap_with_no_limit_shows_a_dash_and_no_limit_instead_of_a_bar() {
+        let fm = fm_with_caps(|fm| {
+            fm.caps.dispatches = crate::state_reader::driver_frontmatter::Cap {
+                used: 4,
+                limit: None,
+            };
+        });
+        let text = caps_text(&fm, 60);
+        assert_eq!(text[1].trim_end(), "  dispatches       4/\u{2013} no limit");
+        assert!(!text[1].contains('\u{2588}') && !text[1].contains('\u{2591}'));
+        let lines = caps_section(&fm, 60);
+        let no_limit = lines[1].spans.last().unwrap();
+        assert_eq!(no_limit.style.fg, Some(Color::DarkGray));
+        assert!(no_limit.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn a_limit_of_zero_is_a_full_bar_in_the_at_limit_style() {
+        let fm = fm_with_caps(|fm| {
+            fm.caps.dispatches = crate::state_reader::driver_frontmatter::Cap {
+                used: 0,
+                limit: Some(0),
+            };
+        });
+        let lines = caps_section(&fm, 60);
+        assert_eq!(
+            text_of(&lines[1]).matches('\u{2588}').count(),
+            CAP_BAR_CELLS
+        );
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn the_audit_row_flags_logged_not_equal_to_observed_and_only_that() {
+        let ok = fm_with_caps(|fm| {
+            fm.dispatch_audit = crate::state_reader::driver_frontmatter::DispatchAudit {
+                logged: 7,
+                observed: 7,
+                denied: 0,
+            }
+        });
+        let lines = caps_section(&ok, 70);
+        let audit = text_of(&lines[4]);
+        assert!(
+            audit.contains("logged 7")
+                && audit.contains("observed 7")
+                && audit.contains("denied 0"),
+            "{audit}"
+        );
+        assert!(!audit.contains("MISMATCH"), "7/7 is no mismatch: {audit}");
+
+        let bad = fm_with_caps(|fm| {
+            fm.dispatch_audit = crate::state_reader::driver_frontmatter::DispatchAudit {
+                logged: 7,
+                observed: 6,
+                denied: 2,
+            }
+        });
+        let lines = caps_section(&bad, 70);
+        let audit = text_of(&lines[4]);
+        assert!(audit.ends_with(" MISMATCH"), "{audit}");
+        // The whole row is Red; MISMATCH is also BOLD; the denied value is Yellow.
+        let last = lines[4].spans.last().unwrap();
+        assert_eq!(last.style.fg, Some(Color::Red));
+        assert!(last.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(lines[4].spans[1].style.fg, Some(Color::Red));
+        let denied = lines[4]
+            .spans
+            .iter()
+            .find(|s| s.content == "2")
+            .expect("the denied value");
+        assert_eq!(denied.style.fg, Some(Color::Yellow));
+        // Denied alone is Yellow on a clean row.
+        let denied_only = fm_with_caps(|fm| {
+            fm.dispatch_audit = crate::state_reader::driver_frontmatter::DispatchAudit {
+                logged: 3,
+                observed: 3,
+                denied: 1,
+            }
+        });
+        let lines = caps_section(&denied_only, 70);
+        let denied = lines[4].spans.iter().find(|s| s.content == "1").unwrap();
+        assert_eq!(denied.style.fg, Some(Color::Yellow));
+        assert!(!text_of(&lines[4]).contains("MISMATCH"));
+    }
+
+    #[test]
+    fn mismatch_survives_the_narrowest_detail_pane() {
+        let bad = fm_with_caps(|fm| {
+            fm.dispatch_audit = crate::state_reader::driver_frontmatter::DispatchAudit {
+                logged: 12,
+                observed: 11,
+                denied: 3,
+            }
+        });
+        for width in [39usize, 45, 60, 100] {
+            let lines = caps_section(&bad, width);
+            for line in &lines {
+                assert!(line.width() <= width, "{width}: {:?}", text_of(line));
+            }
+            let audit = text_of(&lines[4]);
+            assert!(audit.ends_with("MISMATCH"), "{width}: {audit:?}");
+            // Every cap row's bar is complete at the floor.
+            for row in &lines[1..4] {
+                let t = text_of(row);
+                assert_eq!(
+                    t.matches('\u{2588}').count() + t.matches('\u{2591}').count(),
+                    CAP_BAR_CELLS,
+                    "{width}: {t:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn connections_list_three_rows_then_a_more_row_and_omit_absent_fields() {
+        let conn =
+            |role: &str, pid: Option<u32>| crate::state_reader::driver_frontmatter::Connection {
+                role: role.into(),
+                state: "connected".into(),
+                pid,
+                ..Default::default()
+            };
+        let fm = fm_with_caps(|fm| {
+            fm.connected = vec![
+                conn("launcher", Some(11)),
+                conn("driver", None),
+                conn("driver", Some(33)),
+                conn("driver", Some(44)),
+            ];
+            fm.connected[1].model = Some("opus".into());
+            fm.connected[1].session_id = Some("1f83d5f6-8bee-4f7c".into());
+            fm.connected[1].last_heartbeat = Some(stamp_ago(65));
+            fm.connected[1].scope_unit = Some("unit.scope".into());
+        });
+        let text: Vec<String> = connected_section(&fm, SystemTime::now(), 100)
+            .iter()
+            .map(text_of)
+            .collect();
+        assert!(text[0].starts_with("\u{2500}\u{2500} connected "));
+        assert_eq!(text[1].trim_end(), "  launcher  connected     pid 11");
+        assert_eq!(
+            text[2].trim_end(),
+            "  driver    connected     opus  hb 1:05  unit.scope  1f83d5f6"
+        );
+        assert_eq!(text[3].trim_end(), "  driver    connected     pid 33");
+        assert_eq!(text[4].trim(), "\u{2026} 1 more");
+        assert_eq!(text.len(), 5, "three rows and the more row: {text:#?}");
+
+        let none = fm_with_caps(|fm| fm.connected.clear());
+        let text: Vec<String> = connected_section(&none, SystemTime::now(), 60)
+            .iter()
+            .map(text_of)
+            .collect();
+        assert_eq!(text[1].trim(), "(none recorded)");
+        assert_eq!(text.len(), 2);
+    }
+
+    #[test]
+    fn hostile_header_caps_and_connection_text_reaches_the_rows_sanitised() {
+        let evil = "evil\u{1b}]0;pwned\u{7}\u{1b}[31m\u{202e}x";
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.status_reason = Some(evil.into());
+            fm.current_item = Some(evil.into());
+            fm.current_phase = Some(evil.into());
+            fm.current_step = Some(evil.into());
+            fm.sandbox = Some("degraded".into());
+            fm.sandbox_missing = Some(vec![evil.into()]);
+            fm.prompt_version = Some(evil.into());
+            fm.last_event = crate::state_reader::driver_frontmatter::LastEvent {
+                at: Some(evil.into()),
+                item: Some(evil.into()),
+                event: Some(evil.into()),
+                summary: Some(evil.into()),
+            };
+            fm.caps.gap_rounds.phase = Some(evil.into());
+            fm.connected[0].role = evil.into();
+            fm.connected[0].state = evil.into();
+            fm.connected[0].model = Some(evil.into());
+            fm.connected[0].scope_unit = Some(evil.into());
+            fm.connected[0].session_id = Some(evil.into());
+        });
+        let rows = rendered_rows(entry, 160, 30);
+        for row in &rows {
+            assert!(!row.chars().any(char::is_control), "{row:?}");
+            assert!(!row.contains('\u{202e}'), "{row:?}");
+        }
+        assert!(
+            rows.iter().filter(|r| r.contains("evil")).count() >= 5,
+            "{rows:#?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_held_lock_with_an_old_heartbeat_reads_stale_and_a_free_lock_reads_crashed() {
+        use crate::driver::lock::{acquire_at, run_lock_path};
+        use crate::state_reader::driver_frontmatter::read_driver_run;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run_dir = dir.path().join("20261020-lock");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let mut fm = parse_driver_frontmatter(FIXTURE).expect("fixture");
+        fm.run_id = "20261020-lock".to_owned();
+        fm.status = RunStatus::Running;
+        fm.launches = 1;
+        fm.heartbeat_stale_after_s = 300;
+        fm.last_event.summary = Some("rc=0".to_owned());
+        // The fixture's own stamps are weeks old.
+        std::fs::write(
+            run_dir.join("DIRECTION.md"),
+            format!(
+                "{}\n## Direction\n\n- control: run\n\n## Items\n",
+                fm.emit()
+            ),
+        )
+        .unwrap();
+
+        let lock = acquire_at(
+            &run_lock_path(&run_dir),
+            "20261020-lock",
+            std::process::id(),
+        )
+        .expect("the test takes the run lock");
+        let held = ("20261020-lock".to_owned(), read_driver_run(&run_dir));
+        let rows = render(cache_of(vec![held]), 140, 30).0;
+        let list = row_with(&rows, "20261020-lock");
+        assert!(
+            list.contains("\u{25C8} stale"),
+            "held lock, old heartbeat: {list}"
+        );
+        assert!(row_with(&rows, "control ").contains("stale"));
+        assert!(!rows.iter().any(|r| r.contains("crashed")), "{rows:#?}");
+
+        drop(lock);
+        let free = ("20261020-lock".to_owned(), read_driver_run(&run_dir));
+        let rows = render(cache_of(vec![free]), 140, 30).0;
+        assert!(
+            row_with(&rows, "20261020-lock").contains("\u{2717} crashed"),
+            "{rows:#?}"
+        );
+        assert!(!rows.iter().any(|r| r.contains("stale")), "{rows:#?}");
     }
 }

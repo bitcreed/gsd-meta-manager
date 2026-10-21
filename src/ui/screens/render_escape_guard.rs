@@ -1210,15 +1210,59 @@ fn probe_ctx(identity: &str) -> AppContext {
         ))
         .expect("the spike fixture parses");
     launcher_frontmatter.sandbox = Some("degraded".to_string());
-    cache.launcher_runs = vec![(
+    // The selected-run view's sites (30-02, D-09, T-30-05): header rows 2-6, the
+    // caps' gap phase, the connection rows and the item rows all draw text the
+    // driver, or a sibling run directory forging it, wrote.
+    launcher_frontmatter.status_reason = Some(identity.to_string());
+    launcher_frontmatter.current_item = Some(identity.to_string());
+    launcher_frontmatter.current_phase = Some(identity.to_string());
+    launcher_frontmatter.current_step = Some(identity.to_string());
+    launcher_frontmatter.sandbox_missing = Some(vec![identity.to_string()]);
+    launcher_frontmatter.prompt_version = Some(identity.to_string());
+    launcher_frontmatter.last_event = crate::state_reader::driver_frontmatter::LastEvent {
+        at: Some(identity.to_string()),
+        item: Some(identity.to_string()),
+        event: Some(identity.to_string()),
+        summary: Some(identity.to_string()),
+    };
+    launcher_frontmatter.caps.gap_rounds.phase = Some(identity.to_string());
+    for connection in &mut launcher_frontmatter.connected {
+        connection.role = identity.to_string();
+        connection.state = identity.to_string();
+        connection.model = Some(identity.to_string());
+        connection.scope_unit = Some(identity.to_string());
+        connection.session_id = Some(identity.to_string());
+    }
+    launcher_frontmatter.item_states = crate::state_reader::driver_frontmatter::ItemStates(vec![(
         identity.to_string(),
-        Ok(crate::state_reader::driver_frontmatter::DriverRunView {
-            frontmatter: launcher_frontmatter,
-            derived: crate::state_reader::driver_frontmatter::DerivedStatus::AsWritten(
-                crate::state_reader::driver_frontmatter::RunStatus::Unknown(identity.to_string()),
-            ),
-        }),
-    )];
+        crate::state_reader::driver_frontmatter::ItemStateEntry {
+            state: crate::state_reader::driver_frontmatter::ItemState::Parked,
+            dispatches: 1,
+            outcome: Some(identity.to_string()),
+        },
+    )]);
+    let launcher_view = crate::state_reader::driver_frontmatter::DriverRunView {
+        frontmatter: launcher_frontmatter,
+        derived: crate::state_reader::driver_frontmatter::DerivedStatus::AsWritten(
+            crate::state_reader::driver_frontmatter::RunStatus::Unknown(identity.to_string()),
+        ),
+    };
+    // The body's own item (title, hold, answer) and live control word, which the
+    // item rows, the cursor-item row and header row 3 draw.
+    cache.launcher_detail = Some(Box::new(super::driver_run::RunDetail {
+        run_id: identity.to_string(),
+        view: launcher_view.clone(),
+        body_control: Some(identity.to_string()),
+        items: vec![crate::driver::steer::BodyItem {
+            id: identity.to_string(),
+            title: identity.to_string(),
+            hold: Some(identity.to_string()),
+            answer: Some(identity.to_string()),
+        }],
+    }));
+    cache.launcher_runs = vec![(identity.to_string(), Ok(launcher_view))];
+    cache.launcher_selected_id = Some(identity.to_string());
+    cache.launcher_item_cursor = Some(identity.to_string());
     cache.launcher_selected = 0;
     // Without this the detail pane reads `Loading...` and the list and header rows
     // that draw the hostile identity are never reached (30-01).
@@ -3567,6 +3611,61 @@ mod tests {
              `DryRunPreview::report` is drawn by `render_dry_run_preview` and by \
              nothing else, so its absence means the preview rendered its \
              `None` loading branch instead. Rendered:\n{preview}"
+        );
+    }
+
+    /// **The selected-run view's sites are REACHED** (30-02, T-30-05).
+    ///
+    /// Same discipline as the two states above: a site the probe never draws is a
+    /// site the escape assertions pass over in silence. The default `Driver tab`
+    /// state selects a launcher run whose frontmatter and body `probe_ctx` filled
+    /// with the hostile identity, so each section must be drawn, and the row each
+    /// string lands in must carry a token only it produces.
+    #[test]
+    fn the_selected_run_view_sites_are_reached() {
+        let clean = clean_identity();
+        let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
+            Box::new(crate::ui::screens::detail::DetailScreen::new(
+                identity.to_string(),
+            ))
+        };
+        let state = states_over_sub_views(&clean, &build)
+            .into_iter()
+            .find(|s| s.label == "Driver tab")
+            .expect("the Driver tab state exists");
+        let text = render_to_text(state.screen.as_ref(), &state.ctx);
+        for token in [
+            // The section rules.
+            "\u{2500}\u{2500} items ",
+            "\u{2500}\u{2500} caps ",
+            "\u{2500}\u{2500} connected ",
+            // Header rows 3-6, each by its label.
+            "control ",
+            "UNSANDBOXED missing: ",
+            "prompt ",
+            "  at ",
+            "  last ",
+            // The gap-round phase and the audit.
+            " phase ",
+            "audit ",
+            // An item row (`parked` from the closed enum) and the cursor-item row.
+            "\u{2691} parked",
+            "parked: ",
+            "answer: ",
+        ] {
+            assert!(
+                text.contains(token),
+                "the `Driver tab` state did not reach {token:?}: a new render site is not \
+                 probed, so its escape assertion passes by silence. Rendered:\n{text}"
+            );
+        }
+        // Both connections draw the hostile role, state and model.
+        assert!(
+            text.lines()
+                .filter(|line| line.contains(&clean) && line.contains("pid "))
+                .count()
+                >= 2,
+            "the connection rows were not drawn:\n{text}"
         );
     }
 
