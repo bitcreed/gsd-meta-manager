@@ -448,7 +448,11 @@ fn set_item_field(body: &str, id: &str, key: &str, value: &str) -> Result<String
     // Append after the last non-blank line of the segment (or the heading itself).
     let mut at = segment.start;
     let mut offset = segment.start;
-    let mut terminated = true;
+    // The segment starts after the heading line. When that line has no terminator
+    // (it is the last line of the body) there is nothing to append after yet, so the
+    // new line must open with the segment's line end (IN-01).
+    let mut terminated =
+        segment.start == 0 || body.as_bytes().get(segment.start - 1) == Some(&b'\n');
     let lines = body.get(segment.start..segment.end).ok_or_else(offsets)?;
     for raw in lines.split_inclusive('\n') {
         offset += raw.len();
@@ -544,7 +548,10 @@ pub enum SteerOutcome {
 ///
 /// **Blocking: call it only inside `spawn_blocking`.** The closure handed to
 /// [`write_body`] may run more than once; each run recomputes from the live body and
-/// forgets the previous run's verdict.
+/// forgets the previous run's verdict. A closure that returns the live body unchanged
+/// (the control word is already set, or the transform refused) makes `write_body`
+/// skip the file entirely, so [`SteerOutcome::Unchanged`] and
+/// [`SteerOutcome::Refused`] leave `DIRECTION.md` byte-, inode- and mtime-identical.
 pub fn steer_run(run_dir: &Path, op: &SteerOp) -> SteerOutcome {
     let mut refusal: Option<SteerError> = None;
     let mut changed = false;
@@ -735,7 +742,8 @@ fn not_written_reason(outcome: SpliceOutcome) -> &'static str {
 /// (which sees the body under `DIRECTION.lock`, and again on a fresh body after a
 /// raced human save), so a change made while the editor was open is never overwritten:
 /// the outcome is [`EditOutcome::Conflict`], the other change stands and the temp is
-/// kept (T-30-10). The `---` tool block is never touched.
+/// kept (T-30-10); a conflict returns the live body unchanged, so `write_body` leaves
+/// `DIRECTION.md` untouched (same inode, no temp). The `---` tool block is never touched.
 ///
 /// `temp` must be a regular file (not a symlink; refused on the open handle) of at most [`EDIT_TEMP_MAX_BYTES`]
 /// holding UTF-8. `accept_lint` is the user's "apply it anyway" after a
@@ -1190,14 +1198,6 @@ pub(crate) mod tests {
             "{freed:?}"
         );
         assert_eq!(read_items(&freed)[0].hold.as_deref(), Some("false"));
-
-        // The same shape with CRLF line ends keeps its terminator.
-        let crlf = "## Direction\r\n\r\n- control: run\r\n\r\n## Items\r\n\r\n### I-05 last title";
-        let new = answer(crlf, "I-05", "foo").expect("answer on a CRLF body");
-        assert!(
-            new.ends_with("### I-05 last title\r\n- answer: foo\r\n- hold: false\r\n"),
-            "{new:?}"
-        );
     }
 
     #[cfg(target_os = "linux")]

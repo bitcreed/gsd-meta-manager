@@ -422,7 +422,9 @@ pub fn splice_frontmatter(run_dir: &Path, fm: &str) -> Result<SpliceReport, Dire
 /// loop with driverctl's splice. `edit` receives the current body and returns the
 /// new one; it may be called again on a fresh body when a human save raced the
 /// write. A new body missing either section header is [`DirectionError::InsaneNewBody`]
-/// and nothing is written.
+/// and nothing is written. A new body equal to the one `edit` was given is not written
+/// either: the outcome is [`SpliceOutcome::Ok`] and the file keeps its inode and
+/// mtime (no temp, no exchange, no watcher event).
 pub fn write_body<F: FnMut(&str) -> String>(
     run_dir: &Path,
     edit: F,
@@ -496,6 +498,10 @@ mod imp {
         Skip,
         /// The full new file content.
         Write(String),
+        /// The edit left the body as it was: write nothing, exchange nothing. The
+        /// file keeps its inode and mtime and the watcher sees no event (WR-03).
+        /// Only [`write_body`] yields it; a splice always has a block to place.
+        Keep,
     }
 
     fn io_err(context: impl std::fmt::Display, err: impl std::fmt::Display) -> DirectionError {
@@ -523,6 +529,10 @@ mod imp {
         locked(run_dir, || {
             run_loop(run_dir, |block, body| {
                 let new_body = edit(body);
+                // An unchanged body is not rewritten (WR-03): no temp, no exchange.
+                if new_body == body {
+                    return Ok(Plan::Keep);
+                }
                 if !body_sane(&new_body) {
                     return Err(DirectionError::InsaneNewBody);
                 }
@@ -603,6 +613,7 @@ mod imp {
             let (block, body) = split_frontmatter(&text);
             let new_content = match plan(block, body)? {
                 Plan::Skip => return Ok(SpliceOutcome::SkippedInsaneBody),
+                Plan::Keep => return Ok(SpliceOutcome::Ok),
                 Plan::Write(content) => content,
             };
             let mode = match std::fs::metadata(&target) {
