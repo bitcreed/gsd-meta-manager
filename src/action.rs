@@ -451,6 +451,27 @@ pub enum Action {
         run_id: String,
         report: String,
     },
+    /// A Driver-tab steering key asked for one edit to a launcher run's
+    /// `DIRECTION.md` body (30-04, D-14, D-15).
+    ///
+    /// Sent by a chooser or input screen, which touched no file. The handler resolves
+    /// the run directory from the registered project and the listed run id, runs
+    /// `driver::steer::steer_run` (a `write_body` closure under `DIRECTION.lock`) on
+    /// `spawn_blocking`, and answers [`Action::DriverSteered`]. Plain data, so
+    /// `Action` stays `Clone`.
+    DriverSteerRequested {
+        alias: String,
+        run_id: String,
+        op: crate::driver::steer::SteerOp,
+    },
+    /// A steering write finished (30-04). `outcome` says what happened to the file;
+    /// the handler words it for the status line and schedules a re-read of the run.
+    DriverSteered {
+        alias: String,
+        run_id: String,
+        op: crate::driver::steer::SteerOp,
+        outcome: crate::driver::steer::SteerOutcome,
+    },
 }
 
 #[cfg(test)]
@@ -545,5 +566,15 @@ mod tests {
             scanned.clone(),
             Action::LauncherMarkerScanned { .. }
         ));
+
+        let steered = Action::DriverSteered {
+            alias: "proj".to_string(),
+            run_id: "20261020-a".to_string(),
+            op: crate::driver::steer::SteerOp::SetControl("pause".to_string()),
+            outcome: crate::driver::steer::SteerOutcome::Written {
+                lock_timed_out: false,
+            },
+        };
+        assert!(matches!(steered.clone(), Action::DriverSteered { .. }));
     }
 }

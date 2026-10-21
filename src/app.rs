@@ -1094,6 +1094,109 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// The run directory of launcher run `run_id` of project `project`, or `None` when
+    /// the id is not a plain directory name. The id came from the listing or from a
+    /// watcher path, so it is validated before it names a directory (30-02).
+    fn launcher_run_dir(project: &std::path::Path, run_id: &str) -> Option<PathBuf> {
+        crate::state_reader::driver_frontmatter::is_plain_run_id(run_id).then(|| {
+            project
+                .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+                .join(run_id)
+        })
+    }
+
+    /// Refuse a steering request visibly (S4): a write whose result cannot be
+    /// reported, or that this build cannot make, says so and writes nothing.
+    fn refuse_steering(&mut self, message: String) {
+        self.ctx.error_message = Some(message);
+        self.needs_redraw = true;
+    }
+
+    /// Run one steering edit (30-04, D-14, D-15, D-25).
+    ///
+    /// **The only DIRECTION.md write the Driver tab makes besides the editor apply:**
+    /// `steer::steer_run`, a `write_body` closure under `DIRECTION.lock` that keeps
+    /// the `---` tool block byte-identical, on `spawn_blocking`. The key handler that
+    /// asked for it touched no file. On a build that cannot steer (not Linux) the
+    /// request is refused here with the read-only copy, whatever reached this arm.
+    fn request_steer(&mut self, alias: &str, run_id: &str, op: crate::driver::steer::SteerOp) {
+        if !self.ctx.experimental {
+            return;
+        }
+        if !crate::ui::screens::driver_steer::can_steer() {
+            self.refuse_steering(
+                crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+            );
+            return;
+        }
+        let Some(path) = self.project_path_for(alias) else {
+            return;
+        };
+        let Some(run_dir) = Self::launcher_run_dir(&path, run_id) else {
+            self.refuse_steering(format!(
+                "Could not write DIRECTION.md: '{}' is not a run directory name. Nothing was written.",
+                crate::text::render_for_terminal(run_id)
+            ));
+            return;
+        };
+        let Some(tx) = self.ctx.event_tx.clone() else {
+            self.refuse_steering(format!(
+                "Could not write DIRECTION.md for '{alias}': this session has no event channel. Nothing was written."
+            ));
+            return;
+        };
+        let (alias, run_id) = (alias.to_string(), run_id.to_string());
+        tokio::task::spawn_blocking(move || {
+            let outcome = crate::driver::steer::steer_run(&run_dir, &op);
+            let _ = tx.send(Action::DriverSteered {
+                alias,
+                run_id,
+                op,
+                outcome,
+            });
+        });
+    }
+
+    /// Show a finished steering write and schedule the re-read that makes the header
+    /// show it (30-04, D-05, D-28).
+    ///
+    /// The wording comes from `driver_steer::steered_message`: it says the file was
+    /// written, never that the driver applied it. The selected run is re-read at once
+    /// so the control line reads `{word} (pending)` without waiting for the watcher.
+    fn finish_steer(
+        &mut self,
+        alias: &str,
+        run_id: &str,
+        op: &crate::driver::steer::SteerOp,
+        outcome: &crate::driver::steer::SteerOutcome,
+    ) {
+        let live = self
+            .ctx
+            .view_cache
+            .get(alias)
+            .and_then(|cache| {
+                cache
+                    .launcher_runs
+                    .iter()
+                    .find(|(listed, _)| listed == run_id)
+            })
+            .is_some_and(|(_, entry)| {
+                entry
+                    .as_ref()
+                    .is_ok_and(|view| crate::ui::screens::driver_run::is_live(&view.derived))
+            });
+        let (text, is_error) = crate::ui::screens::driver_steer::steered_message(op, outcome, live);
+        if is_error {
+            self.ctx.error_message = Some(text);
+        } else {
+            self.ctx.status_message = Some((text, std::time::Instant::now()));
+        }
+        if let Some(path) = self.ctx.config.projects.get(alias).map(|p| p.path.clone()) {
+            self.ctx.schedule_selected_run_refresh(alias, &path, run_id);
+        }
+        self.needs_redraw = true;
+    }
+
     /// Schedule the durable append of one injected message (STEER-01, STEER-03).
     ///
     /// **The key handler never touches the filesystem, and that is the whole
@@ -2141,6 +2244,20 @@ impl App {
                     self.ctx.schedule_launcher_refresh(&alias, &path);
                 }
                 self.needs_redraw = true;
+            }
+            // 30-04, D-14, D-15: a steering key asked for one edit to the selected
+            // launcher run's DIRECTION.md body. The key handler touched no file; the
+            // write runs on `spawn_blocking` and answers `DriverSteered`.
+            Action::DriverSteerRequested { alias, run_id, op } => {
+                self.request_steer(&alias, &run_id, op);
+            }
+            Action::DriverSteered {
+                alias,
+                run_id,
+                op,
+                outcome,
+            } => {
+                self.finish_steer(&alias, &run_id, &op, &outcome);
             }
             // ── The Driver surface's four messages ────────────────────
             //
@@ -7499,5 +7616,194 @@ mod tests {
             marker,
         });
         assert!(!app.needs_redraw, "an unchanged marker repaints nothing");
+    }
+
+    // ── 30-04: steering a launcher run from the Driver tab ──────────────────
+
+    /// Wait for the next action `pick` accepts, skipping the others (refreshes the
+    /// earlier steps scheduled arrive in between).
+    async fn next_matching(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        pick: impl Fn(&Action) -> bool,
+    ) -> Action {
+        loop {
+            match next_action(rx).await {
+                Some(action) if pick(&action) => return action,
+                Some(_) => {}
+                None => panic!("the awaited action never arrived"),
+            }
+        }
+    }
+
+    /// A launcher run that is `running` in its frontmatter, with the template body, so
+    /// `control: run` is both written and echoed.
+    #[cfg(target_os = "linux")]
+    fn write_live_run(root: &std::path::Path) -> (std::path::PathBuf, String) {
+        use crate::state_reader::driver_frontmatter::{
+            parse_driver_frontmatter, RunStatus, DRIVER_RUNS_REL,
+        };
+        let run_dir = root.join(DRIVER_RUNS_REL).join(LAUNCHER_RUN);
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let mut frontmatter = parse_driver_frontmatter(include_str!(
+            "../tests/fixtures/driverctl/direction/s003-run1b.md"
+        ))
+        .expect("the spike fixture parses");
+        frontmatter.run_id = LAUNCHER_RUN.to_string();
+        frontmatter.status = RunStatus::Running;
+        frontmatter.status_reason = None;
+        frontmatter.control = Some("run".to_string());
+        crate::ui::screens::driver_run::refresh_heartbeats(&mut frontmatter);
+        let block = frontmatter.emit();
+        std::fs::write(
+            run_dir.join("DIRECTION.md"),
+            format!("{block}{}", crate::driver_templates::DIRECTION_TEMPLATE),
+        )
+        .expect("DIRECTION.md");
+        (run_dir, block)
+    }
+
+    /// The tracer, end to end (D-05, D-14, D-15, D-28): on a live run, `c` then `p`
+    /// writes `control: pause` into the body through `write_body`, the tool block is
+    /// untouched, the status line says it was WRITTEN, and the header reads
+    /// `pause (pending)` until the driver echoes it. Nothing says `paused`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_steer_c_then_p_shows_pending() {
+        use crate::driver::lock::{acquire_at, run_lock_path};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (run_dir, block) = write_live_run(dir.path());
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        let _lock = acquire_at(&run_lock_path(&run_dir), LAUNCHER_RUN, std::process::id())
+            .expect("the test takes the run lock");
+
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(text.contains("\u{25C6} running"), "a live run:\n{text}");
+        assert!(!text.contains("(pending)"), "nothing pending yet:\n{text}");
+
+        // `c` opens the chooser, `p` dispatches and pops.
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("driver_control")
+        );
+        let text = render_top_screen(&app);
+        assert!(text.contains("control (now: run)>"), "{text}");
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("detail")
+        );
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverSteerRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let steered = next_matching(&mut rx, |a| matches!(a, Action::DriverSteered { .. })).await;
+        let Action::DriverSteered { outcome, .. } = &steered else {
+            unreachable!()
+        };
+        assert_eq!(
+            *outcome,
+            crate::driver::steer::SteerOutcome::Written {
+                lock_timed_out: false
+            }
+        );
+        app.update(steered);
+        let (status, _) = app.ctx.status_message.clone().expect("a status message");
+        assert_eq!(
+            status,
+            "control: pause written to DIRECTION.md. The driver applies it before its next dispatch."
+        );
+
+        // The write reached the body and only the body.
+        let written = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        let (fm, body) = crate::driver::direction::split_frontmatter(&written);
+        assert_eq!(fm, Some(block.as_str()));
+        assert_eq!(
+            crate::driver::direction::parse_direction(body)
+                .control
+                .as_deref(),
+            Some("pause")
+        );
+
+        // The finished write scheduled a re-read of the selected run: the header
+        // shows the pending word, never `paused`.
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(text.contains("pause (pending)"), "{text}");
+        assert!(!text.contains("paused"), "{text}");
+        assert!(!text.contains("stopped"), "{text}");
+        assert_eq!(app.ctx.reparse_dispatches, 0, "no project re-parse");
+    }
+
+    /// A build without the write primitive refuses every steering request with the
+    /// read-only copy and writes nothing (D-14).
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn launcher_steer_a_non_linux_build_refuses_with_the_read_only_copy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::DriverSteerRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+            op: crate::driver::steer::SteerOp::SetControl("pause".to_string()),
+        });
+        assert_eq!(
+            app.ctx.error_message.as_deref(),
+            Some("read-only: steering needs Linux")
+        );
+    }
+
+    /// With no event channel the result could not be reported, so the request is
+    /// refused visibly and nothing is written (S4).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_steer_without_an_event_channel_refuses_visibly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (run_dir, block) = write_live_run(dir.path());
+        let (mut app, rx) = obs_app(dir.path());
+        drop(rx);
+        app.ctx.event_tx = None;
+        app.update(Action::DriverSteerRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+            op: crate::driver::steer::SteerOp::SetControl("pause".to_string()),
+        });
+        let message = app.ctx.error_message.clone().expect("a visible refusal");
+        assert!(message.contains("Nothing was written"), "{message}");
+        let text = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        assert!(text.starts_with(&block));
+        assert_eq!(
+            crate::driver::direction::parse_direction(
+                crate::driver::direction::split_frontmatter(&text).1
+            )
+            .control
+            .as_deref(),
+            Some("run")
+        );
+    }
+
+    /// A run id that is not a plain directory name never names a directory.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_steer_a_run_id_with_a_separator_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.update(Action::DriverSteerRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "../escape".to_string(),
+            op: crate::driver::steer::SteerOp::SetControl("pause".to_string()),
+        });
+        let message = app.ctx.error_message.clone().expect("a visible refusal");
+        assert!(message.contains("not a run directory name"), "{message}");
+        assert!(rx.try_recv().is_err(), "nothing was scheduled");
     }
 }

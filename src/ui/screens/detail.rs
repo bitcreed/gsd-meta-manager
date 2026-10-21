@@ -5402,6 +5402,35 @@ impl Screen for DetailScreen {
                     }
                 }
             }
+            // `c`: the control chooser for the SELECTED launcher run (30-04, D-15).
+            //
+            // Tab-scoped like every Driver key (the 260917-fko gate). The handler opens
+            // a screen and writes nothing: the chooser dispatches the request and the
+            // App runs the `write_body` closure on `spawn_blocking` (D-25). A legacy
+            // row, an unreadable run and a build that cannot steer each refuse with
+            // their copy and open nothing.
+            KeyCode::Char('c') if current_view == DetailSubView::Driver => {
+                use super::driver_run::{steer_refusal, steer_target, SteerTarget};
+                ctx.needs_redraw = true;
+                let target = steer_target(ctx.view_cache.get(&self.alias));
+                if let Some(message) = steer_refusal(&target) {
+                    ctx.status_message = Some((message, std::time::Instant::now()));
+                    return ScreenAction::None;
+                }
+                match target {
+                    SteerTarget::Run {
+                        run_id,
+                        body_control,
+                    } => ScreenAction::Push(Box::new(
+                        super::driver_steer::ControlChooserScreen::new(
+                            self.alias.clone(),
+                            run_id,
+                            body_control,
+                        ),
+                    )),
+                    _ => ScreenAction::None,
+                }
+            }
             // `[` / `]`: move the item cursor of the SELECTED launcher run (30-02,
             // D-06). Driver-tab only and only on a launcher row: a legacy row has no
             // items and the Driver tab has no sub-tab pair for these keys to mean.
@@ -10524,6 +10553,9 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
     if keys.item {
         tokens.push(FooterToken::hint("[[/]]", "item  ", 3));
     }
+    if keys.control {
+        tokens.push(FooterToken::hint("[c]", "ontrol  ", 1));
+    }
     if keys.start {
         tokens.push(FooterToken::hint("[s]", "tart  ", 2));
     }
@@ -10539,6 +10571,9 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
     }
     if keys.legacy_row {
         tokens.push(FooterToken::muted("legacy run: read-only  ", 1));
+    }
+    if keys.read_only_platform {
+        tokens.push(FooterToken::muted("read-only: steering needs Linux  ", 1));
     }
 
     let fixed = Span::raw("  ").width() + Span::raw("[?]help").width();
@@ -17208,6 +17243,8 @@ mod tests {
             start: true,
             scroll: false,
             item: false,
+            control: false,
+            read_only_platform: false,
         }
     }
 
@@ -17308,6 +17345,8 @@ mod tests {
             start: true,
             scroll: true,
             item: false,
+            control: false,
+            read_only_platform: false,
         };
         let text = driver_footer_text(200, &on_legacy);
         assert!(text.contains("legacy run: read-only"), "{text}");
@@ -17319,7 +17358,7 @@ mod tests {
     /// five widths the UI-SPEC names, for every combination of available keys.
     #[test]
     fn the_driver_footer_fits_its_width_and_always_ends_with_help() {
-        for bits in 0u8..64 {
+        for bits in 0u16..256 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17327,6 +17366,8 @@ mod tests {
                 start: bits & 8 != 0,
                 scroll: bits & 16 != 0,
                 item: bits & 32 != 0,
+                control: bits & 64 != 0,
+                read_only_platform: bits & 128 != 0,
             };
             for width in [40u16, 60, 80, 100, 160] {
                 let text = driver_footer_text(width, &keys);
@@ -17352,6 +17393,8 @@ mod tests {
             start: true,
             scroll: true,
             item: false,
+            control: false,
+            read_only_platform: false,
         };
         // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 10 + 7 = 98 cells.
         let full = driver_footer_text(98, &keys);
@@ -17386,7 +17429,7 @@ mod tests {
 
     #[test]
     fn the_driver_footer_names_no_retired_key_at_any_width() {
-        for bits in 0u8..64 {
+        for bits in 0u16..256 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17394,6 +17437,8 @@ mod tests {
                 start: bits & 8 != 0,
                 scroll: bits & 16 != 0,
                 item: bits & 32 != 0,
+                control: bits & 64 != 0,
+                read_only_platform: bits & 128 != 0,
             };
             for width in [40u16, 60, 80, 100, 160, 300] {
                 let text = driver_footer_text(width, &keys);
@@ -19794,6 +19839,139 @@ mod tests {
             .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
         press(&mut screen, &mut ctx, KeyCode::Char(']'));
         assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_item_cursor, None);
+    }
+
+    // ── 30-04: the steering keys on the Driver tab ───────────────────────────
+
+    /// Give launcher run `index` a cached detail whose body says `control`.
+    fn give_control(ctx: &mut AppContext, index: usize, control: Option<&str>) {
+        give_items(ctx, index);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        if let Some(detail) = cache.launcher_detail.as_mut() {
+            detail.body_control = control.map(str::to_string);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_steer_c_opens_the_chooser_for_a_readable_run() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(2);
+        give_control(&mut ctx, 0, Some("pause"));
+        let action = screen.handle_key(KeyCode::Char('c'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            pushed_screen_name(&action).as_deref(),
+            Some("driver_control")
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "opening the chooser writes and dispatches nothing"
+        );
+        // The chooser knows the body's word: choosing it again is a no-op.
+        let ScreenAction::Push(mut chooser) = action else {
+            unreachable!()
+        };
+        chooser.handle_key(KeyCode::Char('p'), KeyModifiers::NONE, &mut ctx);
+        assert!(rx.try_recv().is_err(), "pause is already the body's word");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_steer_c_on_a_legacy_row_or_an_unreadable_run_opens_nothing() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        add_legacy_run(&mut ctx);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
+        }
+        let action = screen.handle_key(KeyCode::Char('c'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        let message = ctx.status_message.clone().expect("a refusal").0;
+        assert_eq!(message, "Legacy runs are read-only here.");
+
+        let (mut screen, mut ctx, mut rx2) = launcher_fixture(1);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.launcher_runs[0].1 =
+                Err(crate::state_reader::driver_frontmatter::FrontmatterError::NoFrontmatter);
+        }
+        let action = screen.handle_key(KeyCode::Char('c'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        let message = ctx.status_message.clone().expect("a refusal").0;
+        assert!(message.contains("could not be read"), "{message}");
+        assert!(rx.try_recv().is_err() && rx2.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_steer_c_exists_only_on_the_driver_tab() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        for view in [DetailSubView::Queue, DetailSubView::Pipeline] {
+            ctx.detail_sub_view_per_project
+                .insert(TEST_ALIAS.to_string(), view);
+            let action = screen.handle_key(KeyCode::Char('c'), KeyModifiers::NONE, &mut ctx);
+            assert!(pushed_screen_name(&action).is_none());
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_steer_the_footer_lists_control_only_when_the_key_can_act() {
+        let on = DriverKeys {
+            control: true,
+            ..live_run_keys()
+        };
+        let text = driver_footer_text(160, &on);
+        assert!(text.contains("[c]ontrol"), "{text}");
+        // Between the item cursor and the start key, as the UI-SPEC orders them.
+        assert!(
+            text.find("[c]ontrol").unwrap() < text.find("[s]tart").unwrap(),
+            "{text}"
+        );
+        assert!(!driver_footer_text(160, &live_run_keys()).contains("[c]ontrol"));
+        // It is a priority-1 token: it outlives the priority-2 start key.
+        let narrow = driver_footer_text(45, &on);
+        assert!(
+            narrow.contains("[c]ontrol") && !narrow.contains("[s]tart"),
+            "{narrow:?}"
+        );
+    }
+
+    #[test]
+    fn launcher_steer_the_read_only_suffix_is_whole_and_only_for_a_platform_that_cannot_steer() {
+        let keys = DriverKeys {
+            read_only_platform: true,
+            ..live_run_keys()
+        };
+        let text = driver_footer_text(160, &keys);
+        assert!(text.contains("read-only: steering needs Linux"), "{text}");
+        assert!(
+            text.ends_with("read-only: steering needs Linux  [?]help"),
+            "{text}"
+        );
+        assert!(!driver_footer_text(160, &live_run_keys()).contains("steering needs Linux"));
+    }
+
+    #[test]
+    fn launcher_steer_driver_keys_follow_the_selection() {
+        let (_screen, mut ctx, _rx) = launcher_fixture(1);
+        let keys = super::super::driver_run::driver_keys(&ctx, TEST_ALIAS);
+        assert_eq!(keys.control, cfg!(target_os = "linux"));
+        assert_eq!(keys.read_only_platform, !cfg!(target_os = "linux"));
+        add_legacy_run(&mut ctx);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
+        }
+        let keys = super::super::driver_run::driver_keys(&ctx, TEST_ALIAS);
+        assert!(!keys.control, "a legacy row cannot be steered");
+        let mut ctx2 = launcher_fixture(1).1;
+        ctx2.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .launcher_runs[0]
+            .1 = Err(crate::state_reader::driver_frontmatter::FrontmatterError::NoFrontmatter);
+        assert!(!super::super::driver_run::driver_keys(&ctx2, TEST_ALIAS).control);
     }
 
     #[test]

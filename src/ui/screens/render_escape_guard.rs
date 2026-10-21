@@ -366,6 +366,7 @@ type FixtureRow = (&'static str, &'static str);
 
 const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("AddProjectScreen", "src/ui/screens/add_project.rs"),
+    ("ControlChooserScreen", "src/ui/screens/driver_steer.rs"),
     ("CreateProjectScreen", "src/ui/screens/create_project.rs"),
     ("DeleteConfirmScreen", "src/ui/screens/delete_confirm.rs"),
     ("DetailScreen", "src/ui/screens/detail.rs"),
@@ -2261,6 +2262,19 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 Box::new(super::driver_inject::DriverInjectScreen::new(
                     identity.to_string(),
                     identity.to_string(),
+                ))
+            })
+        }),
+
+        // The control chooser (30-04): the hostile identity is the control word the
+        // body holds now, which is the one value its footer draws from file content.
+        // The run id rides along for the dispatch and is never drawn.
+        "ControlChooserScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(super::driver_steer::ControlChooserScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    Some(identity.to_string()),
                 ))
             })
         }),

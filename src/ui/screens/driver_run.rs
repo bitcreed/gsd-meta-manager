@@ -2555,6 +2555,67 @@ pub fn selected_run_is_live(cache: Option<&ProjectViewCache>) -> bool {
     }
 }
 
+// ── What a steering key acts on (30-04) ─────────────────────────────────────
+
+/// What `c`, `a`, `u` and `e` act on for the current selection.
+///
+/// Owned data, so a key handler can read it and then set a status message on the
+/// same context without a borrow outliving the read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SteerTarget {
+    /// A readable launcher run: its id and the control word its cached body holds
+    /// (`None` when no detail is cached for it yet, or the body has no control line).
+    Run {
+        run_id: String,
+        body_control: Option<String>,
+    },
+    /// A launcher run whose `DIRECTION.md` could not be read: nothing to steer.
+    Unreadable { run_id: String },
+    /// A legacy journal run: read-only here (D-01).
+    Legacy,
+    /// No run is highlighted.
+    Nothing,
+}
+
+/// The steering target for `cache`'s current selection. Pure over the cache.
+pub fn steer_target(cache: Option<&ProjectViewCache>) -> SteerTarget {
+    match (selection(cache), cache) {
+        (Selection::Launcher(index), Some(cache)) => {
+            let (run_id, entry) = &cache.launcher_runs[index];
+            if entry.is_ok() {
+                SteerTarget::Run {
+                    run_id: run_id.clone(),
+                    body_control: detail_for(Some(cache), run_id)
+                        .and_then(|detail| detail.body_control.clone()),
+                }
+            } else {
+                SteerTarget::Unreadable {
+                    run_id: run_id.clone(),
+                }
+            }
+        }
+        (Selection::Legacy(_), _) => SteerTarget::Legacy,
+        _ => SteerTarget::Nothing,
+    }
+}
+
+/// What a steering key says when the highlighted run cannot be steered: `None` for a
+/// readable launcher run (the key proceeds), the refusal copy otherwise. A key on a
+/// build that cannot write DIRECTION.md says so first.
+pub fn steer_refusal(target: &SteerTarget) -> Option<String> {
+    if !super::driver_steer::can_steer() && !matches!(target, SteerTarget::Nothing) {
+        return Some(super::driver_steer::STEERING_NEEDS_LINUX.to_string());
+    }
+    match target {
+        SteerTarget::Run { .. } | SteerTarget::Nothing => None,
+        SteerTarget::Legacy => Some(LEGACY_READ_ONLY.to_string()),
+        SteerTarget::Unreadable { run_id } => Some(format!(
+            "{} could not be read, so it cannot be steered.",
+            shown_capped(run_id)
+        )),
+    }
+}
+
 /// The highlight's place in the one linear order `j`/`k` walk: launcher rows
 /// first, then (when shown) the legacy rows. The collapsed-section header row is
 /// not a position.
@@ -2684,6 +2745,11 @@ pub struct DriverKeys {
     pub scroll: bool,
     /// `[` / `]`: the selected launcher run has items to move the cursor over.
     pub item: bool,
+    /// `c`: a readable launcher run is selected and this build can steer (Linux).
+    pub control: bool,
+    /// This build cannot steer (not Linux): `c`, `a`, `u`, `e` are absent and the
+    /// footer says why (D-14).
+    pub read_only_platform: bool,
 }
 
 /// The keys available for `alias`'s current selection. Pure over the context.
@@ -2708,6 +2774,9 @@ pub fn driver_keys(ctx: &AppContext, alias: &str) -> DriverKeys {
             }
             _ => false,
         },
+        control: super::driver_steer::can_steer()
+            && matches!(steer_target(cache), SteerTarget::Run { .. }),
+        read_only_platform: !super::driver_steer::can_steer(),
     }
 }
 
