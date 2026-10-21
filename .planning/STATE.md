@@ -5,10 +5,10 @@ current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: verifying
 stopped_at: Completed 30-09-PLAN.md
-last_updated: "2026-10-21T06:04:31.964Z"
+last_updated: "2026-10-21T06:21:50.526Z"
 last_activity: 2026-10-21
 last_activity_desc: Phase 30 execution started
-state_head: 524ba05bc296ae0cf7b1de40dc55c2d32a7c2d3f
+state_head: dffb6c906db753c5ce45285d24067dc1b03b01af
 progress:
   total_phases: 10
   completed_phases: 12
@@ -272,7 +272,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-21 - Completed quick task 261021-101: Fix Phase 30 review findings WR-07 WR-02 IN-04
+Last activity: 2026-10-21 - Completed quick task 261021-1if: Remove macOS socket-path run-id length limit for driverctl socket
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -891,6 +891,7 @@ Recent decisions affecting current work:
 | 261020-vxg | Fix non-Linux build breaks (macOS, Windows) and add CI cargo check for non-Linux targets | 2026-10-20 | 946508b | [261020-vxg-fix-non-linux-build-breaks-macos-windows](./quick/261020-vxg-fix-non-linux-build-breaks-macos-windows/) |
 | 261021-0jg | Cross-target clippy cleanup and macOS unsandboxed launch portability (D-31) | 2026-10-21 | 794af4b | [261021-0jg-cross-target-clippy-cleanup-and-macos-un](./quick/261021-0jg-cross-target-clippy-cleanup-and-macos-un/) |
 | 261021-101 | Fix Phase 30 review findings WR-07 WR-02 IN-04 | 2026-10-21 | 524ba05 | [261021-101-fix-phase-30-review-findings-wr-07-wr-02](./quick/261021-101-fix-phase-30-review-findings-wr-07-wr-02/) |
+| 261021-1if | Remove macOS socket-path run-id length limit for driverctl socket (fixed-length hashed fallback name) | 2026-10-21 | dffb6c9 | [261021-1if-remove-macos-socket-path-run-id-length-l](./quick/261021-1if-remove-macos-socket-path-run-id-length-l/) |
 
 ## Session Continuity
 
