@@ -251,4 +251,192 @@ mod tests {
             "U+23F8 must be rejected by the property checks alone: {v:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // The production source scan
+    // -----------------------------------------------------------------------
+
+    use icu_properties::props::GeneralCategory;
+    use std::path::{Path, PathBuf};
+
+    /// Box drawing and block elements: borders, rules, graph lanes, the cap-bar
+    /// fill, the text cursor. Every terminal font carries them.
+    const STRUCTURAL: std::ops::RangeInclusive<u32> = 0x2500..=0x259F;
+    /// Typography inside composed text: separators, truncation, ranges, key
+    /// hints, scroll indicators. Replacing them needs an ASCII fallback mode (a
+    /// follow-up todo).
+    const TYPOGRAPHY: [u32; 8] = [
+        0x00B7, 0x2013, 0x2014, 0x2026, 0x2190, 0x2191, 0x2192, 0x2193,
+    ];
+
+    fn is_cfg_test_mod_decl(attr: &str, next: &str) -> bool {
+        if attr.trim() != "#[cfg(test)]" {
+            return false;
+        }
+        let mut n = next.trim();
+        if let Some(rest) = n.strip_prefix("pub(") {
+            n = rest.split_once(')').map_or("", |(_, r)| r).trim();
+        } else if let Some(rest) = n.strip_prefix("pub ") {
+            n = rest.trim();
+        }
+        match n.strip_prefix("mod ") {
+            Some(rest) => rest.trim_end().ends_with('{') || rest.trim_end().ends_with(';'),
+            None => false,
+        }
+    }
+
+    /// The `(line, char)` pairs production code draws: `\u{HEX}` escapes and
+    /// literal non-ASCII chars, outside comments and outside the first
+    /// `#[cfg(test)] mod`, minus the Cc and Cf sanitizer data.
+    fn drawn_codepoints(src: &str) -> Vec<(usize, char)> {
+        let lines: Vec<&str> = src.lines().collect();
+        let cut = (0..lines.len())
+            .find(|&i| i + 1 < lines.len() && is_cfg_test_mod_decl(lines[i], lines[i + 1]))
+            .unwrap_or(lines.len());
+        let category = CodePointMapData::<GeneralCategory>::new();
+        let mut out = Vec::new();
+        for (idx, raw) in lines[..cut].iter().enumerate() {
+            let trimmed = raw.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let mut line = *raw;
+            if let Some(pos) = line.rfind("//") {
+                if !line[pos + 2..].contains('"') {
+                    line = &line[..pos];
+                }
+            }
+            let mut found: Vec<char> = Vec::new();
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            let mut literal_start = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && line[i..].starts_with("\\u{") {
+                    if let Some(end) = line[i..].find('}') {
+                        let hex = &line[i + 3..i + end];
+                        if (1..=6).contains(&hex.len()) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                            found.extend(line[literal_start..i].chars().filter(|c| !c.is_ascii()));
+                            if let Some(c) = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
+                                found.push(c);
+                            }
+                            i += end + 1;
+                            literal_start = i;
+                            continue;
+                        }
+                    }
+                }
+                i += 1;
+            }
+            found.extend(line[literal_start..].chars().filter(|c| !c.is_ascii()));
+            for c in found {
+                let gc = category.get(c);
+                if gc == GeneralCategory::Control || gc == GeneralCategory::Format {
+                    continue;
+                }
+                out.push((idx + 1, c));
+            }
+        }
+        out
+    }
+
+    fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            .map(|e| e.expect("dir entry").path())
+            .collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                collect_rs(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    #[test]
+    fn production_ui_code_draws_only_registry_or_exempt_glyphs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(&root.join("src/ui"), &mut files);
+        for extra in [
+            "src/agents/unmerged.rs",
+            "src/agents/waves.rs",
+            "src/state_reader/git_ops.rs",
+        ] {
+            files.push(root.join(extra));
+        }
+        // The exclusion may only hide a test module: prove it is one.
+        let screens_mod = std::fs::read_to_string(root.join("src/ui/screens/mod.rs")).expect("mod.rs");
+        assert!(
+            screens_mod.contains("#[cfg(test)]\nmod render_escape_guard;"),
+            "render_escape_guard must stay declared under #[cfg(test)]"
+        );
+        files.retain(|p| !p.ends_with("src/ui/screens/render_escape_guard.rs"));
+
+        let registry: Vec<u32> = ALL.iter().flat_map(|(_, g)| g.chars().map(|c| c as u32)).collect();
+        for t in TYPOGRAPHY {
+            assert!(!registry.contains(&t), "U+{t:04X} is both registry and TYPOGRAPHY");
+        }
+        for r in &registry {
+            assert!(!STRUCTURAL.contains(r), "U+{r:04X} is both registry and STRUCTURAL");
+        }
+
+        let mut stray = Vec::new();
+        let (mut escape_seen, mut literal_seen) = (false, false);
+        let (mut structural_seen, mut typography_seen) = (false, false);
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+            for (line, c) in drawn_codepoints(&src) {
+                let v = c as u32;
+                if src.lines().nth(line - 1).is_some_and(|l| l.contains(&format!("{c}"))) {
+                    literal_seen = true;
+                } else {
+                    escape_seen = true;
+                }
+                if STRUCTURAL.contains(&v) {
+                    structural_seen = true;
+                } else if TYPOGRAPHY.contains(&v) {
+                    typography_seen = true;
+                } else if !registry.contains(&v) {
+                    stray.push(format!(
+                        "{}:{line}: U+{v:04X} {c:?}",
+                        f.strip_prefix(root).unwrap_or(f).display()
+                    ));
+                }
+            }
+        }
+        assert!(files.len() >= 25, "only {} files read", files.len());
+        assert!(escape_seen, "no escape-form codepoint seen: the scan is vacuous");
+        assert!(literal_seen, "no literal codepoint seen: the scan is vacuous");
+        assert!(structural_seen, "no STRUCTURAL codepoint seen");
+        assert!(typography_seen, "no TYPOGRAPHY codepoint seen");
+        assert!(
+            stray.is_empty(),
+            "glyphs drawn outside the registry and the exemptions:\n{}",
+            stray.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_scanner_flags_a_stray_glyph_and_ignores_tests_and_comments() {
+        let src = r##"pub const A: &str = "\u{25C6}";
+pub const B: &str = "◆ x";
+// a comment line with ◆ and \u{25C6}
+let _c = 1; // a trailing comment with ◆
+#[cfg(test)]
+mod tests {
+    const T: &str = "\u{2691}";
+}
+"##;
+        let got = drawn_codepoints(src);
+        assert_eq!(got, vec![(1, '\u{25C6}'), (2, '\u{25C6}')], "{got:?}");
+    }
+
+    #[test]
+    fn glyphs_defined_outside_ui_are_registry_glyphs() {
+        assert_eq!(crate::agents::unmerged::GLYPH_UNMERGED, CIRCLE_HALF);
+        assert_eq!(crate::state_reader::git_ops::GRAPH_COMMIT.to_string(), CIRCLE_FILLED);
+        assert_eq!(crate::state_reader::git_ops::GRAPH_MERGE.to_string(), CIRCLE_OPEN);
+    }
 }
