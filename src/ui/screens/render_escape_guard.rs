@@ -386,6 +386,10 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
         "QueueDeleteConfirmScreen",
         "src/ui/screens/queue_delete_confirm.rs",
     ),
+    (
+        "UnsandboxedConfirmScreen",
+        "src/ui/screens/driver_launch.rs",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -2397,6 +2401,19 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             }
             states.push(one_state("model being typed", typing_ctx, Box::new(typing)));
             states
+        }),
+
+        // The unsandboxed-launch confirmation (30-05): the hostile identity is the run
+        // id, the alias and a missing sandbox piece, over every detail tab.
+        "UnsandboxedConfirmScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(super::driver_launch::UnsandboxedConfirmScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    crate::cli::launch_defaults(),
+                    vec![identity.to_string()],
+                ))
+            })
         }),
 
         // The polite-stop confirmation (30-04): the hostile identity is the run id its

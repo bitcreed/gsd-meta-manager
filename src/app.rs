@@ -9211,4 +9211,252 @@ mod tests {
         let message = app.ctx.error_message.clone().expect("a refusal");
         assert!(message.ends_with("Nothing was started."), "{message}");
     }
+
+    /// A host that lacks `bwrap` but has a new enough claude.
+    #[cfg(target_os = "linux")]
+    fn fake_detect_degraded() -> crate::launcher::host::HostCaps {
+        crate::launcher::host::HostCaps {
+            missing: vec!["bwrap".to_string()],
+            claude_version: Some((2, 1, 295)),
+        }
+    }
+
+    /// A host whose claude is older than the hook field the gate relies on.
+    #[cfg(target_os = "linux")]
+    fn fake_detect_old_claude() -> crate::launcher::host::HostCaps {
+        crate::launcher::host::HostCaps {
+            missing: Vec::new(),
+            claude_version: Some((2, 0, 1)),
+        }
+    }
+
+    /// Whether any `DriverLaunchRequested` is waiting on the channel.
+    #[cfg(target_os = "linux")]
+    fn no_launch_requested(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) -> bool {
+        let mut none = true;
+        while let Ok(action) = rx.try_recv() {
+            none &= !matches!(action, Action::DriverLaunchRequested { .. });
+        }
+        none
+    }
+
+    /// D-20 end to end through the App: on a host missing `bwrap`, `y` launches nothing
+    /// and says why; `U` then `n` launches nothing; only `U` then `y` launches, with
+    /// `unsandboxed`, once; and the next form is sandboxed again (nothing is remembered).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_a_degraded_host_launches_unsandboxed_only_through_the_second_confirmation(
+    ) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, _run_dir) = launch_fixture(dir.path()).await;
+        app.launch_seams.detect = fake_detect_degraded;
+
+        open_the_launch_form(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(
+            text.contains("Sandbox unavailable: missing bwrap."),
+            "{text}"
+        );
+        assert!(
+            text.contains("[U] launch UNSANDBOXED instead (asks again)"),
+            "{text}"
+        );
+        // y: nothing launches; the form stays open and says why.
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_launch_form");
+        assert!(no_launch_requested(&mut rx));
+        let text = render_top_screen(&app);
+        assert!(
+            text.contains("Launch refused: this host cannot sandbox the driver (missing: bwrap)."),
+            "{text}"
+        );
+
+        // U then n: back to the tab, nothing launched.
+        app.handle_key(KeyCode::Char('U'), KeyModifiers::SHIFT);
+        assert_eq!(top_screen_name(&app), "driver_launch_unsandboxed");
+        let text = render_top_screen(&app);
+        assert!(text.contains("Launch UNSANDBOXED"), "{text}");
+        assert!(text.contains("WITHOUT a sandbox?"), "{text}");
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail");
+        assert!(no_launch_requested(&mut rx));
+        assert!(launches_for(dir.path()).is_empty());
+
+        // U then y: exactly one launch, unsandboxed.
+        open_the_launch_form(&mut app, &mut rx).await;
+        app.handle_key(KeyCode::Char('U'), KeyModifiers::SHIFT);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail");
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverLaunchRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let launched = next_matching(&mut rx, |a| matches!(a, Action::DriverLaunched { .. })).await;
+        app.update(launched);
+        let calls = launches_for(dir.path());
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].0.unsandboxed);
+        assert_eq!(calls[0].0.run_id, LAUNCHER_RUN);
+
+        // The next form is sandboxed again, and y on the same degraded host is refused.
+        open_the_launch_form(&mut app, &mut rx).await;
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_launch_form");
+        assert!(no_launch_requested(&mut rx));
+        assert_eq!(launches_for(dir.path()).len(), 1, "no second launch");
+    }
+
+    /// A claude older than the minimum is refused in both postures: no `[U]`, no launch.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_an_old_claude_is_refused_without_an_unsandboxed_offer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, _run_dir) = launch_fixture(dir.path()).await;
+        app.launch_seams.detect = fake_detect_old_claude;
+        open_the_launch_form(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(
+            text.contains("Launch refused: Claude Code 2.0.1 is older than"),
+            "{text}"
+        );
+        assert!(!text.contains("[U]"), "{text}");
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('U'), KeyModifiers::SHIFT);
+        assert_eq!(top_screen_name(&app), "driver_launch_form");
+        assert!(no_launch_requested(&mut rx));
+        assert!(launches_for(dir.path()).is_empty());
+    }
+
+    /// The template's unfilled placeholders are `driver check` problems: they show in
+    /// the form and block `y`, exactly as the launcher's own preflight would refuse.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_template_placeholders_block_y() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir) = launch_fixture(dir.path()).await;
+        crate::driver::steer::tests::write_run(
+            &run_dir,
+            crate::driver_templates::DIRECTION_TEMPLATE,
+        );
+        open_the_launch_form(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(text.contains("driver check found"), "{text}");
+        assert!(text.contains("before launching."), "{text}");
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_launch_form");
+        assert!(no_launch_requested(&mut rx));
+        assert!(launches_for(dir.path()).is_empty());
+    }
+
+    /// A body that says `control: pause` blocks `y`; `c` closes the form and opens the
+    /// control chooser, and nothing is written for the user.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_a_paused_body_blocks_y_and_c_opens_the_chooser() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir) = launch_fixture(dir.path()).await;
+        let paused =
+            crate::driver::steer::set_control(&crate::driver::steer::tests::clean_body(), "pause")
+                .expect("a control write");
+        crate::driver::steer::tests::write_run(&run_dir, &paused);
+        let before = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        open_the_launch_form(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(text.contains("control is pause:"), "{text}");
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_launch_form");
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "driver_control");
+        assert!(no_launch_requested(&mut rx));
+        assert_eq!(
+            std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap(),
+            before,
+            "nothing writes control: run automatically"
+        );
+    }
+
+    /// `R` on a run that is running, whose liveness is unknown, or that is done opens no
+    /// form and says why; a run that was never launched opens the form with the defaults.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_r_refuses_a_running_run_and_opens_the_defaults_for_a_new_one() {
+        use crate::driver::lock::{acquire_at, run_lock_path};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir) = launch_fixture(dir.path()).await;
+        // The file says `running`, and a held lock agrees: the run is running.
+        write_dead_launcher_run(dir.path(), LAUNCHER_RUN);
+        let _lock = acquire_at(&run_lock_path(&run_dir), LAUNCHER_RUN, std::process::id())
+            .expect("the test takes the run lock");
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        app.handle_key(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(top_screen_name(&app), "detail", "no form for a running run");
+        let (status, _) = app.ctx.status_message.clone().expect("a status message");
+        assert_eq!(
+            status,
+            format!("{LAUNCHER_RUN} is still running (its run lock is held). Stop it first.")
+        );
+        assert!(no_launch_requested(&mut rx));
+        drop(_lock);
+
+        // Lower-case r never opens the launch form.
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(top_screen_name(&app), "detail");
+    }
+
+    /// `R` on a never-launched run opens the same form with the CLI defaults.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_launch_r_on_a_new_run_opens_the_form_with_the_defaults() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run_dir = dir
+            .path()
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(LAUNCHER_RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        // `driver new`'s tool block (status starting, launches 0) over a clean body.
+        let run = crate::driver_templates::create_run_dir(dir.path(), "newer", chrono::Utc::now())
+            .expect("a new run");
+        let text = std::fs::read_to_string(&run.direction).unwrap();
+        let block = crate::driver::direction::split_frontmatter(&text)
+            .0
+            .expect("a tool block")
+            .to_string();
+        std::fs::write(
+            &run.direction,
+            format!("{block}{}", crate::driver::steer::tests::clean_body()),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&run_dir).unwrap();
+
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.launch_seams = LaunchSeams {
+            launch: fake_launch,
+            detect: fake_detect_ready,
+        };
+        app.update(Action::FileChanged {
+            project_path: dir.path().to_path_buf(),
+            changed_path: run.direction.clone(),
+        });
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        open_the_launch_form(&mut app, &mut rx).await;
+        let form = render_top_screen(&app);
+        assert!(form.contains(&run.run_id), "{form}");
+        assert!(form.contains("dispatches      10"), "{form}");
+        assert!(form.contains("minutes         60"), "{form}");
+        assert!(form.contains("gap rounds      2 per phase"), "{form}");
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        let request = next_matching(&mut rx, |a| {
+            matches!(a, Action::DriverLaunchRequested { .. })
+        })
+        .await;
+        app.update(request);
+        let launched = next_matching(&mut rx, |a| matches!(a, Action::DriverLaunched { .. })).await;
+        app.update(launched);
+        let calls = launches_for(dir.path());
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].0.run_id, run.run_id);
+        assert_eq!(calls[0].0.limits.wall_clock_min, Some(60.0));
+    }
 }

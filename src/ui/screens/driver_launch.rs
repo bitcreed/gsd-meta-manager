@@ -460,6 +460,35 @@ pub fn launch_error_copy(run_id: &str, error: &LauncherError) -> String {
     }
 }
 
+/// The control word that stops a launch, when the live body holds one: the launcher
+/// refuses to start a run whose DIRECTION.md says anything but `control: run`.
+fn control_blocking(preflight: &LaunchPreflight) -> Option<&str> {
+    preflight
+        .control
+        .as_deref()
+        .filter(|word| !word.eq_ignore_ascii_case("run"))
+}
+
+/// The Yellow control row, and the refusal `y` gives with it.
+fn control_copy(word: &str) -> String {
+    let word = shown(word);
+    format!(
+        "control is {word}: the launcher refuses to start a run whose DIRECTION.md says control: {word}. Set control: run with [c] first."
+    )
+}
+
+/// The Red lint headline, and the refusal `y` gives with it. `[e]` is the Driver tab's
+/// edit key: inside the form `e` edits a field, hence "close this form" (the spec's
+/// string, which lacked it, was `[inferred — audit]`).
+fn lint_copy(count: usize) -> String {
+    format!(
+        "driver check found {count} problem(s). Close this form, then fix them with [e] before launching."
+    )
+}
+
+/// How many lint problems or warnings the form lists before `… k more`.
+const FORM_FINDINGS_SHOWN: usize = 3;
+
 // ── The launch form (D-19, D-20, D-21) ──────────────────────────────────────
 
 /// What the sandbox row of the form says before the preflight arrives.
@@ -605,8 +634,25 @@ impl LaunchFormScreen {
         Ok(())
     }
 
+    /// Why a launch of ANY posture must go no further: the host's `claude` is refused
+    /// (both postures refuse it), the live body says `control: pause|stop`, or
+    /// `driver check` found problems. These block the unsandboxed launch too.
+    fn body_blocker(preflight: &LaunchPreflight) -> Option<String> {
+        if let Some(detail) = &preflight.claude_refusal {
+            return Some(format!("Launch refused: {}", shown(detail)));
+        }
+        if let Some(word) = control_blocking(preflight) {
+            return Some(control_copy(word));
+        }
+        if !preflight.lint_problems.is_empty() {
+            return Some(lint_copy(preflight.lint_problems.len()));
+        }
+        None
+    }
+
     /// Why `y` must launch nothing right now, as the copy to show; `None` when the
-    /// launch may go ahead.
+    /// launch may go ahead. A host that cannot sandbox refuses a sandboxed launch with
+    /// the sandbox copy; the unsandboxed launch is a separate confirmation (`U`).
     fn blocker(preflight: &LaunchPreflight) -> Option<String> {
         if let Some(detail) = &preflight.claude_refusal {
             return Some(format!("Launch refused: {}", shown(detail)));
@@ -614,7 +660,53 @@ impl LaunchFormScreen {
         if !preflight.missing.is_empty() {
             return Some(sandbox_refused_copy(&preflight.missing));
         }
-        None
+        Self::body_blocker(preflight)
+    }
+
+    /// `U`: offer the unsandboxed launch, through its own confirmation (D-20). Only a
+    /// host that is missing sandbox pieces offers it, and only when nothing else would
+    /// refuse the launch anyway; every other case is inert or says why.
+    fn offer_unsandboxed(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let Some(preflight) = self.preflight(ctx).cloned() else {
+            return ScreenAction::None;
+        };
+        if preflight.claude_refusal.is_some() || preflight.missing.is_empty() {
+            return ScreenAction::None;
+        }
+        if let Some(copy) = Self::body_blocker(&preflight) {
+            self.refusal = Some(copy);
+            ctx.needs_redraw = true;
+            return ScreenAction::None;
+        }
+        let mut args = self.form.args.clone();
+        args.project = self.alias.clone();
+        args.run_id = self.run_id.clone();
+        ctx.needs_redraw = true;
+        // Replace, not Push: the form that handed off is gone, so neither answer can
+        // return the user to a screen they can submit again.
+        ScreenAction::Replace(Box::new(UnsandboxedConfirmScreen::new(
+            self.alias.clone(),
+            self.run_id.clone(),
+            args,
+            preflight.missing,
+        )))
+    }
+
+    /// `c`: close the form and open the control chooser for this run, when the live
+    /// body says `pause` or `stop`. Nothing is written automatically.
+    fn open_control_chooser(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let Some(preflight) = self.preflight(ctx) else {
+            return ScreenAction::None;
+        };
+        let Some(word) = control_blocking(preflight).map(str::to_string) else {
+            return ScreenAction::None;
+        };
+        ctx.needs_redraw = true;
+        ScreenAction::Replace(Box::new(super::driver_steer::ControlChooserScreen::new(
+            self.alias.clone(),
+            self.run_id.clone(),
+            Some(word),
+        )))
     }
 
     /// `y` (or Enter on Yes, or a click on Yes).
@@ -729,6 +821,12 @@ impl LaunchFormScreen {
             }
             lines.push(Line::from(spans));
         }
+        if self.form.minutes_used_up {
+            lines.push(Line::from(Span::styled(
+                "  minutes: the old limit is used up. Raise it or the launcher refuses this launch.",
+                yellow,
+            )));
+        }
         match self.preflight(ctx) {
             None => lines.push(Line::from(Span::styled(SANDBOX_LOADING, muted()))),
             Some(preflight) => {
@@ -752,13 +850,67 @@ impl LaunchFormScreen {
                         "A sandboxed launch is refused on this host.",
                         red,
                     )));
+                    lines.push(Line::from(Span::styled(
+                        "[U] launch UNSANDBOXED instead (asks again)",
+                        yellow,
+                    )));
                 } else {
                     lines.push(Line::from(SANDBOX_OK));
+                }
+                if let Some(word) = control_blocking(preflight) {
+                    lines.push(Line::from(Span::styled(control_copy(word), yellow)));
+                }
+                if !preflight.lint_problems.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        lint_copy(preflight.lint_problems.len()),
+                        red,
+                    )));
+                    for problem in preflight.lint_problems.iter().take(FORM_FINDINGS_SHOWN) {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}", shown(problem)),
+                            red,
+                        )));
+                    }
+                    if preflight.lint_problems.len() > FORM_FINDINGS_SHOWN {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "  \u{2026} {} more",
+                                preflight.lint_problems.len() - FORM_FINDINGS_SHOWN
+                            ),
+                            muted(),
+                        )));
+                    }
+                }
+                for warning in preflight.lint_warnings.iter().take(FORM_FINDINGS_SHOWN) {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}", shown(warning)),
+                        yellow,
+                    )));
+                }
+                if preflight.lint_warnings.len() > FORM_FINDINGS_SHOWN {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "  \u{2026} {} more",
+                            preflight.lint_warnings.len() - FORM_FINDINGS_SHOWN
+                        ),
+                        muted(),
+                    )));
                 }
             }
         }
         if let Some(refusal) = &self.refusal {
-            lines.push(Line::from(Span::styled(refusal.clone(), red)));
+            // A refusal whose text is already a row above (the claude refusal, the
+            // control row, the lint headline) is not said twice.
+            let said = lines.iter().any(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    == *refusal
+            });
+            if !said {
+                lines.push(Line::from(Span::styled(refusal.clone(), red)));
+            }
         }
         lines.push(Line::from(Span::styled(
             format!(
@@ -767,6 +919,12 @@ impl LaunchFormScreen {
             ),
             yellow,
         )));
+        if self.form.args.loop_mode == DriverLoopMode::FreshPerItem {
+            lines.push(Line::from(Span::styled(
+                "fresh-per-item starts one session per item, so the run can spend a multiple of this.",
+                yellow,
+            )));
+        }
         lines.push(Line::from(Span::styled(KEY_ROW, muted())));
         lines
     }
@@ -808,6 +966,8 @@ impl Screen for LaunchFormScreen {
                 ctx.needs_redraw = true;
                 return ScreenAction::None;
             }
+            KeyCode::Char('U') => return self.offer_unsandboxed(ctx),
+            KeyCode::Char('c') => return self.open_control_chooser(ctx),
             KeyCode::Char('e') => {
                 let field = self.field();
                 if field == Field::LoopMode {
@@ -860,6 +1020,122 @@ impl Screen for LaunchFormScreen {
 
     fn name(&self) -> &str {
         "driver_launch_form"
+    }
+}
+
+// ── The unsandboxed launch (D-20) ───────────────────────────────────────────
+
+/// `Launch UNSANDBOXED`: the one way to launch a driver without bwrap and a systemd
+/// scope, and only from a host that cannot sandbox. A Red `ConfirmPopup`, default focus
+/// No, naming the missing pieces. Only its `y` launches, with `unsandboxed = true`; the
+/// choice lives in this screen's arguments and nowhere else, so nothing is remembered
+/// for the next launch (28 D-29).
+pub struct UnsandboxedConfirmScreen {
+    alias: String,
+    run_id: String,
+    args: LaunchArgs,
+    missing: Vec<String>,
+    popup: ConfirmPopup,
+}
+
+impl UnsandboxedConfirmScreen {
+    pub fn new(alias: String, run_id: String, mut args: LaunchArgs, missing: Vec<String>) -> Self {
+        args.project = alias.clone();
+        args.run_id = run_id.clone();
+        Self {
+            alias,
+            run_id,
+            args,
+            missing,
+            popup: ConfirmPopup::default(),
+        }
+    }
+
+    /// The prompt the popup shows, every value escaped.
+    fn prompt(&self) -> String {
+        format!(
+            "Launch {} on \"{}\" WITHOUT a sandbox? The driver runs as an ordinary process group with your full user permissions: no bwrap, no systemd scope. Missing: {}. [y/n]",
+            shown(&self.run_id),
+            shown(&self.alias),
+            self.missing
+                .iter()
+                .map(|m| shown(m))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+crate::ui::screens::adjudicate_screen!(
+    UnsandboxedConfirmScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints the Driver tab behind a dimmed popup (the registry alias and the run list) \
+     and names the run id (a directory name a cloned repository or a sibling sandbox \
+     chooses), the registry alias and the sandbox pieces the host probes found missing \
+     (probe output). Every one is drawn through `render_for_terminal`. Fixture states: \
+     the hostile identity as the run id, the alias and a missing item.",
+);
+
+impl Screen for UnsandboxedConfirmScreen {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => {
+                let mut args = self.args.clone();
+                args.unsandboxed = true;
+                dispatch(
+                    ctx,
+                    Action::DriverLaunchRequested {
+                        alias: self.alias.clone(),
+                        run_id: self.run_id.clone(),
+                        args,
+                    },
+                    &self.alias,
+                );
+                ScreenAction::Pop
+            }
+            ConfirmOutcome::Cancel => {
+                ctx.needs_redraw = true;
+                ScreenAction::Pop
+            }
+            ConfirmOutcome::Pending => {
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let detail = super::detail::DetailScreen::new(self.alias.clone());
+        detail.render_main_only(frame, area, ctx);
+        dim_background(frame, area);
+        let prompt = self.prompt();
+        let body = vec![Line::from(Span::styled(
+            super::confirm_popup::strip_key_hint(&prompt).to_string(),
+            Style::default().fg(Color::Red),
+        ))];
+        self.popup.record(render_confirm_popup(
+            frame,
+            area,
+            "Launch UNSANDBOXED",
+            body,
+            Color::Red,
+            self.popup.focus,
+        ));
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
+    }
+
+    fn name(&self) -> &str {
+        "driver_launch_unsandboxed"
     }
 }
 
@@ -1444,5 +1720,478 @@ mod tests {
         );
         assert!(long.chars().count() < 450, "{}", long.chars().count());
         assert!(long.ends_with("Nothing was started."));
+    }
+
+    // ── Task 2: refusals, the unsandboxed confirmation, the spend copy ──────
+
+    /// Draw `screen` into a `TestBackend` and join the cells row by row.
+    fn draw(screen: &dyn Screen, ctx: &AppContext, width: u16, height: u16) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map(|cell| cell.symbol().to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn degraded() -> LaunchPreflight {
+        LaunchPreflight {
+            missing: vec!["bwrap".to_string()],
+            ..LaunchPreflight::default()
+        }
+    }
+
+    fn replaced_name(action: ScreenAction) -> (String, Box<dyn Screen>) {
+        match action {
+            ScreenAction::Replace(screen) => (screen.name().to_string(), screen),
+            ScreenAction::Push(_) => panic!("U must replace the form, not stack on it"),
+            _ => panic!("expected a screen replacement"),
+        }
+    }
+
+    #[test]
+    fn launcher_launch_a_degraded_host_offers_u_and_y_launches_nothing() {
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(&mut ctx, degraded());
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(rows.contains(&"[U] launch UNSANDBOXED instead (asks again)".to_string()));
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'y'),
+            ScreenAction::None
+        ));
+        assert!(rx.try_recv().is_err(), "y launches nothing");
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(rows.iter().any(|r| r
+            .starts_with("Launch refused: this host cannot sandbox the driver (missing: bwrap)")));
+        // The args the form would launch with stay sandboxed whatever happened.
+        assert!(!screen.args().unsandboxed);
+    }
+
+    #[test]
+    fn launcher_launch_u_then_n_dispatches_nothing() {
+        // `n`, Esc and Enter (default focus is No) all decline, and a decline neither
+        // launches anything nor leaves a screen the user can submit again.
+        for key in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Enter] {
+            let (mut screen, mut ctx, mut rx) =
+                form_screen(LaunchKind::Launch, LaunchForm::fresh());
+            arrive(&mut ctx, degraded());
+            let (name, mut confirm) = replaced_name(press(&mut screen, &mut ctx, 'U'));
+            assert_eq!(name, "driver_launch_unsandboxed");
+            let action = confirm.handle_key(key, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::Pop), "{key:?}");
+            assert!(rx.try_recv().is_err(), "{key:?} launches nothing");
+        }
+    }
+
+    #[test]
+    fn launcher_launch_u_then_y_launches_unsandboxed_once_and_remembers_nothing() {
+        let (mut screen, mut ctx, mut rx) =
+            form_screen(LaunchKind::Relaunch, relaunch_prefill(&fm()));
+        arrive(&mut ctx, degraded());
+        let (_, mut confirm) = replaced_name(press(&mut screen, &mut ctx, 'U'));
+        // Nothing is dispatched by merely opening the confirmation.
+        assert!(rx.try_recv().is_err());
+        let action = confirm.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        let Some(Action::DriverLaunchRequested {
+            alias,
+            run_id,
+            args,
+        }) = rx.try_recv().ok()
+        else {
+            panic!("y must dispatch exactly one launch");
+        };
+        assert_eq!((alias.as_str(), run_id.as_str()), (ALIAS, RUN));
+        assert!(args.unsandboxed, "the second confirmation sets the flag");
+        assert_eq!(args.cap_minutes, 90.0, "the form's values travel with it");
+        assert!(rx.try_recv().is_err(), "exactly one request");
+
+        // The choice is not remembered: the form's own arguments never carried it, and
+        // a form opened again (what `R` builds) starts sandboxed.
+        assert!(!screen.args().unsandboxed);
+        let reopened = LaunchFormScreen::new(
+            ALIAS.to_string(),
+            RUN.to_string(),
+            LaunchKind::Relaunch,
+            relaunch_prefill(&fm()),
+        );
+        assert!(!reopened.args().unsandboxed);
+    }
+
+    #[test]
+    fn launcher_launch_the_unsandboxed_confirmation_names_what_is_missing() {
+        let (mut screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                missing: vec!["bwrap".to_string(), "user-systemd".to_string()],
+                ..LaunchPreflight::default()
+            },
+        );
+        let (_, confirm) = replaced_name(press(&mut screen, &mut ctx, 'U'));
+        let text = draw(confirm.as_ref(), &ctx, 100, 30);
+        assert!(text.contains("Launch UNSANDBOXED"), "{text}");
+        assert!(text.contains("WITHOUT a sandbox?"), "{text}");
+        // The popup wraps its prose, so each phrase is checked on its own.
+        assert!(text.contains("no systemd scope."), "{text}");
+        assert!(text.contains("Missing: bwrap, user-systemd."), "{text}");
+        assert!(text.contains("[ No ]"), "{text}");
+    }
+
+    #[test]
+    fn launcher_launch_u_is_inert_unless_the_host_is_missing_sandbox_pieces() {
+        for preflight in [
+            None,
+            Some(LaunchPreflight::default()),
+            Some(LaunchPreflight {
+                claude_refusal: Some("too old".to_string()),
+                missing: vec!["bwrap".to_string()],
+                ..LaunchPreflight::default()
+            }),
+        ] {
+            let (mut screen, mut ctx, mut rx) =
+                form_screen(LaunchKind::Launch, LaunchForm::fresh());
+            if let Some(preflight) = preflight.clone() {
+                arrive(&mut ctx, preflight);
+            }
+            assert!(
+                matches!(press(&mut screen, &mut ctx, 'U'), ScreenAction::None),
+                "{preflight:?}"
+            );
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn launcher_launch_a_claude_refusal_has_no_u_and_y_launches_nothing() {
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                claude_refusal: Some("Claude Code 2.0.0 is older than 2.1.295".to_string()),
+                missing: vec!["bwrap".to_string()],
+                ..LaunchPreflight::default()
+            },
+        );
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(
+            rows.contains(&"Launch refused: Claude Code 2.0.0 is older than 2.1.295".to_string())
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("[U]")),
+            "both postures refuse it, so no unsandboxed offer: {rows:?}"
+        );
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'y'),
+            ScreenAction::None
+        ));
+        assert!(rx.try_recv().is_err());
+        // Said once, not twice.
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.starts_with("Launch refused: Claude Code"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn launcher_launch_a_paused_body_blocks_y_and_c_opens_the_chooser() {
+        for word in ["pause", "stop"] {
+            let (mut screen, mut ctx, mut rx) =
+                form_screen(LaunchKind::Relaunch, relaunch_prefill(&fm()));
+            arrive(
+                &mut ctx,
+                LaunchPreflight {
+                    control: Some(word.to_string()),
+                    ..LaunchPreflight::default()
+                },
+            );
+            let rows = text_of(&screen.body_lines(&ctx));
+            assert!(
+                rows.contains(&format!(
+                    "control is {word}: the launcher refuses to start a run whose DIRECTION.md says control: {word}. Set control: run with [c] first."
+                )),
+                "{rows:?}"
+            );
+            assert!(matches!(
+                press(&mut screen, &mut ctx, 'y'),
+                ScreenAction::None
+            ));
+            assert!(rx.try_recv().is_err(), "y launches nothing on {word}");
+            // `c` closes the form and opens the chooser; nothing is written for the user.
+            let (name, _chooser) = replaced_name(press(&mut screen, &mut ctx, 'c'));
+            assert_eq!(name, "driver_control");
+            assert!(rx.try_recv().is_err(), "no control write is dispatched");
+        }
+    }
+
+    #[test]
+    fn launcher_launch_c_is_inert_when_the_body_says_run() {
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                control: Some("run".to_string()),
+                ..LaunchPreflight::default()
+            },
+        );
+        assert!(!text_of(&screen.body_lines(&ctx))
+            .iter()
+            .any(|r| r.starts_with("control is")));
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'c'),
+            ScreenAction::None
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_launch_driver_check_problems_block_y_and_warnings_do_not() {
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                lint_problems: (1..=5)
+                    .map(|n| format!("DIRECTION.md:{n}: placeholder {{short title}}"))
+                    .collect(),
+                lint_warnings: vec!["DIRECTION.md:9: warning: budget above the cap".to_string()],
+                ..LaunchPreflight::default()
+            },
+        );
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(rows.contains(&"driver check found 5 problem(s). Close this form, then fix them with [e] before launching.".to_string()), "{rows:?}");
+        assert!(rows.contains(&"  DIRECTION.md:1: placeholder {short title}".to_string()));
+        assert!(rows.contains(&"  \u{2026} 2 more".to_string()), "{rows:?}");
+        assert!(rows.contains(&"  DIRECTION.md:9: warning: budget above the cap".to_string()));
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'y'),
+            ScreenAction::None
+        ));
+        assert!(rx.try_recv().is_err(), "y launches nothing with problems");
+
+        // Warnings alone never block.
+        let (mut screen, mut ctx, mut rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                lint_warnings: vec!["DIRECTION.md:9: warning: x".to_string()],
+                ..LaunchPreflight::default()
+            },
+        );
+        assert!(matches!(
+            press(&mut screen, &mut ctx, 'y'),
+            ScreenAction::Pop
+        ));
+        assert!(matches!(
+            rx.try_recv().ok(),
+            Some(Action::DriverLaunchRequested { .. })
+        ));
+    }
+
+    #[test]
+    fn launcher_launch_the_spend_line_is_per_session_and_gains_the_multiple() {
+        let (mut screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        let rows = text_of(&screen.body_lines(&ctx));
+        let spend = "Each driver session may spend up to $10.00 of Claude usage (claude --max-budget-usd). It runs detached and keeps running after you close this TUI.";
+        assert!(rows.contains(&spend.to_string()), "{rows:?}");
+        let multiple =
+            "fresh-per-item starts one session per item, so the run can spend a multiple of this.";
+        assert!(!rows.contains(&multiple.to_string()));
+        // Toggle the loop mode to fresh-per-item.
+        press(&mut screen, &mut ctx, 'j');
+        press(&mut screen, &mut ctx, 'e');
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(rows.contains(&spend.to_string()));
+        assert!(rows.contains(&multiple.to_string()), "{rows:?}");
+        // And the ceiling follows an edit.
+        press(&mut screen, &mut ctx, 'j');
+        press(&mut screen, &mut ctx, 'e');
+        screen.editing = Some("2.5".to_string());
+        screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(rows
+            .iter()
+            .any(|r| r.starts_with("Each driver session may spend up to $2.50 of")));
+        // It never claims a hard per-run ceiling.
+        for row in &rows {
+            assert!(!row.starts_with("This run"), "{row}");
+        }
+    }
+
+    #[test]
+    fn launcher_launch_a_used_up_wall_clock_shows_the_raise_hint() {
+        let mut fm = fm();
+        fm.caps.wall_clock_min.used = 95.0;
+        let (screen, ctx, _rx) = form_screen(LaunchKind::Relaunch, relaunch_prefill(&fm));
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(
+            rows.contains(
+                &"  minutes: the old limit is used up. Raise it or the launcher refuses this launch."
+                    .to_string()
+            ),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn launcher_launch_the_form_renders_at_a_small_terminal_without_clipping_the_buttons() {
+        let (mut screen, mut ctx, _rx) = form_screen(LaunchKind::Relaunch, relaunch_prefill(&fm()));
+        arrive(&mut ctx, LaunchPreflight::default());
+        let _ = &mut screen;
+        let text = draw(&screen, &ctx, 80, 24);
+        assert!(text.contains("Launch driver run"), "{text}");
+        assert!(
+            text.contains("[ Yes ]") && text.contains("[ No ]"),
+            "{text}"
+        );
+        assert!(text.contains("Sandbox: bwrap + systemd scope"), "{text}");
+    }
+
+    /// The preflight over real files: the same lint and control the launcher applies.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_launch_preflight_reads_the_lint_and_the_control_word() {
+        use crate::launcher::host::HostCaps;
+        let ready = HostCaps {
+            missing: Vec::new(),
+            claude_version: Some((2, 1, 295)),
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        // A clean body: nothing blocks.
+        crate::driver::steer::tests::write_run(
+            dir.path(),
+            &crate::driver::steer::tests::clean_body(),
+        );
+        let clean = launch_preflight(dir.path(), &ready);
+        assert_eq!(clean.missing, Vec::<String>::new());
+        assert_eq!(clean.claude_refusal, None);
+        assert!(clean.lint_problems.is_empty(), "{clean:?}");
+        assert_eq!(clean.control.as_deref(), Some("run"));
+
+        // The template, unedited, has placeholders: problems.
+        crate::driver::steer::tests::write_run(
+            dir.path(),
+            crate::driver_templates::DIRECTION_TEMPLATE,
+        );
+        let template = launch_preflight(dir.path(), &ready);
+        assert!(!template.lint_problems.is_empty(), "{template:?}");
+        assert!(template.lint_problems[0].starts_with("DIRECTION.md:"));
+
+        // A paused body.
+        let paused =
+            crate::driver::steer::set_control(&crate::driver::steer::tests::clean_body(), "pause")
+                .expect("a control write");
+        crate::driver::steer::tests::write_run(dir.path(), &paused);
+        let pre = launch_preflight(dir.path(), &ready);
+        assert_eq!(pre.control.as_deref(), Some("pause"));
+
+        // A host missing pieces, and one with an old claude.
+        let degraded = launch_preflight(
+            dir.path(),
+            &HostCaps {
+                missing: vec!["bwrap".to_string(), "systemd-run".to_string()],
+                claude_version: Some((2, 1, 295)),
+            },
+        );
+        assert_eq!(degraded.missing, ["bwrap", "systemd-run"]);
+        assert_eq!(degraded.claude_refusal, None);
+        let old = launch_preflight(
+            dir.path(),
+            &HostCaps {
+                missing: Vec::new(),
+                claude_version: Some((2, 0, 1)),
+            },
+        );
+        assert!(old.claude_refusal.is_some_and(|d| d.contains("2.0.1")));
+        let none = launch_preflight(
+            dir.path(),
+            &HostCaps {
+                missing: Vec::new(),
+                claude_version: None,
+            },
+        );
+        assert!(none.claude_refusal.is_some());
+
+        // A run directory with no DIRECTION.md is a problem, not a panic.
+        let empty = tempfile::tempdir().expect("temp dir");
+        let unreadable = launch_preflight(empty.path(), &ready);
+        assert!(unreadable.lint_problems[0].starts_with("DIRECTION.md could not be read"));
+    }
+
+    #[test]
+    fn launcher_launch_error_copy_escapes_every_variant() {
+        let esc = "\u{1b}[31mred\u{1b}]0;title\u{7}";
+        let variants = [
+            LauncherError::InvalidRun {
+                detail: esc.to_string(),
+            },
+            LauncherError::Locked {
+                detail: esc.to_string(),
+            },
+            LauncherError::Auth {
+                detail: esc.to_string(),
+            },
+            LauncherError::Spawn {
+                detail: esc.to_string(),
+            },
+            LauncherError::Io {
+                detail: esc.to_string(),
+            },
+            LauncherError::Store {
+                detail: esc.to_string(),
+            },
+            LauncherError::UnsupportedPlatform,
+            LauncherError::DaemonExited {
+                code: 1,
+                detail: esc.to_string(),
+            },
+            LauncherError::DaemonExited {
+                code: 3,
+                detail: esc.to_string(),
+            },
+            LauncherError::SandboxUnavailable {
+                missing: vec![esc.to_string()],
+            },
+            LauncherError::ClaudeVersion {
+                detail: esc.to_string(),
+            },
+            LauncherError::CapExhausted {
+                detail: esc.to_string(),
+            },
+            LauncherError::DirectionInvalid {
+                problems: vec![esc.to_string()],
+            },
+        ];
+        for variant in variants {
+            let copy = launch_error_copy(&format!("r{esc}"), &variant);
+            assert!(
+                !copy.contains('\u{1b}') && !copy.contains('\u{7}'),
+                "{variant:?}: {copy:?}"
+            );
+            let refusal = copy.starts_with("Launch refused: ");
+            assert!(
+                refusal
+                    || copy.ends_with("Nothing was started.")
+                    || copy.contains("Nothing was started."),
+                "every failure says nothing was started, or that it was refused: {copy}"
+            );
+        }
     }
 }
