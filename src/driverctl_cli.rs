@@ -165,7 +165,7 @@ fn stop_guard_main(run_dir: Option<&std::path::Path>) -> i32 {
 }
 
 /// `driverctl serve`: run the launcher-side server until a signal (D-03).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn serve_main(
     run_dir: std::path::PathBuf,
     project: std::path::PathBuf,
@@ -185,14 +185,15 @@ fn serve_main(
     }
 }
 
-/// `driverctl serve` needs `renameat2(RENAME_EXCHANGE)` and `flock`: Linux only.
-#[cfg(not(target_os = "linux"))]
+/// `driverctl serve` needs an atomic directory-entry exchange and `flock`: Linux and
+/// macOS only; this stub is every other platform.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn serve_main(
     _run_dir: std::path::PathBuf,
     _project: std::path::PathBuf,
     _sock: Option<std::path::PathBuf>,
 ) -> i32 {
-    err_line("driverctl serve: unsupported platform (the run store needs Linux)");
+    err_line("driverctl serve: unsupported platform (the run store needs Linux or macOS)");
     1
 }
 

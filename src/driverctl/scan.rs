@@ -325,6 +325,7 @@ mod tests {
     }
 
     /// Run `f` on a thread and fail (rather than hang the suite) if it never returns.
+    #[cfg(target_os = "linux")]
     fn within_a_generous_bound<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -334,6 +335,7 @@ mod tests {
             .expect("the scan blocked on a planted file")
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cr01_a_fifo_named_like_a_verification_does_not_hang_the_scan() {
         let td = TempDir::new().unwrap();

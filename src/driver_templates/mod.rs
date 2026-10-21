@@ -13,7 +13,7 @@
 //!
 //! No `state.json` is written: the run store opens a missing one as a fresh run.
 //!
-//! The filesystem half is Linux-only for the reason the run store is (it builds on
+//! The filesystem half is Linux and macOS only for the reason the run store is (it builds on
 //! `driverctl::store` and `driverctl::serve`); the templates are plain constants
 //! and compile everywhere.
 //!
@@ -47,10 +47,10 @@ pub const RUN_ID_TOKEN: &str = "{run-id}";
 /// the run-id rule (80 bytes).
 pub const SLUG_RE: &str = r"^[A-Za-z0-9][A-Za-z0-9._-]*$";
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use create::{create_run_dir, mint_run_id, NewRun, NewRunError};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod create {
     use std::fs::{self, OpenOptions};
     use std::io::Write as _;
@@ -290,7 +290,7 @@ mod tests {
     use crate::driverctl::log::parse_log;
     use crate::launcher::prompt::{stop_rules_block, MASTER_PROMPT};
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn day() -> chrono::DateTime<chrono::Utc> {
         use chrono::TimeZone;
         chrono::Utc
@@ -299,7 +299,7 @@ mod tests {
             .expect("a valid instant")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn mint_run_id_composes_the_utc_date_and_the_slug() {
         assert_eq!(mint_run_id("smoke", day()).as_deref(), Ok("20261019-smoke"));
@@ -309,7 +309,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn mint_run_id_accepts_the_longest_slug_and_refuses_one_byte_more() {
         let longest = "a".repeat(71);
@@ -322,7 +322,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn mint_run_id_refuses_every_unusable_slug_with_the_allowed_shape() {
         for slug in [

@@ -28,7 +28,7 @@ fn err_line(text: &str) {
 }
 
 /// Write one line to stdout, ignoring failure.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn out_line(text: &str) {
     let mut stdout = std::io::stdout().lock();
     let _ = writeln!(stdout, "{text}");
@@ -37,7 +37,7 @@ fn out_line(text: &str) {
 /// `text` as one terminal-safe shell word for a command line printed to be copied
 /// (WR-03): control and bidi characters are escaped first, then a word with anything
 /// outside the plain path/alias set is single-quoted.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn shell_word(text: &str) -> String {
     let shown = gsd_meta_manager::text::render_for_terminal(text).to_string();
     let plain = !shown.is_empty()
@@ -68,7 +68,7 @@ pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
 }
 
 /// `driver auth setup|status` (D-21).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn auth_main(action: AuthAction) -> i32 {
     match action {
         AuthAction::Setup => auth_setup(),
@@ -76,14 +76,14 @@ fn auth_main(action: AuthAction) -> i32 {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn auth_main(_action: AuthAction) -> i32 {
     report("auth", &LauncherError::UnsupportedPlatform)
 }
 
 /// Explain, run `claude setup-token` on the user's terminal, read the pasted
 /// token from one line of stdin and store it. The value is never printed.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn auth_setup() -> i32 {
     use gsd_meta_manager::launcher::auth::{
         has_expected_prefix, store_token, token_path, validate_pasted_token, EXPECTED_TOKEN_PREFIX,
@@ -183,7 +183,7 @@ fn auth_setup() -> i32 {
 /// pasted. The check must not block (a terminal has nothing more to give until
 /// the user types), so stdin goes non-blocking for the one `fill_buf` and its
 /// flags are restored on every path.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn more_input_pending(stdin: &std::io::Stdin) -> bool {
     use std::io::BufRead;
 
@@ -205,7 +205,7 @@ fn more_input_pending(stdin: &std::io::Stdin) -> bool {
 }
 
 /// Report presence, path, mode and the host token's expiry. Never a value.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn auth_status_main() -> i32 {
     use gsd_meta_manager::launcher::auth::auth_status;
 
@@ -240,7 +240,7 @@ fn auth_status_main() -> i32 {
 }
 
 /// The alias, project root and loaded registry a `driver` target names.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn resolve_project(
     target: &str,
     config: Option<PathBuf>,
@@ -259,7 +259,7 @@ fn resolve_project(
     Ok((alias, project, config))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::cli::DriverLoopMode;
     use gsd_meta_manager::driverctl::store::CapLimits;
@@ -343,7 +343,7 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
 
 /// `driver stop`: signal the launcher (or stop an orphaned scope) and say what
 /// happened. `1` when the launcher was signalled but still holds the run.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn stop_main(target: &str, run_id: &str, wait_secs: u64, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::launcher::stop::{stop_run, StopReport};
 
@@ -367,7 +367,7 @@ fn stop_main(target: &str, run_id: &str, wait_secs: u64, config: Option<PathBuf>
 ///
 /// Prints where DIRECTION.md is and the exact next commands; opens no editor.
 /// `1` for every refusal, and nothing is created on a refusal.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn new_main(target: &str, slug: &str, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::driver_templates::create_run_dir;
 
@@ -400,7 +400,7 @@ fn new_main(target: &str, slug: &str, config: Option<PathBuf>) -> i32 {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn new_main(_target: &str, _slug: &str, _config: Option<PathBuf>) -> i32 {
     report("new", &LauncherError::UnsupportedPlatform)
 }
@@ -410,7 +410,7 @@ fn new_main(_target: &str, _slug: &str, _config: Option<PathBuf>) -> i32 {
 /// Read-only. Problems then warnings, one `DIRECTION.md:<line>: ...` line each;
 /// nothing is printed for a clean file. `0` without problems, `1` with any, and `1`
 /// for a run that cannot be read.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn check_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::driver_templates::lint::lint_direction;
     use gsd_meta_manager::driverctl::serve::{valid_run_id, validate_run_dir, RUN_ID_RE};
@@ -464,7 +464,7 @@ fn check_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
     i32::from(!report.is_clean())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn check_main(_target: &str, _run_id: &str, _config: Option<PathBuf>) -> i32 {
     report("check", &LauncherError::UnsupportedPlatform)
 }
@@ -472,7 +472,7 @@ fn check_main(_target: &str, _run_id: &str, _config: Option<PathBuf>) -> i32 {
 /// `driver push`: the push step for a finished run whose launcher is gone.
 /// `0` for a push, an already-done push or nothing to push; `1` for a refusal or
 /// a failure.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn push_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::launcher::config_dir::driver_root;
     use gsd_meta_manager::launcher::push::{policy_for, push_finished_run, PushContext};
@@ -514,28 +514,26 @@ fn push_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn push_main(_target: &str, _run_id: &str, _config: Option<PathBuf>) -> i32 {
     report("push", &LauncherError::UnsupportedPlatform)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn stop_main(_target: &str, _run_id: &str, _wait_secs: u64, _config: Option<PathBuf>) -> i32 {
     report("stop", &LauncherError::UnsupportedPlatform)
 }
 
-/// The launcher needs `flock`, `renameat2`, `bwrap` and `systemd-run`: Linux only.
+/// The launcher is supported on Linux and macOS only; this stub is every other
+/// platform (Windows).
 ///
 /// D-31: without `--unsandboxed` the refusal names what a sandboxed run needs
-/// (`bwrap` and `systemd-run`); with it the run store is what is missing, because
-/// the degraded mode is functional only on Linux in this phase. Both exit 1.
-#[cfg(not(target_os = "linux"))]
+/// (`bwrap` and `systemd-run`); with it the platform itself is what is missing,
+/// because the degraded mode runs on Linux and macOS only. Both exit 1.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn launch_main(args: &LaunchArgs, _config: Option<PathBuf>) -> i32 {
     if args.unsandboxed {
-        err_line(
-            "driver launch: unsupported platform: the run store needs Linux \
-             (no renamex_np splice yet)",
-        );
+        err_line("driver launch: unsupported platform: the launcher needs Linux or macOS");
         return 1;
     }
     report(
@@ -556,7 +554,7 @@ fn report(verb: &str, error: &LauncherError) -> i32 {
     error.exit_code()
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::shell_word;
 
