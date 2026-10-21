@@ -4387,6 +4387,78 @@ mod tests {
         assert!(app.ctx.last_refresh.is_empty());
     }
 
+    /// Wait for the launcher listing the last event scheduled and feed it to the app,
+    /// as the event loop does.
+    async fn deliver_launcher_refresh(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+    ) {
+        loop {
+            match next_action(rx).await {
+                Some(action @ Action::LauncherRunsRefreshed { .. }) => {
+                    app.update(action);
+                    return;
+                }
+                Some(_) => {}
+                None => panic!("the launcher listing never reported"),
+            }
+        }
+    }
+
+    /// SC2 end to end (D-04, D-09, D-11): a run whose frontmatter says `running`
+    /// reads `crashed` while its run lock is free, and `running` once a lock holder
+    /// exists. The frontmatter never changes between the two reads; only the lock
+    /// does.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launcher_view_a_free_lock_reads_crashed_and_a_held_lock_reads_running() {
+        use crate::driver::lock::{acquire_at, run_lock_path};
+        use crate::state_reader::driver_frontmatter::{
+            parse_driver_frontmatter, RunStatus, DRIVER_RUNS_REL,
+        };
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run_dir = dir.path().join(DRIVER_RUNS_REL).join(LAUNCHER_RUN);
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let mut frontmatter = parse_driver_frontmatter(include_str!(
+            "../tests/fixtures/driverctl/direction/s003-run1b.md"
+        ))
+        .expect("the spike fixture parses");
+        frontmatter.run_id = LAUNCHER_RUN.to_string();
+        frontmatter.status = RunStatus::Running;
+        frontmatter.status_reason = None;
+        frontmatter.launches = 1;
+        std::fs::write(
+            run_dir.join("DIRECTION.md"),
+            format!(
+                "{}{}",
+                frontmatter.emit(),
+                crate::driver_templates::DIRECTION_TEMPLATE
+            ),
+        )
+        .expect("DIRECTION.md");
+
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.ctx.experimental = true;
+
+        // 1. The lock is free: the file says running, the lock says nobody is.
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(text.contains("\u{2717} crashed"), "{text}");
+        assert!(!text.contains("\u{25C6} running"), "{text}");
+
+        // 2. The lock is held by this test: the same bytes now read running.
+        let _lock = acquire_at(&run_lock_path(&run_dir), LAUNCHER_RUN, std::process::id())
+            .expect("the test takes the run lock");
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        let text = render_top_screen(&app);
+        assert!(text.contains("\u{25C6} running"), "{text}");
+        assert!(!text.contains("\u{2717} crashed"), "{text}");
+        assert_eq!(app.ctx.reparse_dispatches, 0, "no project re-parse");
+    }
+
     /// The gate really refuses: a dashboard with no Driver tab open pays nothing
     /// for it. The scan is three blocking reads, so an ungated rescan would cost
     /// the whole fleet for one pane's freshness.
@@ -4936,7 +5008,11 @@ mod tests {
             cache.launcher_selected_id = Some("20261018-b".to_string());
         }
 
-        app.update(launcher_refreshed(&["20261020-new", "20261019-a", "20261018-b"]));
+        app.update(launcher_refreshed(&[
+            "20261020-new",
+            "20261019-a",
+            "20261018-b",
+        ]));
         let cache = &app.ctx.view_cache[OBS_ALIAS];
         assert_eq!(cache.launcher_selected, 2, "still on 20261018-b");
         assert_eq!(cache.launcher_selected_id.as_deref(), Some("20261018-b"));

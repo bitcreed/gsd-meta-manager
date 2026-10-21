@@ -462,6 +462,14 @@ mod tests {
         };
         assert!(matches!(listed.clone(), Action::DriverRunsListed { .. }));
 
+        let stopped = Action::DriverStopped {
+            alias: "proj".to_string(),
+            run_id: "2026-07-29T12-00-00Z-abcd".to_string(),
+            outcome: "stopped".to_string(),
+            disposition: StopDisposition::RunGone,
+        };
+        assert!(matches!(stopped.clone(), Action::DriverStopped { .. }));
+
         let refreshed = Action::LauncherRunsRefreshed {
             alias: "proj".to_string(),
             launcher_runs: Vec::new(),
@@ -470,13 +478,5 @@ mod tests {
             refreshed.clone(),
             Action::LauncherRunsRefreshed { .. }
         ));
-
-        let stopped = Action::DriverStopped {
-            alias: "proj".to_string(),
-            run_id: "2026-07-29T12-00-00Z-abcd".to_string(),
-            outcome: "stopped".to_string(),
-            disposition: StopDisposition::RunGone,
-        };
-        assert!(matches!(stopped.clone(), Action::DriverStopped { .. }));
     }
 }

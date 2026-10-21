@@ -324,11 +324,11 @@ pub(super) const DRY_RUN_LOADING: &str = "Loading...";
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 
-fn label_style() -> Style {
+pub(super) fn label_style() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
-fn muted_style() -> Style {
+pub(super) fn muted_style() -> Style {
     Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM)
@@ -651,7 +651,7 @@ fn local_date_time(started_at: &str) -> (String, String) {
 /// uncapped composition is `crate::text::render_for_terminal`, and the two
 /// agree below the cap (pinned by
 /// `ui::screens::tests::the_capped_and_uncapped_compositions_agree_below_the_cap`).
-fn shown_capped(value: &str) -> String {
+pub(super) fn shown_capped(value: &str) -> String {
     crate::text::display_identity(&sanitize_render_line(value))
 }
 
@@ -720,7 +720,7 @@ fn run_list_title(summary: &RunSummary, index: usize, total: usize) -> String {
 /// constraint on that pane is the CR-01 / UIFIX-02 defect, verbatim. Below
 /// [`DRIVER_TWO_PANE_MIN_CELLS`] the list is dropped entirely and `None` is
 /// returned for it; the selection still moves, only its *rendering* is given up.
-fn driver_panes(area: Rect) -> (Option<Rect>, Rect) {
+pub(super) fn driver_panes(area: Rect) -> (Option<Rect>, Rect) {
     if area.width < DRIVER_TWO_PANE_MIN_CELLS {
         return (None, area);
     }
@@ -994,7 +994,7 @@ fn no_runs_lines(alias: &str, opted_in: bool) -> Vec<Line<'static>> {
 ///
 /// The em dash is written as a `\u{…}` escape, matching the `DRIVER_LIVE_MARKER`
 /// convention in `detail.rs`.
-const DRIVER_PANE_TITLE: &str = " Driver \u{2014} EXPERIMENTAL ";
+pub(super) const DRIVER_PANE_TITLE: &str = " Driver \u{2014} EXPERIMENTAL ";
 
 /// What the Driver tab drew that the mouse can hit (quick 260926-kes,
 /// [inferred I-11]): the run list's item rows, and the run-detail pane — the

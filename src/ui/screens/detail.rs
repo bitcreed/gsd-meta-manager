@@ -1561,6 +1561,26 @@ impl DetailScreen {
     /// only in the sign, and two copies of a clamp are two things to keep in
     /// agreement.
     fn move_driver_selection(&self, ctx: &mut AppContext, delta: isize) {
+        // Launcher runs are the list (30-01, D-01). Their detail is a pure function
+        // of the cache, so a move reschedules nothing: the selection is pinned to
+        // the run id so a refresh cannot move it onto another run.
+        if let Some(cache) = ctx
+            .view_cache
+            .get_mut(&self.alias)
+            .filter(|cache| !cache.launcher_runs.is_empty())
+        {
+            let last = cache.launcher_runs.len() - 1;
+            let next = if delta < 0 {
+                cache.launcher_selected.saturating_sub(delta.unsigned_abs())
+            } else {
+                cache.launcher_selected.saturating_add(delta as usize)
+            }
+            .min(last);
+            cache.launcher_selected = next;
+            cache.launcher_selected_id = cache.launcher_runs.get(next).map(|(id, _)| id.clone());
+            ctx.needs_redraw = true;
+            return;
+        }
         let len = ctx
             .view_cache
             .get(&self.alias)
@@ -2249,7 +2269,15 @@ impl DetailScreen {
                     .first()
                     .is_none_or(|&first| c.defaults_selected <= first)
             }),
-            DetailSubView::Driver => cache.is_none_or(|c| c.driver_selected_run == 0),
+            // Launcher rows come first (30-01, D-01): when there are any, the top
+            // is launcher row 0; the legacy selection only matters without them.
+            DetailSubView::Driver => cache.is_none_or(|c| {
+                if c.launcher_runs.is_empty() {
+                    c.driver_selected_run == 0
+                } else {
+                    c.launcher_selected == 0
+                }
+            }),
         }
     }
 }
@@ -6135,10 +6163,13 @@ impl DetailScreen {
             // pane and reschedules the scan; the tab has no Enter
             // ([inferred I-11]).
             DetailSubView::Driver => {
-                let current = ctx
-                    .view_cache
-                    .get(&self.alias)
-                    .map_or(0, |c| c.driver_selected_run);
+                let current = ctx.view_cache.get(&self.alias).map_or(0, |c| {
+                    if c.launcher_runs.is_empty() {
+                        c.driver_selected_run
+                    } else {
+                        c.launcher_selected
+                    }
+                });
                 if index != current {
                     let delta = isize::try_from(index).unwrap_or(isize::MAX)
                         - isize::try_from(current).unwrap_or(isize::MAX);
@@ -6359,15 +6390,30 @@ impl DetailScreen {
     /// [inferred I-11]). One method for both render paths, so neither can
     /// record less than the other.
     fn render_driver(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let drawn = super::driver::render_driver_tab(
-            frame,
-            area,
-            ctx,
-            &self.alias,
-            ctx.view_cache.get(&self.alias),
-            &self.driver_viewport,
-            &self.driver_list_offset,
-        );
+        let cache = ctx.view_cache.get(&self.alias);
+        // The launcher-first composition (30-01, D-01) whenever the project has a
+        // launcher run; the shipped legacy render otherwise.
+        let drawn = if cache.is_some_and(|c| !c.launcher_runs.is_empty()) {
+            super::driver_run::render_launcher_tab(
+                frame,
+                area,
+                ctx,
+                &self.alias,
+                cache,
+                &self.driver_viewport,
+                &self.driver_list_offset,
+            )
+        } else {
+            super::driver::render_driver_tab(
+                frame,
+                area,
+                ctx,
+                &self.alias,
+                cache,
+                &self.driver_viewport,
+                &self.driver_list_offset,
+            )
+        };
         if let Some(list) = drawn.list {
             self.record_list(list);
         }

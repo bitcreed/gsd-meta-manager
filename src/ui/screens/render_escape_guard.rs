@@ -1220,6 +1220,9 @@ fn probe_ctx(identity: &str) -> AppContext {
         }),
     )];
     cache.launcher_selected = 0;
+    // Without this the detail pane reads `Loading...` and the list and header rows
+    // that draw the hostile identity are never reached (30-01).
+    cache.launcher_listed = true;
 
     // The Driver tab's LIVE OUTPUT PANE — the pane that displays the agent's own
     // prose, and the one this whole phase is named for (21-28 T1).
@@ -1623,16 +1626,28 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
     (
         "Driver tab",
         true,
-        "Draws the run list row and run header built from `driver_runs[0]`'s `run_id`, \
-         `goal` and `gsd_command` — populated by 21-25 T2. Before that the tab rendered \
-         `no_runs_lines`, which was the ONE already-composed site on this path, and the \
-         four half-composed ones below it were exercised by nothing. \
+        "Since 30-01 this is the LAUNCHER-FIRST composition: it draws the run list row \
+         (`driver_run::run_row`: the run id, the unknown status word the fixture's \
+         `DerivedStatus::AsWritten(Unknown(..))` carries, and the posture cell) and the \
+         selected run's header rows 1-2 (`driver_run::header_row_1` / `header_row_2`: \
+         the run id and the unknown status word) from `launcher_runs[0]` — populated by \
+         `probe_ctx`, with `launcher_listed` set so the pane does not read `Loading...`. \
+         The legacy surface (`driver_runs`, the live output pane, the injection rows) is \
+         the next state's.",
+    ),
+    (
+        "Driver tab, legacy runs",
+        true,
+        "The shipped Phase 17/18 surface, reached by emptying `launcher_runs` so the tab \
+         falls back to the legacy render: the run list row and run header built from \
+         `driver_runs[0]`'s `run_id`, `goal` and `gsd_command` — populated by 21-25 T2. \
          ALSO draws, since 21-28 T1, the LIVE OUTPUT PANE: `DriverOutputLine::text` for \
          each line of `ctx.driver_output[alias]`, whose bytes are the `exec_event` text \
          a run's journal holds on disk — the agent's own prose, written by the model and \
          read back by `crate::app::driver_line_for_record`. Four lines are pushed through \
          `DriverOutput::push_record`, one per `DriverLineKind` the pane styles \
-         differently, so the marker arms are drawn rather than assumed.",
+         differently, so the marker arms are drawn rather than assumed. And the \
+         INJECTION ROWS from `driver_inbox`.",
     ),
     (
         "Backlog tab, expanded",
@@ -1968,6 +1983,19 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
     // unset there and the baseline draws chrome only. It also mirrors the real
     // report, which interpolates values read from the project rather than
     // authored ones.
+    // The legacy Driver surface (30-01). The default `Driver tab` state now draws the
+    // launcher-first composition, so the Phase 17/18 sites (run list, run detail,
+    // live output pane, injection rows) need their own state: emptying
+    // `launcher_runs` is what sends the tab down the legacy render.
+    ("Driver tab, legacy runs", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Driver);
+        ctx.view_cache
+            .entry(identity.to_string())
+            .or_default()
+            .launcher_runs
+            .clear();
+    }),
     ("Driver tab, dry-run preview", |identity, ctx| {
         ctx.detail_sub_view_per_project
             .insert(identity.to_string(), crate::app::DetailSubView::Driver);
@@ -1975,6 +2003,9 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
         let Some(run) = cache.driver_runs.first() else {
             return;
         };
+        // The preview belongs to the legacy start flow (30-01): with launcher runs
+        // listed the tab draws the launcher composition instead.
+        cache.launcher_runs.clear();
         let (goal, command) = (run.goal.clone(), run.gsd_command.clone());
         cache.driver_dry_run = Some(super::DryRunPreview {
             command: command.clone(),
@@ -3483,10 +3514,10 @@ mod tests {
         };
 
         // --- Injection rows -------------------------------------------------
-        let driver_tab = rendered("Driver tab");
+        let driver_tab = rendered("Driver tab, legacy runs");
         assert!(
             driver_tab.contains(&queued_cell),
-            "the `Driver tab` state did not reach `injection_rows`: {queued_cell:?} \
+            "the `Driver tab, legacy runs` state did not reach `injection_rows`: {queued_cell:?} \
              is absent, so `derive_injection_states` returned no entries and the \
              assertion that the injection row's `message.text` is composed is \
              passing by silence. Check that `probe_ctx` populates \
@@ -3497,12 +3528,11 @@ mod tests {
         no_inbox
             .detail_sub_view_per_project
             .insert(clean.clone(), crate::app::DetailSubView::Driver);
-        no_inbox
-            .view_cache
-            .entry(clean.clone())
-            .or_default()
-            .driver_inbox
-            .clear();
+        {
+            let cache = no_inbox.view_cache.entry(clean.clone()).or_default();
+            cache.driver_inbox.clear();
+            cache.launcher_runs.clear();
+        }
         let no_inbox_text = render_to_text(
             &crate::ui::screens::detail::DetailScreen::new(clean.clone()),
             &no_inbox,
@@ -3519,7 +3549,7 @@ mod tests {
         let steps_rule = "\u{2500}\u{2500} steps ";
         assert!(
             driver_tab.contains(steps_rule),
-            "the ordinary `Driver tab` state does not draw the run detail's \
+            "the ordinary `Driver tab, legacy runs` state does not draw the run detail's \
              `steps` section rule, so its ABSENCE below cannot be evidence that \
              the dry-run preview replaced it. Rendered:\n{driver_tab}"
         );

@@ -6,6 +6,7 @@ pub mod detail;
 pub mod driver;
 pub mod driver_confirm;
 pub mod driver_inject;
+pub mod driver_run;
 pub mod driver_start;
 pub mod enqueue;
 pub mod help;
