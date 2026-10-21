@@ -3784,7 +3784,7 @@ mod tests {
     /// records one such near-miss — so each branch is asserted with a token only
     /// it can produce, and each token is checked in BOTH directions.
     ///
-    /// * **Injection rows** — `\u{25CB} queued`, the glyph-and-label pair
+    /// * **Injection rows** — `\u{25E6} queued`, the glyph-and-label pair
     ///   `InjectionState::Queued.cell()` returns. It is drawn only by
     ///   `injection_rows`; the run detail's other panes draw no such pair. The
     ///   `false` direction empties `driver_inbox`, which makes

@@ -194,7 +194,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
                     buf.set_string(
                         left_margin,
                         screen_y,
-                        "\u{25B6}",
+                        crate::ui::glyphs::POINTER_RIGHT,
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
@@ -227,7 +227,12 @@ impl<'a> Widget for RoadmapWidget<'a> {
 
                 // Arrow
                 if let Some(screen_y) = self.screen_y(y_logical, scroll_skip, area) {
-                    buf.set_string(connector_x, screen_y, "\u{25BC}", style);
+                    buf.set_string(
+                        connector_x,
+                        screen_y,
+                        crate::ui::glyphs::TRIANGLE_DOWN_SMALL,
+                        style,
+                    );
                 }
                 y_logical += 1;
             }

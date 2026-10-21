@@ -132,9 +132,7 @@ pub const ALL: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use icu_properties::props::{
-        EastAsianWidth, Emoji, EmojiPresentation, ExtendedPictographic,
-    };
+    use icu_properties::props::{EastAsianWidth, Emoji, EmojiPresentation, ExtendedPictographic};
     use icu_properties::{CodePointMapData, CodePointSetData};
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -202,7 +200,11 @@ mod tests {
                 failures.push(format!("{name} U+{:04X}: is a FORMER glyph", c as u32));
             }
         }
-        assert!(failures.is_empty(), "unsafe registry glyphs:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "unsafe registry glyphs:\n{}",
+            failures.join("\n")
+        );
 
         assert_eq!(ALL.len(), 25, "ALL has exactly the 25 glyph_map entries");
         for (i, (n1, g1)) in ALL.iter().enumerate() {
@@ -314,9 +316,13 @@ mod tests {
                 if bytes[i] == b'\\' && line[i..].starts_with("\\u{") {
                     if let Some(end) = line[i..].find('}') {
                         let hex = &line[i + 3..i + end];
-                        if (1..=6).contains(&hex.len()) && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                        if (1..=6).contains(&hex.len())
+                            && hex.chars().all(|c| c.is_ascii_hexdigit())
+                        {
                             found.extend(line[literal_start..i].chars().filter(|c| !c.is_ascii()));
-                            if let Some(c) = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
+                            if let Some(c) =
+                                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+                            {
                                 found.push(c);
                             }
                             i += end + 1;
@@ -367,19 +373,29 @@ mod tests {
             files.push(root.join(extra));
         }
         // The exclusion may only hide a test module: prove it is one.
-        let screens_mod = std::fs::read_to_string(root.join("src/ui/screens/mod.rs")).expect("mod.rs");
+        let screens_mod =
+            std::fs::read_to_string(root.join("src/ui/screens/mod.rs")).expect("mod.rs");
         assert!(
             screens_mod.contains("#[cfg(test)]\nmod render_escape_guard;"),
             "render_escape_guard must stay declared under #[cfg(test)]"
         );
         files.retain(|p| !p.ends_with("src/ui/screens/render_escape_guard.rs"));
 
-        let registry: Vec<u32> = ALL.iter().flat_map(|(_, g)| g.chars().map(|c| c as u32)).collect();
+        let registry: Vec<u32> = ALL
+            .iter()
+            .flat_map(|(_, g)| g.chars().map(|c| c as u32))
+            .collect();
         for t in TYPOGRAPHY {
-            assert!(!registry.contains(&t), "U+{t:04X} is both registry and TYPOGRAPHY");
+            assert!(
+                !registry.contains(&t),
+                "U+{t:04X} is both registry and TYPOGRAPHY"
+            );
         }
         for r in &registry {
-            assert!(!STRUCTURAL.contains(r), "U+{r:04X} is both registry and STRUCTURAL");
+            assert!(
+                !STRUCTURAL.contains(r),
+                "U+{r:04X} is both registry and STRUCTURAL"
+            );
         }
 
         let mut stray = Vec::new();
@@ -389,7 +405,11 @@ mod tests {
             let src = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
             for (line, c) in drawn_codepoints(&src) {
                 let v = c as u32;
-                if src.lines().nth(line - 1).is_some_and(|l| l.contains(&format!("{c}"))) {
+                if src
+                    .lines()
+                    .nth(line - 1)
+                    .is_some_and(|l| l.contains(&format!("{c}")))
+                {
                     literal_seen = true;
                 } else {
                     escape_seen = true;
@@ -407,8 +427,14 @@ mod tests {
             }
         }
         assert!(files.len() >= 25, "only {} files read", files.len());
-        assert!(escape_seen, "no escape-form codepoint seen: the scan is vacuous");
-        assert!(literal_seen, "no literal codepoint seen: the scan is vacuous");
+        assert!(
+            escape_seen,
+            "no escape-form codepoint seen: the scan is vacuous"
+        );
+        assert!(
+            literal_seen,
+            "no literal codepoint seen: the scan is vacuous"
+        );
         assert!(structural_seen, "no STRUCTURAL codepoint seen");
         assert!(typography_seen, "no TYPOGRAPHY codepoint seen");
         assert!(
@@ -420,15 +446,20 @@ mod tests {
 
     #[test]
     fn the_scanner_flags_a_stray_glyph_and_ignores_tests_and_comments() {
-        let src = r##"pub const A: &str = "\u{25C6}";
-pub const B: &str = "◆ x";
-// a comment line with ◆ and \u{25C6}
-let _c = 1; // a trailing comment with ◆
-#[cfg(test)]
-mod tests {
-    const T: &str = "\u{2691}";
-}
-"##;
+        // Built line by line so no synthetic line sits at column zero (the
+        // spawn-seam guard reads this file for column-zero `mod tests {`).
+        let src = [
+            r#"pub const A: &str = "\u{25C6}";"#,
+            r#"pub const B: &str = "◆ x";"#,
+            "// a comment line with ◆ and \\u{25C6}",
+            "let _c = 1; // a trailing comment with ◆",
+            "#[cfg(test)]",
+            "mod tests {",
+            r#"    const T: &str = "\u{2691}";"#,
+            "}",
+        ]
+        .join("\n");
+        let src = src.as_str();
         let got = drawn_codepoints(src);
         assert_eq!(got, vec![(1, '\u{25C6}'), (2, '\u{25C6}')], "{got:?}");
     }
@@ -436,7 +467,13 @@ mod tests {
     #[test]
     fn glyphs_defined_outside_ui_are_registry_glyphs() {
         assert_eq!(crate::agents::unmerged::GLYPH_UNMERGED, CIRCLE_HALF);
-        assert_eq!(crate::state_reader::git_ops::GRAPH_COMMIT.to_string(), CIRCLE_FILLED);
-        assert_eq!(crate::state_reader::git_ops::GRAPH_MERGE.to_string(), CIRCLE_OPEN);
+        assert_eq!(
+            crate::state_reader::git_ops::GRAPH_COMMIT.to_string(),
+            CIRCLE_FILLED
+        );
+        assert_eq!(
+            crate::state_reader::git_ops::GRAPH_MERGE.to_string(),
+            CIRCLE_OPEN
+        );
     }
 }

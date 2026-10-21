@@ -41,7 +41,7 @@
 //! are "received", "read" and "acknowledged"** — the echo arrives at DEQUEUE,
 //! measured roughly fifty-five seconds after the write, so every one of those
 //! words would promise an observation the protocol cannot make. The filling
-//! shape `○ → ◐ → ●` is the whole design: it reads correctly across a
+//! shape `◦ → ◒ → ◍` is the whole design: it reads correctly across a
 //! minute-long gap. **There is no spinner, no animation and no implied
 //! imminence anywhere on this surface**, and a spinner idiom here would be
 //! actively dishonest rather than merely decorative.
@@ -112,24 +112,25 @@ pub const RUN_LIST_FIXED_CELLS: usize = 18;
 //
 // A fixed `&'static str` is the *mechanism* enforcing "no glyph is derived from
 // file content": no byte read off disk can be assigned to one of these, so agent
-// prose cannot reach a run row through its glyph (D-13). The escape form keeps
-// the source readable in editors that render these codepoints ambiguously.
+// prose cannot reach a run row through its glyph (D-13). Each is an alias of a
+// `crate::ui::glyphs` registry constant, the single place the width-safety rule
+// is stated and tested (quick 261021-1id).
 
-/// `◆` — a run this scan positively knows is running.
-const GLYPH_LIVE: &str = "\u{25C6}";
-/// `◇` — the platform cannot say whether the driver lives. **Never a synonym
+/// `⧫` — a run this scan positively knows is running.
+const GLYPH_LIVE: &str = crate::ui::glyphs::LOZENGE_BLACK;
+/// `◊` — the platform cannot say whether the driver lives. **Never a synonym
 /// for dead**; that collapse was CR-05 and the tri-state fix must not be
 /// re-flattened at the render layer.
-const GLYPH_LIVENESS_UNKNOWN: &str = "\u{25C7}";
-/// `●` — succeeded, with changes on disk.
-const GLYPH_SUCCEEDED: &str = "\u{25CF}";
-/// `○` — succeeded while nothing moved on disk. Its own state, not a flavour of
+const GLYPH_LIVENESS_UNKNOWN: &str = crate::ui::glyphs::LOZENGE_WHITE;
+/// `◍` — succeeded, with changes on disk.
+const GLYPH_SUCCEEDED: &str = crate::ui::glyphs::CIRCLE_FILLED;
+/// `◦` — succeeded while nothing moved on disk. Its own state, not a flavour of
 /// success: the envelope said success and the working tree disagreed.
-const GLYPH_SUCCEEDED_NO_CHANGES: &str = "\u{25CB}";
+const GLYPH_SUCCEEDED_NO_CHANGES: &str = crate::ui::glyphs::CIRCLE_OPEN;
 /// `✗` — failed, denied, timed out, stalled, refused, crashed.
-const GLYPH_FAILED: &str = "\u{2717}";
-/// `■` — the user stopped it.
-const GLYPH_KILLED: &str = "\u{25A0}";
+const GLYPH_FAILED: &str = crate::ui::glyphs::BALLOT_X;
+/// `▮` — the user stopped it.
+const GLYPH_KILLED: &str = crate::ui::glyphs::BLACK_RECT;
 
 // ── Output-pane markers (fixed `&'static str`, `\u{…}` per PATTERNS S7) ─────
 //
@@ -140,8 +141,8 @@ const GLYPH_KILLED: &str = "\u{25A0}";
 /// The common case — assistant, user, turn-boundary and unparseable streams —
 /// gets **no** marker, so injections and diagnostics stand out against it.
 const MARKER_OUTPUT: &str = "  ";
-/// `· ` — the agent's stderr: present, and deliberately secondary.
-const MARKER_STDERR: &str = "\u{00B7} ";
+/// `∙ ` U+2219 — the agent's stderr: present, and deliberately secondary.
+const MARKER_STDERR: &str = "\u{2219} ";
 /// `» ` — a human-injected message. The one Cyan use in this pane.
 const MARKER_INJECTION: &str = "\u{00BB} ";
 /// `! ` — a diagnostic. **Never silently swallowed**: a pane that loses lines
@@ -164,20 +165,20 @@ pub const INJECTION_KINDS: [&str; 3] = [
     "interjection_missed",
 ];
 
-/// `○` — durably on disk in `inbox.jsonl`; **nothing has read it**.
-pub(super) const GLYPH_QUEUED: &str = "\u{25CB}";
-/// `◐` — written to the agent's stdin without error. Half-filled, because half
+/// `◦` — durably on disk in `inbox.jsonl`; **nothing has read it**.
+pub(super) const GLYPH_QUEUED: &str = crate::ui::glyphs::CIRCLE_OPEN;
+/// `◒` — written to the agent's stdin without error. Half-filled, because half
 /// of what matters has happened: the write landed and the agent has not yet
 /// picked it up.
-pub(super) const GLYPH_DELIVERED: &str = "\u{25D0}";
-/// `●` — the agent **dequeued** it and is running it as its own turn. Full,
+pub(super) const GLYPH_DELIVERED: &str = crate::ui::glyphs::CIRCLE_HALF;
+/// `◍` — the agent **dequeued** it and is running it as its own turn. Full,
 /// because this is as far as the protocol can see. The same codepoint the run
 /// glyphs use for "succeeded": both mean *this reached its end*, and the two
 /// live in different columns of different widgets, so no row shows both.
-pub(super) const GLYPH_ACTED_ON: &str = "\u{25CF}";
+pub(super) const GLYPH_ACTED_ON: &str = crate::ui::glyphs::CIRCLE_FILLED;
 /// `✗` — appended after the agent's input was closed. Undeliverable, named,
 /// and **never retried**.
-pub(super) const GLYPH_MISSED: &str = "\u{2717}";
+pub(super) const GLYPH_MISSED: &str = crate::ui::glyphs::BALLOT_X;
 
 /// The exact label for a message durably queued and unread.
 pub(super) const LABEL_QUEUED: &str = "queued";
@@ -333,7 +334,7 @@ pub(super) fn muted_style() -> Style {
 ///
 /// `None` for both is **not** treated as a crash. A run with no terminal record
 /// and no observation is a run nothing can currently speak for, which is what
-/// `◇ ?` says; reporting it as dead would manufacture a crash out of an absence
+/// `◊ ?` says; reporting it as dead would manufacture a crash out of an absence
 /// of evidence, which is the CR-05 defect in a new place.
 pub fn run_state_glyph(
     verdict: Option<RunVerdict>,
@@ -1353,7 +1354,7 @@ pub(super) fn pane_header_line(
 /// is *acted-on*, and "sent", "received", "read" and "acknowledged" are all
 /// forbidden — the echo arrives roughly fifty-five seconds after the write, so
 /// each of those four would claim an observation the protocol cannot make. The
-/// filling shape `○ → ◐ → ●` is the whole design: it reads correctly across a
+/// filling shape `◦ → ◒ → ◍` is the whole design: it reads correctly across a
 /// minute-long gap with **no spinner, no animation and no implied imminence**.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InjectionState {
@@ -1569,7 +1570,7 @@ fn injection_elapsed(seconds: i64) -> String {
 /// One injected message: **always two rows, three when missed, at every width**.
 ///
 /// ```text
-/// » ◐ delivered  21:40:02  (+0:47)
+/// » ◒ delivered  21:40:02  (+0:47)
 ///     skip the UI review
 /// ```
 ///
@@ -1924,6 +1925,22 @@ fn section_rule(name: &str, width: u16) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quick 261021-1id: the output-pane markers that carry a glyph are a
+    /// width-safe registry glyph plus one space (two cells), like the badges.
+    #[test]
+    fn output_markers_are_registry_glyphs_plus_one_space() {
+        for marker in [MARKER_STDERR, MARKER_INJECTION] {
+            let mut chars = marker.chars();
+            let glyph = chars.next().expect("glyph").to_string();
+            assert_eq!(chars.as_str(), " ", "{marker:?} must be glyph + one space");
+            assert!(
+                crate::ui::glyphs::ALL.iter().any(|(_, r)| *r == glyph),
+                "{glyph:?} is not a registry glyph"
+            );
+            assert_eq!(ratatui::text::Span::raw(marker).width(), 2);
+        }
+    }
 
     /// The legacy surface through the shipped-by-Phase-30 composition: the collapsed
     /// `legacy runs` row expanded and the highlight on the legacy run (30-01), with
@@ -3428,7 +3445,7 @@ mod tests {
     /// in direction. `delivered: false` is the journal saying the write FAILED,
     /// which is positive evidence and not an absence of it — the driver read the
     /// message, the write failed, and the inbox cursor has already moved past it
-    /// so nothing will ever read it again. Rendering `○ queued` — glossed
+    /// so nothing will ever read it again. Rendering `◦ queued` — glossed
     /// *"durably on disk; nothing has read it yet"* — is false twice over and is
     /// PITFALLS' undelivered-injection failure in the code written to prevent it.
     #[test]

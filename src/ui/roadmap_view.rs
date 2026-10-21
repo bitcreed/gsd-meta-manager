@@ -53,7 +53,7 @@ const DETAIL_STACKED_ROWS: u16 = 9;
 const DETAIL_STACKED_MIN_ROWS: u16 = 6;
 /// The narrowest lane column.
 const MIN_LANE_CELLS: usize = 8;
-/// The marker column (` ▶ `).
+/// The marker column (` ► `).
 const MARK_CELLS: usize = 3;
 /// The widest id column; longer ids are truncated.
 const MAX_ID_CELLS: usize = 8;
@@ -760,7 +760,7 @@ impl RoadmapView<'_> {
         Paragraph::new(lines).render(list_area, buf);
     }
 
-    /// `Start now: ◉10 Slot picker UI (active) ║ ○11 Calendar sync` (D-A06).
+    /// `Start now: ◉10 Slot picker UI (active) ║ ◦11 Calendar sync` (D-A06).
     fn start_now_line(&self, w: usize) -> Line<'static> {
         let mut spans = vec![Span::styled("Start now: ", bold())];
         let now: Vec<&PhaseFacts> = self
@@ -1092,7 +1092,7 @@ impl RoadmapView<'_> {
             None if !p.planned => spans.push(Span::raw(format!("{DOT}plans TBD"))),
             None => {}
         }
-        // `◐k`: plans of this phase finished on a worktree, not yet merged
+        // `◒k`: plans of this phase finished on a worktree, not yet merged
         // (quick 260929-szq, I-11); detail status line only.
         if p.unmerged > 0 {
             spans.push(Span::styled(
@@ -1803,7 +1803,7 @@ mod tests {
     }
 
     /// Lane glyphs and status glyphs: what must never appear past the cap.
-    const LANE_GLYPHS: &str = "│─├┤┬┴╮╭╯╰┼●◉○◌";
+    const LANE_GLYPHS: &str = "│─├┤┬┴╮╭╯╰┼◍◉◦◌";
 
     /// A row's cells inside the list border and padding (both sides).
     fn body(row: &str) -> Vec<char> {

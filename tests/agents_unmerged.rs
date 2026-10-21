@@ -289,7 +289,7 @@ fn mailbot_modelled_phase_05_is_in_progress_while_locked_then_awaits_merge() {
     }
     assert_eq!(
         waves::derive(&locked, &ProjectState::default()).summary_forms(),
-        vec!["\u{25D0}5 unmerged".to_string(), "\u{25D0}5".to_string()]
+        vec!["\u{25D2}5 unmerged".to_string(), "\u{25D2}5".to_string()]
     );
 
     assert!(git(&root, &["worktree", "unlock", wt.to_str().unwrap()]));
@@ -301,7 +301,7 @@ fn mailbot_modelled_phase_05_is_in_progress_while_locked_then_awaits_merge() {
         .all(|i| i.state == UnmergedState::AwaitingMerge));
     assert_eq!(
         waves::derive(&unlocked, &ProjectState::default()).summary_forms(),
-        vec!["\u{25D0}5 unmerged".to_string(), "\u{25D0}5".to_string()]
+        vec!["\u{25D2}5 unmerged".to_string(), "\u{25D2}5".to_string()]
     );
 }
 
@@ -321,7 +321,7 @@ fn the_guarded_scan_carries_unmerged_work_to_the_summary_forms() {
     let view = waves::derive(&scans[0].1, &ProjectState::default());
     assert_eq!(
         view.summary_forms(),
-        vec!["\u{25D0}1 unmerged".to_string(), "\u{25D0}1".to_string()]
+        vec!["\u{25D2}1 unmerged".to_string(), "\u{25D2}1".to_string()]
     );
 }
 

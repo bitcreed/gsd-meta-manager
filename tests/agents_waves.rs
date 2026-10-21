@@ -288,7 +288,7 @@ fn a_summary_committed_in_the_worktree_reads_finished_before_the_merge() {
     // Quick 260929-szq: the unmerged SUMMARY is a pending action of its own.
     assert_eq!(
         view.summary_forms(),
-        vec!["\u{25D0}1 unmerged".to_string(), "\u{25D0}1".to_string()]
+        vec!["\u{25D2}1 unmerged".to_string(), "\u{25D2}1".to_string()]
     );
 
     // 13-03's executor, running: no SUMMARY, 30 s old, so Live.
@@ -299,7 +299,7 @@ fn a_summary_committed_in_the_worktree_reads_finished_before_the_merge() {
     assert_eq!((view.done, view.finished, view.running), (1, 1, 1));
     assert_eq!(
         view.summary_forms().first().map(String::as_str),
-        Some("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/3 done \u{b7} \u{25D0}1 unmerged"),
+        Some("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/3 done \u{b7} \u{25D2}1 unmerged"),
         "done shown to the user is main-done only; the unmerged plan is its own segment"
     );
 }

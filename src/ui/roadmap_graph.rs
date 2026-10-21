@@ -213,28 +213,28 @@ fn longest_path_layers(parents: &ParentLists) -> Vec<usize> {
 // ---------------------------------------------------------------------------
 
 /// Status glyph: done (drawn dim).
-pub const GLYPH_DONE: &str = "\u{25CF}";
+pub const GLYPH_DONE: &str = crate::ui::glyphs::CIRCLE_FILLED;
 /// Status glyph: the active phase (yellow, bold).
-pub const GLYPH_ACTIVE: &str = "\u{25C9}";
+pub const GLYPH_ACTIVE: &str = crate::ui::glyphs::FISHEYE;
 /// Status glyph: ready — not done, every in-graph dependency done (green).
-pub const GLYPH_READY: &str = "\u{25CB}";
+pub const GLYPH_READY: &str = crate::ui::glyphs::CIRCLE_OPEN;
 /// Status glyph: blocked on an unfinished dependency.
-pub const GLYPH_BLOCKED: &str = "\u{25CC}";
+pub const GLYPH_BLOCKED: &str = crate::ui::glyphs::CIRCLE_DOTTED;
 /// Status glyph: every remaining plan finished on a worktree, not yet merged
 /// (cyan, not dim; quick 260929-szq). The one glyph the whole UI shares.
 pub const GLYPH_UNMERGED: &str = crate::agents::unmerged::GLYPH_UNMERGED;
 /// Marker of the selected row (the row is also drawn reversed).
-pub const MARK_SELECTED: &str = "\u{25B6}";
+pub const MARK_SELECTED: &str = crate::ui::glyphs::POINTER_RIGHT;
 /// Marker of a dependency of the selection (cyan).
-pub const MARK_DEP: &str = "\u{2191}";
+pub const MARK_DEP: &str = crate::ui::glyphs::ARROW_UP_DASHED;
 /// Marker of a phase the selection unblocks (magenta).
-pub const MARK_UNBLOCKS: &str = "\u{2193}";
+pub const MARK_UNBLOCKS: &str = crate::ui::glyphs::ARROW_DOWN_DASHED;
 /// Marker of an implied (transitively reduced) dependency (dim).
-pub const MARK_IMPLIED: &str = "\u{00B7}";
+pub const MARK_IMPLIED: &str = crate::ui::glyphs::BULLET_OPERATOR;
 /// An unfolded band.
-pub const BAND_OPEN: &str = "\u{25BE}";
+pub const BAND_OPEN: &str = crate::ui::glyphs::TRIANGLE_DOWN_SMALL;
 /// A folded band.
-pub const BAND_FOLDED: &str = "\u{25B8}";
+pub const BAND_FOLDED: &str = crate::ui::glyphs::TRIANGLE_RIGHT_SMALL;
 /// A band row's trailing fill.
 pub const BAND_FILL: &str = "\u{2501}";
 /// Separator between phases that can run in parallel (the Start-now line).
@@ -347,7 +347,7 @@ pub enum PhaseStatus {
 }
 
 impl PhaseStatus {
-    /// The status glyph (`●` `◉` `○` `◌` `◐`).
+    /// The status glyph (`◍` `◉` `◦` `◌` `◒`).
     pub fn glyph(self) -> &'static str {
         match self {
             PhaseStatus::Done => GLYPH_DONE,

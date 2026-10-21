@@ -102,7 +102,7 @@ const BADGE_LEGEND: [(&str, &str); 8] = [
 
 /// The badge glyphs only the driver surface can paint: with the experimental
 /// features off `row_badge` can never yield them, so documenting them would name
-/// a glyph nothing renders. (`⚑` stays: the legacy needs-a-human predicate paints
+/// a glyph nothing renders. (`❢` stays: the legacy needs-a-human predicate paints
 /// it with the flag off too.)
 const DRIVER_ONLY_BADGES: [&str; 4] = [BADGE_CRASHED, BADGE_DRIVEN, BADGE_STALE, BADGE_UNKNOWN];
 

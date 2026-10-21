@@ -1480,7 +1480,11 @@ mod tests {
             (BADGE_EXTERNAL_JOB, g::CLOCK),
         ];
         for (badge, registry) in pinned {
-            assert_eq!(badge, format!("{registry} "), "badge must be its registry glyph + a space");
+            assert_eq!(
+                badge,
+                format!("{registry} "),
+                "badge must be its registry glyph + a space"
+            );
         }
         let badges = [
             BADGE_DRIVEN,
@@ -1498,7 +1502,9 @@ mod tests {
             assert_eq!(chars.next(), Some(' '), "{b:?} must be glyph + one space");
             assert_eq!(chars.next(), None, "{b:?} must be exactly two chars");
             assert!(
-                crate::ui::glyphs::ALL.iter().any(|(_, r)| *r == glyph.to_string()),
+                crate::ui::glyphs::ALL
+                    .iter()
+                    .any(|(_, r)| *r == glyph.to_string()),
                 "{glyph:?} is not a registry glyph"
             );
             assert!(!FORBIDDEN.contains(&glyph));

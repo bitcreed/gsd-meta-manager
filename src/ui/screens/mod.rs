@@ -1908,7 +1908,7 @@ impl AppContext {
     /// healthy `driven` run. The launcher half is gated on the experimental flag like
     /// every other driver surface, and on the marker having landed at all: before the
     /// first scan nothing is guessed. The badge's rank-4 input stays
-    /// [`needs_human_for`](Self::needs_human_for) alone, so a stale project shows `◈`
+    /// [`needs_human_for`](Self::needs_human_for) alone, so a stale project shows `⬖`
     /// and still sorts first.
     pub fn needs_attention_for(&self, alias: &str) -> bool {
         self.needs_human_for(alias)

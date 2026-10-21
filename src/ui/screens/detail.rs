@@ -559,12 +559,12 @@ pub(crate) fn tab_bar_compact_cells(experimental: bool) -> u16 {
     }
 }
 
-/// The Driver label's reserved final cell while a run is live: `◆`.
+/// The Driver label's reserved final cell while a run is live: `⧫`.
 ///
 /// A fixed `&'static str` written as a `\u{…}` escape, per the house rule that no
 /// raw glyph appears in source (`normal.rs:55-70`). Magenta is the phase's
 /// driven-and-live colour.
-const DRIVER_LIVE_MARKER: &str = "\u{25C6}";
+const DRIVER_LIVE_MARKER: &str = crate::ui::glyphs::LOZENGE_BLACK;
 
 /// The Driver label's reserved final cell while nothing is driving: one space.
 ///
@@ -575,10 +575,10 @@ const DRIVER_LIVE_MARKER: &str = "\u{25C6}";
 const DRIVER_IDLE_MARKER: &str = " ";
 
 /// Left overflow marker: `‹`. DarkGray, one cell.
-const TAB_OVERFLOW_LEFT: &str = "\u{2039}";
+const TAB_OVERFLOW_LEFT: &str = crate::ui::glyphs::ANGLE_LEFT;
 
 /// Right overflow marker: `›`. DarkGray, one cell.
-const TAB_OVERFLOW_RIGHT: &str = "\u{203A}";
+const TAB_OVERFLOW_RIGHT: &str = crate::ui::glyphs::ANGLE_RIGHT;
 
 /// The cells one `Tabs` entry costs: the label plus its two pads.
 fn tab_entry_cells(label_cells: usize) -> usize {
@@ -781,7 +781,7 @@ fn windowed_tab_titles(
 /// (CR-05) and is resolved there, never re-derived here.
 ///
 /// Also true when a **launcher** run of the project holds its run lock (30-03, D-12):
-/// the dashboard marker's `any_live`, so `D:Drive◆` lights for launcher runs
+/// the dashboard marker's `any_live`, so `D:Drive⧫` lights for launcher runs
 /// `[inferred — audit]`. That half is the experimental flag's, like every launcher
 /// surface, and is false before the project's first marker scan lands.
 fn driver_live_for(ctx: &AppContext, alias: &str) -> bool {
@@ -8543,7 +8543,11 @@ impl DetailScreen {
                                 } else {
                                     Style::default().fg(Color::White)
                                 };
-                                let marker = if opt == &entry.value { "● " } else { "  " };
+                                let marker = if opt == &entry.value {
+                                    concat!("\u{25CD}", " ")
+                                } else {
+                                    "  "
+                                };
                                 // Value FIRST, explanation after: the popup is
                                 // clamped to the area, so when the clamp bites
                                 // it is the explanation that gets cut and the
@@ -8884,9 +8888,9 @@ fn fit_spans(spans: Vec<Span<'static>>, cols: usize) -> Line<'static> {
 
 /// The two-line stage block under the ladder ([inferred I-12]).
 ///
-/// Line A is one token per stage — `Discuss ✓  Research –  Plan 7  Execute 3/7
-/// Verify –` — from [`derive_all_stage_statuses`] and the plan counts: `✓`
-/// complete, `…` current, `–` skipped or not started, with the Plan
+/// Line A is one token per stage — `Discuss ✓  Research -  Plan 7  Execute 3/7
+/// Verify -` — from [`derive_all_stage_statuses`] and the plan counts: `✓`
+/// complete, `⋯` current, `-` skipped or not started, with the Plan
 /// stage's plan count and the Execute stage's `done/total` in place of a mark.
 /// Line B is `Checks ✓Patterns ✓Plan-Check +N not run` over the
 /// [`substage_table`] rows whose stage has been touched (the collapse rule
@@ -8905,11 +8909,11 @@ fn stage_block_lines(
                 format!("{}/{}", inf.summary_count, inf.plan_count)
             }
             (2, StageStatus::Complete) if inf.plan_count > 0 => inf.plan_count.to_string(),
-            (_, StageStatus::Complete) => "\u{2713}".to_string(),
-            (_, StageStatus::Current) => "\u{2026}".to_string(),
+            (_, StageStatus::Complete) => crate::ui::glyphs::CHECK.to_string(),
+            (_, StageStatus::Current) => crate::ui::glyphs::MIDLINE_ELLIPSIS.to_string(),
             // The ladder above already spells a skip as `[--]`; here both
-            // read `–`, in the ladder's own colours.
-            (_, StageStatus::Skipped | StageStatus::NotStarted) => "\u{2013}".to_string(),
+            // read as an ASCII hyphen, in the ladder's own colours.
+            (_, StageStatus::Skipped | StageStatus::NotStarted) => "-".to_string(),
         };
         if i > 0 {
             a.push(Span::raw("  "));
@@ -9031,9 +9035,9 @@ fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Ve
 }
 
 /// The Waves pane's `done` glyph; the help legend interpolates it (T-18-63).
-pub(super) const WAVES_GLYPH_DONE: &str = "\u{2713}";
-/// The Waves pane's `running` glyph, also the `▶ active` marker's (I-13).
-pub(super) const WAVES_GLYPH_RUNNING: &str = "\u{25b6}";
+pub(super) const WAVES_GLYPH_DONE: &str = crate::ui::glyphs::CHECK;
+/// The Waves pane's `running` glyph, also the `► active` marker's (I-13).
+pub(super) const WAVES_GLYPH_RUNNING: &str = crate::ui::glyphs::POINTER_RIGHT;
 /// The Waves pane's `stalled` glyph.
 pub(super) const WAVES_GLYPH_STALLED: &str = "!";
 
@@ -9083,8 +9087,8 @@ impl PaneState {
             PaneState::Running => WAVES_GLYPH_RUNNING,
             PaneState::Unmerged => crate::agents::unmerged::GLYPH_UNMERGED,
             PaneState::Stalled => WAVES_GLYPH_STALLED,
-            PaneState::Queued => "\u{b7}",
-            PaneState::Planned => "\u{25cb}",
+            PaneState::Queued => crate::ui::glyphs::BULLET_OPERATOR,
+            PaneState::Planned => crate::ui::glyphs::CIRCLE_OPEN,
         }
     }
 
@@ -9130,7 +9134,7 @@ struct PanePlan {
 
 /// The dim tail of an `Unmerged` plan row: `@<ref> +N ~D`, already escaped
 /// (the ref went through `shown()` and `fit_cells(.., 14)`, T-szq-01), plus
-/// whether its worktree is still in use (`▶ active`, I-13).
+/// whether its worktree is still in use (`► active`, I-13).
 #[derive(Debug, Clone, PartialEq)]
 struct UnmergedHint {
     reference: String,
@@ -9161,7 +9165,7 @@ impl UnmergedHint {
         )
     }
 
-    /// ` ▶ active` (leading space included).
+    /// ` ► active` (leading space included).
     fn active_span() -> Span<'static> {
         Span::styled(
             format!(
@@ -9801,7 +9805,7 @@ fn waves_row_line(
             let show_tokens =
                 tokens.is_some() && cells >= base + word_w + tokens_w + min_title.min(8);
             let tokens_w = if show_tokens { tokens_w } else { 0 };
-            // An Unmerged plan's `@ref +N ~D [▶ active]` tail is reserved like
+            // An Unmerged plan's `@ref +N ~D [► active]` tail is reserved like
             // the tokens: the active marker drops first, then the whole hint,
             // so the line never exceeds `cells` (I-13).
             let fits = |w: usize| cells >= base + word_w + tokens_w + w + min_title.min(8);
@@ -10392,7 +10396,11 @@ fn agents_wave_strip(view: &AgentView, cells: usize) -> Line<'static> {
                 counts.join(" \u{b7} ")
             ));
         } else {
-            tokens.push(format!("{}\u{b7}", wave.label()));
+            tokens.push(format!(
+                "{}{}",
+                wave.label(),
+                crate::ui::glyphs::BULLET_OPERATOR
+            ));
         }
         index += 1;
     }
@@ -11238,7 +11246,7 @@ const CHOICE_DELIMITER: &str = "  ·  ";
 /// on a render that drew a different one.
 const SINCE_PREFIX: &str = "  · since gsd-core ";
 
-/// Width of the dropdown's current-value marker column (`"● "` / `"  "`).
+/// Width of the dropdown's current-value marker column (`"◍ "` / `"  "`).
 const DROPDOWN_MARKER_WIDTH: usize = 2;
 
 /// The Defaults dropdown popup's outer width, clamped to the content area.
@@ -12756,7 +12764,7 @@ mod graph_spans_tests {
 
     #[test]
     fn lane_colour_is_stable_per_column_and_cycles() {
-        let spans = graph_spans("\u{25CF} \u{2502} \u{2502}");
+        let spans = graph_spans("\u{25CD} \u{2502} \u{2502}");
         assert_eq!(spans[0].style.fg, Some(Color::Magenta));
         assert_eq!(spans[2].style.fg, Some(Color::Yellow));
         assert_eq!(spans[4].style.fg, Some(Color::Cyan));
@@ -26456,7 +26464,7 @@ mod tests {
         set_roadmap_cursor(&mut ctx, phase_target("23"));
         let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
         let pane = roadmap_list_pane(&text);
-        assert!(row_numbered(&pane, "20").contains('·'), "{text}");
+        assert!(row_numbered(&pane, "20").contains('\u{2219}'), "{text}");
         assert!(text.contains("(implied via 21)"), "{text}");
     }
 
@@ -26533,7 +26541,10 @@ mod tests {
         for (w, h) in [(80, 24), (120, 30)] {
             let text = render_detail_to_text_at(&screen, &ctx, w, h);
             let pane = roadmap_list_pane(&text);
-            assert!(row_numbered(&pane, "9").contains('·'), "{w}x{h}:\n{text}");
+            assert!(
+                row_numbered(&pane, "9").contains('\u{2219}'),
+                "{w}x{h}:\n{text}"
+            );
             assert!(text.contains("(implied via 10)"), "{w}x{h}:\n{text}");
         }
     }
@@ -26603,7 +26614,7 @@ mod tests {
             .lines()
             .find(|l| l.contains("planned (not a GSD phase)"))
             .unwrap_or_else(|| panic!("no planned status line:\n{text}"));
-        assert!(status.contains('○') || status.contains('◌'), "{status}");
+        assert!(status.contains('◦') || status.contains('◌'), "{status}");
     }
 
     /// A Roadmap-tab fixture over hand-built phases `1` and `2`, phase 2
@@ -26657,8 +26668,8 @@ mod tests {
         let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
         let pane = roadmap_list_pane(&text);
         let row = row_numbered(&pane, "1");
-        assert!(row.contains('●'), "disk Complete draws done: {row}");
-        assert!(!row.contains('○') && !row.contains('◌'), "{row}");
+        assert!(row.contains('◍'), "disk Complete draws done: {row}");
+        assert!(!row.contains('◦') && !row.contains('◌'), "{row}");
         assert!(summary_line(&text).contains("1 of 3 phases done"), "{text}");
     }
 
@@ -27783,7 +27794,7 @@ mod tests {
             .iter()
             .find(|l| l.contains("13-02"))
             .unwrap_or_else(|| panic!("no 13-02 row: {text}"));
-        assert!(row.contains("\u{25b6} running"), "{row}");
+        assert!(row.contains("\u{25BA} running"), "{row}");
         assert!(row.contains("Wire the beta seam"), "{row}");
         for gone in [
             "Plan sub-stages",
@@ -28292,7 +28303,7 @@ mod tests {
             assert!(text.contains("not started"), "at {w}: {text}");
             let planned = text
                 .lines()
-                .filter(|l| l.contains("\u{25cb} planned"))
+                .filter(|l| l.contains("\u{25E6} planned"))
                 .count();
             assert_eq!(
                 planned, 2,
@@ -28452,7 +28463,7 @@ mod tests {
             .find(|l| l.contains("05-01"))
             .expect("a plan row");
         assert!(
-            row.contains("\u{25cb} 05-01"),
+            row.contains("\u{25E6} 05-01"),
             "glyph then id, no word: {row}"
         );
         assert!(!row.contains("planned"), "{row}");
@@ -28919,7 +28930,7 @@ mod tests {
         let wide = line_text(&agents_wave_strip(&view, 120));
         assert_eq!(
             wide,
-            "w1\u{2013}w10\u{2713}  \u{25b8}w11 1 running \u{b7} 2 queued  w12\u{b7}  w13\u{b7}  waves \u{2192} 2:Phases"
+            "w1\u{2013}w10\u{2713}  \u{25b8}w11 1 running \u{b7} 2 queued  w12\u{2219}  w13\u{2219}  waves \u{2192} 2:Phases"
         );
         for cells in [60, 40, 24] {
             let strip = agents_wave_strip(&view, cells);

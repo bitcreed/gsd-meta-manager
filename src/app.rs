@@ -2850,7 +2850,7 @@ impl App {
                     // No entry for a project with nothing to show, so its
                     // dashboard row stays byte-identical to today's (D-C14).
                     // Unmerged worktree work alone is something to show: its
-                    // `◐N` is a pending action (quick 260929-szq, I-7).
+                    // `◒N` is a pending action (quick 260929-szq, I-7).
                     // Worktree-held plans are something to show too, in the
                     // Phases pane and on the Roadmap (quick 261014-0jv); the
                     // dashboard cell is unchanged because `summary_forms`
@@ -6034,7 +6034,10 @@ mod tests {
             row("I-01 \u{2762} parked").contains("> I-01"),
             "the cursor starts on the parked item:\n{text}"
         );
-        assert!(row("I-02 \u{2219} unseen").contains("second thing"), "{text}");
+        assert!(
+            row("I-02 \u{2219} unseen").contains("second thing"),
+            "{text}"
+        );
         let nine = row("I-09 \u{25CD} done");
         assert!(nine.contains("[not in DIRECTION]"), "{nine}");
         assert!(row("I-01 parked").contains("needs a socket path"), "{text}");
@@ -7985,7 +7988,7 @@ mod tests {
     }
 
     /// Quick 260929-szq: a project whose scan holds unmerged worktree work but
-    /// no agent row still gets a view, and its Status cell shows `◐N`.
+    /// no agent row still gets a view, and its Status cell shows `◒N`.
     #[tokio::test]
     async fn an_unmerged_only_scan_reaches_the_dashboard_status_cell() {
         use crate::agents::unmerged::{UnmergedItem, UnmergedKey, UnmergedState};
@@ -8024,7 +8027,7 @@ mod tests {
         );
         let screen = render_top_screen(&app);
         assert!(
-            screen.contains("\u{25D0}1"),
+            screen.contains("\u{25D2}1"),
             "the Status cell must carry the unmerged count:\n{screen}"
         );
     }

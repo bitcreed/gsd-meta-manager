@@ -773,7 +773,7 @@ pub struct GitLogEntry {
     /// branches on presence to decide whether to emit the column AND its
     /// separator, and an empty string would draw a dangling `"  ()"`.
     pub co_authors: Option<crate::text::Untrusted>,
-    /// gitk-style lane glyphs for this row (`●` commit, `○` merge commit, `│` a parallel
+    /// gitk-style lane glyphs for this row (`◍` commit, `◦` merge commit, `│` a parallel
     /// line of history, `╮` `╭` a lane opened by a merge, `╯` a lane joining back), padded
     /// to one width across the whole log so the hash column stays aligned.
     ///
@@ -884,8 +884,8 @@ pub async fn load_git_log(
 }
 
 /// Lane glyphs, in the rounded style of `git-graph`. One cell per lane.
-pub(crate) const GRAPH_COMMIT: char = '\u{25CF}'; // ●
-pub(crate) const GRAPH_MERGE: char = '\u{25CB}'; // ○ (a commit with several parents)
+pub(crate) const GRAPH_COMMIT: char = '\u{25CD}'; // ◍
+pub(crate) const GRAPH_MERGE: char = '\u{25E6}'; // ◦ (a commit with several parents)
 pub(crate) const GRAPH_VERTICAL: char = '\u{2502}'; // │
 pub(crate) const GRAPH_HORIZONTAL: char = '\u{2500}'; // ─
 pub(crate) const GRAPH_CROSS: char = '\u{253C}'; // ┼
@@ -2010,10 +2010,10 @@ mod tests {
         assert_eq!(
             g,
             vec![
-                "\u{25CB}\u{2500}\u{256E}",
-                "\u{2502} \u{25CF}",
-                "\u{25CF} \u{2502}",
-                "\u{25CF}\u{2500}\u{256F}"
+                "\u{25E6}\u{2500}\u{256E}",
+                "\u{2502} \u{25CD}",
+                "\u{25CD} \u{2502}",
+                "\u{25CD}\u{2500}\u{256F}"
             ]
         );
     }
