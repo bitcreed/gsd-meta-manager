@@ -20712,7 +20712,7 @@ mod tests {
     /// holds: a live observed run, a launcher run, a legacy row, nothing at all.
     #[test]
     fn launcher_steer_i_is_retired_opens_nothing_and_names_the_steering_keys() {
-        const MESSAGE: &str = "Message injection is retired. Steer this run through DIRECTION.md: [c] control, [a] answer, [e] edit.";
+        const MESSAGE: &str = "Injection is retired: use [c]ontrol, [a]nswer, [e]dit.";
         assert_eq!(super::super::driver_run::INJECTION_RETIRED, MESSAGE);
 
         // A live observed run, as the Phase 18 key required.
@@ -20754,6 +20754,25 @@ mod tests {
             assert_eq!(message, MESSAGE);
             assert!(rx.try_recv().is_err(), "and nothing is dispatched");
         }
+    }
+
+    #[test]
+    fn launcher_steer_the_retired_copy_fits_an_80_column_status_bar() {
+        let message = super::super::driver_run::INJECTION_RETIRED;
+        assert!(
+            ratatui::text::Line::from(message).width() <= 62,
+            "{message:?} is wider than the status room"
+        );
+        let (mut screen, mut ctx, _rx) = launcher_fixture(2);
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        let top = drawn.lines().next().expect("a first row");
+        assert!(
+            top.contains("[e]dit."),
+            "the last steering key survives at 80 columns: {top:?}"
+        );
+        assert!(top.contains("[c]ontrol"), "{top:?}");
     }
 
     #[cfg(target_os = "linux")]

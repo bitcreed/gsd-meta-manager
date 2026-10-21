@@ -1135,18 +1135,37 @@ fn header_row_6(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
     clip_line(Line::from(spans), width)
 }
 
+/// What the FULL header knows about the selected run's live body control (D-05, D-28).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyControl<'a> {
+    /// The body has not been read yet.
+    Loading,
+    /// The body was read and has no `- control:` line.
+    NoLine,
+    /// The body was read and its control word is this.
+    Word(&'a str),
+}
+
 /// The six header rows of the FULL tier (UI-SPEC "Header — FULL").
 pub fn header_rows(
     entry: &DriverRunEntry,
     view: &DriverRunView,
-    body_control: Option<&str>,
+    body_control: BodyControl<'_>,
     now: SystemTime,
     width: usize,
 ) -> Vec<Line<'static>> {
     vec![
         header_row_1(entry, now, width),
         header_row_2(view, width),
-        header_row_3(view, body_control, now, width),
+        header_row_3(
+            view,
+            match body_control {
+                BodyControl::Word(word) => Some(word),
+                BodyControl::Loading | BodyControl::NoLine => None,
+            },
+            now,
+            width,
+        ),
         header_row_4(&view.frontmatter, width),
         header_row_5(&view.frontmatter, width),
         header_row_6(&view.frontmatter, width),
@@ -2474,7 +2493,13 @@ fn compose_selected(
         let mut lines = header_rows(
             entry,
             view,
-            detail.and_then(|d| d.body_control.as_deref()),
+            match detail {
+                None => BodyControl::Loading,
+                Some(d) => d
+                    .body_control
+                    .as_deref()
+                    .map_or(BodyControl::NoLine, BodyControl::Word),
+            },
             now,
             width,
         );
@@ -4816,9 +4841,10 @@ mod tests {
                 .to_owned()
         };
         assert!(find("reason").contains("driver dispatched I-03"));
-        // No body detail yet: the body has no control line.
+        // No body detail yet: the body is still loading, which is not a warning.
         let control = find("control ");
-        assert!(control.contains("(no control line)"), "{control}");
+        assert!(control.contains("Loading..."), "{control}");
+        assert!(!control.contains("(no control line)"), "{control}");
         assert!(control.contains("heartbeat 0:4"), "{control}");
         assert!(control.contains(" ago"), "{control}");
         assert_eq!(
@@ -4966,6 +4992,62 @@ mod tests {
         assert_eq!(cell.fg, Color::DarkGray);
     }
 
+    /// The `y`, column and cells of the first row containing `needle`.
+    fn cells_of(rows: &[String], buffer: &Buffer, needle: &str) -> Vec<ratatui::buffer::Cell> {
+        let y = rows
+            .iter()
+            .position(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("no row contains {needle:?}:\n{}", rows.join("\n")));
+        let col = rows[y].find(needle).unwrap();
+        let x = u16::try_from(rows[y][..col].chars().count()).unwrap();
+        (0..u16::try_from(needle.chars().count()).unwrap())
+            .map(|i| {
+                buffer
+                    .cell((x + i, u16::try_from(y).unwrap()))
+                    .unwrap()
+                    .clone()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn launcher_view_full_header_says_loading_until_the_detail_arrives() {
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.control = Some("run".into());
+            fm.connected[1].last_heartbeat = Some(stamp_ago(42));
+        });
+        // The run is selected but its body has not arrived.
+        let (rows, buffer) = render(cache_of(vec![entry]), 100, 30);
+        let control = row_with(&rows, "control ");
+        assert!(control.contains("control Loading..."), "{control}");
+        assert!(!control.contains("(no control line)"), "{control}");
+        assert!(
+            control.contains("heartbeat 0:4"),
+            "the heartbeat is unchanged: {control}"
+        );
+        for cell in cells_of(&rows, &buffer, "Loading...") {
+            assert_eq!(cell.fg, Color::DarkGray, "{cell:?}");
+        }
+    }
+
+    #[test]
+    fn launcher_view_full_header_flags_a_body_without_a_control_line() {
+        let entry = entry_edit("20261020-a", running(), |fm| {
+            fm.control = Some("run".into())
+        });
+        let mut detail = detail_of("20261020-a", vec![], vec![], None);
+        detail.body_control = None;
+        let mut cache = cache_with_detail(detail);
+        cache.launcher_runs = vec![entry];
+        let (rows, buffer) = render(cache, 100, 30);
+        let control = row_with(&rows, "control ");
+        assert!(control.contains("control (no control line)"), "{control}");
+        assert!(!control.contains("Loading..."), "{control}");
+        for cell in cells_of(&rows, &buffer, "(no control line)") {
+            assert_eq!(cell.fg, Color::Yellow, "{cell:?}");
+        }
+    }
+
     #[test]
     fn a_narrow_pane_cuts_the_control_word_before_the_heartbeat_flag() {
         let entry = entry_edit("20261020-a", running(), |fm| {
@@ -4980,7 +5062,7 @@ mod tests {
         let lines = header_rows(
             &entry,
             entry.1.as_ref().expect("readable"),
-            Some("pause"),
+            BodyControl::Word("pause"),
             SystemTime::now(),
             52,
         );
