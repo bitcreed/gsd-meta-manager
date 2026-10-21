@@ -224,10 +224,11 @@ impl LaunchForm {
     }
 }
 
-/// A model name worth prefilling from a recorded connection: the conservative charset
-/// `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` (T-30-17). Anything else is not trusted as an
-/// argument the user did not type.
-fn recorded_model_ok(model: &str) -> bool {
+/// A model name the form accepts, typed or recorded: the conservative rule
+/// `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` (T-30-17, T-30-30). A recorded connection is not
+/// trusted as an argument the user did not type, and a typed value that looks like a
+/// flag (`-x`, `--foreground`) never reaches the detached launch's argv.
+fn model_name_ok(model: &str) -> bool {
     let mut chars = model.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -263,7 +264,7 @@ pub fn relaunch_prefill(fm: &DriverFrontmatter) -> LaunchForm {
         .iter()
         .find(|c| c.role == "driver")
         .and_then(|c| c.model.as_deref())
-        .filter(|m| recorded_model_ok(m))
+        .filter(|m| model_name_ok(m))
     {
         form.args.model = model.to_string();
         form.defaulted.model = false;
@@ -348,11 +349,13 @@ pub struct LaunchPreflight {
     pub missing: Vec<String>,
     /// Why the host's `claude` is refused in both postures, when it is.
     pub claude_refusal: Option<String>,
-    /// The live body's `control` word.
+    /// The `control` word the launcher would read: the first `- control:` under
+    /// `## Direction` (`driver_templates::lint::control_line`), as written.
     pub control: Option<String>,
-    /// `driver check` problems, rendered `DIRECTION.md:<line>: <message>`.
+    /// `driver check` problems, rendered `DIRECTION.md:<line>: <message>`, the line
+    /// counted from the first body line (the numbering the editor shows).
     pub lint_problems: Vec<String>,
-    /// `driver check` warnings; they do not block a launch.
+    /// `driver check` warnings, numbered the same way; they do not block a launch.
     pub lint_warnings: Vec<String>,
 }
 
@@ -363,8 +366,8 @@ pub struct LaunchPreflight {
 /// injectable `detect` seam.
 #[cfg(target_os = "linux")]
 pub fn launch_preflight(run_dir: &Path, caps: &crate::launcher::host::HostCaps) -> LaunchPreflight {
-    use crate::driver::direction::{parse_direction, split_frontmatter};
-    use crate::driver_templates::lint::lint_direction;
+    use crate::driver::direction::split_frontmatter;
+    use crate::driver_templates::lint::{control_line, lint_direction};
 
     let mut pre = LaunchPreflight {
         missing: caps.missing.clone(),
@@ -378,10 +381,13 @@ pub fn launch_preflight(run_dir: &Path, caps: &crate::launcher::host::HostCaps) 
     }
     match crate::driver::steer::read_direction(run_dir) {
         Ok(text) => {
-            let report = lint_direction(&text);
+            // The edit flow shows the user the body alone, so findings are numbered from
+            // its first line: the line the editor shows (WR-04). The control word is the
+            // launcher's own reading of the file (IN-03).
+            let report = lint_direction(split_frontmatter(&text).1);
             pre.lint_problems = report.problems.iter().map(ToString::to_string).collect();
             pre.lint_warnings = report.warnings.iter().map(|f| f.as_warning()).collect();
-            pre.control = parse_direction(split_frontmatter(&text).1).control;
+            pre.control = control_line(&text).map(|(_, word)| word);
         }
         Err(error) => {
             pre.lint_problems = vec![format!("DIRECTION.md could not be read: {error}")];
@@ -463,12 +469,10 @@ pub fn launch_error_copy(run_id: &str, error: &LauncherError) -> String {
 }
 
 /// The control word that stops a launch, when the live body holds one: the launcher
-/// refuses to start a run whose DIRECTION.md says anything but `control: run`.
+/// refuses to start a run whose DIRECTION.md says anything but `control: run`, comparing
+/// the word exactly (`launcher::run::preflight_direction`), so the form does too.
 fn control_blocking(preflight: &LaunchPreflight) -> Option<&str> {
-    preflight
-        .control
-        .as_deref()
-        .filter(|word| !word.eq_ignore_ascii_case("run"))
+    preflight.control.as_deref().filter(|word| *word != "run")
 }
 
 /// The Yellow control row, and the refusal `y` gives with it.
@@ -610,11 +614,9 @@ impl LaunchFormScreen {
     fn commit_edit(&mut self, field: Field, text: &str) -> Result<(), &'static str> {
         let text = text.trim();
         if field == Field::Model {
-            let ok = !text.is_empty()
-                && text.chars().count() <= 100
-                && !text.chars().any(|c| c.is_control())
-                && parse_launch_field(field.flag(), text).is_ok();
-            if !ok {
+            // The 64-character bound replaces the old 100 `[inferred — audit]`; clap's own
+            // parser still has the last word, as for every other field.
+            if !model_name_ok(text) || parse_launch_field(field.flag(), text).is_err() {
                 return Err("must be a model name");
             }
             self.form.args.model = text.to_string();

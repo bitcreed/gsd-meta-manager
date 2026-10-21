@@ -1555,7 +1555,10 @@ impl App {
             use crate::driver_templates::lint::lint_direction;
             let (problems, warnings) = match crate::driver::steer::read_direction(&run_dir) {
                 Ok(text) => {
-                    let report = lint_direction(&text);
+                    // The editor shows the body alone, so the findings are numbered
+                    // from its first line (WR-04), as `apply_edit` reports them.
+                    let report =
+                        lint_direction(crate::driver::direction::split_frontmatter(&text).1);
                     (
                         report.problems.iter().map(ToString::to_string).collect(),
                         report.warnings.iter().map(|f| f.as_warning()).collect(),
