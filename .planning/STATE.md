@@ -5,10 +5,10 @@ current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: executing
 stopped_at: Completed 30-05-PLAN.md
-last_updated: "2026-10-21T03:58:33.491Z"
+last_updated: "2026-10-21T04:38:51.551Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: c667318fcf295ed595c8e76b2c05af5364a59889
+state_head: 946508b79abebfdc37c4dc5e0817ff0a015041cf
 progress:
   total_phases: 10
   completed_phases: 12
@@ -272,7 +272,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-20 — Phase 30 execution started
+Last activity: 2026-10-20 - Completed quick task 261020-vxg: Fix non-Linux build breaks (macOS, Windows) and add CI cargo check for non-Linux targets
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -877,6 +877,7 @@ Recent decisions affecting current work:
 | 261019-guw | Fix two config.json defects: strict_known_registries type, and unlocked non-atomic writes | 2026-10-19 | 76bbac1 | [261019-guw-fix-two-config-json-defects-strict-known](./quick/261019-guw-fix-two-config-json-defects-strict-known/) |
 | 261019-hqu | README: Where it fits in the GSD ecosystem | 2026-10-19 | 8c022ad | [261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste](./quick/261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste/) |
 | 261020-f80 | Hide sibling driver run dirs in bwrap sandbox + fix auth.rs doc comment | 2026-10-20 | c84bb25 | [261020-f80-hide-sibling-driver-run-dirs-in-bwrap-sa](./quick/261020-f80-hide-sibling-driver-run-dirs-in-bwrap-sa/) |
+| 261020-vxg | Fix non-Linux build breaks (macOS, Windows) and add CI cargo check for non-Linux targets | 2026-10-20 | 946508b | [261020-vxg-fix-non-linux-build-breaks-macos-windows](./quick/261020-vxg-fix-non-linux-build-breaks-macos-windows/) |
 
 ## Session Continuity
 
