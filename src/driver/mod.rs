@@ -1207,6 +1207,7 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
         ),
     };
     #[cfg(not(unix))]
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let decomposed: Option<goal::GoalPlan> = None;
 
     // **The approval, bound to the plan AND to the bytes that will enter the

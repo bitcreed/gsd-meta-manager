@@ -16,6 +16,9 @@
 // own prose name the tokens it forbids without invalidating its own gate.
 // ============================================================================
 
+// Unix-only: exercises the Unix-gated driver / std::os::unix surface.
+#![cfg(unix)]
+
 use std::path::{Path, PathBuf};
 
 /// The tree under audit. Resolved at compile time, so the test is

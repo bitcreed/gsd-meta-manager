@@ -67,9 +67,9 @@ use uuid::Uuid;
 
 use crate::config::RegisteredProject;
 use crate::error::{OptInError, SendError, SpawnError};
-use crate::executor::stream_json::{
-    ControlRequest, ControlResponse, ResultMessage, StreamMessage, UserMessage,
-};
+#[cfg(unix)]
+use crate::executor::stream_json::ControlRequest;
+use crate::executor::stream_json::{ControlResponse, ResultMessage, StreamMessage, UserMessage};
 
 /// A boxed, `Send` future — how the [`Executor`] trait stays object-safe.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -591,6 +591,7 @@ impl std::fmt::Display for ExecutionId {
 #[derive(Debug)]
 pub(crate) enum WriterCommand {
     /// Write one NDJSON line plus its newline.
+    #[cfg(unix)]
     Line(String),
     /// Drop the stdin handle. EOF means "no more input", **not** "stop": the
     /// CLI drains its queued turns, finishes them, and exits 0.
@@ -626,13 +627,16 @@ pub struct ExecutionHandle {
 
     /// How long [`Executor::interrupt`] waits for its correlated response
     /// before abandoning the wait. Carried from [`ExecutionOptions`] at spawn.
+    #[cfg(unix)]
     pub(crate) control_response_cap: Duration,
 
     pub(crate) stdin_tx: mpsc::Sender<WriterCommand>,
     pub(crate) running: Arc<AtomicBool>,
+    #[cfg(unix)]
     pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
     pub(crate) outcome_rx: Option<oneshot::Receiver<RunOutcome>>,
     pub(crate) outcome: Option<RunOutcome>,
+    #[cfg(unix)]
     pub(crate) next_control_seq: u64,
 }
 
@@ -643,6 +647,7 @@ impl ExecutionHandle {
     }
 
     /// Write one raw NDJSON line to the child's stdin.
+    #[cfg(unix)]
     pub(crate) async fn write_line(&self, line: String) -> Result<(), SendError> {
         if !self.is_running() {
             return Err(SendError::NotRunning);
@@ -654,6 +659,7 @@ impl ExecutionHandle {
     }
 
     /// Allocate the next `control_request` id for this run.
+    #[cfg(unix)]
     pub(crate) fn next_control_id(&mut self) -> String {
         self.next_control_seq += 1;
         format!("req_{}", self.next_control_seq)
@@ -957,6 +963,7 @@ impl InterruptAck {
 }
 
 /// Build the NDJSON line for an interrupt request.
+#[cfg(unix)]
 pub(crate) fn encode_interrupt(request_id: &str) -> Result<String, SendError> {
     serde_json::to_string(&ControlRequest::interrupt(request_id)).map_err(SendError::Encode)
 }
@@ -1175,6 +1182,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn interrupt_request_encodes_to_the_observed_wire_shape() {
         let line = encode_interrupt("req_1").expect("encode");

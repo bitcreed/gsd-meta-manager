@@ -75,6 +75,9 @@
 // itself.
 // ============================================================================
 
+// Unix-only: exercises the Unix-gated driver / std::os::unix surface.
+#![cfg(unix)]
+
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};

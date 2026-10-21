@@ -573,6 +573,7 @@ impl GoalRefusal {
     /// rather than widening [`GoalRefusal::new`] — `new` stays private so the
     /// bounding it performs on the offending value cannot be bypassed, and the
     /// two seams cannot come to disagree about which refusal a stepless plan is.
+    #[cfg(unix)]
     pub(super) fn empty_plan() -> Self {
         Self::new(GoalReason::EmptyPlan, FIELD_STEPS)
     }

@@ -105,6 +105,9 @@
 //
 // ============================================================================
 
+// Unix-only: exercises the Unix-gated driver / std::os::unix surface.
+#![cfg(unix)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

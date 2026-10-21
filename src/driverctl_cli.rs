@@ -56,6 +56,7 @@ use serde_json::{json, Map, Value};
 /// Matches the spike client's `settimeout(15)`. It is a TOTAL deadline for the
 /// reply here rather than a per-`recv` timeout: a server trickling one byte every
 /// 14 s would otherwise hold the client (and a hook) open indefinitely (T-27-14).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The largest reply the client reads. A reply is a status block or one error
@@ -67,10 +68,13 @@ const MAX_REPLY_BYTES: u64 = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientError {
     /// `DRIVERCTL_SOCK` is unset or empty.
+    #[cfg_attr(not(unix), allow(dead_code))]
     NoSocket,
     /// Connecting, writing or reading failed (including the deadline).
+    #[cfg_attr(not(unix), allow(dead_code))]
     Transport { detail: String },
     /// The server answered, but not with one JSON object.
+    #[cfg_attr(not(unix), allow(dead_code))]
     BadResponse { detail: String },
     /// No unix domain sockets on this platform.
     #[cfg_attr(unix, allow(dead_code))]

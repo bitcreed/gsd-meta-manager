@@ -17,7 +17,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use gsd_meta_manager::cli::{AuthAction, DriverAction, LaunchArgs};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use gsd_meta_manager::config::{load_config, Config};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use gsd_meta_manager::launch_target::resolve_launch_target;
 use gsd_meta_manager::launcher::LauncherError;
 

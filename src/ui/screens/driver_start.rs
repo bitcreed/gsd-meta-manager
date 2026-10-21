@@ -583,6 +583,7 @@ mod tests {
     /// things to type into a field labelled "why". The goal is the last operand
     /// the argv builder emits, so terminating option parsing for it swallows no
     /// following flag.
+    #[cfg(unix)]
     #[test]
     fn a_hyphen_led_goal_reaches_the_child_parser_as_a_goal() {
         use clap::Parser;
