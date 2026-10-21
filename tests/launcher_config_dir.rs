@@ -27,6 +27,16 @@ const GUARD: &str = "'/cfg/bin/driverctl' stop-guard --run-dir '/runs/r1'";
 /// Serialises the one test that points `HOME` / `XDG_CONFIG_HOME` at a fixture.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// Serialises the two shim tests' write -> spawn -> wait sequence.
+///
+/// A test thread's `fork` inherits another thread's still-open write descriptor on a
+/// just-written script until that child execs, so exec of the script fails with
+/// `ETXTBSY` ("Text file busy"). A temp-plus-rename does not help: the rename keeps the
+/// inode, and the inherited descriptor points at that same inode. So the fake binary
+/// is written and every process that runs it exits inside this lock, and
+/// [`run_shim`] retries the rare residual `ETXTBSY` (a fork from outside the file).
+static EXEC_LOCK: Mutex<()> = Mutex::new(());
+
 fn command_of(entry: &Value) -> &str {
     entry["hooks"][0]["command"].as_str().unwrap_or_default()
 }
@@ -449,14 +459,31 @@ fn next_shim_with_fake_binary(root: &TempDir) -> (PathBuf, PathBuf) {
     (spec.config_dir.join("bin/gsd-meta-manager"), record)
 }
 
+/// Run the shim and collect its output, retrying a bounded number of times while the
+/// exec fails with `ETXTBSY` (`Text file busy`); any other error panics as before.
+fn run_shim(shim: &Path, args: &[&str]) -> std::process::Output {
+    const ATTEMPTS: usize = 5;
+    let busy = rustix::io::Errno::TXTBSY.raw_os_error();
+    for attempt in 1..=ATTEMPTS {
+        match std::process::Command::new(shim).args(args).output() {
+            Err(e) if e.raw_os_error() == Some(busy) && attempt < ATTEMPTS => {}
+            Ok(out)
+                if out.status.code() == Some(126)
+                    && String::from_utf8_lossy(&out.stderr).contains("Text file busy")
+                    && attempt < ATTEMPTS => {}
+            other => return other.unwrap(),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    unreachable!("the last attempt always returns")
+}
+
 #[test]
 fn the_next_shim_forwards_next_and_its_arguments_to_the_binary() {
+    let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
     let (shim, record) = next_shim_with_fake_binary(&root);
-    let out = std::process::Command::new(&shim)
-        .args(["next", "/p", "--json"])
-        .output()
-        .unwrap();
+    let out = run_shim(&shim, &["next", "/p", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "next /p --json\n");
     assert_eq!(fs::read_to_string(record).unwrap(), "called\n");
@@ -464,13 +491,11 @@ fn the_next_shim_forwards_next_and_its_arguments_to_the_binary() {
 
 #[test]
 fn the_next_shim_refuses_any_other_verb_without_running_the_binary() {
+    let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
     let (shim, record) = next_shim_with_fake_binary(&root);
     for argv in [vec!["driver", "launch", "x", "y"], vec![], vec!["nextish"]] {
-        let out = std::process::Command::new(&shim)
-            .args(&argv)
-            .output()
-            .unwrap();
+        let out = run_shim(&shim, &argv);
         assert_eq!(out.status.code(), Some(2), "{argv:?}: {out:?}");
         assert!(out.stdout.is_empty(), "{argv:?}");
         assert_eq!(

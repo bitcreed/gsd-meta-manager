@@ -8668,7 +8668,9 @@ mod tests {
     // ── 30-04: steering a launcher run from the Driver tab ──────────────────
 
     /// Wait for the next action `pick` accepts, skipping the others (refreshes the
-    /// earlier steps scheduled arrive in between).
+    /// earlier steps scheduled arrive in between). Linux-only with every caller, so
+    /// it is not dead code under `-D warnings` elsewhere.
+    #[cfg(target_os = "linux")]
     async fn next_matching(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
         pick: impl Fn(&Action) -> bool,
