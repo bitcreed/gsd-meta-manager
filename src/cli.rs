@@ -643,7 +643,8 @@ pub enum DriverctlAction {
         #[arg(long)]
         project: PathBuf,
         /// Socket path (default: `$XDG_RUNTIME_DIR/gsdmm-driverctl/<run-id>-<hash>.sock`;
-        /// on macOS without XDG_RUNTIME_DIR, under `$TMPDIR`)
+        /// on macOS without XDG_RUNTIME_DIR, under `$TMPDIR`; a fixed-length hashed
+        /// name when that would exceed the unix socket path limit)
         #[arg(long)]
         sock: Option<PathBuf>,
     },

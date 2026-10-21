@@ -28,7 +28,11 @@
 //! 4. **The default socket path is private (D-21, T-27-22).** Without `--sock` it is
 //!    `$XDG_RUNTIME_DIR/gsdmm-driverctl/<run-id>-<sha256(canonical run dir)[:8]>.sock`.
 //!    That directory is created 0700 and must be a real directory owned by the
-//!    current uid with no group/other bits. An unset `XDG_RUNTIME_DIR`, or a path
+//!    current uid with no group/other bits. A D-21 name over [`MAX_SUN_PATH`] bytes
+//!    falls back to a fixed-length `<16 hex of sha256(run id, NUL, canonical run
+//!    dir)>.sock` in the same private directory, which is what lets a stock macOS
+//!    `$TMPDIR` (about 49 bytes) take any valid run id `[inferred — audit]`. An
+//!    unset `XDG_RUNTIME_DIR`, or a base so long that even the fixed-length name is
 //!    over [`MAX_SUN_PATH`] bytes, is a typed refusal. There is deliberately no
 //!    `/tmp` fallback `[inferred — audit]`: a shared directory is exactly where a
 //!    squatter pre-creates the path. On macOS only, an unset `XDG_RUNTIME_DIR`
@@ -277,7 +281,8 @@ pub fn hash8(canonical: &Path) -> String {
 /// that use the same run id from colliding on one socket (T-27-25). Phase 28
 /// passes this as `DRIVERCTL_SOCK`. `TMPDIR` is read from the environment
 /// variable only, never `std::env::temp_dir()`, which silently falls back to
-/// `/tmp` `[inferred — audit]`.
+/// `/tmp` `[inferred — audit]`. The file name is the D-21 name when it fits the
+/// platform limit, else a fixed-length hashed one (see `default_socket_file`).
 pub fn socket_path(run_id: &str, canonical_run_dir: &Path) -> Result<PathBuf, DriverctlError> {
     let base = socket_base_dir(
         std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
@@ -336,6 +341,10 @@ fn socket_base_dir(
 }
 
 /// [`socket_path`] with the runtime directory passed in (the testable core).
+///
+/// The length is refused before the directory is created; both name shapes get
+/// the same private-directory checks (0700, a real directory, owned by the
+/// current uid, no group/other bits).
 pub fn socket_path_in(
     runtime_dir: Option<&Path>,
     run_id: &str,
