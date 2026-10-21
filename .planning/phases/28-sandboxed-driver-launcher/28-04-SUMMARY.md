@@ -193,6 +193,15 @@ Remaining caveats:
 - TUI-side launch is still Linux-gated (the `cfg(target_os = "linux")` launch arms in `src/app.rs`, e.g. `:589`, and `src/ui/screens/driver_launch.rs:38`).
 - Under a stock `/var/folders` TMPDIR (about 48 bytes) the 103-byte limit leaves roughly 24 bytes for the run id. A longer id is refused with the typed length error, and `driver launch` has no `--sock` override `[inferred — audit]`.
 
+**Socket name length (2026-10-21, quick 261021-1if)** `[inferred — audit]`:
+
+- The last caveat above (roughly 24 bytes left for the run id under a stock `/var/folders` TMPDIR) is resolved.
+- Scheme: the D-21 name `<run-id>-<hash8>.sock` is kept whenever it fits the platform limit. Otherwise the default socket is a fixed-length `<16 hex>.sock` (first 8 bytes of SHA-256 over run id, one NUL byte, canonical run dir) in the same private 0700 `gsdmm-driverctl` directory. That is 38 bytes past the base, so any base up to 65 bytes fits under 103, and a stock 49-byte TMPDIR gives an 86-byte path for an 80-character run id. Code: `default_socket_file` (`src/driverctl/serve.rs:429`), `socket_name_hash` (`:403`), named limits `MACOS_MAX_SUN_PATH` (`:93`) and `LINUX_MAX_SUN_PATH`, wired through `socket_path_in` (`:366`). An explicit `--sock` is never rewritten and stays a hard refusal when too long.
+- Every consumer (the launcher at `src/launcher/run.rs:622`, `driverctl serve`, the launcher tests) resolves the path through `socket_path`; the TUI and the stop path compute no socket path.
+- Linux paths are unchanged wherever they resolved before (`default_socket_path_requires_xdg_runtime_dir` passes unmodified), and Linux run ids of 63 to 80 characters now work instead of being refused.
+- Proof: golden hash `socket_name_hash_is_pinned_by_a_golden_value` (`src/driverctl/serve.rs:1431`), edge cases `the_d21_name_is_kept_when_it_fits_exactly` (`:1336`) and `a_base_of_65_bytes_fits_the_fixed_length_name_and_66_is_refused` (`:1440`), FS-backed `socket_path_in_gives_a_long_run_id_the_fixed_length_name` (`:1456`), and the real binary `default_socket_path_gives_a_long_run_id_the_fixed_length_name` (`tests/driverctl_serve.rs:527`).
+- Remaining limit: a base over 65 bytes (103) / 69 bytes (107) is still a typed refusal naming the limit, and macOS runtime is still unverified without a Mac.
+
 ## Verification
 
 - Full `cargo test --no-fail-fast`: **3343 passed, 1 failed, 22 ignored.** The one failure is the expected local `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`.

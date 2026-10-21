@@ -186,6 +186,7 @@ Out of scope, owned by other phases:
   until a `renamex_np` path exists — i.e. degraded mode is functional on Linux-without-bwrap and documented as
   refused on macOS in this phase. Flagged for audit because it narrows SC6's "(macOS)" example. `[inferred — audit]`
   — **Re-assessed 2026-10-21 (quick 261021-0jg):** macOS `--unsandboxed` is supported at the code level (splice portable via renameatx_np RENAME_SWAP, socket falls back to `$TMPDIR`, MAX_SUN_PATH 103); runtime unverified without a Mac; see 28-04-SUMMARY.md 'D-31 re-assessment'. `[inferred — audit]`
+  — **Socket length (2026-10-21, quick 261021-1if):** over-limit default socket names fall back to a fixed-length 16-hex name in the same private dir, so a stock macOS $TMPDIR takes any valid run id; D-21 names unchanged where they fit; see 28-04-SUMMARY.md 'Socket name length'. `[inferred — audit]`
 
 ### Acceptance cases & the carried risk (SC2, ROADMAP carried risk from 26.1)
 - **D-32:** The spike L1-L5 cases are re-run against the Rust launcher on Haiku (cents) with the spike-002
