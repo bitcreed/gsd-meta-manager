@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: executing
-stopped_at: Completed 30-05-PLAN.md
-last_updated: "2026-10-21T03:58:33.491Z"
+stopped_at: Completed 30-06-PLAN.md
+last_updated: "2026-10-21T04:15:55.471Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: c667318fcf295ed595c8e76b2c05af5364a59889
+state_head: 3bf6b8fb16967be1f86f22466232293dbec6ec77
 progress:
   total_phases: 10
   completed_phases: 12
@@ -237,8 +237,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 30 (Driver Tab on DIRECTION.md) — READY TO EXECUTE
-Plan: 5 of 5
+Phase: 30 (Driver Tab on DIRECTION.md) — EXECUTING
+Plan: 7 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -506,6 +506,7 @@ verify-phase if the gate is fixed.
 | Phase 30 P03 | 31 min | 3 tasks | 10 files |
 | Phase 30 P04 | 41 min | 3 tasks | 10 files |
 | Phase 30 P05 | 31 min | 3 tasks | 12 files |
+| Phase 30 P06 | 20 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -706,6 +707,9 @@ Recent decisions affecting current work:
 - [Phase 30]: 30-05: The launch itself is covered by a fake LaunchSeams in-process plus the real binary with the same argv; launch_detached re-executes current_exe so it is never called in-process from a test (Pitfall 5).
 - [Phase 30]: 30-05: U (unsandboxed) and c (control chooser) replace the launch form (ScreenAction::Replace) so neither answer returns to a re-submittable form; the unsandboxed flag lives only in the confirmation's arguments and is never remembered.
 - [Phase 30]: 30-05: The new-run flow's flag is App::new_run_flow keyed by (alias, run id), copied into EditSession::then_launch when the edit temp is ready; it ends on a clean driver check, n, an editor failure, a discard or a launch.
+- [Phase 30]: 30-06: a clipped ConfirmPopup disarms y / Enter-on-Yes / Yes click and shows CLIPPED_HINT; popup height comes from Paragraph::line_count [inferred — audit]
+- [Phase 30]: 30-06: D-16 answer status copy shortened to '{id} answered; {rule} parks it: [e] budget, [R] caps.' (<=62 cells) [inferred — audit]
+- [Phase 30]: 30-06: only DriverAction::StopLauncher paints the Driver tab behind its popup [inferred — audit]
 
 ### Roadmap Evolution
 
@@ -880,8 +884,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-21T03:05:09.382Z
-Stopped at: Completed 30-05-PLAN.md
+Last session: 2026-10-21T04:15:54.451Z
+Stopped at: Completed 30-06-PLAN.md
 Resume file: None
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md

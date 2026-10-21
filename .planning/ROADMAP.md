@@ -1215,7 +1215,7 @@ DIRECTION.md.
 
      The Phase 18 stream-json injection UI is no longer the steering path.
 
-**Plans**: 5/9 plans executed (4 gap-closure plans planned)
+**Plans**: 6/9 plans executed (4 gap-closure plans planned)
 
 Plans:
 
@@ -1237,7 +1237,7 @@ Plans:
 **Gap closure** (30-VERIFICATION.md gaps_found, 30-REVIEW WR-01..06 / IN-01..03, 30-UI-REVIEW warnings)
 
 **Wave 6** *(gap closure — blocked on Wave 5 completion; 30-06/07/08 touch disjoint files and run in parallel)*
-- [ ] 30-06-PLAN.md — confirm popups sized by real word wrap ("Nothing is killed." at every width), clipped popups disarm Yes, wrapped answer row, D-16 copy, kill confirm over the Driver tab (DTAB-03)
+- [x] 30-06-PLAN.md — confirm popups sized by real word wrap ("Nothing is killed." at every width), clipped popups disarm Yes, wrapped answer row, D-16 copy, kill confirm over the Driver tab (DTAB-03)
 - [ ] 30-07-PLAN.md — guarded run-dir opens (FIFO/symlink), no-op body writes leave DIRECTION.md alone, IN-01, FULL header Loading..., retired-`i` copy (DTAB-01..04)
 - [ ] 30-08-PLAN.md — `$EDITOR` with arguments via `sh -c` (path never in the script), ETXTBSY-free shim tests, Linux-only test helper (DTAB-03)
 
@@ -1361,7 +1361,7 @@ Plans:
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
-| 30. Driver Tab on DIRECTION.md | 5/5 | In Progress | - |
+| 30. Driver Tab on DIRECTION.md | 6/9 | In Progress | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 

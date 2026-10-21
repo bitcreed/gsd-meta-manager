@@ -171,7 +171,7 @@ RED evidence (Rust `cargo test` text output; the `tdd-red-evidence` classifier h
 2. Shortened D-16 answer copy. This deviates from the UI-SPEC row "Answer written, non-needs-human park"; plan 30-09 updates the UI-SPEC rows for all three shortened copies.
 3. `StopLauncher`-only background change.
 4. `render_confirm_popup` reports `clipped: true` when the popup has no room for its buttons (including `inner.height == 0`).
-5. Two uncommitted-by-me working-tree files (`.planning/STATE.md`, `.planning/state.json`, `.planning/milestone.lock`) were already modified before this plan and are left to the state-update step.
+5. `fit_list` lets a tall terminal list up to nine findings with no `… k more` row (the row budget is `LINT_FINDINGS_SHOWN + 1`), instead of strictly eight plus a count.
 
 ## Verification
 
