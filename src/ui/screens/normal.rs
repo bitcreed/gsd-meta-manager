@@ -3,6 +3,7 @@ use super::create_project::CreateProjectScreen;
 use super::delete_confirm::DeleteConfirmScreen;
 use super::detail::DetailScreen;
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
+use super::driver_run::MarkerClass;
 use super::help::HelpScreen;
 use super::{AppContext, Screen, ScreenAction, SortMode};
 use crate::app::{classify_status, format_phase_display, DetailSubView, StatusCategory};
@@ -112,6 +113,12 @@ pub(super) const BADGE_DRIVEN: &str = "\u{25C6} ";
 /// outline with the diamond, the two pause bars, the hourglass or the triangle.
 pub(super) const BADGE_NEEDS_HUMAN: &str = "\u{2691} ";
 
+/// A launcher run of this project crashed: its run lock is free while the file says
+/// it was running (30-03, D-12). `✗` BALLOT X, U+2717, text presentation and narrow.
+/// Dashboard rank 1: a false crash invites a relaunch over a live run, so only the
+/// lock probe raises it (never a stale heartbeat, never an unknown probe).
+pub(super) const BADGE_CRASHED: &str = "\u{2717} ";
+
 /// Rank 3 — a non-empty HANDOFF. `‖` DOUBLE VERTICAL LINE. Shipped in v1.4.
 /// Was `⏸` U+23F8, which several terminals draw emoji-wide (2 cells) while
 /// `unicode-width` reports 1 — see `badge_glyphs_are_width_stable`.
@@ -158,6 +165,10 @@ struct BadgeInputs {
     external_job_waiting: bool,
     /// An active Claude or Codex session whose working dir is this project.
     has_session: bool,
+    /// The class of this project's launcher-run marker (30-03, D-12), already gated
+    /// on the experimental flag by [`row_badge`]. `None` before the project's first
+    /// scan, with no launcher runs, or with the flag off.
+    launcher: Option<MarkerClass>,
 }
 
 /// Select the single leading badge for a dashboard alias cell.
@@ -206,12 +217,22 @@ fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
         is_paused,
         external_job_waiting,
         has_session,
+        launcher,
     } = inputs;
 
     let bold = Modifier::BOLD;
     let plain = Modifier::empty();
 
-    if driven_and_live {
+    if launcher == Some(MarkerClass::Crashed) {
+        // A launcher run died without a final status: its lock is free. The one
+        // badge that outranks everything, because the user may be about to relaunch
+        // or to trust a run that is not running.
+        Some(AliasBadge {
+            glyph: BADGE_CRASHED,
+            color: Color::Red,
+            modifier: bold,
+        })
+    } else if driven_and_live {
         // An agent is driving this repo right now; nothing outranks that.
         Some(AliasBadge {
             glyph: BADGE_DRIVEN,
@@ -261,7 +282,7 @@ fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
 /// is inspected here**, so nothing an agent writes can decide what a badge says
 /// (D-13). An unregistered alias, an alias with no parsed state, and an alias
 /// that has never been driven all fall through to `None` without panicking.
-fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
+pub(crate) fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
     let state = ctx.project_states.get(alias);
 
     // Tri-state `Liveness` is resolved by `is_live()`, never re-derived here.
@@ -296,6 +317,14 @@ fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
         is_paused: state.map(|s| s.paused).unwrap_or(false),
         external_job_waiting: state.map(|s| s.external_job_waiting).unwrap_or(false),
         has_session,
+        // Gated like the driven surface above: with the flag off no launcher
+        // marker reaches the badge, whatever an earlier scan cached.
+        launcher: ctx
+            .experimental
+            .then(|| ctx.view_cache.get(alias))
+            .flatten()
+            .and_then(|cache| cache.launcher_marker)
+            .and_then(|marker| marker.class),
     })
 }
 
@@ -1771,6 +1800,7 @@ mod tests {
                 is_paused: true,
                 external_job_waiting: true,
                 has_session: true,
+                launcher: None,
             }),
             Some(DRIVEN_BADGE),
             "every condition at once must still yield rank 1"
@@ -1820,6 +1850,7 @@ mod tests {
                 is_paused: bits & 4 != 0,
                 external_job_waiting: bits & 8 != 0,
                 has_session: bits & 16 != 0,
+                launcher: None,
             };
             if let Some(badge) = alias_badge(inputs) {
                 assert_eq!(badge.glyph.chars().count(), 2, "{inputs:?}");

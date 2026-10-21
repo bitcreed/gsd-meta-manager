@@ -174,6 +174,18 @@ pub enum Action {
         /// driven, is simply absent — the same authoritative-by-absence rule
         /// `runs` follows.
         last_outcomes: std::collections::HashMap<String, String>,
+        /// Each registered project's launcher-run marker (30-03, D-12, D-13), keyed by
+        /// alias: the highest of crashed, parked, driven, stale and unknown across the
+        /// project's launcher runs, and whether any holds its run lock.
+        ///
+        /// Computed in the SAME blocking task as the probe above, on the same 20-tick
+        /// counter, so a launcher killed with `SIGKILL` (no file event) turns into a
+        /// crashed badge within one slow tick. Replaced wholesale for the reason `runs`
+        /// is: a project absent from the map has no marker. **Empty with the
+        /// experimental flag off**, since no launcher surface is shown then and the
+        /// scan's file reads are skipped.
+        launcher_markers:
+            std::collections::HashMap<String, crate::ui::screens::driver_run::LauncherMarker>,
     },
     /// One running-agents scan completed (AGENT-05, D-C01).
     ///

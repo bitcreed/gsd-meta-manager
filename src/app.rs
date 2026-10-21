@@ -374,6 +374,35 @@ pub fn driver_tab_is_on_top(top_screen_name: &str, sub_view: Option<&DetailSubVi
         && matches!(sub_view, Some(DetailSubView::Driver))
 }
 
+/// Every registered project's launcher-run marker (30-03, D-12, D-13).
+///
+/// Per project: [`list_driver_runs`](crate::state_reader::driver_frontmatter::list_driver_runs)
+/// (at most [`LAUNCHER_RUNS_LISTED`](crate::ui::screens::LAUNCHER_RUNS_LISTED) runs, each
+/// `DIRECTION.md` read capped at 1 MiB, one lock probe per run) reduced by
+/// [`launcher_marker`](crate::ui::screens::driver_run::launcher_marker). **Blocking**: it
+/// runs inside the reconciliation `spawn_blocking` task on the existing 20-tick counter,
+/// never on its own timer, and never on the render thread. A project with no launcher
+/// runs still gets an entry (no class), so the handler's wholesale replacement is the
+/// only place a marker is cleared.
+pub fn launcher_markers_for(
+    projects: &HashMap<String, crate::config::RegisteredProject>,
+    now: std::time::SystemTime,
+) -> HashMap<String, crate::ui::screens::driver_run::LauncherMarker> {
+    projects
+        .iter()
+        .map(|(alias, project)| {
+            let entries = crate::state_reader::driver_frontmatter::list_driver_runs(
+                &project.path,
+                crate::ui::screens::LAUNCHER_RUNS_LISTED,
+            );
+            (
+                alias.clone(),
+                crate::ui::screens::driver_run::launcher_marker(&entries, now),
+            )
+        })
+        .collect()
+}
+
 pub fn classify_status(status: &str) -> StatusCategory {
     // ADR-2207 status vocabulary takes precedence over the generic keyword
     // matching below. Milestone-terminal statuses are truly Complete; the
@@ -1335,6 +1364,12 @@ impl App {
                     if let Some(ref tx) = self.ctx.event_tx {
                         let tx: UnboundedSender<Action> = tx.clone();
                         let projects = self.ctx.config.projects.clone();
+                        // The launcher-run markers (30-03, D-13) ride this same task:
+                        // one more `read_dir` plus bounded reads per project, on the
+                        // same counter, never a timer of their own. With the
+                        // experimental flag off no launcher surface is shown, so the
+                        // reads are skipped altogether.
+                        let experimental = self.ctx.experimental;
                         tokio::task::spawn_blocking(move || {
                             let runs = crate::driver::reconcile::reconcile_all(&projects);
                             // Read in the SAME blocking task as the probe above,
@@ -1345,9 +1380,15 @@ impl App {
                             // reasoning that forbids a second timer.
                             let last_outcomes =
                                 crate::driver::reconcile::last_ended_outcomes(&projects);
+                            let launcher_markers = if experimental {
+                                launcher_markers_for(&projects, std::time::SystemTime::now())
+                            } else {
+                                HashMap::new()
+                            };
                             let _ = tx.send(Action::RunsReconciled {
                                 runs,
                                 last_outcomes,
+                                launcher_markers,
                             });
                         });
                     }
@@ -1884,7 +1925,16 @@ impl App {
             Action::RunsReconciled {
                 runs,
                 last_outcomes,
+                launcher_markers,
             } => {
+                // The launcher-run markers (30-03, D-13), replaced wholesale: a project
+                // absent from the scan has no marker, and one never scanned has none
+                // either (no guessed class). The filter and the attention sort read the
+                // marker, so they are recomputed when any marker moved.
+                if self.ctx.apply_launcher_markers(&launcher_markers) {
+                    self.ctx.recompute_filtered_aliases();
+                    self.needs_redraw = true;
+                }
                 let observed: HashMap<String, crate::driver::reconcile::ObservedRun> = runs
                     .into_iter()
                     .map(|run| (run.alias.clone(), run))
@@ -3307,6 +3357,7 @@ mod tests {
         Action::RunsReconciled {
             runs,
             last_outcomes: HashMap::new(),
+            launcher_markers: HashMap::new(),
         }
     }
 
@@ -7157,5 +7208,153 @@ mod tests {
         app.update(left_press(5, row));
         assert_eq!(app.screen_stack.len(), 1);
         assert_eq!(app.ctx.table_state.selected(), Some(2));
+    }
+
+    // ── 30-03: the dashboard's launcher-run markers ─────────────────────────────
+
+    /// A launcher run dir under `root` whose frontmatter says `running` with one
+    /// launch and whose run lock is NOT held: the launcher died without a final
+    /// status. Heartbeats are fresh, so the only thing wrong with it is the lock.
+    fn write_dead_launcher_run(root: &std::path::Path, run_id: &str) {
+        use crate::state_reader::driver_frontmatter::{
+            parse_driver_frontmatter, RunStatus, DRIVER_RUNS_REL,
+        };
+        let run_dir = root.join(DRIVER_RUNS_REL).join(run_id);
+        std::fs::create_dir_all(&run_dir).expect("run dir");
+        let mut frontmatter = parse_driver_frontmatter(include_str!(
+            "../tests/fixtures/driverctl/direction/s003-run1b.md"
+        ))
+        .expect("the spike fixture parses");
+        frontmatter.run_id = run_id.to_string();
+        frontmatter.status = RunStatus::Running;
+        frontmatter.status_reason = None;
+        frontmatter.launches = 1;
+        crate::ui::screens::driver_run::refresh_heartbeats(&mut frontmatter);
+        std::fs::write(
+            run_dir.join("DIRECTION.md"),
+            format!(
+                "{}{}",
+                frontmatter.emit(),
+                crate::driver_templates::DIRECTION_TEMPLATE
+            ),
+        )
+        .expect("DIRECTION.md");
+    }
+
+    /// An `App` with two registered projects, `alpha` and `beta`, rooted at the given
+    /// directories.
+    fn two_project_app(alpha: &std::path::Path, beta: &std::path::Path) -> App {
+        use crate::config::RegisteredProject;
+        let mut app = App::new_for_test();
+        for (alias, root) in [("alpha", alpha), ("beta", beta)] {
+            app.ctx.config.projects.insert(
+                alias.to_string(),
+                RegisteredProject {
+                    path: root.to_path_buf(),
+                    added: "2026-07-29".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+        }
+        app.ctx.recompute_filtered_aliases();
+        app
+    }
+
+    /// The tracer: a launcher run that died without a final status, in one of two
+    /// registered projects, shows `✗ ` on that project's dashboard row and is the only
+    /// row `//h` lists. With the experimental flag off neither changes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launcher_marker_a_crashed_run_lights_the_badge_and_the_h_filter() {
+        let alpha = tempfile::tempdir().expect("alpha dir");
+        let beta = tempfile::tempdir().expect("beta dir");
+        write_dead_launcher_run(alpha.path(), LAUNCHER_RUN);
+        let mut app = two_project_app(alpha.path(), beta.path());
+
+        // Before the first scan lands nothing is guessed: no badge, nothing listed.
+        app.ctx.filter_text = "/h".to_string();
+        app.ctx.recompute_filtered_aliases();
+        assert!(app.ctx.filtered_aliases.is_empty());
+        assert_eq!(
+            crate::ui::screens::normal::row_badge(&app.ctx, "alpha"),
+            None
+        );
+
+        let markers = launcher_markers_for(&app.ctx.config.projects, std::time::SystemTime::now());
+        app.update(Action::RunsReconciled {
+            runs: Vec::new(),
+            last_outcomes: HashMap::new(),
+            launcher_markers: markers,
+        });
+
+        let badge = crate::ui::screens::normal::row_badge(&app.ctx, "alpha").expect("a badge");
+        assert_eq!(badge.glyph, "\u{2717} ");
+        assert_eq!(badge.color, ratatui::style::Color::Red);
+        assert_eq!(badge.modifier, ratatui::style::Modifier::BOLD);
+        assert_eq!(
+            crate::ui::screens::normal::row_badge(&app.ctx, "beta"),
+            None
+        );
+        // The handler recomputed the filtered rows when the marker moved.
+        assert_eq!(app.ctx.filtered_aliases, vec!["alpha".to_string()]);
+        assert!(app.ctx.needs_attention_for("alpha"));
+        assert!(!app.ctx.needs_attention_for("beta"));
+
+        // Flag off: no launcher surface, so neither the badge nor the filter changes.
+        app.ctx.experimental = false;
+        app.ctx.recompute_filtered_aliases();
+        assert_eq!(
+            crate::ui::screens::normal::row_badge(&app.ctx, "alpha"),
+            None
+        );
+        assert!(app.ctx.filtered_aliases.is_empty());
+        assert!(!app.ctx.needs_attention_for("alpha"));
+    }
+
+    /// The scan rides the 20-tick reconcile task: on the twentieth tick with the flag
+    /// on the `RunsReconciled` it sends carries the marker, and with the flag off no
+    /// launcher scan runs, so the map is empty.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launcher_marker_the_slow_tick_scans_only_with_the_flag_on() {
+        let alpha = tempfile::tempdir().expect("alpha dir");
+        let beta = tempfile::tempdir().expect("beta dir");
+        write_dead_launcher_run(alpha.path(), LAUNCHER_RUN);
+
+        for experimental in [true, false] {
+            let mut app = two_project_app(alpha.path(), beta.path());
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            app.ctx.event_tx = Some(tx);
+            app.ctx.experimental = experimental;
+            app.session_poll_counter = 19;
+            app.update(Action::Tick);
+
+            let mut markers = None;
+            for _ in 0..300 {
+                while let Ok(action) = rx.try_recv() {
+                    if let Action::RunsReconciled {
+                        launcher_markers, ..
+                    } = action
+                    {
+                        markers = Some(launcher_markers);
+                    }
+                }
+                if markers.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let markers = markers.expect("the slow tick sends RunsReconciled");
+            if experimental {
+                assert_eq!(
+                    markers.get("alpha").and_then(|m| m.class),
+                    Some(crate::ui::screens::driver_run::MarkerClass::Crashed)
+                );
+                assert_eq!(markers.get("beta").and_then(|m| m.class), None);
+            } else {
+                assert!(markers.is_empty(), "no launcher scan with the flag off");
+            }
+        }
     }
 }

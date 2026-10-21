@@ -1219,6 +1219,16 @@ pub struct ProjectViewCache {
     /// above the selected one keeps this run selected; if the run is gone the index
     /// is clamped into range instead.
     pub launcher_selected_id: Option<String>,
+    /// This project's launcher-run marker for the dashboard (30-03, D-12, D-13): the
+    /// highest of crashed, parked, driven, stale and unknown across its launcher runs,
+    /// and whether any holds its run lock.
+    ///
+    /// `None` until the project's first marker scan lands, so before that there is no
+    /// driver-derived badge and no attention contribution, never a guessed class. Set
+    /// wholesale by `Action::RunsReconciled` (the 20-tick scan), by
+    /// `Action::LauncherMarkerScanned` (a `DriverRun` event for a project whose Driver
+    /// tab is not on top) and by the launcher-run refresh handlers (tab on top).
+    pub launcher_marker: Option<driver_run::LauncherMarker>,
     /// What the last read of the **selected** launcher run's `DIRECTION.md` found:
     /// the frontmatter, the live body `control` and the body's items (30-02, D-06).
     ///
@@ -1877,6 +1887,51 @@ impl AppContext {
             .is_some_and(|state| needs_human(state, self.observed_runs.get(alias), last, false))
     }
 
+    /// Whether `alias` needs attention: the shipped needs-a-human predicate **or** a
+    /// launcher-run marker in {crashed, parked, stale} (30-03, OBS-07, D-12).
+    ///
+    /// This is what the `h` filter and the `AttentionFirst` rank 0 read. `unknown` does
+    /// not count (a failed lock probe is not a call for a human), and neither does a
+    /// healthy `driven` run. The launcher half is gated on the experimental flag like
+    /// every other driver surface, and on the marker having landed at all: before the
+    /// first scan nothing is guessed. The badge's rank-4 input stays
+    /// [`needs_human_for`](Self::needs_human_for) alone, so a stale project shows `◈`
+    /// and still sorts first.
+    pub fn needs_attention_for(&self, alias: &str) -> bool {
+        self.needs_human_for(alias)
+            || (self.experimental
+                && self
+                    .view_cache
+                    .get(alias)
+                    .and_then(|cache| cache.launcher_marker)
+                    .is_some_and(|marker| marker.needs_attention()))
+    }
+
+    /// Replace every registered project's launcher marker from one scan (30-03, D-13).
+    ///
+    /// Authoritative, so a registered alias absent from `markers` gets `None` (and an
+    /// alias with no cache entry yet is not given one to hold a `None`). Returns whether
+    /// any marker changed, so the caller recomputes the filtered rows and redraws only
+    /// then: a scan lands every ~5 s for the life of the process.
+    pub fn apply_launcher_markers(
+        &mut self,
+        markers: &HashMap<String, driver_run::LauncherMarker>,
+    ) -> bool {
+        let mut changed = false;
+        for alias in self.config.projects.keys() {
+            let marker = markers.get(alias).copied();
+            if marker.is_none() && !self.view_cache.contains_key(alias) {
+                continue;
+            }
+            let cache = self.view_cache.entry(alias.clone()).or_default();
+            if cache.launcher_marker != marker {
+                cache.launcher_marker = marker;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Schedule the run-list directory scan and the selected run's inbox read
     /// (OBS-05, STEER-02).
     ///
@@ -2239,7 +2294,7 @@ impl AppContext {
                 .observed_runs
                 .get(alias)
                 .is_some_and(|run| run.is_live());
-        attention_rank(self.needs_human_for(alias), driven_and_live)
+        attention_rank(self.needs_attention_for(alias), driven_and_live)
     }
 
     /// Get the alias of the currently selected project, if any.
@@ -2311,7 +2366,7 @@ impl AppContext {
                                 s.status.to_lowercase().contains(&term_lower)
                                     || format_phase_display(s).to_lowercase().contains(&term_lower)
                             });
-                        matches_term && self.needs_human_for(alias)
+                        matches_term && self.needs_attention_for(alias)
                     }
                 }
             })

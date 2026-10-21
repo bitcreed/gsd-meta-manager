@@ -431,6 +431,114 @@ pub fn heartbeat_stale(fm: &DriverFrontmatter, derived: &DerivedStatus, now: Sys
             .is_some_and(|age| age > fm.heartbeat_stale_after_s)
 }
 
+// ── Dashboard markers (30-03, D-12) ─────────────────────────────────────────
+
+/// The class one launcher run contributes to its project's dashboard marker (D-12).
+///
+/// Declared in precedence order, **highest first**, so the derived `Ord` ranks
+/// `Crashed` lowest and the project marker is the [`Ord::min`] of its runs' classes:
+/// crashed > parked > driven > stale > unknown. The classes are exclusive per run
+/// (first match in [`run_marker_class`]): a live run with a stale heartbeat is
+/// `Stale`, never `Driven`, or the stale marker could never light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MarkerClass {
+    /// The launcher is gone without a final status (free lock), or the launcher
+    /// itself wrote `crashed`.
+    Crashed,
+    /// The run stopped for a human, or is live with an item parked.
+    Parked,
+    /// The run's lock is held and its heartbeat is fresh.
+    Driven,
+    /// The run's lock is held but its heartbeat is older than the file's threshold.
+    Stale,
+    /// The lock probe could not tell whether the run is alive.
+    Unknown,
+}
+
+/// One project's launcher-run marker (D-12): the highest class among the runs
+/// considered, and whether any of them holds its run lock (the tab-bar `D:Drive◆`
+/// light). Plain data, so it travels in an `Action` and sits in the view cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LauncherMarker {
+    /// `None` when no considered run has a class: nothing to flag.
+    pub class: Option<MarkerClass>,
+    /// Whether any considered run derives `AsWritten(Running | Starting)`.
+    pub any_live: bool,
+}
+
+impl LauncherMarker {
+    /// Whether the marker raises the attention flag (OBS-07, D-12): crashed, parked
+    /// or stale. `Unknown` never counts, and neither does `Driven` (a healthy run).
+    pub fn needs_attention(&self) -> bool {
+        matches!(
+            self.class,
+            Some(MarkerClass::Crashed | MarkerClass::Parked | MarkerClass::Stale)
+        )
+    }
+}
+
+/// The class one run contributes, by the first match of the UI-SPEC table: crashed,
+/// parked, stale, driven, unknown. `None` for a run that is none of those (not
+/// launched, paused, stopped, done, stalled, an unknown status word, or an entry that
+/// could not be read `[inferred — audit]`).
+///
+/// Chosen only from [`DerivedStatus`] (the lock probe), the closed [`ItemState`] enum
+/// and the file's own heartbeat threshold; no text the driver wrote picks a class
+/// (the Replit rule). A merely stale, liveness-unknown, not-launched or paused run is
+/// never `Crashed`: a false crash invites a relaunch over a live run.
+pub fn run_marker_class(entry: &DriverRunEntry, now: SystemTime) -> Option<MarkerClass> {
+    let view = entry.1.as_ref().ok()?;
+    let fm = &view.frontmatter;
+    match &view.derived {
+        // `AsWritten(Crashed)` is the launcher's own record; `launcher_marker` only
+        // lets it through for the most recent run (a terminal status).
+        DerivedStatus::Crashed { .. } | DerivedStatus::AsWritten(RunStatus::Crashed) => {
+            Some(MarkerClass::Crashed)
+        }
+        DerivedStatus::AsWritten(RunStatus::Parked) => Some(MarkerClass::Parked),
+        derived if is_live(derived) => {
+            if fm
+                .item_states
+                .0
+                .iter()
+                .any(|(_, item)| item.state == ItemState::Parked)
+            {
+                Some(MarkerClass::Parked)
+            } else if heartbeat_stale(fm, derived, now) {
+                Some(MarkerClass::Stale)
+            } else {
+                Some(MarkerClass::Driven)
+            }
+        }
+        DerivedStatus::LivenessUnknown { .. } => Some(MarkerClass::Unknown),
+        _ => None,
+    }
+}
+
+/// Reduce a project's newest-first run listing to its [`LauncherMarker`] (D-12).
+///
+/// The runs considered are every run whose **written** status is not terminal, plus
+/// the most recent run (`entries[0]`), so an older run that is still going is not
+/// hidden behind a newer finished one. The class is the maximum by precedence;
+/// `any_live` is true when any considered run derives `AsWritten(Running | Starting)`.
+/// An empty listing is no class. Pure: the lock probes already happened in the listing.
+pub fn launcher_marker(entries: &[DriverRunEntry], now: SystemTime) -> LauncherMarker {
+    let mut marker = LauncherMarker::default();
+    for (index, entry) in entries.iter().enumerate() {
+        let Ok(view) = &entry.1 else { continue };
+        if index != 0 && view.frontmatter.status.is_terminal() {
+            continue;
+        }
+        if is_live(&view.derived) {
+            marker.any_live = true;
+        }
+        if let Some(class) = run_marker_class(entry, now) {
+            marker.class = Some(marker.class.map_or(class, |best| best.min(class)));
+        }
+    }
+    marker
+}
+
 /// The control word to show, and its pending suffix (D-05, D-28). `body_control` is
 /// the LIVE word from the DIRECTION body; `fm_control` is what the frontmatter last
 /// echoed.
@@ -5124,6 +5232,278 @@ mod tests {
         assert!(
             !rows.iter().any(|r| r.contains("No events logged yet.")),
             "{rows:#?}"
+        );
+    }
+
+    // ── Dashboard markers (30-03, D-12) ────────────────────────────────────
+
+    /// A run whose written status is `written` and whose derived status is `derived`.
+    fn marker_run(id: &str, written: RunStatus, derived: DerivedStatus) -> DriverRunEntry {
+        let mut run = entry(id, derived);
+        run.1.as_mut().expect("readable").frontmatter.status = written;
+        run
+    }
+
+    /// The same run with a heartbeat older than the file's threshold.
+    fn aged(mut run: DriverRunEntry) -> DriverRunEntry {
+        let fm = &mut run.1.as_mut().expect("readable").frontmatter;
+        let ago = fm.heartbeat_stale_after_s + 600;
+        for conn in &mut fm.connected {
+            conn.last_heartbeat = Some(stamp_ago(ago));
+        }
+        run
+    }
+
+    /// One non-terminal run (written `running`) of each marker class.
+    fn run_of(class: MarkerClass, id: &str) -> DriverRunEntry {
+        let live = || marker_run(id, RunStatus::Running, running());
+        match class {
+            MarkerClass::Crashed => marker_run(id, RunStatus::Running, crashed()),
+            MarkerClass::Parked => {
+                let mut run = live();
+                run.1.as_mut().expect("readable").frontmatter.item_states = ItemStates(vec![(
+                    "I-01".to_owned(),
+                    ItemStateEntry {
+                        state: ItemState::Parked,
+                        dispatches: 1,
+                        outcome: None,
+                    },
+                )]);
+                run
+            }
+            MarkerClass::Driven => live(),
+            MarkerClass::Stale => aged(live()),
+            MarkerClass::Unknown => marker_run(
+                id,
+                RunStatus::Running,
+                DerivedStatus::LivenessUnknown {
+                    written: RunStatus::Running,
+                },
+            ),
+        }
+    }
+
+    const ALL_CLASSES: [MarkerClass; 5] = [
+        MarkerClass::Crashed,
+        MarkerClass::Parked,
+        MarkerClass::Driven,
+        MarkerClass::Stale,
+        MarkerClass::Unknown,
+    ];
+
+    #[test]
+    fn launcher_marker_a_free_lock_running_run_is_crashed() {
+        let run = marker_run("20261020-a", RunStatus::Running, crashed());
+        assert_eq!(
+            run_marker_class(&run, SystemTime::now()),
+            Some(MarkerClass::Crashed)
+        );
+        let marker = launcher_marker(&[run], SystemTime::now());
+        assert_eq!(marker.class, Some(MarkerClass::Crashed));
+        assert!(!marker.any_live, "a crashed run does not hold its lock");
+        assert!(marker.needs_attention());
+    }
+
+    #[test]
+    fn launcher_marker_over_no_runs_is_no_class() {
+        let marker = launcher_marker(&[], SystemTime::now());
+        assert_eq!(marker, LauncherMarker::default());
+        assert!(!marker.needs_attention());
+    }
+
+    #[test]
+    fn launcher_marker_each_class_comes_from_its_own_run_shape() {
+        let now = SystemTime::now();
+        for class in ALL_CLASSES {
+            assert_eq!(
+                run_marker_class(&run_of(class, "20261020-a"), now),
+                Some(class),
+                "{class:?}"
+            );
+        }
+        // The launcher's own `crashed` / `parked` words are classes too.
+        let written_crashed = marker_run(
+            "20261020-a",
+            RunStatus::Crashed,
+            DerivedStatus::AsWritten(RunStatus::Crashed),
+        );
+        assert_eq!(
+            run_marker_class(&written_crashed, now),
+            Some(MarkerClass::Crashed)
+        );
+        let written_parked = marker_run(
+            "20261020-a",
+            RunStatus::Parked,
+            DerivedStatus::AsWritten(RunStatus::Parked),
+        );
+        assert_eq!(
+            run_marker_class(&written_parked, now),
+            Some(MarkerClass::Parked)
+        );
+    }
+
+    /// Every pair of classes across two runs yields the higher one, and the order of
+    /// the runs does not matter.
+    #[test]
+    fn launcher_marker_precedence_truth_table() {
+        let now = SystemTime::now();
+        for a in ALL_CLASSES {
+            for b in ALL_CLASSES {
+                let runs = [run_of(a, "20261020-b"), run_of(b, "20261020-a")];
+                // Crashed > parked > driven > stale > unknown: the earlier in
+                // `ALL_CLASSES` wins.
+                let expected = ALL_CLASSES
+                    .iter()
+                    .find(|class| **class == a || **class == b)
+                    .copied();
+                assert_eq!(launcher_marker(&runs, now).class, expected, "{a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn launcher_marker_a_stale_live_run_is_stale_not_driven() {
+        let now = SystemTime::now();
+        let run = run_of(MarkerClass::Stale, "20261020-a");
+        assert_eq!(run_marker_class(&run, now), Some(MarkerClass::Stale));
+        let marker = launcher_marker(&[run], now);
+        assert_eq!(marker.class, Some(MarkerClass::Stale));
+        assert!(marker.any_live, "stale is still a live lock");
+        assert!(marker.needs_attention());
+        // Never crashed: staleness is not a crash.
+        assert_ne!(marker.class, Some(MarkerClass::Crashed));
+    }
+
+    #[test]
+    fn launcher_marker_liveness_unknown_alone_is_unknown_and_not_attention() {
+        let marker = launcher_marker(
+            &[run_of(MarkerClass::Unknown, "20261020-a")],
+            SystemTime::now(),
+        );
+        assert_eq!(marker.class, Some(MarkerClass::Unknown));
+        assert!(!marker.any_live);
+        assert!(!marker.needs_attention(), "unknown never counts");
+    }
+
+    #[test]
+    fn launcher_marker_a_driven_run_is_not_an_attention_flag() {
+        let marker = launcher_marker(
+            &[run_of(MarkerClass::Driven, "20261020-a")],
+            SystemTime::now(),
+        );
+        assert_eq!(marker.class, Some(MarkerClass::Driven));
+        assert!(marker.any_live);
+        assert!(!marker.needs_attention());
+    }
+
+    #[test]
+    fn launcher_marker_a_not_launched_run_and_a_paused_run_have_no_class() {
+        let now = SystemTime::now();
+        let fresh = marker_run(
+            "20261020-a",
+            RunStatus::Starting,
+            DerivedStatus::NotLaunched,
+        );
+        let paused = marker_run(
+            "20261020-b",
+            RunStatus::Paused,
+            DerivedStatus::AsWritten(RunStatus::Paused),
+        );
+        assert_eq!(run_marker_class(&fresh, now), None);
+        assert_eq!(run_marker_class(&paused, now), None);
+        // Both are considered (not terminal) and neither flags anything.
+        assert_eq!(
+            launcher_marker(&[fresh, paused], now),
+            LauncherMarker::default()
+        );
+    }
+
+    #[test]
+    fn launcher_marker_a_terminal_done_most_recent_run_has_no_class() {
+        let done = marker_run(
+            "20261020-a",
+            RunStatus::Done,
+            DerivedStatus::AsWritten(RunStatus::Done),
+        );
+        assert_eq!(
+            launcher_marker(&[done], SystemTime::now()),
+            LauncherMarker::default()
+        );
+    }
+
+    #[test]
+    fn launcher_marker_a_non_terminal_older_run_behind_a_newer_done_run_is_still_considered() {
+        let now = SystemTime::now();
+        let newest = marker_run(
+            "20261020-b",
+            RunStatus::Done,
+            DerivedStatus::AsWritten(RunStatus::Done),
+        );
+        let older = run_of(MarkerClass::Crashed, "20261020-a");
+        assert_eq!(
+            launcher_marker(&[newest, older], now).class,
+            Some(MarkerClass::Crashed)
+        );
+    }
+
+    #[test]
+    fn launcher_marker_only_the_most_recent_terminal_run_is_considered() {
+        let now = SystemTime::now();
+        let written_crashed = || {
+            marker_run(
+                "20261020-a",
+                RunStatus::Crashed,
+                DerivedStatus::AsWritten(RunStatus::Crashed),
+            )
+        };
+        let done = || {
+            marker_run(
+                "20261020-b",
+                RunStatus::Done,
+                DerivedStatus::AsWritten(RunStatus::Done),
+            )
+        };
+        // Behind a newer finished run, a long-finished crash is history.
+        assert_eq!(
+            launcher_marker(&[done(), written_crashed()], now),
+            LauncherMarker::default()
+        );
+        // As the most recent run, the launcher's own `crashed` is a class.
+        assert_eq!(
+            launcher_marker(&[written_crashed()], now).class,
+            Some(MarkerClass::Crashed)
+        );
+    }
+
+    #[test]
+    fn launcher_marker_any_live_follows_running_and_starting_only() {
+        let now = SystemTime::now();
+        let starting = marker_run(
+            "20261020-a",
+            RunStatus::Starting,
+            DerivedStatus::AsWritten(RunStatus::Starting),
+        );
+        assert!(launcher_marker(&[starting], now).any_live);
+        for class in [MarkerClass::Crashed, MarkerClass::Unknown] {
+            assert!(
+                !launcher_marker(&[run_of(class, "20261020-a")], now).any_live,
+                "{class:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn launcher_marker_an_unreadable_run_has_no_class() {
+        let bad: DriverRunEntry = (
+            "20261020-a".to_owned(),
+            Err(FrontmatterError::Io {
+                detail: "boom".to_owned(),
+            }),
+        );
+        assert_eq!(run_marker_class(&bad, SystemTime::now()), None);
+        assert_eq!(
+            launcher_marker(&[bad], SystemTime::now()),
+            LauncherMarker::default()
         );
     }
 }
