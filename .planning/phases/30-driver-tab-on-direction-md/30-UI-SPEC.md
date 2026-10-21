@@ -50,7 +50,7 @@ render function receives, never from the terminal size**. Mouse: the shipped cli
 | Preset | not applicable |
 | Component library | `ratatui` 0.30 widgets already used by the tab: `Block`, `Borders`, `List`, `ListItem`, `ListState`, `Paragraph`, `Clear`, `Tabs` |
 | Terminal backend | `crossterm` 0.29 |
-| Icon library | Unicode glyphs as fixed `&'static str` `\u{…}` constants only (house rule, `normal.rs:91-100`); never derived from file content |
+| Icon library | Unicode glyphs as fixed `&'static str` `\u{…}` constants only, registered in `src/ui/glyphs.rs` (see `## Glyph width safety`); never derived from file content |
 | Font | The user's terminal monospace font: not selectable, not knowable |
 | Theme module | None exists and none is created (18-CONTEXT deferred list still binds) |
 | Shared primitives reused | `confirm_popup::render_confirm_popup` / `ConfirmPopup` (`confirm_popup.rs:194`), `dim_background`, the one-line input-footer screen idiom (`enqueue.rs`, `driver_inject.rs`), `ScreenAction::SuspendAndEdit` handoff (`main.rs:834`), `follow_indicator` / `tail_offset` / `clamp_scroll`, `sanitize_render_line` + `shown_capped` (`driver.rs:654`), `render_for_terminal` |
@@ -126,8 +126,8 @@ There is no type scale. One monospace grid; the roles below are the modifier + c
 | Role | Style | Usage in this phase |
 |------|-------|---------------------|
 | Body | `Style::default()` | Values, item titles, run ids, LOG lines, connection lines |
-| Label | `fg(DarkGray)` | Header labels, section rules, LOG timestamps, `(pending)`, `missing:` lists, the legacy collapsed line |
-| Muted | `fg(DarkGray)` + `DIM` | Empty-state rows (`(none recorded)`, `No events logged yet.`), the ring-overflow notice, `no limit` |
+| Label | `DIM` on the default fg (no fg colour) | Header labels, section rules, LOG timestamps, `(pending)`, `missing:` lists, the legacy collapsed line |
+| Muted | `DIM` on the default fg (no fg colour) | Empty-state rows (`(none recorded)`, `No events logged yet.`), the ring-overflow notice, `no limit` |
 | Emphasis | `BOLD` | Footer key spans (`[c]`), input prompt words (`Answer I-03> `), `crashed`, `stale`, `MISMATCH`, `UNSANDBOXED` |
 | Selection | `fg(Cyan)` + `BOLD` | Selected run row, item cursor row, launch-form field cursor (all with the `"> "` symbol) |
 | State | `fg(<state colour>)` | Status glyph + word, item glyph + word, cap rows at or over the limit |
@@ -144,7 +144,7 @@ focused tab-bar label and the focused confirm-popup button, where it already shi
 | Role | Value | Usage |
 |------|-------|-------|
 | Dominant (60%) | Terminal default fg on default bg | All pane interiors, body text |
-| Secondary (30%) | `Color::DarkGray` | Labels, rules, borders, timestamps, muted rows, not-launched / stopped states |
+| Secondary (30%) | `DIM` on the default fg for the Label and Muted roles; `Color::DarkGray` for the inert states | Labels, rules, borders, timestamps, muted rows (DIM); not-launched / stopped / pending / unseen states (DarkGray) |
 | Accent (10%) | `Color::Cyan` | Exhaustive reserved list below |
 | Destructive | `Color::Red` | `crashed`, `failed`, parked-item glyph, audit `MISMATCH`, the kill confirmation, sandbox-refused rows, lint problems, write errors |
 
@@ -164,7 +164,7 @@ focused tab-bar label and the focused confirm-popup button, where it already shi
 - Selected run row in the run list (shipped `"> "` + Cyan + BOLD idiom, `driver.rs:1110-1115`)
 - Item cursor row in the items section (`"> "` + Cyan + BOLD)
 - Field cursor row in the launch form (`"> "` + Cyan + BOLD)
-- (pre-existing, untouched) active tab label, `sort: attention` indicator, `‖` pause badge
+- (pre-existing, untouched) active tab label, `sort: attention` indicator, `ǁ` pause badge
 
 Footer key hints are BOLD on the default foreground, never Cyan.
 
@@ -191,8 +191,8 @@ moves into the detail header, its stop key becomes `x`.
 ### Run-list rows (launcher runs, newest first, at most `LAUNCHER_RUNS_LISTED` = 20)
 
 ```
-narrow:  > ◆ 20261020-driver-tab!
-wide:    > ◆ running    20261020-driver-tab!
+narrow:  > ⧫ 20261020-driver-tab!
+wide:    > ⧫ running    20261020-driver-tab!
 ```
 
 `highlight(2) · glyph(1) · space · [word padded to 10 · space] · run id (ellipsised to fit) · posture(1)`.
@@ -207,20 +207,20 @@ reader only returns while the run lock is held (D-09: liveness from the lock, ne
 
 | `DerivedStatus` | Glyph | List word | Detail word | Colour |
 |---|---|---|---|---|
-| `AsWritten(Running)`, heartbeat fresh | `◆` U+25C6 | `running` | `running` | Magenta |
-| `AsWritten(Starting)` | `◆` | `starting` | `starting` | Magenta |
-| live, heartbeat stale (D-08) | `◈` U+25C8 | `stale` | `running` + `stale` flag on the heartbeat | Yellow |
+| `AsWritten(Running)`, heartbeat fresh | `⧫` U+29EB | `running` | `running` | Magenta |
+| `AsWritten(Starting)` | `⧫` | `starting` | `starting` | Magenta |
+| live, heartbeat stale (D-08) | `⬖` U+2B16 | `stale` | `running` + `stale` flag on the heartbeat | Yellow |
 | `Crashed { written }` | `✗` U+2717 | `crashed` | `crashed` (BOLD) | Red |
-| `LivenessUnknown { written }` | `◇` U+25C7 | `liveness?` | `liveness unknown` | Yellow |
-| `NotLaunched` | `○` U+25CB | `unlaunched` | `not launched` | DarkGray |
-| `AsWritten(Parked)` | `⚑` U+2691 | `parked` | `parked` | Red |
-| `AsWritten(Paused)` | `‖` U+2016 | `paused` | `paused` | Yellow |
-| `AsWritten(Stopped)` | `■` U+25A0 | `stopped` | `stopped` | DarkGray |
-| `AsWritten(Done)` | `●` U+25CF | `done` | `done` | Green |
+| `LivenessUnknown { written }` | `◊` U+25CA | `liveness?` | `liveness unknown` | Yellow |
+| `NotLaunched` | `◦` U+25E6 | `unlaunched` | `not launched` | DarkGray |
+| `AsWritten(Parked)` | `❢` U+2762 | `parked` | `parked` | Red |
+| `AsWritten(Paused)` | `ǁ` U+01C1 | `paused` | `paused` | Yellow |
+| `AsWritten(Stopped)` | `▮` U+25AE | `stopped` | `stopped` | DarkGray |
+| `AsWritten(Done)` | `◍` U+25CD | `done` | `done` | Green |
 | `AsWritten(Stalled)` | `✗` | `stalled` | `stalled` | Red |
 | `AsWritten(Crashed)` (written by the launcher) | `✗` | `crashed` | `crashed` (BOLD) | Red |
-| `AsWritten(Unknown(s))` | `◇` | `s` (`shown_capped`, `…` at 10) | `s` | Yellow |
-| entry is `Err(FrontmatterError)` | `◇` | `unreadable` | see `## Copywriting Contract` | Yellow |
+| `AsWritten(Unknown(s))` | `◊` | `s` (`shown_capped`, `…` at 10) | `s` | Yellow |
+| entry is `Err(FrontmatterError)` | `◊` | `unreadable` | see `## Copywriting Contract` | Yellow |
 
 The raw `status:` line is never shown as the status (D-04). `[inferred — audit]` for the glyph and colour of
 `paused`, `stopped`, `stalled` and `unreadable`, and for showing `stale` as the list word.
@@ -269,7 +269,7 @@ the steps section together. `>= 14` and `< 8` are unchanged. `[inferred — audi
 ### SUMMARY row
 
 ```
-> ◆ running    20261020-driver-tab  ctl pause (pending)  hb 3:10 stale
+> ⧫ running    20261020-driver-tab  ctl pause (pending)  hb 3:10 stale
 ```
 
 `highlight 2 · glyph · word(10) · run id` then **status tokens** (below), each added only if it fits whole.
@@ -298,7 +298,7 @@ so a flag token always outlives a benign one:
 ### Header — FULL (6 rows)
 
 ```
-◆ running  20261020-driver-tab
+⧫ running  20261020-driver-tab
   reason  driver dispatched I-03
   control pause (pending)  ·  heartbeat 0:42 ago
   sandbox UNSANDBOXED missing: bwrap  ·  prompt custom:3fa9c0d1
@@ -343,9 +343,9 @@ Row 1 as FULL row 1. Row 2 = the status tokens. Rows 2-6 of FULL are not drawn.
 
 ```
 ── items ─────────────────────────────
-> I-03 ⚑ parked   2d hold  Wire the run list
-  I-04 ◆ running  1d       Steering transforms
-  I-05 · unseen   0d       Dashboard marker
+> I-03 ❢ parked   2d hold  Wire the run list
+  I-04 ⧫ running  1d       Steering transforms
+  I-05 ∙ unseen   0d       Dashboard marker
   I-03 parked by needs-human: which socket path?
 ```
 
@@ -354,12 +354,12 @@ flag (4: "hold" or blank) · sm · title`.
 
 | Item state (closed enum, 27 D-19) | Glyph | Word | Colour |
 |---|---|---|---|
-| `pending` | `○` | `pending` | DarkGray |
-| `running` | `◆` | `running` | Magenta |
-| `done` | `●` | `done` | Green |
-| `parked` | `⚑` | `parked` | Red |
+| `pending` | `◦` | `pending` | DarkGray |
+| `running` | `⧫` | `running` | Magenta |
+| `done` | `◍` | `done` | Green |
+| `parked` | `❢` | `parked` | Red |
 | `failed` | `✗` | `failed` | Red |
-| in the body only (not yet seen by the driver) | `·` U+00B7 | `unseen` | DarkGray |
+| in the body only (not yet seen by the driver) | `∙` U+2219 | `unseen` | DarkGray |
 | in the frontmatter only | its state's glyph | its word, then ` [not in DIRECTION]` DarkGray after the title | as the state |
 
 - Order: DIRECTION body order, then frontmatter-only items in `item_states` order.
@@ -383,7 +383,7 @@ flag (4: "hold" or blank) · sm · title`.
   audit   logged 7  ·  observed 7  ·  denied 0
 ```
 
-- Bar: `█` U+2588 filled, `░` U+2591 empty, `filled = min(10, floor(used × 10 / limit))`.
+- Bar: `█` U+2588 filled, `░` U+2591 empty (both STRUCTURAL, see `## Glyph width safety`), `filled = min(10, floor(used × 10 / limit))`.
 - Minutes: `wall_clock_min` rounded down to whole minutes for display.
 - `used >= limit`: the whole row Yellow, value BOLD. No limit → value `{used}/–` and the bar replaced by
   `no limit` muted.
@@ -701,27 +701,27 @@ A live run with a stale heartbeat classifies as `stale`, not `driven`, or the st
 | Rank | Condition | Badge | Style | New? |
 |---|---|---|---|---|
 | 1 | marker `crashed` | `✗ ` U+2717 | Red + BOLD | **new** |
-| 2 | marker `parked` | `⚑ ` | Red + BOLD | new source, shipped glyph |
-| 3 | marker `driven`, or legacy `ObservedRun::is_live()` | `◆ ` | Magenta + BOLD | new source, shipped glyph |
-| 4 | legacy `needs_human` predicate | `⚑ ` | Red + BOLD | shipped |
-| 5 | marker `stale` | `◈ ` U+25C8 | Yellow + BOLD | **new** |
-| 6 | marker `unknown` | `◇ ` U+25C7 | Yellow | **new** (the run list's shipped unknown glyph) |
-| 7-9 | paused `‖`, external job `◷`, session `▶` | as shipped | as shipped | shipped |
+| 2 | marker `parked` | `❢ ` | Red + BOLD | new source, shipped glyph |
+| 3 | marker `driven`, or legacy `ObservedRun::is_live()` | `⧫ ` | Magenta + BOLD | new source, shipped glyph |
+| 4 | legacy `needs_human` predicate | `❢ ` | Red + BOLD | shipped |
+| 5 | marker `stale` | `⬖ ` U+2B16 | Yellow + BOLD | **new** |
+| 6 | marker `unknown` | `◊ ` U+25CA | Yellow | **new** (the run list's shipped unknown glyph) |
+| 7-9 | paused `ǁ`, external job `◷`, session `►` | as shipped | as shipped | shipped |
 
 Ranks 1-2 above `driven` is D-12's order. Rank 4 keeps the shipped legacy order (`driven` above legacy
-needs-human). The new glyphs are East-Asian-Width Ambiguous (narrow), like `◆`, and must pass the shipped
-`badge_glyphs_are_width_stable` test. `[inferred — audit]` for the glyphs and ranks 4-6.
+needs-human). Every badge glyph is a `src/ui/glyphs.rs` registry glyph (see `## Glyph width safety`) and must pass
+`badge_glyphs_are_width_stable`. `[inferred — audit]` for the glyphs and ranks 4-6.
 
 ### Attention (OBS-07)
 
 `needs_human_for(alias)` (the `h` filter and the `AttentionFirst` rank 0) = legacy predicate **or** marker in
 {crashed, parked, stale} (D-12). `unknown` does not count. `driven` stays rank 1. The badge's rank-4 input
-stays the legacy predicate alone, so a stale project shows `◈` and still sorts first.
+stays the legacy predicate alone, so a stale project shows `⬖` and still sorts first.
 
 ### Tab-bar live marker
 
 `driver_live_for` also returns true when any launcher run of the project is live (lock held), so
-`D:Drive◆` lights for launcher runs `[inferred — audit]`.
+`D:Drive⧫` lights for launcher runs `[inferred — audit]`.
 
 ---
 
@@ -831,7 +831,7 @@ four rows close the gaps the probe surfaced.
 | empty | Run list, project with no runs | ✅ covered | Renders the empty-state heading and body from the Copywriting Contract in a bordered block; the non-Linux variant names the platform limit |
 | empty | Items, connections, LOG, header fields | ✅ covered | Each renders its named muted placeholder row, so no section is ever header-only (D-29) |
 | loading | Run list before the first `DriverRunsListed`; launch-form host check | ✅ covered | `Loading...` DarkGray; `y` is inert in the launch form until the host check returns |
-| error | Unreadable `DIRECTION.md` (`FrontmatterError`) | ✅ covered | List word `unreadable` (Yellow `◇`); the detail shows the unreadable copy and the steering keys are hidden |
+| error | Unreadable `DIRECTION.md` (`FrontmatterError`) | ✅ covered | List word `unreadable` (Yellow `◊`); the detail shows the unreadable copy and the steering keys are hidden |
 | error | `write_body` failure, lock timeout, launch failure, stop failure | ✅ covered | Each surfaces the error copy naming what failed and that nothing changed; no silent failure |
 | error | Edit conflict, insane body, lint problems | ✅ covered | Nothing is clobbered; the user's text is kept at `.DIRECTION.md.edit` with re-open, discard and keep keys |
 | error | Degraded host | ✅ covered | Sandboxed launch refused with the missing items named; unsandboxed only through the second confirmation |
@@ -847,7 +847,7 @@ four rows close the gaps the probe surfaced.
 | overflow | Height tiers at every height | 🧪 backstop | `TestBackend` sweep H = 1..=40 × W = 40/60/80/120: no rule or header without content beneath it, no rule on the bottom row (D-29), legacy detail included |
 | overflow | Cap row and header fixed widths at the 39-cell detail floor | 🧪 backstop | Rendered-buffer check at W = 60: every cap row's bar is complete and the `MISMATCH` / `UNSANDBOXED` tokens are not clipped |
 | long-text | Hostile frontmatter / LOG / DIRECTION text (ESC, C1, bidi) | 🧪 backstop | Render-escape-guard states for every new site: run row, header rows, item rows, connection rows, LOG tail, lint findings, answer echo, launch form |
-| partial | Stale heartbeat on a live-locked run vs a crashed run | 🧪 backstop | Fixture run dirs with the lock held by a test thread vs free: stale renders `◈ stale`, crashed renders `✗ crashed`, unknown renders `◇`, and the dashboard badge matches the class table |
+| partial | Stale heartbeat on a live-locked run vs a crashed run | 🧪 backstop | Fixture run dirs with the lock held by a test thread vs free: stale renders `⬖ stale`, crashed renders `✗ crashed`, unknown renders `◊`, and the dashboard badge matches the class table |
 | long-text | Item title longer than the row in MEDIUM at 60 columns | ⚠ unresolved | Ellipsised to whatever is left after the 27 fixed cells (about 12 at the floor). **Planner assumption:** the full title is readable via `[e]` (DIRECTION.md) and in FULL tier rows; no wrapping key is added |
 | empty | Dashboard badge, project with no launcher runs | ✅ covered | No driver class applies, so the badge falls through to the legacy and shipped ranks (4, 7-9) or none; no new glyph and no placeholder `[inferred — audit]` |
 | loading | Dashboard badge before the project's first `DriverRunsListed` | ✅ covered | Same as no runs: no driver-derived badge and no attention contribution until the first listing lands; never a guessed class `[inferred — audit]` |
@@ -878,6 +878,62 @@ four rows close the gaps the probe surfaced.
 - No reduction of `STATUS_COLUMN_MIN_CELLS` (13) and no change to the tab-bar tier constants.
 
 ---
+
+## Glyph width safety
+
+Added by quick 261021-1id `[inferred — audit]`. `src/ui/glyphs.rs` and this section are authoritative; the
+Phase 18/24/25 UI-SPECs keep the pre-swap glyphs as historical record.
+
+**Rule.** Every status glyph the TUI draws is one char that is East Asian Width Neutral, Narrow or Halfwidth
+(never Ambiguous, Wide or Fullwidth); is not `Emoji`, `Emoji_Presentation` or `Extended_Pictographic`; measures
+1 cell under both `unicode-width` `width` and `width_cjk`; and is covered by DejaVu Sans Mono. A terminal set to
+CJK or ambiguous-wide widths (or falling back to a CJK font) draws an Ambiguous glyph in 2 cells, and an
+emoji-capable glyph can switch to 2-cell emoji presentation, while ratatui counts 1: every later column in the
+row shifts. The `ui::glyphs` tests enforce the rule over the registry `ALL` (with a control that rejects all
+the former glyphs), and a production source scan over `src/ui/**`, `src/agents/{unmerged,waves}.rs` and
+`src/state_reader/git_ops.rs` proves nothing else draws a status glyph. One measured note: `icu_properties`
+2.3.0 does not list U+2691 as `Extended_Pictographic` (the Unicode 13 data does), so the control witnesses the
+property check with U+23F8 instead; U+2691 is replaced regardless.
+
+**Swap table** (one old codepoint maps to one new codepoint everywhere it is a status glyph):
+
+| Registry name | New | Replaces | Meaning |
+|---|---|---|---|
+| `LOZENGE_BLACK` | `⧫` U+29EB | U+25C6 | driven / live / running / starting / detail driver marker |
+| `DIAMOND_HALF_BLACK` | `⬖` U+2B16 | U+25C8 | stale (filled = live, half = stale, open = unknown) |
+| `LOZENGE_WHITE` | `◊` U+25CA | U+25C7 | liveness unknown / unreadable |
+| `ATTENTION` | `❢` U+2762 | U+2691 | parked / needs a human |
+| `DOUBLE_BAR` | `ǁ` U+01C1 | U+2016 | paused (draws as two bars) |
+| `BLACK_RECT` | `▮` U+25AE | U+25A0 | stopped / killed |
+| `CIRCLE_FILLED` | `◍` U+25CD | U+25CF | done / succeeded / acted on / roadmap done / git commit / selected option |
+| `CIRCLE_OPEN` | `◦` U+25E6 | U+25CB | unlaunched / pending / queued / roadmap ready / planned / git merge |
+| `CIRCLE_HALF` | `◒` U+25D2 | U+25D0 | unmerged / delivered |
+| `POINTER_RIGHT` | `►` U+25BA | U+25B6 | session / roadmap selected / Waves running |
+| `TRIANGLE_DOWN_SMALL` | `▾` U+25BE | U+25BC (roadmap widget) | open / expanded |
+| `ARROW_UP_DASHED` / `ARROW_DOWN_DASHED` | `⇡` U+21E1 / `⇣` U+21E3 | U+2191 / U+2193 as markers | roadmap dependency / unblocks |
+| `BULLET_OPERATOR` | `∙` U+2219 | U+00B7 as a marker | item unseen / roadmap implied / stderr marker / Waves queued |
+| `MIDLINE_ELLIPSIS` | `⋯` U+22EF | U+2026 as a stage mark | stage in progress |
+
+Unchanged and already safe: `✗` U+2717, `◉` U+25C9, `◌` U+25CC, `◷` U+25F7, `▸` U+25B8, `▾` U+25BE,
+`✓` U+2713, `‹` `›`, `»`, `⏎`. A skipped or not-started stage reads as an ASCII `-`.
+
+**Exemptions** (audited, kept, known limitations; both still draw 2 cells under ambiguous-wide settings):
+
+- STRUCTURAL, U+2500..=U+259F (box drawing and block elements: borders, rules, graph lanes, the caps bar
+  fill, the text cursor). ratatui's own `Block` borders and `Gauge` use this range, every terminal font carries
+  it, and no Narrow or Neutral equivalent exists.
+- TYPOGRAPHY, U+00B7, U+2013, U+2014, U+2026, U+2190, U+2191, U+2192, U+2193 inside composed text
+  (separators, truncation, ranges, key hints, scroll indicators). Replacing them needs an ASCII fallback
+  mode, which is new config (follow-up todo
+  `2026-10-21-ambiguous-wide-typography-borders-and-darkgray`).
+
+**DIM decision.** The Driver tab's Label and Muted roles (`label_style()` / `muted_style()`) are `Modifier::DIM`
+on the terminal's default foreground with no fg colour. DIM adapts to light and dark themes; bright-black
+(`Color::DarkGray`) equals the background in Solarized-Dark-family palettes, and ANSI white nearly vanishes on
+light ones. A terminal without SGR 2 shows the label at full intensity, which is still legible. Label and Muted
+now render the same; muted rows stay distinguishable by their parenthesised copy. The inert-state colour stays
+`Color::DarkGray` (unlaunched, stopped, pending, unseen, `[not live]`, killed): a state's colour is one third of
+its (glyph, word, colour) triple. The Driver popups' own `muted()` and the other tabs are out of scope.
 
 ## Registry Safety
 

@@ -176,8 +176,8 @@ its state and what to run next: `/gsd-execute-phase N` for a stale report
 VERIFICATION.md, fixing the YAML frontmatter in the report itself. Below the
 summary is the **Waves pane**: one row per plan, grouped by
 the `wave:` each PLAN.md declares. Every row shows a glyph and a state word —
-`✓ done`, `▶ running`, `◐ leftover` (finished in a worktree, not merged yet),
-`! stalled`, `· queued`, `○ planned` (a phase that is not the active one) —
+`✓ done`, `► running`, `◒ leftover` (finished in a worktree, not merged yet),
+`! stalled`, `∙ queued`, `◦ planned` (a phase that is not the active one) —
 then the plan id, its PLAN.md title and `act/est` tokens. The state comes
 from the running-agents scan for the active phase, and from the phase's own
 SUMMARY files otherwise; nothing is read from disk while the screen draws.
