@@ -20040,6 +20040,9 @@ mod tests {
     // ── 30-04: the steering keys on the Driver tab ───────────────────────────
 
     /// Give launcher run `index` a cached detail whose body says `control`.
+    ///
+    /// Linux-only, like every caller: the steering tests need `write_body`.
+    #[cfg(target_os = "linux")]
     fn give_control(ctx: &mut AppContext, index: usize, control: Option<&str>) {
         give_items(ctx, index);
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();

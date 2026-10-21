@@ -975,24 +975,33 @@ fn heartbeat_spans(
 
 /// Header row 3: the live control word (from the body) and the heartbeat.
 ///
+/// While the body has not been read (`Loading`) the value is `Loading...` in DarkGray;
+/// `(no control line)` in Yellow is only for a body that was read and has none (D-28:
+/// loading is not a warning).
+///
 /// When the pair does not fit, the control word gives way before the heartbeat does:
 /// first the heartbeat sheds its context tags (never `stale`), and the control word
 /// is cut to the room left, so a flag outlives a benign word.
 fn header_row_3(
     view: &DriverRunView,
-    body_control: Option<&str>,
+    body_control: BodyControl<'_>,
     now: SystemTime,
     width: usize,
 ) -> Line<'static> {
     let live = is_live(&view.derived);
-    let (word, suffix) = control_shown(body_control, view.frontmatter.control.as_deref(), live);
+    let fm_control = view.frontmatter.control.as_deref();
+    let (word, suffix) = match body_control {
+        BodyControl::Loading => (DRY_RUN_LOADING.to_owned(), None),
+        BodyControl::NoLine => control_shown(None, fm_control, live),
+        BodyControl::Word(word) => control_shown(Some(word), fm_control, live),
+    };
     let suffix_text = suffix.map(|s| format!(" {s}")).unwrap_or_default();
     let control_cells = Span::raw(word.as_str()).width() + Span::raw(suffix_text.as_str()).width();
     let sep_cells = Span::raw(HEADER_SEP).width();
-    let word_style = if body_control.is_none() {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
+    let word_style = match body_control {
+        BodyControl::Loading => muted_style(),
+        BodyControl::NoLine => Style::default().fg(Color::Yellow),
+        BodyControl::Word(_) => Style::default(),
     };
     let forms = [
         HeartbeatForm::Full,
@@ -1157,15 +1166,7 @@ pub fn header_rows(
     vec![
         header_row_1(entry, now, width),
         header_row_2(view, width),
-        header_row_3(
-            view,
-            match body_control {
-                BodyControl::Word(word) => Some(word),
-                BodyControl::Loading | BodyControl::NoLine => None,
-            },
-            now,
-            width,
-        ),
+        header_row_3(view, body_control, now, width),
         header_row_4(&view.frontmatter, width),
         header_row_5(&view.frontmatter, width),
         header_row_6(&view.frontmatter, width),
@@ -2525,8 +2526,10 @@ fn compose_selected(
 }
 
 /// What `i` says on the Driver tab since Phase 30 (D-02): the injection input is
-/// retired, and these are the keys that steer a run now.
-pub const INJECTION_RETIRED: &str = "Message injection is retired. Steer this run through DIRECTION.md: [c] control, [a] answer, [e] edit.";
+/// retired, and these are the keys that steer a run now. 54 cells, so it fits the
+/// 62-cell status room of an 80-column tab bar for the alias `proj` and the three keys
+/// stay visible (UI D4). `[inferred — audit]`
+pub const INJECTION_RETIRED: &str = "Injection is retired: use [c]ontrol, [a]nswer, [e]dit.";
 
 /// What a steering, launch or kill key says when the highlight is on a legacy run.
 pub const LEGACY_READ_ONLY: &str = "Legacy runs are read-only here.";
