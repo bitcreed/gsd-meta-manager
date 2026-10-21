@@ -9301,6 +9301,7 @@ mod tests {
         (app, rx, run_dir)
     }
 
+    #[cfg(target_os = "linux")]
     fn top_screen_name(app: &App) -> String {
         app.screen_stack
             .last()
