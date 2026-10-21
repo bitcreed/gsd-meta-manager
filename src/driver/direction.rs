@@ -476,7 +476,7 @@ pub fn sweep_stale_temps(run_dir: &Path, older_than: Duration) -> std::io::Resul
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod imp {
     use std::fs::{File, OpenOptions};
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -509,6 +509,16 @@ mod imp {
         DirectionError::Io {
             detail: format!("{context}: {err}"),
         }
+    }
+
+    /// Read a whole run-directory file through the guarded open: no symlink is
+    /// followed and a FIFO opens non-blocking and is refused as not a regular
+    /// file, so a planted entry cannot park the caller under the lock (T-30-04).
+    fn read_run_file(path: &Path) -> std::io::Result<Vec<u8>> {
+        let mut file = crate::state_reader::driver_frontmatter::open_run_file(path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
     }
 
     pub(super) fn splice(run_dir: &Path, fm: &str) -> Result<SpliceReport, DirectionError> {
@@ -599,7 +609,7 @@ mod imp {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(5 * u64::from(attempt)));
             }
-            let bytes = match std::fs::read(&target) {
+            let bytes = match read_run_file(&target) {
                 Ok(bytes) => bytes,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(SpliceOutcome::NoDirection)
@@ -649,7 +659,7 @@ mod imp {
 
             // D-23: compare BODY BYTES, not inode identity. An unreadable or
             // non-UTF-8 displaced file is a mismatch: give it back.
-            let displaced_matches = std::fs::read(&temp_path)
+            let displaced_matches = read_run_file(&temp_path)
                 .ok()
                 .and_then(|bytes| String::from_utf8(bytes).ok())
                 .is_some_and(|displaced| split_frontmatter(&displaced).1 == body);
@@ -670,7 +680,7 @@ mod imp {
                     errno,
                 ));
             }
-            match std::fs::read(&temp_path) {
+            match read_run_file(&temp_path) {
                 Ok(bytes) if bytes == new_content.as_bytes() => {
                     // Our own stale file: drop it and try again.
                     let _ = std::fs::remove_file(&temp_path);
