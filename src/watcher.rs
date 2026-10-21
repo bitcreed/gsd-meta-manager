@@ -52,6 +52,9 @@ fn extract_project_root(path: &Path) -> Option<&Path> {
 /// test without a live debouncer; without that extraction the regression above
 /// would ship silently.
 ///
+/// A path classified [`ChangeKind::Ignored`] emits nothing, and a
+/// [`ChangeKind::DriverRun`] path dedups per run (30-01, D-24).
+///
 /// [`classify_change`] is a **pure** function with no filesystem access (D-11),
 /// which is precisely what lets it run here: this body executes on the
 /// debouncer's callback thread, which has no runtime, no `App`, and no business
@@ -65,6 +68,12 @@ fn batch_actions<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Vec<Action> {
             continue;
         };
         let kind = classify_change(root, path);
+        // Nothing reads an `Ignored` path (the launcher's splice temps, `state.json`,
+        // the locks), so no action is built for it at all (T-30-03). Dropping it
+        // here, before the dedup set, also means it cannot occupy a dedup slot.
+        if kind == ChangeKind::Ignored {
+            continue;
+        }
         if seen.insert((root.to_path_buf(), kind)) {
             actions.push(Action::FileChanged {
                 project_path: root.to_path_buf(),
@@ -239,6 +248,51 @@ mod tests {
         // half of the old behaviour worth keeping.
         let collapsed = fold(&[state_md, root.join(".planning/ROADMAP.md")]);
         assert_eq!(collapsed.len(), 1);
+    }
+
+    #[test]
+    fn an_ignored_drivers_path_emits_no_event() {
+        let root = PathBuf::from(ROOT);
+        let run = ".planning/meta-manager/drivers/20261020-a";
+        let actions = fold(&[
+            root.join(format!("{run}/state.json")),
+            root.join(format!("{run}/.DIRECTION.md.fm.abc123")),
+            root.join(format!("{run}/.DIRECTION.md.edit")),
+            root.join(format!("{run}/launcher.lock")),
+            root.join(format!("{run}/DIRECTION.lock")),
+            root.join(".planning/meta-manager/drivers"),
+        ]);
+        assert!(
+            actions.is_empty(),
+            "an Ignored path must not become an action; got {:?}",
+            changed_paths(&actions)
+        );
+    }
+
+    #[test]
+    fn a_runs_log_then_direction_emit_one_action_for_that_run() {
+        let root = PathBuf::from(ROOT);
+        let run = ".planning/meta-manager/drivers/20261020-a";
+        let log = root.join(format!("{run}/LOG.md"));
+        let actions = fold(&[
+            log.clone(),
+            root.join(format!("{run}/state.json")),
+            root.join(format!("{run}/DIRECTION.md")),
+        ]);
+        assert_eq!(
+            changed_paths(&actions),
+            vec![log.as_path()],
+            "two files of one run collapse to one refresh, and state.json adds none"
+        );
+
+        // A second run is a second refresh; a planning write beside them survives.
+        let other = root.join(".planning/meta-manager/drivers/20261020-b/DIRECTION.md");
+        let state_md = root.join(".planning/STATE.md");
+        let actions = fold(&[log.clone(), other.clone(), state_md.clone()]);
+        assert_eq!(
+            changed_paths(&actions),
+            vec![log.as_path(), other.as_path(), state_md.as_path()]
+        );
     }
 
     #[test]

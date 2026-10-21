@@ -1096,6 +1096,24 @@ pub enum ChangeKind {
         /// The run directory's name, which is the run id.
         run_id: String,
     },
+    /// A change to a launcher run's own files under
+    /// `.planning/meta-manager/drivers/<run-id>/` (30-01, D-24): the run directory
+    /// itself appearing or disappearing, its `DIRECTION.md`, or its `LOG.md`.
+    /// Routes to a launcher-run refresh for that run, never to a project re-parse
+    /// (OBS-06): the launcher writes these files often, and none of them is
+    /// planning state.
+    DriverRun {
+        /// The run directory's name, which is the run id.
+        run_id: String,
+    },
+    /// A path under `.planning/meta-manager/drivers/` that no consumer reads: the
+    /// splice temps `.DIRECTION.md.fm.*`, `.DIRECTION.md.edit`, `state.json`,
+    /// `launcher.lock`, `DIRECTION.lock`, editor swap files, anything deeper, and
+    /// the bare `drivers` directory itself. Dropped before an action is built
+    /// (T-30-03): the splice alone rewrites its temp and `state.json` on every
+    /// heartbeat, and a re-parse per heartbeat is the denial of service this
+    /// variant exists to stop.
+    Ignored,
     /// Everything else. Keeps today's re-parse behaviour.
     Planning,
 }
@@ -1122,6 +1140,13 @@ pub enum ChangeKind {
 /// A path *directly* under `runs/` — the shared `.gitignore`, the `active`
 /// pointer, or the run directory itself — is `Planning`: it names no run, so
 /// there is no `run_id` to carry, and there is no journal to tail.
+///
+/// **`.planning/meta-manager/drivers/` is an ALLOWLIST (30-01, D-24).** The
+/// run directory (`drivers/<id>`), `drivers/<id>/DIRECTION.md` and
+/// `drivers/<id>/LOG.md` are [`ChangeKind::DriverRun`]; every other shape under
+/// `drivers/` is [`ChangeKind::Ignored`], so a file added to a run directory later
+/// is silent until someone decides it should not be. The same three-component
+/// anchor applies: a project's own `.planning/drivers/` stays `Planning`.
 pub fn classify_change(project_root: &Path, changed_path: &Path) -> ChangeKind {
     let Ok(relative) = changed_path.strip_prefix(project_root) else {
         // Not under this project at all.
@@ -1150,6 +1175,23 @@ pub fn classify_change(project_root: &Path, changed_path: &Path) -> ChangeKind {
     {
         return ChangeKind::DriverJournal {
             run_id: parts[3].to_string(),
+        };
+    }
+
+    if parts.len() >= 3
+        && parts[0] == ".planning"
+        && parts[1] == "meta-manager"
+        && parts[2] == "drivers"
+    {
+        return match parts.as_slice() {
+            [_, _, _, run_id] | [_, _, _, run_id, "DIRECTION.md" | "LOG.md"] => {
+                ChangeKind::DriverRun {
+                    run_id: (*run_id).to_string(),
+                }
+            }
+            // The bare `drivers` directory, a splice temp, `state.json`, a lock,
+            // an editor swap file, a deeper path: nothing reads them.
+            _ => ChangeKind::Ignored,
         };
     }
 
@@ -2284,6 +2326,73 @@ mod tests {
                 classify_change(root, &root.join(case)),
                 ChangeKind::Planning,
                 "{case} must not classify as a driver journal write"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_change_routes_driver_run_paths() {
+        let root = Path::new("/home/user/projects/myapp");
+        let run_id = "20261020-driver-tab";
+        let cases = [
+            // The run directory appearing or disappearing.
+            ".planning/meta-manager/drivers/20261020-driver-tab",
+            ".planning/meta-manager/drivers/20261020-driver-tab/DIRECTION.md",
+            ".planning/meta-manager/drivers/20261020-driver-tab/LOG.md",
+        ];
+        for case in cases {
+            assert_eq!(
+                classify_change(root, &root.join(case)),
+                ChangeKind::DriverRun {
+                    run_id: run_id.to_string()
+                },
+                "{case} must classify as a driver run change"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_change_ignores_every_other_drivers_path() {
+        let root = Path::new("/home/user/projects/myapp");
+        let run = ".planning/meta-manager/drivers/20261020-driver-tab";
+        let cases = [
+            format!("{run}/state.json"),
+            format!("{run}/.DIRECTION.md.fm.abc"),
+            format!("{run}/.DIRECTION.md.edit"),
+            format!("{run}/launcher.lock"),
+            format!("{run}/DIRECTION.lock"),
+            format!("{run}/.DIRECTION.md.edit.swp"),
+            format!("{run}/a/b/c"),
+            // Deeper paths named like the allowed files are still deeper paths.
+            format!("{run}/a/DIRECTION.md"),
+            format!("{run}/LOG.md/x"),
+            // The bare drivers directory itself (inferred: it names no run).
+            ".planning/meta-manager/drivers".to_string(),
+        ];
+        for case in cases {
+            assert_eq!(
+                classify_change(root, &root.join(&case)),
+                ChangeKind::Ignored,
+                "{case} must be ignored"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_change_keeps_a_project_owned_drivers_dir_as_planning() {
+        let root = Path::new("/home/user/projects/myapp");
+        // No `meta-manager` component: the project's own directory, whose writes
+        // must keep re-parsing the project.
+        for case in [
+            ".planning/drivers/x/DIRECTION.md",
+            ".planning/drivers/x",
+            "drivers/x/DIRECTION.md",
+            ".planning/meta-manager/QUEUE.md",
+        ] {
+            assert_eq!(
+                classify_change(root, &root.join(case)),
+                ChangeKind::Planning,
+                "{case} is not the launcher's drivers directory"
             );
         }
     }

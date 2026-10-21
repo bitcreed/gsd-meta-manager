@@ -1423,6 +1423,25 @@ impl App {
                             // 200ms watcher debounce already floors the rate.
                             self.schedule_journal_tail(&alias, &project_path, &run_id);
                         }
+                        // A launcher run's own files (30-01, D-24). Refreshes the
+                        // launcher list for the alias whose Driver tab is open and
+                        // does NOTHING ELSE: no re-parse (OBS-06), no `last_refresh`
+                        // entry, so a heartbeat-rate stream of these cannot starve
+                        // a genuine STATE.md re-parse of its 500 ms window.
+                        crate::journal::ChangeKind::DriverRun { .. } => {
+                            let on_top = self.screen_stack.last().is_some_and(|top| {
+                                driver_tab_is_on_top(
+                                    top.name(),
+                                    self.ctx.detail_sub_view_per_project.get(&alias),
+                                )
+                            });
+                            if on_top && self.ctx.selected_alias().as_deref() == Some(&alias) {
+                                self.ctx.schedule_launcher_refresh(&alias, &project_path);
+                            }
+                        }
+                        // The splice temps, `state.json`, the locks, editor swap
+                        // files: nothing reads them, so nothing refreshes (T-30-03).
+                        crate::journal::ChangeKind::Ignored => {}
                         crate::journal::ChangeKind::Planning => {
                             // The Archive tab reloads in place, and AHEAD of the
                             // dedup below rather than behind it: the dedup drops
@@ -4303,6 +4322,69 @@ mod tests {
         app.ctx.schedule_launcher_refresh(OBS_ALIAS, dir.path());
         let message = app.ctx.error_message.clone().expect("a visible refusal");
         assert!(message.contains(OBS_ALIAS), "{message}");
+    }
+
+    fn run_file_change(root: &std::path::Path, file: &str) -> Action {
+        Action::FileChanged {
+            project_path: root.to_path_buf(),
+            changed_path: root
+                .join(".planning/meta-manager/drivers")
+                .join(LAUNCHER_RUN)
+                .join(file),
+        }
+    }
+
+    /// D-24 / OBS-06: a launcher run's own files refresh the launcher list and never
+    /// re-parse the project.
+    #[tokio::test]
+    async fn launcher_view_a_driver_run_event_refreshes_without_a_reparse() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+
+        app.update(run_file_change(dir.path(), "DIRECTION.md"));
+
+        let rows = launcher_listing_reported(&mut rx)
+            .await
+            .expect("an event under the run directory must re-list the launcher runs");
+        assert_eq!(rows[0].0, LAUNCHER_RUN);
+        assert_eq!(app.ctx.reparse_dispatches, 0, "no full project re-parse");
+        assert!(
+            !app.ctx.last_refresh.contains_key(OBS_ALIAS),
+            "the driver route must not share the planning route's 500 ms dedup"
+        );
+    }
+
+    /// The same event for a tab that is not open schedules nothing.
+    #[tokio::test]
+    async fn launcher_view_a_driver_run_event_with_the_tab_closed_schedules_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx.recompute_filtered_aliases();
+        app.ctx.table_state.select(Some(0));
+
+        app.update(run_file_change(dir.path(), "LOG.md"));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(rx.try_recv().is_err(), "the dashboard is on top");
+        assert_eq!(app.ctx.reparse_dispatches, 0);
+    }
+
+    /// The splice rewrites `state.json` on every heartbeat; none of it may cost a
+    /// listing, let alone a re-parse (T-30-03).
+    #[tokio::test]
+    async fn launcher_view_a_state_json_event_schedules_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        launcher_project(dir.path());
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+
+        for file in ["state.json", ".DIRECTION.md.fm.abc", "launcher.lock"] {
+            app.update(run_file_change(dir.path(), file));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(rx.try_recv().is_err(), "an Ignored path schedules no work");
+        assert_eq!(app.ctx.reparse_dispatches, 0);
+        assert!(app.ctx.last_refresh.is_empty());
     }
 
     /// The gate really refuses: a dashboard with no Driver tab open pays nothing
