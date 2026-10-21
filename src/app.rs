@@ -545,6 +545,35 @@ fn phase_display_label(state: &ProjectState) -> String {
     format!("P{}: {}", phase_num, phase_name)
 }
 
+/// How the user's editor ended, as the main loop saw it (30-04, D-17).
+///
+/// Built by `src/main.rs` from the child's `ExitStatus` or spawn error and handed to
+/// [`App::after_editor`], so the library, not the loop, decides what a failed editor
+/// means for an edit temp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorExit {
+    /// The editor exited with status 0.
+    Success,
+    /// The editor exited unsuccessfully; the string is the status as displayed.
+    Failed(String),
+    /// The editor could not be started; the string is the program and the error.
+    SpawnError(String),
+}
+
+/// One open editor session on a run's DIRECTION.md body (30-04, D-17).
+///
+/// Recorded when the temp is ready and keyed by the temp's path in
+/// [`App::edit_sessions`]. `base` is the body the editor session started from, which
+/// the apply checks the live body against; `run_dir` is where the temp lives and where
+/// the write goes. Plan data, so a later plan's new-run flow chains the same session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditSession {
+    pub alias: String,
+    pub run_id: String,
+    pub run_dir: PathBuf,
+    pub base: String,
+}
+
 pub struct App {
     pub should_quit: bool,
     pub needs_redraw: bool,
@@ -555,6 +584,9 @@ pub struct App {
     /// When set, the main loop should suspend the TUI and open this file in
     /// $EDITOR, at the 1-based line when one is carried (see [`editor_args`]).
     pub pending_editor: Option<(PathBuf, Option<usize>)>,
+    /// The DIRECTION.md edit sessions awaiting their editor's exit, keyed by the temp's
+    /// path (30-04, D-17). A path here is what makes [`App::after_editor`] apply it.
+    pub edit_sessions: HashMap<PathBuf, EditSession>,
     /// The DESIRED terminal mouse-capture state (quick 260926-dyf, D-06).
     ///
     /// Initialised from `preferences.mouse` and flipped by `M`; the binary's
@@ -616,6 +648,63 @@ impl App {
             cache.reload_archive_file_if(edited);
         }
         self.needs_redraw = true;
+    }
+
+    /// Called by the main loop when the editor returns (30-04, D-17): the shipped
+    /// refresh of any cached file, then, for a path that is an open DIRECTION.md edit
+    /// session, the next step.
+    ///
+    /// A clean exit dispatches the apply on `spawn_blocking` (the library compares the
+    /// base, lints and writes under the lock; nothing blocking happens here). A failed
+    /// editor or a spawn error writes nothing, keeps the temp and says where the text
+    /// is. A GUI editor that returns at once looks like a clean exit with an unchanged
+    /// file, which the apply answers as "no changes" (RESEARCH Pitfall 7).
+    pub fn after_editor(&mut self, path: &Path, exit: EditorExit) {
+        self.refresh_after_editor(path);
+        let Some(session) = self.edit_sessions.get(path).cloned() else {
+            return;
+        };
+        match exit {
+            EditorExit::Success => {
+                self.start_apply(path.to_path_buf(), &session, false);
+            }
+            EditorExit::Failed(status) | EditorExit::SpawnError(status) => {
+                self.edit_sessions.remove(path);
+                self.ctx.error_message = Some(
+                    crate::ui::screens::driver_steer::editor_failed_message(&status, path),
+                );
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    /// Apply the edit of `session` on `spawn_blocking` and answer
+    /// [`Action::DriverEditDone`]. The temp stays on disk until the library says it was
+    /// applied or found unchanged.
+    fn start_apply(&mut self, temp: PathBuf, session: &EditSession, accept_lint: bool) {
+        let Some(tx) = self.ctx.event_tx.clone() else {
+            self.refuse_steering(format!(
+                "Could not write DIRECTION.md for '{}': this session has no event channel. Nothing was written. Your text is kept at {}.",
+                crate::text::render_for_terminal(&session.alias),
+                crate::text::render_for_terminal(&temp.display().to_string())
+            ));
+            return;
+        };
+        let session = session.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = crate::driver::steer::apply_edit(
+                &session.run_dir,
+                &temp,
+                &session.base,
+                accept_lint,
+            );
+            let _ = tx.send(Action::DriverEditDone {
+                alias: session.alias,
+                run_id: session.run_id,
+                temp,
+                outcome,
+            });
+        });
     }
 
     pub fn new(config_path: PathBuf) -> anyhow::Result<Self> {
@@ -706,6 +795,7 @@ impl App {
             active_sessions: Vec::new(),
             session_poll_counter: 0,
             pending_editor: None,
+            edit_sessions: HashMap::new(),
             mouse_capture,
             click_tracker: crate::ui::mouse::ClickTracker::default(),
         }
@@ -1112,37 +1202,51 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Run one steering edit (30-04, D-14, D-15, D-25).
-    ///
-    /// **The only DIRECTION.md write the Driver tab makes besides the editor apply:**
-    /// `steer::steer_run`, a `write_body` closure under `DIRECTION.lock` that keeps
-    /// the `---` tool block byte-identical, on `spawn_blocking`. The key handler that
-    /// asked for it touched no file. On a build that cannot steer (not Linux) the
-    /// request is refused here with the read-only copy, whatever reached this arm.
-    fn request_steer(&mut self, alias: &str, run_id: &str, op: crate::driver::steer::SteerOp) {
+    /// What every Driver-tab DIRECTION.md write needs before it can start: the
+    /// experimental gate, a build that can write (Linux), a registered project, a run
+    /// id that names a plain directory, and a channel to report back on. Each failure
+    /// is refused visibly (S4) except the gate, which is silent like the stop path.
+    fn steering_target(
+        &mut self,
+        alias: &str,
+        run_id: &str,
+    ) -> Option<(PathBuf, UnboundedSender<Action>)> {
         if !self.ctx.experimental {
-            return;
+            return None;
         }
         if !crate::ui::screens::driver_steer::can_steer() {
             self.refuse_steering(
                 crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string(),
             );
-            return;
+            return None;
         }
-        let Some(path) = self.project_path_for(alias) else {
-            return;
-        };
+        let path = self.project_path_for(alias)?;
         let Some(run_dir) = Self::launcher_run_dir(&path, run_id) else {
             self.refuse_steering(format!(
                 "Could not write DIRECTION.md: '{}' is not a run directory name. Nothing was written.",
                 crate::text::render_for_terminal(run_id)
             ));
-            return;
+            return None;
         };
         let Some(tx) = self.ctx.event_tx.clone() else {
             self.refuse_steering(format!(
-                "Could not write DIRECTION.md for '{alias}': this session has no event channel. Nothing was written."
+                "Could not write DIRECTION.md for '{}': this session has no event channel. Nothing was written.",
+                crate::text::render_for_terminal(alias)
             ));
+            return None;
+        };
+        Some((run_dir, tx))
+    }
+
+    /// Run one steering edit (30-04, D-14, D-15, D-25).
+    ///
+    /// **One of two DIRECTION.md writes the Driver tab makes** (the other is the editor
+    /// apply): `steer::steer_run`, a `write_body` closure under `DIRECTION.lock` that
+    /// keeps the `---` tool block byte-identical, on `spawn_blocking`. The key handler
+    /// that asked for it touched no file. On a build that cannot steer (not Linux) the
+    /// request is refused here with the read-only copy, whatever reached this arm.
+    fn request_steer(&mut self, alias: &str, run_id: &str, op: crate::driver::steer::SteerOp) {
+        let Some((run_dir, tx)) = self.steering_target(alias, run_id) else {
             return;
         };
         let (alias, run_id) = (alias.to_string(), run_id.to_string());
@@ -1155,6 +1259,155 @@ impl App {
                 outcome,
             });
         });
+    }
+
+    /// `e`: make the body-only edit temp (30-04, D-17) on `spawn_blocking`. The result
+    /// is [`Action::DriverEditReady`] (the editor opens), [`Action::DriverEditStale`]
+    /// (an earlier temp is there; it is never overwritten) or
+    /// [`Action::DriverEditFailed`]. `DIRECTION.lock` is not held: the lock exists for
+    /// single writes, not for an editor session.
+    fn request_edit(&mut self, alias: &str, run_id: &str) {
+        let Some((run_dir, tx)) = self.steering_target(alias, run_id) else {
+            return;
+        };
+        let (alias, run_id) = (alias.to_string(), run_id.to_string());
+        tokio::task::spawn_blocking(move || {
+            use crate::driver::steer::{prepare_edit, PrepareError};
+            let action = match prepare_edit(&run_dir) {
+                Ok(prepared) => Action::DriverEditReady {
+                    alias,
+                    run_id,
+                    temp: prepared.temp,
+                    base: prepared.base,
+                },
+                Err(PrepareError::StaleTemp(temp)) => Action::DriverEditStale {
+                    alias,
+                    run_id,
+                    temp,
+                },
+                Err(PrepareError::Read(error) | PrepareError::Create(error)) => {
+                    Action::DriverEditFailed {
+                        alias,
+                        run_id,
+                        error,
+                    }
+                }
+            };
+            let _ = tx.send(action);
+        });
+    }
+
+    /// `r` in the edit chooser: read the live body NOW and answer
+    /// [`Action::DriverEditReady`] with it as the new base, over the kept temp. The
+    /// user's text is untouched; saving it will replace what changed meanwhile.
+    fn request_reopen(&mut self, alias: &str, run_id: &str) {
+        let Some((run_dir, tx)) = self.steering_target(alias, run_id) else {
+            return;
+        };
+        let (alias, run_id) = (alias.to_string(), run_id.to_string());
+        tokio::task::spawn_blocking(move || {
+            let temp = run_dir.join(crate::driver::steer::EDIT_TEMP_NAME);
+            let kept = std::fs::symlink_metadata(&temp).is_ok_and(|m| m.file_type().is_file());
+            let action = if !kept {
+                Action::DriverEditFailed {
+                    alias,
+                    run_id,
+                    error: "the kept text is no longer there".to_string(),
+                }
+            } else {
+                match crate::driver::steer::live_body(&run_dir) {
+                    Ok(base) => Action::DriverEditReady {
+                        alias,
+                        run_id,
+                        temp,
+                        base,
+                    },
+                    Err(error) => Action::DriverEditFailed {
+                        alias,
+                        run_id,
+                        error,
+                    },
+                }
+            };
+            let _ = tx.send(action);
+        });
+    }
+
+    /// `d` in the edit chooser: remove the kept temp. The path comes from the run
+    /// directory, never from the action, so only `<run>/.DIRECTION.md.edit` can go.
+    fn request_discard(&mut self, alias: &str, run_id: &str) {
+        let Some((run_dir, tx)) = self.steering_target(alias, run_id) else {
+            return;
+        };
+        self.edit_sessions
+            .retain(|_, session| !(session.alias == alias && session.run_id == run_id));
+        let (alias, run_id) = (alias.to_string(), run_id.to_string());
+        tokio::task::spawn_blocking(move || {
+            let error = crate::driver::steer::discard_edit(&run_dir).err();
+            let _ = tx.send(Action::DriverEditDiscarded {
+                alias,
+                run_id,
+                error,
+            });
+        });
+    }
+
+    /// Show a finished edit apply (30-04, D-17): a status line for the outcomes that
+    /// need no screen, the chooser for a conflict or an insane body, and the lint
+    /// confirmation for `driver check` problems. Only an applied or unchanged edit ends
+    /// the session and re-reads the run; the others keep the temp.
+    fn finish_edit(
+        &mut self,
+        alias: &str,
+        run_id: &str,
+        temp: PathBuf,
+        outcome: crate::driver::steer::EditOutcome,
+    ) {
+        use crate::driver::steer::EditOutcome;
+        use crate::ui::screens::driver_steer::{
+            edit_done_message, ChooserReason, EditChooserScreen, EditLintConfirmScreen,
+        };
+        match &outcome {
+            EditOutcome::Conflict | EditOutcome::Insane => {
+                self.edit_sessions.remove(&temp);
+                let reason = if matches!(outcome, EditOutcome::Conflict) {
+                    ChooserReason::Conflict
+                } else {
+                    ChooserReason::Insane
+                };
+                self.screen_stack.push(Box::new(EditChooserScreen::new(
+                    alias.to_string(),
+                    run_id.to_string(),
+                    temp,
+                    reason,
+                )));
+            }
+            EditOutcome::LintProblems(findings) => {
+                self.screen_stack.push(Box::new(EditLintConfirmScreen::new(
+                    alias.to_string(),
+                    run_id.to_string(),
+                    temp,
+                    findings.clone(),
+                )));
+            }
+            other => {
+                self.edit_sessions.remove(&temp);
+                if let Some((text, is_error)) = edit_done_message(other, &temp) {
+                    if is_error {
+                        self.ctx.error_message = Some(text);
+                    } else {
+                        self.ctx.status_message = Some((text, std::time::Instant::now()));
+                    }
+                }
+                if !matches!(other, EditOutcome::Failed(_)) {
+                    if let Some(path) = self.ctx.config.projects.get(alias).map(|p| p.path.clone())
+                    {
+                        self.ctx.schedule_selected_run_refresh(alias, &path, run_id);
+                    }
+                }
+            }
+        }
+        self.needs_redraw = true;
     }
 
     /// Show a finished steering write and schedule the re-read that makes the header
@@ -2275,6 +2528,120 @@ impl App {
                 outcome,
             } => {
                 self.finish_steer(&alias, &run_id, &op, &outcome);
+            }
+            // 30-04, D-17: edit DIRECTION.md's body in the user's editor. The temp is
+            // made and applied off the render thread; the library holds the no-clobber
+            // rule. Every arm that reaches a write has its non-Linux refusal in
+            // `steering_target`.
+            Action::DriverEditRequested { alias, run_id } => {
+                self.request_edit(&alias, &run_id);
+            }
+            Action::DriverEditReady {
+                alias,
+                run_id,
+                temp,
+                base,
+            } => {
+                let run_dir = self
+                    .ctx
+                    .config
+                    .projects
+                    .get(&alias)
+                    .and_then(|project| Self::launcher_run_dir(&project.path, &run_id));
+                if let Some(run_dir) = run_dir {
+                    self.edit_sessions.insert(
+                        temp.clone(),
+                        EditSession {
+                            alias,
+                            run_id,
+                            run_dir,
+                            base,
+                        },
+                    );
+                    self.pending_editor = Some((temp, None));
+                    self.needs_redraw = true;
+                }
+            }
+            Action::DriverEditStale {
+                alias,
+                run_id,
+                temp,
+            } => {
+                self.screen_stack.push(Box::new(
+                    crate::ui::screens::driver_steer::EditChooserScreen::new(
+                        alias,
+                        run_id,
+                        temp,
+                        crate::ui::screens::driver_steer::ChooserReason::Stale,
+                    ),
+                ));
+                self.needs_redraw = true;
+            }
+            Action::DriverEditFailed {
+                alias: _,
+                run_id: _,
+                error,
+            } => {
+                self.ctx.error_message = Some(format!(
+                    "Could not start the edit: {}. DIRECTION.md was not changed.",
+                    crate::text::render_for_terminal(&error)
+                ));
+                self.needs_redraw = true;
+            }
+            Action::DriverEditReopen {
+                alias,
+                run_id,
+                temp: _,
+            } => {
+                self.request_reopen(&alias, &run_id);
+            }
+            Action::DriverEditApply { temp, accept_lint } => {
+                match self.edit_sessions.get(&temp).cloned() {
+                    Some(session) => self.start_apply(temp, &session, accept_lint),
+                    None => {
+                        self.ctx.error_message = Some(
+                            "That edit is no longer open, so nothing was applied. Press [e] to start again."
+                                .to_string(),
+                        );
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+            Action::DriverEditDone {
+                alias,
+                run_id,
+                temp,
+                outcome,
+            } => {
+                self.finish_edit(&alias, &run_id, temp, outcome);
+            }
+            Action::DriverEditDiscard {
+                alias,
+                run_id,
+                temp: _,
+            } => {
+                self.request_discard(&alias, &run_id);
+            }
+            Action::DriverEditDiscarded {
+                alias: _,
+                run_id: _,
+                error,
+            } => {
+                match error {
+                    None => {
+                        self.ctx.status_message = Some((
+                            "Discarded your edit. DIRECTION.md was not changed.".to_string(),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                    Some(error) => {
+                        self.ctx.error_message = Some(format!(
+                            "Could not discard your edit: {}. DIRECTION.md was not changed.",
+                            crate::text::render_for_terminal(&error)
+                        ));
+                    }
+                }
+                self.needs_redraw = true;
             }
             // ── The Driver surface's four messages ────────────────────
             //
@@ -7973,5 +8340,444 @@ mod tests {
             "{message}"
         );
         assert!(app.ctx.status_message.is_none(), "not reported as success");
+    }
+
+    // ── 30-04: editing DIRECTION.md in the user's editor ────────────────────
+
+    /// The path of run `LAUNCHER_RUN`'s edit temp under `root`.
+    #[cfg(target_os = "linux")]
+    fn edit_temp(root: &std::path::Path) -> PathBuf {
+        root.join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(LAUNCHER_RUN)
+            .join(crate::driver::steer::EDIT_TEMP_NAME)
+    }
+
+    /// A launcher run holding a lint-clean body (so an edit applies without the
+    /// confirmation), the tab open on it with its detail loaded.
+    #[cfg(target_os = "linux")]
+    async fn edit_fixture(
+        root: &std::path::Path,
+    ) -> (
+        App,
+        tokio::sync::mpsc::UnboundedReceiver<Action>,
+        PathBuf,
+        String,
+    ) {
+        let run_dir = root
+            .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+            .join(LAUNCHER_RUN);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let block = crate::driver::steer::tests::write_run(
+            &run_dir,
+            &crate::driver::steer::tests::clean_body(),
+        );
+        let (mut app, mut rx) = app_on_the_driver_tab(root);
+        app.update(run_file_change(root, "DIRECTION.md"));
+        deliver_launcher_refresh(&mut app, &mut rx).await;
+        (app, rx, run_dir, block)
+    }
+
+    /// `e`, through the key handler and the App, until the editor would open: the
+    /// temp exists, holds the body, and `pending_editor` names it.
+    #[cfg(target_os = "linux")]
+    async fn open_the_editor(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+    ) -> PathBuf {
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        let request = next_matching(rx, |a| matches!(a, Action::DriverEditRequested { .. })).await;
+        app.update(request);
+        let ready = next_matching(rx, |a| matches!(a, Action::DriverEditReady { .. })).await;
+        app.update(ready);
+        let (temp, line) = app.pending_editor.take().expect("the editor is requested");
+        assert_eq!(line, None);
+        temp
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_e_hands_the_body_only_temp_to_the_editor_and_applies_a_clean_save() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir, block) = edit_fixture(dir.path()).await;
+        let clean = crate::driver::steer::tests::clean_body();
+
+        let temp = open_the_editor(&mut app, &mut rx).await;
+        assert_eq!(temp, edit_temp(dir.path()));
+        assert_eq!(std::fs::read_to_string(&temp).unwrap(), clean);
+        let session = app.edit_sessions.get(&temp).expect("a session").clone();
+        assert_eq!(session.base, clean);
+        assert_eq!(session.run_dir, run_dir);
+
+        // The editor saved a change (simulated: no process is spawned in src/).
+        let edited = clean.replace("Prove the edit flow.", "Prove the edit flow twice.");
+        std::fs::write(&temp, &edited).unwrap();
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+
+        assert_eq!(
+            app.ctx.status_message.clone().expect("status").0,
+            "DIRECTION.md updated. The driver re-reads it before its next dispatch."
+        );
+        let text = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        let (fm, body) = crate::driver::direction::split_frontmatter(&text);
+        assert_eq!(fm, Some(block.as_str()), "the tool block is byte-identical");
+        assert_eq!(body, edited);
+        assert!(!temp.exists(), "an applied temp is removed");
+        assert!(app.edit_sessions.is_empty(), "and the session ends");
+        // The run is re-read, so the new body shows without waiting for the watcher.
+        assert!(matches!(
+            next_matching(&mut rx, |a| matches!(
+                a,
+                Action::LauncherRunRefreshed { .. }
+            ))
+            .await,
+            Action::LauncherRunRefreshed { .. }
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_a_save_that_changed_nothing_writes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir, _block) = edit_fixture(dir.path()).await;
+        let before = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        let temp = open_the_editor(&mut app, &mut rx).await;
+        // A GUI editor that returned at once looks exactly like this (Pitfall 7).
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        assert_eq!(
+            app.ctx.status_message.clone().expect("status").0,
+            "No changes to DIRECTION.md. Nothing was written."
+        );
+        assert!(!temp.exists());
+        assert_eq!(
+            std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap(),
+            before
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_a_failed_editor_keeps_the_temp_and_writes_nothing() {
+        for exit in [
+            EditorExit::Failed("exit status: 1".to_string()),
+            EditorExit::SpawnError("nano: No such file or directory (os error 2)".to_string()),
+        ] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (mut app, mut rx, run_dir, _block) = edit_fixture(dir.path()).await;
+            let before = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+            let temp = open_the_editor(&mut app, &mut rx).await;
+            let edited = crate::driver::steer::tests::clean_body().replace("Prove it", "Mine");
+            std::fs::write(&temp, &edited).unwrap();
+
+            let status = match &exit {
+                EditorExit::Failed(s) | EditorExit::SpawnError(s) => s.clone(),
+                EditorExit::Success => unreachable!(),
+            };
+            app.after_editor(&temp, exit);
+            assert_eq!(
+                app.ctx.error_message.clone().expect("a message"),
+                format!(
+                    "The editor exited with {status}. Nothing was written. Your text is kept at {}.",
+                    temp.display()
+                )
+            );
+            assert!(temp.exists(), "the user's text is kept");
+            assert_eq!(std::fs::read_to_string(&temp).unwrap(), edited);
+            assert_eq!(
+                std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap(),
+                before,
+                "nothing was written"
+            );
+            assert!(app.edit_sessions.is_empty());
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            while let Ok(action) = rx.try_recv() {
+                assert!(
+                    !matches!(action, Action::DriverEditDone { .. }),
+                    "a failed editor dispatches no apply"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_a_path_that_is_not_a_session_is_only_refreshed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, _run_dir, _block) = edit_fixture(dir.path()).await;
+        app.after_editor(&dir.path().join("notes.md"), EditorExit::Success);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "no apply for a file we did not prepare"
+        );
+        assert!(app.ctx.error_message.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_a_conflict_opens_the_chooser_and_reopen_rebases_on_the_live_body() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir, block) = edit_fixture(dir.path()).await;
+        let clean = crate::driver::steer::tests::clean_body();
+        let temp = open_the_editor(&mut app, &mut rx).await;
+        let mine = clean.replace("Prove it", "My title");
+        std::fs::write(&temp, &mine).unwrap();
+
+        // Someone else saves while the editor is open.
+        let racing = clean.replace("It works.", "It works!");
+        crate::driver::direction::write_body(&run_dir, |_| racing.clone()).unwrap();
+
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("driver_edit_chooser")
+        );
+        let text = render_top_screen(&app);
+        assert!(
+            text.contains("Not applied: DIRECTION.md changed while you were editing."),
+            "{text}"
+        );
+        assert!(temp.exists(), "the user's text is kept");
+        assert!(
+            std::fs::read_to_string(run_dir.join("DIRECTION.md"))
+                .unwrap()
+                .ends_with(&racing),
+            "the other change stands"
+        );
+
+        // `r`: the kept text is opened again against the body as it is NOW.
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        let reopen = next_matching(&mut rx, |a| matches!(a, Action::DriverEditReopen { .. })).await;
+        app.update(reopen);
+        let ready = next_matching(&mut rx, |a| matches!(a, Action::DriverEditReady { .. })).await;
+        app.update(ready);
+        let (reopened, _) = app.pending_editor.take().expect("the editor opens again");
+        assert_eq!(reopened, temp);
+        assert_eq!(
+            app.edit_sessions[&temp].base, racing,
+            "the live body is the new base"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&temp).unwrap(),
+            mine,
+            "the text is untouched"
+        );
+
+        // Saving now replaces the other change, which is what the chooser said.
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        let text = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        let (fm, body) = crate::driver::direction::split_frontmatter(&text);
+        assert_eq!(fm, Some(block.as_str()));
+        assert_eq!(body, mine);
+        assert!(!temp.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_discard_removes_only_the_temp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir, _block) = edit_fixture(dir.path()).await;
+        let clean = crate::driver::steer::tests::clean_body();
+        let temp = open_the_editor(&mut app, &mut rx).await;
+        std::fs::write(&temp, clean.replace("Prove it", "Mine")).unwrap();
+        crate::driver::direction::write_body(&run_dir, |_| clean.replace("It works.", "Theirs"))
+            .unwrap();
+        let live = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        let discard =
+            next_matching(&mut rx, |a| matches!(a, Action::DriverEditDiscard { .. })).await;
+        app.update(discard);
+        let discarded =
+            next_matching(&mut rx, |a| matches!(a, Action::DriverEditDiscarded { .. })).await;
+        app.update(discarded);
+        assert!(!temp.exists());
+        assert_eq!(
+            std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap(),
+            live,
+            "DIRECTION.md is untouched"
+        );
+        assert_eq!(
+            app.ctx.status_message.clone().expect("status").0,
+            "Discarded your edit. DIRECTION.md was not changed."
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_lint_problems_ask_first_and_y_applies() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir, _block) = edit_fixture(dir.path()).await;
+        let clean = crate::driver::steer::tests::clean_body();
+        let temp = open_the_editor(&mut app, &mut rx).await;
+        // The template's placeholders are `driver check` problems.
+        let placeholders = clean.replace(
+            "Prove the edit flow.",
+            "{one or two sentences: what this run is for}",
+        );
+        std::fs::write(&temp, &placeholders).unwrap();
+
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("driver_edit_confirm")
+        );
+        let text = render_top_screen(&app);
+        assert!(text.contains("Apply this edit?"), "{text}");
+        assert!(text.contains("driver check found"), "{text}");
+        assert!(
+            std::fs::read_to_string(run_dir.join("DIRECTION.md"))
+                .unwrap()
+                .ends_with(&clean),
+            "nothing was written yet"
+        );
+        assert!(
+            app.edit_sessions.contains_key(&temp),
+            "the session waits for the answer"
+        );
+
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        let apply = next_matching(&mut rx, |a| matches!(a, Action::DriverEditApply { .. })).await;
+        app.update(apply);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        assert!(
+            std::fs::read_to_string(run_dir.join("DIRECTION.md"))
+                .unwrap()
+                .ends_with(&placeholders),
+            "applied anyway"
+        );
+        assert!(!temp.exists());
+        assert!(app.edit_sessions.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_declining_the_lint_confirmation_opens_the_chooser_and_keeps_the_temp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir, _block) = edit_fixture(dir.path()).await;
+        let clean = crate::driver::steer::tests::clean_body();
+        let temp = open_the_editor(&mut app, &mut rx).await;
+        std::fs::write(
+            &temp,
+            clean.replace(
+                "Prove the edit flow.",
+                "{one or two sentences: what this run is for}",
+            ),
+        )
+        .unwrap();
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(
+            app.screen_stack
+                .last()
+                .map(|s| s.name().to_string())
+                .as_deref(),
+            Some("driver_edit_chooser")
+        );
+        assert!(temp.exists());
+        assert!(std::fs::read_to_string(run_dir.join("DIRECTION.md"))
+            .unwrap()
+            .ends_with(&clean));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_an_edit_without_the_section_headers_is_not_applied() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, run_dir, _block) = edit_fixture(dir.path()).await;
+        let clean = crate::driver::steer::tests::clean_body();
+        let temp = open_the_editor(&mut app, &mut rx).await;
+        std::fs::write(&temp, clean.replace("## Items", "## Things")).unwrap();
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        let text = render_top_screen(&app);
+        assert!(
+            text.contains(
+                "Not applied: the edited body is missing \"## Direction\" or \"## Items\"."
+            ),
+            "{text}"
+        );
+        assert!(temp.exists());
+        assert!(std::fs::read_to_string(run_dir.join("DIRECTION.md"))
+            .unwrap()
+            .ends_with(&clean));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_a_temp_left_by_a_crashed_tui_is_never_overwritten() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx, _run_dir, _block) = edit_fixture(dir.path()).await;
+        let temp = edit_temp(dir.path());
+        std::fs::write(&temp, "the user's unsaved text").unwrap();
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        let request =
+            next_matching(&mut rx, |a| matches!(a, Action::DriverEditRequested { .. })).await;
+        app.update(request);
+        let stale = next_matching(&mut rx, |a| matches!(a, Action::DriverEditStale { .. })).await;
+        app.update(stale);
+        assert!(app.pending_editor.is_none(), "no editor is opened");
+        assert_eq!(
+            std::fs::read_to_string(&temp).unwrap(),
+            "the user's unsaved text"
+        );
+        let text = render_top_screen(&app);
+        // The path is cut from the left to fit the row; its tail names the run.
+        assert!(text.contains("A previous edit was not applied: "), "{text}");
+        assert!(
+            text.contains(&format!("{LAUNCHER_RUN}/.DIRECTION.md.edit.")),
+            "{text}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_edit_apply_for_an_unknown_session_is_refused_visibly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx, _run_dir, _block) = edit_fixture(dir.path()).await;
+        app.update(Action::DriverEditApply {
+            temp: dir.path().join("nope"),
+            accept_lint: true,
+        });
+        let message = app.ctx.error_message.clone().expect("a refusal");
+        assert!(message.contains("no longer open"), "{message}");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn launcher_edit_a_non_linux_build_refuses_with_the_read_only_copy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::DriverEditRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: LAUNCHER_RUN.to_string(),
+        });
+        assert_eq!(
+            app.ctx.error_message.as_deref(),
+            Some("read-only: steering needs Linux")
+        );
+        assert!(app.pending_editor.is_none());
     }
 }

@@ -5586,6 +5586,32 @@ impl Screen for DetailScreen {
                     DriverAction::ToggleOptIn,
                 )))
             }
+            // `e` on the Driver tab: edit the SELECTED launcher run's DIRECTION.md body in
+            // `$VISUAL`/`$EDITOR` (30-04, D-17). Tab-scoped, so `e` keeps its Docs,
+            // Queue, Backlog and Archive meanings. The handler writes nothing: it asks
+            // the App to make the body-only temp, and the shipped editor hand-off opens
+            // it. A legacy row, an unreadable run and a build that cannot steer refuse
+            // with their copy.
+            KeyCode::Char('e') if current_view == DetailSubView::Driver => {
+                use super::driver_run::{steer_refusal, steer_target, SteerTarget};
+                ctx.needs_redraw = true;
+                let target = steer_target(ctx.view_cache.get(&self.alias));
+                if let Some(message) = steer_refusal(&target) {
+                    ctx.status_message = Some((message, std::time::Instant::now()));
+                    return ScreenAction::None;
+                }
+                if let SteerTarget::Run { run_id, .. } = target {
+                    super::driver_confirm::dispatch(
+                        ctx,
+                        Action::DriverEditRequested {
+                            alias: self.alias.clone(),
+                            run_id,
+                        },
+                        &self.alias,
+                    );
+                }
+                ScreenAction::None
+            }
             KeyCode::Char('e') => {
                 // Archive FileView: open file in $EDITOR (read-only for milestones)
                 if current_view == DetailSubView::Archive {
@@ -10596,6 +10622,9 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
     }
     if keys.unhold {
         tokens.push(FooterToken::hint("[u]", "nhold  ", 2));
+    }
+    if keys.edit {
+        tokens.push(FooterToken::hint("[e]", "dit  ", 2));
     }
     if keys.start {
         tokens.push(FooterToken::hint("[s]", "tart  ", 2));
@@ -17287,6 +17316,7 @@ mod tests {
             control: false,
             answer: false,
             unhold: false,
+            edit: false,
             read_only_platform: false,
         }
     }
@@ -17391,6 +17421,7 @@ mod tests {
             control: false,
             answer: false,
             unhold: false,
+            edit: false,
             read_only_platform: false,
         };
         let text = driver_footer_text(200, &on_legacy);
@@ -17403,7 +17434,7 @@ mod tests {
     /// five widths the UI-SPEC names, for every combination of available keys.
     #[test]
     fn the_driver_footer_fits_its_width_and_always_ends_with_help() {
-        for bits in 0u16..1024 {
+        for bits in 0u16..2048 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17415,6 +17446,7 @@ mod tests {
                 read_only_platform: bits & 128 != 0,
                 answer: bits & 256 != 0,
                 unhold: bits & 512 != 0,
+                edit: bits & 1024 != 0,
             };
             for width in [40u16, 60, 80, 100, 160] {
                 let text = driver_footer_text(width, &keys);
@@ -17443,6 +17475,7 @@ mod tests {
             control: false,
             answer: false,
             unhold: false,
+            edit: false,
             read_only_platform: false,
         };
         // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 10 + 7 = 98 cells.
@@ -17478,7 +17511,7 @@ mod tests {
 
     #[test]
     fn the_driver_footer_names_no_retired_key_at_any_width() {
-        for bits in 0u16..1024 {
+        for bits in 0u16..2048 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
                 legacy: bits & 2 != 0,
@@ -17490,6 +17523,7 @@ mod tests {
                 read_only_platform: bits & 128 != 0,
                 answer: bits & 256 != 0,
                 unhold: bits & 512 != 0,
+                edit: bits & 1024 != 0,
             };
             for width in [40u16, 60, 80, 100, 160, 300] {
                 let text = driver_footer_text(width, &keys);
@@ -20165,6 +20199,97 @@ mod tests {
         let tight = driver_footer_text(52, &keys);
         assert!(!tight.contains("[u]nhold"), "{tight:?}");
         assert!(tight.contains("[a]nswer"), "{tight:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_e_asks_the_app_for_the_edit_temp_and_writes_nothing() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(2);
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "no screen and no editor yet"
+        );
+        let Some(crate::action::Action::DriverEditRequested { alias, run_id }) = rx.try_recv().ok()
+        else {
+            panic!("e dispatches the edit request");
+        };
+        assert_eq!(
+            (alias.as_str(), run_id.as_str()),
+            (TEST_ALIAS, "20261019-run0")
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_edit_e_refuses_on_a_legacy_row_an_unreadable_run_and_off_the_driver_tab() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
+        add_legacy_run(&mut ctx);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.legacy_expanded = true;
+            cache.legacy_row_selected = true;
+        }
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.clone().expect("a refusal").0,
+            "Legacy runs are read-only here."
+        );
+
+        let (mut screen, mut ctx, mut rx2) = launcher_fixture(1);
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .launcher_runs[0]
+            .1 = Err(crate::state_reader::driver_frontmatter::FrontmatterError::NoFrontmatter);
+        screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        assert!(ctx
+            .status_message
+            .clone()
+            .expect("a refusal")
+            .0
+            .contains("could not be read"));
+
+        // On another tab `e` keeps its shipped meaning (here: the Queue tab's edit).
+        let (mut screen, mut ctx, mut rx3) = launcher_fixture(1);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
+        screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        assert!(rx.try_recv().is_err() && rx2.try_recv().is_err());
+        while let Ok(action) = rx3.try_recv() {
+            assert!(!matches!(
+                action,
+                crate::action::Action::DriverEditRequested { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn launcher_edit_the_footer_names_edit_between_unhold_and_start_and_drops_it_before_control() {
+        let keys = DriverKeys {
+            control: true,
+            answer: true,
+            unhold: true,
+            edit: true,
+            ..live_run_keys()
+        };
+        let text = driver_footer_text(160, &keys);
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {text}"))
+        };
+        assert!(
+            at("[u]nhold") < at("[e]dit") && at("[e]dit") < at("[s]tart"),
+            "{text}"
+        );
+        assert!(!driver_footer_text(160, &live_run_keys()).contains("[e]dit"));
+        // `[e]dit` is priority 2: gone at a width where `[c]ontrol` (priority 1) stays.
+        let tight = driver_footer_text(45, &keys);
+        assert!(
+            tight.contains("[c]ontrol") && !tight.contains("[e]dit"),
+            "{tight:?}"
+        );
     }
 
     #[test]

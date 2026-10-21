@@ -472,6 +472,70 @@ pub enum Action {
         op: crate::driver::steer::SteerOp,
         outcome: crate::driver::steer::SteerOutcome,
     },
+    /// `e` on a readable launcher run (30-04, D-17). The handler makes the body-only
+    /// edit temp on `spawn_blocking` and answers [`Action::DriverEditReady`],
+    /// [`Action::DriverEditStale`] or [`Action::DriverEditFailed`].
+    DriverEditRequested {
+        alias: String,
+        run_id: String,
+    },
+    /// The edit temp exists. `base` is the body it was written from (or, after a
+    /// re-open, the live body read just now): the apply is checked against it. The
+    /// handler records the session and asks the main loop to open `temp` in the
+    /// user's editor.
+    DriverEditReady {
+        alias: String,
+        run_id: String,
+        temp: std::path::PathBuf,
+        base: String,
+    },
+    /// A temp already exists (an edit a crashed TUI never applied): nothing was
+    /// written or overwritten; the chooser offers re-open, discard or keep.
+    DriverEditStale {
+        alias: String,
+        run_id: String,
+        temp: std::path::PathBuf,
+    },
+    /// The temp could not be made; `DIRECTION.md` was not changed.
+    DriverEditFailed {
+        alias: String,
+        run_id: String,
+        error: String,
+    },
+    /// `r` in the edit chooser: open the kept text again, against the live body as it
+    /// is now. The handler reads that body on `spawn_blocking` and answers
+    /// [`Action::DriverEditReady`] with it as the new base.
+    DriverEditReopen {
+        alias: String,
+        run_id: String,
+        temp: std::path::PathBuf,
+    },
+    /// `y` in the lint confirmation: apply the recorded session's edit although
+    /// `driver check` reported problems.
+    DriverEditApply {
+        temp: std::path::PathBuf,
+        accept_lint: bool,
+    },
+    /// An apply finished. `outcome` decides the status line or the screen shown.
+    DriverEditDone {
+        alias: String,
+        run_id: String,
+        temp: std::path::PathBuf,
+        outcome: crate::driver::steer::EditOutcome,
+    },
+    /// `d` in the edit chooser: delete the kept temp. The path removed is built from
+    /// the run directory, not taken from `temp`.
+    DriverEditDiscard {
+        alias: String,
+        run_id: String,
+        temp: std::path::PathBuf,
+    },
+    /// The discard finished: `error` is `None` when the temp is gone.
+    DriverEditDiscarded {
+        alias: String,
+        run_id: String,
+        error: Option<String>,
+    },
 }
 
 #[cfg(test)]

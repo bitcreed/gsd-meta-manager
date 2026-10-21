@@ -374,6 +374,8 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("DriverConfirmScreen", "src/ui/screens/driver_confirm.rs"),
     ("DriverInjectScreen", "src/ui/screens/driver_inject.rs"),
     ("DriverStartScreen", "src/ui/screens/driver_start.rs"),
+    ("EditChooserScreen", "src/ui/screens/driver_steer.rs"),
+    ("EditLintConfirmScreen", "src/ui/screens/driver_steer.rs"),
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
     ("HelpScreen", "src/ui/screens/help.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
@@ -2277,6 +2279,52 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     identity.to_string(),
                     identity.to_string(),
                     Some(identity.to_string()),
+                ))
+            })
+        }),
+
+        // The edit chooser (30-04): the stale-temp footer is the one that draws a path,
+        // so the hostile identity is the temp's path there. Every reason is probed over
+        // the Driver tab's body; the three fixed-copy reasons draw nothing hostile of
+        // their own, and the arrival check is satisfied by the stale state and the body.
+        "EditChooserScreen" => Some(|identity| {
+            use super::driver_steer::{ChooserReason, EditChooserScreen};
+            let mut states = states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(EditChooserScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    std::path::PathBuf::from(identity),
+                    ChooserReason::Stale,
+                ))
+            });
+            for (label, reason) in [
+                ("conflict", ChooserReason::Conflict),
+                ("insane body", ChooserReason::Insane),
+                ("declined lint", ChooserReason::NotApplied),
+            ] {
+                states.push(one_state(
+                    label,
+                    probe_ctx(identity),
+                    Box::new(EditChooserScreen::new(
+                        identity.to_string(),
+                        identity.to_string(),
+                        std::path::PathBuf::from(identity),
+                        reason,
+                    )),
+                ));
+            }
+            states
+        }),
+
+        // The lint confirmation (30-04): the hostile identity is a finding, as it is
+        // when an edited body quotes it.
+        "EditLintConfirmScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(super::driver_steer::EditLintConfirmScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    std::path::PathBuf::from(identity),
+                    vec![format!("DIRECTION.md:3: {identity}"), identity.to_string()],
                 ))
             })
         }),

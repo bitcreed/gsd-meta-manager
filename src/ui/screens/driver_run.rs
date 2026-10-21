@@ -2802,6 +2802,8 @@ pub struct DriverKeys {
     pub answer: bool,
     /// `u`: the item under the cursor is on hold and this build can steer.
     pub unhold: bool,
+    /// `e`: a readable launcher run is selected and this build can steer (Linux).
+    pub edit: bool,
     /// This build cannot steer (not Linux): `c`, `a`, `u`, `e` are absent and the
     /// footer says why (D-14).
     pub read_only_platform: bool,
@@ -2835,6 +2837,8 @@ pub fn driver_keys(ctx: &AppContext, alias: &str) -> DriverKeys {
             && cursor_item_row(cache).is_some_and(|row| row.in_body() && row.answerable()),
         unhold: super::driver_steer::can_steer()
             && cursor_item_row(cache).is_some_and(|row| row.in_body() && row.hold),
+        edit: super::driver_steer::can_steer()
+            && matches!(steer_target(cache), SteerTarget::Run { .. }),
         read_only_platform: !super::driver_steer::can_steer(),
     }
 }

@@ -848,7 +848,9 @@ async fn run_tui_loop(
                 .args(gsd_meta_manager::app::editor_args(&editor, &path, line))
                 .status();
 
-            match status {
+            // The exit status also reaches the library: a DIRECTION.md edit temp is
+            // applied (or kept, on a failed editor) by `App::after_editor`, not here.
+            let exit = match status {
                 Ok(s) if s.success() => {
                     app.ctx.status_message = Some((
                         format!(
@@ -857,23 +859,27 @@ async fn run_tui_loop(
                         ),
                         std::time::Instant::now(),
                     ));
+                    gsd_meta_manager::app::EditorExit::Success
                 }
                 Ok(s) => {
                     app.ctx.status_message = Some((
                         format!("Editor exited with: {}", s),
                         std::time::Instant::now(),
                     ));
+                    gsd_meta_manager::app::EditorExit::Failed(s.to_string())
                 }
                 Err(e) => {
                     app.ctx.status_message = Some((
                         format!("Failed to launch {}: {}", editor, e),
                         std::time::Instant::now(),
                     ));
+                    gsd_meta_manager::app::EditorExit::SpawnError(format!("{editor}: {e}"))
                 }
-            }
+            };
 
-            // The edit may have changed the file the browser is showing.
-            app.refresh_after_editor(&path);
+            // The edit may have changed the file the browser is showing; a known edit
+            // temp is applied.
+            app.after_editor(&path, exit);
 
             // Re-initialize TUI
             *terminal = tui::init();

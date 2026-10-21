@@ -355,6 +355,12 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
                 "Answer the item under the cursor (also sets hold: false)",
             ),
             row("u", "Take the item under the cursor off hold"),
+            row("e", "Edit this run's DIRECTION.md in $EDITOR"),
+            // The continuation of the `e` row (RESEARCH Pitfall 7, `[inferred —
+            // audit]`): a GUI editor that returns at once leaves the file unchanged.
+            row("", "$VISUAL/$EDITOR must be a terminal editor or"),
+            row("", "a blocking wrapper script; a GUI editor that"),
+            row("", "returns at once sees an unchanged file."),
             row("s", "Start a run: command, then optional goal"),
             row("x", "Kill this run's sandbox now (asks first)"),
             row("L", "Show or hide legacy runs (read-only)"),
@@ -612,6 +618,7 @@ mod tests {
                 "Answer the item under the cursor (also sets hold: false)",
             ),
             ("u", "Take the item under the cursor off hold"),
+            ("e", "Edit this run's DIRECTION.md in $EDITOR"),
             ("s", "Start a run: command, then optional goal"),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("L", "Show or hide legacy runs (read-only)"),
@@ -800,13 +807,25 @@ mod tests {
         let c = at("Set control: run, pause or stop (writes DIRECTION.md)");
         let a = at("Answer the item under the cursor (also sets hold: false)");
         let u = at("Take the item under the cursor off hold");
+        let e = at("Edit this run's DIRECTION.md in $EDITOR");
         let s = at("Start a run");
-        assert!(g < c && c < a && a < u && u < s, "UI-SPEC order:\n{on}");
+        assert!(
+            g < c && c < a && a < u && u < e && e < s,
+            "UI-SPEC order:\n{on}"
+        );
+        // The continuation rows warn that the editor must block (Pitfall 7).
+        let flow = flowed();
+        assert!(
+            flow.contains("terminal editor or a blocking wrapper script"),
+            "{flow}"
+        );
+        assert!(flow.contains("GUI editor that returns at once"), "{flow}");
         let off = body_with(false);
         for description in [
             "Set control: run, pause or stop",
             "Answer the item under the cursor",
             "Take the item under the cursor off hold",
+            "Edit this run's DIRECTION.md in $EDITOR",
         ] {
             assert!(!off.contains(description), "{description}:\n{off}");
         }
@@ -922,6 +941,7 @@ mod tests {
                 "Answer the item under the cursor (also sets hold: false)",
             ),
             ("u", "Take the item under the cursor off hold"),
+            ("e", "Edit this run's DIRECTION.md in $EDITOR"),
             ("s", "Start a run: command, then optional goal"),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("L", "Show or hide legacy runs (read-only)"),

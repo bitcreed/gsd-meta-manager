@@ -27,9 +27,10 @@
 use std::path::Path;
 
 use crate::driver::direction::{
-    blank_comments, control_re, item_re, parse_direction, section_heading, write_body, Section,
-    SpliceOutcome,
+    blank_comments, body_sane, control_re, item_re, parse_direction, section_heading, write_body,
+    Section, SpliceOutcome,
 };
+use crate::driver_templates::lint::lint_direction;
 
 /// One `### I-NN` item as the human wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,21 +570,244 @@ pub fn steer_run(run_dir: &Path, op: &SteerOp) -> SteerOutcome {
                     lock_timed_out: report.lock_timed_out,
                 },
             },
-            SpliceOutcome::SkippedInsaneBody => SteerOutcome::NotWritten(
-                "the body lacks \"## Direction\" or \"## Items\"".to_string(),
-            ),
-            SpliceOutcome::GaveUp => SteerOutcome::NotWritten(
-                "another save kept changing the file, so this one gave up".to_string(),
-            ),
-            SpliceOutcome::NoDirection => {
-                SteerOutcome::NotWritten("the run has no DIRECTION.md".to_string())
+            other => SteerOutcome::NotWritten(not_written_reason(other).to_string()),
+        },
+    }
+}
+
+// ── The editor flow: a body-only temp that never clobbers (D-17, D-24) ──────
+
+/// The edit temp's file name, inside the run directory. It does **not** start with the
+/// splice prefix `.DIRECTION.md.fm.` (so `sweep_stale_temps` never deletes a user's
+/// unsaved text) and the watcher classifies it `Ignored` (D-24). The name is the
+/// UI-SPEC's; the `.DIRECTION.edit.md` refinement is not taken (`[inferred — audit]`).
+pub const EDIT_TEMP_NAME: &str = ".DIRECTION.md.edit";
+
+/// The largest `DIRECTION.md` or edit temp the flow reads: 1 MiB. A body past it is
+/// refused rather than slurped (T-30-12).
+pub const EDIT_TEMP_MAX_BYTES: u64 = 1 << 20;
+
+/// What [`prepare_edit`] made: the temp the editor opens, and the body it was filled
+/// from (the base the apply is checked against).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedEdit {
+    pub temp: std::path::PathBuf,
+    pub base: String,
+}
+
+/// Why [`prepare_edit`] made no temp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareError {
+    /// A temp is already there (an edit a crashed TUI never applied, or something
+    /// planted). It is never overwritten: the user's text may be in it.
+    StaleTemp(std::path::PathBuf),
+    /// `DIRECTION.md` could not be read, or is over [`EDIT_TEMP_MAX_BYTES`].
+    Read(String),
+    /// The temp could not be created or written.
+    Create(String),
+}
+
+/// Read `<run_dir>/DIRECTION.md` whole, refusing one past [`EDIT_TEMP_MAX_BYTES`].
+fn read_direction(run_dir: &Path) -> Result<String, String> {
+    let path = run_dir.join(crate::driver::direction::DIRECTION_FILE);
+    let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    read_capped(file, &path)
+}
+
+/// Read `file` as UTF-8, at most [`EDIT_TEMP_MAX_BYTES`].
+fn read_capped(file: std::fs::File, path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.take(EDIT_TEMP_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > EDIT_TEMP_MAX_BYTES {
+        return Err(format!("{} is larger than 1 MiB", path.display()));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{} is not valid UTF-8", path.display()))
+}
+
+/// The live body of `<run_dir>/DIRECTION.md` (the text after the tool block), for the
+/// re-open path: the base a kept edit is checked against from now on.
+///
+/// **Blocking: `spawn_blocking` only.**
+pub fn live_body(run_dir: &Path) -> Result<String, String> {
+    let text = read_direction(run_dir)?;
+    Ok(crate::driver::direction::split_frontmatter(&text)
+        .1
+        .to_string())
+}
+
+/// Write the live body of `<run_dir>/DIRECTION.md` (never the `---` tool block) to
+/// `<run_dir>/.DIRECTION.md.edit` for the user's editor.
+///
+/// The temp is created with `create_new` (`O_EXCL`: it fails on any existing path,
+/// a planted symlink included) and mode 0600, so a sandboxed process that can write the
+/// run directory cannot pre-place it and cannot read the user's text. An existing
+/// temp is [`PrepareError::StaleTemp`] and is left exactly as it was.
+///
+/// **Blocking: `spawn_blocking` only.** No lock is taken or held: the editor session
+/// can last hours and the lock exists for single writes (D-17).
+pub fn prepare_edit(run_dir: &Path) -> Result<PreparedEdit, PrepareError> {
+    use std::io::Write;
+    let text = read_direction(run_dir).map_err(PrepareError::Read)?;
+    let base = crate::driver::direction::split_frontmatter(&text)
+        .1
+        .to_string();
+    let temp = run_dir.join(EDIT_TEMP_NAME);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = match options.open(&temp) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(PrepareError::StaleTemp(temp));
+        }
+        Err(e) => return Err(PrepareError::Create(format!("{}: {e}", temp.display()))),
+    };
+    if let Err(e) = file
+        .write_all(base.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        // The temp is the file this call just created, so taking it back is ours.
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return Err(PrepareError::Create(format!("{}: {e}", temp.display())));
+    }
+    Ok(PreparedEdit { temp, base })
+}
+
+/// Remove the edit temp of `run_dir` (the user chose to discard it). The path is built
+/// here from the run directory, never taken from a caller, so this can only ever
+/// remove `<run_dir>/.DIRECTION.md.edit`. An absent temp is fine.
+///
+/// **Blocking: `spawn_blocking` only.**
+pub fn discard_edit(run_dir: &Path) -> Result<(), String> {
+    let temp = run_dir.join(EDIT_TEMP_NAME);
+    match std::fs::remove_file(&temp) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", temp.display())),
+    }
+}
+
+/// How an [`apply_edit`] ended. Every outcome but `Unchanged` and `Applied` keeps the
+/// temp, so the user's text is never lost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditOutcome {
+    /// The editor saved nothing new; the temp was removed and nothing was written.
+    Unchanged,
+    /// The live body is no longer the base the user started from: nothing was written.
+    Conflict,
+    /// The edited body lacks `## Direction` or `## Items`: nothing was written.
+    Insane,
+    /// `driver check` found problems in the edit; each is one rendered line. Nothing
+    /// was written; applying anyway is the user's call (`accept_lint`).
+    LintProblems(Vec<String>),
+    /// The edit is in place and the temp was removed.
+    Applied { lock_timed_out: bool },
+    /// The temp or the file could not be read or written; the file stands.
+    Failed(String),
+}
+
+/// Why `write_body` placed nothing, in one phrase.
+fn not_written_reason(outcome: SpliceOutcome) -> &'static str {
+    match outcome {
+        SpliceOutcome::Ok => "written",
+        SpliceOutcome::SkippedInsaneBody => "the body lacks \"## Direction\" or \"## Items\"",
+        SpliceOutcome::GaveUp => "another save kept changing the file, so this one gave up",
+        SpliceOutcome::NoDirection => "the run has no DIRECTION.md",
+    }
+}
+
+/// Apply the user's saved edit (`temp`) to `<run_dir>/DIRECTION.md`'s body, **only if
+/// the live body still equals `base`**, the text the editor session started from.
+///
+/// The base is compared before the write and again inside the [`write_body`] closure
+/// (which sees the body under `DIRECTION.lock`, and again on a fresh body after a
+/// raced human save), so a change made while the editor was open is never overwritten:
+/// the outcome is [`EditOutcome::Conflict`], the other change stands and the temp is
+/// kept (T-30-10). The `---` tool block is never touched.
+///
+/// `temp` must be a regular file (not a symlink) of at most [`EDIT_TEMP_MAX_BYTES`]
+/// holding UTF-8. `accept_lint` is the user's "apply it anyway" after a
+/// [`EditOutcome::LintProblems`].
+///
+/// **Blocking: `spawn_blocking` only.**
+pub fn apply_edit(run_dir: &Path, temp: &Path, base: &str, accept_lint: bool) -> EditOutcome {
+    let meta = match std::fs::symlink_metadata(temp) {
+        Ok(meta) => meta,
+        Err(e) => return EditOutcome::Failed(format!("{}: {e}", temp.display())),
+    };
+    if !meta.file_type().is_file() {
+        return EditOutcome::Failed(format!("{} is not a regular file", temp.display()));
+    }
+    if meta.len() > EDIT_TEMP_MAX_BYTES {
+        return EditOutcome::Failed(format!("{} is larger than 1 MiB", temp.display()));
+    }
+    let edited = match std::fs::File::open(temp)
+        .map_err(|e| format!("{}: {e}", temp.display()))
+        .and_then(|file| read_capped(file, temp))
+    {
+        Ok(text) => text,
+        Err(error) => return EditOutcome::Failed(error),
+    };
+
+    if edited == base {
+        let _ = std::fs::remove_file(temp);
+        return EditOutcome::Unchanged;
+    }
+    if !body_sane(&edited) {
+        return EditOutcome::Insane;
+    }
+    if !accept_lint {
+        let problems: Vec<String> = lint_direction(&edited)
+            .problems
+            .iter()
+            .map(|finding| finding.to_string())
+            .collect();
+        if !problems.is_empty() {
+            return EditOutcome::LintProblems(problems);
+        }
+    }
+    match live_body(run_dir) {
+        Ok(live) if live == base => {}
+        Ok(_) => return EditOutcome::Conflict,
+        Err(error) => return EditOutcome::Failed(error),
+    }
+
+    let mut conflict = false;
+    let report = write_body(run_dir, |live| {
+        if live == base {
+            conflict = false;
+            edited.clone()
+        } else {
+            conflict = true;
+            live.to_string()
+        }
+    });
+    match report {
+        Err(crate::driver::direction::DirectionError::InsaneNewBody) => EditOutcome::Insane,
+        Err(error) => EditOutcome::Failed(error.to_string()),
+        Ok(report) => match report.outcome {
+            SpliceOutcome::Ok if conflict => EditOutcome::Conflict,
+            SpliceOutcome::Ok => {
+                let _ = std::fs::remove_file(temp);
+                EditOutcome::Applied {
+                    lock_timed_out: report.lock_timed_out,
+                }
             }
+            other => EditOutcome::Failed(not_written_reason(other).to_string()),
         },
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const BODY: &str = "# Driver direction: r\n\n## Direction\n\n- control: run\n\n## Items\n\n\
@@ -1237,5 +1461,326 @@ mod tests {
             message.contains("Written without DIRECTION.lock"),
             "{message}"
         );
+    }
+
+    // ── The editor flow (Task 3) ────────────────────────────────────────────
+    //
+    // The editor is simulated by writing the temp: no process is spawned in `src/`
+    // (`tests/spawn_seam_guard.rs`).
+
+    /// A body that lints clean: the template with its placeholders filled in.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn clean_body() -> String {
+        DIRECTION_TEMPLATE
+            .replace("{run-id}", "20261020-edit")
+            .replace(
+                "{one or two sentences: what this run is for}",
+                "Prove the edit flow.",
+            )
+            .replace("{short title}", "Prove it")
+            .replace(
+                "{what should be true afterwards and why, in plain words}",
+                "It works.",
+            )
+            .replace(
+                "{a check the driver can run itself, e.g. `cargo test --no-fail-fast` passes AND `.planning/phases/21-*/21-VERIFICATION.md` has status: passed}",
+                "`cargo test --no-fail-fast` passes",
+            )
+            .replace("- start-with: {optional GSD command hint, e.g. /gsd-plan-phase 26; the driver may choose otherwise}\n", "")
+            .replace(
+                "- {project-specific rules, e.g. \"run cargo test --no-fail-fast, not cargo test\"}\n",
+                "",
+            )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn live_text(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("DIRECTION.md")).unwrap()
+    }
+
+    #[test]
+    fn launcher_edit_the_temp_name_is_not_a_splice_temp_and_the_watcher_ignores_it() {
+        use crate::driver::direction::{sweep_stale_temps, TEMP_PREFIX};
+        assert!(
+            !EDIT_TEMP_NAME.starts_with(TEMP_PREFIX),
+            "sweep_stale_temps must never delete a user's unsaved text"
+        );
+        let root = Path::new("/home/user/projects/app");
+        let path = root
+            .join(".planning/meta-manager/drivers/20261020-edit")
+            .join(EDIT_TEMP_NAME);
+        assert_eq!(
+            crate::journal::classify_change(root, &path),
+            crate::journal::ChangeKind::Ignored
+        );
+        // And the sweep really leaves it, however old.
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join(EDIT_TEMP_NAME), "unsaved").unwrap();
+        let removed = sweep_stale_temps(dir.path(), std::time::Duration::ZERO).unwrap();
+        assert_eq!(removed, 0);
+        assert!(dir.path().join(EDIT_TEMP_NAME).exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_prepare_then_rewrite_then_apply_applies_and_keeps_the_tool_block() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let block = write_run(dir.path(), &clean_body());
+        let prepared = prepare_edit(dir.path()).expect("prepares");
+        assert_eq!(prepared.temp, dir.path().join(EDIT_TEMP_NAME));
+        assert_eq!(prepared.base, clean_body());
+        assert_eq!(
+            std::fs::read_to_string(&prepared.temp).unwrap(),
+            clean_body(),
+            "the temp holds the body and no tool block"
+        );
+
+        let edited = clean_body().replace("Prove the edit flow.", "Prove the edit flow twice.");
+        std::fs::write(&prepared.temp, &edited).unwrap();
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, false);
+        assert_eq!(
+            outcome,
+            EditOutcome::Applied {
+                lock_timed_out: false
+            }
+        );
+        assert!(!prepared.temp.exists(), "an applied temp is removed");
+        let text = live_text(dir.path());
+        let (fm, body) = crate::driver::direction::split_frontmatter(&text);
+        assert_eq!(fm, Some(block.as_str()), "the tool block is byte-identical");
+        assert_eq!(body, edited);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_an_unchanged_save_writes_nothing_and_removes_the_temp() {
+        // Edge E8.
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let before = live_text(dir.path());
+        let prepared = prepare_edit(dir.path()).expect("prepares");
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, false);
+        assert_eq!(outcome, EditOutcome::Unchanged);
+        assert!(!prepared.temp.exists());
+        assert_eq!(live_text(dir.path()), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_a_change_made_while_editing_is_never_overwritten() {
+        // Edge E7: a base that differs by a single byte is a conflict.
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let prepared = prepare_edit(dir.path()).expect("prepares");
+        std::fs::write(
+            &prepared.temp,
+            clean_body().replace("Prove it", "My edit of the title"),
+        )
+        .unwrap();
+
+        // A human (or the driver's splice) saves while the editor is open.
+        let racing = clean_body().replace("It works.", "It works!");
+        crate::driver::direction::write_body(dir.path(), |_| racing.clone()).unwrap();
+        let live_before = live_text(dir.path());
+
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, false);
+        assert_eq!(outcome, EditOutcome::Conflict);
+        assert!(prepared.temp.exists(), "the user's text is kept");
+        assert_eq!(
+            live_text(dir.path()),
+            live_before,
+            "the racing change stands"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&prepared.temp).unwrap(),
+            clean_body().replace("Prove it", "My edit of the title")
+        );
+    }
+
+    /// The second comparison, inside the write: `apply_edit`'s pre-check passes, then a
+    /// human save lands while `write_body` waits for `DIRECTION.lock`. The closure sees
+    /// the new body under the lock, writes nothing, and the racing change stands.
+    /// (If the scheduler delays the apply past the save, the pre-check reports the same
+    /// conflict, so the assertion cannot flake; it only exercises the inner check in
+    /// the common case.)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_a_save_landing_while_the_write_waits_for_the_lock_is_kept() {
+        use crate::driver::direction::direction_lock;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let block = write_run(dir.path(), &clean_body());
+        let prepared = prepare_edit(dir.path()).expect("prepares");
+        std::fs::write(
+            &prepared.temp,
+            clean_body().replace("Prove it", "My edit of the title"),
+        )
+        .unwrap();
+        let racing = clean_body().replace("It works.", "It works!");
+
+        let (taken_tx, taken_rx) = std::sync::mpsc::channel();
+        let run_dir = dir.path().to_path_buf();
+        let racing_for_holder = racing.clone();
+        let block_for_holder = block.clone();
+        let holder = std::thread::spawn(move || {
+            let guard = direction_lock(&run_dir).expect("the holder takes the lock");
+            taken_tx.send(()).expect("signal");
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            // The human's save, made while the lock is held by "another writer".
+            std::fs::write(
+                run_dir.join("DIRECTION.md"),
+                format!("{block_for_holder}{racing_for_holder}"),
+            )
+            .expect("the racing save");
+            drop(guard);
+        });
+        taken_rx.recv().expect("the lock is held");
+
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, false);
+        holder.join().expect("holder thread");
+
+        assert_eq!(outcome, EditOutcome::Conflict);
+        assert!(prepared.temp.exists(), "the user's text is kept");
+        let text = live_text(dir.path());
+        assert_eq!(text, format!("{block}{racing}"), "the racing save stands");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_an_insane_edit_and_a_lint_problem_edit_keep_the_temp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let before = live_text(dir.path());
+        let prepared = prepare_edit(dir.path()).expect("prepares");
+
+        // No `## Items` any more.
+        let insane = clean_body().replace("## Items", "## Things");
+        std::fs::write(&prepared.temp, &insane).unwrap();
+        assert_eq!(
+            apply_edit(dir.path(), &prepared.temp, &prepared.base, false),
+            EditOutcome::Insane
+        );
+        assert!(prepared.temp.exists());
+        assert_eq!(live_text(dir.path()), before);
+
+        // The template's placeholders are lint problems.
+        std::fs::write(&prepared.temp, DIRECTION_TEMPLATE).unwrap();
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, false);
+        let EditOutcome::LintProblems(problems) = outcome else {
+            panic!("the placeholders must be reported, got {outcome:?}");
+        };
+        assert!(!problems.is_empty());
+        assert!(
+            problems.iter().all(|p| p.starts_with("DIRECTION.md:")),
+            "{problems:?}"
+        );
+        assert!(prepared.temp.exists());
+        assert_eq!(live_text(dir.path()), before, "nothing was written");
+
+        // The user's "apply it anyway".
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, true);
+        assert_eq!(
+            outcome,
+            EditOutcome::Applied {
+                lock_timed_out: false
+            }
+        );
+        assert!(!prepared.temp.exists());
+        assert!(live_text(dir.path()).ends_with(DIRECTION_TEMPLATE));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_a_pre_existing_temp_is_never_overwritten() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let temp = dir.path().join(EDIT_TEMP_NAME);
+        std::fs::write(&temp, "the user's unsaved text").unwrap();
+        assert_eq!(
+            prepare_edit(dir.path()),
+            Err(PrepareError::StaleTemp(temp.clone()))
+        );
+        assert_eq!(
+            std::fs::read_to_string(&temp).unwrap(),
+            "the user's unsaved text"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_a_planted_symlink_is_a_stale_temp_and_never_followed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let outside = dir.path().join("elsewhere.txt");
+        std::fs::write(&outside, "do not touch").unwrap();
+        let temp = dir.path().join(EDIT_TEMP_NAME);
+        std::os::unix::fs::symlink(&outside, &temp).unwrap();
+
+        // prepare: O_EXCL fails on the link itself, and the target is untouched.
+        assert_eq!(
+            prepare_edit(dir.path()),
+            Err(PrepareError::StaleTemp(temp.clone()))
+        );
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "do not touch");
+
+        // apply: a link is not a regular file, so nothing is read through it.
+        let before = live_text(dir.path());
+        let outcome = apply_edit(dir.path(), &temp, &clean_body(), false);
+        let EditOutcome::Failed(why) = outcome else {
+            panic!("a symlinked temp must fail, got {outcome:?}");
+        };
+        assert!(why.contains("not a regular file"), "{why}");
+        assert!(temp.symlink_metadata().is_ok(), "the link is kept");
+        assert_eq!(live_text(dir.path()), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_the_temp_is_private_and_a_huge_or_binary_temp_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let prepared = prepare_edit(dir.path()).expect("prepares");
+        let mode = std::fs::metadata(&prepared.temp)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode & 0o077, 0, "no group or other access: {mode:o}");
+        assert_eq!(mode & 0o600, 0o600);
+
+        std::fs::write(
+            &prepared.temp,
+            vec![b'x'; (EDIT_TEMP_MAX_BYTES + 1) as usize],
+        )
+        .unwrap();
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, true);
+        assert!(
+            matches!(&outcome, EditOutcome::Failed(why) if why.contains("larger than 1 MiB")),
+            "{outcome:?}"
+        );
+        std::fs::write(&prepared.temp, [0xff, 0xfe, 0xfd]).unwrap();
+        let outcome = apply_edit(dir.path(), &prepared.temp, &prepared.base, true);
+        assert!(
+            matches!(&outcome, EditOutcome::Failed(why) if why.contains("UTF-8")),
+            "{outcome:?}"
+        );
+        assert!(prepared.temp.exists(), "a refused temp is kept");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_edit_prepare_reports_an_unreadable_file_and_discard_removes_only_the_temp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert!(matches!(
+            prepare_edit(dir.path()),
+            Err(PrepareError::Read(_))
+        ));
+        write_run(dir.path(), &clean_body());
+        let prepared = prepare_edit(dir.path()).expect("prepares");
+        assert_eq!(discard_edit(dir.path()), Ok(()));
+        assert!(!prepared.temp.exists());
+        assert!(dir.path().join("DIRECTION.md").exists());
+        assert_eq!(discard_edit(dir.path()), Ok(()), "an absent temp is fine");
+        assert_eq!(live_body(dir.path()).as_deref(), Ok(clean_body().as_str()));
     }
 }

@@ -22,7 +22,9 @@ use super::confirm_popup::{
 use super::driver_confirm::dispatch;
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
-use crate::driver::steer::{AnswerRule, SteerOp, SteerOutcome, DIRECTION_ANSWER_MAX_CHARS};
+use crate::driver::steer::{
+    AnswerRule, EditOutcome, SteerOp, SteerOutcome, DIRECTION_ANSWER_MAX_CHARS,
+};
 use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -30,6 +32,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use std::path::{Path, PathBuf};
 
 /// What every steering key says on a build that cannot write `DIRECTION.md` safely
 /// (D-14): the writer is `renameat2(RENAME_EXCHANGE)`, which is Linux-only.
@@ -573,6 +576,319 @@ impl Screen for AnswerScreen {
     }
 }
 
+// ── The edit flow's copy and screens (`e`, D-17) ────────────────────────────
+
+/// The status (or error) line for a finished apply that needs no screen, and whether
+/// it is an error. `None` for the outcomes that open one ([`EditOutcome::Conflict`],
+/// [`EditOutcome::Insane`], [`EditOutcome::LintProblems`]).
+pub fn edit_done_message(outcome: &EditOutcome, temp: &Path) -> Option<(String, bool)> {
+    match outcome {
+        EditOutcome::Unchanged => Some((
+            "No changes to DIRECTION.md. Nothing was written.".to_string(),
+            false,
+        )),
+        EditOutcome::Applied { lock_timed_out } => {
+            let mut text =
+                "DIRECTION.md updated. The driver re-reads it before its next dispatch."
+                    .to_string();
+            if *lock_timed_out {
+                text.push_str(LOCK_TIMEOUT_NOTE);
+            }
+            Some((text, false))
+        }
+        EditOutcome::Failed(error) => Some((
+            format!(
+                "Could not write DIRECTION.md: {}. The file was not changed. Try again. Your text is kept at {}.",
+                crate::text::render_for_terminal(error),
+                crate::text::render_for_terminal(&temp.display().to_string())
+            ),
+            true,
+        )),
+        EditOutcome::Conflict | EditOutcome::Insane | EditOutcome::LintProblems(_) => None,
+    }
+}
+
+/// What the App says when the editor did not exit cleanly: the temp is kept and
+/// nothing was written. `status` is the exit status or the spawn error.
+pub fn editor_failed_message(status: &str, temp: &Path) -> String {
+    format!(
+        "The editor exited with {}. Nothing was written. Your text is kept at {}.",
+        crate::text::render_for_terminal(status),
+        crate::text::render_for_terminal(&temp.display().to_string())
+    )
+}
+
+/// Why the edit chooser is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChooserReason {
+    /// The live body changed while the editor was open.
+    Conflict,
+    /// The edited body lost `## Direction` or `## Items`.
+    Insane,
+    /// A temp from an earlier session is still there.
+    Stale,
+    /// The user declined to apply an edit `driver check` reported problems in.
+    NotApplied,
+}
+
+/// The kept text's name in the chooser's `[Esc]` hint.
+const KEPT_AT: &str = ".DIRECTION.md.edit";
+
+/// A not-applied edit, with the keys to re-open, discard or keep it (UI-SPEC "Edit in
+/// $EDITOR"). `r` re-opens the kept text against the live body as it is now, so saving
+/// replaces whatever changed meanwhile; `d` deletes the temp (the explicit key is the
+/// confirmation); `Esc` keeps it on disk, the safe default.
+pub struct EditChooserScreen {
+    alias: String,
+    run_id: String,
+    temp: PathBuf,
+    reason: ChooserReason,
+}
+
+impl EditChooserScreen {
+    pub fn new(alias: String, run_id: String, temp: PathBuf, reason: ChooserReason) -> Self {
+        Self {
+            alias,
+            run_id,
+            temp,
+            reason,
+        }
+    }
+
+    /// The message half of the first row. A stale temp's path is cut from the left to
+    /// fit `width` cells (the tail is the part that names the run), so the keys behind
+    /// it are never pushed off the row by a long project path.
+    fn message(&self, width: usize) -> String {
+        match self.reason {
+            ChooserReason::Conflict => {
+                "Not applied: DIRECTION.md changed while you were editing.".to_string()
+            }
+            ChooserReason::Insane => {
+                "Not applied: the edited body is missing \"## Direction\" or \"## Items\"."
+                    .to_string()
+            }
+            ChooserReason::Stale => {
+                let lead = "A previous edit was not applied: ";
+                let room = width.saturating_sub(Span::raw(lead).width() + 3).max(8);
+                let path = crate::text::render_for_terminal(&self.temp.display().to_string());
+                format!("{lead}{}.", tail_cells(path.as_ref(), room))
+            }
+            ChooserReason::NotApplied => {
+                "Not applied: driver check found problems in your edit.".to_string()
+            }
+        }
+    }
+
+    /// The key half of the first row.
+    fn keys(&self) -> String {
+        match self.reason {
+            ChooserReason::Stale => "[r]e-open it  [d]iscard it  [Esc] keep it".to_string(),
+            _ => format!("[r]e-open yours  [d]iscard yours  [Esc] keep it at {KEPT_AT}"),
+        }
+    }
+}
+
+crate::ui::screens::adjudicate_screen!(
+    EditChooserScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints the Driver tab behind its footer rows (the registry alias and the run \
+     list). A stale-temp footer names the temp's path, which is built from the project \
+     path and a run directory name a cloned repository or a sibling sandbox chooses; \
+     the other reasons draw only fixed copy. Fixture states: the hostile identity as \
+     the temp path of a stale edit.",
+);
+
+impl Screen for EditChooserScreen {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        match code {
+            KeyCode::Char('r') => {
+                dispatch(
+                    ctx,
+                    Action::DriverEditReopen {
+                        alias: self.alias.clone(),
+                        run_id: self.run_id.clone(),
+                        temp: self.temp.clone(),
+                    },
+                    &self.alias,
+                );
+                ScreenAction::Pop
+            }
+            KeyCode::Char('d') => {
+                dispatch(
+                    ctx,
+                    Action::DriverEditDiscard {
+                        alias: self.alias.clone(),
+                        run_id: self.run_id.clone(),
+                        temp: self.temp.clone(),
+                    },
+                    &self.alias,
+                );
+                ScreenAction::Pop
+            }
+            KeyCode::Esc => {
+                ctx.status_message = Some((
+                    format!(
+                        "Your text is kept at {}.",
+                        crate::text::render_for_terminal(&self.temp.display().to_string())
+                    ),
+                    std::time::Instant::now(),
+                ));
+                ctx.needs_redraw = true;
+                ScreenAction::Pop
+            }
+            _ => ScreenAction::None,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let message = self.message(usize::from(area.width));
+        let keys = self.keys();
+        let single = format!("  {message}  {keys}");
+        let mut rows: Vec<Line<'static>> = Vec::new();
+        if Span::raw(single.as_str()).width() <= usize::from(area.width) {
+            rows.push(Line::from(vec![
+                Span::styled(format!("  {message}  "), bold()),
+                Span::styled(keys, muted()),
+            ]));
+        } else {
+            rows.push(Line::from(Span::styled(format!("  {message}"), bold())));
+            rows.push(Line::from(Span::styled(format!("  {keys}"), muted())));
+        }
+        rows.push(Line::from(Span::styled(
+            "    [r] opens your text against DIRECTION.md as it is now: saving replaces whatever is there.",
+            muted(),
+        )));
+        let height = u16::try_from(rows.len()).unwrap_or(1);
+        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).split(area);
+        let detail = super::detail::DetailScreen::new(self.alias.clone());
+        detail.render_main_only(frame, chunks[0], ctx);
+        frame.render_widget(Paragraph::new(rows), chunks[1]);
+    }
+
+    fn name(&self) -> &str {
+        "driver_edit_chooser"
+    }
+}
+
+/// How many `driver check` findings the confirmation lists before `… k more`.
+const LINT_FINDINGS_SHOWN: usize = 8;
+
+/// `Apply this edit?`: the edit has `driver check` problems. `y` applies it anyway,
+/// `n` (and `Esc`) declines and opens the chooser so the text can be re-opened or
+/// discarded. Default focus is No.
+pub struct EditLintConfirmScreen {
+    alias: String,
+    run_id: String,
+    temp: PathBuf,
+    findings: Vec<String>,
+    popup: ConfirmPopup,
+}
+
+impl EditLintConfirmScreen {
+    pub fn new(alias: String, run_id: String, temp: PathBuf, findings: Vec<String>) -> Self {
+        Self {
+            alias,
+            run_id,
+            temp,
+            findings,
+            popup: ConfirmPopup::default(),
+        }
+    }
+}
+
+crate::ui::screens::adjudicate_screen!(
+    EditLintConfirmScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints the Driver tab behind a dimmed popup (the registry alias and the run list) \
+     and lists the `driver check` findings of the operator's own edit. A finding quotes \
+     text from the edited body, which the operator typed or pasted, and a finding is \
+     rendered through `render_for_terminal` here as well as by the lint's own Display. \
+     Fixture states: the hostile identity as a finding.",
+);
+
+impl Screen for EditLintConfirmScreen {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => {
+                dispatch(
+                    ctx,
+                    Action::DriverEditApply {
+                        temp: self.temp.clone(),
+                        accept_lint: true,
+                    },
+                    &self.alias,
+                );
+                ScreenAction::Pop
+            }
+            ConfirmOutcome::Cancel => {
+                ctx.needs_redraw = true;
+                ScreenAction::Replace(Box::new(EditChooserScreen::new(
+                    self.alias.clone(),
+                    self.run_id.clone(),
+                    self.temp.clone(),
+                    ChooserReason::NotApplied,
+                )))
+            }
+            ConfirmOutcome::Pending => {
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let detail = super::detail::DetailScreen::new(self.alias.clone());
+        detail.render_main_only(frame, area, ctx);
+        dim_background(frame, area);
+        let n = self.findings.len();
+        let mut body: Vec<Line<'static>> = vec![Line::from(Span::styled(
+            format!("driver check found {n} problem(s) in your edit:"),
+            Style::default().fg(Color::Yellow),
+        ))];
+        for finding in self.findings.iter().take(LINT_FINDINGS_SHOWN) {
+            body.push(Line::from(Span::styled(
+                format!("  {}", crate::text::render_for_terminal(finding)),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        if n > LINT_FINDINGS_SHOWN {
+            body.push(Line::from(Span::styled(
+                format!("  \u{2026} {} more", n - LINT_FINDINGS_SHOWN),
+                muted(),
+            )));
+        }
+        body.push(Line::from("Apply it anyway?"));
+        self.popup.record(render_confirm_popup(
+            frame,
+            area,
+            "Apply this edit?",
+            body,
+            Color::Yellow,
+            self.popup.focus,
+        ));
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
+    }
+
+    fn name(&self) -> &str {
+        "driver_edit_confirm"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,6 +1294,248 @@ mod tests {
         assert!(
             !text.contains('\u{1b}') && !text.contains('\u{202e}'),
             "{text:?}"
+        );
+    }
+
+    // ── The edit chooser and the lint confirmation (Task 3) ─────────────────
+
+    const TEMP: &str = "/proj/.planning/meta-manager/drivers/20261019-run0/.DIRECTION.md.edit";
+
+    fn edit_chooser(
+        reason: ChooserReason,
+    ) -> (EditChooserScreen, AppContext, UnboundedReceiver<Action>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, rx) = ctx_with_project(dir.path());
+        (
+            EditChooserScreen::new(
+                ALIAS.to_string(),
+                RUN.to_string(),
+                PathBuf::from(TEMP),
+                reason,
+            ),
+            ctx,
+            rx,
+        )
+    }
+
+    #[test]
+    fn launcher_edit_the_chooser_keys_reopen_discard_and_keep() {
+        let (mut screen, mut ctx, mut rx) = edit_chooser(ChooserReason::Conflict);
+        let action = screen.handle_key(KeyCode::Char('r'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        let Some(Action::DriverEditReopen {
+            alias,
+            run_id,
+            temp,
+        }) = rx.try_recv().ok()
+        else {
+            panic!("r re-opens");
+        };
+        assert_eq!((alias.as_str(), run_id.as_str()), (ALIAS, RUN));
+        assert_eq!(temp, PathBuf::from(TEMP));
+
+        let (mut screen, mut ctx, mut rx) = edit_chooser(ChooserReason::Conflict);
+        let action = screen.handle_key(KeyCode::Char('d'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(matches!(
+            rx.try_recv().ok(),
+            Some(Action::DriverEditDiscard { .. })
+        ));
+
+        // Esc keeps the text: nothing is dispatched and the status says where it is.
+        let (mut screen, mut ctx, mut rx) = edit_chooser(ChooserReason::Conflict);
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(rx.try_recv().is_err());
+        let (text, _) = ctx.status_message.clone().expect("a status message");
+        assert_eq!(text, format!("Your text is kept at {TEMP}."));
+
+        // Anything else is inert, and `y`/`n` are not accelerators here.
+        let (mut screen, mut ctx, mut rx) = edit_chooser(ChooserReason::Conflict);
+        for key in ['y', 'n', 'x'] {
+            assert!(matches!(
+                screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx),
+                ScreenAction::None
+            ));
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn launcher_edit_the_chooser_says_what_the_ui_spec_says() {
+        let (screen, ctx, _rx) = edit_chooser(ChooserReason::Conflict);
+        let wide = draw(&screen, &ctx, 200, 20);
+        assert!(
+            wide.contains(
+                "Not applied: DIRECTION.md changed while you were editing.  [r]e-open yours  [d]iscard yours  [Esc] keep it at .DIRECTION.md.edit"
+            ),
+            "one row at a wide terminal:\n{wide}"
+        );
+        // On an 80-column terminal the message and the keys take a row each, both whole.
+        let narrow = draw(&screen, &ctx, 80, 20);
+        assert!(
+            narrow.contains("Not applied: DIRECTION.md changed while you were editing."),
+            "{narrow}"
+        );
+        assert!(
+            narrow
+                .contains("[r]e-open yours  [d]iscard yours  [Esc] keep it at .DIRECTION.md.edit"),
+            "{narrow}"
+        );
+
+        let (screen, ctx, _rx) = edit_chooser(ChooserReason::Insane);
+        let text = draw(&screen, &ctx, 200, 20);
+        assert!(
+            text.contains(
+                "Not applied: the edited body is missing \"## Direction\" or \"## Items\"."
+            ),
+            "{text}"
+        );
+        let (screen, ctx, _rx) = edit_chooser(ChooserReason::Stale);
+        let text = draw(&screen, &ctx, 200, 20);
+        assert!(
+            text.contains(&format!("A previous edit was not applied: {TEMP}.")),
+            "{text}"
+        );
+        assert!(
+            text.contains("[r]e-open it  [d]iscard it  [Esc] keep it"),
+            "{text}"
+        );
+    }
+
+    fn lint_confirm(
+        findings: &[&str],
+    ) -> (EditLintConfirmScreen, AppContext, UnboundedReceiver<Action>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, rx) = ctx_with_project(dir.path());
+        (
+            EditLintConfirmScreen::new(
+                ALIAS.to_string(),
+                RUN.to_string(),
+                PathBuf::from(TEMP),
+                findings.iter().map(|f| (*f).to_string()).collect(),
+            ),
+            ctx,
+            rx,
+        )
+    }
+
+    #[test]
+    fn launcher_edit_the_lint_confirmation_lists_the_findings_and_only_y_applies() {
+        let (screen, ctx, _rx) = lint_confirm(&[
+            "DIRECTION.md:7: the goal is still a placeholder",
+            "DIRECTION.md:20: item I-01 has no done-when",
+        ]);
+        let text = draw(&screen, &ctx, 100, 30);
+        assert!(text.contains("Apply this edit?"), "{text}");
+        assert!(
+            text.contains("driver check found 2 problem(s) in your edit:"),
+            "{text}"
+        );
+        assert!(
+            text.contains("DIRECTION.md:7: the goal is still a placeholder"),
+            "{text}"
+        );
+        assert!(text.contains("Apply it anyway?"), "{text}");
+
+        let (mut screen, mut ctx, mut rx) = lint_confirm(&["DIRECTION.md:7: x"]);
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        let Some(Action::DriverEditApply { temp, accept_lint }) = rx.try_recv().ok() else {
+            panic!("y applies");
+        };
+        assert_eq!(temp, PathBuf::from(TEMP));
+        assert!(accept_lint);
+
+        // `n`, Esc and a stray Enter (default focus No) all open the chooser instead.
+        for key in [KeyCode::Char('n'), KeyCode::Esc, KeyCode::Enter] {
+            let (mut screen, mut ctx, mut rx) = lint_confirm(&["DIRECTION.md:7: x"]);
+            let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
+            assert!(
+                matches!(&action, ScreenAction::Replace(next) if next.name() == "driver_edit_chooser"),
+                "{key:?}"
+            );
+            assert!(rx.try_recv().is_err(), "{key:?} applies nothing");
+        }
+    }
+
+    #[test]
+    fn launcher_edit_a_long_findings_list_is_cut_with_a_count() {
+        let findings: Vec<String> = (1..=11)
+            .map(|n| format!("DIRECTION.md:{n}: problem {n}"))
+            .collect();
+        let refs: Vec<&str> = findings.iter().map(String::as_str).collect();
+        let (screen, ctx, _rx) = lint_confirm(&refs);
+        let text = draw(&screen, &ctx, 100, 40);
+        assert!(text.contains("driver check found 11 problem(s)"), "{text}");
+        assert!(text.contains("problem 8"), "{text}");
+        assert!(!text.contains("problem 9"), "{text}");
+        assert!(text.contains("\u{2026} 3 more"), "{text}");
+    }
+
+    #[test]
+    fn launcher_edit_the_messages_follow_the_ui_spec() {
+        let temp = PathBuf::from(TEMP);
+        assert_eq!(
+            edit_done_message(&EditOutcome::Unchanged, &temp),
+            Some((
+                "No changes to DIRECTION.md. Nothing was written.".to_string(),
+                false
+            ))
+        );
+        assert_eq!(
+            edit_done_message(
+                &EditOutcome::Applied {
+                    lock_timed_out: false
+                },
+                &temp
+            ),
+            Some((
+                "DIRECTION.md updated. The driver re-reads it before its next dispatch."
+                    .to_string(),
+                false
+            ))
+        );
+        let (timed_out, _) = edit_done_message(
+            &EditOutcome::Applied {
+                lock_timed_out: true,
+            },
+            &temp,
+        )
+        .expect("a message");
+        assert!(
+            timed_out.contains("Written without DIRECTION.lock"),
+            "{timed_out}"
+        );
+        let (failed, is_error) =
+            edit_done_message(&EditOutcome::Failed("disk full".to_string()), &temp)
+                .expect("message");
+        assert!(is_error);
+        assert!(
+            failed
+                .starts_with("Could not write DIRECTION.md: disk full. The file was not changed."),
+            "{failed}"
+        );
+        assert!(
+            failed.ends_with(&format!("Your text is kept at {TEMP}.")),
+            "{failed}"
+        );
+        for outcome in [
+            EditOutcome::Conflict,
+            EditOutcome::Insane,
+            EditOutcome::LintProblems(vec![]),
+        ] {
+            assert_eq!(
+                edit_done_message(&outcome, &temp),
+                None,
+                "{outcome:?} opens a screen"
+            );
+        }
+        assert_eq!(
+            editor_failed_message("exit status: 1", &temp),
+            format!(
+                "The editor exited with exit status: 1. Nothing was written. Your text is kept at {TEMP}."
+            )
         );
     }
 }
