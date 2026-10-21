@@ -8434,6 +8434,7 @@ mod tests {
     /// A launcher run dir under `root` whose frontmatter says `running` with one
     /// launch and whose run lock is NOT held: the launcher died without a final
     /// status. Heartbeats are fresh, so the only thing wrong with it is the lock.
+    #[cfg(unix)]
     fn write_dead_launcher_run(root: &std::path::Path, run_id: &str) {
         use crate::state_reader::driver_frontmatter::{
             parse_driver_frontmatter, RunStatus, DRIVER_RUNS_REL,
@@ -8462,6 +8463,7 @@ mod tests {
 
     /// An `App` with two registered projects, `alpha` and `beta`, rooted at the given
     /// directories.
+    #[cfg(unix)]
     fn two_project_app(alpha: &std::path::Path, beta: &std::path::Path) -> App {
         use crate::config::RegisteredProject;
         let mut app = App::new_for_test();

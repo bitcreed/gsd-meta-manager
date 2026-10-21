@@ -1393,5 +1393,6 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     type OsStringArg = std::ffi::OsString;
 }

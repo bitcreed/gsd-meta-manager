@@ -56,9 +56,9 @@ jobs:
   # no `target_env` cfg, which makes it cfg-equivalent to msvc, and gnu is the
   # target verified locally.
   #
-  # Clippy covers --lib --bins only. Two test-only helpers (in src/app.rs and
-  # src/ui/screens/detail.rs) are dead code under the macOS/Windows cfg until the
-  # fix for them lands on master; widen clippy to --all-targets once it does.
+  # Clippy covers all targets, tests included, with -D warnings. The test-only
+  # helpers that were dead code under the macOS/Windows cfg are now gated to the
+  # cfg of their callers (quick 261021-0jg), so a new one fails this gate.
   #
   # scripts/pre-tag-check.sh does not mirror this gate yet; that is a follow-up.
   cross-target-check:
@@ -95,7 +95,7 @@ jobs:
 
       - name: Clippy
         if: matrix.clippy
-        run: cargo clippy --locked --target "${{ matrix.target }}" --lib --bins -- -D warnings
+        run: cargo clippy --locked --target "${{ matrix.target }}" --all-targets -- -D warnings
 
   publish:
     name: Verify and publish to crates.io

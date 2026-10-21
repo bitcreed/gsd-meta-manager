@@ -694,6 +694,7 @@ mod tests {
 
     const BODY: &str = "# Driver direction: t\n\n## Direction\n\n- control: run\n\n## Items\n\n### I-01 first\n\n- budget: dispatches=3, tokens=1000, bad=x\n\n### I-02 second\n\n- budget: dispatches=1\n";
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn block(n: u32) -> String {
         format!("---\n{FM_MARKER}\nn: {n}\n---\n")
     }
