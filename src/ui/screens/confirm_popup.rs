@@ -352,6 +352,38 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_rows_counts_the_rows_word_wrap_draws() {
+        // Word wrap moves `bbbbbbb` whole onto the next row; a char count says 2.
+        assert_eq!(wrapped_rows(&[Line::from("aaaaaaa bbbbbbb ccc")], 10), 3);
+        let bodies: [Vec<Line<'static>>; 3] = [
+            vec![Line::from(
+                "Set control: stop for 20261019-0042-abcd? The driver dispatches nothing new, records the in-flight report, then ends. Nothing is killed.",
+            )],
+            vec![
+                Line::from("driver check found 3 problem(s) in your edit:"),
+                Line::from("  DIRECTION.md:7: the goal is still a placeholder"),
+                Line::from(""),
+                Line::from("Apply it anyway?"),
+            ],
+            vec![Line::from(
+                "supercalifragilisticexpialidocious pneumonoultramicroscopicsilicovolcanoconiosis x",
+            )],
+        ];
+        for body in &bodies {
+            for width in 10..=80u16 {
+                let expected = Paragraph::new(body.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width);
+                assert_eq!(
+                    usize::from(wrapped_rows(body, width)),
+                    expected,
+                    "width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn tiny_terminals_do_not_panic() {
         for (w, h) in [(1, 1), (10, 3), (20, 5), (30, 8)] {
             let _ = draw(ConfirmFocus::No, w, h);

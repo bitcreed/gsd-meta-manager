@@ -1143,6 +1143,67 @@ mod tests {
         );
     }
 
+    const LONG_RUN: &str = "20261019-0042-abcd";
+
+    /// The text inside the popup whose title row holds `title`: the rows between its
+    /// top border and its button row, border glyphs stripped, as `(rows, spacer_blank)`.
+    fn popup_body_rows(screen_text: &str, title: &str) -> Option<(Vec<String>, bool)> {
+        let rows: Vec<Vec<char>> = screen_text.lines().map(|l| l.chars().collect()).collect();
+        let needle: Vec<char> = title.chars().collect();
+        let (top, at) = rows.iter().enumerate().find_map(|(y, row)| {
+            row.windows(needle.len())
+                .position(|w| w == needle.as_slice())
+                .map(|x| (y, x))
+        })?;
+        let left = rows[top][..at].iter().rposition(|c| *c == '\u{250c}')?;
+        let right = at + rows[top][at..].iter().position(|c| *c == '\u{2510}')?;
+        let buttons = (top + 1..rows.len())
+            .find(|y| rows[*y].iter().collect::<String>().contains("[ Yes ]"))?;
+        let inside = |y: usize| -> String {
+            rows[y][left + 1..right]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+        let body: Vec<String> = (top + 1..buttons - 1).map(inside).collect();
+        let spacer_blank = inside(buttons - 1).is_empty();
+        Some((body, spacer_blank))
+    }
+
+    #[test]
+    fn launcher_steer_the_polite_stop_sentence_survives_every_width() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, _rx) = ctx_with_project(dir.path());
+        let screen = PoliteStopScreen::new(ALIAS.to_string(), LONG_RUN.to_string());
+        let prompt = screen.prompt();
+        let want = strip_key_hint(&prompt).to_string();
+        for (w, h) in [
+            (50, 24),
+            (60, 16),
+            (80, 12),
+            (80, 24),
+            (100, 30),
+            (120, 40),
+            (160, 40),
+        ] {
+            let text = draw(&screen, &ctx, w, h);
+            let (body, spacer_blank) = popup_body_rows(&text, "Stop driver run")
+                .unwrap_or_else(|| panic!("{w}x{h}: no popup found:\n{text}"));
+            let joined = body
+                .iter()
+                .filter(|r| !r.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                joined.contains(&want),
+                "{w}x{h}: the prompt is cut.\nwant: {want}\ngot:  {joined}\n{text}"
+            );
+            assert!(spacer_blank, "{w}x{h}: the spacer row is gone:\n{text}");
+        }
+    }
+
     #[test]
     fn launcher_steer_an_answer_enter_dispatches_the_trimmed_text_and_pops() {
         let (mut screen, mut ctx, mut rx) = answer_screen(Some("needs-human"));
