@@ -5,10 +5,10 @@ current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: verifying
 stopped_at: Completed 30-09-PLAN.md
-last_updated: "2026-10-21T05:00:27.941Z"
+last_updated: "2026-10-21T05:43:01.986Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: 21ce046064499ee14ce2f2810ad406af9d302107
+state_head: 794af4b2dfe4c71ba96a7c4bd194e47d3a2b4434
 progress:
   total_phases: 10
   completed_phases: 12
@@ -272,7 +272,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-20 - Completed quick task 261020-vxg: Fix non-Linux build breaks (macOS, Windows) and add CI cargo check for non-Linux targets
+Last activity: 2026-10-21 - Completed quick task 261021-0jg: Cross-target clippy cleanup and macOS unsandboxed launch portability (D-31)
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -889,6 +889,7 @@ Recent decisions affecting current work:
 | 261019-hqu | README: Where it fits in the GSD ecosystem | 2026-10-19 | 8c022ad | [261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste](./quick/261019-hqu-readme-where-it-fits-in-the-gsd-ecosyste/) |
 | 261020-f80 | Hide sibling driver run dirs in bwrap sandbox + fix auth.rs doc comment | 2026-10-20 | c84bb25 | [261020-f80-hide-sibling-driver-run-dirs-in-bwrap-sa](./quick/261020-f80-hide-sibling-driver-run-dirs-in-bwrap-sa/) |
 | 261020-vxg | Fix non-Linux build breaks (macOS, Windows) and add CI cargo check for non-Linux targets | 2026-10-20 | 946508b | [261020-vxg-fix-non-linux-build-breaks-macos-windows](./quick/261020-vxg-fix-non-linux-build-breaks-macos-windows/) |
+| 261021-0jg | Cross-target clippy cleanup and macOS unsandboxed launch portability (D-31) | 2026-10-21 | 794af4b | [261021-0jg-cross-target-clippy-cleanup-and-macos-un](./quick/261021-0jg-cross-target-clippy-cleanup-and-macos-un/) |
 
 ## Session Continuity
 
