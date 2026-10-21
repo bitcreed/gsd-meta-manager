@@ -1672,6 +1672,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn launcher_kill_confirm_keeps_the_driver_tab_behind_it() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (ctx, _rx) = ctx_with_project(dir.path());
+        let screen = DriverConfirmScreen::new_launcher_stop(ALIAS.to_string(), RUN.to_string());
+        let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
+        let buf = t.backend().buffer();
+        let text: String = (0..24u16)
+            .map(|y| (0..80u16).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Kill driver run"), "{text}");
+        assert!(
+            text.contains("Project: proj"),
+            "the Driver tab is behind the kill prompt:\n{text}"
+        );
+        assert!(
+            !text.contains(" GSD Manager "),
+            "not the dashboard:\n{text}"
+        );
+    }
+
+    #[test]
     fn every_driver_confirmation_renders_as_a_popup_with_buttons() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;

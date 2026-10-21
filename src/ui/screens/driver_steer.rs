@@ -1332,7 +1332,7 @@ mod tests {
         );
         assert_eq!(
             steered_message(&op, &written, true, Some("gap-rounds")).0,
-            "Answer written to I-03, but it is parked by gap-rounds: an answer alone will not resume it. Raise its budget with [e] or relaunch with higher caps with [R]."
+            "I-03 answered; gap-rounds parks it: [e] budget, [R] caps."
         );
         let unhold = SteerOp::Unhold {
             item: "I-03".to_string(),
@@ -1353,6 +1353,71 @@ mod tests {
             error && text.starts_with("Nothing was written: I-03 is not an item"),
             "{text}"
         );
+    }
+
+    /// The rows under the answer input row (`  Answer I-03> `), trimmed and joined, so
+    /// a sentence wrapped over several rows still reads as one.
+    fn footer_below_the_input(text: &str) -> (String, String) {
+        let rows: Vec<&str> = text.lines().collect();
+        let input = rows
+            .iter()
+            .position(|row| row.contains("Answer I-03> "))
+            .unwrap_or_else(|| panic!("no input row:\n{text}"));
+        let below = rows[input + 1..]
+            .iter()
+            .map(|row| row.trim())
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        (rows[input].to_string(), below)
+    }
+
+    #[test]
+    fn launcher_steer_the_answer_warning_wraps_to_its_last_word() {
+        let warning = park_warning("I-03", Some("gap-rounds")).expect("a warning");
+        for (w, h) in [(80, 24), (100, 30), (120, 40)] {
+            let (screen, ctx, _rx) = answer_screen(Some("gap-rounds"));
+            let text = draw(&screen, &ctx, w, h);
+            let (input, below) = footer_below_the_input(&text);
+            assert!(
+                below.contains(&warning) && below.ends_with("[R]."),
+                "{w}x{h}: the warning is cut.\nwant: {warning}\ngot:  {below}\n{text}"
+            );
+            assert!(input.contains("  Answer I-03> "), "{w}x{h}: {input}");
+            assert!(input.contains("[Enter] write"), "{w}x{h}: {input}");
+        }
+
+        // A refused answer's Red error row wraps too, above the warning.
+        let (mut screen, mut ctx, _rx) = answer_screen(Some("gap-rounds"));
+        type_into(&mut screen, &mut ctx, "a --> b");
+        enter(&mut screen, &mut ctx);
+        let text = draw(&screen, &ctx, 80, 24);
+        let (_, below) = footer_below_the_input(&text);
+        let error = answer_rejected_copy(AnswerRule::CommentMarker);
+        assert!(below.contains(error), "the error is cut:\n{text}");
+        assert!(below.contains(&warning), "the warning is cut:\n{text}");
+    }
+
+    #[test]
+    fn launcher_steer_the_park_answer_copy_fits_the_status_bar() {
+        use crate::ui::screens::driver_run::PARK_RULES;
+        let op = SteerOp::Answer {
+            item: "I-03".to_string(),
+            text: "x".to_string(),
+        };
+        let written = SteerOutcome::Written {
+            lock_timed_out: false,
+        };
+        for rule in PARK_RULES.iter().filter(|rule| **rule != NEEDS_HUMAN_RULE) {
+            let (text, error) = steered_message(&op, &written, true, Some(rule));
+            assert!(!error);
+            assert_eq!(
+                text,
+                format!("I-03 answered; {rule} parks it: [e] budget, [R] caps.")
+            );
+            // 62 cells is the room the detail tab bar leaves at 80 columns for `proj`.
+            assert!(Span::raw(text.as_str()).width() <= 62, "{rule}: {text}");
+        }
     }
 
     #[test]

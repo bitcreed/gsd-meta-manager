@@ -8709,7 +8709,7 @@ mod tests {
 
         let (status, _) = app.ctx.status_message.clone().expect("a status message");
         assert!(
-            status.starts_with("Answer written to I-01, but it is parked by gap-rounds"),
+            status.starts_with("I-01 answered; gap-rounds parks it: [e] budget, [R] caps."),
             "{status}"
         );
         let after = std::fs::read_to_string(run_dir.join("DIRECTION.md")).unwrap();
