@@ -504,7 +504,12 @@ fn default_socket_path_requires_xdg_runtime_dir() {
     // No --sock and no XDG_RUNTIME_DIR: refused, naming the variable, before
     // anything is written.
     let fx = Fixture::new();
-    let mut none = spawn_captured(&fx, serve_command(&fx, None), "none");
+    // TMPDIR is set to a real absolute directory and still ignored on Linux
+    // (D-21: no shared-dir fallback; only macOS consults it, D-31).
+    let tmpdir = TempDir::new().expect("tmpdir");
+    let mut none_cmd = serve_command(&fx, None);
+    none_cmd.env("TMPDIR", tmpdir.path());
+    let mut none = spawn_captured(&fx, none_cmd, "none");
     let status = none.wait_exit(Duration::from_secs(10));
     assert_eq!(status.code(), Some(1), "stderr: {}", none.stderr_text());
     assert!(

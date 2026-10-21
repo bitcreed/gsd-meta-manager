@@ -31,7 +31,11 @@
 //!    current uid with no group/other bits. An unset `XDG_RUNTIME_DIR`, or a path
 //!    over [`MAX_SUN_PATH`] bytes, is a typed refusal. There is deliberately no
 //!    `/tmp` fallback `[inferred — audit]`: a shared directory is exactly where a
-//!    squatter pre-creates the path.
+//!    squatter pre-creates the path. On macOS only, an unset `XDG_RUNTIME_DIR`
+//!    falls back to an absolute `$TMPDIR` (a per-user 0700 directory under
+//!    `/var/folders` on a stock host, D-31) `[inferred — audit]`; the
+//!    `gsdmm-driverctl` subdirectory must pass the same owner and no-group/other
+//!    checks whichever base is used. On Linux `TMPDIR` is never consulted.
 //! 5. **The run id is a path component and is validated as one (Pitfall 8,
 //!    T-27-23).** It must match [`RUN_ID_RE`] and the canonical run dir must sit
 //!    directly under the canonical `<project>/.planning/meta-manager/drivers/`.
@@ -53,6 +57,7 @@
 //!    frontmatter regenerated, then the listener stops, the socket is unlinked and
 //!    the lock is released.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -75,10 +80,17 @@ use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
 use crate::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
 use crate::error::LockError;
 
-/// The per-user directory (under `XDG_RUNTIME_DIR`) the default sockets live in.
+/// The per-user directory (under the socket base: `XDG_RUNTIME_DIR`, or
+/// `TMPDIR` on macOS) the default sockets live in.
 pub const SOCKET_DIR_NAME: &str = "gsdmm-driverctl";
 
-/// The longest socket path `sockaddr_un` holds on Linux (108 bytes with the NUL).
+/// The longest socket path `sockaddr_un` holds on macOS (`sun_path` is 104
+/// bytes including the NUL).
+#[cfg(target_os = "macos")]
+pub const MAX_SUN_PATH: usize = 103;
+
+/// The longest socket path `sockaddr_un` holds off macOS (108 bytes with the NUL).
+#[cfg(not(target_os = "macos"))]
 pub const MAX_SUN_PATH: usize = 107;
 
 /// How many connections may be in flight; the next one is answered `busy`.
@@ -251,16 +263,69 @@ pub fn hash8(canonical: &Path) -> String {
     digest.iter().take(4).map(|b| format!("{b:02x}")).collect()
 }
 
-/// The default socket path for a run (D-21), from `XDG_RUNTIME_DIR`.
+/// The default socket path for a run (D-21), from `XDG_RUNTIME_DIR`; on macOS
+/// only, an unset `XDG_RUNTIME_DIR` falls back to an absolute `$TMPDIR` (D-31).
 ///
 /// `canonical_run_dir` must already be canonical: its hash keeps two projects
 /// that use the same run id from colliding on one socket (T-27-25). Phase 28
-/// passes this as `DRIVERCTL_SOCK`.
+/// passes this as `DRIVERCTL_SOCK`. `TMPDIR` is read from the environment
+/// variable only, never `std::env::temp_dir()`, which silently falls back to
+/// `/tmp` `[inferred — audit]`.
 pub fn socket_path(run_id: &str, canonical_run_dir: &Path) -> Result<PathBuf, DriverctlError> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from);
-    socket_path_in(runtime.as_deref(), run_id, canonical_run_dir)
+    let base = socket_base_dir(
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        std::env::var_os("TMPDIR").as_deref(),
+        cfg!(target_os = "macos"),
+    )?;
+    socket_path_in(Some(&base), run_id, canonical_run_dir)
+}
+
+/// Pick the directory the private socket subdirectory is created under (the
+/// testable core of [`socket_path`]). An empty value counts as unset.
+///
+/// `XDG_RUNTIME_DIR` wins when set; a set-but-relative value is refused and
+/// never falls through to `TMPDIR` `[inferred — audit]`. Only when
+/// `allow_tmpdir` (macOS) is `true` and `XDG_RUNTIME_DIR` is unset is an
+/// absolute `TMPDIR` used; a relative `TMPDIR` is refused, not skipped
+/// `[inferred — audit]`. Nothing ever falls back to `/tmp`.
+fn socket_base_dir(
+    xdg_runtime_dir: Option<&OsStr>,
+    tmpdir: Option<&OsStr>,
+    allow_tmpdir: bool,
+) -> Result<PathBuf, DriverctlError> {
+    let bad = |detail: String| DriverctlError::SocketPath { detail };
+    let xdg = xdg_runtime_dir.filter(|v| !v.is_empty());
+    let tmp = tmpdir.filter(|v| !v.is_empty());
+
+    if let Some(xdg) = xdg {
+        let path = PathBuf::from(xdg);
+        if !path.is_absolute() {
+            return Err(bad(format!(
+                "XDG_RUNTIME_DIR {} is not an absolute path",
+                path.display()
+            )));
+        }
+        return Ok(path);
+    }
+    if allow_tmpdir {
+        if let Some(tmp) = tmp {
+            let path = PathBuf::from(tmp);
+            if !path.is_absolute() {
+                return Err(bad(format!(
+                    "TMPDIR {} is not an absolute path",
+                    path.display()
+                )));
+            }
+            return Ok(path);
+        }
+        return Err(bad(
+            "neither XDG_RUNTIME_DIR nor TMPDIR is set; pass --sock explicitly (/tmp is never used)"
+                .to_owned(),
+        ));
+    }
+    Err(bad(
+        "XDG_RUNTIME_DIR is not set; pass --sock explicitly (/tmp is never used)".to_owned(),
+    ))
 }
 
 /// [`socket_path`] with the runtime directory passed in (the testable core).
@@ -1063,10 +1128,7 @@ mod tests {
         let nested = rt.path().join("x".repeat(60));
         fs::create_dir(&nested).unwrap();
         let err = socket_path_in(Some(&nested), &long_id, Path::new("/p/r")).unwrap_err();
-        assert!(
-            err.to_string().contains(&MAX_SUN_PATH.to_string()),
-            "{err}"
-        );
+        assert!(err.to_string().contains(&MAX_SUN_PATH.to_string()), "{err}");
         // Refused before the directory was created.
         assert!(!nested.join(SOCKET_DIR_NAME).exists());
     }

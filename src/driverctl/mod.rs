@@ -69,7 +69,8 @@
 //!    thread.
 //! 5. **Pass [`serve::socket_path`]`(run_id, run_dir)` as `DRIVERCTL_SOCK`**
 //!    (D-21). It is the one helper that applies the private-directory rules and
-//!    the 107-byte limit; do not rebuild the path by hand.
+//!    the platform `sun_path` limit ([`serve::MAX_SUN_PATH`]); do not rebuild the
+//!    path by hand.
 //! 6. **Install the cap gate with [`store::RunStore::set_gate`]**, reading
 //!    `caps.gap_rounds.per_phase` (D-26). This module counts gap rounds from disk
 //!    and calls the gate; denying at limit + 1 and killing the scope at limit + 2
