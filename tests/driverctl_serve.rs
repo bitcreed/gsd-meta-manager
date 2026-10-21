@@ -61,12 +61,17 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_run_id(RUN_ID)
+    }
+
+    /// A fixture whose run directory is named `run_id`.
+    fn with_run_id(run_id: &str) -> Self {
         let project_dir = TempDir::new().expect("project dir");
         let scratch = TempDir::new().expect("scratch dir");
         let run_dir = project_dir
             .path()
             .join(".planning/meta-manager/drivers")
-            .join(RUN_ID);
+            .join(run_id);
         fs::create_dir_all(&run_dir).expect("run dir");
         fs::write(run_dir.join("DIRECTION.md"), BODY).expect("DIRECTION.md");
         Fixture {
@@ -497,6 +502,56 @@ fn expected_hash8(run_dir: &Path) -> String {
         .take(4)
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// The fixed-length socket stem, computed independently of the server:
+/// sha256(run id, 0x00, canonical run dir)[:8] as 16 lowercase hex characters.
+fn expected_fixed_stem(run_id: &str, run_dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+
+    let canonical = fs::canonicalize(run_dir).expect("canonical run dir");
+    let mut hasher = Sha256::new();
+    hasher.update(run_id.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(canonical.as_os_str().as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+#[test]
+fn default_socket_path_gives_a_long_run_id_the_fixed_length_name() {
+    // An 80-character run id makes the D-21 name far longer than the unix
+    // socket limit; the default path falls back to a fixed-length name in the
+    // same private directory.
+    let run_id = format!("20261021-{}", "a".repeat(71));
+    assert_eq!(run_id.len(), 80);
+    let fx = Fixture::with_run_id(&run_id);
+    let runtime = TempDir::new().expect("runtime dir");
+    let mut cmd = serve_command(&fx, None);
+    cmd.env("XDG_RUNTIME_DIR", runtime.path());
+    let mut served = spawn_captured(&fx, cmd, "long");
+    wait_listening(&mut served);
+
+    let dir = runtime.path().join("gsdmm-driverctl");
+    let expected = dir.join(format!("{}.sock", expected_fixed_stem(&run_id, &fx.run_dir)));
+    assert!(
+        expected.exists(),
+        "fixed-length socket at {}",
+        expected.display()
+    );
+    let sock_mode = fs::metadata(&expected).expect("socket metadata").mode();
+    assert_eq!(sock_mode & 0o777, 0o600, "the socket is 0600");
+    let d21 = dir.join(format!("{run_id}-{}.sock", expected_hash8(&fx.run_dir)));
+    assert!(!d21.exists(), "no D-21-shaped socket at {}", d21.display());
+
+    let show = client(&expected, &["show"], None);
+    assert_eq!(show.status.code(), Some(0), "show: {}", stderr(&show));
+    drop(served);
 }
 
 #[test]

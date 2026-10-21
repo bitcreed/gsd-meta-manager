@@ -1125,7 +1125,9 @@ mod tests {
     fn socket_path_refuses_a_path_over_the_unix_limit() {
         let rt = runtime_dir();
         let long_id = "r".repeat(80);
-        let nested = rt.path().join("x".repeat(60));
+        // Long enough that even the fixed-length name overflows, whatever the
+        // host TMPDIR length.
+        let nested = rt.path().join("x".repeat(MAX_SUN_PATH));
         fs::create_dir(&nested).unwrap();
         let err = socket_path_in(Some(&nested), &long_id, Path::new("/p/r")).unwrap_err();
         assert!(err.to_string().contains(&MAX_SUN_PATH.to_string()), "{err}");
@@ -1234,6 +1236,153 @@ mod tests {
         let resolved2 = base(None, Some(rt2.path().to_str().unwrap()), true).unwrap();
         let err = socket_path_in(Some(&resolved2), "r27", Path::new("/p/r27")).unwrap_err();
         assert!(err.to_string().contains("group or others"), "{err}");
+    }
+
+    // ------------------------------------- fixed-length fallback (quick 261021-1if)
+
+    /// A stock-shaped macOS `$TMPDIR` (49 bytes, with the trailing slash).
+    const STOCK_MACOS_TMPDIR: &str = "/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/";
+
+    fn is_lower_hex16(stem: &str) -> bool {
+        stem.len() == 16
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
+    #[test]
+    fn the_d21_name_is_kept_when_it_fits_exactly() {
+        let run_dir = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+
+        let id62 = "a".repeat(62);
+        let linux = default_socket_file(
+            Path::new("/run/user/1000"),
+            &id62,
+            run_dir,
+            LINUX_MAX_SUN_PATH,
+        )
+        .unwrap();
+        assert_eq!(
+            linux,
+            PathBuf::from(format!(
+                "/run/user/1000/gsdmm-driverctl/{id62}-{}.sock",
+                hash8(run_dir)
+            ))
+        );
+        assert_eq!(linux.as_os_str().len(), LINUX_MAX_SUN_PATH);
+
+        let id24 = "a".repeat(24);
+        let mac = default_socket_file(
+            Path::new(STOCK_MACOS_TMPDIR),
+            &id24,
+            run_dir,
+            MACOS_MAX_SUN_PATH,
+        )
+        .unwrap();
+        assert_eq!(
+            mac,
+            PathBuf::from(format!(
+                "{STOCK_MACOS_TMPDIR}gsdmm-driverctl/{id24}-{}.sock",
+                hash8(run_dir)
+            ))
+        );
+        assert_eq!(mac.as_os_str().len(), MACOS_MAX_SUN_PATH);
+    }
+
+    #[test]
+    fn one_byte_over_the_limit_gives_the_fixed_length_name() {
+        let run_dir = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+        for (base, id_len, max) in [
+            ("/run/user/1000", 63, LINUX_MAX_SUN_PATH),
+            (STOCK_MACOS_TMPDIR, 25, MACOS_MAX_SUN_PATH),
+        ] {
+            let id = "a".repeat(id_len);
+            let got = default_socket_file(Path::new(base), &id, run_dir, max).unwrap();
+            assert_eq!(
+                got.parent().unwrap(),
+                Path::new(base).join(SOCKET_DIR_NAME),
+                "same private directory"
+            );
+            let stem = got.file_stem().unwrap().to_str().unwrap();
+            assert!(is_lower_hex16(stem), "{stem}");
+            assert_eq!(got.extension().unwrap(), "sock");
+            assert!(got.as_os_str().len() <= max);
+        }
+    }
+
+    #[test]
+    fn a_long_run_id_under_a_stock_macos_tmpdir_fits() {
+        let tmp = base(None, Some(STOCK_MACOS_TMPDIR), true).unwrap();
+        let id = "a".repeat(80);
+        let got = default_socket_file(
+            &tmp,
+            &id,
+            Path::new("/projects/a/.planning/meta-manager/drivers/x"),
+            MACOS_MAX_SUN_PATH,
+        )
+        .unwrap();
+        assert_eq!(got.as_os_str().len(), 86);
+        assert_eq!(got.parent().unwrap(), tmp.join(SOCKET_DIR_NAME));
+        let stem = got.file_stem().unwrap().to_str().unwrap();
+        assert!(is_lower_hex16(stem), "{stem}");
+        assert!(!stem.contains('-'), "{stem}");
+    }
+
+    #[test]
+    fn the_fixed_length_name_is_deterministic_and_input_sensitive() {
+        let id = "a".repeat(80);
+        let dir_a = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+        let dir_b = Path::new("/projects/b/.planning/meta-manager/drivers/x");
+        let pick = |id: &str, dir: &Path| {
+            default_socket_file(Path::new(STOCK_MACOS_TMPDIR), id, dir, MACOS_MAX_SUN_PATH).unwrap()
+        };
+        assert_eq!(pick(&id, dir_a), pick(&id, dir_a));
+        assert_ne!(pick(&id, dir_a), pick(&id, dir_b), "another run dir");
+        assert_ne!(
+            pick(&id, dir_a),
+            pick(&"b".repeat(80), dir_a),
+            "another run id"
+        );
+    }
+
+    #[test]
+    fn socket_name_hash_is_pinned_by_a_golden_value() {
+        // printf 'r27\000/p/r27' | sha256sum | cut -c1-16
+        assert_eq!(
+            socket_name_hash("r27", Path::new("/p/r27")),
+            "b3a230fed1e52760"
+        );
+    }
+
+    #[test]
+    fn a_base_of_65_bytes_fits_the_fixed_length_name_and_66_is_refused() {
+        let id = "a".repeat(80);
+        let run_dir = Path::new("/p/r");
+        let fits = PathBuf::from(format!("/{}", "b".repeat(64)));
+        assert_eq!(fits.as_os_str().len(), 65);
+        let got = default_socket_file(&fits, &id, run_dir, MACOS_MAX_SUN_PATH).unwrap();
+        assert_eq!(got.as_os_str().len(), MACOS_MAX_SUN_PATH);
+
+        let over = PathBuf::from(format!("/{}", "b".repeat(65)));
+        assert_eq!(over.as_os_str().len(), 66);
+        let err = default_socket_file(&over, &id, run_dir, MACOS_MAX_SUN_PATH).unwrap_err();
+        assert!(matches!(err, DriverctlError::SocketPath { .. }));
+        assert!(err.to_string().contains("103"), "{err}");
+    }
+
+    #[test]
+    fn socket_path_in_gives_a_long_run_id_the_fixed_length_name() {
+        let rt = runtime_dir();
+        let id = "a".repeat(80);
+        let run_dir = Path::new("/projects/a/.planning/meta-manager/drivers/x");
+        let got = socket_path_in(Some(rt.path()), &id, run_dir).unwrap();
+        assert_eq!(
+            got,
+            default_socket_file(rt.path(), &id, run_dir, MAX_SUN_PATH).unwrap()
+        );
+        assert!(got.as_os_str().len() <= MAX_SUN_PATH);
+        let meta = fs::metadata(rt.path().join(SOCKET_DIR_NAME)).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o700);
     }
 
     // ---------------------------------------------------------------- misc
