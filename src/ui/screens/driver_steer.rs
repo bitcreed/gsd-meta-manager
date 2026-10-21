@@ -875,7 +875,8 @@ impl Screen for EditLintConfirmScreen {
         ));
         let question = Line::from("Apply it anyway?");
         // The header and the question always come first: the findings get what is left,
-        // at most `LINT_FINDINGS_SHOWN` of them plus the `… k more` row.
+        // at most `LINT_FINDINGS_SHOWN` of them plus the `… k more` row. At a zero
+        // budget the list is left out, so the question still fits and `y` stays live.
         let (width, room) = body_room(area);
         let fixed = wrapped_rows(&[header.clone(), question.clone()], width);
         let rows = room
@@ -892,7 +893,9 @@ impl Screen for EditLintConfirmScreen {
             })
             .collect();
         let mut body: Vec<Line<'static>> = vec![header];
-        body.extend(fit_list(findings, rows, width));
+        if rows > 0 {
+            body.extend(fit_list(findings, rows, width));
+        }
         body.push(question);
         self.popup.record(render_confirm_popup(
             frame,

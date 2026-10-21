@@ -1509,20 +1509,21 @@ impl Screen for LintPopupScreen {
         let question = Line::from("Edit it again now?");
         // The problems give way, the question does not (WR-05, UI D5): they are fitted
         // to the rows left after the header and the question, and at most
-        // `POPUP_PROBLEMS_SHOWN` plus a count row are listed on a tall terminal.
+        // `POPUP_PROBLEMS_SHOWN` plus a count row are listed on a tall terminal. At a
+        // zero budget the list is left out, so the header and the question still fit
+        // and `y` stays live.
         let (inner, room) = body_room(area);
         let taken = wrapped_rows(&[header.clone(), question.clone()], inner);
+        let rows = room.saturating_sub(taken).min(POPUP_PROBLEMS_SHOWN + 1);
         let problems = self
             .problems
             .iter()
             .map(|problem| Line::from(Span::styled(format!("  {}", shown(problem)), red)))
             .collect();
         let mut body: Vec<Line<'static>> = vec![header];
-        body.extend(fit_list(
-            problems,
-            room.saturating_sub(taken).min(POPUP_PROBLEMS_SHOWN + 1),
-            inner,
-        ));
+        if rows > 0 {
+            body.extend(fit_list(problems, rows, inner));
+        }
         body.push(question);
         self.popup.record(render_confirm_popup(
             frame,
