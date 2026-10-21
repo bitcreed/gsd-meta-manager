@@ -4,11 +4,11 @@ milestone: v1.14.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: executing
-stopped_at: Completed 30-02-PLAN.md
-last_updated: "2026-10-21T01:06:43.756Z"
+stopped_at: Completed 30-03-PLAN.md
+last_updated: "2026-10-21T01:40:21.245Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 30 execution started
-state_head: 13bbcc4ef5a694be8f680c5e31c9b5b1f874168d
+state_head: abb3121fda78b1a1cac88d3325a2c4c9d2f6be28
 progress:
   total_phases: 10
   completed_phases: 12
@@ -238,7 +238,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 30 (Driver Tab on DIRECTION.md) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -503,6 +503,7 @@ verify-phase if the gate is fixed.
 | Phase 29 P08 | 3h (resumed) | 3 tasks | 7 files |
 | Phase 30 P01 | 31 min | 3 tasks | 13 files |
 | Phase 30 P02 | 34 min | 3 tasks | 12 files |
+| Phase 30 P03 | 31 min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -695,6 +696,9 @@ Recent decisions affecting current work:
 - [Phase 30]: 30-02: heartbeat_stale(fm, derived, now) is the one stale rule (live and age > the file's heartbeat_stale_after_s); a stale live run reads stale, never crashed
 - [Phase 30]: 30-02: park rules reach plan 30-04 via ProjectViewCache::launcher_log.park_rules (item id -> rule from the closed set), valid only for the selected run's tail
 - [Phase 30]: 30-02: a failed single-run read is answered by a full re-listing; the LOG pane shares the legacy output pane's follow/scroll state [inferred - audit]
+- [Phase 30]: 30-03: project dashboard marker = Ord::min of per-run classes (crashed > parked > driven > stale > unknown); attention = crashed|parked|stale only; badge rank-4 stays the legacy needs-human predicate
+- [Phase 30]: 30-03 [inferred - audit]: status tokens drop benign first, flags last (each group from the end of the UI-SPEC order), so a flag outlives ctl, audit and prompt custom
+- [Phase 30]: 30-03: height tiers FULL (tab area >= 21 rows), MEDIUM (12-20), SUMMARY (1-11, one row per run); legacy detail at 8-13 rows drops pipeline row and steps together (WR-05 resolved by D-29)
 
 ### Roadmap Evolution
 
@@ -869,8 +873,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-21T01:06:43.014Z
-Stopped at: Completed 30-02-PLAN.md
+Last session: 2026-10-21T01:40:20.488Z
+Stopped at: Completed 30-03-PLAN.md
 Resume file: None
 
 Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md

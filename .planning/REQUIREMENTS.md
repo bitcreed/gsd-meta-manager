@@ -230,7 +230,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 ### Driver Tab (DTAB): Phase 30
 
-- [ ] **DTAB-01**: The Driver tab lists a project's run dirs. For the selected run it shows, from
+- [x] **DTAB-01**: The Driver tab lists a project's run dirs. For the selected run it shows, from
   frontmatter only:
   - status;
   - per-item state;
@@ -238,7 +238,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
   - the dispatch audit;
   - heartbeat age;
   - `connected[]`.
-- [ ] **DTAB-02**: Crashed runs and stale heartbeats are flagged. The dashboard marks projects that
+- [x] **DTAB-02**: Crashed runs and stale heartbeats are flagged. The dashboard marks projects that
   are driven, parked or crashed.
 - [ ] **DTAB-03**: A user can set `control`, answer or un-hold a parked item, and open DIRECTION.md
   in `$EDITOR` from the tab. Every edit takes the shared flock and never touches the frontmatter.
@@ -362,8 +362,8 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | PRMT-03 | Phase 29 | Complete |
 | PRMT-04 | Phase 29 | Complete |
 | PRMT-05 | Phase 29 | Complete |
-| DTAB-01 | Phase 30 | Pending |
-| DTAB-02 | Phase 30 | Pending |
+| DTAB-01 | Phase 30 | Complete |
+| DTAB-02 | Phase 30 | Complete |
 | DTAB-03 | Phase 30 | Pending |
 | DTAB-04 | Phase 30 | Pending |
 | RETIRE-01 | Phase 31 | Pending |
