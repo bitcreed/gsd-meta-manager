@@ -682,6 +682,14 @@ impl App {
     /// [`Action::DriverEditDone`]. The temp stays on disk until the library says it was
     /// applied or found unchanged.
     fn start_apply(&mut self, temp: PathBuf, session: &EditSession, accept_lint: bool) {
+        // No session exists on a build that cannot steer (the arms that open one refuse
+        // first), but the apply is a DIRECTION.md write and keeps its own refusal.
+        if !crate::ui::screens::driver_steer::can_steer() {
+            self.refuse_steering(
+                crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+            );
+            return;
+        }
         let Some(tx) = self.ctx.event_tx.clone() else {
             self.refuse_steering(format!(
                 "Could not write DIRECTION.md for '{}': this session has no event channel. Nothing was written. Your text is kept at {}.",
