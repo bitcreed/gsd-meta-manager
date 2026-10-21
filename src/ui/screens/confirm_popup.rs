@@ -50,11 +50,24 @@ pub struct ConfirmButtons {
     pub no: Rect,
 }
 
+/// What [`render_confirm_popup`] drew: where the buttons landed (`None` when the popup
+/// is too short to draw them) and whether the body was cut off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PopupLayout {
+    pub buttons: Option<ConfirmButtons>,
+    pub clipped: bool,
+}
+
+/// The bottom row of a clipped popup, in place of the key hint.
+pub const CLIPPED_HINT: &str = "Cut off: enlarge the terminal to confirm \u{b7} Esc cancel";
+
 #[derive(Debug, Clone, Default)]
 pub struct ConfirmPopup {
     pub focus: ConfirmFocus,
     /// Written by `render` (which takes `&self`), read by `on_mouse`.
     buttons: Cell<Option<ConfirmButtons>>,
+    /// Written by `render`, read by `on_key` / `on_mouse`.
+    clipped: Cell<bool>,
 }
 
 impl ConfirmPopup {
@@ -77,9 +90,15 @@ impl ConfirmPopup {
         }
     }
 
-    /// Remember where `render_confirm_popup` drew the buttons.
-    pub fn record(&self, buttons: Option<ConfirmButtons>) {
-        self.buttons.set(buttons);
+    /// Remember what `render_confirm_popup` drew.
+    pub fn record(&self, layout: PopupLayout) {
+        self.buttons.set(layout.buttons);
+        self.clipped.set(layout.clipped);
+    }
+
+    /// Whether the last render cut the body off.
+    pub fn clipped(&self) -> bool {
+        self.clipped.get()
     }
 
     pub fn on_key(&mut self, code: KeyCode) -> ConfirmOutcome {
@@ -201,7 +220,7 @@ pub fn render_confirm_popup(
     body: Vec<Line<'static>>,
     accent: Color,
     focus: ConfirmFocus,
-) -> Option<ConfirmButtons> {
+) -> PopupLayout {
     let inner_w = popup_width(area).saturating_sub(2);
     let popup = popup_rect(area, wrapped_rows(&body, inner_w));
     frame.render_widget(Clear, popup);
@@ -215,7 +234,7 @@ pub fn render_confirm_popup(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     if inner.height == 0 {
-        return None;
+        return PopupLayout::default();
     }
 
     // Bottom three inner rows: buttons, spacer-free hint. Body gets the rest.
@@ -244,7 +263,23 @@ pub fn render_confirm_popup(
         .alignment(Alignment::Center),
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
-    rects
+    PopupLayout {
+        buttons: rects,
+        clipped: false,
+    }
+}
+
+/// `(inner width, most body rows)` a popup drawn in `area` can show.
+pub fn body_room(area: Rect) -> (u16, u16) {
+    (
+        popup_width(area).saturating_sub(2),
+        area.height.saturating_sub(5),
+    )
+}
+
+/// The longest prefix of `items` that fits `rows`, plus a muted `  … {k} more` row.
+pub fn fit_list(items: Vec<Line<'static>>, _rows: u16, _inner_width: u16) -> Vec<Line<'static>> {
+    items
 }
 
 /// Column and row of the first `needle` in newline-joined screen `text`.
@@ -386,6 +421,121 @@ mod tests {
         }
     }
 
+    fn draw_popup(popup: &ConfirmPopup, body: Vec<Line<'static>>, w: u16, h: u16) -> Vec<String> {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| {
+            popup.record(render_confirm_popup(
+                f,
+                f.area(),
+                "T",
+                body.clone(),
+                Color::Red,
+                popup.focus,
+            ));
+        })
+        .unwrap();
+        rows_of(&t, w, h)
+    }
+
+    fn six_lines() -> Vec<Line<'static>> {
+        (1..=6).map(|n| Line::from(format!("line {n}"))).collect()
+    }
+
+    #[test]
+    fn a_clipped_body_disarms_yes_and_says_so() {
+        let mut popup = ConfirmPopup::default();
+        // Nothing drawn yet: never clipped, so key-only tests keep working.
+        assert!(!popup.clipped());
+        draw_popup(&popup, six_lines(), 40, 6);
+        assert!(popup.clipped(), "six lines cannot fit a 40x6 area");
+        let b = popup.buttons.get().expect("buttons are still drawn");
+        assert_eq!(popup.on_key(KeyCode::Char('y')), ConfirmOutcome::Pending);
+        assert_eq!(popup.on_key(KeyCode::Char('Y')), ConfirmOutcome::Pending);
+        popup.focus = ConfirmFocus::Yes;
+        assert_eq!(popup.on_key(KeyCode::Enter), ConfirmOutcome::Pending);
+        assert_eq!(
+            popup.on_mouse(click(b.yes.x, b.yes.y)),
+            ConfirmOutcome::Pending
+        );
+        assert_eq!(click_as_key(&popup, click(b.yes.x, b.yes.y)), None);
+        // Declining still works from every route.
+        assert_eq!(popup.on_key(KeyCode::Char('n')), ConfirmOutcome::Cancel);
+        assert_eq!(popup.on_key(KeyCode::Char('N')), ConfirmOutcome::Cancel);
+        assert_eq!(popup.on_key(KeyCode::Esc), ConfirmOutcome::Cancel);
+        assert_eq!(
+            popup.on_mouse(click(b.no.x, b.no.y)),
+            ConfirmOutcome::Cancel
+        );
+        // Focus still moves, and Enter on No still cancels.
+        assert_eq!(popup.on_key(KeyCode::Tab), ConfirmOutcome::Pending);
+        assert_eq!(popup.focus, ConfirmFocus::No);
+        assert_eq!(popup.on_key(KeyCode::Enter), ConfirmOutcome::Cancel);
+
+        // The bottom row says why Yes does nothing (a 60-wide area fits the sentence).
+        let rows = draw_popup(&popup, six_lines(), 60, 6);
+        let hint = &rows[4];
+        assert!(
+            hint.contains("Cut off: enlarge the terminal to confirm"),
+            "{rows:#?}"
+        );
+        assert!(!hint.contains("y/n"), "{hint}");
+        assert!(CLIPPED_HINT.starts_with("Cut off: enlarge the terminal to confirm"));
+    }
+
+    #[test]
+    fn a_body_that_fits_keeps_yes_armed() {
+        let mut popup = ConfirmPopup::default();
+        let rows = draw_popup(&popup, vec![Line::from("Remove it?")], 80, 24);
+        assert!(!popup.clipped());
+        assert!(rows.join("\n").contains("y/n"), "the key hint is kept");
+        assert!(!rows.join("\n").contains("Cut off"));
+        let b = popup.buttons.get().expect("buttons");
+        assert_eq!(popup.on_key(KeyCode::Char('y')), ConfirmOutcome::Confirm);
+        assert_eq!(
+            popup.on_mouse(click(b.yes.x, b.yes.y)),
+            ConfirmOutcome::Confirm
+        );
+        popup.focus = ConfirmFocus::Yes;
+        assert_eq!(popup.on_key(KeyCode::Enter), ConfirmOutcome::Confirm);
+        // A never-rendered popup is not clipped.
+        let mut fresh = ConfirmPopup::default();
+        assert_eq!(fresh.on_key(KeyCode::Char('y')), ConfirmOutcome::Confirm);
+    }
+
+    fn text_of(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn fit_list_keeps_the_rows_that_fit_and_counts_the_rest() {
+        let items = || -> Vec<Line<'static>> {
+            (1..=6).map(|n| Line::from(format!("item {n}"))).collect()
+        };
+        let texts =
+            |lines: &[Line<'_>]| -> Vec<String> { lines.iter().map(text_of).collect() };
+        let cut = fit_list(items(), 4, 40);
+        assert_eq!(
+            texts(&cut),
+            ["item 1", "item 2", "item 3", "  \u{2026} 3 more"]
+        );
+        let none = fit_list(items(), 0, 40);
+        assert_eq!(texts(&none), ["  \u{2026} 6 more"]);
+        for rows in [6, 7, 40] {
+            assert_eq!(texts(&fit_list(items(), rows, 40)).len(), 6, "rows {rows}");
+        }
+        assert_eq!(texts(&fit_list(items(), 5, 40)).last().unwrap(), "  \u{2026} 2 more");
+        // A wrapped item costs its wrapped rows.
+        let wide = vec![
+            Line::from("aaaa bbbb cccc"),
+            Line::from("dddd"),
+            Line::from("eeee"),
+        ];
+        assert_eq!(
+            texts(&fit_list(wide, 4, 5)),
+            ["aaaa bbbb cccc", "  \u{2026} 2 more"]
+        );
+    }
+
     #[test]
     fn tiny_terminals_do_not_panic() {
         for (w, h) in [(1, 1), (10, 3), (20, 5), (30, 8)] {
@@ -427,7 +577,7 @@ mod tests {
     fn recorded_button_rects_sit_exactly_on_the_drawn_labels() {
         for (w, h) in [(80, 24), (40, 12), (110, 40)] {
             let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-            let mut got = None;
+            let mut got = PopupLayout::default();
             t.draw(|f| {
                 got = render_confirm_popup(
                     f,
@@ -439,7 +589,7 @@ mod tests {
                 );
             })
             .unwrap();
-            let b = got.expect("buttons drawn");
+            let b = got.buttons.expect("buttons drawn");
             let text = rows_of(&t, w, h).join("\n");
             let (yx, yy) = locate(&text, "[ Yes ]").unwrap();
             let (nx, ny) = locate(&text, "[ No ]").unwrap();

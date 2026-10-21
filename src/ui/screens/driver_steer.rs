@@ -1521,6 +1521,63 @@ mod tests {
     }
 
     #[test]
+    fn launcher_edit_the_lint_confirmation_keeps_its_question_on_a_short_terminal() {
+        let findings: Vec<String> = (1..=10)
+            .map(|n| format!("DIRECTION.md:{n}: problem {n}"))
+            .collect();
+        let refs: Vec<&str> = findings.iter().map(String::as_str).collect();
+
+        // 80x12: as many findings as fit, the count of the rest, and the question.
+        let (mut screen, mut ctx, mut rx) = lint_confirm(&refs);
+        let text = draw(&screen, &ctx, 80, 12);
+        assert!(text.contains("driver check found 10 problem(s)"), "{text}");
+        assert!(text.contains("Apply it anyway?"), "{text}");
+        let shown = (1..=10)
+            .filter(|n| text.contains(&format!("DIRECTION.md:{n}: problem {n}")))
+            .count();
+        assert!(shown >= 1, "at least one finding fits:\n{text}");
+        let more = 10 - shown;
+        assert!(more >= 1, "ten findings do not fit 80x12:\n{text}");
+        assert!(
+            text.contains(&format!("\u{2026} {more} more")),
+            "k is the number of findings not shown ({more}):\n{text}"
+        );
+        assert!(!screen.popup.clipped(), "{text}");
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(matches!(
+            rx.try_recv().ok(),
+            Some(Action::DriverEditApply {
+                accept_lint: true,
+                ..
+            })
+        ));
+
+        // 40x7: the text cannot fit, so the popup is clipped and `y` applies nothing.
+        let (mut screen, mut ctx, mut rx) = lint_confirm(&refs);
+        let text = draw(&screen, &ctx, 40, 7);
+        assert!(screen.popup.clipped(), "{text}");
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(rx.try_recv().is_err(), "a clipped confirmation applies nothing");
+    }
+
+    #[test]
+    fn launcher_steer_a_clipped_polite_stop_writes_nothing_on_y() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        let mut screen = PoliteStopScreen::new(ALIAS.to_string(), LONG_RUN.to_string());
+        let text = draw(&screen, &ctx, 30, 6);
+        assert!(screen.popup.clipped(), "{text}");
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(rx.try_recv().is_err(), "nothing is dispatched");
+        let action = screen.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn launcher_edit_a_long_findings_list_is_cut_with_a_count() {
         let findings: Vec<String> = (1..=11)
             .map(|n| format!("DIRECTION.md:{n}: problem {n}"))

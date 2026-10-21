@@ -76,7 +76,7 @@ impl Screen for CreateProjectScreen {
             ratatui::layout::Constraint::Length(1),
         ])
         .split(area);
-        self.popup.record(None);
+        self.popup.record(confirm_popup::PopupLayout::default());
 
         // Render background
         use ratatui::widgets::{Block, Borders};
