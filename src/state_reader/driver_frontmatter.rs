@@ -763,6 +763,12 @@ pub fn derive_status(
     )
 }
 
+/// The largest `DIRECTION.md` [`read_driver_run`] will read (1 MiB, T-30-04). A run
+/// directory is writable from inside an `--unsandboxed` run, so the file is display
+/// data of unbounded size; a bigger one is an unreadable row, not a stalled blocking
+/// worker.
+pub const DIRECTION_READ_MAX_BYTES: u64 = 1 << 20;
+
 /// Read a run directory: its `DIRECTION.md` frontmatter and the derived status.
 ///
 /// Reads `<run_dir>/DIRECTION.md` and, on unix, probes `<run_dir>/launcher.lock`
@@ -772,11 +778,28 @@ pub fn derive_status(
 /// `running` and a launched `starting` derive [`DerivedStatus::LivenessUnknown`]
 /// rather than a guess.
 pub fn read_driver_run(run_dir: &std::path::Path) -> Result<DriverRunView, FrontmatterError> {
-    let text = std::fs::read_to_string(run_dir.join("DIRECTION.md")).map_err(|e| {
-        FrontmatterError::Io {
-            detail: format!("{}: {e}", run_dir.join("DIRECTION.md").display()),
-        }
-    })?;
+    let path = run_dir.join("DIRECTION.md");
+    let io_err = |e: std::io::Error| FrontmatterError::Io {
+        detail: format!("{}: {e}", path.display()),
+    };
+    let file = std::fs::File::open(&path).map_err(io_err)?;
+    // T-30-04: the size is read from the open handle, so a file swapped in after
+    // the check cannot dodge it, and the read itself is bounded by `take`.
+    let len = file.metadata().map_err(io_err)?.len();
+    if len > DIRECTION_READ_MAX_BYTES {
+        return Err(FrontmatterError::Io {
+            detail: format!(
+                "{}: {len} bytes is larger than the {DIRECTION_READ_MAX_BYTES}-byte limit",
+                path.display()
+            ),
+        });
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut std::io::Read::take(file, DIRECTION_READ_MAX_BYTES + 1),
+        &mut text,
+    )
+    .map_err(io_err)?;
     let frontmatter = parse_driver_frontmatter(&text)?;
 
     #[cfg(unix)]
@@ -965,6 +988,28 @@ mod tests {
                 written: RunStatus::Running
             }
         );
+    }
+
+    #[test]
+    fn read_driver_run_refuses_an_oversized_direction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(DRIVER_RUNS_REL).join("20261019-big");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut text = RUN1B.replace("s003-run1b", "20261019-big");
+        // Pad the body past the cap; the frontmatter itself stays valid.
+        text.push_str(&"x".repeat(DIRECTION_READ_MAX_BYTES as usize));
+        std::fs::write(dir.join("DIRECTION.md"), &text).unwrap();
+        match read_driver_run(&dir) {
+            Err(FrontmatterError::Io { detail }) => {
+                assert!(detail.contains("larger than"), "{detail}");
+            }
+            other => panic!("expected an Io refusal, got {other:?}"),
+        }
+        // Exactly at the cap is still read.
+        let ok = RUN1B.replace("s003-run1b", "20261019-big");
+        let pad = DIRECTION_READ_MAX_BYTES as usize - ok.len();
+        std::fs::write(dir.join("DIRECTION.md"), format!("{ok}{}", "x".repeat(pad))).unwrap();
+        assert!(read_driver_run(&dir).is_ok());
     }
 
     #[cfg(target_os = "linux")]
