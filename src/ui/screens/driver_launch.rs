@@ -2668,6 +2668,121 @@ mod tests {
         ));
     }
 
+    // ── Plan 30-09 Task 3: the form agrees with the launcher and the editor ──
+
+    /// WR-01: a typed model is judged by the rule a recorded model meets, so a value that
+    /// looks like a flag never reaches the detached launch's argv.
+    #[test]
+    fn launcher_launch_a_typed_model_that_looks_like_a_flag_is_refused() {
+        let (mut screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        press(&mut screen, &mut ctx, 'e');
+        for bad in ["-x", "--foreground", &"a".repeat(65), "a b", ".opus"] {
+            screen.editing = Some(bad.to_string());
+            screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+            assert_eq!(
+                screen.error.as_deref(),
+                Some("must be a model name"),
+                "{bad:?} is refused in the form"
+            );
+            assert!(screen.editing.is_some(), "{bad:?}: editing continues");
+            assert_eq!(screen.args().model, "opus", "{bad:?} is not stored");
+        }
+        for good in ["opus", "sonnet", "claude-opus-4-5", "claude-opus-4-7:1m"] {
+            screen.editing = Some(good.to_string());
+            screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+            assert!(screen.editing.is_none(), "{good} is accepted");
+            assert_eq!(screen.args().model, good);
+            press(&mut screen, &mut ctx, 'e');
+        }
+        // A 64-character name is the longest.
+        screen.editing = Some("a".repeat(64));
+        screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        assert!(screen.editing.is_none());
+    }
+
+    /// IN-03: the form reads `control` with the launcher's reader and blocks exactly
+    /// when the launcher would.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_launch_preflight_reads_control_like_the_launcher() {
+        use crate::launcher::host::HostCaps;
+        let ready = HostCaps {
+            missing: Vec::new(),
+            claude_version: Some((2, 1, 295)),
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        // `control: run` under `## Direction`, a stray `control: pause` elsewhere: the
+        // launcher accepts this run, so the form must not block it.
+        let stray = format!(
+            "{}\n## Notes\n\n- control: pause\n",
+            crate::driver::steer::tests::clean_body()
+        );
+        crate::driver::steer::tests::write_run(dir.path(), &stray);
+        let pre = launch_preflight(dir.path(), &ready);
+        assert_eq!(pre.control.as_deref(), Some("run"), "{pre:?}");
+        assert_eq!(control_blocking(&pre), None);
+
+        // `control: pause` under `## Direction` is what the launcher refuses.
+        let paused =
+            crate::driver::steer::set_control(&crate::driver::steer::tests::clean_body(), "pause")
+                .expect("a control write");
+        crate::driver::steer::tests::write_run(dir.path(), &paused);
+        let pre = launch_preflight(dir.path(), &ready);
+        assert_eq!(pre.control.as_deref(), Some("pause"));
+        assert_eq!(control_blocking(&pre), Some("pause"));
+
+        // The launcher compares the word exactly: anything but `run` blocks.
+        for (word, blocks) in [("run", false), ("Run", true), ("stop", true)] {
+            let pre = LaunchPreflight {
+                control: Some(word.to_string()),
+                ..LaunchPreflight::default()
+            };
+            assert_eq!(control_blocking(&pre).is_some(), blocks, "{word}");
+        }
+    }
+
+    /// WR-04: a finding's `DIRECTION.md:<line>:` counts from the first body line, the
+    /// numbering the body-only edit temp shows in the editor.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_launch_preflight_numbers_lint_lines_like_the_editor() {
+        use crate::driver::direction::split_frontmatter;
+        use crate::driver_templates::lint::lint_direction;
+        use crate::launcher::host::HostCaps;
+        let ready = HostCaps {
+            missing: Vec::new(),
+            claude_version: Some((2, 1, 295)),
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        crate::driver::steer::tests::write_run(
+            dir.path(),
+            crate::driver_templates::DIRECTION_TEMPLATE,
+        );
+        let text = std::fs::read_to_string(dir.path().join("DIRECTION.md")).unwrap();
+        let (frontmatter, body) = split_frontmatter(&text);
+        assert!(frontmatter.is_some(), "the run has a tool block");
+        let editor: Vec<String> = lint_direction(body)
+            .problems
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(!editor.is_empty());
+        assert_ne!(
+            lint_direction(&text).problems[0].to_string(),
+            editor[0],
+            "the whole-file numbering differs by the tool block"
+        );
+        let pre = launch_preflight(dir.path(), &ready);
+        assert_eq!(pre.lint_problems, editor);
+        let warnings: Vec<String> = lint_direction(body)
+            .warnings
+            .iter()
+            .map(|f| f.as_warning())
+            .collect();
+        assert_eq!(pre.lint_warnings, warnings);
+    }
+
     /// The preflight over real files: the same lint and control the launcher applies.
     #[cfg(target_os = "linux")]
     #[test]

@@ -10227,6 +10227,50 @@ mod tests {
         );
     }
 
+    /// WR-04: the new-run check numbers its findings from the first body line, the way
+    /// the body-only edit temp shows them in the editor.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn launcher_new_run_check_numbers_lint_lines_like_the_editor() {
+        use crate::driver::direction::split_frontmatter;
+        use crate::driver_templates::lint::lint_direction;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = new_run_app(dir.path());
+        let (run_id, temp) = create_a_run(&mut app, &mut rx, "nums").await;
+        app.after_editor(&temp, EditorExit::Success);
+        let done = next_matching(&mut rx, |a| matches!(a, Action::DriverEditDone { .. })).await;
+        app.update(done);
+        let checked =
+            next_matching(&mut rx, |a| matches!(a, Action::DriverNewRunChecked { .. })).await;
+        let Action::DriverNewRunChecked { problems, .. } = &checked else {
+            unreachable!()
+        };
+        let text = std::fs::read_to_string(
+            dir.path()
+                .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+                .join(&run_id)
+                .join("DIRECTION.md"),
+        )
+        .unwrap();
+        let (frontmatter, body) = split_frontmatter(&text);
+        assert!(frontmatter.is_some(), "the run has a tool block");
+        let editor: Vec<String> = lint_direction(body)
+            .problems
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            !editor.is_empty(),
+            "the template's placeholders are problems"
+        );
+        assert_ne!(
+            lint_direction(&text).problems[0].to_string(),
+            editor[0],
+            "the whole-file numbering differs by the tool block"
+        );
+        assert_eq!(*problems, editor);
+    }
+
     /// A project that is not a GSD project (no `.planning/`) is refused by the creation
     /// itself, with nothing created.
     #[cfg(target_os = "linux")]
