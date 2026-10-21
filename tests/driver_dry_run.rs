@@ -13,6 +13,9 @@
 // a shell script carries its own `#[cfg(unix)]` instead.
 // ============================================================================
 
+// Unix-only: exercises the Unix-gated driver / std::os::unix surface.
+#![cfg(unix)]
+
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};

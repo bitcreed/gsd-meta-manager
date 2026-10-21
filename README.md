@@ -416,6 +416,10 @@ sessions, tmux `Tab`-to-switch, and resuming a detected session have nothing to
 act on. The rest of the TUI -- everything read from `.planning/` -- works
 normally.
 
+Windows builds (CI checks that it compiles) but is not exercised at runtime.
+Saving config from the Defaults tab is refused there, and the driver launcher is
+unavailable.
+
 Codex session detection is best-effort: it relies on Codex CLI process details
 that may change between releases. Interactive `codex` sessions are shown
 alongside Claude sessions and can be reached with `Tab` under tmux;

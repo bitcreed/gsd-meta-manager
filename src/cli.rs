@@ -903,6 +903,7 @@ mod tests {
         assert_eq!(cli.target, None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_project_target_leaves_the_drive_respawn_argv_parsing() {
         let argv = crate::driver::spawn::drive_argv(

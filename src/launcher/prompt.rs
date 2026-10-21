@@ -14,8 +14,8 @@
 //! D-04) is recorded as `custom:<sha256-8 of its bytes>` ([`custom_version`]), so
 //! a run never claims the shipped version for text it did not use.
 //!
-//! This module is pure text and hashing: it is deliberately not
-//! `cfg(target_os = "linux")`-gated, like [`super::sandbox`].
+//! This module is pure text and hashing: it is deliberately not gated to Linux and
+//! macOS, like [`super::sandbox`].
 
 use std::borrow::Cow;
 

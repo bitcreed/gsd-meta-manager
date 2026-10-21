@@ -6,7 +6,9 @@
 //! disk, never from a value the driver sends.
 
 use std::fs;
+#[cfg(unix)]
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +31,7 @@ pub const MAX_VERIFICATION_BYTES: u64 = 1 << 20;
 /// `lstat` and the open is caught; and the read itself is bounded by `take`, so a
 /// `/dev/zero`-like file cannot grow the buffer without limit. Returns the bytes
 /// with the mtime before and after the read (`None` for anything skipped).
+#[cfg(unix)]
 fn read_regular_bounded(path: &Path) -> Option<(Vec<u8>, SystemTime, SystemTime)> {
     let lmeta = fs::symlink_metadata(path).ok()?;
     if !lmeta.file_type().is_file() || lmeta.len() > MAX_VERIFICATION_BYTES {
@@ -57,6 +60,14 @@ fn read_regular_bounded(path: &Path) -> Option<(Vec<u8>, SystemTime, SystemTime)
         return None;
     }
     Some((raw, before.modified().ok()?, after.modified().ok()?))
+}
+
+/// Off Unix the `O_NOFOLLOW | O_NONBLOCK` open and the `fstat` re-check that make
+/// the read safe against a planted FIFO or symlink (CR-01) cannot be reproduced, so
+/// every candidate is skipped: the scan fails closed `[inferred — audit]`.
+#[cfg(not(unix))]
+fn read_regular_bounded(_path: &Path) -> Option<(Vec<u8>, SystemTime, SystemTime)> {
+    None
 }
 
 /// One `gaps_found` VERIFICATION.md as observed on disk.
@@ -325,6 +336,7 @@ mod tests {
     }
 
     /// Run `f` on a thread and fail (rather than hang the suite) if it never returns.
+    #[cfg(target_os = "linux")]
     fn within_a_generous_bound<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -334,6 +346,7 @@ mod tests {
             .expect("the scan blocked on a planted file")
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cr01_a_fifo_named_like_a_verification_does_not_hang_the_scan() {
         let td = TempDir::new().unwrap();
@@ -355,6 +368,7 @@ mod tests {
         assert_eq!(phases, ["1"], "the FIFO is skipped, the regular file kept");
     }
 
+    #[cfg(unix)]
     #[test]
     fn cr01_a_symlinked_verification_is_not_followed() {
         let td = TempDir::new().unwrap();
@@ -367,6 +381,7 @@ mod tests {
         assert!(scan_verifications(p).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn cr01_a_symlinked_phase_directory_is_not_followed() {
         let td = TempDir::new().unwrap();

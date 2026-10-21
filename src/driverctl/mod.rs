@@ -115,8 +115,8 @@ pub mod counters;
 pub mod log;
 pub mod protocol;
 pub mod scan;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod serve;
 pub mod stop_guard;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod store;

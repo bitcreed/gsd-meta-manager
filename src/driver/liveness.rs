@@ -339,6 +339,7 @@ mod tests {
         assert!(!zombie, "is_zombie must agree with process_state");
     }
 
+    #[cfg(unix)]
     #[test]
     fn process_group_reads_the_kernels_group_for_a_child_that_leads_its_own() {
         use std::os::unix::process::CommandExt;
@@ -396,6 +397,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_inline_run_id_spelling_is_not_invisible_to_the_probe() {
         use std::os::unix::process::CommandExt;

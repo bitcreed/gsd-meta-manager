@@ -223,6 +223,7 @@ impl SandboxSpec {
             .map(|rel| home.join(rel))
             .filter(|p| p.is_dir())
             .collect();
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
         let mut null_masks: Vec<PathBuf> = NULL_MASK_FILES
             .iter()
             .map(|rel| home.join(rel))
@@ -230,6 +231,7 @@ impl SandboxSpec {
             .collect();
         // The stored run token lives under `dirs::config_dir()`, which an
         // `XDG_CONFIG_HOME` moves away from `~/.config` (WR-02).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(token) = super::auth::token_path() {
             if token.exists() && !null_masks.contains(&token) {
                 null_masks.push(token);

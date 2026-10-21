@@ -47,8 +47,9 @@
 //!    write and the exchange cannot surface an empty `DIRECTION.md`.
 //!    [`sweep_stale_temps`] removes only such temps older than a threshold.
 //!
-//! The exchange functions are Linux-only (`renameat2` is a Linux syscall); on
-//! other targets they return [`DirectionError::UnsupportedPlatform`]. The pure
+//! The exchange functions are Linux and macOS only (`renameat2` on Linux, the
+//! `renameatx_np` swap rustix maps `RENAME_EXCHANGE` to on macOS); on other
+//! targets they return [`DirectionError::UnsupportedPlatform`]. The pure
 //! helpers compile everywhere.
 
 use std::collections::BTreeMap;
@@ -404,11 +405,11 @@ pub fn splice_frontmatter(run_dir: &Path, fm: &str) -> Result<SpliceReport, Dire
             ),
         });
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         imp::splice(run_dir, fm)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = run_dir;
         Err(unsupported())
@@ -429,21 +430,21 @@ pub fn write_body<F: FnMut(&str) -> String>(
     run_dir: &Path,
     edit: F,
 ) -> Result<SpliceReport, DirectionError> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         imp::write_body(run_dir, edit)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (run_dir, edit);
         Err(unsupported())
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn unsupported() -> DirectionError {
     DirectionError::UnsupportedPlatform {
-        detail: "renameat2(RENAME_EXCHANGE) is Linux-only".to_string(),
+        detail: "an atomic rename exchange needs Linux or macOS".to_string(),
     }
 }
 
@@ -472,7 +473,7 @@ pub fn sweep_stale_temps(run_dir: &Path, older_than: Duration) -> std::io::Resul
     Ok(removed)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod imp {
     use std::fs::{File, OpenOptions};
     use std::io::Write;
@@ -861,7 +862,7 @@ mod tests {
         assert!(other_old.exists(), "a non-temp file is never touched");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     mod linux {
         use super::*;
         use std::os::unix::fs::PermissionsExt;

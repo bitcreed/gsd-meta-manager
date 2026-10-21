@@ -38,6 +38,27 @@ pub const MISSING_BWRAP: &str = "bwrap";
 pub const MISSING_SYSTEMD_RUN: &str = "systemd-run";
 pub const MISSING_USER_MANAGER: &str = "user-systemd";
 
+/// Whether this build can ever contain a launch in a sandbox.
+///
+/// `bwrap` and `systemd-run --user --scope` are Linux tools. Off Linux (macOS,
+/// where a `bwrap` or `systemd-run` shim could sit on `PATH`), [`detect`] does not
+/// probe at all and reports all three sandbox pieces missing, so
+/// [`decide`]`(_, false)` always refuses and [`Posture::BwrapScope`] is unreachable
+/// by construction: `decide` is the only producer of a [`Posture`]. A const rather
+/// than a `cfg` block, so both arms are compiled (and the off-platform one tested)
+/// on Linux, like `LIVENESS_SUPPORTED` in `driver::liveness`.
+pub const SANDBOX_SUPPORTED: bool = cfg!(target_os = "linux");
+
+/// The sandbox pieces [`detect`] reports missing on a host that cannot sandbox at
+/// all, in probe order.
+pub fn off_platform_missing() -> Vec<String> {
+    vec![
+        MISSING_BWRAP.to_owned(),
+        MISSING_SYSTEMD_RUN.to_owned(),
+        MISSING_USER_MANAGER.to_owned(),
+    ]
+}
+
 /// What the probes found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostCaps {
@@ -108,8 +129,7 @@ fn run_probe(program: &str, args: &[&str]) -> Option<(bool, String)> {
     })
 }
 
-/// Run the probes on this host. Writes nothing.
-pub fn detect() -> HostCaps {
+fn probe_sandbox_pieces() -> Vec<String> {
     let mut missing = Vec::new();
     let bwrap_runs = run_probe(
         "bwrap",
@@ -127,6 +147,19 @@ pub fn detect() -> HostCaps {
     if !manager_usable {
         missing.push(MISSING_USER_MANAGER.to_owned());
     }
+    missing
+}
+
+/// Run the probes on this host. Writes nothing.
+///
+/// Off Linux ([`SANDBOX_SUPPORTED`] is false) the sandbox probes are skipped and
+/// every sandbox piece is reported missing; only `claude --version` still runs.
+pub fn detect() -> HostCaps {
+    let missing = if SANDBOX_SUPPORTED {
+        probe_sandbox_pieces()
+    } else {
+        off_platform_missing()
+    };
     let claude_version = run_probe("claude", &["--version"])
         .filter(|(ok, _)| *ok)
         .and_then(|(_, stdout)| parse_claude_version(&stdout));
@@ -291,6 +324,44 @@ mod tests {
         assert!(
             matches!(error, LauncherError::ClaudeVersion { .. }),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn the_sandbox_is_supported_on_linux_only() {
+        assert_eq!(SANDBOX_SUPPORTED, cfg!(target_os = "linux"));
+    }
+
+    #[test]
+    fn off_platform_the_sandbox_is_refused_by_default_naming_bwrap_and_systemd_run() {
+        let host = HostCaps {
+            missing: off_platform_missing(),
+            claude_version: Some(MIN_CLAUDE_VERSION),
+        };
+        let refusal = decide(&host, false).unwrap_err();
+        let LauncherError::SandboxUnavailable { missing } = &refusal else {
+            panic!("expected SandboxUnavailable, got {refusal}");
+        };
+        assert!(missing.iter().any(|m| m == "bwrap"), "{missing:?}");
+        assert!(missing.iter().any(|m| m == "systemd-run"), "{missing:?}");
+    }
+
+    #[test]
+    fn off_platform_the_flag_runs_the_degraded_posture() {
+        let host = HostCaps {
+            missing: off_platform_missing(),
+            claude_version: Some(MIN_CLAUDE_VERSION),
+        };
+        let posture = decide(&host, true).unwrap();
+        assert!(matches!(posture, Posture::Degraded { .. }), "{posture:?}");
+        assert_eq!(posture.as_str(), "degraded");
+    }
+
+    #[test]
+    fn the_off_platform_list_is_the_three_pieces_in_probe_order() {
+        assert_eq!(
+            off_platform_missing(),
+            [MISSING_BWRAP, MISSING_SYSTEMD_RUN, MISSING_USER_MANAGER]
         );
     }
 

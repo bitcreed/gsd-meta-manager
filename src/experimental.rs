@@ -139,6 +139,7 @@ mod tests {
     /// Pinned here, in the flag's own module, because the risk being guarded
     /// against is a future edit that "simplifies" one of those two into this
     /// flag and turns a consent gate into a convenience one.
+    #[cfg(unix)]
     #[test]
     fn the_flag_neither_weakens_opt_in_nor_the_concurrency_cap() {
         use crate::driver::spawn::admit;

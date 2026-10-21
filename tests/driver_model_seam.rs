@@ -26,6 +26,9 @@
 // unearned assurance this codebase's honesty conventions exist to prevent.
 // ============================================================================
 
+// Unix-only: exercises the Unix-gated driver / std::os::unix surface.
+#![cfg(unix)]
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 

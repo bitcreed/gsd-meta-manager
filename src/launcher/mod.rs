@@ -28,7 +28,7 @@
 //! 6. **The argv builders are pure ([`sandbox`], D-20).** They take every host fact
 //!    as a parameter, so the bwrap, systemd-run and claude command lines are
 //!    golden-testable on any runner, one without bwrap or a user systemd
-//!    included. `sandbox` is therefore the one submodule that is not Linux-gated.
+//!    included. `sandbox` is therefore the one submodule that is not gated to Linux and macOS.
 //! 7. **The token never leaves the child's environment (D-19, D-22).** It is not
 //!    in any argv, in `state.json`, in `LOG.md`, in the launch log or in any file
 //!    the launcher writes; [`auth::LaunchToken`]'s `Debug` redacts it.
@@ -64,23 +64,23 @@
 pub mod prompt;
 pub mod sandbox;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod auth;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod config_dir;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod gate;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod host;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod outcome;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod process;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod push;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod run;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod stop;
 
 /// Why a launch did not run (or could not continue).
@@ -102,7 +102,7 @@ pub enum LauncherError {
     Io { detail: String },
     /// The run store could not open or write.
     Store { detail: String },
-    /// The launcher needs Linux (`flock`, `renameat2`, `bwrap`, `systemd-run`).
+    /// The launcher needs Linux or macOS (`flock`, `renameat2`, `bwrap`, `systemd-run`).
     UnsupportedPlatform,
     /// The detached launcher exited before it held the run lock (D-04). `code` is
     /// its own exit code (`3` for a run that is already launched); `detail` is
@@ -147,7 +147,7 @@ impl std::fmt::Display for LauncherError {
             LauncherError::Io { detail } => write!(f, "I/O failure: {detail}"),
             LauncherError::Store { detail } => write!(f, "run store: {detail}"),
             LauncherError::UnsupportedPlatform => {
-                f.write_str("unsupported platform (the launcher needs Linux)")
+                f.write_str("unsupported platform (the launcher needs Linux or macOS)")
             }
             LauncherError::SandboxUnavailable { missing } => write!(
                 f,
@@ -176,7 +176,7 @@ impl std::fmt::Display for LauncherError {
 
 impl std::error::Error for LauncherError {}
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl From<crate::driverctl::serve::DriverctlError> for LauncherError {
     fn from(err: crate::driverctl::serve::DriverctlError) -> Self {
         use crate::driverctl::serve::DriverctlError;
@@ -193,7 +193,7 @@ impl From<crate::driverctl::serve::DriverctlError> for LauncherError {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl From<crate::driverctl::store::StoreError> for LauncherError {
     fn from(err: crate::driverctl::store::StoreError) -> Self {
         LauncherError::Store {
@@ -276,7 +276,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn driverctl_errors_map_by_variant() {
         use crate::driverctl::serve::DriverctlError;

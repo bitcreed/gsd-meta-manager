@@ -47,26 +47,41 @@
 //! Everything here is synchronous on purpose (it is called from sync key
 //! handlers); do not add an `async fn` to this module.
 
+#[cfg(unix)]
 use std::fs::{self, OpenOptions};
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
+#[cfg(unix)]
 use rustix::io::Errno;
+#[cfg(unix)]
 use serde::Serialize;
 
-use super::config_json::{parse_gsd_config, serialize_gsd_config, GsdConfig};
+use super::config_json::GsdConfig;
+#[cfg(unix)]
+use super::config_json::{parse_gsd_config, serialize_gsd_config};
 
 /// Cap on a lock body read (a lock body is ~100 bytes).
+#[cfg(unix)]
 const LOCK_BODY_CAP: u64 = 4096;
 /// Cap on a config file read inside the lock.
+#[cfg(unix)]
 const CONFIG_READ_CAP: u64 = 4 * 1024 * 1024;
 /// Attempts at a free temp name before giving up.
+#[cfg(unix)]
 const TEMP_NAME_ATTEMPTS: usize = 16;
 
+#[cfg(unix)]
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
 static STALE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Which of gsd-core's two lock protocols applies.
@@ -194,6 +209,7 @@ impl ConfigWriteError {
     }
 }
 
+#[cfg(unix)]
 #[derive(Serialize)]
 struct PlanningLockBody<'a> {
     pid: u32,
@@ -201,6 +217,7 @@ struct PlanningLockBody<'a> {
     acquired: String,
 }
 
+#[cfg(unix)]
 #[derive(Serialize)]
 struct InstallLockBody {
     pid: u32,
@@ -208,6 +225,7 @@ struct InstallLockBody {
     acquired_at: String,
 }
 
+#[cfg(unix)]
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -217,6 +235,7 @@ fn now_iso() -> String {
 /// with no writer cannot hang the open), `O_NOFOLLOW` unless `follow_symlinks`,
 /// a regular-file check on the open handle, and a `take(cap + 1)` bound. Any
 /// failed check is an error, which callers treat as "unreadable".
+#[cfg(unix)]
 fn read_bounded(path: &Path, cap: u64, follow_symlinks: bool) -> std::io::Result<Vec<u8>> {
     let mut flags = rustix::fs::OFlags::NONBLOCK.bits();
     if !follow_symlinks {
@@ -254,6 +273,7 @@ fn read_bounded(path: &Path, cap: u64, follow_symlinks: bool) -> std::io::Result
 
 /// A lock body's `pid` as an integer, if it has one (an integral float counts,
 /// as with JS `Number.isInteger`). `None` for every other shape.
+#[cfg(unix)]
 fn body_pid(body: &[u8]) -> Option<i64> {
     let v: serde_json::Value = serde_json::from_slice(body).ok()?;
     let n = v.as_object()?.get("pid")?.as_number()?;
@@ -270,6 +290,7 @@ fn body_pid(body: &[u8]) -> Option<i64> {
 
 /// `kill(pid, 0)`: `Some(true)` alive, `Some(false)` ESRCH, `None` for a pid
 /// that does not fit a `pid_t` (or is not positive).
+#[cfg(unix)]
 fn probe_pid(pid: i64) -> Option<Result<(), Errno>> {
     // `Pid::from_raw` panics on a negative value, so reject it here.
     let raw = i32::try_from(pid).ok().filter(|r| *r > 0)?;
@@ -279,6 +300,7 @@ fn probe_pid(pid: i64) -> Option<Result<(), Errno>> {
 
 /// Planning flavour: verified-live = positive integer pid that fits `pid_t`
 /// and answers `kill(pid, 0)` with success or EPERM.
+#[cfg(unix)]
 fn planning_verified_live(pid: Option<i64>) -> bool {
     match pid.and_then(probe_pid) {
         Some(Ok(())) => true,
@@ -287,6 +309,7 @@ fn planning_verified_live(pid: Option<i64>) -> bool {
     }
 }
 
+#[cfg(unix)]
 fn is_transient_create_error(e: &std::io::Error) -> bool {
     let Some(raw) = e.raw_os_error() else {
         return false;
@@ -307,11 +330,13 @@ fn is_transient_create_error(e: &std::io::Error) -> bool {
 
 /// An acquired lock. Dropping it releases the lock, but only if the file still
 /// carries the body this guard wrote ([INFERRED I-guw-9]).
+#[cfg(unix)]
 struct LockGuard {
     path: PathBuf,
     body: Vec<u8>,
 }
 
+#[cfg(unix)]
 impl Drop for LockGuard {
     fn drop(&mut self) {
         match read_bounded(&self.path, LOCK_BODY_CAP, false) {
@@ -329,6 +354,7 @@ impl Drop for LockGuard {
     }
 }
 
+#[cfg(unix)]
 enum Next {
     /// Look again immediately.
     RetryNow,
@@ -338,6 +364,7 @@ enum Next {
 
 /// Create the lock file `O_EXCL` and write the body through the same handle.
 /// A failed body write unlinks the file just created.
+#[cfg(unix)]
 fn try_create(path: &Path, body: &[u8]) -> std::io::Result<()> {
     let mut f = OpenOptions::new()
         .write(true)
@@ -352,6 +379,7 @@ fn try_create(path: &Path, body: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn lock_body(target: &ConfigWriteTarget) -> Vec<u8> {
     let pid = std::process::id();
     match target {
@@ -377,6 +405,7 @@ fn lock_body(target: &ConfigWriteTarget) -> Vec<u8> {
 }
 
 /// The Planning-flavour EEXIST decision (`planning-workspace.cjs:384-457`).
+#[cfg(unix)]
 fn planning_on_exists(path: &Path, last_holder: &mut Option<i64>) -> Next {
     let Ok(snap_meta) = fs::symlink_metadata(path) else {
         // A failed lstat means the lock moved under us: look again at once.
@@ -426,6 +455,7 @@ fn planning_on_exists(path: &Path, last_holder: &mut Option<i64>) -> Next {
 
 /// The InstallMigration-flavour EEXIST decision
 /// (`installer-migrations.cjs:499-597`).
+#[cfg(unix)]
 fn install_on_exists(path: &Path, last_holder: &mut Option<i64>) -> Next {
     let Some(pid) = read_bounded(path, LOCK_BODY_CAP, false)
         .ok()
@@ -448,6 +478,7 @@ fn install_on_exists(path: &Path, last_holder: &mut Option<i64>) -> Next {
     Next::Wait
 }
 
+#[cfg(unix)]
 fn acquire(target: &ConfigWriteTarget, policy: LockPolicy) -> Result<LockGuard, ConfigWriteError> {
     let flavor = target.flavor();
     let path = target.lock_path();
@@ -491,6 +522,7 @@ fn acquire(target: &ConfigWriteTarget, policy: LockPolicy) -> Result<LockGuard, 
 /// (`<target>.tmp-<pid>-<n>`), the target's permission bits, `fsync`, rename.
 /// A foreign file at a temp name is never touched (the next counter is tried).
 /// On any failure the temp file is removed.
+#[cfg(unix)]
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
@@ -558,6 +590,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// - the file is absent: `fallback` is the base (create-on-save);
 /// - `mutate` returns `false`: `Ok(None)`, nothing written;
 /// - otherwise `Ok(Some(fresh))`, the config now on disk.
+#[cfg(unix)]
 pub fn update_gsd_config(
     target: &ConfigWriteTarget,
     policy: LockPolicy,
@@ -582,7 +615,32 @@ pub fn update_gsd_config(
     Ok(Some(fresh))
 }
 
-#[cfg(test)]
+/// Off Unix there is no gsd-core-compatible lock protocol here (it rests on
+/// `O_EXCL` lock files, `kill(pid, 0)` liveness, `O_NOFOLLOW`/`O_NONBLOCK` reads
+/// and inode identity), and a save without that protocol could corrupt a config
+/// GSD is writing. So this refuses before any I/O: the file is never opened,
+/// `mutate` is never called, and the Defaults tab shows
+/// `Config NOT saved: unsupported` through [`ConfigWriteError::status_text`].
+#[cfg(not(unix))]
+pub fn atomic_write(_path: &Path, _bytes: &[u8]) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
+/// Off Unix a config save is refused (see [`atomic_write`]): returns
+/// `Err(Io { kind: Unsupported })` before any file I/O and never calls `mutate`.
+#[cfg(not(unix))]
+pub fn update_gsd_config(
+    _target: &ConfigWriteTarget,
+    _policy: LockPolicy,
+    _fallback: &GsdConfig,
+    _mutate: impl FnOnce(&mut GsdConfig) -> bool,
+) -> Result<Option<GsdConfig>, ConfigWriteError> {
+    Err(ConfigWriteError::Io {
+        kind: std::io::ErrorKind::Unsupported,
+    })
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;

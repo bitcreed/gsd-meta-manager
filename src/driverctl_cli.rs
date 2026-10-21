@@ -56,6 +56,7 @@ use serde_json::{json, Map, Value};
 /// Matches the spike client's `settimeout(15)`. It is a TOTAL deadline for the
 /// reply here rather than a per-`recv` timeout: a server trickling one byte every
 /// 14 s would otherwise hold the client (and a hook) open indefinitely (T-27-14).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The largest reply the client reads. A reply is a status block or one error
@@ -67,10 +68,13 @@ const MAX_REPLY_BYTES: u64 = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientError {
     /// `DRIVERCTL_SOCK` is unset or empty.
+    #[cfg_attr(not(unix), allow(dead_code))]
     NoSocket,
     /// Connecting, writing or reading failed (including the deadline).
+    #[cfg_attr(not(unix), allow(dead_code))]
     Transport { detail: String },
     /// The server answered, but not with one JSON object.
+    #[cfg_attr(not(unix), allow(dead_code))]
     BadResponse { detail: String },
     /// No unix domain sockets on this platform.
     #[cfg_attr(unix, allow(dead_code))]
@@ -165,7 +169,7 @@ fn stop_guard_main(run_dir: Option<&std::path::Path>) -> i32 {
 }
 
 /// `driverctl serve`: run the launcher-side server until a signal (D-03).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn serve_main(
     run_dir: std::path::PathBuf,
     project: std::path::PathBuf,
@@ -185,14 +189,15 @@ fn serve_main(
     }
 }
 
-/// `driverctl serve` needs `renameat2(RENAME_EXCHANGE)` and `flock`: Linux only.
-#[cfg(not(target_os = "linux"))]
+/// `driverctl serve` needs an atomic directory-entry exchange and `flock`: Linux and
+/// macOS only; this stub is every other platform.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn serve_main(
     _run_dir: std::path::PathBuf,
     _project: std::path::PathBuf,
     _sock: Option<std::path::PathBuf>,
 ) -> i32 {
-    err_line("driverctl serve: unsupported platform (the run store needs Linux)");
+    err_line("driverctl serve: unsupported platform (the run store needs Linux or macOS)");
     1
 }
 
