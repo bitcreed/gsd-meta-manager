@@ -10767,6 +10767,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, mut rx) = new_run_app(dir.path());
         let (_run_id, _temp) = create_a_run(&mut app, &mut rx, "fresh").await;
+        // Ask for a listing now rather than waiting for the one `create_a_run` set
+        // going. Creating the run starts that listing and the editor's prepare as two
+        // independent tasks, and `create_a_run` skips every action but the editor's:
+        // when the listing lands first it is skipped with them, and waiting for it here
+        // timed out after 10 s ("the launcher listing never reported") whenever the
+        // machine was busy. The run exists on disk by now, so any listing shows it.
+        let project = app.ctx.config.projects[OBS_ALIAS].path.clone();
+        app.ctx.schedule_launcher_refresh(OBS_ALIAS, &project);
         deliver_launcher_refresh(&mut app, &mut rx).await;
         let fresh = render_top_screen(&app);
         assert!(fresh.contains("[R]launch"), "{fresh}");

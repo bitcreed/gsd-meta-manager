@@ -576,10 +576,19 @@ mod tests {
         let sock = td.path().join("full.sock");
         // Bound, listening, never accepting: the backlog fills and a further
         // blocking connect(2) would wait forever.
-        let _listener = UnixListener::bind(&sock).unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        // The backlog is chosen HERE, not inherited. `bind` listens with the
+        // kernel's cap (`net.core.somaxconn`, 4096 on current kernels), and filling
+        // that takes one held client fd per queued connection, so the test needed
+        // `RLIMIT_NOFILE` above `somaxconn`: it failed with EMFILE under a default
+        // container's soft limit of 1024 while passing on a host with 524288, and
+        // would fail the other way on a host whose `somaxconn` outgrows the loop
+        // bound. Calling `listen` again with 1 shrinks the queue to two connections
+        // (Linux admits backlog + 1), whatever either limit is.
+        rustix::net::listen(&listener, 1).unwrap();
         let mut held = Vec::new();
         let mut timed_out = false;
-        for _ in 0..10_000 {
+        for _ in 0..16 {
             match connect_within(sock.as_os_str(), Duration::from_millis(300)) {
                 Ok(stream) => held.push(stream),
                 Err(ClientError::Transport { detail }) => {

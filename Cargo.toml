@@ -114,6 +114,12 @@ icu_properties = "2.2.0"
 
 [dev-dependencies]
 assert_fs = "1"
+# `net` for ONE test: `driverctl_cli`'s full-backlog test calls `listen(2)` a
+# second time to pick its own backlog, so it needs neither a high `RLIMIT_NOFILE`
+# nor a particular `net.core.somaxconn`. Dev-only on purpose (resolver 2 does not
+# unify a dev-dependency's features into the release build), and it adds no crate:
+# `rustix` and everything `net` pulls in are already locked.
+rustix = { version = "1.1", features = ["net"] }
 # The INDEPENDENT ORACLE for the invisible class (D-19-3). unicode-rs's
 # derivation of the same standard `icu_properties` derives above; see the
 # rationale on that entry for why the two must not be one.

@@ -5935,8 +5935,31 @@ mod tests {
         assert!(first.ident.is_some());
         let again = read_log_delta(plain.path(), LOG_RUN, first.cursor, first.ident);
         assert!(again.lines.is_empty() && !again.reset);
-        std::fs::remove_file(&log).unwrap();
-        std::fs::write(&log, log_header("2026-10-20T14:09:00Z", "I-02", "two", "")).unwrap();
+        // The replacement is a NEW file renamed over the log, never remove-then-
+        // create. Both versions here are the same length, so the inode is the only
+        // thing that tells them apart, and a freed inode number is handed straight
+        // back by ext4 and overlayfs (a container's `/tmp`, the runner's `/tmp`):
+        // the unlinked log's number came back as the new log's, the identity
+        // matched, and the replacement read as an unchanged file. tmpfs numbers
+        // never recur, which is the only reason that passed on a developer machine.
+        // Staging first keeps the old inode alive while the new one is allocated,
+        // so the two cannot share a number on any filesystem.
+        let staged = plain.path().join("LOG.md.new");
+        std::fs::write(
+            &staged,
+            log_header("2026-10-20T14:09:00Z", "I-02", "two", ""),
+        )
+        .unwrap();
+        std::fs::rename(&staged, &log).unwrap();
+        {
+            use std::os::unix::fs::MetadataExt;
+            let now = std::fs::metadata(&log).unwrap();
+            assert_ne!(
+                Some((now.dev(), now.ino())),
+                first.ident,
+                "the replacement must be a different inode for this test to mean anything"
+            );
+        }
         let replaced = read_log_delta(plain.path(), LOG_RUN, first.cursor, first.ident);
         assert!(replaced.reset, "{replaced:?}");
         assert!(!replaced.lines.is_empty());
