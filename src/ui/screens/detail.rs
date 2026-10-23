@@ -3227,6 +3227,84 @@ fn roadmap_summary_line(alias: &str, state: &state_reader::ProjectState) -> Line
     Line::from(spans)
 }
 
+/// The Roadmap tab's summary line(s): the project's own
+/// [`roadmap_summary_line`], followed by one `{tag} {done}/{total}` segment
+/// per parallel workstream (`ws v0.13 7/7 · ws v0.14 4/6`).
+///
+/// - [INFERRED — audit] D-1: each segment's count is read from the roadmap
+///   `model`'s scoped band (`BandFacts::done` / `total`), not from the
+///   workstream's `phase_progress()`, so the header equals the band's own count
+///   by construction. The model is the one the list is drawn from: no second
+///   parse, no I/O.
+/// - [INFERRED — audit] D-2: the text is the model's already-escaped
+///   `ScopeFacts::tag` (never escaped again), drawn in Magenta, the workstream
+///   cue; the `ws` word carries the meaning.
+/// - [INFERRED — audit] D-3: width ladder. (1) project line + every segment
+///   fits: one line; (2) else the project's count compacted to `k/n done`
+///   (the existing Mockup C rule) + every segment fits: one line; (3) else the
+///   pre-change summary line, and a continuation line below holding the
+///   segments.
+/// - [INFERRED — audit] D-4: every workstream gets a segment, even one whose
+///   roadmap lists no phases (it reads `0/0`).
+/// - [INFERRED — audit] D-5: a project without workstreams gets exactly the
+///   pre-change single line (same compaction trigger).
+fn roadmap_summary_lines(
+    alias: &str,
+    state: &state_reader::ProjectState,
+    model: &roadmap_graph::RoadmapModel,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    let project = roadmap_summary_line(alias, state);
+    // The project's count is its last span; replace it BEFORE any segment is
+    // appended, so the replacement can never land on a workstream segment.
+    let compacted = |line: &Line<'static>| {
+        let mut line = line.clone();
+        if let Some(count) = line.spans.last_mut() {
+            let progress = state.phase_progress();
+            *count = Span::raw(format!("{}/{} done", progress.done, progress.total));
+        }
+        line
+    };
+    let segments: Vec<String> = model
+        .bands
+        .iter()
+        .filter_map(|band| {
+            band.scope
+                .as_ref()
+                .map(|scope| format!("{} {}/{}", scope.tag, band.done, band.total))
+        })
+        .collect();
+    if segments.is_empty() {
+        return vec![if project.width() > width {
+            compacted(&project)
+        } else {
+            project
+        }];
+    }
+
+    let with_segments = |base: &Line<'static>| {
+        let mut line = base.clone();
+        for segment in &segments {
+            line.spans.push(Span::styled(
+                " \u{00B7} ",
+                Style::default().fg(Color::DarkGray),
+            ));
+            line.spans.push(Span::styled(
+                segment.clone(),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+        line
+    };
+    let full = with_segments(&project);
+    if full.width() <= width {
+        return vec![full];
+    }
+    let compact = with_segments(&compacted(&project));
+    vec![compact]
+}
+
 /// Point the Roadmap cursor at the Phases tab's selected phase (D-B03): the
 /// two tabs share one selected phase, so moving it on Phases moves it on the
 /// Roadmap too. `pipeline_selected` is clamped here the same way
@@ -6651,21 +6729,14 @@ impl DetailScreen {
             // to spare. The summary line and `Path:` always; every other line
             // only when it has something to say.
             // Too wide for the terminal: the done count takes Mockup C's
-            // compact `k/n done` form rather than being cut mid-word.
-            let mut summary = roadmap_summary_line(alias, state);
-            if summary.width() > usize::from(area.width) {
-                if let Some(count) = summary.spans.last_mut() {
-                    let progress = state.phase_progress();
-                    *count = Span::raw(format!("{}/{} done", progress.done, progress.total));
-                }
-            }
-            let mut header_lines: Vec<Line> = vec![
-                summary,
-                Line::from(vec![
-                    Span::styled(" Path: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(shown(&project_path)),
-                ]),
-            ];
+            // compact `k/n done` form rather than being cut mid-word, and a
+            // project with workstreams names each of them after it.
+            let mut header_lines: Vec<Line> =
+                roadmap_summary_lines(alias, state, &model, area.width);
+            header_lines.push(Line::from(vec![
+                Span::styled(" Path: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(shown(&project_path)),
+            ]));
 
             if let Some(line) = unreadable_state_line(state) {
                 header_lines.push(line);
@@ -32329,10 +32400,7 @@ mod tests {
             for want in [
                 // The project's own milestone is still there.
                 "Actuation Routines",
-                // Each workstream's milestone band, marked as a workstream.
-                "ws v0.13",
                 "Public Beta",
-                "ws v0.14",
                 "Voice Mechanic",
                 // Their phases, including the one being worked.
                 "Play Release Readiness",
@@ -32343,6 +32411,46 @@ mod tests {
                     "at {width}x{height} the Roadmap tab does not show {want:?}:\n{text}"
                 );
             }
+            // Each workstream's milestone band, marked as a workstream. The
+            // header's own `ws v0.13 7/7` must not satisfy these, so they are
+            // looked for in the list pane's rows only.
+            let pane = roadmap_list_pane(&text);
+            for want in ["ws v0.13", "ws v0.14"] {
+                assert!(
+                    pane.iter().any(|row| row.contains(want)),
+                    "at {width}x{height} the Roadmap list has no {want:?} band:\n{text}"
+                );
+            }
+        }
+    }
+
+    /// The Roadmap header's summary line also names every workstream's
+    /// milestone with its done/total count, and each count is the one its band
+    /// shows (D-1): `… 1 of 2 phases done · ws v0.13 7/7 · ws v0.14 4/6`.
+    #[test]
+    fn sentriq_roadmap_header_summarises_each_workstream_milestone() {
+        let (_td, screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let state = &ctx.project_states[TEST_ALIAS];
+        let model = roadmap_model_at(state, None, false, None, chrono::Utc::now());
+        for (width, height) in [(200u16, 50u16), (120, 50)] {
+            let text = render_detail_to_text_at(&screen, &ctx, width, height);
+            let line = summary_line(&text);
+            assert!(
+                line.contains("1 of 2 phases done \u{b7} ws v0.13 7/7 \u{b7} ws v0.14 4/6"),
+                "at {width}x{height}: {line:?}"
+            );
+            let mut from = 0;
+            let mut segments = 0;
+            for band in &model.bands {
+                let Some(scope) = &band.scope else { continue };
+                let segment = format!("{} {}/{}", scope.tag, band.done, band.total);
+                let at = line[from..]
+                    .find(&segment)
+                    .unwrap_or_else(|| panic!("{segment:?} missing or out of order: {line:?}"));
+                from += at + segment.len();
+                segments += 1;
+            }
+            assert_eq!(segments, 2, "{line:?}");
         }
     }
 
