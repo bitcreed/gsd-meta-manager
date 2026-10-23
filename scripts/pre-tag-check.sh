@@ -565,11 +565,13 @@ G2_STATUS="NOT REACHED"
 G3_STATUS="NOT REACHED"
 G4_STATUS="NOT REACHED"
 G5_STATUS="NOT REACHED"
+G6_STATUS="NOT REACHED"
 G1_NOTE=""
 G2_NOTE=""
 G3_NOTE=""
 G4_NOTE=""
 G5_NOTE=""
+G6_NOTE=""
 
 LOG_DIR=""
 INSTALLED_GIT=""
@@ -596,6 +598,7 @@ print_summary() {
 	gate_line 3 "cargo build --release" "$G3_STATUS" "$G3_NOTE"
 	gate_line 4 "cargo test" "$G4_STATUS" "$G4_NOTE"
 	gate_line 5 "cargo clippy -D warnings" "$G5_STATUS" "$G5_NOTE"
+	gate_line 6 "cargo package --locked" "$G6_STATUS" "$G6_NOTE"
 	echo "$THIN"
 	if [ -n "$LOG_DIR" ]; then
 		echo "  gate logs: $LOG_DIR"
@@ -878,8 +881,36 @@ else
 	G5_NOTE="see gate5-clippy.log"
 fi
 
+# ---------------------------------------------------------------------------
+# GATE 6 — cargo package (publish job's "Publish" step, minus the upload)
+#
+# This mirrors the publish job's Publish step, `cargo publish --locked`, up to
+# and EXCLUDING the upload. `cargo package` assembles the .crate from the
+# manifest's file list and then builds the unpacked tarball; that build is the
+# step that failed v1.15.0 (`failed to verify package tarball`), when an
+# unanchored `assets/` exclude dropped three `include_str!` targets.
+#
+# The subcommand has no upload path, needs no token and no crates.io account.
+# This script neither reads nor forwards CARGO_REGISTRY_TOKEN.
+#
+# It sits after clippy because Publish follows Clippy in release.yml.
+#
+# Its output (the .crate and the unpacked tree) lands under the target dir's
+# package/ subtree: target/ in bare mode, /cargo-target/ in container mode,
+# inside the capped cache volume. The script does not delete it: release.yml
+# drops target/package only for the rust-cache cleaner, which never runs here;
+# cargo overwrites it on the next run; and the .crate is useful evidence.
+# ---------------------------------------------------------------------------
+section "GATE 6 — cargo package --locked (the publish step's tarball verify; never uploads)"
+if run_gate "gate6-package.log" cargo package --locked --allow-dirty; then
+	G6_STATUS="PASS"
+else
+	G6_STATUS="FAILED"
+	G6_NOTE="see gate6-package.log"
+fi
+
 OVERALL_RC=0
-for st in "$G1_STATUS" "$G2_STATUS" "$G3_STATUS" "$G4_STATUS" "$G5_STATUS"; do
+for st in "$G1_STATUS" "$G2_STATUS" "$G3_STATUS" "$G4_STATUS" "$G5_STATUS" "$G6_STATUS"; do
 	if [ "$st" = "FAILED" ]; then
 		OVERALL_RC=1
 	fi
