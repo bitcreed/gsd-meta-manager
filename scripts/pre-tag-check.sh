@@ -40,8 +40,27 @@
 #                               20. Whole numbers only; 0 wipes both volumes on
 #                               every run. A volume over the cap is wiped before
 #                               the run, so that run is cold.
+#   PRE_TAG_CONTAINER_CLEAN     1 is equivalent to --clean (0, empty or unset is
+#                               off; anything else is a usage error).
 #
-# Usage: ./scripts/pre-tag-check.sh [--container] [vX.Y.Z]
+# STORAGE IS BOUNDED. --container used to grow Docker storage without limit
+# (one cache volume reached 115 GB). Now:
+#   - Ownership is the label gsdmm.pre-tag-check=1 PLUS the fixed volume names
+#     gsdmm-pretag-target and gsdmm-pretag-cargo-home. Deletions go by exact name,
+#     by the image repository, or by that label, never global.
+#   - The cap is checked before EVERY run, inside the privileged prep step; a
+#     volume over it is wiped, making that run cold.
+#   - The inner run sets CARGO_INCREMENTAL=0, as CI does, so debug/incremental
+#     stops growing.
+#   - After each build the script prunes only its own DANGLING labelled images.
+#   - The BuildKit builder cache cannot be scoped by label, so the script leaves
+#     it alone; pruning it is the operator's global decision.
+#   - gsdmm-target and gsdmm-cargo are NOT this script's. It never touches them.
+#   - --clean (or PRE_TAG_CONTAINER_CLEAN=1) removes both volumes and every image
+#     of the repository or carrying the label, then exits (or, with --container,
+#     goes on to a cold run).
+#
+# Usage: ./scripts/pre-tag-check.sh [--container] [--clean] [vX.Y.Z]
 
 # `set -u` only, on purpose:
 #   - no `set -e`: gates 2-5 must ALL run and report, so the operator gets the
@@ -54,7 +73,7 @@ PROG="${0##*/}"
 
 usage() {
 	cat <<'USAGE'
-Usage: ./scripts/pre-tag-check.sh [--container] [TAG]
+Usage: ./scripts/pre-tag-check.sh [--container] [--clean] [TAG]
 
 Runs, locally, the gates that .github/workflows/release.yml runs on a tag push.
 
@@ -72,9 +91,25 @@ Runs, locally, the gates that .github/workflows/release.yml runs on a tag push.
                If no container runtime is usable this FAILS LOUDLY and exits
                non-zero. There is deliberately NO fallback to a local run.
 
+  --clean      remove the container storage this script created: the volumes
+               gsdmm-pretag-target and gsdmm-pretag-cargo-home (by exact name)
+               and every image in the gsdmm-pre-tag-check repository or carrying
+               the label gsdmm.pre-tag-check=1. Equivalent to
+               PRE_TAG_CONTAINER_CLEAN=1. On its own it exits 0 without running
+               any gate (and takes no TAG). With --container it cleans first and
+               then performs a COLD run. It never touches anything this script
+               did not create.
+
 Environment:
   PRE_TAG_CONTAINER_RUNTIME   force a runtime instead of probing docker,
                               then podman.
+  PRE_TAG_CONTAINER_CACHE_MAX_GB
+                              cap on EACH cache volume, in decimal GB. Default
+                              20. Whole numbers only; 0 wipes both volumes on
+                              every --container run. A volume over the cap is
+                              wiped before the run, so that run is cold.
+  PRE_TAG_CONTAINER_CLEAN     1 is equivalent to --clean (0, empty or unset is
+                              off).
 
 Exit status: 0 when no gate FAILED, 1 when any gate FAILED, 2 on bad usage.
 USAGE
@@ -83,6 +118,7 @@ USAGE
 TAG_ARG=""
 HAVE_TAG=0
 CONTAINER=0
+CLEAN=0
 for arg in "$@"; do
 	case "$arg" in
 	-h | --help)
@@ -91,6 +127,9 @@ for arg in "$@"; do
 		;;
 	--container)
 		CONTAINER=1
+		;;
+	--clean)
+		CLEAN=1
 		;;
 	-*)
 		echo "$PROG: unknown option: $arg" >&2
@@ -108,6 +147,23 @@ for arg in "$@"; do
 		;;
 	esac
 done
+
+case "${PRE_TAG_CONTAINER_CLEAN:-0}" in
+0) ;;
+1) CLEAN=1 ;;
+*)
+	echo "$PROG: PRE_TAG_CONTAINER_CLEAN must be 0 or 1, got: '${PRE_TAG_CONTAINER_CLEAN}'" >&2
+	usage >&2
+	exit 2
+	;;
+esac
+# A bare run never touches container storage, so a TAG alongside a clean-only
+# request is a mistake worth refusing rather than silently ignoring.
+if [ "$CLEAN" -eq 1 ] && [ "$CONTAINER" -eq 0 ] && [ "$HAVE_TAG" -eq 1 ]; then
+	echo "$PROG: --clean without --container takes no TAG (got: $TAG_ARG)" >&2
+	usage >&2
+	exit 2
+fi
 
 RULE="================================================================================"
 THIN="--------------------------------------------------------------------------------"
@@ -127,7 +183,7 @@ THIN="--------------------------------------------------------------------------
 # Nothing below this block is reachable in container mode, and nothing in it
 # runs at all in bare mode.
 # ===========================================================================
-if [ "$CONTAINER" -eq 1 ]; then
+if [ "$CONTAINER" -eq 1 ] || [ "$CLEAN" -eq 1 ]; then
 	# --- 1. RECURSION GUARD -------------------------------------------------
 	# The dispatch never passes --container inward, so this is belt-and-braces.
 	# It is explicit anyway because an accidental recursion in a script that
@@ -135,10 +191,17 @@ if [ "$CONTAINER" -eq 1 ]; then
 	# named variable and a hard stop.
 	if [ -n "${PRE_TAG_CHECK_IN_CONTAINER:-}" ]; then
 		echo "$RULE" >&2
-		echo "HARD ERROR: --container requested while PRE_TAG_CHECK_IN_CONTAINER is set." >&2
+		if [ "$CONTAINER" -eq 1 ]; then
+			RECURSION_ASKED="--container"
+		else
+			RECURSION_ASKED="--clean"
+		fi
+		echo "HARD ERROR: $RECURSION_ASKED requested while PRE_TAG_CHECK_IN_CONTAINER is set." >&2
 		echo "That variable means this process is ALREADY the in-container run, so" >&2
-		echo "honouring the flag would build an image inside a container and start the" >&2
-		echo "whole gate suite again. Drop the flag: the inner run is a bare run." >&2
+		echo "honouring the flag would drive the container runtime from inside a" >&2
+		echo "container (build an image, start the whole gate suite again, or delete" >&2
+		echo "the cache volumes under a live run). Drop the flag: the inner run is a" >&2
+		echo "bare run." >&2
 		echo "$RULE" >&2
 		exit 2
 	fi
@@ -150,27 +213,29 @@ if [ "$CONTAINER" -eq 1 ]; then
 	# later handed over as a positional argument, never spliced into script text.
 	#
 	# Consumed only by --container: a bare run never touches container storage.
-	CACHE_MAX_GB_RAW="${PRE_TAG_CONTAINER_CACHE_MAX_GB:-}"
-	[ -n "$CACHE_MAX_GB_RAW" ] || CACHE_MAX_GB_RAW=20
-	case "$CACHE_MAX_GB_RAW" in
-	*[!0-9]*)
-		CACHE_MAX_GB_BAD=1
-		;;
-	*)
-		CACHE_MAX_GB_BAD=0
-		[ "${#CACHE_MAX_GB_RAW}" -le 9 ] || CACHE_MAX_GB_BAD=1
-		;;
-	esac
-	if [ "$CACHE_MAX_GB_BAD" -eq 1 ]; then
-		echo "$PROG: PRE_TAG_CONTAINER_CACHE_MAX_GB must be a whole number of GB (1-9 decimal digits), got: '$CACHE_MAX_GB_RAW'" >&2
-		usage >&2
-		exit 2
+	if [ "$CONTAINER" -eq 1 ]; then
+		CACHE_MAX_GB_RAW="${PRE_TAG_CONTAINER_CACHE_MAX_GB:-}"
+		[ -n "$CACHE_MAX_GB_RAW" ] || CACHE_MAX_GB_RAW=20
+		case "$CACHE_MAX_GB_RAW" in
+		*[!0-9]*)
+			CACHE_MAX_GB_BAD=1
+			;;
+		*)
+			CACHE_MAX_GB_BAD=0
+			[ "${#CACHE_MAX_GB_RAW}" -le 9 ] || CACHE_MAX_GB_BAD=1
+			;;
+		esac
+		if [ "$CACHE_MAX_GB_BAD" -eq 1 ]; then
+			echo "$PROG: PRE_TAG_CONTAINER_CACHE_MAX_GB must be a whole number of GB (1-9 decimal digits), got: '$CACHE_MAX_GB_RAW'" >&2
+			usage >&2
+			exit 2
+		fi
+		# 10# forces base 10: a value like 08 must never be read as (invalid) octal.
+		# GB is 10^9 bytes, the unit `docker system df` reports in. 0 falls out as
+		# "wipe every run": du of even an empty volume is more than 0 bytes.
+		CACHE_MAX_GB=$((10#$CACHE_MAX_GB_RAW))
+		CACHE_CAP_BYTES=$((CACHE_MAX_GB * 1000000000))
 	fi
-	# 10# forces base 10: a value like 08 must never be read as (invalid) octal.
-	# GB is 10^9 bytes, the unit `docker system df` reports in. 0 falls out as
-	# "wipe every run": du of even an empty volume is more than 0 bytes.
-	CACHE_MAX_GB=$((10#$CACHE_MAX_GB_RAW))
-	CACHE_CAP_BYTES=$((CACHE_MAX_GB * 1000000000))
 
 	# --- 2. RUNTIME RESOLUTION ---------------------------------------------
 	# A runtime BINARY whose daemon does not answer is not a usable runtime, so
@@ -196,17 +261,23 @@ if [ "$CONTAINER" -eq 1 ]; then
 		echo "(a runtime counts as usable only when its binary is on PATH AND" >&2
 		echo " \`<runtime> info\` succeeds — an unreachable daemon is not a runtime)." >&2
 		echo "$THIN" >&2
-		echo "THIS RUN HAS CERTIFIED NOTHING. No gate ran." >&2
-		echo >&2
-		echo "There is deliberately NO FALLBACK to a local run. A silent fallback" >&2
-		echo "would recreate the exact blind spot --container exists to close: a" >&2
-		echo "green local gate on the one thing CI is red on. This machine has GSD" >&2
-		echo "installed and a different ambient git, so the two tests that have" >&2
-		echo "actually blocked publication pass here on the trees CI rejects." >&2
-		echo >&2
-		echo "Start a container runtime, or set PRE_TAG_CONTAINER_RUNTIME to one that" >&2
-		echo "works, and re-run. To knowingly run the weaker local gates instead, drop" >&2
-		echo "--container — and read the reconciliation banner it prints." >&2
+		if [ "$CONTAINER" -eq 0 ]; then
+			echo "--clean REMOVED NOTHING: there is no runtime to remove anything with." >&2
+			echo "Start a container runtime, or set PRE_TAG_CONTAINER_RUNTIME to one that" >&2
+			echo "works, and re-run." >&2
+		else
+			echo "THIS RUN HAS CERTIFIED NOTHING. No gate ran." >&2
+			echo >&2
+			echo "There is deliberately NO FALLBACK to a local run. A silent fallback" >&2
+			echo "would recreate the exact blind spot --container exists to close: a" >&2
+			echo "green local gate on the one thing CI is red on. This machine has GSD" >&2
+			echo "installed and a different ambient git, so the two tests that have" >&2
+			echo "actually blocked publication pass here on the trees CI rejects." >&2
+			echo >&2
+			echo "Start a container runtime, or set PRE_TAG_CONTAINER_RUNTIME to one that" >&2
+			echo "works, and re-run. To knowingly run the weaker local gates instead, drop" >&2
+			echo "--container — and read the reconciliation banner it prints." >&2
+		fi
 		echo "$RULE" >&2
 		exit 1
 	fi
@@ -227,6 +298,69 @@ if [ "$CONTAINER" -eq 1 ]; then
 	# cannot be relabelled. So every deletion goes by exact name or by label,
 	# never global. gsdmm-target and gsdmm-cargo are NOT ours; never touch them.
 	CONTAINER_LABEL="gsdmm.pre-tag-check=1"
+
+	# --- 2b. CLEAN ----------------------------------------------------------
+	# Remove ONLY what this script owns: the two volumes by EXACT name, and every
+	# image of the gsdmm-pre-tag-check repository (all tags) or carrying the
+	# label. Never a global prune, never any other volume name (gsdmm-target and
+	# gsdmm-cargo are NOT ours). Anything absent is reported and tolerated;
+	# anything PRESENT that cannot be removed (e.g. in use by a running container)
+	# is a HARD ERROR and no run follows. Runs AFTER cap validation, so a bad cap
+	# never wipes and then fails.
+	if [ "$CLEAN" -eq 1 ]; then
+		echo "$RULE"
+		echo "!!! CLEAN !!!"
+		echo "$THIN"
+		echo "  runtime : $RUNTIME"
+		echo "$THIN"
+		CLEAN_FAILED=""
+		for vol in "$CONTAINER_TARGET_VOL" "$CONTAINER_CARGO_VOL"; do
+			if ! "$RUNTIME" volume inspect "$vol" >/dev/null 2>&1; then
+				echo "  volume $vol: already absent"
+			elif "$RUNTIME" volume rm "$vol" >/dev/null; then
+				echo "  volume $vol: removed"
+			else
+				echo "  volume $vol: REMOVAL FAILED" >&2
+				CLEAN_FAILED="$CLEAN_FAILED volume:$vol"
+			fi
+		done
+		CLEAN_IMAGE_IDS=$(
+			{
+				"$RUNTIME" image ls -q "$CONTAINER_IMAGE_REPO"
+				"$RUNTIME" image ls -q --filter "label=$CONTAINER_LABEL"
+			} 2>/dev/null | sort -u
+		)
+		if [ -z "$CLEAN_IMAGE_IDS" ]; then
+			echo "  images: no image present"
+		else
+			for img in $CLEAN_IMAGE_IDS; do
+				# -f: one ID may carry several tags, which a plain rm refuses.
+				if "$RUNTIME" image rm -f "$img" >/dev/null; then
+					echo "  image $img: removed"
+				else
+					echo "  image $img: REMOVAL FAILED" >&2
+					CLEAN_FAILED="$CLEAN_FAILED image:$img"
+				fi
+			done
+		fi
+		if [ -n "$CLEAN_FAILED" ]; then
+			echo "$RULE" >&2
+			echo "HARD ERROR: could not remove:$CLEAN_FAILED" >&2
+			echo "Something may still be using it (a running container?). No run follows." >&2
+			echo "$RULE" >&2
+			exit 1
+		fi
+		if [ "$CONTAINER" -eq 0 ]; then
+			echo "$THIN"
+			echo "  clean complete; no gate was run (see --help)."
+			echo "$RULE"
+			exit 0
+		fi
+		echo "$THIN"
+		echo "  clean complete; continuing to a COLD container run."
+		echo "$RULE"
+		echo
+	fi
 
 	echo "$RULE"
 	echo "!!! CONTAINER MODE !!!"
