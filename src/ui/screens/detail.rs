@@ -3242,8 +3242,10 @@ fn roadmap_summary_line(alias: &str, state: &state_reader::ProjectState) -> Line
 /// - [INFERRED — audit] D-3: width ladder. (1) project line + every segment
 ///   fits: one line; (2) else the project's count compacted to `k/n done`
 ///   (the existing Mockup C rule) + every segment fits: one line; (3) else the
-///   pre-change summary line, and a continuation line below holding the
-///   segments.
+///   pre-change summary line (full if it fits, else compact), and a
+///   continuation line below holding ` ` + the segments. A continuation that
+///   overflows drops whole trailing segments for a `ws +N more` tail, so no
+///   segment is cut mid-word.
 /// - [INFERRED — audit] D-4: every workstream gets a segment, even one whose
 ///   roadmap lists no phases (it reads `0/0`).
 /// - [INFERRED — audit] D-5: a project without workstreams gets exactly the
@@ -3302,7 +3304,49 @@ fn roadmap_summary_lines(
         return vec![full];
     }
     let compact = with_segments(&compacted(&project));
-    vec![compact]
+    if compact.width() <= width {
+        return vec![compact];
+    }
+
+    // Rung 3: line 1 is exactly the pre-change summary line; line 2 holds the
+    // segments. When they overflow it, whole trailing segments give way to a
+    // `ws +N more` tail (the dashboard's own overflow vocabulary), so none is
+    // ever cut mid-word. Not even one segment beside the tail: the tail alone.
+    let first = if project.width() > width {
+        compacted(&project)
+    } else {
+        project
+    };
+    let sep = || Span::styled(" \u{00B7} ", Style::default().fg(Color::DarkGray));
+    let continuation = |kept: usize| {
+        let mut spans = vec![Span::raw(" ")];
+        for (i, segment) in segments.iter().take(kept).enumerate() {
+            if i > 0 {
+                spans.push(sep());
+            }
+            spans.push(Span::styled(
+                segment.clone(),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+        let dropped = segments.len() - kept;
+        if dropped > 0 {
+            if kept > 0 {
+                spans.push(sep());
+            }
+            spans.push(Span::styled(
+                format!("ws +{dropped} more"),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+        Line::from(spans)
+    };
+    let second = (1..=segments.len())
+        .rev()
+        .map(continuation)
+        .find(|line| line.width() <= width)
+        .unwrap_or_else(|| continuation(0));
+    vec![first, second]
 }
 
 /// Point the Roadmap cursor at the Phases tab's selected phase (D-B03): the
@@ -32452,6 +32496,263 @@ mod tests {
             }
             assert_eq!(segments, 2, "{line:?}");
         }
+    }
+
+    /// A header line's text, spans joined.
+    fn header_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The pre-workstream header rule, restated: the project line, its last
+    /// span (the count) replaced by `k/n done` when wider than `width`.
+    fn flat_header_text(state: &state_reader::ProjectState, width: usize) -> String {
+        let mut line = roadmap_summary_line(TEST_ALIAS, state);
+        if line.width() > width {
+            if let Some(count) = line.spans.last_mut() {
+                let progress = state.phase_progress();
+                *count = Span::raw(format!("{}/{} done", progress.done, progress.total));
+            }
+        }
+        header_text(&line)
+    }
+
+    /// Every workstream stays in the header at narrow widths: the compact
+    /// count while everything still fits on one line, then a continuation line
+    /// below the (unchanged) summary line. Nothing is wider than the terminal.
+    #[test]
+    fn sentriq_roadmap_header_keeps_every_workstream_at_narrow_widths() {
+        let (_td, screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let both = "ws v0.13 7/7 \u{b7} ws v0.14 4/6";
+
+        // The compact count plus both segments on ONE line: measured, not
+        // assumed. It is 101 cells on this fixture, so 100 columns is already
+        // the continuation-line rung (a deviation from the plan's wording,
+        // which put the one-line rung at 100).
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let full_one_line = summary_line(&text).trim_end().chars().count();
+        let compact_one_line = full_one_line - "1 of 2 phases done".len() + "1/2 done".len();
+        assert!(
+            compact_one_line < full_one_line,
+            "{compact_one_line} {full_one_line}"
+        );
+        let one_line_width = u16::try_from(compact_one_line).unwrap();
+        let text = render_detail_to_text_at(&screen, &ctx, one_line_width, 30);
+        let line = text
+            .lines()
+            .find(|l| l.contains("1/2 done"))
+            .unwrap_or_else(|| panic!("no compact summary line at {one_line_width}:\n{text}"));
+        assert!(
+            line.contains(&format!("1/2 done \u{b7} {both}")),
+            "{line:?}"
+        );
+        assert!(
+            text.lines().any(|l| l.contains(" Path:"))
+                && !text
+                    .lines()
+                    .skip_while(|l| !l.contains("1/2 done"))
+                    .nth(1)
+                    .is_some_and(|l| l.contains("ws v0.13")),
+            "one line expected at {one_line_width}:\n{text}"
+        );
+
+        // One cell less, and at 80x24: the summary line is the pre-change one
+        // (compact only when the project line alone is too wide), the segments
+        // sit on the line directly below it, above ` Path:`.
+        let project_width =
+            roadmap_summary_line(TEST_ALIAS, &ctx.project_states[TEST_ALIAS]).width();
+        assert!(
+            project_width > 80 && project_width <= 100,
+            "{project_width}"
+        );
+        for (w, h) in [(one_line_width - 1, 30u16), (90, 30), (80, 24)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            let rows: Vec<&str> = text.lines().collect();
+            let count = if project_width > usize::from(w) {
+                "1/2 done"
+            } else {
+                "1 of 2 phases done"
+            };
+            let at = rows
+                .iter()
+                .position(|l| l.contains("phase 16 phase_complete"))
+                .unwrap_or_else(|| panic!("no summary line at {w}:\n{text}"));
+            assert!(rows[at].contains(count), "{w}: {:?}", rows[at]);
+            assert!(!rows[at].contains("ws v0.1"), "{:?}", rows[at]);
+            assert!(
+                rows[at + 1].contains(&format!(" {both}")),
+                "{:?}",
+                rows[at + 1]
+            );
+            assert!(rows[at + 2].contains(" Path:"), "{:?}", rows[at + 2]);
+        }
+
+        for (w, h) in [(one_line_width, 30u16), (100, 30), (80, 24)] {
+            let text = render_detail_to_text_at(&screen, &ctx, w, h);
+            assert!(
+                text.lines().all(|l| l.chars().count() == usize::from(w)),
+                "a line is not {w} wide:\n{text}"
+            );
+            assert!(
+                text.contains("┌ Roadmap "),
+                "no Roadmap block at {w}:\n{text}"
+            );
+        }
+    }
+
+    /// The pure ladder: one line, one line with the compact count, then a
+    /// continuation line that gives way segment by segment to `ws +N more`.
+    #[test]
+    fn roadmap_summary_lines_steps_down_from_one_line_to_a_workstream_line() {
+        let (_td, _screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let state = &ctx.project_states[TEST_ALIAS];
+        let model = roadmap_model_at(state, None, false, None, chrono::Utc::now());
+        let at = |w: usize| {
+            roadmap_summary_lines(TEST_ALIAS, state, &model, u16::try_from(w).unwrap())
+                .iter()
+                .map(header_text)
+                .collect::<Vec<_>>()
+        };
+        let both = "ws v0.13 7/7 \u{b7} ws v0.14 4/6";
+
+        let full = at(1000);
+        assert_eq!(full.len(), 1);
+        let f = full[0].chars().count();
+        assert!(full[0].contains("1 of 2 phases done"), "{full:?}");
+        assert!(full[0].ends_with(&format!("phases done \u{b7} {both}")));
+
+        let rung2 = at(f - 1);
+        assert_eq!(rung2.len(), 1, "{rung2:?}");
+        assert!(
+            rung2[0].contains("1/2 done") && rung2[0].ends_with(both),
+            "{rung2:?}"
+        );
+        let c = rung2[0].chars().count();
+
+        // Below the compact one-line width: two lines, the first the flat rule's.
+        let rung3 = at(c - 1);
+        assert_eq!(rung3.len(), 2, "{rung3:?}");
+        assert_eq!(rung3[0], flat_header_text(state, c - 1));
+        assert!(!rung3[0].contains("ws "), "{rung3:?}");
+        assert_eq!(rung3[1], format!(" {both}"));
+
+        // The tail: whole trailing segments give way to `ws +N more`.
+        let one_and_tail = " ws v0.13 7/7 \u{b7} ws +1 more";
+        let w = one_and_tail.chars().count();
+        assert!(w < format!(" {both}").chars().count());
+        let rows = at(w);
+        assert_eq!(
+            (rows.len(), rows[1].as_str()),
+            (2, one_and_tail),
+            "{rows:?}"
+        );
+        let rows = at(w - 1);
+        assert_eq!(
+            (rows.len(), rows[1].as_str()),
+            (2, " ws +2 more"),
+            "{rows:?}"
+        );
+
+        // Whatever the width, a segment is whole or gone, never cut mid-word.
+        let allowed = [
+            format!(" {both}"),
+            one_and_tail.to_string(),
+            " ws +2 more".to_string(),
+        ];
+        for width in 1..=f + 1 {
+            let rows = at(width);
+            match rows.len() {
+                1 => assert!(rows[0].ends_with(both), "{width}: {rows:?}"),
+                2 => assert!(allowed.contains(&rows[1]), "{width}: {rows:?}"),
+                n => panic!("{n} header lines at {width}: {rows:?}"),
+            }
+        }
+    }
+
+    /// D-4: a workstream whose roadmap lists no phases still gets its segment,
+    /// equal to whatever its band reports.
+    #[test]
+    fn a_workstream_with_no_phases_keeps_its_roadmap_header_segment() {
+        let (td, _screen, _ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let planning = td.path().join(".planning");
+        let empty = planning.join("workstreams").join("v0-15-empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(
+            empty.join("STATE.md"),
+            "---\ngsd_state_version: \"1.0\"\nmilestone: v0.15\nmilestone_name: Nothing Yet\n\
+             status: planning\n---\n\n# Project State\n",
+        )
+        .unwrap();
+        std::fs::write(
+            empty.join("ROADMAP.md"),
+            "# Roadmap: Sentriq\n\n## v0.15 \u{2014} Nothing Yet\n",
+        )
+        .unwrap();
+        let state = crate::state_reader::parse_project_state(&planning);
+        let model = roadmap_model_at(&state, None, false, None, chrono::Utc::now());
+        let band = model
+            .bands
+            .iter()
+            .find(|b| b.scope.as_ref().is_some_and(|s| s.tag.contains("v0.15")))
+            .expect("a band for the empty workstream");
+        let segment = format!(
+            "{} {}/{}",
+            band.scope.as_ref().unwrap().tag,
+            band.done,
+            band.total
+        );
+        let lines = roadmap_summary_lines(TEST_ALIAS, &state, &model, 400);
+        assert_eq!(lines.len(), 1);
+        let text = header_text(&lines[0]);
+        assert!(text.ends_with(&segment), "{segment:?} not in {text:?}");
+        assert_eq!(text.matches("ws v0.1").count(), 3, "{text:?}");
+    }
+
+    /// Metamorphic: with the workstreams taken away, the header is exactly
+    /// what it was before workstream support, compaction trigger included.
+    #[test]
+    fn a_flat_project_roadmap_header_is_unchanged_by_workstream_support() {
+        let (_td, _screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let mut state = ctx.project_states[TEST_ALIAS].clone();
+        state.workstreams.clear();
+        let model = roadmap_model_at(&state, None, false, None, chrono::Utc::now());
+        let whole = roadmap_summary_line(TEST_ALIAS, &state).width();
+        for width in [200, whole, whole - 1, 80] {
+            let lines =
+                roadmap_summary_lines(TEST_ALIAS, &state, &model, u16::try_from(width).unwrap());
+            assert_eq!(lines.len(), 1, "{width}");
+            let text = header_text(&lines[0]);
+            assert_eq!(text, flat_header_text(&state, width), "{width}");
+            assert!(!text.contains("ws "), "{text:?}");
+        }
+        assert!(flat_header_text(&state, whole - 1).ends_with("1/2 done"));
+    }
+
+    /// SAFE-07: a workstream milestone carrying an ESC byte reaches the header
+    /// through the model's escaped tag, once.
+    #[test]
+    fn a_workstream_milestone_with_control_bytes_is_escaped_in_the_roadmap_header() {
+        let (_td, _screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let mut state = ctx.project_states[TEST_ALIAS].clone();
+        state.workstreams[0].state.milestone = "v0.13\u{1b}[2J".to_string();
+        let model = roadmap_model_at(&state, None, false, None, chrono::Utc::now());
+        let band = model
+            .bands
+            .iter()
+            .find(|b| b.scope.is_some())
+            .expect("a workstream band");
+        let tag = band.scope.as_ref().unwrap().tag.clone();
+        let lines = roadmap_summary_lines(TEST_ALIAS, &state, &model, 400);
+        for line in &lines {
+            for span in &line.spans {
+                assert!(!span.content.contains('\u{1b}'), "{:?}", span.content);
+            }
+        }
+        let text = header_text(&lines[0]);
+        assert!(
+            text.contains(&format!("{tag} {}/{}", band.done, band.total)),
+            "{tag:?} not in {text:?}"
+        );
+        assert!(tag.contains("v0.13"), "{tag:?}");
     }
 
     /// The Phases tab lists the workstream phases too, each row carrying the
