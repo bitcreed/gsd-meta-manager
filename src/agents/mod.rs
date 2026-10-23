@@ -537,7 +537,8 @@ pub fn scan_project_with_probe(
             let entry = WorkstreamAgents {
                 name: name.clone(),
                 unmerged: unmerged::detect_in(&core, &rows, project_root, &rel),
-                ..WorkstreamAgents::default()
+                worktree_phases: worktree_phases::detect_in(&core, &rows, project_root, &rel),
+                worktree_plans: worktree_plans::detect_in(&core, project_root, &rel),
             };
             let empty = entry.unmerged.is_empty()
                 && entry.worktree_phases.is_empty()

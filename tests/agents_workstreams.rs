@@ -223,3 +223,44 @@ fn a_workstream_worktree_finishing_plans_marks_its_own_phase_unmerged_end_to_end
         .values()
         .all(|w| w.unmerged_in_phase("16") == 0));
 }
+
+/// Worktree-held plans and worktree-only phases are found under the
+/// workstream whose directory holds them, never under the project.
+#[test]
+fn workstream_worktree_plans_and_phases_are_found_under_the_workstream_only() {
+    let Some((_tmp, root)) = workstream_repo() else {
+        return;
+    };
+    let lanes = add_worktree(&root, "gsd/v0.14-voice", ".claude/worktrees/lanes-v014");
+    let phases = format!(".planning/workstreams/{WS14}/phases");
+    for n in [1, 2] {
+        put(
+            &lanes,
+            &format!("{phases}/27-parity/27-0{n}-PLAN.md"),
+            "---\nwave: 1\n---\n<objective>Parity.</objective>\n",
+        );
+    }
+    put(
+        &lanes,
+        &format!("{phases}/29-wake-word/29-CONTEXT.md"),
+        "ctx\n",
+    );
+
+    let scan = scan(&root);
+    assert!(scan.worktree_plans.is_empty(), "{:?}", scan.worktree_plans);
+    assert!(scan.worktree_phases.is_empty());
+    let ws = entry(&scan, WS14).expect("v0.14 holds worktree work");
+    assert_eq!(ws.worktree_plans.len(), 1, "{:?}", ws.worktree_plans);
+    let wp = &ws.worktree_plans[0];
+    assert_eq!(wp.key, "27");
+    assert!(
+        wp.phase_dir
+            .ends_with(format!("workstreams/{WS14}/phases/27-parity")),
+        "{:?}",
+        wp.phase_dir
+    );
+    assert_eq!(wp.inference.plan_count, 2);
+    let ids: Vec<&str> = ws.worktree_phases.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, vec!["27", "29"]);
+    assert!(entry(&scan, WS13).is_none());
+}

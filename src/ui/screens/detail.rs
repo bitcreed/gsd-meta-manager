@@ -2948,20 +2948,25 @@ pub(crate) fn roadmap_model_at(
         .cloned()
         .chain(state.shipped_phases.iter().map(|p| phase_key(&p.number)))
         .collect();
-    let ghosts: Vec<GhostNode> = view
-        .map(|v| {
-            v.worktree_phases
-                .iter()
-                .filter(|g| !held_main.contains(&phase_key(&g.id)))
-                .map(|g| {
-                    let badge = format!("[{} @{}]", g.stage.label(), g.short_ref.shown());
-                    let plans = (g.plans_total > 0).then_some((g.plans_done, g.plans_total));
-                    (g.id.clone(), g.name.shown().to_string(), badge, plans)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let ghosts: Vec<GhostNode> = ghosts_of(view, &held_main);
     let ghost_count = ghosts.len();
+    // The same for each workstream, against its own roadmap and shipped
+    // history and its own nested view (quick 261023-05i). Parallel to
+    // `state.workstreams`.
+    let ws_ghosts: Vec<Vec<GhostNode>> = state
+        .workstreams
+        .iter()
+        .map(|ws| {
+            let held: std::collections::HashSet<String> = ws
+                .state
+                .roadmap_entries()
+                .iter()
+                .map(|(p, _)| phase_key(&p.number))
+                .chain(ws.state.shipped_phases.iter().map(|p| phase_key(&p.number)))
+                .collect();
+            ghosts_of(view.and_then(|v| v.workstreams.get(&ws.name)), &held)
+        })
+        .collect();
     let ghost_nodes: Vec<roadmap_graph::ListNode<'_>> = ghosts
         .iter()
         .map(|(id, name, badge, plans)| roadmap_graph::ListNode {
@@ -2986,31 +2991,10 @@ pub(crate) fn roadmap_model_at(
     let nodes = shipped_nodes
         .into_iter()
         .chain(entries.into_iter().map(|(p, planned)| {
-            let browsed = browsed_inference(state, view, &p.number);
-            let worktree = browsed.and_then(|(_, wp)| wp);
-            let badge: String = match worktree {
-                Some(wp) => format!(
-                    "[{} @{}]",
-                    disk_stage_label(&wp.inference),
-                    wp.short_ref.shown()
-                ),
-                None => disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect(),
-            };
-            let badge = badge.trim();
-            // A main ROADMAP plan checklist still wins the counts; otherwise a
-            // worktree's own PLAN/SUMMARY counts stand in for main's absent ones.
-            let plans =
-                state_reader::phase_plan_counts(p, &state.phase_disk_statuses).or_else(|| {
-                    let wp = worktree?;
-                    worktree_counted.insert(phase_key(&p.number));
-                    Some((
-                        wp.inference.summary_count.min(wp.inference.plan_count),
-                        wp.inference.plan_count,
-                    ))
-                });
+            let (badge, plans, from_worktree) = phase_badge_and_counts(state, view, p, show_badges);
+            if from_worktree {
+                worktree_counted.insert(phase_key(&p.number));
+            }
             roadmap_graph::ListNode {
                 id: &p.number,
                 name: &p.name,
@@ -3025,7 +3009,7 @@ pub(crate) fn roadmap_model_at(
                 plans,
                 goal: state.phase_goals.get(&phase_key(&p.number)),
                 planned,
-                badge: (!badge.is_empty()).then(|| badge.to_string()),
+                badge,
                 scope: None,
             }
         }))
@@ -3045,8 +3029,9 @@ pub(crate) fn roadmap_model_at(
         })
         .collect();
     let mut nodes: Vec<roadmap_graph::ListNode<'_>> = nodes;
-    for (ws, scope) in state.workstreams.iter().zip(&scopes) {
+    for ((ws, scope), ws_ghost) in state.workstreams.iter().zip(&scopes).zip(&ws_ghosts) {
         let owner = &ws.state;
+        let ws_view = view.and_then(|v| v.workstreams.get(&ws.name));
         let band = bands.len();
         bands.push(roadmap_graph::BandInput {
             label: workstream_band_label(ws),
@@ -3056,12 +3041,14 @@ pub(crate) fn roadmap_model_at(
         });
         let focus = ws.focus_phase_number(now);
         nodes.extend(owner.roadmap_entries().into_iter().map(|(p, planned)| {
-            let badge: String =
-                disk_suffix_spans(&p.number, &owner.phase_disk_statuses, show_badges)
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect();
-            let badge = badge.trim();
+            let (badge, plans, from_worktree) =
+                phase_badge_and_counts(owner, ws_view, p, show_badges);
+            if from_worktree {
+                worktree_counted.insert(state_reader::workstreams::scoped_phase_key(
+                    Some(&ws.name),
+                    &p.number,
+                ));
+            }
             roadmap_graph::ListNode {
                 id: &p.number,
                 name: &p.name,
@@ -3081,13 +3068,32 @@ pub(crate) fn roadmap_model_at(
                     p.completed,
                     &owner.phase_disk_statuses,
                 ),
-                plans: state_reader::phase_plan_counts(p, &owner.phase_disk_statuses),
+                plans,
                 goal: owner.phase_goals.get(&phase_key(&p.number)),
                 planned,
-                badge: (!badge.is_empty()).then(|| badge.to_string()),
+                badge,
                 scope: Some(scope),
             }
         }));
+        // Worktree-only phases the workstream's roadmap does not list: ghost
+        // rows inside its own band, after its entries.
+        nodes.extend(
+            ws_ghost
+                .iter()
+                .map(|(id, name, badge, plans)| roadmap_graph::ListNode {
+                    id,
+                    name,
+                    deps: &[],
+                    band: Some(band),
+                    marker: state_reader::PhaseMarker::Future,
+                    done: false,
+                    plans: *plans,
+                    goal: None,
+                    planned: false,
+                    badge: Some(badge.clone()),
+                    scope: Some(scope),
+                }),
+        );
     }
 
     let no_toggles = std::collections::HashSet::new();
@@ -3150,6 +3156,15 @@ pub(crate) fn roadmap_model_at(
                 }
             }
         }
+        // A workstream's ghosts the same way, matched by their scoped key.
+        for (ws, ws_ghost) in state.workstreams.iter().zip(&ws_ghosts) {
+            for (id, ..) in ws_ghost {
+                let key = state_reader::workstreams::scoped_phase_key(Some(&ws.name), id);
+                if let Some(u) = model.phases.iter().position(|f| f.key == key) {
+                    unmerged_nodes.push(u);
+                }
+            }
+        }
         // Through the model, so the lane glyph `layout_list` drew follows.
         for u in unmerged_nodes {
             model.set_phase_status(u, roadmap_graph::PhaseStatus::Unmerged);
@@ -3160,6 +3175,75 @@ pub(crate) fn roadmap_model_at(
             .retain(|&u| phases[u].status != roadmap_graph::PhaseStatus::Unmerged);
     }
     model
+}
+
+/// One listed phase's Roadmap badge and plan counts, for the project's own
+/// phases and for a workstream's alike (quick 261023-05i), so the escaping and
+/// the counting cannot diverge (T-05i-03).
+///
+/// `owner` is the state that owns the phase and `view` the scope's own agents
+/// view. When main holds no plans for the phase and a linked worktree does
+/// ([`browsed_inference`]), the badge is `[<stage> @<ref>]`, built from the
+/// untrusted `short_ref` through `shown()`; otherwise it is the plain disk
+/// badge. A main ROADMAP plan checklist still wins the counts; otherwise the
+/// worktree's own PLAN/SUMMARY counts stand in for main's absent ones. The
+/// flag is true exactly when the counts came from the worktree.
+fn phase_badge_and_counts(
+    owner: &state_reader::ProjectState,
+    view: Option<&AgentView>,
+    p: &state_reader::roadmap_md::RoadmapPhase,
+    show_badges: bool,
+) -> (Option<String>, Option<(u32, u32)>, bool) {
+    let browsed = browsed_inference(owner, view, &p.number);
+    let worktree = browsed.and_then(|(_, wp)| wp);
+    let badge: String = match worktree {
+        Some(wp) => format!(
+            "[{} @{}]",
+            disk_stage_label(&wp.inference),
+            wp.short_ref.shown()
+        ),
+        None => disk_suffix_spans(&p.number, &owner.phase_disk_statuses, show_badges)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect(),
+    };
+    let badge = badge.trim();
+    let mut from_worktree = false;
+    let plans = state_reader::phase_plan_counts(p, &owner.phase_disk_statuses).or_else(|| {
+        let wp = worktree?;
+        from_worktree = true;
+        Some((
+            wp.inference.summary_count.min(wp.inference.plan_count),
+            wp.inference.plan_count,
+        ))
+    });
+    (
+        (!badge.is_empty()).then(|| badge.to_string()),
+        plans,
+        from_worktree,
+    )
+}
+
+/// The ghost nodes (id, name, badge, counts) of `view`'s worktree-only phases
+/// whose keys are not in `held_main` (the roadmap and shipped history of the
+/// scope that owns them). Main stays authoritative: a key main lists is
+/// skipped.
+fn ghosts_of(
+    view: Option<&AgentView>,
+    held_main: &std::collections::HashSet<String>,
+) -> Vec<GhostNode> {
+    view.map(|v| {
+        v.worktree_phases
+            .iter()
+            .filter(|g| !held_main.contains(&crate::state_reader::phase_num::phase_key(&g.id)))
+            .map(|g| {
+                let badge = format!("[{} @{}]", g.stage.label(), g.short_ref.shown());
+                let plans = (g.plans_total > 0).then_some((g.plans_done, g.plans_total));
+                (g.id.clone(), g.name.shown().to_string(), badge, plans)
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// The label of a workstream's Roadmap band: the roadmap's own heading for the
@@ -33286,11 +33370,12 @@ mod tests {
         assert!(!text.contains("--ws"), "{text}");
     }
 
-    /// The agents scan describes the PROJECT's worktrees and keys their plans
-    /// by bare phase number, so it must never be applied to a workstream's
-    /// phase: a worktree holding plans for "27" is not v0.14's Phase 27.
+    /// Each scope reads its own agents view (quick 261023-05i). The project's
+    /// view keys its worktree plans by bare phase number, so it must never
+    /// reach a workstream's phase: a worktree holding project plans for "27"
+    /// is not v0.14's Phase 27.
     #[test]
-    fn sentriq_the_agent_view_is_never_applied_to_a_workstream_phase() {
+    fn sentriq_the_projects_worktree_plans_never_reach_a_same_numbered_workstream_phase() {
         let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
         let view = AgentView {
             worktree_plans: vec![WorktreePlans {
@@ -33923,5 +34008,154 @@ mod tests {
         let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
         let text = press_j_until(&mut screen, &mut ctx, "Phase 28:", 20, render);
         assert!(text.contains("unmerged"), "{text}");
+    }
+
+    /// v0.14's Phase 27 plans, held only by agent worktree `a3e0c1b…`.
+    fn ws14_p27_plans(short_ref: &str) -> WorktreePlans {
+        WorktreePlans {
+            key: "27".to_string(),
+            worktree: std::path::PathBuf::from("/wt/.claude/worktrees/agent-a3e0c1b7655c37392"),
+            phase_dir: std::path::PathBuf::from(
+                "/wt/.claude/worktrees/agent-a3e0c1b7655c37392/.planning/workstreams/\
+                 v0-14-voice-assistant/phases/27-parity-designs-and-wake-word-verdict",
+            ),
+            worktree_name: Untrusted::from_untrusted_source("agent-a3e0c1b7655c37392".to_string()),
+            branch: None,
+            short_ref: Untrusted::from_untrusted_source(short_ref.to_string()),
+            others: 0,
+            inference: waves_inference(
+                &[
+                    ("27-01-parity-audit", Some("Parity audit"), Some(1)),
+                    ("27-02-designs", Some("Designs"), Some(1)),
+                    ("27-03-wake-word", Some("Wake word"), Some(2)),
+                    ("27-04-verdict", Some("Verdict"), Some(2)),
+                ],
+                &[],
+            ),
+        }
+    }
+
+    /// Quick 261023-05i: a workstream phase whose plans only a worktree holds
+    /// shows the worktree badge and counts on the Roadmap and the plans in the
+    /// Phases tab's Waves pane, and a hostile short ref is escaped.
+    #[test]
+    fn sentriq_a_workstream_phase_shows_its_own_worktree_plans_badge_and_counts() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let key = format!("{WS14}/27");
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_plans: vec![ws14_p27_plans("a3e0c1b")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&view));
+        let facts = &model.phases[model.phase_index(&key).expect("listed")];
+        let badge = facts.badge.as_deref().unwrap_or_default();
+        assert!(badge.contains("@a3e0c1b"), "{badge}");
+        assert!(
+            matches!(facts.plans, Some((_, n)) if n > 0),
+            "{:?}",
+            facts.plans
+        );
+        assert_eq!(facts.plans, Some((0, 4)));
+        // The project's own Phase 16 stays untouched.
+        let p16 = &model.phases[model.phase_index("16").expect("listed")];
+        assert!(!p16.badge.as_deref().unwrap_or_default().contains('@'));
+
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let text = press_j_until(&mut screen, &mut ctx, "Phase 27: Parity", 20, render);
+        assert!(
+            text.contains("plans in worktree agent-a3e0c1b7655c37392"),
+            "{text}"
+        );
+        assert!(text.contains("27-01"), "{text}");
+        assert!(!text.contains("No plans yet"), "{text}");
+
+        // A hostile short ref never reaches the badge raw.
+        let hostile = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_plans: vec![ws14_p27_plans("\u{1b}[31mred")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&hostile));
+        let facts = &model.phases[model.phase_index(&key).expect("listed")];
+        let badge = facts.badge.as_deref().unwrap_or_default();
+        assert!(badge.contains('@'), "{badge}");
+        assert!(!badge.contains('\u{1b}'), "{badge:?}");
+    }
+
+    /// Quick 261023-05i: a worktree-only phase v0.14's roadmap does not list
+    /// is a ghost row inside v0.14's band, never in the project's.
+    #[test]
+    fn sentriq_a_workstream_ghost_phase_sits_in_its_workstream_band() {
+        use crate::agents::worktree_phases::{WorktreePhase, WorktreeStage};
+        let (_td, _screen, ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_phases: vec![WorktreePhase {
+                        id: "29".to_string(),
+                        name: Untrusted::from_untrusted_source("wake-word".to_string()),
+                        stage: WorktreeStage::Context,
+                        plans_done: 0,
+                        plans_total: 0,
+                        worktree: std::path::PathBuf::from("/wt/lanes-v014"),
+                        short_ref: Untrusted::from_untrusted_source("lanes-v014".to_string()),
+                        state: crate::agents::unmerged::UnmergedState::AwaitingMerge,
+                    }],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&view));
+        assert!(model.phase_index("29").is_none(), "never the project's key");
+        let at = model
+            .phase_index(&format!("{WS14}/29"))
+            .expect("a ghost row in v0.14");
+        let facts = &model.phases[at];
+        let band = facts.band.expect("a band");
+        assert_eq!(
+            model.bands[band].scope.as_ref().map(|s| s.id.as_str()),
+            Some(WS14)
+        );
+        assert_eq!(facts.status, roadmap_graph::PhaseStatus::Unmerged);
+        assert!(facts.badge.as_deref().unwrap_or_default().contains('@'));
+        // A phase the workstream's roadmap lists is not duplicated as a ghost.
+        let listed = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_phases: view.workstreams[WS14].worktree_phases.clone(),
+                    ..Default::default()
+                },
+            )],
+        );
+        let mut listed = listed;
+        listed
+            .workstreams
+            .get_mut(WS14)
+            .expect("view")
+            .worktree_phases[0]
+            .id = "26".to_string();
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&listed));
+        let count = model
+            .phases
+            .iter()
+            .filter(|f| f.key == format!("{WS14}/26"))
+            .count();
+        assert_eq!(count, 1, "main's roadmap stays authoritative");
     }
 }
