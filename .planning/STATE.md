@@ -5,10 +5,10 @@ current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: verifying
 stopped_at: Completed 30-09-PLAN.md
-last_updated: "2026-10-21T06:54:53.116Z"
+last_updated: "2026-10-23T05:04:34.170Z"
 last_activity: 2026-10-21
 last_activity_desc: Phase 30 execution started
-state_head: 7bd6e15c523f5a7d465ee8570bdf9459fec1640e
+state_head: 460a21976fb076592cc41f4431c83fe2b4029054
 progress:
   total_phases: 10
   completed_phases: 12
@@ -272,7 +272,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-21 - Completed quick task 261021-1id: Make TUI status glyphs width-safe across terminals (also 261021-1if: macOS socket-path run-id length limit removed)
+Last activity: 2026-10-23 - Completed quick task 261022-wtw: Remove the Detail screen Roadmap box view (v key)
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -893,6 +893,7 @@ Recent decisions affecting current work:
 | 261021-101 | Fix Phase 30 review findings WR-07 WR-02 IN-04 | 2026-10-21 | 524ba05 | [261021-101-fix-phase-30-review-findings-wr-07-wr-02](./quick/261021-101-fix-phase-30-review-findings-wr-07-wr-02/) |
 | 261021-1id | Make TUI status glyphs width-safe across terminals (EAW Neutral, non-emoji glyph registry + width test; Driver labels DIM) | 2026-10-21 | 7bd6e15 | [261021-1id-make-tui-status-glyphs-width-safe-across](./quick/261021-1id-make-tui-status-glyphs-width-safe-across/) |
 | 261021-1if | Remove macOS socket-path run-id length limit for driverctl socket (fixed-length hashed fallback name) | 2026-10-21 | dffb6c9 | [261021-1if-remove-macos-socket-path-run-id-length-l](./quick/261021-1if-remove-macos-socket-path-run-id-length-l/) |
+| 261022-wtw | Remove the Detail screen Roadmap box view (v key), obsolete now that the Roadmap tab shows the lanes | 2026-10-23 | 460a219 | [261022-wtw-remove-the-detail-screen-roadmap-box-vie](./quick/261022-wtw-remove-the-detail-screen-roadmap-box-vie/) |
 
 ## Session Continuity
 
