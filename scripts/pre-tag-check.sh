@@ -4,7 +4,7 @@
 # BEFORE the `v*` tag exists.
 #
 # It reproduces the gates that workflow runs on a tag push (tag/version match,
-# MSRV compile, release build, test, clippy) so a release can be rehearsed
+# MSRV compile, release build, test, clippy, package verify) so a release can be rehearsed
 # locally instead of discovered broken after the tag is already pushed.
 #
 # GATE ORDER IS DELIBERATELY INVERTED relative to the CI job graph. In
@@ -42,6 +42,13 @@
 #                               the run, so that run is cold.
 #   PRE_TAG_CONTAINER_CLEAN     1 is equivalent to --clean (0, empty or unset is
 #                               off; anything else is a usage error).
+#   CARGO_NET_OFFLINE           cargo's own variable, honoured by every cargo gate
+#                               in a BARE run; set true to run gate 6 offline on a
+#                               warm cache. It is not passed into the container
+#                               (which forwards only explicit -e variables and
+#                               needs the network anyway). Gate 6 deliberately has
+#                               no --offline flag and no offline fallback: see the
+#                               comment above it.
 #
 # STORAGE IS BOUNDED. --container used to grow Docker storage without limit
 # (one cache volume reached 115 GB). Now:
@@ -63,7 +70,7 @@
 # Usage: ./scripts/pre-tag-check.sh [--container] [--clean] [vX.Y.Z]
 
 # `set -u` only, on purpose:
-#   - no `set -e`: gates 2-5 must ALL run and report, so the operator gets the
+#   - no `set -e`: gates 2-6 must ALL run and report, so the operator gets the
 #     whole picture from one invocation rather than one failure at a time.
 #   - no `pipefail`: the constant-extraction pipelines end in `head -1`, whose
 #     SIGPIPE would be misread as a pipeline failure.
@@ -76,6 +83,17 @@ usage() {
 Usage: ./scripts/pre-tag-check.sh [--container] [--clean] [TAG]
 
 Runs, locally, the gates that .github/workflows/release.yml runs on a tag push.
+
+Gates (run order):
+  1  tag / Cargo.toml version   hard-stops on disagreement
+  2  MSRV check                 cargo check on the declared rust-version floor
+  3  cargo build --release
+  4  cargo test --no-fail-fast
+  5  cargo clippy -- -D warnings
+  6  cargo package --locked     builds and verifies the packaged .crate the way
+                                the publish job's `cargo publish --locked` does
+                                before uploading. It never publishes and needs no
+                                token.
 
   TAG          optional, e.g. v1.7.1. When given, gate 1 asserts it matches the
                Cargo.toml version and hard-stops on disagreement. When omitted,
@@ -110,6 +128,9 @@ Environment:
                               wiped before the run, so that run is cold.
   PRE_TAG_CONTAINER_CLEAN     1 is equivalent to --clean (0, empty or unset is
                               off).
+  CARGO_NET_OFFLINE           cargo's own variable, bare runs only: set true to
+                              run gate 6 offline on a warm cache. Gate 6 has no
+                              --offline flag and no offline fallback.
 
 Exit status: 0 when no gate FAILED, 1 when any gate FAILED, 2 on bad usage.
 USAGE
@@ -172,7 +193,7 @@ THIN="--------------------------------------------------------------------------
 # --container DISPATCH
 #
 # PLACEMENT IS DELIBERATE: after RULE/THIN (this block shouts with them) and
-# BEFORE the EXIT trap is installed further down. That trap prints a five-gate
+# BEFORE the EXIT trap is installed further down. That trap prints a six-gate
 # summary describing gates that never ran in THIS process — on a container
 # dispatch every line of it would read NOT REACHED, a confusing lie stapled to
 # the end of a real run. The INNER run prints its own banner and its own
@@ -900,6 +921,23 @@ fi
 # inside the capped cache volume. The script does not delete it: release.yml
 # drops target/package only for the rust-cache cleaner, which never runs here;
 # cargo overwrites it on the next run; and the .crate is useful evidence.
+#
+# WHY --allow-dirty, ALWAYS. CLAUDE.md Release Process step 3 runs BEFORE the
+# step-5 release commit, so the step-1 version bump and the step-2 `cargo update`
+# are uncommitted BY DESIGN. Without the flag this gate would fail on every
+# correctly run release. The container dispatch bind-mounts the same working
+# tree at /work and does not copy it, so the dirty state is identical in both
+# modes and one flag serves both. Every other gate also tests the working tree,
+# not HEAD. The dirty-tree advisory below is what keeps the flag from hiding a
+# real problem.
+#
+# WHY NO --offline AND NO OFFLINE FALLBACK. Measured: `cargo package` contacts
+# the crates.io index even on a warm cache, unlike the check, build, test and
+# clippy gates, and the publish job runs online. A retry-offline fallback would
+# be a second code path that green CI never takes. The escape hatch for a bare
+# offline run on a warm cache is cargo's own CARGO_NET_OFFLINE=true, which every
+# cargo gate honours. The container passes only explicit `-e` variables and
+# needs the network anyway for its image build and oracle install.
 # ---------------------------------------------------------------------------
 section "GATE 6 — cargo package --locked (the publish step's tarball verify; never uploads)"
 if run_gate "gate6-package.log" cargo package --locked --allow-dirty; then
@@ -907,6 +945,28 @@ if run_gate "gate6-package.log" cargo package --locked --allow-dirty; then
 else
 	G6_STATUS="FAILED"
 	G6_NOTE="see gate6-package.log"
+fi
+
+# DIRTY-TREE ADVISORY. Runs whatever the verdict is, and NEVER alters it — the
+# same principle as the DEC-5 comment under gate 4: a hint must not be able to
+# hide, or invent, a failure. The pathspec is exactly the packaged paths whose
+# content changes what compiles.
+if DIRTY_PATHS=$(git status --porcelain --untracked-files=all -- src tests Cargo.toml Cargo.lock 2>/dev/null); then
+	if [ -n "$DIRTY_PATHS" ]; then
+		DIRTY_COUNT=$(printf '%s\n' "$DIRTY_PATHS" | wc -l | tr -d ' ')
+		echo
+		echo "ADVISORY: --allow-dirty packaged these uncommitted paths. The publish job"
+		echo "          packages only what is COMMITTED at the tag. An untracked (??) file"
+		echo "          the crate needs passes this gate and FAILS the publish job."
+		printf '%s\n' "$DIRTY_PATHS" | sed 's/^/  /'
+		if [ "$G6_STATUS" = "PASS" ]; then
+			G6_NOTE="packaged $DIRTY_COUNT uncommitted path(s); see gate output"
+		fi
+	fi
+else
+	echo
+	echo "ADVISORY: dirty state unknown — git status failed (no repository, or a linked"
+	echo "          worktree seen from inside the container). Verdict unchanged."
 fi
 
 OVERALL_RC=0

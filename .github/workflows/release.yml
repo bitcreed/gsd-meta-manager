@@ -157,6 +157,9 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
+      # scripts/pre-tag-check.sh gate 6 runs `cargo package --locked`, this step's
+      # pre-upload build-and-verify, before the tag exists. v1.15.0 died here at
+      # `failed to verify package tarball`.
       - name: Publish
         run: cargo publish --locked
         env:
