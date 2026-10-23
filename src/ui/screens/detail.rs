@@ -7525,9 +7525,20 @@ impl DetailScreen {
         // The project's own phases, then each parallel workstream's: the list
         // the selection index addresses (`ProjectState::scoped_phases`).
         let entries = state.scoped_phases();
+        // A workstream whose roadmap lists no phases has no row to select, so
+        // it is named by a dim placeholder line under the phase rows instead
+        // (quick 261023-05l, I-5, I-6).
+        let empty_workstreams: Vec<Line<'static>> = state
+            .workstreams
+            .iter()
+            .filter(|ws| ws.state.roadmap_entries().is_empty())
+            .map(empty_workstream_line)
+            .collect();
         if entries.is_empty() {
             let block = Block::default().borders(Borders::ALL).title(" Phases ");
-            let msg = Paragraph::new("  No phases found").block(block);
+            let mut lines = vec![Line::from("  No phases found")];
+            lines.extend(empty_workstreams);
+            let msg = Paragraph::new(lines).block(block);
             frame.render_widget(msg, area);
             return;
         }
@@ -7608,7 +7619,6 @@ impl DetailScreen {
         let list_block = Block::default().borders(Borders::RIGHT).title(" Phases ");
         let list_inner = list_block.inner(left_area);
         let list = List::new(items)
-            .block(list_block)
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
@@ -7620,10 +7630,40 @@ impl DetailScreen {
         // (quick 260926-dyf, [inferred I-12]).
         let mut list_state = ListState::default().with_offset(self.phase_list_offset.get());
         list_state.select(Some(selected));
-        frame.render_stateful_widget(list, left_area, &mut list_state);
+        let list_rect = if empty_workstreams.is_empty() {
+            frame.render_stateful_widget(list.block(list_block), left_area, &mut list_state);
+            list_inner
+        } else {
+            // The placeholder lines sit BELOW the list's own rect: outside the
+            // List widget and outside the recorded click region, so the
+            // selection index and the mouse mapping address phases only. They
+            // take at most all but one row, so the list always keeps a row.
+            frame.render_widget(list_block, left_area);
+            let lines = u16::try_from(empty_workstreams.len())
+                .unwrap_or(u16::MAX)
+                .min(list_inner.height.saturating_sub(1));
+            let rows = u16::try_from(entries.len())
+                .unwrap_or(u16::MAX)
+                .min(list_inner.height - lines);
+            let parts = Layout::vertical([
+                Constraint::Length(rows),
+                Constraint::Length(lines),
+                Constraint::Min(0),
+            ])
+            .split(list_inner);
+            frame.render_stateful_widget(list, parts[0], &mut list_state);
+            let width = usize::from(parts[1].width);
+            let shown_lines: Vec<Line> = empty_workstreams
+                .into_iter()
+                .take(usize::from(lines))
+                .map(|line| fit_spans(line.spans, width))
+                .collect();
+            frame.render_widget(Paragraph::new(shown_lines), parts[1]);
+            parts[0]
+        };
         self.phase_list_offset.set(list_state.offset());
         self.record_list(crate::ui::mouse::ListRegion {
-            rect: list_inner,
+            rect: list_rect,
             offset: list_state.offset(),
             len: entries.len(),
         });
@@ -9166,6 +9206,33 @@ fn workstream_line_spans(ws: &state_reader::workstreams::WorkstreamState) -> Vec
         Style::default().fg(Color::DarkGray),
     ));
     spans
+}
+
+/// The Phases tab's placeholder line for a parallel workstream whose roadmap
+/// lists no phases: `  ws v0.13.1 Store Listing · no phases on roadmap yet ·
+/// planning` — the marker, milestone and name in the workstream colour, the
+/// rest dim, the trailing status left out (with its separator) when the
+/// workstream's STATE.md states none. Third-party text throughout, so every
+/// part goes through [`shown`] / `Untrusted::shown` (T-05l-02).
+fn empty_workstream_line(ws: &state_reader::workstreams::WorkstreamState) -> Line<'static> {
+    let workstream_colour = Style::default().fg(Color::Magenta);
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(shown(&crate::app::workstream_tag(ws)), workstream_colour),
+    ];
+    if let Some(name) = &ws.state.milestone_name {
+        spans.push(Span::styled(
+            format!(" {}", name.shown()),
+            workstream_colour,
+        ));
+    }
+    spans.push(Span::styled(" \u{b7} no phases on roadmap yet", dim));
+    let status = ws.state.status.trim();
+    if !status.is_empty() {
+        spans.push(Span::styled(format!(" \u{b7} {}", shown(status)), dim));
+    }
+    Line::from(spans)
 }
 
 /// One row of the Pipeline tab's left-hand phase list.
@@ -33477,6 +33544,107 @@ mod tests {
         let plain_keys: std::collections::HashSet<&str> =
             plain.phases.iter().map(|p| p.key.as_str()).collect();
         assert_eq!(keys, plain_keys);
+    }
+
+    /// The Phases tab names the empty workstream with a dim placeholder line
+    /// under the phase rows. Its full text is 64 cells, so it is read at a
+    /// width whose left pane (40%) holds it.
+    #[test]
+    fn sentriq_empty_workstream_phases_tab_draws_a_placeholder_line() {
+        let (_td, screen, ctx) = sentriq_with_empty_workstream_detail(DetailSubView::Pipeline);
+        let text = render_detail_to_text_at(&screen, &ctx, 200, 40);
+        for want in [
+            "ws v0.13.1 Store Listing",
+            "no phases on roadmap yet \u{b7} planning",
+            "ws v0.13 P22: Play Release Readiness",
+            "ws v0.14 P26: Push-to-Talk Voice",
+        ] {
+            assert!(text.contains(want), "{want:?} missing:\n{text}");
+        }
+        let line_of = |want: &str| {
+            text.lines()
+                .position(|l| l.contains(want))
+                .unwrap_or_else(|| panic!("{want:?} missing:\n{text}"))
+        };
+        assert!(
+            line_of("ws v0.14 P28:") < line_of("ws v0.13.1 Store Listing"),
+            "the placeholder sits below the last phase row:\n{text}"
+        );
+        // At 160 columns the line is cut to the pane, never wrapped or dropped.
+        let narrow = render_detail_to_text_at(&screen, &ctx, 160, 40);
+        assert!(narrow.contains("ws v0.13.1 Store Listing"), "{narrow}");
+    }
+
+    /// The placeholder is no row: the selection index, the keys and the mouse
+    /// region address phases only.
+    #[test]
+    fn sentriq_empty_workstream_phases_selection_and_clicks_are_unchanged() {
+        let (_td, mut screen, mut ctx) =
+            sentriq_with_empty_workstream_detail(DetailSubView::Pipeline);
+        let selected = |c: &AppContext| c.view_cache[TEST_ALIAS].pipeline_selected;
+        for _ in 0..40 {
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        assert_eq!(selected(&ctx), 2 + 7 + 6 - 1);
+        let text = render_detail_to_text_at(&screen, &ctx, 160, 40);
+        assert!(text.contains("Phase 28:"), "{text}");
+        assert!(text.contains("v0-14-voice-assistant"), "{text}");
+        // `g` alone does not move the Phases selection (the sibling sentriq
+        // test pairs it with PageUp), so PageUp is what returns to the top.
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(selected(&ctx), 0);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        render_detail_to_text_at(&screen, &ctx, 160, 40);
+        let list = mouse_list(&screen);
+        assert_eq!(list.len, 2 + 7 + 6);
+        // The recorded rect holds the phase rows only: the placeholder line
+        // is the row right under it.
+        assert_eq!(usize::from(list.rect.height), list.len);
+        let before = selected(&ctx);
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.bottom());
+        assert_eq!(selected(&ctx), before, "a click on the placeholder line");
+
+        // A click on the list's first row still selects it.
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 3, list.rect.y);
+        assert_eq!(selected(&ctx), 0);
+    }
+
+    /// Everything the placeholder line shows is third-party text.
+    #[test]
+    fn empty_workstream_line_escapes_third_party_text() {
+        let ws = state_reader::workstreams::WorkstreamState {
+            name: "dir\u{1b}[2J".to_string(),
+            active: false,
+            claim: None,
+            state: state_reader::ProjectState {
+                milestone: "v1\u{1b}[31m\u{7}".to_string(),
+                milestone_name: Some(Untrusted::from_untrusted_source(
+                    "Na\u{202E}me\u{1b}[2J".to_string(),
+                )),
+                status: " plan\u{1b}[2Jning\u{202E}\u{7} ".to_string(),
+                ..Default::default()
+            },
+        };
+        let text = header_text(&empty_workstream_line(&ws));
+        for bad in ['\u{1b}', '\u{202E}', '\u{7}'] {
+            assert!(!text.contains(bad), "{bad:?} reached {text:?}");
+        }
+        assert!(
+            text.contains(" \u{b7} no phases on roadmap yet \u{b7} "),
+            "{text:?}"
+        );
+        assert!(
+            text.contains("planning") || text.contains("plan"),
+            "{text:?}"
+        );
+
+        // No status: the separator goes with it.
+        let mut quiet = ws.clone();
+        quiet.state.status = "  ".to_string();
+        let text = header_text(&empty_workstream_line(&quiet));
+        assert!(text.ends_with("no phases on roadmap yet"), "{text:?}");
     }
 
     // ── the selection behind the Phases tab ───────────────────────────────
