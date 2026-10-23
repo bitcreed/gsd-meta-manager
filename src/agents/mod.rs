@@ -43,6 +43,7 @@ pub mod fixers;
 pub mod processes;
 pub mod unmerged;
 pub mod waves;
+pub mod workstream_scope;
 pub mod worktree_phases;
 pub mod worktree_plans;
 pub mod worktrees;
@@ -280,6 +281,10 @@ pub struct AgentRow {
     /// Whether this worktree's own `.planning/` holds this plan's SUMMARY —
     /// finished, but not yet merged into main (RESEARCH Pitfall 3).
     pub summary_in_worktree: bool,
+    /// The workstream directory the row's plan belongs to, resolved at scan
+    /// time by [`workstream_scope::resolve`]; `None` for the project or an
+    /// unattributed row. Identity only, never drawn.
+    pub workstream: Option<String>,
 }
 
 /// One project's agents, as of one scan.
@@ -308,6 +313,25 @@ pub struct ProjectAgents {
     /// Phases whose plans only a linked worktree holds
     /// ([`worktree_plans::detect`], quick 261014-0jv), sorted by phase number.
     /// Display-only: never merged into `ProjectState`.
+    pub worktree_plans: Vec<worktree_plans::WorktreePlans>,
+    /// Each workstream's own unmerged work, worktree-only phases and
+    /// worktree-held plans (quick 261023-05i), sorted by name. An entry exists
+    /// only when at least one of its lists is non-empty. The project's own
+    /// lists above never hold workstream data, and the reverse.
+    pub workstreams: Vec<WorkstreamAgents>,
+}
+
+/// One workstream's agents-scan lists: what [`ProjectAgents`] carries for the
+/// project, detected inside `.planning/workstreams/<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkstreamAgents {
+    /// The workstream directory name. Identity only, never drawn.
+    pub name: String,
+    /// See [`ProjectAgents::unmerged`].
+    pub unmerged: Vec<unmerged::UnmergedItem>,
+    /// See [`ProjectAgents::worktree_phases`].
+    pub worktree_phases: Vec<worktree_phases::WorktreePhase>,
+    /// See [`ProjectAgents::worktree_plans`].
     pub worktree_plans: Vec<worktree_plans::WorktreePlans>,
 }
 
@@ -424,6 +448,7 @@ pub fn scan_project_with_probe(
 
     let base_sha = core.base_sha.as_deref();
     let planning = project_root.join(".planning");
+    let workstream_names = workstream_scope::names(&planning);
     // Phase → its directory relative to `<project>/.planning`, or `None` when
     // main has no directory for it. `find_phase_dir` runs at most once per
     // distinct phase per scan.
@@ -505,6 +530,21 @@ pub fn scan_project_with_probe(
     let unmerged = unmerged::detect(&core, &rows, project_root);
     let worktree_phases = worktree_phases::detect(&core, &rows, project_root);
     let worktree_plans = worktree_plans::detect(&core, project_root);
+    let workstreams: Vec<WorkstreamAgents> = workstream_names
+        .iter()
+        .filter_map(|name| {
+            let rel = Path::new(".planning").join("workstreams").join(name);
+            let entry = WorkstreamAgents {
+                name: name.clone(),
+                unmerged: unmerged::detect_in(&core, &rows, project_root, &rel),
+                ..WorkstreamAgents::default()
+            };
+            let empty = entry.unmerged.is_empty()
+                && entry.worktree_phases.is_empty()
+                && entry.worktree_plans.is_empty();
+            (!empty).then_some(entry)
+        })
+        .collect();
 
     let raw = |value: &Option<Untrusted>| {
         value
@@ -537,6 +577,7 @@ pub fn scan_project_with_probe(
         unmerged,
         worktree_phases,
         worktree_plans,
+        workstreams,
     }
 }
 

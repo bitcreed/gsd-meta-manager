@@ -2833,9 +2833,11 @@ fn disk_suffix_spans(
 ///   project's and its dependencies resolve inside it. A workstream's current
 ///   phase is [`state_reader::workstreams::WorkstreamState::focus_phase_number`]
 ///   (a live `milestone.lock` claim, else the established rule), the same phase
-///   the dashboard names, so `◉` marks the phase the owner is working. The
-///   agent view is the PROJECT's (its worktrees' phases are keyed by bare
-///   number), so it is never applied to a workstream's phases.
+///   the dashboard names, so `◉` marks the phase the owner is working. Each
+///   scope reads its own agent view (quick 261023-05i): the project's phases
+///   the project's, a workstream's phases that workstream's nested
+///   [`AgentView::workstreams`] entry, so a bare phase number never crosses
+///   scopes.
 ///
 /// In-memory state only — no I/O — because the render loop calls it
 /// (CLAUDE.md: never block the render loop). Fold toggles come from `cache`
@@ -3102,13 +3104,26 @@ pub(crate) fn roadmap_model_at(
     if let Some(view) = view {
         let mut unmerged_nodes = Vec::new();
         for (u, facts) in model.phases.iter_mut().enumerate() {
-            // A workstream's phase is not in the agent view's world: the view
-            // keys worktree plans by bare phase number, which would hand the
-            // project's Phase 16 plans to a workstream's Phase 16.
-            if is_shipped(u) || facts.scope.is_some() {
+            // Each scope reads its own view (quick 261023-05i): the project's
+            // bare-number view would hand the project's Phase 16 plans to a
+            // workstream's Phase 16. A workstream phase's key is
+            // `<directory>/<phase key>` (`scoped_phase_key`); split it at the
+            // first `/` and look the directory up in the nested views.
+            if is_shipped(u) {
                 continue;
             }
-            let k = view.unmerged_in_phase(&facts.key);
+            let (scope_view, bare_key) = if facts.scope.is_some() {
+                match facts.key.split_once('/') {
+                    Some((dir, bare)) => match view.workstreams.get(dir) {
+                        Some(ws_view) => (ws_view, bare),
+                        None => continue,
+                    },
+                    None => continue,
+                }
+            } else {
+                (view, facts.key.as_str())
+            };
+            let k = scope_view.unmerged_in_phase(bare_key);
             facts.unmerged = k;
             // Worktree-sourced counts are not done in main (quick 261014-0jv):
             // `k` already counts their worktree SUMMARYs, so `d` would double it.
@@ -9597,21 +9612,23 @@ impl WavesWorktree {
     }
 }
 
-/// The agents scan's view as it applies to one listed phase: the project's own
-/// phases get it, a workstream's get none.
+/// The agents scan's view as it applies to one listed phase: each scope reads
+/// its own view (quick 261023-05i).
 ///
-/// The view describes the PROJECT's worktrees, and keys their plans and their
-/// unmerged work by bare phase number. Handed to a workstream's `Phase 16` it
-/// would attribute the project's Phase 16 worktree plans to it.
+/// A project phase gets the project's view; a workstream phase gets that
+/// workstream's nested view ([`AgentView::workstreams`]), or none. The views
+/// key worktree plans and unmerged work by bare phase number, so the project's
+/// view handed to a workstream's `Phase 16` would attribute the project's
+/// Phase 16 worktree plans to it, and the reverse.
 fn agent_view_of<'a>(
     entry: &state_reader::workstreams::ScopedPhase<'_>,
     ctx: &'a AppContext,
     alias: &str,
 ) -> Option<&'a AgentView> {
-    if entry.workstream.is_some() {
-        None
-    } else {
-        ctx.agent_views.get(alias)
+    let view = ctx.agent_views.get(alias)?;
+    match entry.workstream {
+        None => Some(view),
+        Some(ws) => view.workstreams.get(&ws.name),
     }
 }
 
@@ -33812,5 +33829,99 @@ mod tests {
             !text.contains('\u{202e}'),
             "raw U+202E in the breadcrumb:\n{text}"
         );
+    }
+
+    // ── quick 261023-05i: agents-scan details for workstream phases ──
+
+    const WS13: &str = "v0-13-public-beta";
+    const WS14: &str = "v0-14-voice-assistant";
+
+    /// An awaiting-merge unmerged item for plan `id`.
+    fn ws_unmerged(id: &str) -> crate::agents::unmerged::UnmergedItem {
+        use crate::agents::unmerged::{UnmergedItem, UnmergedKey, UnmergedState};
+        UnmergedItem {
+            key: UnmergedKey::Plan(crate::agents::waves::PlanRef::from_id(id).expect("id")),
+            worktree: std::path::PathBuf::from("/wt/lanes-ws"),
+            branch: None,
+            short_ref: Untrusted::from_untrusted_source("lanes-ws".to_string()),
+            commits_ahead: Some(1),
+            dirty: Some(0),
+            state: UnmergedState::AwaitingMerge,
+        }
+    }
+
+    /// A view carrying nested workstream views built from `(name, view)`.
+    fn view_with_workstreams(project: AgentView, nested: Vec<(&str, AgentView)>) -> AgentView {
+        let mut view = project;
+        for (name, mut ws_view) in nested {
+            ws_view.workstream = Some(name.to_string());
+            view.workstreams.insert(name.to_string(), ws_view);
+        }
+        view
+    }
+
+    /// Quick 261023-05i: a workstream's unmerged plans mark only its own
+    /// phase, and the project's same-numbered phase never shares them.
+    #[test]
+    fn sentriq_workstream_unmerged_plans_mark_only_their_own_phase() {
+        use roadmap_graph::PhaseStatus;
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let state = ctx.project_states[TEST_ALIAS].clone();
+        let key13 = format!("{WS13}/16");
+        let key14 = format!("{WS14}/28");
+
+        let view = view_with_workstreams(
+            AgentView {
+                unmerged: vec![ws_unmerged("16-01")],
+                ..Default::default()
+            },
+            vec![(
+                WS14,
+                AgentView {
+                    unmerged: vec![ws_unmerged("28-02"), ws_unmerged("28-03")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&state, None, false, Some(&view));
+        let at = |key: &str| model.phase_index(key).unwrap_or_else(|| panic!("{key}"));
+        assert_eq!(model.phases[at("16")].unmerged, 1);
+        assert_eq!(model.phases[at("16")].status, PhaseStatus::Unmerged);
+        assert_eq!(model.phases[at(&key13)].unmerged, 0);
+        assert_ne!(model.phases[at(&key13)].status, PhaseStatus::Unmerged);
+        assert_eq!(model.phases[at(&key14)].unmerged, 2);
+        assert_eq!(model.phases[at(&key14)].status, PhaseStatus::Unmerged);
+
+        // Swapped: only v0.13 holds 16-01. The project's Phase 16 is clear.
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS13,
+                AgentView {
+                    unmerged: vec![ws_unmerged("16-01")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&state, None, false, Some(&view));
+        assert_eq!(model.phases[at("16")].unmerged, 0);
+        assert_ne!(model.phases[at("16")].status, PhaseStatus::Unmerged);
+        assert_eq!(model.phases[at(&key13)].unmerged, 1);
+
+        // The Phases tab on v0.14 P28 reads the workstream's own view.
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    unmerged: vec![ws_unmerged("28-02"), ws_unmerged("28-03")],
+                    ..Default::default()
+                },
+            )],
+        );
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let text = press_j_until(&mut screen, &mut ctx, "Phase 28:", 20, render);
+        assert!(text.contains("unmerged"), "{text}");
     }
 }

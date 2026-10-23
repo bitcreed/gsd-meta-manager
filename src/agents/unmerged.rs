@@ -242,6 +242,19 @@ pub fn detect(
     rows: &[AgentRow],
     project_root: &Path,
 ) -> Vec<UnmergedItem> {
+    detect_in(core, rows, project_root, Path::new(".planning"))
+}
+
+/// [`detect`] over one scope's planning directory: `planning_rel` is joined
+/// onto the main root and onto each worktree path, so `.planning` is the
+/// project and `.planning/workstreams/<name>` one workstream (quick
+/// 261023-05i). The same rules apply inside a workstream's planning directory.
+pub fn detect_in(
+    core: &worktrees::CoreScan,
+    rows: &[AgentRow],
+    project_root: &Path,
+    planning_rel: &Path,
+) -> Vec<UnmergedItem> {
     let mut live: Vec<&worktrees::CoreWorktree> =
         core.worktrees.iter().filter(|wt| !wt.prunable).collect();
     if live.is_empty() {
@@ -249,7 +262,7 @@ pub fn detect(
     }
     live.sort_by(|a, b| a.path.cmp(&b.path));
     let main_root = core.main_worktree.as_deref().unwrap_or(project_root);
-    let main = main_done_keys(&main_root.join(".planning"));
+    let main = main_done_keys(&main_root.join(planning_rel));
     let agent_ids: Vec<&str> = core
         .worktrees
         .iter()
@@ -258,7 +271,7 @@ pub fn detect(
 
     let mut items: Vec<UnmergedItem> = Vec::new();
     for wt in live {
-        let keys = worktree_done_keys(&wt.path.join(".planning"), &main);
+        let keys = worktree_done_keys(&wt.path.join(planning_rel), &main);
         if keys.is_empty() {
             continue;
         }
