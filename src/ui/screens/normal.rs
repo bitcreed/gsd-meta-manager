@@ -6,17 +6,19 @@ use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::driver_run::MarkerClass;
 use super::help::HelpScreen;
 use super::{AppContext, Screen, ScreenAction, SortMode};
-use crate::app::{classify_status, format_phase_display, DetailSubView, StatusCategory};
+use crate::app::{
+    classify_status, format_phase_display, format_workstream_display, DetailSubView, StatusCategory,
+};
 use crate::state_reader::disk_status::DiskStatus;
-use crate::state_reader::ProjectPresence;
+use crate::state_reader::{ProjectPresence, ProjectState};
 use crate::ui::mouse::{ListRegion, MouseInput};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Borders, Cell as TableCell, Paragraph, Row, Table};
 use ratatui::Frame;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 pub struct NormalScreen {
     pub searching: bool,
@@ -29,6 +31,11 @@ pub struct NormalScreen {
     table_region: Cell<Option<ListRegion>>,
     /// The table's whole outer block as drawn in the last frame, for the wheel.
     table_area: Cell<Option<Rect>>,
+    /// How many terminal rows each project's table row occupied in the last
+    /// frame, in `filtered_aliases` order. A project with parallel workstreams
+    /// draws one extra line per workstream, so the click hit test cannot assume
+    /// one row per project.
+    table_row_heights: RefCell<Vec<u16>>,
     /// Set by a single click that selected a row; a double-click runs Enter only
     /// while it is set (I-7).
     mouse_row_armed: bool,
@@ -47,6 +54,7 @@ impl NormalScreen {
             table_offset: Cell::new(0),
             table_region: Cell::new(None),
             table_area: Cell::new(None),
+            table_row_heights: RefCell::new(Vec::new()),
             mouse_row_armed: false,
         }
     }
@@ -526,6 +534,117 @@ fn agent_summary_line(view: &crate::agents::waves::AgentView, cells: u16) -> Opt
     Some(Line::from(Span::styled(form, Style::default().fg(color))))
 }
 
+/// The most lines one project's row grows by for its parallel workstreams.
+///
+/// A project can hold any number of workstreams and the table is a fixed-height
+/// window; past this the last line becomes `ws +N more` instead of the rows
+/// pushing every other project off the screen.
+const MAX_WORKSTREAM_LINES: usize = 4;
+
+/// How many workstream lines a project's row carries: one per workstream, up to
+/// [`MAX_WORKSTREAM_LINES`].
+///
+/// The ONE count both the row's height and its cells are derived from, so a row
+/// can never be taller or shorter than the lines it draws.
+fn workstream_line_count(state: Option<&ProjectState>) -> usize {
+    state.map_or(0, |s| s.workstreams.len().min(MAX_WORKSTREAM_LINES))
+}
+
+/// A project row's height in terminal rows: its own line plus its workstream
+/// lines. `1` for every project without workstreams, which is what every row
+/// was before they were drawn.
+fn row_height(workstream_lines: usize) -> u16 {
+    u16::try_from(1 + workstream_lines).unwrap_or(u16::MAX)
+}
+
+/// The lines drawn under a project's own, as `(Phase cell, Status cell)` pairs —
+/// one per workstream, or `ws +N more` for the tail past
+/// [`MAX_WORKSTREAM_LINES`].
+///
+/// The Phase cell reads `ws v0.14 P26: Push-to-Talk Voice`
+/// ([`format_workstream_display`]), tinted by the workstream's own status. The
+/// Status cell is the same D-R-P-E-V pipeline the project's row draws, for the
+/// workstream's focus phase, so a parallel milestone reads in the vocabulary the
+/// dashboard already teaches; a workstream with no phase to describe falls back
+/// to its status text. Both are third-party text and go through
+/// `render_for_terminal`.
+fn workstream_lines(
+    state: &ProjectState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(Line<'static>, Line<'static>)> {
+    let total = state.workstreams.len();
+    let shown = workstream_line_count(Some(state));
+    // Past the cap, the last slot is the overflow line, so one fewer workstream
+    // is listed and the line counts everything it replaced.
+    let (listed, hidden) = if total > shown {
+        (shown - 1, total - (shown - 1))
+    } else {
+        (shown, 0)
+    };
+
+    let mut lines: Vec<(Line<'static>, Line<'static>)> = state
+        .workstreams
+        .iter()
+        .take(listed)
+        .map(|ws| {
+            let color = status_color(&ws.state.status);
+            let phase_line = Line::from(Span::styled(
+                crate::text::render_for_terminal(&format_workstream_display(ws, now)),
+                Style::default().fg(color),
+            ));
+            let status_line = match ws.focus_inference(now) {
+                Some(inference) => compact_pipeline(&inference.status),
+                None => Line::from(Span::styled(
+                    crate::text::render_for_terminal(&ws.state.status),
+                    Style::default().fg(color),
+                )),
+            };
+            (phase_line, status_line)
+        })
+        .collect();
+    if hidden > 0 {
+        lines.push((
+            Line::from(Span::styled(
+                format!("ws +{hidden} more"),
+                Style::default().fg(Color::Magenta),
+            )),
+            Line::default(),
+        ));
+    }
+    lines
+}
+
+/// The project index under (`column`, `row`) when rows differ in height.
+///
+/// [`ListRegion::row_at`] assumes one terminal row per item, which stopped
+/// being true the moment a project could draw a line per workstream: every
+/// click below such a project would have selected the project above the one
+/// under the pointer. `heights` is [`NormalScreen::table_row_heights`], in
+/// `filtered_aliases` order; the walk starts at the region's scroll offset and
+/// stops at the last item, so the blank area under the table hits nothing.
+fn dashboard_row_at(region: ListRegion, heights: &[u16], column: u16, row: u16) -> Option<usize> {
+    if !region
+        .rect
+        .contains(ratatui::layout::Position::new(column, row))
+    {
+        return None;
+    }
+    let mut top = region.rect.y;
+    for (index, height) in heights
+        .iter()
+        .enumerate()
+        .skip(region.offset)
+        .take(region.len.saturating_sub(region.offset))
+    {
+        let bottom = top.saturating_add(*height);
+        if row < bottom {
+            return Some(index);
+        }
+        top = bottom;
+    }
+    None
+}
+
 /// Build the dashboard `Table` for a terminal width from already-built rows.
 ///
 /// Pairs with [`dashboard_columns`] so the header cells and the constraint vector
@@ -801,6 +920,7 @@ impl Screen for NormalScreen {
         // (too small, empty state) leaves nothing clickable (D-04).
         self.table_region.set(None);
         self.table_area.set(None);
+        self.table_row_heights.borrow_mut().clear();
         // Minimum terminal size guard
         if area.width < 40 || area.height < 8 {
             let msg = Paragraph::new("Terminal too small. Resize to at least 40x8.")
@@ -836,7 +956,9 @@ impl Screen for NormalScreen {
                 self.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx)
             }
             MouseInput::Click { column, row, .. } => {
-                let hit = self.table_region.get().and_then(|r| r.row_at(column, row));
+                let hit = self.table_region.get().and_then(|r| {
+                    dashboard_row_at(r, &self.table_row_heights.borrow(), column, row)
+                });
                 match hit {
                     Some(index) => {
                         ctx.table_state.select(Some(index));
@@ -975,6 +1097,10 @@ impl NormalScreen {
             // Measured once per frame, from the same layout the table runs.
             let status_cells = status_column_cells(terminal_width);
 
+            // One clock reading per frame: every workstream's claim is judged
+            // live or expired against the same instant.
+            let now = chrono::Utc::now();
+
             let rows: Vec<Row> = ctx
                 .filtered_aliases
                 .iter()
@@ -1011,29 +1137,20 @@ impl NormalScreen {
                         None => "?".to_string(),
                     };
 
-                    // Workstream cue (GSD 1.8.0): show the active workstream name,
-                    // else an "N ws" count, appended to the Phase column so
-                    // multi-workstream projects are visible in every layout.
-                    let ws_suffix = match state {
-                        Some(s) if !s.workstreams.is_empty() => {
-                            match s.workstreams.iter().find(|w| w.active) {
-                                Some(active) => format!(
-                                    "  [ws:{}]",
-                                    crate::text::render_for_terminal(&active.name)
-                                ),
-                                None => format!("  [{} ws]", s.workstreams.len()),
-                            }
-                        }
-                        _ => String::new(),
-                    };
-                    let phase_line: Line = if ws_suffix.is_empty() {
-                        Line::from(phase_cell)
-                    } else {
-                        Line::from(vec![
-                            Span::raw(phase_cell),
-                            Span::styled(ws_suffix, Style::default().fg(Color::Magenta)),
-                        ])
-                    };
+                    // Parallel workstreams (GSD 1.8.0): one extra line each,
+                    // under the project's own, in the Phase and Status cells —
+                    // see `workstream_lines`. This used to be a `[N ws]` count
+                    // appended to the phase label itself, which a long label
+                    // clipped off the screen.
+                    let ws_lines = state.map(|s| workstream_lines(s, now)).unwrap_or_default();
+                    let ws_height = ws_lines.len();
+                    let (ws_phase_lines, ws_status_lines): (Vec<Line>, Vec<Line>) =
+                        ws_lines.into_iter().unzip();
+                    let phase_line: Text = Text::from(
+                        std::iter::once(Line::from(phase_cell))
+                            .chain(ws_phase_lines)
+                            .collect::<Vec<_>>(),
+                    );
 
                     // The one phase-count definition the Roadmap header also
                     // uses (quick 260926-16t), not the `## Progress` table.
@@ -1132,27 +1249,50 @@ impl NormalScreen {
                         None => Line::from(Span::raw(alias_read)),
                     };
 
-                    let cells: Vec<Line> = if terminal_width >= 80 {
+                    // The project's own status line, then one per workstream. A
+                    // single-line project builds a one-line `Text` and a
+                    // height-1 row, exactly what it drew before.
+                    let status_text: Text = Text::from(
+                        std::iter::once(status_cell)
+                            .chain(ws_status_lines)
+                            .collect::<Vec<_>>(),
+                    );
+
+                    let cells: Vec<TableCell> = if terminal_width >= 80 {
                         vec![
-                            alias_cell,
-                            phase_line,
-                            status_cell,
-                            Line::from(progress_cell),
-                            Line::from(backlog_cell),
+                            TableCell::from(alias_cell),
+                            TableCell::from(phase_line),
+                            TableCell::from(status_text),
+                            TableCell::from(Line::from(progress_cell)),
+                            TableCell::from(Line::from(backlog_cell)),
                         ]
                     } else if terminal_width >= 60 {
                         vec![
-                            alias_cell,
-                            phase_line,
-                            status_cell,
-                            Line::from(progress_cell),
+                            TableCell::from(alias_cell),
+                            TableCell::from(phase_line),
+                            TableCell::from(status_text),
+                            TableCell::from(Line::from(progress_cell)),
                         ]
                     } else {
-                        vec![alias_cell, phase_line, status_cell]
+                        vec![
+                            TableCell::from(alias_cell),
+                            TableCell::from(phase_line),
+                            TableCell::from(status_text),
+                        ]
                     };
 
-                    Row::new(cells).style(Style::default().fg(row_color))
+                    Row::new(cells)
+                        .height(row_height(ws_height))
+                        .style(Style::default().fg(row_color))
                 })
+                .collect();
+
+            // The heights the table just drew, for the click hit test: with
+            // workstream lines a project is no longer always one terminal row.
+            *self.table_row_heights.borrow_mut() = ctx
+                .filtered_aliases
+                .iter()
+                .map(|alias| row_height(workstream_line_count(ctx.project_states.get(alias))))
                 .collect();
 
             let table = dashboard_table(rows, terminal_width);
@@ -3044,6 +3184,57 @@ mod tests {
             .find(|&x| want.iter().enumerate().all(|(i, w)| row[x + i].0 == *w))
     }
 
+    /// Every rendered terminal row as plain text (borders included).
+    fn rendered_text(cells: &[Vec<(String, Color)>]) -> Vec<String> {
+        cells
+            .iter()
+            .map(|row| row.iter().map(|(symbol, _)| symbol.as_str()).collect())
+            .collect()
+    }
+
+    /// A dashboard context holding the parsed sentriq-shaped fixture.
+    fn sentriq_ctx(planning: &std::path::Path) -> AppContext {
+        let mut ctx = ctx_with_aliases(&["sentriq"]);
+        ctx.project_states
+            .insert("sentriq".to_string(), parse_project_state(planning));
+        ctx
+    }
+
+    /// Debug session `workstreams-not-surfaced`: a project with parallel
+    /// workstreams must SHOW them — each workstream's milestone and the phase it
+    /// is working — at every layout width.
+    ///
+    /// The workstreams used to reach the screen only as a trailing `[2 ws]`
+    /// count appended after the root's phase label. sentriq's root label is 54
+    /// cells wide and the Phase column is a percentage of the terminal, so the
+    /// count was clipped off at every ordinary width and no workstream milestone
+    /// or phase was drawn anywhere. The fixture is sentriq's layout: see
+    /// [`crate::state_reader::workstreams::write_sentriq_workstreams_fixture`].
+    #[test]
+    fn sentriq_parallel_workstreams_are_drawn_with_their_milestone_and_active_phase() {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let ctx = sentriq_ctx(&planning);
+
+        for width in [60u16, 80, 120, 200] {
+            let text = rendered_text(&render_dashboard_cells(&ctx, width, 20)).join("\n");
+            assert!(
+                text.contains("v0.14 P26"),
+                "at {width} columns the v0.14 workstream's milestone and ACTIVE phase (26, \
+                 the live milestone.lock claim) are not drawn:\n{text}"
+            );
+            assert!(
+                text.contains("v0.13 P22"),
+                "at {width} columns the v0.13 workstream's milestone and phase are not \
+                 drawn:\n{text}"
+            );
+        }
+    }
+
     /// quick-260926-16t: the dashboard `k/n phases` cell is
     /// `ProjectState::phase_progress()`, not the lagging `## Progress` table.
     #[test]
@@ -3711,6 +3902,100 @@ mod tests {
         assert_eq!(ctx.table_state.selected(), Some(2));
         screen.handle_mouse(click(centre, 29), &mut ctx);
         assert_eq!(ctx.table_state.selected(), Some(2));
+    }
+
+    /// A project with parallel workstreams is several terminal rows tall, and
+    /// the click hit test used to assume one row per project: every click below
+    /// such a project selected the project ABOVE the one under the pointer.
+    #[test]
+    fn mouse_click_below_a_project_with_workstreams_selects_the_project_under_the_pointer() {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let mut ctx = ctx_with_aliases(&["sentriq", "tail"]);
+        ctx.project_states
+            .insert("sentriq".to_string(), parse_project_state(&planning));
+        ctx.recompute_filtered_aliases();
+        ctx.table_state.select(Some(0));
+        assert_eq!(ctx.filtered_aliases, ["sentriq", "tail"]);
+
+        let mut screen = NormalScreen::new();
+        mouse_render(&screen, &ctx, 100, 30);
+        let region = screen.table_region.get().expect("the table was drawn");
+        let col = region.rect.x + 4;
+
+        // sentriq's own line and its two workstream lines all hit sentriq.
+        for dy in 0..3 {
+            screen.handle_mouse(click(col, region.rect.y + dy), &mut ctx);
+            assert_eq!(
+                ctx.table_state.selected(),
+                Some(0),
+                "line {dy} of the sentriq row must select sentriq"
+            );
+        }
+        // The fourth line is `tail`.
+        screen.handle_mouse(click(col, region.rect.y + 3), &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(1));
+        let rows = mouse_render(&screen, &ctx, 100, 30);
+        assert!(
+            rows[usize::from(region.rect.y + 3)].contains("> tail"),
+            "the clicked row is the highlighted one: {:?}",
+            rows[usize::from(region.rect.y + 3)]
+        );
+        // Below the last project there is nothing to hit.
+        screen.handle_mouse(click(col, region.rect.y + 4), &mut ctx);
+        assert_eq!(ctx.table_state.selected(), Some(1));
+        assert!(!screen.mouse_row_armed, "a miss disarms the double-click");
+    }
+
+    /// Past the cap the last line counts the rest instead of the rows growing
+    /// without bound; at exactly the cap every workstream is listed.
+    #[test]
+    fn workstreams_past_the_cap_end_in_an_overflow_line() {
+        use crate::state_reader::workstreams::WorkstreamState;
+
+        let mut state = ProjectState {
+            workstreams: (0..6)
+                .map(|i| WorkstreamState {
+                    name: format!("ws{i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let text = |lines: &[(Line<'static>, Line<'static>)]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|(phase, _)| phase.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+
+        assert_eq!(workstream_line_count(Some(&state)), MAX_WORKSTREAM_LINES);
+        let lines = workstream_lines(&state, chrono::Utc::now());
+        assert_eq!(lines.len(), MAX_WORKSTREAM_LINES);
+        assert_eq!(
+            text(&lines),
+            ["ws ws0", "ws ws1", "ws ws2", "ws +3 more"],
+            "3 listed + an overflow line standing for the other 3"
+        );
+
+        state.workstreams.truncate(MAX_WORKSTREAM_LINES);
+        let lines = workstream_lines(&state, chrono::Utc::now());
+        assert_eq!(text(&lines), ["ws ws0", "ws ws1", "ws ws2", "ws ws3"]);
+    }
+
+    /// A project without workstreams is exactly the one row it always was.
+    #[test]
+    fn a_project_without_workstreams_is_one_row_tall() {
+        let state = ProjectState::default();
+        assert_eq!(workstream_line_count(Some(&state)), 0);
+        assert_eq!(workstream_line_count(None), 0);
+        assert!(workstream_lines(&state, chrono::Utc::now()).is_empty());
+        assert_eq!(row_height(0), 1);
+        assert_eq!(row_height(3), 4);
     }
 
     #[test]

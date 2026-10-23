@@ -545,6 +545,66 @@ fn phase_display_label(state: &ProjectState) -> String {
     format!("P{}: {}", phase_num, phase_name)
 }
 
+/// The dashboard text of one parallel workstream: `ws v0.14 P26: Push-to-Talk
+/// Voice` — its milestone, then the phase it is working.
+///
+/// **Why this exists, and why it is a line of its own.** Workstreams used to
+/// reach the dashboard only as a `[N ws]` count appended to the project's phase
+/// label. sentriq's root label is 54 cells wide and the Phase column is a
+/// percentage of the terminal, so the count was clipped away at every ordinary
+/// width — and even drawn it named neither a milestone nor a phase. A parallel
+/// milestone is a line of work in its own right, so each gets its own line,
+/// with the identifying words first so a narrow column clips the phase *name*
+/// and never the milestone or the number.
+///
+/// - `ws*` marks the workstream `.planning/active-workstream` names; plain `ws`
+///   otherwise. (GSD 1.18 mostly keeps that pointer per session in a temp dir,
+///   so on disk there often is none.)
+/// - The milestone is STATE.md's `milestone`; a workstream whose STATE.md names
+///   none shows its directory name instead.
+/// - The phase is [`WorkstreamState::focus_phase_number`]: a live
+///   `milestone.lock` claim, else the established active-phase rule.
+/// - An unreadable STATE.md says so rather than guess a phase, exactly as
+///   [`format_phase_display`] does, and a repaired one carries
+///   [`RECOVERED_STATE_MARKER`].
+///
+/// The result is third-party text: the caller escapes it for the terminal.
+///
+/// [`WorkstreamState::focus_phase_number`]: crate::state_reader::workstreams::WorkstreamState::focus_phase_number
+pub fn format_workstream_display(
+    ws: &crate::state_reader::workstreams::WorkstreamState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let marker = if ws.active { "ws*" } else { "ws" };
+    let milestone = ws.state.milestone.trim();
+    let label = if milestone.is_empty() {
+        ws.name.as_str()
+    } else {
+        milestone
+    };
+    if ws.state.state_md_unreadable {
+        return format!(
+            "{marker} {label} {}",
+            unreadable_state_label(ws.state.state_md_fault_position)
+        );
+    }
+    let recovered = if ws.state.state_md_recovered {
+        RECOVERED_STATE_MARKER
+    } else {
+        ""
+    };
+    match ws.focus_phase_number(now) {
+        Some(number) => {
+            let name = ws
+                .focus_phase(now)
+                .map(|phase| phase.name.as_str())
+                .unwrap_or("Unknown");
+            format!("{marker} {recovered}{label} P{number}: {name}")
+        }
+        None => format!("{marker} {recovered}{label}"),
+    }
+}
+
 /// How the user's editor ended, as the main loop saw it (30-04, D-17).
 ///
 /// Built by `src/main.rs` from the child's `ExitStatus` or spawn error and handed to
@@ -4334,6 +4394,114 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(format_phase_display(&state), UNREADABLE_STATE_LABEL);
+    }
+
+    // --- debug session `workstreams-not-surfaced`: format_workstream_display ----
+
+    use crate::state_reader::workstreams::WorkstreamState;
+
+    /// A workstream with the given roadmap phases `(number, name)`.
+    fn workstream(
+        name: &str,
+        milestone: &str,
+        phases: &[(&str, &str)],
+        declared: Option<u32>,
+    ) -> WorkstreamState {
+        WorkstreamState {
+            name: name.to_string(),
+            active: false,
+            claim: None,
+            state: ProjectState {
+                milestone: milestone.to_string(),
+                state_md_phase_number: declared.map(crate::state_reader::phase_num::PhaseNum::from),
+                phases: phases
+                    .iter()
+                    .map(|(number, name)| RoadmapPhase {
+                        number: (*number).to_string(),
+                        name: (*name).to_string(),
+                        description: String::new(),
+                        completed: false,
+                        total_plans: 0,
+                        completed_plans: 0,
+                        depends_on: Vec::new(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The milestone and the phase NUMBER come before the phase name, so a
+    /// narrow Phase column clips the name and never the two facts that identify
+    /// the line of work.
+    #[test]
+    fn a_workstream_line_leads_with_its_milestone_and_phase_number() {
+        let ws = workstream(
+            "v0-14-voice-assistant",
+            "v0.14",
+            &[("25", "Conversation Memory"), ("26", "Push-to-Talk Voice")],
+            Some(26),
+        );
+        let line = format_workstream_display(&ws, chrono::Utc::now());
+        assert_eq!(line, "ws v0.14 P26: Push-to-Talk Voice");
+        assert!(line.find("v0.14").unwrap() < line.find("Push-to-Talk").unwrap());
+    }
+
+    #[test]
+    fn the_active_workstream_is_marked_and_a_milestone_less_one_shows_its_directory() {
+        let mut ws = workstream("alpha", "", &[("1", "Foundation")], Some(1));
+        assert_eq!(
+            format_workstream_display(&ws, chrono::Utc::now()),
+            "ws alpha P1: Foundation"
+        );
+        ws.active = true;
+        assert_eq!(
+            format_workstream_display(&ws, chrono::Utc::now()),
+            "ws* alpha P1: Foundation"
+        );
+    }
+
+    /// A workstream whose roadmap lists no phase has none to name; the line is
+    /// still drawn, because the workstream exists.
+    #[test]
+    fn a_workstream_without_roadmap_phases_still_gets_a_line() {
+        let ws = workstream("beta", "v0.9", &[], None);
+        assert_eq!(
+            format_workstream_display(&ws, chrono::Utc::now()),
+            "ws v0.9"
+        );
+    }
+
+    /// A phase the roadmap cannot name draws `Unknown`, as the project's own
+    /// cell does, rather than a blank.
+    #[test]
+    fn an_unrecognised_active_phase_draws_unknown() {
+        let ws = workstream("gamma", "v0.8", &[("1", "One")], Some(5));
+        // Declared 5 is above the roadmap; the active-phase rule clamps up to
+        // max(declared, frontier) = 5, which the roadmap does not list.
+        assert_eq!(
+            format_workstream_display(&ws, chrono::Utc::now()),
+            "ws v0.8 P5: Unknown"
+        );
+    }
+
+    /// The same honesty as the project cell: a STATE.md that could not be read
+    /// says so instead of naming a phase derived from counts, and a repaired
+    /// one carries the repaired marker.
+    #[test]
+    fn an_unreadable_or_repaired_workstream_state_md_is_admitted() {
+        let mut ws = workstream("delta", "v0.7", &[("3", "Slice")], Some(3));
+        ws.state.state_md_unreadable = true;
+        let line = format_workstream_display(&ws, chrono::Utc::now());
+        assert_eq!(line, format!("ws v0.7 {UNREADABLE_STATE_LABEL}"));
+        assert!(!line.contains("P3"), "{line}");
+
+        let mut ws = workstream("delta", "v0.7", &[("3", "Slice")], Some(3));
+        ws.state.state_md_recovered = true;
+        assert_eq!(
+            format_workstream_display(&ws, chrono::Utc::now()),
+            format!("ws {RECOVERED_STATE_MARKER}v0.7 P3: Slice")
+        );
     }
 
     #[test]
