@@ -20,7 +20,15 @@ repository = "https://github.com/bitcreed/gsd-meta-manager"
 readme = "README.md"
 keywords = ["tui", "gsd", "dashboard", "ratatui", "cli"]
 categories = ["command-line-utilities"]
-exclude = [".planning/", "CLAUDE.md", "assets/"]
+# Cargo matches `exclude` entries gitignore-style, so a leading `/` anchors an
+# entry to the package root. The entries MUST be anchored: the unanchored
+# `assets/` also matched src/driver_templates/assets/ and src/launcher/assets/,
+# which hold `include_str!` targets, and the v1.15.0 publish died at
+# `failed to verify package tarball`. Anchoring also starts shipping the
+# tests/fixtures/injection-corpus/.planning/ files and that directory's
+# CLAUDE.md: synthetic test fixtures, already public in the GitHub repo, which
+# the crate's own tests read.
+exclude = ["/.planning/", "/CLAUDE.md", "/assets/"]
 
 [dependencies]
 # `unstable-rendered-line-info`: `Paragraph::line_count`, so the Backlog
