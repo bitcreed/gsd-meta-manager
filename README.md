@@ -307,7 +307,7 @@ Tab-specific keys:
 | Docs › Files | `e` | Open the selected file in `$EDITOR` |
 | Docs › Milestones | `Enter` | Open the milestone, phase or file |
 | Docs › Milestones | `Esc` | Back up one level |
-| Docs › Milestones | `e` | Archived files are read-only, so this only shows a status message |
+| Docs › Milestones | `e` | Archived files are read-only, so this only shows a status message; a workstream's active-milestone docs (`ws …` rows) open in `$EDITOR` |
 | Any other tab | `e` | Enqueue the suggested next GSD command |
 
 #### Mouse

@@ -1845,17 +1845,21 @@ impl AppContext {
 
         let tx = tx.clone();
         let alias = alias.to_string();
-        let milestones_dir = project_path.join(".planning/milestones");
+        // The project's `.planning/`: discovery spans the root's archives and
+        // each workstream's milestones, and a loaded key (a bare version,
+        // `<ws>/` or `<ws>/<version>`) is resolved by
+        // `archive::parse_milestone_key` rather than as a path segment.
+        let planning_dir = project_path.join(".planning");
         tokio::task::spawn_blocking(move || {
             if rediscover {
-                let milestones = crate::archive::discover_milestones(&milestones_dir);
+                let milestones = crate::archive::discover_all_milestones(&planning_dir);
                 let _ = tx.send(Action::ArchiveMilestonesDiscovered {
                     alias: alias.clone(),
                     milestones,
                 });
             }
             for milestone in loaded {
-                let data = crate::archive::load_milestone_archive(&milestones_dir, &milestone);
+                let data = crate::archive::load_milestone_by_key(&planning_dir, &milestone);
                 let _ = tx.send(Action::ArchiveLoaded {
                     alias: alias.clone(),
                     milestone,

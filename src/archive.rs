@@ -215,6 +215,198 @@ pub fn load_milestone_archive(milestones_dir: &Path, version: &str) -> Milestone
     }
 }
 
+/// Where a milestone key points, as parsed by [`parse_milestone_key`].
+///
+/// Docs › Milestones used to read ONE planning directory (`.planning/`, one
+/// `milestones/`), so a bare version was a unique identity. It now reads the
+/// project's plus each parallel workstream's, and `v0.13` can be archived in
+/// both, so the identity is (source planning directory, version). The key stays
+/// a `String` because that is what `Action::ArchiveLoaded`, [`ArchiveDepth`] and
+/// [`ArchiveCache`] carry; this type is the one way back from the string to a
+/// path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MilestoneSource<'a> {
+    /// An archived milestone of the project itself: `<planning>/milestones/`.
+    /// The key is the bare version (`v1.2`), exactly as before workstreams.
+    Root { version: &'a str },
+    /// A workstream's ACTIVE milestone: its own planning directory,
+    /// `<planning>/workstreams/<dir>/`. The key is `<dir>/`.
+    Workstream { workstream: &'a str },
+    /// A milestone a workstream archived:
+    /// `<planning>/workstreams/<dir>/milestones/`. The key is `<dir>/<version>`.
+    WorkstreamArchive {
+        workstream: &'a str,
+        version: &'a str,
+    },
+}
+
+/// The key of a workstream's milestone: `<ws>/` for its active milestone,
+/// `<ws>/<version>` for an archived one. The inverse of [`parse_milestone_key`].
+pub fn workstream_milestone_key(workstream: &str, version: Option<&str>) -> String {
+    format!("{workstream}/{}", version.unwrap_or(""))
+}
+
+/// One plain path component: non-empty, not `.` or `..`, and no separator.
+fn is_plain_component(part: &str) -> bool {
+    !part.is_empty() && part != "." && part != ".." && !part.contains('/')
+}
+
+/// Parse a milestone key into where it points; `None` when it names no
+/// directory this module may read.
+///
+/// The grammar follows the `scoped_phase_key` precedent (`/` cannot occur in a
+/// directory name, so it is a safe separator):
+///
+/// - `v1.2` (no `/`): [`MilestoneSource::Root`];
+/// - `<ws>/`: [`MilestoneSource::Workstream`];
+/// - `<ws>/<version>`: [`MilestoneSource::WorkstreamArchive`].
+///
+/// Every component must be a plain name: empty, `.`, `..` and extra segments are
+/// rejected, so a key can never walk out of the project (T-05h-01). Every
+/// loader resolves a key through this function before it builds a path.
+pub fn parse_milestone_key(key: &str) -> Option<MilestoneSource<'_>> {
+    match key.split_once('/') {
+        None => is_plain_component(key).then_some(MilestoneSource::Root { version: key }),
+        Some((workstream, rest)) => {
+            if !is_plain_component(workstream) {
+                return None;
+            }
+            if rest.is_empty() {
+                Some(MilestoneSource::Workstream { workstream })
+            } else if is_plain_component(rest) {
+                Some(MilestoneSource::WorkstreamArchive {
+                    workstream,
+                    version: rest,
+                })
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// The names of `planning_dir/workstreams/*` subdirectories, in name order.
+/// Hidden and non-UTF-8 names are skipped; so is anything that is not a
+/// directory. Empty when there is no `workstreams/` directory.
+fn workstream_dir_names(planning_dir: &Path) -> Vec<String> {
+    let Ok(read) = std::fs::read_dir(planning_dir.join("workstreams")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = read
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Every milestone Docs › Milestones lists for the project whose planning
+/// directory is `planning_dir` (`<project>/.planning`), as keys for
+/// [`load_milestone_by_key`].
+///
+/// The root's archived milestones come first, unchanged
+/// ([`discover_milestones`] over `milestones/`). Then, for each workstream in
+/// name order, its active milestone (`<ws>/`) and any milestones it archived
+/// (`<ws>/<version>`). A project without `workstreams/` yields exactly
+/// `discover_milestones(planning_dir/milestones)`.
+pub fn discover_all_milestones(planning_dir: &Path) -> Vec<String> {
+    let mut keys = discover_milestones(&planning_dir.join("milestones"));
+    for workstream in workstream_dir_names(planning_dir) {
+        let archived = discover_milestones(
+            &planning_dir
+                .join("workstreams")
+                .join(&workstream)
+                .join("milestones"),
+        );
+        keys.push(workstream_milestone_key(&workstream, None));
+        keys.extend(
+            archived
+                .iter()
+                .map(|version| workstream_milestone_key(&workstream, Some(version))),
+        );
+    }
+    keys
+}
+
+/// Load the milestone a key from [`discover_all_milestones`] names.
+///
+/// The key is resolved through [`parse_milestone_key`] first; one that does not
+/// parse loads nothing (an empty archive, no filesystem access).
+pub fn load_milestone_by_key(planning_dir: &Path, key: &str) -> MilestoneArchive {
+    match parse_milestone_key(key) {
+        Some(MilestoneSource::Root { version }) => {
+            load_milestone_archive(&planning_dir.join("milestones"), version)
+        }
+        Some(MilestoneSource::WorkstreamArchive {
+            workstream,
+            version,
+        }) => load_milestone_archive(
+            &planning_dir
+                .join("workstreams")
+                .join(workstream)
+                .join("milestones"),
+            version,
+        ),
+        Some(MilestoneSource::Workstream { workstream }) => {
+            load_workstream_milestone(&planning_dir.join("workstreams").join(workstream), key)
+        }
+        None => MilestoneArchive {
+            version: key.to_string(),
+            top_level_files: Vec::new(),
+            phases: Vec::new(),
+        },
+    }
+}
+
+/// A workstream's ACTIVE milestone: the docs sitting directly in its planning
+/// directory (`*.md`, plus `HANDOFF.json` when present; `config.json`,
+/// `state.json` and `milestone.lock` are machine state, not docs) and its
+/// `phases/`. Opened in place, so these are the files GSD itself edits.
+fn load_workstream_milestone(ws_dir: &Path, key: &str) -> MilestoneArchive {
+    let mut top_level_files: Vec<ArchiveFile> = std::fs::read_dir(ws_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            (name.ends_with(".md") || name == "HANDOFF.json") && e.path().is_file()
+        })
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            ArchiveFile {
+                name: Untrusted::from_untrusted_source(name),
+                path: e.path().canonicalize().unwrap_or_else(|_| e.path()),
+            }
+        })
+        .collect();
+    // A sort ORDER, not something a human reads.
+    top_level_files.sort_by(|a, b| {
+        a.name
+            .as_raw_for_logic_only()
+            .cmp(b.name.as_raw_for_logic_only())
+    });
+
+    let mut phases: Vec<PhaseArchive> = std::fs::read_dir(ws_dir.join("phases"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let dir_name = e.file_name().to_string_lossy().to_string();
+            parse_phase_dir(&dir_name, &e.path())
+        })
+        .collect();
+    phases.sort_by(|a, b| a.number.cmp(&b.number));
+
+    MilestoneArchive {
+        version: key.to_string(),
+        top_level_files,
+        phases,
+    }
+}
+
 /// Parse a phase directory name like "01-core-infrastructure" into a PhaseArchive.
 fn parse_phase_dir(dir_name: &str, dir_path: &Path) -> Option<PhaseArchive> {
     let parts: Vec<&str> = dir_name.splitn(2, '-').collect();
@@ -476,5 +668,244 @@ mod tests {
                 "Phase 10: Later",
             ]
         );
+    }
+
+    // ── quick 261023-05h: workstream milestones ─────────────────────────────
+
+    use std::path::PathBuf;
+
+    fn touch(path: PathBuf) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "# x\n").unwrap();
+    }
+
+    /// The sentriq tree plus an archived root milestone `v0.11` and an archived
+    /// `v0.13` under the v0.13 workstream (so `v0.13` exists only there).
+    fn sentriq_planning() -> (tempfile::TempDir, PathBuf) {
+        let td = tempfile::tempdir().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        touch(planning.join("milestones/v0.11-ROADMAP.md"));
+        touch(planning.join("milestones/v0.11-phases/14-old/14-01-PLAN.md"));
+        let ws13 = planning.join("workstreams/v0-13-public-beta/milestones");
+        touch(ws13.join("v0.13-ROADMAP.md"));
+        touch(ws13.join("v0.13-phases/16-beta-build-channel/16-01-PLAN.md"));
+        (td, planning)
+    }
+
+    /// A field-by-field rendering of an archive, for equality (the type has no
+    /// `PartialEq`).
+    fn flatten(a: &MilestoneArchive) -> Vec<String> {
+        let mut out = vec![format!("version={}", a.version)];
+        for f in &a.top_level_files {
+            out.push(format!(
+                "top {} {}",
+                f.name.as_raw_for_logic_only(),
+                f.path.display()
+            ));
+        }
+        for p in &a.phases {
+            out.push(format!(
+                "phase {} {} {}",
+                p.number.padded(),
+                p.name.as_raw_for_logic_only(),
+                p.display_name.as_raw_for_logic_only()
+            ));
+            for f in &p.files {
+                out.push(format!(
+                    "  file {} {}",
+                    f.name.as_raw_for_logic_only(),
+                    f.path.display()
+                ));
+            }
+        }
+        out
+    }
+
+    fn top_names(a: &MilestoneArchive) -> Vec<&str> {
+        a.top_level_files
+            .iter()
+            .map(|f| f.name.as_raw_for_logic_only())
+            .collect()
+    }
+
+    #[test]
+    fn discover_all_milestones_lists_root_archives_then_each_workstream() {
+        let (_td, planning) = sentriq_planning();
+        // v0.14's empty `milestones/archived-20261022-phases/` yields nothing.
+        assert_eq!(
+            discover_all_milestones(&planning),
+            [
+                "v0.11",
+                "v0-13-public-beta/",
+                "v0-13-public-beta/v0.13",
+                "v0-14-voice-assistant/"
+            ]
+        );
+    }
+
+    #[test]
+    fn load_a_workstream_active_milestone_lists_its_docs_and_phases_in_place() {
+        let (_td, planning) = sentriq_planning();
+        let ws14 =
+            std::fs::canonicalize(planning.join("workstreams/v0-14-voice-assistant")).unwrap();
+        let a = load_milestone_by_key(&planning, "v0-14-voice-assistant/");
+        assert_eq!(a.version, "v0-14-voice-assistant/");
+        // No HANDOFF.json (absent), and config.json / state.json / milestone.lock
+        // are machine state, not docs.
+        assert_eq!(
+            top_names(&a),
+            [
+                "MILESTONE-CONTEXT.md",
+                "REQUIREMENTS.md",
+                "ROADMAP.md",
+                "STATE.md"
+            ]
+        );
+        let numbers: Vec<String> = a.phases.iter().map(|p| p.number.padded()).collect();
+        assert_eq!(numbers, ["23", "24", "25", "26", "28"]);
+        let p26 = a.phases.iter().find(|p| p.number.padded() == "26").unwrap();
+        let files: Vec<&str> = p26
+            .files
+            .iter()
+            .map(|f| f.name.as_raw_for_logic_only())
+            .collect();
+        for n in 1..=14 {
+            assert!(
+                files.contains(&format!("26-{n:02}-PLAN.md").as_str()),
+                "{files:?}"
+            );
+        }
+        assert!(files.contains(&"26-VERIFICATION.md"));
+        for f in a
+            .top_level_files
+            .iter()
+            .chain(a.phases.iter().flat_map(|p| p.files.iter()))
+        {
+            assert!(f.path.starts_with(&ws14), "{:?} escapes {ws14:?}", f.path);
+        }
+    }
+
+    #[test]
+    fn load_other_keys_resolve_under_their_own_directories() {
+        let (_td, planning) = sentriq_planning();
+        let a = load_milestone_by_key(&planning, "v0-13-public-beta/");
+        assert!(
+            top_names(&a).contains(&"HANDOFF.json"),
+            "{:?}",
+            top_names(&a)
+        );
+        let numbers: Vec<String> = a.phases.iter().map(|p| p.number.padded()).collect();
+        assert_eq!(numbers, ["16", "17", "18", "19", "20", "21", "22"]);
+
+        let archived = load_milestone_by_key(&planning, "v0-13-public-beta/v0.13");
+        assert_eq!(top_names(&archived), ["v0.13-ROADMAP.md"]);
+        assert_eq!(archived.phases.len(), 1);
+        assert_eq!(archived.phases[0].number.padded(), "16");
+        let base = std::fs::canonicalize(planning.join("workstreams/v0-13-public-beta/milestones"))
+            .unwrap();
+        for f in archived
+            .top_level_files
+            .iter()
+            .chain(archived.phases[0].files.iter())
+        {
+            assert!(f.path.starts_with(&base), "{:?}", f.path);
+        }
+
+        // A bare version is the root's, unchanged.
+        let root = load_milestone_by_key(&planning, "v0.11");
+        assert_eq!(
+            flatten(&root),
+            flatten(&load_milestone_archive(
+                &planning.join("milestones"),
+                "v0.11"
+            ))
+        );
+    }
+
+    /// Every key discovery yields parses, and its load stays inside the
+    /// directory the key names.
+    #[test]
+    fn every_discovered_key_parses_and_loads_only_from_the_directory_it_names() {
+        let (_td, planning) = sentriq_planning();
+        for key in discover_all_milestones(&planning) {
+            let source = parse_milestone_key(&key).unwrap_or_else(|| panic!("{key} parses"));
+            let base = match source {
+                MilestoneSource::Root { .. } => planning.join("milestones"),
+                MilestoneSource::Workstream { workstream } => {
+                    planning.join("workstreams").join(workstream)
+                }
+                MilestoneSource::WorkstreamArchive { workstream, .. } => planning
+                    .join("workstreams")
+                    .join(workstream)
+                    .join("milestones"),
+            };
+            let base = std::fs::canonicalize(base).unwrap();
+            let a = load_milestone_by_key(&planning, &key);
+            assert!(!a.top_level_files.is_empty(), "{key} loads something");
+            for f in a
+                .top_level_files
+                .iter()
+                .chain(a.phases.iter().flat_map(|p| p.files.iter()))
+            {
+                assert!(
+                    f.path.starts_with(&base),
+                    "{key}: {:?} not under {base:?}",
+                    f.path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_that_could_leave_the_project_parses_to_nothing_and_loads_nothing() {
+        let (_td, planning) = sentriq_planning();
+        for key in ["", ".", "..", "../x/", "./", "x/..", "x/.", "a/b/c", "/v1"] {
+            assert!(parse_milestone_key(key).is_none(), "{key:?} must not parse");
+            let a = load_milestone_by_key(&planning, key);
+            assert!(a.top_level_files.is_empty(), "{key:?}");
+            assert!(a.phases.is_empty(), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn milestone_keys_round_trip_through_the_grammar() {
+        assert_eq!(workstream_milestone_key("ws", None), "ws/");
+        assert_eq!(workstream_milestone_key("ws", Some("v1.0")), "ws/v1.0");
+        assert!(matches!(
+            parse_milestone_key("v1.2"),
+            Some(MilestoneSource::Root { version: "v1.2" })
+        ));
+        assert!(matches!(
+            parse_milestone_key("ws/"),
+            Some(MilestoneSource::Workstream { workstream: "ws" })
+        ));
+        assert!(matches!(
+            parse_milestone_key("ws/v1.0"),
+            Some(MilestoneSource::WorkstreamArchive {
+                workstream: "ws",
+                version: "v1.0"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_flat_project_discovers_exactly_what_it_did_before() {
+        let td = tempfile::tempdir().unwrap();
+        let planning = td.path().join(".planning");
+        touch(planning.join("milestones/v1.0-ROADMAP.md"));
+        touch(planning.join("milestones/v1.1-ROADMAP.md"));
+        touch(planning.join("milestones/v1.10-ROADMAP.md"));
+        assert_eq!(
+            discover_all_milestones(&planning),
+            discover_milestones(&planning.join("milestones"))
+        );
+        // And none at all.
+        let empty = td.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(discover_all_milestones(&empty).is_empty());
     }
 }
