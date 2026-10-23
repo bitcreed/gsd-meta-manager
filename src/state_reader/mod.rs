@@ -347,6 +347,42 @@ impl ProjectState {
         }
     }
 
+    /// The project's own state followed by each parallel workstream's, in
+    /// workstream-name order: the scopes the Detail screen's Roadmap and Phases
+    /// tabs list. The first item is always `(None, self)`.
+    ///
+    /// A workstream's own state carries no workstreams (the recursion guard in
+    /// [`parse_project_state`]), so for one this is just itself.
+    pub fn scopes(
+        &self,
+    ) -> impl Iterator<Item = (Option<&workstreams::WorkstreamState>, &ProjectState)> {
+        std::iter::once((None, self)).chain(self.workstreams.iter().map(|ws| (Some(ws), &ws.state)))
+    }
+
+    /// Every GSD phase the Detail screen's Phases tab lists, in list order: the
+    /// project's own [`Self::phases`], then each workstream's. The Phases tab's
+    /// selection index (`pipeline_selected`) indexes THIS list, which for a
+    /// project without workstreams is exactly [`Self::phases`].
+    pub fn scoped_phases(&self) -> Vec<workstreams::ScopedPhase<'_>> {
+        self.scopes()
+            .flat_map(|(workstream, owner)| {
+                owner
+                    .phases
+                    .iter()
+                    .map(move |phase| workstreams::ScopedPhase {
+                        workstream,
+                        owner,
+                        phase,
+                    })
+            })
+            .collect()
+    }
+
+    /// How many entries [`Self::scoped_phases`] holds, without building them.
+    pub fn scoped_phase_count(&self) -> usize {
+        self.scopes().map(|(_, state)| state.phases.len()).sum()
+    }
+
     /// Every roadmap entry the Roadmap lists, in its order: [`Self::phases`],
     /// then [`Self::planned_phases`] no GSD phase already holds (deduped by
     /// `phase_key`, so a GSD phase wins a duplicate). `true` marks a planned

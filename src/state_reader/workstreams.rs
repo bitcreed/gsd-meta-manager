@@ -154,6 +154,56 @@ impl WorkstreamState {
     }
 }
 
+/// The identity key of one phase across the project's own roadmap AND its
+/// parallel workstreams' roadmaps.
+///
+/// A phase number is only unique inside ONE roadmap: every workstream numbers
+/// its phases itself, and sentriq's root and its `v0-13-public-beta` workstream
+/// both have a Phase 16. So a phase is identified by where it lives as well as
+/// by its number: the project's own phases keep the bare [`phase_key`] (every
+/// key that existed before workstreams were listed is unchanged), and a
+/// workstream's phase is `<workstream dir>/<phase key>`.
+///
+/// The `/` cannot occur in a directory name and is never part of a numeric
+/// phase id, so a scoped key is never mistaken for a bare one — nor changed by
+/// a second trip through [`phase_key`], which leaves a non-numeric id as it is.
+pub fn scoped_phase_key(workstream: Option<&str>, number: &str) -> String {
+    let key = super::phase_num::phase_key(number);
+    match workstream {
+        None => key,
+        Some(name) => format!("{name}/{key}"),
+    }
+}
+
+/// One phase the Detail screen's Roadmap and Phases tabs can list: a phase of
+/// the project's own `.planning/` or of one of its parallel workstreams.
+///
+/// `owner` is the state the phase must be read against — the project's or the
+/// workstream's — because the per-phase evidence (`phase_disk_statuses`, goals,
+/// the active phase, the external-job flag) lives on the state whose directory
+/// holds the phase, and a workstream's numbers mean nothing to the project's.
+#[derive(Debug, Clone, Copy)]
+pub struct ScopedPhase<'a> {
+    /// The workstream the phase belongs to; `None` for the project's own.
+    pub workstream: Option<&'a WorkstreamState>,
+    /// The state that owns the phase.
+    pub owner: &'a super::ProjectState,
+    /// The roadmap entry.
+    pub phase: &'a super::roadmap_md::RoadmapPhase,
+}
+
+impl ScopedPhase<'_> {
+    /// The phase's identity key — see [`scoped_phase_key`].
+    pub fn key(&self) -> String {
+        scoped_phase_key(self.workstream_name(), &self.phase.number)
+    }
+
+    /// The owning workstream's directory name, `None` for the project's own.
+    pub fn workstream_name(&self) -> Option<&str> {
+        self.workstream.map(|ws| ws.name.as_str())
+    }
+}
+
 /// Load every workstream under `<planning_dir>/workstreams/`.
 ///
 /// Returns one [`WorkstreamState`] per subdirectory, each parsed with
@@ -216,7 +266,8 @@ pub fn load_workstreams(planning_dir: &Path) -> Vec<WorkstreamState> {
 ///   `milestone.lock` claims phase 26. Its `stopped_at` is a long quoted string
 ///   holding `;` `(` `)` and `,`. Phase 26 verified `gaps_found`; phase 28 is
 ///   partly built; `phases/` also holds an `archived-…-phases` directory, and
-///   `quick/` and `milestones/archived-…-phases/` exist beside it.
+///   `quick/` and `milestones/archived-…-phases/` exist beside it. Phase 26 holds
+///   fourteen plans (`26-01`..`26-14`).
 /// - `v0-13-public-beta` has a stale HANDOFF.json and every phase executed
 ///   with `human_needed` verification.
 ///
@@ -430,7 +481,11 @@ pub(crate) fn write_sentriq_workstreams_fixture(
         2,
         Some("human_needed"),
     );
-    phase_dir(&phases, "26-push-to-talk-voice", 3, 3, Some("gaps_found"));
+    // Phase 26 holds FOURTEEN plans (26-01..26-14: ten planned, then four
+    // gap-closure plans), all summarised, verified `gaps_found` — the phase the
+    // owner is working, and the one the Detail screen's Phases tab must list
+    // plan by plan.
+    phase_dir(&phases, "26-push-to-talk-voice", 14, 14, Some("gaps_found"));
     // Phase 27 has NO directory: it is the disk frontier.
     phase_dir(
         &phases,
@@ -757,6 +812,72 @@ mod tests {
             assert!(read(junk).is_none(), "{junk:?}");
         }
         assert!(read_milestone_claim(&TempDir::new().unwrap().path().join("nope")).is_none());
+    }
+
+    // ── debug session `workstreams-not-surfaced`: the Detail tabs' phase list ──
+
+    /// The project's own phases keep the bare `phase_key`, so every key that
+    /// existed before workstreams were listed is unchanged; a workstream's is
+    /// behind its directory, and `phase_key` leaves the result alone.
+    #[test]
+    fn scoped_phase_keys_keep_the_projects_and_prefix_a_workstreams() {
+        use crate::state_reader::phase_num::phase_key;
+        assert_eq!(scoped_phase_key(None, "07"), "7");
+        assert_eq!(scoped_phase_key(None, "07.1"), "7.1");
+        assert_eq!(scoped_phase_key(Some("v0-13"), "16"), "v0-13/16");
+        assert_eq!(scoped_phase_key(Some("v0-13"), "07.1"), "v0-13/7.1");
+        // Numeric-looking workstream names do not turn the key numeric.
+        for name in ["1", "0.1", "v0.14"] {
+            let key = scoped_phase_key(Some(name), "2");
+            assert_eq!(phase_key(&key), key, "{key}");
+        }
+    }
+
+    /// `scoped_phases` is the project's phases, then each workstream's in name
+    /// order, every one with a distinct key — v0.13's Phase 16 is not the
+    /// project's. For a project without workstreams it is exactly `phases`.
+    #[test]
+    fn scoped_phases_list_the_project_then_each_workstream() {
+        let (_td, root, _) = sentriq();
+        let scoped = root.scoped_phases();
+        assert_eq!(scoped.len(), 2 + 7 + 6);
+        assert_eq!(scoped.len(), root.scoped_phase_count());
+
+        let keys: Vec<String> = scoped.iter().map(ScopedPhase::key).collect();
+        assert_eq!(
+            keys.iter().collect::<std::collections::HashSet<_>>().len(),
+            keys.len(),
+            "{keys:?}"
+        );
+        assert_eq!(&keys[..2], ["15", "16"]);
+        assert_eq!(keys[2], "v0-13-public-beta/16");
+        assert_eq!(keys[8], "v0-13-public-beta/22");
+        assert_eq!(keys[9], "v0-14-voice-assistant/23");
+        assert_eq!(keys[14], "v0-14-voice-assistant/28");
+
+        // Each is read against the state that owns it.
+        assert!(scoped[0].workstream.is_none());
+        assert_eq!(scoped[2].workstream_name(), Some("v0-13-public-beta"));
+        assert_eq!(scoped[2].owner.milestone, "v0.13");
+        assert_eq!(scoped[0].owner.milestone, "v0.12");
+        assert!(scoped[2].owner.phase_disk_statuses.contains_key("16"));
+
+        // A flat project: nothing changes.
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            (
+                "ROADMAP.md",
+                "# Roadmap\n\n## Phases\n\n- [ ] **Phase 1: A** - a\n- [ ] **Phase 2: B** - b\n",
+            ),
+        ]);
+        let flat = parse_project_state(&td.path().join(".planning"));
+        let numbers: Vec<&str> = flat
+            .scoped_phases()
+            .iter()
+            .map(|p| p.phase.number.as_str())
+            .collect();
+        assert_eq!(numbers, ["1", "2"]);
+        assert!(flat.scoped_phases().iter().all(|p| p.workstream.is_none()));
     }
 
     /// An oversized lock is read only up to the cap, so a hostile repository

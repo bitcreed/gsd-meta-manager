@@ -22,8 +22,8 @@
 
 use crate::ui::roadmap_graph::{
     BandFacts, BandKey, CursorTarget, LaneLink, ListRow, PhaseFacts, PhaseStatus, RoadmapModel,
-    BAND_FILL, BAND_FOLDED, BAND_OPEN, GLYPH_UNMERGED, MARK_DEP, MARK_IMPLIED, MARK_SELECTED,
-    MARK_UNBLOCKS, PARALLEL_SEP,
+    ScopeFacts, BAND_FILL, BAND_FOLDED, BAND_OPEN, GLYPH_UNMERGED, MARK_DEP, MARK_IMPLIED,
+    MARK_SELECTED, MARK_UNBLOCKS, PARALLEL_SEP,
 };
 use crate::ui::LANE_PALETTE;
 use ratatui::buffer::Buffer;
@@ -777,7 +777,13 @@ impl RoadmapView<'_> {
                 spans.push(Span::styled(format!(" {PARALLEL_SEP} "), dim()));
             }
             spans.push(Span::styled(p.status.glyph(), glyph_style(p.status)));
-            let mut text = format!("{} {}", p.id, p.name);
+            // A workstream's phase names its workstream (`ws v0.14 P26 …`): a
+            // bare `26` could be any roadmap's, and two roadmaps can both be
+            // working a Phase 16.
+            let mut text = match &p.scope {
+                Some(scope) => format!(" {} P{} {}", scope.tag, p.id, p.name),
+                None => format!("{} {}", p.id, p.name),
+            };
             if p.status == PhaseStatus::Active {
                 text.push_str(" (active)");
             }
@@ -1008,6 +1014,19 @@ impl RoadmapView<'_> {
         draw_items(items, inner, buf);
     }
 
+    /// The line that names the parallel workstream a phase or band belongs to
+    /// — `workstream v0-14-voice-assistant`, the directory `--ws` takes — or
+    /// nothing for the project's own. The marker and milestone are already in
+    /// the place line (the band's label leads with them).
+    fn scope_item(scope: Option<&ScopeFacts>, w: usize) -> Option<Item> {
+        scope.map(|scope| {
+            Item::Line(fit(
+                vec![Span::styled(format!("workstream {}", scope.id), dim())],
+                w,
+            ))
+        })
+    }
+
     /// A band under the cursor: its label, progress and the fold key.
     fn band_items(b: &BandFacts, w: usize, stacked: bool) -> Vec<Item> {
         let mut progress = format!("{}/{} phases done", b.done, b.total);
@@ -1015,9 +1034,12 @@ impl RoadmapView<'_> {
             progress.push_str(DOT);
             progress.push_str("shipped");
         }
-        vec![
+        let mut items = vec![
             Item::Line(fit(vec![Span::styled(b.label.clone(), bold())], w)),
             Item::Line(fit(vec![Span::raw(progress)], w)),
+        ];
+        items.extend(Self::scope_item(b.scope.as_ref(), w));
+        items.extend([
             Item::blank(),
             Item::Hint(fit(
                 vec![Span::styled(
@@ -1026,7 +1048,8 @@ impl RoadmapView<'_> {
                 )],
                 w,
             )),
-        ]
+        ]);
+        items
     }
 
     /// The shipped summary under the cursor: every shipped milestone with the
@@ -1266,11 +1289,14 @@ impl RoadmapView<'_> {
             where_line.push_str(&band.label);
             where_line.push_str(DOT);
         }
-        where_line.push_str(&format!("wave {} of {}", p.wave, self.model.max_wave));
+        where_line.push_str(&format!("wave {} of {}", p.wave, self.model.max_wave_of(p)));
 
         let mut items = vec![
             Item::Line(fit(vec![Span::styled(p.name.clone(), bold())], w)),
             Item::Line(fit(vec![Span::raw(where_line)], w)),
+        ];
+        items.extend(Self::scope_item(p.scope.as_ref(), w));
+        items.extend([
             Item::Line(fit(Self::status_spans(p), w)),
             Item::blank(),
             Item::Line(fit(vec![Span::styled("Goal", bold())], w)),
@@ -1283,7 +1309,7 @@ impl RoadmapView<'_> {
                 None => Item::Line(fit(vec![Span::styled("no goal in ROADMAP.md", dim())], w)),
             },
             Item::blank(),
-        ];
+        ]);
         let avail = w.saturating_sub(LABEL_CELLS);
         items.extend(section("Needs", self.needs_rows(p, avail), w));
         items.extend(section("Unblocks", self.unblocks_rows(p, avail), w));
@@ -1336,7 +1362,12 @@ impl RoadmapView<'_> {
     /// Parallel, and the hint.
     fn stacked_items(&self, p: &PhaseFacts, w: usize) -> Vec<Item> {
         let mut place = String::from("   ");
-        if let Some(short) = self.band_short(p.band) {
+        // A workstream's phase is placed by its `ws v0.14` tag, which names the
+        // milestone too; the project's own by its band's short id.
+        if let Some(scope) = &p.scope {
+            place.push_str(&scope.tag);
+            place.push_str(DOT);
+        } else if let Some(short) = self.band_short(p.band) {
             place.push_str(short);
             place.push_str(DOT);
         }
@@ -1545,6 +1576,7 @@ mod tests {
                         .iter()
                         .find(|(b, _)| *b == id)
                         .map(|(_, text)| text.to_string()),
+                    scope: None,
                 })
                 .collect(),
             bands: bands
@@ -1553,6 +1585,7 @@ mod tests {
                     label: Untrusted::from_untrusted_source(label.to_string()),
                     shipped,
                     declared_phases: declared,
+                    scope: None,
                 })
                 .collect(),
         };

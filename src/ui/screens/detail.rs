@@ -1733,12 +1733,10 @@ impl DetailScreen {
         let Some(state) = ctx.project_states.get(&self.alias) else {
             return ScreenAction::None;
         };
-        let phase_key = crate::state_reader::phase_num::phase_key;
-        if let Some(index) = state
-            .phases
-            .iter()
-            .position(|p| phase_key(&p.number) == key)
-        {
+        // The key is a SCOPED key: a workstream's phase is found by its
+        // workstream and its number, never by number alone — v0.13's Phase 16
+        // is not the project's Phase 16.
+        if let Some(index) = state.scoped_phases().iter().position(|p| p.key() == key) {
             let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
             cache.pipeline_selected = index;
             cache.roadmap_cursor = Some(CursorTarget::Phase(key));
@@ -1749,13 +1747,15 @@ impl DetailScreen {
                 ctx,
             );
         }
+        let scoped_key = state_reader::workstreams::scoped_phase_key;
         // The id is third-party text: escaped before it reaches the status
         // line (T-24-17).
-        if let Some(planned) = state
-            .planned_phases
-            .iter()
-            .find(|p| phase_key(&p.number) == key)
-        {
+        if let Some(planned) = state.scopes().find_map(|(ws, owner)| {
+            owner
+                .planned_phases
+                .iter()
+                .find(|p| scoped_key(ws.map(|w| w.name.as_str()), &p.number) == key)
+        }) {
             return ScreenAction::SetStatusMessage(format!(
                 "Build phase {} is a planned placeholder, not a GSD phase — it has no Phases entry",
                 crate::text::render_for_terminal(&planned.number)
@@ -1763,11 +1763,12 @@ impl DetailScreen {
         }
         // A shipped phase (quick 260926-fi9) lives in a closed-milestone
         // collapse GSD no longer counts, so it has no Phases entry either.
-        // Escaped like the planned arm (T-24-17, T-fi9-01).
+        // Escaped like the planned arm (T-24-17, T-fi9-01). The project's own
+        // only: a workstream's closed milestones are not drawn.
         match state
             .shipped_phases
             .iter()
-            .find(|p| phase_key(&p.number) == key)
+            .find(|p| crate::state_reader::phase_num::phase_key(&p.number) == key)
         {
             Some(shipped) => ScreenAction::SetStatusMessage(format!(
                 "Phase {} shipped in an earlier milestone — it has no Phases entry",
@@ -1784,17 +1785,35 @@ impl DetailScreen {
     /// inference for the selected phase.
     fn selected_waves(&self, ctx: &AppContext) -> Option<(WavesModel, Vec<WavesRow>)> {
         let state = ctx.project_states.get(&self.alias)?;
-        let last = state.phases.len().checked_sub(1)?;
+        let entries = state.scoped_phases();
+        let last = entries.len().checked_sub(1)?;
         let cache = ctx.view_cache.get(&self.alias);
         let selected = cache.map_or(0, |c| c.pipeline_selected.min(last));
-        let phase = &state.phases[selected];
-        let view = ctx.agent_views.get(&self.alias);
-        let (inf, worktree) = browsed_inference(state, view, &phase.number)?;
-        let active = crate::state_reader::phase_num::same_phase(
-            &state.active_phase_number().to_string(),
-            &phase.number,
-        );
+        let entry = &entries[selected];
+        let phase = entry.phase;
+        let view = agent_view_of(entry, ctx, &self.alias);
+        let (inf, worktree) = browsed_inference(entry.owner, view, &phase.number)?;
+        // The phase the pane calls active is the phase its OWN roadmap works:
+        // the project's active phase, or a workstream's focus (live claim,
+        // else the established rule — the phase the dashboard names for it).
+        let active = match entry.workstream {
+            None => crate::state_reader::phase_num::same_phase(
+                &entry.owner.active_phase_number().to_string(),
+                &phase.number,
+            ),
+            Some(ws) => ws
+                .focus_phase_number(chrono::Utc::now())
+                .is_some_and(|focus| {
+                    crate::state_reader::phase_num::same_phase(&focus.to_string(), &phase.number)
+                }),
+        };
         let mut model = waves_model(&phase.number, inf, view, active);
+        if let Some(ws) = entry.workstream {
+            // The fold toggles and the cursor are keyed by `phase_key`: scoped,
+            // so v0.13's Phase 16 does not fold the project's.
+            model.phase_key = entry.key();
+            model.workstream = Some(ws.name.clone());
+        }
         if let Some(wp) = worktree {
             model.worktree = Some(WavesWorktree::from_plans(wp));
             // The partial-progress note is about main's queued plans; a
@@ -1955,10 +1974,13 @@ impl DetailScreen {
             return ScreenAction::None;
         };
         let wanted = phase_key(&plan.phase.to_string());
+        // An agent's plan belongs to the PROJECT's phases (the agents scan
+        // knows nothing of workstreams), so a workstream's same-numbered phase
+        // is never the answer.
         let Some(index) = state
-            .phases
+            .scoped_phases()
             .iter()
-            .position(|p| phase_key(&p.number) == wanted)
+            .position(|p| p.workstream.is_none() && phase_key(&p.phase.number) == wanted)
         else {
             return ScreenAction::SetStatusMessage(format!(
                 "Plan {} is not a phase in this project",
@@ -2036,10 +2058,13 @@ impl DetailScreen {
         let phase_dir = match &model.worktree {
             Some(wt) => Some(wt.phase_dir.clone()),
             None => ctx.config.projects.get(&self.alias).and_then(|project| {
-                crate::state_reader::disk_status::find_phase_dir(
-                    &project.path.join(".planning"),
-                    &model.phase_number,
-                )
+                // A workstream's phases live under ITS planning directory; the
+                // project's `phases/` may hold a same-numbered phase of its own.
+                let mut planning = project.path.join(".planning");
+                if let Some(name) = &model.workstream {
+                    planning = planning.join("workstreams").join(name);
+                }
+                crate::state_reader::disk_status::find_phase_dir(&planning, &model.phase_number)
             }),
         };
         let target = phase_dir.and_then(|dir| {
@@ -2846,6 +2871,18 @@ fn disk_suffix_spans(
 ///   such counts treat `d` as 0: main holds none of those plans, so `d + k`
 ///   would double count the SUMMARYs `k` already counts.
 ///
+/// * **Parallel workstreams** (debug session `workstreams-not-surfaced`): after
+///   the project's own bands, ONE band per workstream under
+///   `state.workstreams` — `ws v0.14 — Voice Mechanic` — holding that
+///   workstream's own roadmap entries, each node scoped to it
+///   ([`roadmap_graph::Scope`]) so a workstream's `Phase 16` is not the
+///   project's and its dependencies resolve inside it. A workstream's current
+///   phase is [`state_reader::workstreams::WorkstreamState::focus_phase_number`]
+///   (a live `milestone.lock` claim, else the established rule), the same phase
+///   the dashboard names, so `◉` marks the phase the owner is working. The
+///   agent view is the PROJECT's (its worktrees' phases are keyed by bare
+///   number), so it is never applied to a workstream's phases.
+///
 /// In-memory state only — no I/O — because the render loop calls it
 /// (CLAUDE.md: never block the render loop). Fold toggles come from `cache`
 /// (none when the project has no cache yet).
@@ -2854,6 +2891,19 @@ pub(crate) fn roadmap_model_for(
     cache: Option<&super::ProjectViewCache>,
     show_badges: bool,
     view: Option<&AgentView>,
+) -> roadmap_graph::RoadmapModel {
+    roadmap_model_at(state, cache, show_badges, view, chrono::Utc::now())
+}
+
+/// [`roadmap_model_for`] judged at `now`: the instant a workstream's
+/// `milestone.lock` claim is live or lapsed at. The render and the keys call the
+/// wrapper; the tests that pin the claim window call this.
+pub(crate) fn roadmap_model_at(
+    state: &state_reader::ProjectState,
+    cache: Option<&super::ProjectViewCache>,
+    show_badges: bool,
+    view: Option<&AgentView>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> roadmap_graph::RoadmapModel {
     use crate::state_reader::phase_num::phase_key;
     use crate::state_reader::roadmap_md;
@@ -2867,6 +2917,7 @@ pub(crate) fn roadmap_model_for(
             label: m.label.clone(),
             shipped: shipped.get(i).copied().unwrap_or(false),
             declared_phases: roadmap_md::declared_phase_count(m),
+            scope: None,
         })
         .collect();
 
@@ -2892,6 +2943,7 @@ pub(crate) fn roadmap_model_for(
             label: Untrusted::from_untrusted_source(label.trim().to_string()),
             shipped: false,
             declared_phases: 0,
+            scope: None,
         });
         bands.len() - 1
     });
@@ -2926,6 +2978,7 @@ pub(crate) fn roadmap_model_for(
                 goal: state.phase_goals.get(&phase_key(&p.number)),
                 planned: false,
                 badge: None,
+                scope: None,
             })
         })
         .collect();
@@ -2966,6 +3019,7 @@ pub(crate) fn roadmap_model_for(
             goal: None,
             planned: false,
             badge: Some(badge.clone()),
+            scope: None,
         })
         .collect();
 
@@ -3016,10 +3070,69 @@ pub(crate) fn roadmap_model_for(
                 goal: state.phase_goals.get(&phase_key(&p.number)),
                 planned,
                 badge: (!badge.is_empty()).then(|| badge.to_string()),
+                scope: None,
             }
         }))
         .chain(ghost_nodes)
         .collect();
+
+    // Parallel workstreams: one scoped band each, then its phases. Appended
+    // last, so every index the passes below compute for the project's own
+    // nodes (`shipped_count`, the ghosts) is unchanged.
+    let scopes: Vec<roadmap_graph::Scope> = state
+        .workstreams
+        .iter()
+        .map(|ws| roadmap_graph::Scope {
+            id: ws.name.clone(),
+            marker: crate::app::workstream_marker(ws).to_string(),
+            tag: crate::app::workstream_tag(ws),
+        })
+        .collect();
+    let mut nodes: Vec<roadmap_graph::ListNode<'_>> = nodes;
+    for (ws, scope) in state.workstreams.iter().zip(&scopes) {
+        let owner = &ws.state;
+        let band = bands.len();
+        bands.push(roadmap_graph::BandInput {
+            label: workstream_band_label(ws),
+            shipped: false,
+            declared_phases: 0,
+            scope: Some(scope.clone()),
+        });
+        let focus = ws.focus_phase_number(now);
+        nodes.extend(owner.roadmap_entries().into_iter().map(|(p, planned)| {
+            let badge: String =
+                disk_suffix_spans(&p.number, &owner.phase_disk_statuses, show_badges)
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect();
+            let badge = badge.trim();
+            roadmap_graph::ListNode {
+                id: &p.number,
+                name: &p.name,
+                deps: &p.depends_on,
+                band: Some(band),
+                marker: match &focus {
+                    Some(focus) => state_reader::PhaseMarker::decide(
+                        &p.number,
+                        p.completed,
+                        &owner.phase_disk_statuses,
+                        focus,
+                    ),
+                    None => state_reader::PhaseMarker::Future,
+                },
+                done: state_reader::phase_is_done(
+                    &p.number,
+                    p.completed,
+                    &owner.phase_disk_statuses,
+                ),
+                plans: state_reader::phase_plan_counts(p, &owner.phase_disk_statuses),
+                goal: owner.phase_goals.get(&phase_key(&p.number)),
+                planned,
+                badge: (!badge.is_empty()).then(|| badge.to_string()),
+                scope: Some(scope),
+            }
+        }));
+    }
 
     let no_toggles = std::collections::HashSet::new();
     let toggles = cache.map_or(&no_toggles, |c| &c.roadmap_fold_toggles);
@@ -3035,7 +3148,10 @@ pub(crate) fn roadmap_model_for(
     if let Some(view) = view {
         let mut unmerged_nodes = Vec::new();
         for (u, facts) in model.phases.iter_mut().enumerate() {
-            if is_shipped(u) {
+            // A workstream's phase is not in the agent view's world: the view
+            // keys worktree plans by bare phase number, which would hand the
+            // project's Phase 16 plans to a workstream's Phase 16.
+            if is_shipped(u) || facts.scope.is_some() {
                 continue;
             }
             let k = view.unmerged_in_phase(&facts.key);
@@ -3052,9 +3168,11 @@ pub(crate) fn roadmap_model_for(
                 unmerged_nodes.push(u);
             }
         }
-        // Ghost nodes are the last `ghost_count` nodes; layout may reorder, so
-        // match by key. They show as unmerged (worktree-held) and, with no
-        // dependents in main, can never satisfy one (I-11).
+        // Ghost nodes sit before the workstreams' nodes and layout may reorder
+        // them, so match by key (a ghost's key is a bare phase key, which no
+        // workstream phase's scoped key can equal). They show as unmerged
+        // (worktree-held) and, with no dependents in main, can never satisfy
+        // one (I-11).
         if ghost_count > 0 {
             for (id, ..) in &ghosts {
                 let key = phase_key(id);
@@ -3073,6 +3191,29 @@ pub(crate) fn roadmap_model_for(
             .retain(|&u| phases[u].status != roadmap_graph::PhaseStatus::Unmerged);
     }
     model
+}
+
+/// The label of a workstream's Roadmap band: the roadmap's own heading for the
+/// workstream's active milestone (`v0.14 — Voice Mechanic`), else STATE.md's
+/// `{milestone} {milestone_name}` (the synthetic band's rule), else the
+/// workstream's directory name. [`roadmap_graph::layout_list`] puts the `ws`
+/// marker in front.
+fn workstream_band_label(ws: &state_reader::workstreams::WorkstreamState) -> Untrusted {
+    use crate::state_reader::roadmap_md;
+
+    let owner = &ws.state;
+    if let Some(milestone) = roadmap_md::active_milestone_index(&owner.milestones, &owner.milestone)
+        .and_then(|i| owner.milestones.get(i))
+    {
+        return milestone.label.clone();
+    }
+    let id = owner.milestone.trim();
+    let label = match (id.is_empty(), &owner.milestone_name) {
+        (true, _) => ws.name.clone(),
+        (false, Some(name)) => format!("{id} {}", name.as_raw_for_logic_only().trim()),
+        (false, None) => id.to_string(),
+    };
+    Untrusted::from_untrusted_source(label.trim().to_string())
 }
 
 /// The Roadmap tab's first line (Mockups A/B/C, D-B02):
@@ -3141,12 +3282,14 @@ fn share_pipeline_selection(
     state: Option<&state_reader::ProjectState>,
 ) {
     let Some(state) = state else { return };
-    let Some(last) = state.phases.len().checked_sub(1) else {
+    let entries = state.scoped_phases();
+    let Some(last) = entries.len().checked_sub(1) else {
         return;
     };
-    let phase = &state.phases[cache.pipeline_selected.min(last)];
+    // The scoped key: a workstream's phase is a different cursor target from
+    // the project's same-numbered one.
     cache.roadmap_cursor = Some(roadmap_graph::CursorTarget::Phase(
-        crate::state_reader::phase_num::phase_key(&phase.number),
+        entries[cache.pipeline_selected.min(last)].key(),
     ));
 }
 
@@ -3716,8 +3859,10 @@ impl Screen for DetailScreen {
                     DetailSubView::Pipeline => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(state) = ctx.project_states.get(&self.alias) {
-                            if !state.phases.is_empty() {
-                                let max = state.phases.len().saturating_sub(1);
+                            // Every listed phase, a workstream's included.
+                            let listed = state.scoped_phase_count();
+                            if listed > 0 {
+                                let max = listed.saturating_sub(1);
                                 cache.pipeline_selected = (cache.pipeline_selected + 1).min(max);
                             }
                         }
@@ -4048,8 +4193,9 @@ impl Screen for DetailScreen {
                     DetailSubView::Pipeline => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(state) = ctx.project_states.get(&self.alias) {
-                            if !state.phases.is_empty() {
-                                let max = state.phases.len().saturating_sub(1);
+                            let listed = state.scoped_phase_count();
+                            if listed > 0 {
+                                let max = listed.saturating_sub(1);
                                 cache.pipeline_selected =
                                     (cache.pipeline_selected + PAGE_SCROLL_LINES as usize).min(max);
                             }
@@ -7192,7 +7338,10 @@ impl DetailScreen {
             }
         };
 
-        if state.phases.is_empty() {
+        // The project's own phases, then each parallel workstream's: the list
+        // the selection index addresses (`ProjectState::scoped_phases`).
+        let entries = state.scoped_phases();
+        if entries.is_empty() {
             let block = Block::default().borders(Borders::ALL).title(" Phases ");
             let msg = Paragraph::new("  No phases found").block(block);
             frame.render_widget(msg, area);
@@ -7200,10 +7349,7 @@ impl DetailScreen {
         }
 
         let selected_index = cache
-            .map(|c| {
-                c.pipeline_selected
-                    .min(state.phases.len().saturating_sub(1))
-            })
+            .map(|c| c.pipeline_selected.min(entries.len().saturating_sub(1)))
             .unwrap_or(0);
         // Below the side-by-side width a FOCUSED Waves pane takes the whole
         // tab under a one-row breadcrumb (quick 260926-2l4, D-06); unfocused,
@@ -7212,10 +7358,16 @@ impl DetailScreen {
             && area.width < roadmap_view::ROADMAP_SIDE_BY_SIDE_MIN_COLS
         {
             if let Some((model, rows)) = self.selected_waves(ctx) {
-                let phase = &state.phases[selected_index];
+                let entry = &entries[selected_index];
+                let phase = entry.phase;
                 let parts =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-                let crumb = format!("\u{2039} P{} {}", shown(&phase.number), shown(&phase.name));
+                let crumb = format!(
+                    "\u{2039} {}P{} {}",
+                    workstream_prefix(entry),
+                    shown(&phase.number),
+                    shown(&phase.name)
+                );
                 frame.render_widget(
                     Paragraph::new(Span::styled(
                         fit_cells(&crumb, area.width as usize),
@@ -7236,18 +7388,34 @@ impl DetailScreen {
 
         let selected = selected_index;
 
-        // Left pane: phase list
-        let items: Vec<ListItem> = state
-            .phases
+        // Left pane: phase list. A workstream's phase leads with its workstream
+        // tag (`ws v0.14 P26: …`, the dashboard's own vocabulary) in the
+        // workstream colour (UI-SPEC: Magenta = workstream cue); the words, not
+        // the colour, carry the meaning.
+        let items: Vec<ListItem> = entries
             .iter()
-            .map(|phase| {
+            .map(|entry| {
                 // The `Nw` marker follows the pane: a worktree-held phase shows
                 // its worktree plans' waves (quick 261014-0jv). Memory only.
-                ListItem::new(phase_list_label(
-                    phase,
-                    browsed_inference(state, ctx.agent_views.get(alias), &phase.number)
-                        .map(|(inf, _)| inf),
-                ))
+                let label = phase_list_label(
+                    entry.phase,
+                    browsed_inference(
+                        entry.owner,
+                        agent_view_of(entry, ctx, alias),
+                        &entry.phase.number,
+                    )
+                    .map(|(inf, _)| inf),
+                );
+                match entry.workstream {
+                    None => ListItem::new(label),
+                    Some(_) => ListItem::new(Line::from(vec![
+                        Span::styled(
+                            workstream_prefix(entry),
+                            Style::default().fg(Color::Magenta),
+                        ),
+                        Span::raw(label),
+                    ])),
+                }
             })
             .collect();
 
@@ -7273,16 +7441,18 @@ impl DetailScreen {
         self.record_list(crate::ui::mouse::ListRegion {
             rect: list_inner,
             offset: list_state.offset(),
-            len: state.phases.len(),
+            len: entries.len(),
         });
 
         // Right pane, top to bottom (quick 260926-2l4, D-01): the phase line,
         // the ladder, the two-line stage block, the external-job line when it
         // applies, then the Waves pane in all the remaining height. Nothing
         // here reads a file: every input is the refresh scan's inference and
-        // the agents scan's view (D-04).
-        let phase = &state.phases[selected];
-        let inference = state.phase_disk_statuses.get(&phase.number);
+        // the agents scan's view (D-04). A workstream's phase is read against
+        // the workstream's own state, whose numbers are the ones it uses.
+        let entry = &entries[selected];
+        let phase = entry.phase;
+        let inference = entry.owner.phase_disk_statuses.get(&phase.number);
 
         let right_block = Block::default().borders(Borders::NONE).title(" Phases ");
         let inner = right_block.inner(right_area);
@@ -7301,17 +7471,22 @@ impl DetailScreen {
             &format!("  Phase {}: {}", shown(&phase.number), shown(&phase.name)),
             cols,
         )));
+        // Which workstream the phase belongs to: its tag and milestone name,
+        // then the directory — the name `/gsd-workstreams` and `--ws` take.
+        if let Some(ws) = entry.workstream {
+            head.push(fit_spans(workstream_line_spans(ws), cols));
+        }
         head.push(build_pipeline_line(inf, &stage_statuses));
         head.extend(stage_block_lines(inf, &stage_statuses, cols));
         // The Verify line (quick 260926-gtn): present only when the report is
         // present and not passed, so the Waves pane simply starts one row
         // lower when it is drawn.
-        if let Some(spans) = verification_hint_spans(inf, &phase.number) {
+        if let Some(spans) = verification_hint_spans(inf, &phase.number, entry.workstream_name()) {
             head.push(fit_spans(spans, cols));
         }
         // External-job indicator: distinguish a legitimately blocked phase
         // (waiting on an async job) from a stuck one.
-        if state.external_job_waiting {
+        if entry.owner.external_job_waiting {
             head.push(fit_spans(
                 vec![
                     Span::styled(
@@ -7367,8 +7542,13 @@ impl DetailScreen {
         if model.shape == WavesShape::NoPlans {
             // The number is third-party text: escaped (T-2l4-01).
             let hint = format!(
-                "  No plans yet \u{2014} /gsd-plan-phase {}",
-                shown(&model.phase_number)
+                "  No plans yet \u{2014} /gsd-plan-phase {}{}",
+                shown(&model.phase_number),
+                // A workstream's phase is planned in ITS planning directory.
+                model
+                    .workstream
+                    .as_deref()
+                    .map_or_else(String::new, |name| format!(" --ws {}", shown(name)))
             );
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(fit_cells(&hint, cells), dim))),
@@ -8740,6 +8920,41 @@ pub(super) fn build_pipeline_line(
     Line::from(spans)
 }
 
+/// What leads a listed phase's text when it belongs to a parallel workstream:
+/// `ws v0.14 ` (the workstream's marker and milestone, escaped, with the space
+/// that separates it from `P26: …`), and nothing at all for the project's own
+/// phases — whose rows are therefore byte-for-byte what they were before
+/// workstreams were listed.
+fn workstream_prefix(entry: &state_reader::workstreams::ScopedPhase<'_>) -> String {
+    entry.workstream.map_or_else(String::new, |ws| {
+        format!("{} ", shown(&crate::app::workstream_tag(ws)))
+    })
+}
+
+/// The Phases tab's workstream line for a selected workstream phase:
+/// `  ws v0.14 Voice Mechanic · workstream v0-14-voice-assistant` — the marker
+/// and milestone and its name in the workstream colour, the directory (the name
+/// `/gsd-workstreams` and `--ws` take) behind them. Third-party text throughout,
+/// so every part goes through [`shown`] / `Untrusted::shown`.
+fn workstream_line_spans(ws: &state_reader::workstreams::WorkstreamState) -> Vec<Span<'static>> {
+    let workstream_colour = Style::default().fg(Color::Magenta);
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(shown(&crate::app::workstream_tag(ws)), workstream_colour),
+    ];
+    if let Some(name) = &ws.state.milestone_name {
+        spans.push(Span::styled(
+            format!(" {}", name.shown()),
+            workstream_colour,
+        ));
+    }
+    spans.push(Span::styled(
+        format!(" \u{b7} workstream {}", shown(&ws.name)),
+        Style::default().fg(Color::DarkGray),
+    ));
+    spans
+}
+
 /// One row of the Pipeline tab's left-hand phase list.
 ///
 /// Today's text verbatim — `P{number}: {name}`, both halves escaped — plus, for
@@ -8993,19 +9208,29 @@ fn stage_block_lines(
 /// Display only: the router still parks on every one of these (DRIVE-05). The
 /// phase number and an unknown status value are third-party text and go through
 /// [`shown`] (T-gtn-04).
-fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Vec<Span<'static>>> {
+///
+/// For a phase of a parallel workstream (`workstream`, its directory name) every
+/// `/gsd-…` remedy carries `--ws <workstream>`: a bare `/gsd-plan-phase 26
+/// --gaps` would run against whichever planning directory the session resolves,
+/// and the project's own `phases/` may hold a Phase 26 too.
+fn verification_hint_spans(
+    inf: &DiskInference,
+    phase_number: &str,
+    workstream: Option<&str>,
+) -> Option<Vec<Span<'static>>> {
     let n = shown(phase_number);
+    let ws = workstream.map_or_else(String::new, |name| format!(" --ws {}", shown(name)));
     let (word, remedy) = match &inf.verification_status {
         VerificationStatus::Passed => return None,
         VerificationStatus::Missing if !inf.has_verification => return None,
         VerificationStatus::Missing => (
             "no status".to_string(),
-            format!(" \u{2014} /gsd-execute-phase {n}"),
+            format!(" \u{2014} /gsd-execute-phase {n}{ws}"),
         ),
         VerificationStatus::Stale => (
             "stale".to_string(),
             format!(
-                " \u{2014} /gsd-execute-phase {n} re-runs the verifier (a stale report is not refreshed by re-verifying)"
+                " \u{2014} /gsd-execute-phase {n}{ws} re-runs the verifier (a stale report is not refreshed by re-verifying)"
             ),
         ),
         VerificationStatus::Unparseable => (
@@ -9015,15 +9240,15 @@ fn verification_hint_spans(inf: &DiskInference, phase_number: &str) -> Option<Ve
         ),
         VerificationStatus::HumanNeeded => (
             "human_needed".to_string(),
-            format!(" \u{2014} /gsd-verify-work {n}"),
+            format!(" \u{2014} /gsd-verify-work {n}{ws}"),
         ),
         VerificationStatus::GapsFound => (
             "gaps_found".to_string(),
-            format!(" \u{2014} /gsd-plan-phase {n} --gaps"),
+            format!(" \u{2014} /gsd-plan-phase {n} --gaps{ws}"),
         ),
         VerificationStatus::Unknown(value) => (
             shown(value),
-            format!(" \u{2014} /gsd-execute-phase {n}"),
+            format!(" \u{2014} /gsd-execute-phase {n}{ws}"),
         ),
     };
     let dim = Style::default().fg(Color::DarkGray);
@@ -9245,6 +9470,12 @@ struct WavesModel {
     /// Set when the plans come from a linked worktree because main holds none
     /// (quick 261014-0jv); `None` for every main-sourced phase.
     worktree: Option<WavesWorktree>,
+    /// The parallel workstream the phase belongs to, as its directory name
+    /// (RAW — a path segment for `e`, and a `--ws` argument after [`shown`]);
+    /// `None` for the project's own phases. Decides which planning directory
+    /// `find_phase_dir` searches and which workstream the printed `/gsd-…`
+    /// hints name.
+    workstream: Option<String>,
 }
 
 /// Where a worktree-sourced Waves pane got its plans (quick 261014-0jv).
@@ -9269,6 +9500,24 @@ impl WavesWorktree {
             others: wp.others,
             phase_dir: wp.phase_dir.clone(),
         }
+    }
+}
+
+/// The agents scan's view as it applies to one listed phase: the project's own
+/// phases get it, a workstream's get none.
+///
+/// The view describes the PROJECT's worktrees, and keys their plans and their
+/// unmerged work by bare phase number. Handed to a workstream's `Phase 16` it
+/// would attribute the project's Phase 16 worktree plans to it.
+fn agent_view_of<'a>(
+    entry: &state_reader::workstreams::ScopedPhase<'_>,
+    ctx: &'a AppContext,
+    alias: &str,
+) -> Option<&'a AgentView> {
+    if entry.workstream.is_some() {
+        None
+    } else {
+        ctx.agent_views.get(alias)
     }
 }
 
@@ -9495,6 +9744,7 @@ fn waves_model(
         shape,
         no_live_agents,
         worktree: None,
+        workstream: None,
     }
 }
 
@@ -27812,7 +28062,7 @@ mod tests {
             has_verification,
             ..Default::default()
         };
-        verification_hint_spans(&inf, "7")
+        verification_hint_spans(&inf, "7", None)
             .map(|spans| spans.iter().map(|s| s.content.to_string()).collect())
     }
 
@@ -32294,5 +32544,540 @@ mod tests {
         // The flag gates the launcher half.
         ctx.experimental = false;
         assert!(!driver_live_for(&ctx, TEST_ALIAS));
+    }
+
+    // ── debug session `workstreams-not-surfaced`: the Roadmap and Phases tabs ──
+    //
+    // The dashboard learnt to draw a project's parallel workstreams; these tabs
+    // still read only the project's own `.planning/`. The fixture is sentriq's
+    // layout ([`crate::state_reader::workstreams::write_sentriq_workstreams_fixture`]):
+    // a root v0.12 with phases 15 and 16, and two workstreams — v0.13 (phases
+    // 16..22) and v0.14 (phases 23..28, Phase 26 holding plans 26-01..26-14).
+    // **Phase 16 exists twice**, in the root and in v0.13, which is what makes
+    // the identity assertions below mean something.
+
+    /// A Detail screen on `view` for the sentriq-shaped tree, parsed. The
+    /// `TempDir` must outlive the screen.
+    fn sentriq_workstreams_detail(
+        view: DetailSubView,
+    ) -> (tempfile::TempDir, DetailScreen, AppContext) {
+        let td = tempfile::tempdir().expect("temp dir");
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::parse_project_state(&planning),
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), view);
+        (td, DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    /// Press `j` until `render` shows `want`, at most `limit` times; panics with
+    /// the last frame when it never does. Drives the REAL key path, so the
+    /// selection is whatever the keys can reach.
+    fn press_j_until(
+        screen: &mut DetailScreen,
+        ctx: &mut AppContext,
+        want: &str,
+        limit: usize,
+        render: impl Fn(&DetailScreen, &AppContext) -> String,
+    ) -> String {
+        for _ in 0..=limit {
+            let text = render(screen, ctx);
+            if text.contains(want) {
+                return text;
+            }
+            press(screen, ctx, KeyCode::Char('j'));
+        }
+        let text = render(screen, ctx);
+        panic!("pressing j {limit} times never showed {want:?}:\n{text}");
+    }
+
+    /// The owner's expectation, verbatim: the Roadmap tab lists the v0.13 and
+    /// v0.14 milestones and their phases, each marked with the workstream it
+    /// belongs to — at every layout width, not just a wide one.
+    #[test]
+    fn sentriq_roadmap_tab_lists_each_workstream_milestone_and_its_phases() {
+        let (_td, screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        for (width, height) in [(80u16, 60u16), (100, 50), (120, 50), (200, 50)] {
+            let text = render_detail_to_text_at(&screen, &ctx, width, height);
+            for want in [
+                // The project's own milestone is still there.
+                "Actuation Routines",
+                // Each workstream's milestone band, marked as a workstream.
+                "ws v0.13",
+                "Public Beta",
+                "ws v0.14",
+                "Voice Mechanic",
+                // Their phases, including the one being worked.
+                "Play Release Readiness",
+                "Push-to-Talk Voice",
+            ] {
+                assert!(
+                    text.contains(want),
+                    "at {width}x{height} the Roadmap tab does not show {want:?}:\n{text}"
+                );
+            }
+        }
+    }
+
+    /// The Phases tab lists the workstream phases too, each row carrying the
+    /// same `ws <milestone> P<n>:` vocabulary the dashboard teaches; the
+    /// project's own phases stay unmarked.
+    #[test]
+    fn sentriq_phases_tab_lists_workstream_phases_marked_with_their_milestone() {
+        let (_td, screen, ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let text = render_detail_to_text_at(&screen, &ctx, 160, 40);
+        for want in [
+            "P16: Raw-CAN Button Replay PoC",
+            "ws v0.13 P16: Beta Build Channel",
+            "ws v0.13 P22: Play Release Readiness",
+            "ws v0.14 P26: Push-to-Talk Voice",
+            "ws v0.14 P28:",
+        ] {
+            assert!(
+                text.contains(want),
+                "the Phases tab does not list {want:?}:\n{text}"
+            );
+        }
+    }
+
+    /// Phase 26 is selectable on the Phases tab, names its workstream, and its
+    /// Waves pane lists plans 26-01 through 26-14.
+    #[test]
+    fn sentriq_phases_tab_shows_phase_26_with_its_workstream_and_fourteen_plans() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let text = press_j_until(
+            &mut screen,
+            &mut ctx,
+            "Phase 26: Push-to-Talk Voice",
+            20,
+            render,
+        );
+
+        assert!(
+            text.contains("v0-14-voice-assistant"),
+            "the selected phase does not name its workstream:\n{text}"
+        );
+        for n in 1..=14 {
+            let plan = format!("26-{n:02}");
+            assert!(
+                text.contains(&plan),
+                "the Waves pane does not list plan {plan}:\n{text}"
+            );
+        }
+        // Its pipeline is Phase 26's own (executed, verification waiting), not
+        // the root's Phase 16 (one plan, unsummarised).
+        assert!(text.contains("[E 14/14]"), "{text}");
+    }
+
+    /// `Enter` on a workstream phase in the Roadmap opens THAT phase on the
+    /// Phases tab. v0.13's phase 16 shares its number with the project's own
+    /// phase 16, so a number-only lookup would open the wrong one.
+    #[test]
+    fn sentriq_roadmap_enter_opens_the_workstream_phase_not_a_same_numbered_one() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        // The detail pane's place line (`<band> · wave N of M`) names v0.13 only
+        // while the cursor is on one of ITS phases; the first one reached
+        // walking down from the project's own phases is v0.13's phase 16.
+        press_j_until(&mut screen, &mut ctx, "Public Beta \u{b7} wave", 40, render);
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(stored_view(&ctx), DetailSubView::Pipeline);
+        let text = render(&screen, &ctx);
+        assert!(
+            text.contains("Phase 16: Beta Build Channel"),
+            "Enter opened some other phase:\n{text}"
+        );
+        assert!(
+            !text.contains("Phase 16: Raw-CAN Button Replay PoC"),
+            "{text}"
+        );
+    }
+
+    /// `e` on a workstream plan edits the plan file INSIDE the workstream's
+    /// own `phases/` directory, never a same-numbered file in the project's.
+    #[test]
+    fn sentriq_waves_pane_e_edits_the_plan_inside_the_workstream() {
+        use crate::config::RegisteredProject;
+        let (td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: td.path().to_path_buf(),
+                added: "2026-10-23".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        press_j_until(
+            &mut screen,
+            &mut ctx,
+            "Phase 26: Push-to-Talk Voice",
+            20,
+            render,
+        );
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
+        match action {
+            ScreenAction::SuspendAndEdit(path, _) => assert_eq!(
+                path,
+                td.path().join(
+                    ".planning/workstreams/v0-14-voice-assistant/phases/26-push-to-talk-voice/26-01-PLAN.md"
+                )
+            ),
+            _ => panic!("expected an edit of the workstream's plan"),
+        }
+    }
+
+    /// The REAL sentriq's Phase 26 carries `wave:` frontmatter and every plan is
+    /// summarised, so the Waves pane opens on ONE merged row (`w1–w3 ✓ 14/14
+    /// done`) exactly as it does for any finished phase of the project's own.
+    /// `Enter` into the pane and `Enter` on that row opens every wave, and each of
+    /// plans 26-01..26-14 is listed under it — through the SAME fold toggles a
+    /// project phase uses, keyed by the workstream's scoped key.
+    #[test]
+    fn sentriq_a_finished_workstream_phase_opens_its_waves_to_every_plan() {
+        let td = tempfile::tempdir().expect("temp dir");
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        // Three waves over the fourteen plans, as the real phase has.
+        let dir = planning.join("workstreams/v0-14-voice-assistant/phases/26-push-to-talk-voice");
+        for n in 1..=14u32 {
+            let wave = match n {
+                1..=6 => 1,
+                7..=10 => 2,
+                _ => 3,
+            };
+            std::fs::write(
+                dir.join(format!("26-{n:02}-PLAN.md")),
+                format!("---\nwave: {wave}\n---\n<objective>\nPlan {n}\n</objective>\n"),
+            )
+            .expect("plan");
+        }
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::parse_project_state(&planning),
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let text = press_j_until(
+            &mut screen,
+            &mut ctx,
+            "Phase 26: Push-to-Talk Voice",
+            20,
+            render,
+        );
+        assert!(text.contains("w1\u{2013}w3 \u{2713} 14/14 done"), "{text}");
+        assert!(!text.contains("26-01"), "waves open collapsed:\n{text}");
+
+        // Into the pane, onto the merged row, open it.
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render(&screen, &ctx);
+        for n in 1..=14 {
+            let plan = format!("26-{n:02}");
+            assert!(
+                text.contains(&plan),
+                "no {plan} after opening the waves:\n{text}"
+            );
+        }
+        // The fold belongs to v0.14's Phase 26 alone, and a project phase
+        // sharing a number is unaffected.
+        let toggles = &ctx.view_cache[TEST_ALIAS].waves_toggles;
+        assert!(
+            toggles
+                .iter()
+                .all(|(key, _)| key == "v0-14-voice-assistant/26"),
+            "{toggles:?}"
+        );
+    }
+
+    // ── the model behind the Roadmap tab ──────────────────────────────────
+
+    /// The model the Roadmap draws for the sentriq-shaped tree: the project's
+    /// own band, then ONE scoped band per workstream, each holding its own
+    /// roadmap's phases under scoped keys — and `◉` on the phase the owner is
+    /// working in v0.14 (26, the live claim), not on the declared 24 nor on the
+    /// frontier 27, until the claim lapses.
+    #[test]
+    fn sentriq_roadmap_model_has_a_scoped_band_per_workstream_and_marks_the_focus_phase() {
+        let (_td, _screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let state = &ctx.project_states[TEST_ALIAS];
+        let now = chrono::Utc::now();
+        let model = roadmap_model_at(state, None, false, None, now);
+
+        let labels: Vec<&str> = model.bands.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "v0.12 \u{2014} Actuation Routines",
+                "ws v0.13 \u{2014} Public Beta",
+                "ws v0.14 \u{2014} Voice Mechanic"
+            ]
+        );
+        assert_eq!(
+            model
+                .bands
+                .iter()
+                .map(|b| b.short.as_str())
+                .collect::<Vec<_>>(),
+            ["v0.12", "v0.13", "v0.14"],
+            "a workstream's marker does not become its milestone's short id"
+        );
+        assert_eq!(
+            model.bands.iter().map(|b| b.total).collect::<Vec<_>>(),
+            [2, 7, 6]
+        );
+
+        // Same-numbered phases are different phases: 16 exists in the project
+        // and in v0.13, and every key is unique.
+        let keys: Vec<&str> = model.phases.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys.len(), 2 + 7 + 6);
+        assert_eq!(
+            keys.iter().collect::<std::collections::HashSet<_>>().len(),
+            keys.len(),
+            "{keys:?}"
+        );
+        assert!(keys.contains(&"16"));
+        assert!(keys.contains(&"v0-13-public-beta/16"));
+        assert!(keys.contains(&"v0-14-voice-assistant/26"));
+
+        let status = |key: &str| {
+            let at = model.phase_index(key).unwrap_or_else(|| panic!("no {key}"));
+            model.phases[at].status
+        };
+        use roadmap_graph::PhaseStatus::{Active, Done};
+        assert_eq!(status("v0-14-voice-assistant/26"), Active);
+        assert_eq!(status("v0-14-voice-assistant/24"), Done);
+        assert_ne!(status("v0-14-voice-assistant/27"), Active);
+
+        // GSD's own liveness window: past it the claim is abandoned and the
+        // established rule (the disk frontier, 27) answers.
+        let lapsed = roadmap_model_at(state, None, false, None, now + chrono::Duration::hours(5));
+        let status = |key: &str| {
+            let at = lapsed.phase_index(key).expect("listed");
+            lapsed.phases[at].status
+        };
+        assert_eq!(status("v0-14-voice-assistant/27"), Active);
+        assert_eq!(status("v0-14-voice-assistant/26"), Done);
+    }
+
+    /// The Roadmap's `Space` folds ONE workstream's band. Two workstreams on
+    /// identically labelled milestones would otherwise share a fold key.
+    #[test]
+    fn sentriq_roadmap_space_folds_only_the_workstream_band_under_the_cursor() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        // v0.14's band is the only one reading `4/6 phases done` in the pane.
+        press_j_until(&mut screen, &mut ctx, "4/6 phases done", 40, render);
+        assert!(render(&screen, &ctx).contains("Mechanic Mode Foundation"));
+
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        let text = render(&screen, &ctx);
+        assert!(
+            !text.contains("Mechanic Mode Foundation"),
+            "v0.14's phases are still listed after folding it:\n{text}"
+        );
+        assert!(
+            text.contains("Beta Build Channel"),
+            "folding v0.14 folded v0.13 too:\n{text}"
+        );
+        assert!(text.contains("Raw-CAN Button Replay PoC"), "{text}");
+        let toggles = fold_toggles(&ctx);
+        assert_eq!(toggles.len(), 1);
+        assert!(
+            toggles.contains(&roadmap_graph::BandKey::Named(
+                "v0-14-voice-assistant/v0.14 \u{2014} voice mechanic".to_string()
+            )),
+            "{toggles:?}"
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(render(&screen, &ctx).contains("Mechanic Mode Foundation"));
+    }
+
+    // ── the selection behind the Phases tab ───────────────────────────────
+
+    /// `j` walks every listed phase — the project's, then each workstream's —
+    /// and stops on the last; `PageDown` clamps there too.
+    #[test]
+    fn sentriq_phases_tab_keys_walk_every_workstream_phase_and_stop_at_the_last() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let selected = |c: &AppContext| c.view_cache[TEST_ALIAS].pipeline_selected;
+        for _ in 0..40 {
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        assert_eq!(selected(&ctx), 2 + 7 + 6 - 1);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(selected(&ctx), 2 + 7 + 6 - 2);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(selected(&ctx), 0);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(selected(&ctx), 2 + 7 + 6 - 1, "PageDown clamps to the last");
+    }
+
+    /// The two tabs share one selected phase BY SCOPED KEY: moving to a
+    /// workstream's phase on Phases puts the Roadmap's cursor on that phase,
+    /// not on the project's same-numbered one.
+    #[test]
+    fn sentriq_phases_selection_is_shared_with_the_roadmap_by_scoped_key() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        // The third listed phase is v0.13's Phase 16: same number as the
+        // project's own second.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(phase_target("v0-13-public-beta/16"))
+        );
+        assert!(render(&screen, &ctx).contains("Phase 16: Beta Build Channel"));
+
+        // ...and the Roadmap, opened by its digit, rests on that same phase.
+        press(&mut screen, &mut ctx, KeyCode::Char('1'));
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+        let text = render(&screen, &ctx);
+        assert!(
+            text.contains("ws v0.13 \u{2014} Public Beta \u{b7} wave"),
+            "the Roadmap's detail pane is not on v0.13's phase 16:\n{text}"
+        );
+        assert!(text.contains("workstream v0-13-public-beta"), "{text}");
+    }
+
+    /// The Waves pane's fold toggles and cursor are keyed by the model's
+    /// `phase_key`: v0.13's Phase 16 must not share the project's, or folding a
+    /// wave in one would fold the other.
+    #[test]
+    fn sentriq_waves_models_of_same_numbered_phases_have_distinct_keys() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let (own, _) = screen.selected_waves(&ctx).expect("the project's Phase 16");
+        assert_eq!(
+            (own.phase_key.as_str(), own.workstream.as_deref()),
+            ("16", None)
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let (scoped, _) = screen.selected_waves(&ctx).expect("v0.13's Phase 16");
+        assert_eq!(scoped.phase_number, "16");
+        assert_eq!(scoped.phase_key, "v0-13-public-beta/16");
+        assert_eq!(scoped.workstream.as_deref(), Some("v0-13-public-beta"));
+    }
+
+    /// Every `/gsd-…` remedy the Phases tab prints for a workstream's phase
+    /// names its workstream: the project's `phases/` may hold the same number.
+    #[test]
+    fn sentriq_workstream_remedies_carry_the_ws_flag() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 200, 60);
+        // Phase 26: verified `gaps_found`.
+        let text = press_j_until(
+            &mut screen,
+            &mut ctx,
+            "Phase 26: Push-to-Talk Voice",
+            20,
+            render,
+        );
+        assert!(
+            text.contains("/gsd-plan-phase 26 --gaps --ws v0-14-voice-assistant"),
+            "{text}"
+        );
+        // Phase 27: no directory, so no plans.
+        let text = press_j_until(&mut screen, &mut ctx, "Phase 27: Parity", 20, render);
+        assert!(
+            text.contains("/gsd-plan-phase 27 --ws v0-14-voice-assistant"),
+            "{text}"
+        );
+        // The project's own phases keep the bare commands: Phase 16 (the
+        // second row) has no verification report, so nothing prints for it.
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let text = render(&screen, &ctx);
+        assert!(
+            text.contains("Phase 16: Raw-CAN Button Replay PoC"),
+            "{text}"
+        );
+        assert!(!text.contains("--ws"), "{text}");
+    }
+
+    /// The agents scan describes the PROJECT's worktrees and keys their plans
+    /// by bare phase number, so it must never be applied to a workstream's
+    /// phase: a worktree holding plans for "27" is not v0.14's Phase 27.
+    #[test]
+    fn sentriq_the_agent_view_is_never_applied_to_a_workstream_phase() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let view = AgentView {
+            worktree_plans: vec![WorktreePlans {
+                key: "27".to_string(),
+                worktree: std::path::PathBuf::from("/wt/lanes-27"),
+                phase_dir: std::path::PathBuf::from("/wt/lanes-27/.planning/phases/27-x"),
+                worktree_name: Untrusted::from_untrusted_source("lanes-27".to_string()),
+                branch: None,
+                short_ref: Untrusted::from_untrusted_source("phase-27".to_string()),
+                others: 0,
+                inference: worktree_plans_inference(),
+            }],
+            ..Default::default()
+        };
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view.clone());
+
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let text = press_j_until(&mut screen, &mut ctx, "Phase 27: Parity", 20, render);
+        assert!(text.contains("No plans yet"), "{text}");
+        assert!(!text.contains("plans in worktree"), "{text}");
+        assert!(!text.contains("27-01"), "{text}");
+
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&view));
+        let at = model
+            .phase_index("v0-14-voice-assistant/27")
+            .expect("listed");
+        assert_eq!(model.phases[at].plans, None);
+        // The worktree badge is `[<stage> @<ref>]`; v0.14's Phase 27 has no
+        // directory, so its badge is the plain disk one.
+        let badge = model.phases[at].badge.as_deref().unwrap_or_default();
+        assert!(!badge.contains('@'), "{badge}");
+    }
+
+    /// The label of a workstream's band: the roadmap's own heading, else
+    /// STATE.md's milestone and name, else the directory name.
+    #[test]
+    fn a_workstream_band_label_falls_back_from_heading_to_state_to_directory() {
+        let workstream =
+            |milestone: &str, name: Option<&str>| state_reader::workstreams::WorkstreamState {
+                name: "v0-9-dir".to_string(),
+                active: false,
+                claim: None,
+                state: state_reader::ProjectState {
+                    milestone: milestone.to_string(),
+                    milestone_name: name.map(|n| Untrusted::from_untrusted_source(n.to_string())),
+                    ..Default::default()
+                },
+            };
+        let label = |ws: &state_reader::workstreams::WorkstreamState| {
+            workstream_band_label(ws).shown().to_string()
+        };
+        assert_eq!(label(&workstream("v0.9", Some("Voice"))), "v0.9 Voice");
+        assert_eq!(label(&workstream("v0.9", None)), "v0.9");
+        assert_eq!(label(&workstream("", Some("Voice"))), "v0-9-dir");
+        assert_eq!(label(&workstream("  ", None)), "v0-9-dir");
     }
 }

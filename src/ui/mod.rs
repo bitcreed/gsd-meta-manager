@@ -1015,6 +1015,7 @@ mod tests {
                     goal: None,
                     planned: false,
                     badge: None,
+                    scope: None,
                 }],
                 bands: Vec::new(),
             };

@@ -545,6 +545,45 @@ fn phase_display_label(state: &ProjectState) -> String {
     format!("P{}: {}", phase_num, phase_name)
 }
 
+/// The marker that says "this is a parallel workstream" wherever one is drawn:
+/// `ws*` for the workstream `.planning/active-workstream` names, plain `ws`
+/// otherwise. The dashboard line ([`format_workstream_display`]) and the Detail
+/// screen's Roadmap and Phases tabs ([`workstream_tag`]) share it, so the one
+/// word means the one thing on every screen.
+pub fn workstream_marker(ws: &crate::state_reader::workstreams::WorkstreamState) -> &'static str {
+    if ws.active {
+        "ws*"
+    } else {
+        "ws"
+    }
+}
+
+/// The milestone a workstream is identified by on screen: STATE.md's
+/// `milestone`; a workstream whose STATE.md names none shows its directory name
+/// instead. Third-party text: the caller escapes it.
+pub fn workstream_milestone_label(ws: &crate::state_reader::workstreams::WorkstreamState) -> &str {
+    let milestone = ws.state.milestone.trim();
+    if milestone.is_empty() {
+        ws.name.as_str()
+    } else {
+        milestone
+    }
+}
+
+/// What marks a workstream's phases on the Detail screen: `ws v0.14` (its
+/// [`workstream_marker`], then its [`workstream_milestone_label`]). A phase row
+/// reads `ws v0.14 P26: Push-to-Talk Voice` — the dashboard's own line, minus
+/// the live-claim logic that picks one phase for a one-line summary.
+///
+/// Third-party text: the caller escapes it for the terminal.
+pub fn workstream_tag(ws: &crate::state_reader::workstreams::WorkstreamState) -> String {
+    format!(
+        "{} {}",
+        workstream_marker(ws),
+        workstream_milestone_label(ws)
+    )
+}
+
 /// The dashboard text of one parallel workstream: `ws v0.14 P26: Push-to-Talk
 /// Voice` — its milestone, then the phase it is working.
 ///
@@ -575,13 +614,8 @@ pub fn format_workstream_display(
     ws: &crate::state_reader::workstreams::WorkstreamState,
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {
-    let marker = if ws.active { "ws*" } else { "ws" };
-    let milestone = ws.state.milestone.trim();
-    let label = if milestone.is_empty() {
-        ws.name.as_str()
-    } else {
-        milestone
-    };
+    let marker = workstream_marker(ws);
+    let label = workstream_milestone_label(ws);
     if ws.state.state_md_unreadable {
         return format!(
             "{marker} {label} {}",

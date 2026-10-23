@@ -49,23 +49,24 @@ type ExternalLists = Vec<Vec<String>>;
 
 /// Resolve every node's declared deps against the node index (D1).
 ///
-/// `nodes` is `(raw id, raw declared deps)` per node, in list order. Returns
-/// the in-graph parents,
-/// the external deps, and one self-cycle path (the node's escaped label) per
-/// node that names itself.
+/// `nodes` is `(raw id, raw declared deps, raw scope id)` per node, in list
+/// order. A dependency resolves only inside its dependent's scope: a
+/// workstream's `Phase 16` is not the project's own. Returns the in-graph
+/// parents, the external deps, and one self-cycle path (the node's escaped
+/// label) per node that names itself.
 fn resolve_deps(
-    nodes: &[(&str, &[String])],
+    nodes: &[(&str, &[String], Option<&str>)],
     labels: &[String],
 ) -> (ParentLists, ExternalLists, Vec<String>) {
-    let mut index: HashMap<String, usize> = HashMap::new();
-    for (i, &(id, _)) in nodes.iter().enumerate() {
-        index.entry(phase_key(id)).or_insert(i);
+    let mut index: HashMap<(Option<&str>, String), usize> = HashMap::new();
+    for (i, &(id, _, scope)) in nodes.iter().enumerate() {
+        index.entry((scope, phase_key(id))).or_insert(i);
     }
 
     let mut parents: ParentLists = vec![Vec::new(); nodes.len()];
     let mut externals: ExternalLists = vec![Vec::new(); nodes.len()];
     let mut self_cycles = Vec::new();
-    for (i, &(id, deps)) in nodes.iter().enumerate() {
+    for (i, &(id, deps, scope)) in nodes.iter().enumerate() {
         let own = phase_key(id);
         let mut seen: HashSet<String> = HashSet::new();
         let mut self_cycle = false;
@@ -78,7 +79,7 @@ fn resolve_deps(
                 self_cycle = true;
                 continue;
             }
-            match index.get(&key) {
+            match index.get(&(scope, key)) {
                 Some(&j) if j != i => parents[i].push(j),
                 // A duplicate node whose key resolves to itself is a self-cycle
                 // too; `j == i` cannot differ from `key == own`, but stay total.
@@ -268,6 +269,49 @@ pub const LANE_CROSS: &str = "\u{253C}";
 /// Width of the lane column in [`lane_text`].
 const LANE_TEXT_COLUMN: usize = 10;
 
+/// Where a phase or band lives when it is NOT in the project's own roadmap: one
+/// of its parallel workstreams (GSD 1.8.0).
+///
+/// Phase numbers are only unique inside one roadmap — every workstream numbers
+/// its phases itself — so the scope is part of a phase's identity: dependencies
+/// resolve inside it, and its phases' keys and its bands' keys carry it.
+///
+/// All three strings are RAW third-party text (a directory name and a milestone
+/// id out of the workstream's `STATE.md`): `id` is used for matching only, the
+/// other two are escaped before they are stored for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    /// The workstream's directory name. Identity only; never drawn raw.
+    pub id: String,
+    /// The workstream marker the dashboard already teaches: `ws`, or `ws*` for
+    /// the active workstream. Leads a scoped band's label.
+    pub marker: String,
+    /// What marks a scoped PHASE's rows: the marker and the workstream's
+    /// milestone, e.g. `ws v0.14`.
+    pub tag: String,
+}
+
+/// A [`Scope`] as a [`RoadmapModel`] stores it: everything escaped for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeFacts {
+    /// The workstream's directory name, escaped.
+    pub id: String,
+    /// See [`Scope::marker`], escaped.
+    pub marker: String,
+    /// See [`Scope::tag`], escaped.
+    pub tag: String,
+}
+
+impl ScopeFacts {
+    fn of(scope: &Scope) -> Self {
+        ScopeFacts {
+            id: esc(&scope.id),
+            marker: esc(&scope.marker),
+            tag: esc(&scope.tag),
+        }
+    }
+}
+
 /// One phase as the list model sees it. `id`, `name` and `deps` are RAW
 /// third-party text, used for matching and escaped before anything is stored.
 #[derive(Debug, Clone)]
@@ -294,6 +338,9 @@ pub struct ListNode<'a> {
     /// Reader-generated stage text carrying its own brackets
     /// (e.g. `[Executing 16/18] [verified]`).
     pub badge: Option<String>,
+    /// The parallel workstream this phase belongs to; `None` for the project's
+    /// own roadmap. A dependency resolves only to a phase of the SAME scope.
+    pub scope: Option<&'a Scope>,
 }
 
 /// One milestone band as the list model sees it.
@@ -304,6 +351,11 @@ pub struct BandInput {
     /// The phase count the roadmap declares for this milestone (it may list
     /// fewer phases than it shipped).
     pub declared_phases: u32,
+    /// The parallel workstream this milestone band is, `None` for one of the
+    /// project's own. A scoped band's label leads with the scope's marker
+    /// (`ws v0.14 — Voice Mechanic`) and its fold key carries the scope, so two
+    /// workstreams on identically named milestones fold independently.
+    pub scope: Option<Scope>,
 }
 
 /// Everything [`layout_list`] reads: the phases in list order and the bands.
@@ -438,6 +490,10 @@ pub struct PhaseFacts {
     pub no_edges: bool,
     /// The last phase row of its band.
     pub last_in_band: bool,
+    /// The parallel workstream the phase belongs to (escaped); `None` for the
+    /// project's own phases. [`Self::key`] carries it, so two same-numbered
+    /// phases of different roadmaps are two phases.
+    pub scope: Option<ScopeFacts>,
 }
 
 /// Everything the Roadmap knows about one band (escaped display strings).
@@ -450,6 +506,9 @@ pub struct BandFacts {
     pub done: usize,
     pub total: usize,
     pub declared_phases: u32,
+    /// The parallel workstream this band is (escaped); `None` for one of the
+    /// project's own. [`Self::label`] already leads with its marker.
+    pub scope: Option<ScopeFacts>,
 }
 
 /// The laid-out Roadmap list.
@@ -463,6 +522,9 @@ pub struct RoadmapModel {
     pub bands: Vec<BandFacts>,
     /// Active and ready phases, list order (D-A06).
     pub start_now: Vec<usize>,
+    /// The last wave of ANY roadmap in the model. A model that holds a
+    /// workstream's phases too has one wave count per roadmap: use
+    /// [`RoadmapModel::max_wave_of`] for the "of M" of a phase's own.
     pub max_wave: usize,
     pub done: usize,
     pub total: usize,
@@ -830,7 +892,10 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
     let labels: Vec<String> = nodes.iter().map(|node| esc(node.id)).collect();
 
     // The kept D-A15 pipeline.
-    let pairs: Vec<(&str, &[String])> = nodes.iter().map(|node| (node.id, node.deps)).collect();
+    let pairs: Vec<(&str, &[String], Option<&str>)> = nodes
+        .iter()
+        .map(|node| (node.id, node.deps, node.scope.map(|s| s.id.as_str())))
+        .collect();
     let (mut parents, externals, mut cycles) = resolve_deps(&pairs, &labels);
     break_cycles(&mut parents, &labels, &mut cycles);
     let layer = longest_path_layers(&parents);
@@ -870,8 +935,15 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
         .iter()
         .enumerate()
         .map(|(b, band)| {
-            let label = String::from(band.label.shown());
-            let (short, _) = roadmap_md::split_milestone_label(&label);
+            let plain = String::from(band.label.shown());
+            // The short id names the MILESTONE (`v0.14`), so it is split off
+            // the label before a workstream's marker leads it.
+            let (short, _) = roadmap_md::split_milestone_label(&plain);
+            let scope = band.scope.as_ref().map(ScopeFacts::of);
+            let label = match &scope {
+                Some(scope) => format!("{} {plain}", scope.marker),
+                None => plain,
+            };
             BandFacts {
                 key: band_key(band),
                 label,
@@ -880,6 +952,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 done: members[b].iter().filter(|&&u| nodes[u].done).count(),
                 total: members[b].len(),
                 declared_phases: band.declared_phases,
+                scope,
             }
         })
         .collect();
@@ -942,7 +1015,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
             let node = &nodes[u];
             let no_deps = reduced[u].is_empty() && implied[u].is_empty() && externals[u].is_empty();
             PhaseFacts {
-                key: phase_key(node.id),
+                key: scoped_key(node.scope, node.id),
                 id: labels[u].clone(),
                 name: esc(node.name),
                 goal: node.goal.map(|g| String::from(g.shown())),
@@ -957,14 +1030,18 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 implied: implied[u].clone(),
                 external: externals[u].clone(),
                 unblocks: unblocks[u].clone(),
+                // The same wave of the SAME roadmap: two workstreams' phases
+                // never share a dependency graph, so they are not "parallel
+                // within a wave" however their layers happen to line up.
                 parallel: order
                     .iter()
                     .copied()
-                    .filter(|&v| v != u && layer[v] == layer[u])
+                    .filter(|&v| v != u && layer[v] == layer[u] && same_scope(&nodes[v], node))
                     .collect(),
                 no_deps,
                 no_edges: no_deps && !declared_by_any[u],
                 last_in_band: band_of[u].is_some_and(|b| members[b].last() == Some(&u)),
+                scope: node.scope.map(ScopeFacts::of),
             }
         })
         .collect();
@@ -1037,9 +1114,28 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
     }
 }
 
-/// A band's key: its lower-cased trimmed RAW label (logic only).
+/// A band's key: its lower-cased trimmed RAW label (logic only), behind its
+/// workstream's directory name when it is a workstream's.
 fn band_key(band: &BandInput) -> BandKey {
-    BandKey::Named(band.label.as_raw_for_logic_only().trim().to_lowercase())
+    let label = band.label.as_raw_for_logic_only().trim().to_lowercase();
+    BandKey::Named(match &band.scope {
+        Some(scope) => format!("{}/{label}", scope.id),
+        None => label,
+    })
+}
+
+/// A phase's identity key: [`phase_key`] of its id, behind its workstream's
+/// directory name when it has one — the one rule
+/// [`crate::state_reader::workstreams::scoped_phase_key`] states, applied here
+/// without a second spelling of it.
+fn scoped_key(scope: Option<&Scope>, id: &str) -> String {
+    crate::state_reader::workstreams::scoped_phase_key(scope.map(|s| s.id.as_str()), id)
+}
+
+/// Whether two nodes live in the same roadmap (both the project's own, or both
+/// in one workstream).
+fn same_scope(a: &ListNode<'_>, b: &ListNode<'_>) -> bool {
+    a.scope.map(|s| s.id.as_str()) == b.scope.map(|s| s.id.as_str())
 }
 
 /// The unfolded row sequence (D-A07): the shipped summary (when any band
@@ -1267,10 +1363,23 @@ impl RoadmapModel {
     }
 
     /// The index in [`RoadmapModel::phases`] of the phase with `key`
-    /// (matched through [`phase_key`], so `07` finds `7`).
+    /// (matched through [`phase_key`], so `07` finds `7`; a workstream's phase
+    /// is found by its scoped key, which `phase_key` leaves as it is).
     pub fn phase_index(&self, key: &str) -> Option<usize> {
         let key = phase_key(key);
         self.phases.iter().position(|p| p.key == key)
+    }
+
+    /// The last wave of the roadmap `facts` belongs to — the `M` of "wave N of
+    /// M". [`Self::max_wave`] spans every roadmap in the model, which is the
+    /// wrong denominator for a workstream's phase.
+    pub fn max_wave_of(&self, facts: &PhaseFacts) -> usize {
+        self.phases
+            .iter()
+            .filter(|p| p.scope == facts.scope)
+            .map(|p| p.wave)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Follow an edge from `from` (`h`: needs then implied deps; `l`: the
@@ -1327,10 +1436,14 @@ impl RoadmapModel {
         };
         let at = self.phase_index(key)?;
         let wave = self.phases[at].wave;
+        // A wave belongs to one roadmap: a workstream's wave 1 is not the
+        // project's wave 1, so `[`/`]` never hops between them.
         let same: Vec<usize> = self
             .list_order()
             .into_iter()
-            .filter(|&u| self.phases[u].wave == wave)
+            .filter(|&u| {
+                self.phases[u].wave == wave && self.phases[u].scope == self.phases[at].scope
+            })
             .collect();
         if same.len() < 2 {
             return None;
@@ -1431,6 +1544,7 @@ mod tests {
                     goal: None,
                     planned: false,
                     badge: None,
+                    scope: None,
                 })
                 .collect(),
             bands: bands
@@ -1439,6 +1553,7 @@ mod tests {
                     label: crate::text::Untrusted::from_untrusted_source(label.to_string()),
                     shipped,
                     declared_phases: declared,
+                    scope: None,
                 })
                 .collect(),
         };
@@ -2101,6 +2216,7 @@ mod tests {
                     goal: None,
                     planned: false,
                     badge: None,
+                    scope: None,
                 })
                 .collect(),
             bands: Vec::new(),
@@ -2718,6 +2834,7 @@ mod tests {
                     goal: Some(&goal),
                     planned: false,
                     badge: Some(badge.clone()),
+                    scope: None,
                 },
                 ListNode {
                     id: "2\u{202E}",
@@ -2730,6 +2847,7 @@ mod tests {
                     goal: None,
                     planned: true,
                     badge: None,
+                    scope: None,
                 },
             ],
             bands: vec![
@@ -2737,11 +2855,13 @@ mod tests {
                     label: crate::text::Untrusted::from_untrusted_source(shipped_label.to_string()),
                     shipped: true,
                     declared_phases: 3,
+                    scope: None,
                 },
                 BandInput {
                     label: crate::text::Untrusted::from_untrusted_source(label.to_string()),
                     shipped: false,
                     declared_phases: 1,
+                    scope: None,
                 },
             ],
         };
@@ -2794,5 +2914,245 @@ mod tests {
         // Matching still works on the raw id: 2 depends on 1.
         assert_eq!(ids(&model, &model.phases[1].needs), vec![r(id)]);
         assert!(lane_text(&model).iter().any(|l| l.ends_with(&r(id))));
+    }
+
+    // ── debug session `workstreams-not-surfaced`: scoped phases ───────────────
+    //
+    // A phase number is only unique inside ONE roadmap: the project and each of
+    // its parallel workstreams number their phases themselves, and sentriq's
+    // root and its v0.13 workstream both have a Phase 16.
+
+    fn scope(id: &str, tag: &str) -> Scope {
+        Scope {
+            id: id.to_string(),
+            marker: "ws".to_string(),
+            tag: tag.to_string(),
+        }
+    }
+
+    fn band(label: &str, scope: Option<Scope>) -> BandInput {
+        BandInput {
+            label: crate::text::Untrusted::from_untrusted_source(label.to_string()),
+            shipped: false,
+            declared_phases: 0,
+            scope,
+        }
+    }
+
+    /// One node per `(id, deps, scope index, band)`, markers all `Future`.
+    fn scoped_model(
+        specs: &[(&str, &[&str], Option<usize>, usize)],
+        scopes: &[Scope],
+        bands: Vec<BandInput>,
+        toggles: &HashSet<BandKey>,
+    ) -> RoadmapModel {
+        let deps: Vec<Vec<String>> = specs
+            .iter()
+            .map(|(_, deps, _, _)| deps.iter().map(|d| d.to_string()).collect())
+            .collect();
+        let input = ListInput {
+            nodes: specs
+                .iter()
+                .zip(&deps)
+                .map(|(&(id, _, scope, band), deps)| ListNode {
+                    id,
+                    name: "x",
+                    deps,
+                    band: Some(band),
+                    marker: F,
+                    done: false,
+                    plans: None,
+                    goal: None,
+                    planned: false,
+                    badge: None,
+                    scope: scope.map(|i| &scopes[i]),
+                })
+                .collect(),
+            bands,
+        };
+        layout_list(&input, toggles)
+    }
+
+    #[test]
+    fn a_workstream_phase_is_not_the_projects_same_numbered_phase() {
+        let scopes = [scope("ws-a", "ws v1"), scope("ws-b", "ws v2")];
+        let model = scoped_model(
+            &[
+                ("16", &[], None, 0),
+                ("16", &[], Some(0), 1),
+                ("17", &["16"], Some(0), 1),
+                ("16", &[], Some(1), 2),
+            ],
+            &scopes,
+            vec![
+                band("v0.12 \u{2014} Own", None),
+                band("v1 \u{2014} A", Some(scopes[0].clone())),
+                band("v2 \u{2014} B", Some(scopes[1].clone())),
+            ],
+            &HashSet::new(),
+        );
+        let keys: Vec<&str> = model.phases.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["16", "ws-a/16", "ws-a/17", "ws-b/16"]);
+        for (at, key) in keys.iter().enumerate() {
+            assert_eq!(model.phase_index(key), Some(at), "{key}");
+        }
+        // ws-a's 17 needs ws-a's 16 — not the project's, not ws-b's.
+        assert_eq!(model.phases[2].needs, vec![1]);
+        assert!(model.phases[0].unblocks.is_empty());
+        assert!(model.phases[3].unblocks.is_empty());
+        assert!(model.phases[3].no_edges);
+        // The model keeps the escaped scope for display.
+        assert_eq!(model.phases[0].scope, None);
+        assert_eq!(
+            model.phases[1].scope,
+            Some(ScopeFacts {
+                id: "ws-a".into(),
+                marker: "ws".into(),
+                tag: "ws v1".into()
+            })
+        );
+    }
+
+    /// A dependency never crosses into another roadmap: ws-a's `17` declares
+    /// `16`, ws-a has none, the project does — so it is an OUTSIDE dependency.
+    #[test]
+    fn a_dependency_never_crosses_into_another_roadmap() {
+        let scopes = [scope("ws-a", "ws v1")];
+        let model = scoped_model(
+            &[("16", &[], None, 0), ("17", &["16"], Some(0), 1)],
+            &scopes,
+            vec![
+                band("v0.12 \u{2014} Own", None),
+                band("v1 \u{2014} A", Some(scopes[0].clone())),
+            ],
+            &HashSet::new(),
+        );
+        assert!(model.phases[1].needs.is_empty());
+        assert_eq!(model.phases[1].external, vec!["16".to_string()]);
+        assert!(model.phases[0].unblocks.is_empty());
+    }
+
+    /// A wave, a `parallel` set and `[`/`]` belong to one roadmap; "wave N of
+    /// M" counts its own roadmap's waves.
+    #[test]
+    fn waves_and_parallel_phases_stay_inside_one_roadmap() {
+        let scopes = [scope("ws-a", "ws v1")];
+        let model = scoped_model(
+            &[
+                ("1", &[], None, 0),
+                ("2", &[], None, 0),
+                ("3", &["2"], None, 0),
+                ("1", &[], Some(0), 1),
+            ],
+            &scopes,
+            vec![
+                band("v0.12 \u{2014} Own", None),
+                band("v1 \u{2014} A", Some(scopes[0].clone())),
+            ],
+            &HashSet::new(),
+        );
+        // Project 1 and 2 share wave 1; ws-a's 1 also sits on layer 1 but is
+        // another roadmap's.
+        assert_eq!(model.phases[0].parallel, vec![1]);
+        assert!(model.phases[3].parallel.is_empty());
+        assert_eq!(
+            model.wave_step(&CursorTarget::Phase("1".into()), true),
+            Some(CursorTarget::Phase("2".into()))
+        );
+        assert_eq!(
+            model.wave_step(&CursorTarget::Phase("ws-a/1".into()), true),
+            None
+        );
+        assert_eq!(model.max_wave, 2);
+        assert_eq!(model.max_wave_of(&model.phases[0]), 2);
+        assert_eq!(model.max_wave_of(&model.phases[3]), 1);
+    }
+
+    /// A scoped band leads with its marker but keeps the MILESTONE as its short
+    /// id, and two workstreams on identically named milestones fold alone.
+    #[test]
+    fn a_scoped_band_leads_with_its_marker_and_folds_on_its_own() {
+        let scopes = [scope("ws-a", "ws v0.14"), scope("ws-b", "ws v0.14")];
+        let label = "v0.14 \u{2014} Voice Mechanic";
+        let bands = || {
+            vec![
+                band(label, Some(scopes[0].clone())),
+                band(label, Some(scopes[1].clone())),
+            ]
+        };
+        let specs: &[(&str, &[&str], Option<usize>, usize)] =
+            &[("1", &[], Some(0), 0), ("1", &[], Some(1), 1)];
+        let open = scoped_model(specs, &scopes, bands(), &HashSet::new());
+
+        assert_eq!(open.bands[0].label, format!("ws {label}"));
+        assert_eq!(open.bands[0].short, "v0.14");
+        assert_ne!(open.bands[0].key, open.bands[1].key);
+        assert_eq!(open.rows.len(), 4, "two bands, two phases");
+
+        let folded = scoped_model(
+            specs,
+            &scopes,
+            bands(),
+            &toggles(std::slice::from_ref(&open.bands[0].key)),
+        );
+        assert_eq!(folded.rows.len(), 3, "only ws-a's phase is hidden");
+        assert!(folded
+            .row_of(&CursorTarget::Phase("ws-b/1".into()))
+            .is_some());
+        assert!(folded
+            .row_of(&CursorTarget::Phase("ws-a/1".into()))
+            .is_none());
+    }
+
+    /// A scoped key survives the cursor's normalisation (`phase_key` leaves a
+    /// non-numeric id as it is) and the cursor walks across scopes.
+    #[test]
+    fn the_cursor_walks_across_scoped_phases() {
+        let scopes = [scope("ws-a", "ws v1")];
+        let model = scoped_model(
+            &[("07", &[], None, 0), ("07", &[], Some(0), 1)],
+            &scopes,
+            vec![
+                band("v0.12 \u{2014} Own", None),
+                band("v1 \u{2014} A", Some(scopes[0].clone())),
+            ],
+            &HashSet::new(),
+        );
+        let own = CursorTarget::Phase("7".into());
+        let scoped = CursorTarget::Phase("ws-a/7".into());
+        assert_eq!(model.resolve_cursor(Some(&scoped)), Some(scoped.clone()));
+        assert_ne!(model.row_of(&own), model.row_of(&scoped));
+        // own, then the workstream's band row, then its phase.
+        let band_row = model.step(&own, 1);
+        assert!(matches!(band_row, CursorTarget::Band(_)));
+        assert_eq!(model.step(&band_row, 1), scoped);
+    }
+
+    /// The scope is third-party text (a directory name and a milestone id out
+    /// of a workstream's STATE.md): escaped before it is stored.
+    #[test]
+    fn scope_text_is_escaped_before_it_is_stored() {
+        let hostile = scope("ws\u{1b}[2J", "ws \u{202E}v1\u{7}");
+        let scopes = [hostile];
+        let model = scoped_model(
+            &[("1", &[], Some(0), 0)],
+            &scopes,
+            vec![band("v1 \u{2014} A", Some(scopes[0].clone()))],
+            &HashSet::new(),
+        );
+        let facts = model.phases[0].scope.as_ref().expect("scoped");
+        let band_facts = model.bands[0].scope.as_ref().expect("scoped");
+        for text in [
+            &facts.id,
+            &facts.marker,
+            &facts.tag,
+            &band_facts.tag,
+            &model.bands[0].label,
+        ] {
+            assert!(
+                !text.contains('\u{1b}') && !text.contains('\u{202E}') && !text.contains('\u{7}'),
+                "raw control reached {text:?}"
+            );
+        }
     }
 }
