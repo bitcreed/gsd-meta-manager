@@ -1734,12 +1734,6 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          draws `item.content`. Neither value is drawn at all in the collapsed state.",
     ),
     (
-        "RoadmapViz tab, box view",
-        true,
-        "With `roadmap_box_view` set, the box list draws each `RoadmapPhase` number and \
-         name through `ui::roadmap_widget`.",
-    ),
-    (
         "RoadmapViz tab, cursor on the planned phase",
         true,
         "With `roadmap_cursor` on `planned_phases[0]` (a ttbook-style build phase, \
@@ -1941,8 +1935,8 @@ type SubStateArrange = fn(&str, &mut AppContext);
 ///   (FileList).
 /// * **Browse, file view** — `browser_depth` selects between the entry list and
 ///   the file view, and only the file view draws `browser_file_name`.
-/// * **RoadmapViz, box view / cursor on the planned phase / synthetic band** —
-///   `roadmap_box_view` selects the legacy box list; `roadmap_cursor` selects
+/// * **RoadmapViz, cursor on the planned phase / synthetic band** —
+///   `roadmap_cursor` selects
 ///   whose detail pane draws (the planned build phase's name and goal are
 ///   drawn whole only there); and an absent active roadmap milestone is the
 ///   only render of `milestone_name` (header and synthetic band row).
@@ -1977,15 +1971,6 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
             .insert(identity.to_string(), crate::app::DetailSubView::Backlog);
         let cache = ctx.view_cache.entry(identity.to_string()).or_default();
         cache.backlog_expanded = true;
-    }),
-    // The Roadmap tab's BOX LIST (quick 260923-md1). The default render is
-    // now the dependency graph, so without this state `ui::roadmap_widget`
-    // would drop out of the probe entirely. The arrange sets only a flag.
-    ("RoadmapViz tab, box view", |identity, ctx| {
-        ctx.detail_sub_view_per_project
-            .insert(identity.to_string(), crate::app::DetailSubView::RoadmapViz);
-        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
-        cache.roadmap_box_view = true;
     }),
     // The planned build phase's detail pane (24-06). The default cursor rests
     // on the active phase, so without this state the planned phase's name is
@@ -4103,8 +4088,8 @@ mod tests {
     ///
     /// `21-29` asked for a two-direction spot-check on a screen whose rendered
     /// value is **what the operator TYPED**, and both spot-checks it delivered
-    /// landed on `.planning/`-derived values instead (`roadmap_widget.rs`'s
-    /// phase name, `queue_delete_confirm.rs`'s queued command). `21-29`
+    /// landed on `.planning/`-derived values instead (the since-deleted
+    /// Roadmap boxes widget's phase name, `queue_delete_confirm.rs`'s queued command). `21-29`
     /// self-disclosed that as not met; `21-30` deferred it. The subject here is
     /// [`EnqueueScreen`](crate::ui::screens::enqueue::EnqueueScreen), whose
     /// footer at `src/ui/screens/enqueue.rs:126-133` echoes `ctx.input_buffer`

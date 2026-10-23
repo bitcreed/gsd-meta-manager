@@ -251,7 +251,6 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("[ / ]", "Roadmap tab: previous / next phase in the same wave (detail view)"),
         row("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
         row("Enter", "Roadmap tab: open the phase in Phases (detail view)"),
-        row("v", "Roadmap tab: graph / box view (detail view)"),
         row("Enter", "Backlog tab: open / close the item's content pane (detail view)"),
         row("j/k PgUp/PgDn", "Backlog tab: scroll the open content pane (detail view)"),
         row("e", "Backlog tab: edit the open item where it lives, e.g. ROADMAP.md (detail view)"),
@@ -1201,20 +1200,6 @@ mod tests {
             total > 19,
             "the help body is {total} rows; the 80x24 popup shows 19, so the \
              popup must scroll"
-        );
-    }
-
-    /// Quick 260923-md1: the Roadmap tab's `v` toggle is documented as a
-    /// WHOLE row (a one-letter substring check would be vacuous).
-    #[test]
-    fn the_roadmap_graph_toggle_key_is_documented() {
-        let text = body();
-        let expected = row("v", "Roadmap tab: graph / box view (detail view)").spans[0]
-            .content
-            .to_string();
-        assert!(
-            text.lines().any(|line| line == expected),
-            "the row {expected:?} is missing:\n{text}"
         );
     }
 

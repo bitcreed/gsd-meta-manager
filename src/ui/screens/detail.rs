@@ -18,7 +18,6 @@ use crate::text::Untrusted;
 use crate::ui::mouse::MouseInput;
 use crate::ui::roadmap_graph;
 use crate::ui::roadmap_view;
-use crate::ui::roadmap_widget::RoadmapWidget;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -261,7 +260,8 @@ const SESSION_ID_DISPLAY_CHARS: usize = 8;
 /// takes the whole TUI down.
 ///
 /// **This is a family, not an incident.** It is the same defect class as the
-/// `&s[..n]` panic round 8 fixed in `ui::roadmap_widget` — a byte index used
+/// `&s[..n]` panic round 8 fixed in the Roadmap boxes widget (deleted by quick
+/// 261022-wtw) — a byte index used
 /// where a character count was meant, on a value read from outside this build.
 /// `a_multibyte_session_id_does_not_panic_the_render` and
 /// `a_long_multibyte_session_id_is_truncated_by_characters_not_bytes` were both
@@ -798,28 +798,22 @@ fn driver_live_for(ctx: &AppContext, alias: &str) -> bool {
 
 pub struct DetailScreen {
     pub alias: String,
-    pub scroll_offset: u16,
     /// Last-rendered viewport metrics for the Docs (Browse) file view.
     /// Interior mutability: `Screen::render` takes `&self`, so the render pass
     /// cannot write into the view cache (see plan 14-02 CD-01).
     browser_viewport: Cell<ViewportMetrics>,
     /// Last-rendered viewport metrics for the Archive file view.
     archive_viewport: Cell<ViewportMetrics>,
-    /// Last-rendered viewport metrics for the generic text panes — the Phases
-    /// and Roadmap tabs, the only two sub-views that reach the `_ =>` scroll
-    /// fallback. Same interior-mutability reason as the two Cells above
-    /// (plan 14-04 decision GD-01, closing code review IN-07 / CD-03).
-    generic_viewport: Cell<ViewportMetrics>,
     /// Last-rendered viewport metrics for the Driver tab's live-output pane.
     ///
-    /// A fourth `Cell` alongside the three above rather than a fourth
+    /// A third `Cell` alongside the two above rather than a third
     /// *mechanism*: the output pane clamps through the same [`clamp_scroll`]
     /// formula the Browse and Archive viewers already use, which is what keeps
     /// the UIFIX-04 fix from having to be made a second time in a new place.
     driver_viewport: Cell<ViewportMetrics>,
     /// Last-rendered viewport metrics for the Git tab's commit-message pane.
     ///
-    /// A fifth `Cell` alongside the four above rather than a fifth *mechanism*,
+    /// A fourth `Cell` alongside the three above rather than a fourth *mechanism*,
     /// for the reason the Driver one records: the pane's PageUp/PageDown arms
     /// clamp through the same [`clamp_scroll`] formula, so UIFIX-04 cannot come
     /// back here in a new spelling.
@@ -1206,10 +1200,8 @@ impl DetailScreen {
     pub fn new(alias: String) -> Self {
         Self {
             alias,
-            scroll_offset: 0,
             browser_viewport: Cell::default(),
             archive_viewport: Cell::default(),
-            generic_viewport: Cell::default(),
             driver_viewport: Cell::default(),
             git_commit_viewport: Cell::default(),
             backlog_viewport: Cell::default(),
@@ -1426,7 +1418,7 @@ impl DetailScreen {
         if *current == target {
             return ScreenAction::None;
         }
-        switch_to_sub_view(&self.alias, target, &mut self.scroll_offset, ctx)
+        switch_to_sub_view(&self.alias, target, ctx)
     }
 
     /// Record this frame's sub-tab strip rect.
@@ -1540,8 +1532,8 @@ impl DetailScreen {
     /// `switching_to_the_backlog_tab_returns_no_screen_action`, which goes red
     /// if the function ever returns anything but `None`.
     pub(crate) fn opened_on(alias: String, sub_view: DetailSubView, ctx: &mut AppContext) -> Self {
-        let mut screen = Self::new(alias);
-        let _ = switch_to_sub_view(&screen.alias, sub_view, &mut screen.scroll_offset, ctx);
+        let screen = Self::new(alias);
+        let _ = switch_to_sub_view(&screen.alias, sub_view, ctx);
         screen
     }
 
@@ -1590,14 +1582,6 @@ impl DetailScreen {
             ctx.refresh_selected_run_if_missing(&self.alias);
         }
         ctx.needs_redraw = true;
-    }
-
-    /// Whether the Roadmap tab is showing its cursor list (the default
-    /// view) rather than the box view, where the old scroll keys still scroll.
-    fn roadmap_list_active(&self, ctx: &AppContext) -> bool {
-        !ctx.view_cache
-            .get(&self.alias)
-            .is_some_and(|c| c.roadmap_box_view)
     }
 
     /// The Roadmap list model and the resolved cursor, or `None` when the
@@ -1721,12 +1705,7 @@ impl DetailScreen {
                 // Only the shipped summary reaches here (named bands fold
                 // above). It opens Docs › Milestones by sub-view: Docs' index
                 // alone would land on Files and skip milestone discovery.
-                return switch_to_sub_view(
-                    &self.alias,
-                    DetailSubView::Archive,
-                    &mut self.scroll_offset,
-                    ctx,
-                );
+                return switch_to_sub_view(&self.alias, DetailSubView::Archive, ctx);
             }
             CursorTarget::Phase(key) => key,
         };
@@ -1740,12 +1719,7 @@ impl DetailScreen {
             let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
             cache.pipeline_selected = index;
             cache.roadmap_cursor = Some(CursorTarget::Phase(key));
-            return switch_to_tab(
-                &self.alias,
-                tab_index(&DetailSubView::Pipeline),
-                &mut self.scroll_offset,
-                ctx,
-            );
+            return switch_to_tab(&self.alias, tab_index(&DetailSubView::Pipeline), ctx);
         }
         let scoped_key = state_reader::workstreams::scoped_phase_key;
         // The id is third-party text: escaped before it reaches the status
@@ -1922,12 +1896,7 @@ impl DetailScreen {
         let Some(line) = line else {
             return ScreenAction::SetStatusMessage(NO_AGENT.to_string());
         };
-        let action = switch_to_sub_view(
-            &self.alias,
-            DetailSubView::Agents,
-            &mut self.scroll_offset,
-            ctx,
-        );
+        let action = switch_to_sub_view(&self.alias, DetailSubView::Agents, ctx);
         ctx.view_cache
             .entry(self.alias.clone())
             .or_default()
@@ -1993,12 +1962,7 @@ impl DetailScreen {
             cache.waves_cursor = None;
             share_pipeline_selection(cache, ctx.project_states.get(&self.alias));
         }
-        let action = switch_to_tab(
-            &self.alias,
-            tab_index(&DetailSubView::Pipeline),
-            &mut self.scroll_offset,
-            ctx,
-        );
+        let action = switch_to_tab(&self.alias, tab_index(&DetailSubView::Pipeline), ctx);
         if let Some((model, rows)) = self.selected_waves(ctx) {
             let stem = model
                 .plans()
@@ -2101,7 +2065,6 @@ impl DetailScreen {
                 Some(ScreenAction::None)
             }
             KeyCode::Char('q') => {
-                self.scroll_offset = 0;
                 ctx.needs_redraw = true;
                 Some(ScreenAction::Pop)
             }
@@ -2200,7 +2163,7 @@ impl DetailScreen {
     /// [`tab_index`] follows: a new sub-view must decide what its first row
     /// is, or the crate does not compile. Per [inferred I-5]:
     ///
-    /// * a scroll view (the Roadmap box view, a Browse or Archive file view)
+    /// * a scroll view (a Browse or Archive file view)
     ///   is "on its first row" when scrolled to the top;
     /// * an open Backlog pane or an open Config dropdown never is, so `↑`
     ///   never leaves a pane;
@@ -2213,19 +2176,10 @@ impl DetailScreen {
     fn content_at_first_row(&self, view: &DetailSubView, ctx: &AppContext) -> bool {
         let cache = ctx.view_cache.get(&self.alias);
         match view {
-            DetailSubView::RoadmapViz => {
-                if self.roadmap_list_active(ctx) {
-                    match self.roadmap_model_and_cursor(ctx) {
-                        None => true,
-                        Some((model, cursor)) => {
-                            model.first_target().is_none_or(|first| first == cursor)
-                        }
-                    }
-                } else {
-                    let vp = self.generic_viewport.get();
-                    clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height) == 0
-                }
-            }
+            DetailSubView::RoadmapViz => match self.roadmap_model_and_cursor(ctx) {
+                None => true,
+                Some((model, cursor)) => model.first_target().is_none_or(|first| first == cursor),
+            },
             DetailSubView::Pipeline => cache.is_none_or(|c| c.pipeline_selected == 0),
             DetailSubView::Backlog => {
                 cache.is_none_or(|c| !c.backlog_expanded && c.backlog_selected == 0)
@@ -3302,34 +3256,23 @@ fn share_pipeline_selection(
 /// (quick 260926-1t1, D-04) — from `last_sub_view_per_tab`, which
 /// [`switch_to_sub_view`] writes. With nothing remembered the index resolves
 /// through [`sub_view_from_index`] (unchanged), so Docs lands on Files.
-fn switch_to_tab(
-    alias: &str,
-    new_index: usize,
-    scroll_offset: &mut u16,
-    ctx: &mut AppContext,
-) -> ScreenAction {
+fn switch_to_tab(alias: &str, new_index: usize, ctx: &mut AppContext) -> ScreenAction {
     let remembered = ctx
         .view_cache
         .get(alias)
         .and_then(|cache| cache.last_sub_view_per_tab.get(&new_index).cloned());
     let new_view = remembered.unwrap_or_else(|| sub_view_from_index(new_index, ctx.experimental));
-    switch_to_sub_view(alias, new_view, scroll_offset, ctx)
+    switch_to_sub_view(alias, new_view, ctx)
 }
 
-/// Switch to `new_view`: the ONE arrival rule (scroll reset plus each tab's
-/// data loading). Every way onto a tab — digits, arrows, `Shift+D`, the
+/// Switch to `new_view`: the ONE arrival rule (each tab's data
+/// loading). Every way onto a tab — digits, arrows, `Shift+D`, the
 /// sub-tab keys (`←`/`→` and `[`/`]` inside Sessions or Docs, and the `m`
 /// alias), the Roadmap's `Enter`, [`DetailScreen::opened_on`] — ends here,
 /// which is why the sub-tab memory is written here and nowhere else.
-fn switch_to_sub_view(
-    alias: &str,
-    new_view: DetailSubView,
-    scroll_offset: &mut u16,
-    ctx: &mut AppContext,
-) -> ScreenAction {
+fn switch_to_sub_view(alias: &str, new_view: DetailSubView, ctx: &mut AppContext) -> ScreenAction {
     ctx.detail_sub_view_per_project
         .insert(alias.to_string(), new_view.clone());
-    *scroll_offset = 0;
     ctx.needs_redraw = true;
 
     // Every arrival on a tab with sub-tabs is remembered as that tab's
@@ -3578,10 +3521,8 @@ impl Screen for DetailScreen {
         );
         let current_idx = tab_index(&current_view);
 
-        // The Roadmap tab's cursor keys are live on its list (graph) view
-        // only; the box view keeps the old generic scroll (D-A10).
-        let roadmap_list =
-            current_view == DetailSubView::RoadmapViz && self.roadmap_list_active(ctx);
+        // The Roadmap tab's cursor keys (D-A10).
+        let on_roadmap = current_view == DetailSubView::RoadmapViz;
         // An `h`/`l` edge walk continues only while `h`/`l` repeat: every
         // other key on the Roadmap tab ends it (D-A05).
         if current_view == DetailSubView::RoadmapViz
@@ -3627,9 +3568,7 @@ impl Screen for DetailScreen {
                         code == KeyCode::Right,
                         ctx.experimental,
                     ) {
-                        Some(index) => {
-                            switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
-                        }
+                        Some(index) => switch_to_tab(&self.alias, index, ctx),
                         None => ScreenAction::None,
                     };
                 }
@@ -3648,7 +3587,6 @@ impl Screen for DetailScreen {
                 }
                 KeyCode::Up | KeyCode::Char('k') => return ScreenAction::None,
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    self.scroll_offset = 0;
                     ctx.needs_redraw = true;
                     return ScreenAction::Pop;
                 }
@@ -3698,7 +3636,6 @@ impl Screen for DetailScreen {
             // any exit has always left it (quick 260926-1t1 split `q` from
             // `Esc`, which steps up one level).
             KeyCode::Char('q') => {
-                self.scroll_offset = 0;
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
@@ -3993,20 +3930,8 @@ impl Screen for DetailScreen {
                     DetailSubView::Driver => {
                         self.move_driver_selection(ctx, 1);
                     }
-                    // The Roadmap list moves its cursor; the box view falls
-                    // through to the generic scroll below.
-                    DetailSubView::RoadmapViz if roadmap_list => {
+                    DetailSubView::RoadmapViz => {
                         self.roadmap_nav(ctx, RoadmapNav::Step(1));
-                    }
-                    _ => {
-                        // The Roadmap box view: add the delta, then clamp.
-                        let vp = self.generic_viewport.get();
-                        self.scroll_offset = clamp_scroll(
-                            self.scroll_offset.saturating_add(1),
-                            vp.total_lines,
-                            vp.visible_height,
-                        );
-                        ctx.needs_redraw = true;
                     }
                 }
                 ScreenAction::None
@@ -4135,17 +4060,8 @@ impl Screen for DetailScreen {
                     DetailSubView::Driver => {
                         self.move_driver_selection(ctx, -1);
                     }
-                    DetailSubView::RoadmapViz if roadmap_list => {
+                    DetailSubView::RoadmapViz => {
                         self.roadmap_nav(ctx, RoadmapNav::Step(-1));
-                    }
-                    _ => {
-                        // The Roadmap box view: clamp FIRST, subtract second —
-                        // same load-bearing order as the file-view siblings.
-                        let vp = self.generic_viewport.get();
-                        self.scroll_offset =
-                            clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height)
-                                .saturating_sub(1);
-                        ctx.needs_redraw = true;
                     }
                 }
                 ScreenAction::None
@@ -4326,18 +4242,8 @@ impl Screen for DetailScreen {
                     DetailSubView::Driver => {
                         self.scroll_driver_output(ctx, i32::from(PAGE_SCROLL_LINES));
                     }
-                    DetailSubView::RoadmapViz if roadmap_list => {
+                    DetailSubView::RoadmapViz => {
                         self.roadmap_nav(ctx, RoadmapNav::Page(true));
-                    }
-                    _ => {
-                        // The Roadmap box view: add the delta, then clamp.
-                        let vp = self.generic_viewport.get();
-                        self.scroll_offset = clamp_scroll(
-                            self.scroll_offset.saturating_add(PAGE_SCROLL_LINES),
-                            vp.total_lines,
-                            vp.visible_height,
-                        );
-                        ctx.needs_redraw = true;
                     }
                 }
                 ScreenAction::None
@@ -4482,17 +4388,8 @@ impl Screen for DetailScreen {
                     DetailSubView::Driver => {
                         self.scroll_driver_output(ctx, -i32::from(PAGE_SCROLL_LINES));
                     }
-                    DetailSubView::RoadmapViz if roadmap_list => {
+                    DetailSubView::RoadmapViz => {
                         self.roadmap_nav(ctx, RoadmapNav::Page(false));
-                    }
-                    _ => {
-                        // The Roadmap box view: clamp FIRST, subtract second —
-                        // same load-bearing order as the file-view siblings.
-                        let vp = self.generic_viewport.get();
-                        self.scroll_offset =
-                            clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height)
-                                .saturating_sub(PAGE_SCROLL_LINES);
-                        ctx.needs_redraw = true;
                     }
                 }
                 ScreenAction::None
@@ -4510,7 +4407,7 @@ impl Screen for DetailScreen {
             KeyCode::Char(digit @ '1'..='8') => {
                 self.focus = DetailFocus::Content;
                 let index = usize::from(digit as u8 - b'1');
-                switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
+                switch_to_tab(&self.alias, index, ctx)
             }
             // The Driver tab (D-15), always the last. It has no digit, uppercase is
             // entirely unclaimed in the detail view, and `KeyCode::Char('D')`
@@ -4524,7 +4421,7 @@ impl Screen for DetailScreen {
             // does nothing (260917-fko D2).
             KeyCode::Char('D') if ctx.experimental => {
                 self.focus = DetailFocus::Content;
-                switch_to_tab(&self.alias, DRIVER_TAB_INDEX, &mut self.scroll_offset, ctx)
+                switch_to_tab(&self.alias, DRIVER_TAB_INDEX, ctx)
             }
             // The arrows inside content (quick 260926-1t1, D-03), in order:
             // an open Backlog pane first ([inferred I-9]), then the sub-tabs of
@@ -4557,7 +4454,7 @@ impl Screen for DetailScreen {
                 self.focus = DetailFocus::TabBar;
                 ctx.needs_redraw = true;
                 match stepped_tab_index(current_idx, forward, ctx.experimental) {
-                    Some(index) => switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx),
+                    Some(index) => switch_to_tab(&self.alias, index, ctx),
                     None => ScreenAction::None,
                 }
             }
@@ -5039,7 +4936,7 @@ impl Screen for DetailScreen {
                         }
                         ScreenAction::None
                     }
-                    DetailSubView::RoadmapViz if roadmap_list => self.roadmap_activate(code, ctx),
+                    DetailSubView::RoadmapViz => self.roadmap_activate(code, ctx),
                     _ => ScreenAction::None,
                 }
             }
@@ -5101,7 +4998,7 @@ impl Screen for DetailScreen {
                 } else {
                     DetailSubView::Browse
                 };
-                switch_to_sub_view(&self.alias, other, &mut self.scroll_offset, ctx)
+                switch_to_sub_view(&self.alias, other, ctx)
             }
             // Sessions tab: 'm' switches between its two sub-views, Sessions and
             // Agents (D-C15) — an alias of `←`/`→` and `[`/`]` since quick
@@ -5123,7 +5020,7 @@ impl Screen for DetailScreen {
                 } else {
                     DetailSubView::Sessions
                 };
-                switch_to_sub_view(&self.alias, other, &mut self.scroll_offset, ctx)
+                switch_to_sub_view(&self.alias, other, ctx)
             }
             // '/' key: open the Config tab's filter input (quick 260922-hdi),
             // seeded with the current filter so it can be refined ([INFERRED A4]).
@@ -6030,31 +5927,21 @@ impl Screen for DetailScreen {
                     ScreenAction::Push(Box::new(EnqueueScreen::new(alias)))
                 }
             }
-            // Roadmap tab only: flip between the cursor list (default) and
-            // the box list. `v` is bound nowhere else on this screen.
-            KeyCode::Char('v') if current_view == DetailSubView::RoadmapViz => {
-                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                cache.roadmap_box_view = !cache.roadmap_box_view;
-                self.scroll_offset = 0;
-                ctx.needs_redraw = true;
-                ScreenAction::None
-            }
-            // Roadmap list cursor keys (D-A10), live on the list view only —
-            // the box view leaves them unbound, as they were before. `g` and
+            // Roadmap list cursor keys (D-A10). `g` and
             // `G` are also bound on Browse / Driver, behind their own guards;
             // `[` and `]` also switch sub-tabs on Sessions / Docs, behind the
             // `sub_tab_pair` guard above, which Roadmap never passes; `h` and
             // `l` are bound nowhere else on this screen.
-            KeyCode::Char('g') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::First),
-            KeyCode::Char('G') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::Last),
-            KeyCode::Char('h') if roadmap_list => {
+            KeyCode::Char('g') if on_roadmap => self.roadmap_nav(ctx, RoadmapNav::First),
+            KeyCode::Char('G') if on_roadmap => self.roadmap_nav(ctx, RoadmapNav::Last),
+            KeyCode::Char('h') if on_roadmap => {
                 self.roadmap_nav(ctx, RoadmapNav::Edge(roadmap_graph::EdgeDir::Needs))
             }
-            KeyCode::Char('l') if roadmap_list => {
+            KeyCode::Char('l') if on_roadmap => {
                 self.roadmap_nav(ctx, RoadmapNav::Edge(roadmap_graph::EdgeDir::Unblocks))
             }
-            KeyCode::Char('[') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::Wave(false)),
-            KeyCode::Char(']') if roadmap_list => self.roadmap_nav(ctx, RoadmapNav::Wave(true)),
+            KeyCode::Char('[') if on_roadmap => self.roadmap_nav(ctx, RoadmapNav::Wave(false)),
+            KeyCode::Char(']') if on_roadmap => self.roadmap_nav(ctx, RoadmapNav::Wave(true)),
             KeyCode::Char('?') => {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(HelpScreen::new()))
@@ -6347,13 +6234,13 @@ impl DetailScreen {
             ClickTarget::Tab(index) => {
                 self.focus = DetailFocus::Content;
                 ctx.needs_redraw = true;
-                switch_to_tab(&self.alias, index, &mut self.scroll_offset, ctx)
+                switch_to_tab(&self.alias, index, ctx)
             }
             ClickTarget::SubTab(view) => {
                 self.focus = DetailFocus::Content;
                 ctx.needs_redraw = true;
                 if view != *current_view {
-                    switch_to_sub_view(&self.alias, view, &mut self.scroll_offset, ctx)
+                    switch_to_sub_view(&self.alias, view, ctx)
                 } else {
                     ScreenAction::None
                 }
@@ -6390,7 +6277,7 @@ impl DetailScreen {
             ClickTarget::FoldMarker(row) => {
                 self.focus = DetailFocus::Content;
                 ctx.needs_redraw = true;
-                if *current_view != DetailSubView::RoadmapViz || !self.roadmap_list_active(ctx) {
+                if *current_view != DetailSubView::RoadmapViz {
                     return ScreenAction::None;
                 }
                 if self.roadmap_select_row(row, ctx).is_none() {
@@ -6750,7 +6637,6 @@ impl DetailScreen {
 
         if let Some(state) = state {
             let cache = ctx.view_cache.get(alias);
-            let box_view = cache.is_some_and(|c| c.roadmap_box_view);
             // The same adapter the keys use (24-05), so the list drawn is the
             // list the cursor moves over. In-memory only: no I/O here.
             let model = roadmap_model_for(
@@ -6827,60 +6713,33 @@ impl DetailScreen {
                     .areas(area);
             frame.render_widget(Paragraph::new(header_lines), header_area);
 
-            if box_view {
-                let current_phase_num = state.active_phase_number();
-                // Clamp roadmap scroll — estimate content height from phase count
-                let phase_block_h: u16 = 5; // BOX_HEIGHT(3) + connector(1) + spacing(1)
-                let total_content = if state.phases.is_empty() {
-                    0
-                } else {
-                    3 + (state.phases.len() as u16 - 1) * phase_block_h
-                };
-                let viewport_h = roadmap_area.height;
-                // Record for the `_ =>` scroll handlers, which cannot see this pass.
-                self.generic_viewport.set(ViewportMetrics {
-                    total_lines: total_content,
-                    visible_height: viewport_h,
-                });
-                let max_scroll = total_content.saturating_sub(viewport_h);
-                let clamped_offset = self.scroll_offset.min(max_scroll);
-
-                let roadmap_widget = RoadmapWidget {
-                    phases: &state.phases,
-                    current_phase_num,
-                    disk_statuses: &state.phase_disk_statuses,
-                    scroll_offset: clamped_offset,
-                };
-                frame.render_widget(roadmap_widget, roadmap_area);
-            } else {
-                // The default (D-A01): the master/detail list over the stored
-                // cursor (24-05). The widget resolves the cursor itself; render
-                // takes `&self`, so the resolved form is never written back —
-                // only the scroll offset and the page size the keys read.
-                let cursor = cache.and_then(|c| c.roadmap_cursor.as_ref());
-                let mut view_state = roadmap_view::RoadmapViewState {
-                    offset: self.roadmap_list_offset.get(),
-                    ..Default::default()
-                };
-                frame.render_stateful_widget(
-                    roadmap_view::RoadmapView {
-                        model: &model,
-                        cursor,
-                    },
-                    roadmap_area,
-                    &mut view_state,
-                );
-                self.roadmap_list_offset.set(view_state.offset);
-                self.roadmap_list_viewport.set(view_state.list_rows);
-                // The mouse's rects (quick 260926-kes, D-01): the body rows
-                // and fold glyphs the widget drew, at the offset it drew them.
-                self.record_list(crate::ui::mouse::ListRegion {
-                    rect: view_state.list_body,
-                    offset: view_state.offset,
-                    len: model.rows.len(),
-                });
-                self.record_fold_marks(view_state.fold_marks);
-            }
+            // The default (D-A01): the master/detail list over the stored
+            // cursor (24-05). The widget resolves the cursor itself; render
+            // takes `&self`, so the resolved form is never written back —
+            // only the scroll offset and the page size the keys read.
+            let cursor = cache.and_then(|c| c.roadmap_cursor.as_ref());
+            let mut view_state = roadmap_view::RoadmapViewState {
+                offset: self.roadmap_list_offset.get(),
+                ..Default::default()
+            };
+            frame.render_stateful_widget(
+                roadmap_view::RoadmapView {
+                    model: &model,
+                    cursor,
+                },
+                roadmap_area,
+                &mut view_state,
+            );
+            self.roadmap_list_offset.set(view_state.offset);
+            self.roadmap_list_viewport.set(view_state.list_rows);
+            // The mouse's rects (quick 260926-kes, D-01): the body rows
+            // and fold glyphs the widget drew, at the offset it drew them.
+            self.record_list(crate::ui::mouse::ListRegion {
+                rect: view_state.list_body,
+                offset: view_state.offset,
+                len: model.rows.len(),
+            });
+            self.record_fold_marks(view_state.fold_marks);
         } else {
             let block = Block::default().borders(Borders::ALL);
             let paragraph =
@@ -8655,8 +8514,7 @@ impl DetailScreen {
                         // value out of the project's `.planning/config.json`,
                         // so a CJK value (3 bytes/char) or an emoji one (4)
                         // sized the popup two to four times wider than the text
-                        // needs. `chars().count()` matches `section_rule` here
-                        // and `roadmap_widget.rs`'s width arithmetic.
+                        // needs. `chars().count()` matches `section_rule` here.
                         //
                         // **A character count is still not DISPLAY width** — a
                         // CJK character occupies two terminal cells and a
@@ -11213,8 +11071,6 @@ fn footer_spans(
             spans.push(Span::raw(" edge  "));
             spans.push(Span::styled("[Space]", b));
             spans.push(Span::raw(" fold  "));
-            spans.push(Span::styled("[v]", b));
-            spans.push(Span::raw("iew  "));
             spans.push(Span::styled("[e]", b));
             spans.push(Span::raw("nqueue  "));
         }
@@ -21220,80 +21076,6 @@ mod tests {
         }
     }
 
-    // --- CD-03 / IN-07 closure: the generic `_ =>` fallback ---------------
-    //
-    // Reached by exactly one sub-view state since the PhaseList tab was
-    // removed (D-B02) and the Roadmap list gained its cursor (24-05) — the
-    // Roadmap tab's BOX view. Every other sub-view has an explicit match arm.
-    // See plan 14-04 decision GD-01, which corrects CD-03's "seven non-file
-    // tabs" cost estimate.
-
-    /// A DetailScreen and AppContext parked on a tab that reaches the generic
-    /// `_ =>` scroll fallback (the Roadmap box view), with recorded metrics
-    /// and a stored offset.
-    fn generic_fixture(
-        total_lines: u16,
-        visible_height: u16,
-        stored_offset: u16,
-    ) -> (DetailScreen, AppContext) {
-        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
-        screen.generic_viewport.set(ViewportMetrics {
-            total_lines,
-            visible_height,
-        });
-        screen.scroll_offset = stored_offset;
-
-        let mut ctx = test_ctx();
-        ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
-        // The graph view's j/k/PageUp/PageDown move the Roadmap cursor
-        // (24-05); the box view keeps the generic scroll these tests pin.
-        ctx.view_cache
-            .entry(TEST_ALIAS.to_string())
-            .or_default()
-            .roadmap_box_view = true;
-
-        (screen, ctx)
-    }
-
-    #[test]
-    fn test_generic_page_up_clamps_stale_offset() {
-        // Same defect and same fix shape as the file views: max_scroll is 40,
-        // so clamp-then-subtract yields 40 - 20 = 20.
-        let (mut screen, mut ctx) = generic_fixture(100, 60, 90);
-        press(&mut screen, &mut ctx, KeyCode::PageUp);
-        assert_eq!(screen.scroll_offset, 20);
-        assert!(screen.scroll_offset < 100 - 60);
-
-        // The Roadmap tab reaches the same arm.
-        let (mut screen, mut ctx) = generic_fixture(100, 60, 90);
-        ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
-        press(&mut screen, &mut ctx, KeyCode::Up);
-        assert_eq!(screen.scroll_offset, 39);
-    }
-
-    #[test]
-    fn test_generic_page_down_clamps_at_content_end() {
-        // PageDown stops at the content end and stays there.
-        let (mut screen, mut ctx) = generic_fixture(100, 60, 30);
-        press(&mut screen, &mut ctx, KeyCode::PageDown);
-        assert_eq!(screen.scroll_offset, 40);
-        press(&mut screen, &mut ctx, KeyCode::PageDown);
-        assert_eq!(screen.scroll_offset, 40);
-
-        // Down is clamped at the same bound.
-        press(&mut screen, &mut ctx, KeyCode::Down);
-        assert_eq!(screen.scroll_offset, 40);
-
-        // A document shorter than the viewport never scrolls at all.
-        let (mut screen, mut ctx) = generic_fixture(30, 30, 0);
-        press(&mut screen, &mut ctx, KeyCode::PageDown);
-        assert_eq!(screen.scroll_offset, 0);
-        press(&mut screen, &mut ctx, KeyCode::PageUp);
-        assert_eq!(screen.scroll_offset, 0);
-    }
-
     // --- T-21-25-05: the session-id truncation is a CHAR operation ---------
     //
     // `render_sessions_tab` shortened a session id with `sid[..8]`, which
@@ -21305,7 +21087,8 @@ mod tests {
     // takes the whole TUI down.
     //
     // This is the SAME defect class as the `&s[..n]` panic round 8 fixed in
-    // `roadmap_widget.rs:138-146` — a family, not an incident.
+    // the Roadmap boxes widget (deleted by quick 261022-wtw) — a family, not
+    // an incident.
 
     /// A `DetailScreen` and `AppContext` parked on the Sessions tab with one
     /// active session carrying `session_id`.
@@ -23504,20 +23287,12 @@ mod tests {
     #[test]
     fn switching_to_the_backlog_tab_returns_no_screen_action() {
         let mut ctx = test_ctx();
-        let mut scroll_offset = 7;
-
-        let action = switch_to_tab(
-            TEST_ALIAS,
-            tab_index(&DetailSubView::Backlog),
-            &mut scroll_offset,
-            &mut ctx,
-        );
+        let action = switch_to_tab(TEST_ALIAS, tab_index(&DetailSubView::Backlog), &mut ctx);
 
         assert!(
             matches!(action, ScreenAction::None),
             "a tab switch performs arrival work; it does not move the screen stack"
         );
-        assert_eq!(scroll_offset, 0, "the tab switch resets the scroll offset");
         assert_eq!(
             ctx.detail_sub_view_per_project.get(TEST_ALIAS),
             Some(&DetailSubView::Backlog),
@@ -25697,13 +25472,7 @@ mod tests {
             cache.defaults_filter = "drift".to_string();
             cache.defaults_filter_typing = true;
         }
-        let mut offset = 0u16;
-        switch_to_tab(
-            TEST_ALIAS,
-            tab_index(&DetailSubView::Defaults),
-            &mut offset,
-            &mut ctx,
-        );
+        switch_to_tab(TEST_ALIAS, tab_index(&DetailSubView::Defaults), &mut ctx);
         let cache = &ctx.view_cache[TEST_ALIAS];
         assert!(
             cache.defaults_filter.is_empty(),
@@ -25761,7 +25530,7 @@ mod tests {
         );
     }
 
-    // ── quick 260923-md1: Roadmap tab dependency graph + `v` toggle ──────
+    // ── quick 260923-md1: Roadmap tab dependency graph ───────────────────
 
     /// A DetailScreen on the Roadmap tab of a project whose roadmap is the
     /// chain 1 → 2 → 3.
@@ -25789,63 +25558,48 @@ mod tests {
         (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
     }
 
-    fn roadmap_box_flag(ctx: &AppContext) -> bool {
-        ctx.view_cache
-            .get(TEST_ALIAS)
-            .is_some_and(|c| c.roadmap_box_view)
-    }
-
     #[test]
-    fn roadmap_graph_tab_draws_the_graph_by_default_and_v_toggles_the_box_list() {
+    fn roadmap_tab_draws_the_list_and_v_is_unbound() {
         let (mut screen, mut ctx) = roadmap_graph_fixture();
-        let list = render_detail_to_text(&screen, &ctx);
-        assert!(list.contains("┌ Roadmap "), "{list}");
-        assert!(list.contains("Start now:"), "{list}");
-        assert!(!list.contains("─►"), "no legacy arrow: {list}");
+        let first = render_detail_to_text(&screen, &ctx);
+        assert!(first.contains("┌ Roadmap "), "{first}");
+        assert!(first.contains("Start now:"), "{first}");
+        assert!(!first.contains("─►"), "no legacy arrow: {first}");
         assert!(
             screen.roadmap_list_viewport.get() > 0,
             "the render records the list's page size"
         );
 
-        screen.scroll_offset = 2;
-        press(&mut screen, &mut ctx, KeyCode::Char('v'));
-        assert!(roadmap_box_flag(&ctx), "v did not select the box list");
-        assert_eq!(screen.scroll_offset, 0, "v must reset the scroll offset");
-        let boxes = render_detail_to_text(&screen, &ctx);
-        assert!(
-            ["P1: Name 1", "P2: Name 2", "P3: Name 3"]
-                .iter()
-                .all(|b| boxes.contains(b)),
-            "the box list draws a box per phase: {boxes}"
+        let cursor_before = ctx
+            .view_cache
+            .get(TEST_ALIAS)
+            .and_then(|c| c.roadmap_cursor.clone());
+        let action = screen.handle_key(KeyCode::Char('v'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "v must do nothing");
+        assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz);
+        assert_eq!(
+            ctx.view_cache
+                .get(TEST_ALIAS)
+                .and_then(|c| c.roadmap_cursor.clone()),
+            cursor_before,
+            "v must not move the cursor"
         );
-        assert!(!boxes.contains("Start now:"), "{boxes}");
-
-        press(&mut screen, &mut ctx, KeyCode::Char('v'));
-        assert!(!roadmap_box_flag(&ctx));
-        let back = render_detail_to_text(&screen, &ctx);
+        let second = render_detail_to_text(&screen, &ctx);
+        assert_eq!(first, second, "v must not change what is drawn");
         assert!(
-            back.contains("┌ Roadmap ") && back.contains("Start now:"),
-            "{back}"
+            !first.contains("P1: Name 1") && !second.contains("P1: Name 1"),
+            "no per-phase boxes are drawn"
         );
     }
 
     #[test]
-    fn roadmap_graph_tab_v_is_inert_on_other_tabs() {
-        let (mut screen, mut ctx) = roadmap_graph_fixture();
-        ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), DetailSubView::Backlog);
-        press(&mut screen, &mut ctx, KeyCode::Char('v'));
-        assert!(!roadmap_box_flag(&ctx));
-    }
-
-    #[test]
-    fn roadmap_graph_tab_footer_advertises_v() {
+    fn roadmap_footer_does_not_advertise_v() {
         let footer: String =
             footer_spans(&DetailSubView::RoadmapViz, 200, false, &Default::default())
                 .iter()
                 .map(|s| s.content.to_string())
                 .collect();
-        assert!(footer.contains("[v]"), "{footer}");
+        assert!(!footer.contains("[v]"), "{footer}");
         assert!(footer.contains("[e]"), "{footer}");
     }
 
@@ -25861,7 +25615,7 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-            for hint in ["[h/l]", "[Space]", "[v]", "[e]"] {
+            for hint in ["[h/l]", "[Space]", "[e]"] {
                 assert!(footer.contains(hint), "{hint} missing: {footer}");
             }
         }
@@ -26533,38 +26287,6 @@ mod tests {
     }
 
     #[test]
-    fn roadmap_box_view_keeps_generic_scroll() {
-        let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
-        ctx.view_cache
-            .entry(TEST_ALIAS.to_string())
-            .or_default()
-            .roadmap_box_view = true;
-        screen.generic_viewport.set(ViewportMetrics {
-            total_lines: 100,
-            visible_height: 60,
-        });
-        press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert_eq!(screen.scroll_offset, 1, "j scrolls the box view");
-        for code in [
-            KeyCode::Char('g'),
-            KeyCode::Char('G'),
-            KeyCode::Char('h'),
-            KeyCode::Char('l'),
-            KeyCode::Char('['),
-            KeyCode::Char(']'),
-            KeyCode::Char(' '),
-            KeyCode::Enter,
-        ] {
-            press(&mut screen, &mut ctx, code);
-            assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz, "{code:?}");
-        }
-        let cache = &ctx.view_cache[TEST_ALIAS];
-        assert_eq!(cache.roadmap_cursor, None);
-        assert_eq!(cache.roadmap_edge_walk, None);
-        assert!(cache.roadmap_fold_toggles.is_empty());
-    }
-
-    #[test]
     fn other_roadmap_keys_end_the_edge_walk() {
         let (mut screen, mut ctx) = roadmap_fixture("daily-vow");
         for other in [
@@ -26581,7 +26303,6 @@ mod tests {
             assert_eq!(edge_walk(&ctx), None, "{other:?} must end the walk");
             // Undo the side effects that would change the next round.
             let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.roadmap_box_view = false;
             cache.roadmap_fold_toggles.clear();
         }
     }
@@ -26611,7 +26332,6 @@ mod tests {
             let action = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
             assert!(matches!(action, ScreenAction::None), "{code:?}");
             assert_eq!(stored_view(&ctx), DetailSubView::RoadmapViz, "{code:?}");
-            assert_eq!(screen.scroll_offset, 0, "{code:?}");
             assert!(
                 ctx.view_cache
                     .get(TEST_ALIAS)

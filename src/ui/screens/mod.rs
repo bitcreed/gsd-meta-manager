@@ -1037,10 +1037,6 @@ pub struct ProjectViewCache {
     /// `Enter`/`Space` on a wave or merged row; per project, in memory only,
     /// the `roadmap_fold_toggles` pattern ([inferred I-4]).
     pub waves_toggles: std::collections::HashSet<(String, Option<u32>)>,
-    /// The Roadmap tab's view: `false` (the default) draws the cursor list
-    /// (`ui::roadmap_view` over `ui::roadmap_graph`'s model), `true` draws the box list
-    /// (`ui::roadmap_widget`). Toggled per project by `v` on that tab.
-    pub roadmap_box_view: bool,
     /// What the Roadmap tab's cursor rests on: a phase (by `phase_key`) or a
     /// band row. `None` means "resolve to the default" (the active phase,
     /// else the first phase not done). A reader-generated key, not
@@ -2735,7 +2731,7 @@ mod tests {
     /// `.planning/config.json`. `str::len` is BYTES, so a CJK value (3 bytes per
     /// character in UTF-8) sized the popup three times wider than its text, and
     /// an emoji one four times. The measurement is now `chars().count()`,
-    /// matching `section_rule` here and `roadmap_widget.rs`'s width arithmetic.
+    /// matching `section_rule` here.
     ///
     /// This drives the same two expressions the render does, over a fixture that
     /// makes the two DIFFER — a fixture where they agreed would assert nothing.
