@@ -1735,6 +1735,12 @@ pub enum SortMode {
 /// external-job and parked arms still fire, because those are facts about the
 /// project rather than about a finished run.
 ///
+/// The paused and external-job sources are read for the project's root AND for
+/// each of its workstreams: a workstream is its own planning directory with its
+/// own HANDOFF and `async-jobs/`, so a human-waiting workstream must raise the
+/// project's badge, rank and `/h` membership. Driver runs, outcomes and launcher
+/// markers are keyed by alias with no workstream identity and stay project-level.
+///
 /// Pure, and that is what makes it testable at all — every arm above has a unit
 /// test, including the ones a running system reaches rarely.
 pub fn needs_human(
@@ -1743,7 +1749,7 @@ pub fn needs_human(
     last_outcome: Option<TerminalState>,
     parked: bool,
 ) -> bool {
-    if parked || state.paused || state.external_job_waiting {
+    if parked || state_has_attention_evidence(state) {
         return true;
     }
     if run.is_some_and(|r| r.is_live()) {
@@ -1758,6 +1764,17 @@ pub fn needs_human(
                 | TerminalState::TimedOut
         )
     )
+}
+
+/// Whether the project's root, or any of its workstreams, is paused (a live,
+/// non-stale HANDOFF) or waiting on an external job. Typed flags only; no text.
+pub(crate) fn state_has_attention_evidence(state: &ProjectState) -> bool {
+    state.paused
+        || state.external_job_waiting
+        || state
+            .workstreams
+            .iter()
+            .any(|ws| ws.state.paused || ws.state.external_job_waiting)
 }
 
 /// Where a project sorts under [`SortMode::AttentionFirst`]: lower is sooner.
@@ -3219,6 +3236,40 @@ mod tests {
     }
 
     // ── needs_human, the sort mode, and the filter ────────────────────
+
+    /// quick 261023-05j: the paused / external-job evidence is read from every
+    /// workstream, not only the root. An empty `workstreams` vec is the flat case.
+    #[test]
+    fn ws_aggregate_needs_human_reads_workstream_evidence() {
+        use crate::state_reader::workstreams::WorkstreamState;
+
+        let with_ws = |ws: ProjectState| ProjectState {
+            workstreams: vec![
+                WorkstreamState::default(),
+                WorkstreamState {
+                    state: ws,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let paused = with_ws(ProjectState {
+            paused: true,
+            ..Default::default()
+        });
+        assert!(needs_human(&paused, None, None, false));
+
+        let waiting = with_ws(ProjectState {
+            external_job_waiting: true,
+            ..Default::default()
+        });
+        assert!(needs_human(&waiting, None, None, false));
+
+        let quiet = with_ws(ProjectState::default());
+        assert!(!needs_human(&quiet, None, None, false));
+        assert!(!needs_human(&ProjectState::default(), None, None, false));
+    }
 
     #[test]
     fn needs_human_is_true_for_each_of_the_four_evidence_sources() {

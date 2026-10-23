@@ -437,6 +437,42 @@ pub fn classify_status(status: &str) -> StatusCategory {
     }
 }
 
+/// Precedence of a [`StatusCategory`] when several scopes of one project
+/// disagree: higher wins. Private; only [`project_status_category`] ranks.
+fn status_precedence(category: &StatusCategory) -> u8 {
+    match category {
+        StatusCategory::Blocked => 4,
+        StatusCategory::Active => 3,
+        StatusCategory::Idle => 2,
+        StatusCategory::Unknown => 1,
+        StatusCategory::Complete => 0,
+    }
+}
+
+/// The one status category a project's dashboard row stands for: the
+/// highest-precedence [`classify_status`] across the root `STATE.md` and every
+/// parallel workstream, with precedence Blocked > Active > Idle > Unknown >
+/// Complete.
+///
+/// Most-attention / most-active wins, so a project counts as `done` only when
+/// every scope is Complete (a root at `phase_complete` with a workstream still
+/// `executing` is Active, not done). Unknown outranks Complete because a scope
+/// whose status cannot be read is not demonstrably finished. With no
+/// workstreams the result is exactly `classify_status` of the root status.
+///
+/// Pure and in-memory: it reads only the already-parsed state, so the render
+/// loop may call it per frame without touching the disk.
+pub fn project_status_category(state: &ProjectState) -> StatusCategory {
+    let mut best = classify_status(&state.status);
+    for ws in &state.workstreams {
+        let candidate = classify_status(&ws.state.status);
+        if status_precedence(&candidate) > status_precedence(&best) {
+            best = candidate;
+        }
+    }
+    best
+}
+
 /// The cell shown when STATE.md is present but its frontmatter is unreadable.
 ///
 /// Deliberately not a phase. A wrong number that looks right is worse than an
@@ -4649,6 +4685,92 @@ mod tests {
     #[test]
     fn test_classify_status_ready_to_execute_is_idle() {
         assert_eq!(classify_status("Ready to execute"), StatusCategory::Idle);
+    }
+
+    // --- quick 261023-05j: aggregate status over root + workstreams ----------
+
+    fn ws_with_status(status: &str) -> crate::state_reader::workstreams::WorkstreamState {
+        crate::state_reader::workstreams::WorkstreamState {
+            state: ProjectState {
+                status: status.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn project_with(root: &str, workstreams: &[&str]) -> ProjectState {
+        ProjectState {
+            status: root.to_string(),
+            workstreams: workstreams.iter().map(|s| ws_with_status(s)).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ws_aggregate_sentriq_root_is_complete_but_project_is_active() {
+        let td = tempfile::TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let state = crate::state_reader::parse_project_state(&planning);
+        assert_eq!(classify_status(&state.status), StatusCategory::Complete);
+        assert_eq!(project_status_category(&state), StatusCategory::Active);
+    }
+
+    #[test]
+    fn ws_aggregate_flat_project_equals_classify_status() {
+        for status in [
+            "executing",
+            "blocked",
+            "ready to plan",
+            "phase_complete",
+            "verifying",
+            "v1.5.0 milestone complete",
+            "shipped",
+            "",
+        ] {
+            let state = project_with(status, &[]);
+            assert_eq!(
+                project_status_category(&state),
+                classify_status(status),
+                "flat parity for {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ws_aggregate_precedence_table() {
+        let cases: Vec<(&str, Vec<&str>, StatusCategory)> = vec![
+            ("phase_complete", vec!["shipped"], StatusCategory::Unknown),
+            ("executing", vec!["blocked"], StatusCategory::Blocked),
+            ("ready to plan", vec!["executing"], StatusCategory::Active),
+            ("shipped", vec!["ready to plan"], StatusCategory::Idle),
+            (
+                "phase_complete",
+                vec!["phase_complete", "phase_complete"],
+                StatusCategory::Complete,
+            ),
+            (
+                "phase_complete",
+                vec!["ready to plan", "executing", "shipped"],
+                StatusCategory::Active,
+            ),
+        ];
+        for (root, wss, want) in cases {
+            let forward = project_with(root, &wss);
+            assert_eq!(project_status_category(&forward), want, "{root} + {wss:?}");
+            let mut rev = wss.clone();
+            rev.reverse();
+            let backward = project_with(root, &rev);
+            assert_eq!(
+                project_status_category(&backward),
+                want,
+                "order independent: {root} + {rev:?}"
+            );
+        }
     }
 
     #[test]
