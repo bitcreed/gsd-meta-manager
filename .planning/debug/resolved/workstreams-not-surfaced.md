@@ -357,10 +357,12 @@ files_changed:
   - src/ui/screens/normal.rs
   - "round 2: src/state_reader/workstreams.rs, src/state_reader/mod.rs, src/app.rs, src/ui/roadmap_graph.rs, src/ui/roadmap_view.rs, src/ui/mod.rs (test literal), src/ui/screens/detail.rs"
 unresolved:
-  - "After the v0.14 claim's 4 h heartbeat window lapses with no new heartbeat, the workstream falls back to the established rule and shows `P27` (a phase with no directory). Deliberate (GSD's own liveness rule), but visible."
-  - "Dashboard row colour, attention badge, summary counts and sort still read only the root STATE.md: a project whose root is phase_complete but whose workstream is executing still counts as `done` in the footer."
-  - "The dashboard `/` filter does not search workstream text. The Detail screen's Docs tab and Docs > Milestones are still project-only; the Roadmap tab's box view (`v`) still draws only the project's own phases; the Roadmap header line (`v0.12 … 8 of 9 phases done`) still describes the project's own milestone (each workstream's count is on its band)."
   - "The `ws*` active marker needs `.planning/active-workstream`; GSD 1.18 mostly keeps the active pointer per session in a temp dir, so it is usually absent (sentriq has none)."
-  - "Workstream phases get no agents/worktree integration on the Detail tabs (worktree plans, unmerged work, Sessions>Agents cross-jump); the agents scan itself is project-scoped."
-  - "A workstream whose roadmap lists no phases is not drawn on the Roadmap, and a workstream's closed milestones are not shown."
   - "The Roadmap `Start now:` line now also lists active/ready workstream phases (e.g. `ws v0.14 P27 …`), so on a project with several workstreams it truncates earlier."
+  - "A workstream's closed (shipped) milestones are still not drawn as Roadmap bands (Docs > Milestones lists them since quick 261023-05h)."
+closed_by_quick_batch_261023_05f:
+  - "Lapsed-claim fallback to a directory-less phase (P27): 261023-05m — the fallback now prefers a real, unfinished phase, then the established rule."
+  - "Dashboard row colour, badge, footer counts and attention sort read only the root: 261023-05j — aggregate status over root + workstreams."
+  - "Dashboard `/` filter: 261023-05k. Docs tab and Docs > Milestones: 261023-05h. Roadmap header: 261023-05g. Box view (`v`): removed by quick 261022-wtw."
+  - "No agents/worktree integration for workstream phases: 261023-05i."
+  - "A workstream with no roadmap phases is not drawn: 261023-05l — band header plus a dim placeholder row (Roadmap) and a placeholder line (Phases)."
