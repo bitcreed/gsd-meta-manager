@@ -638,7 +638,8 @@ pub fn workstream_tag(ws: &crate::state_reader::workstreams::WorkstreamState) ->
 /// - The milestone is STATE.md's `milestone`; a workstream whose STATE.md names
 ///   none shows its directory name instead.
 /// - The phase is [`WorkstreamState::focus_phase_number`]: a live
-///   `milestone.lock` claim, else the established active-phase rule.
+///   `milestone.lock` claim, else the workstream's most advanced real
+///   unfinished phase, else the established active-phase rule.
 /// - An unreadable STATE.md says so rather than guess a phase, exactly as
 ///   [`format_phase_display`] does, and a repaired one carries
 ///   [`RECOVERED_STATE_MARKER`].
@@ -4519,6 +4520,40 @@ mod tests {
         let line = format_workstream_display(&ws, chrono::Utc::now());
         assert_eq!(line, "ws v0.14 P26: Push-to-Talk Voice");
         assert!(line.find("v0.14").unwrap() < line.find("Push-to-Talk").unwrap());
+    }
+
+    /// Quick 261023-05m: with the claim lapsed the line names the phase that is
+    /// really being built (28), not the directory-less frontier (27). A live
+    /// claim still leads, and a workstream with nothing unfinished is unchanged.
+    #[test]
+    fn a_lapsed_workstream_line_names_its_real_unfinished_phase() {
+        let td = tempfile::TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        let now = chrono::Utc::now();
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(&planning, now);
+        let state = crate::state_reader::parse_project_state(&planning);
+        let find = |name: &str| {
+            state
+                .workstreams
+                .iter()
+                .find(|w| w.name == name)
+                .unwrap_or_else(|| panic!("{name} was not loaded"))
+        };
+        let (v14, v13) = (find("v0-14-voice-assistant"), find("v0-13-public-beta"));
+        let lapsed = now + crate::state_reader::workstreams::MILESTONE_CLAIM_TTL;
+
+        assert_eq!(
+            format_workstream_display(v14, now),
+            "ws v0.14 P26: Push-to-Talk Voice"
+        );
+        assert_eq!(
+            format_workstream_display(v14, lapsed),
+            "ws v0.14 P28: Mechanic Toolbox, Full Data Access and Voice-Started Actions"
+        );
+        assert_eq!(
+            format_workstream_display(v13, lapsed),
+            "ws v0.13 P22: Play Release Readiness"
+        );
     }
 
     #[test]
