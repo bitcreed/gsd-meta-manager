@@ -1,20 +1,20 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.14.0
+milestone: v1.15.0
 current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
-status: verifying
-stopped_at: Completed 30-09-PLAN.md
-last_updated: "2026-10-23T05:04:34.170Z"
-last_activity: 2026-10-21
-last_activity_desc: Phase 30 execution started
+status: shipped
+stopped_at: v1.15.0 released (interim, mid v2.0); next is /gsd-verify-work 28, then /gsd-verify-work 30
+last_updated: "2026-10-23T12:00:00.000Z"
+last_activity: 2026-10-23
+last_activity_desc: v1.15.0 released — Workstream Visibility
 state_head: 460a21976fb076592cc41f4431c83fe2b4029054
 progress:
   total_phases: 10
   completed_phases: 12
   total_plans: 9
   completed_plans: 112
-milestone_name: gsd-core 1.17.0 Sync
+milestone_name: Workstream Visibility
 ---
 
 # Project State
@@ -28,6 +28,17 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 ## Current Position
 
+Status: v1.15.0 shipped 2026-10-23 (interim release; v2.0 milestone still open)
+  GSD workstreams (`.planning/workstreams/<dir>/`) surfaced across the TUI: debug session
+  workstreams-not-surfaced (dashboard lines per workstream, lock-aware active phase, Detail Roadmap
+  and Phases tabs) and quick batch 261023-05f (05g Roadmap header, 05h Docs tab, 05i agent/worktree
+  details, 05j dashboard aggregate status, 05k `/` filter, 05l empty-roadmap band, 05m stale-lock
+  fallback); quick 261022-wtw removed the `v` box view. Also shipped since v1.14.0: Phases 26, 26.1,
+  27 and 29 complete, Phases 28 and 30 executed (verification pending), and quick tasks
+  261019-foc/guw/hqu, 261020-f80/vxg, 261021-0jg/101/1id/1if.
+  Next: `/gsd-verify-work 28`, then `/gsd-verify-work 30` `[inferred — audit]`.
+
+Earlier (2026-10-21):
 Status: Phase complete — ready for verification
   Phase 29 (Master Prompt & Run Templates) complete 2026-10-20: 8/8 plans, re-verification passed
   5/5 after the code-review fixes (01eb8c8), UAT 1/1 (operator sign-off accepting o1 ADJUST x2 and
@@ -904,11 +915,14 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-21T05:00:27.111Z
-Stopped at: Completed 30-09-PLAN.md
+Last session: 2026-10-23T12:00:00.000Z
+Stopped at: v1.15.0 released — Workstream Visibility
 Resume file: None
 
-Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md
+Next: `/gsd-verify-work 28`, then `/gsd-verify-work 30`. v1.15.0 is an interim release; the v2.0
+milestone stays open.
+
+Earlier (2026-10-21): Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md
 `human_needed`). Phases 30-31 follow.
 
 Earlier (2026-10-17): Next: `/gsd-execute-phase 26.1`. 26.1 must return a go verdict before Phase 27 starts.
