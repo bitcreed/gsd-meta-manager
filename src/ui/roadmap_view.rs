@@ -3086,4 +3086,132 @@ mod tests {
         }
         assert!(seen > 0, "{:#?}", rect_text(&buf, list));
     }
+
+    // ----- quick 261023-05l: a workstream whose roadmap lists no phases -------
+
+    /// An empty workstream band (`ws-e`, status `status`) above a populated
+    /// one (`ws-b`, a single done phase).
+    fn empty_workstream_model(status: &str) -> RoadmapModel {
+        let scope = |id: &str, tag: &str, status: &str| roadmap_graph::Scope {
+            id: id.to_string(),
+            marker: "ws".to_string(),
+            tag: tag.to_string(),
+            status: status.to_string(),
+        };
+        let (empty, full) = (
+            scope("ws-e", "ws v2", status),
+            scope("ws-b", "ws v3", "executing"),
+        );
+        let deps: Vec<String> = Vec::new();
+        let input = ListInput {
+            nodes: vec![ListNode {
+                id: "1",
+                name: "Solo",
+                deps: &deps,
+                band: Some(1),
+                marker: PhaseMarker::Done,
+                done: true,
+                plans: None,
+                goal: None,
+                planned: false,
+                badge: None,
+                scope: Some(&full),
+            }],
+            bands: vec![
+                BandInput {
+                    label: Untrusted::from_untrusted_source("v2 \u{2014} Empty".to_string()),
+                    shipped: false,
+                    declared_phases: 0,
+                    scope: Some(empty.clone()),
+                },
+                BandInput {
+                    label: Untrusted::from_untrusted_source("v3 \u{2014} Full".to_string()),
+                    shipped: false,
+                    declared_phases: 0,
+                    scope: Some(full.clone()),
+                },
+            ],
+        };
+        layout_list(&input, &HashSet::new())
+    }
+
+    #[test]
+    fn an_empty_workstream_band_row_has_no_count_and_its_placeholder_is_dim() {
+        let model = empty_workstream_model("planning");
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, None, 120, 30, &mut state);
+        let (list, _) = panes(Rect::new(0, 0, 120, 30));
+        let text = rect_text(&buf, list);
+        let empty_band = text
+            .iter()
+            .find(|l| l.contains("v2 \u{2014} Empty"))
+            .unwrap_or_else(|| panic!("no empty band row:\n{}", text.join("\n")));
+        assert!(!empty_band.contains("0/0"), "{empty_band}");
+        let full_band = text
+            .iter()
+            .find(|l| l.contains("v3 \u{2014} Full"))
+            .expect("the populated band row");
+        assert!(full_band.contains("1/1"), "{full_band}");
+
+        let (y, line) = text
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains("no phases on roadmap yet"))
+            .map(|(y, l)| (u16::try_from(y).unwrap(), l))
+            .expect("the placeholder row");
+        assert!(
+            line.contains("no phases on roadmap yet \u{b7} planning"),
+            "{line}"
+        );
+        let start = line
+            .find("no phases")
+            .map(|b| line[..b].chars().count())
+            .unwrap();
+        for i in 0.."no phases on roadmap yet \u{b7} planning".chars().count() {
+            let x = list.x + u16::try_from(start + i).unwrap();
+            let cell = buf.cell((x, list.y + y)).expect("in the buffer");
+            if cell.symbol() != " " {
+                assert_eq!(cell.fg, Color::DarkGray, "cell {i} of the placeholder");
+            }
+        }
+    }
+
+    /// The status is omitted together with its separator when the workstream
+    /// states none.
+    #[test]
+    fn an_empty_workstream_placeholder_without_a_status_has_no_separator() {
+        let model = empty_workstream_model("");
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, None, 120, 30, &mut state);
+        let (list, _) = panes(Rect::new(0, 0, 120, 30));
+        let line = rect_text(&buf, list)
+            .into_iter()
+            .find(|l| l.contains("no phases on roadmap yet"))
+            .expect("the placeholder row");
+        assert!(!line.contains('\u{b7}'), "{line}");
+    }
+
+    #[test]
+    fn an_empty_workstream_band_pane_says_no_phases_on_roadmap_yet() {
+        let model = empty_workstream_model("planning");
+        let cursor = CursorTarget::Band(model.bands[0].key.clone());
+        for (w, h) in [(120u16, 28u16), (80, 30)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&cursor), w, h, &mut state);
+            let (_, detail) = panes(Rect::new(0, 0, w, h));
+            let text = rect_text(&buf, detail);
+            let at = |want: &str| {
+                text.iter()
+                    .position(|l| l.contains(want))
+                    .unwrap_or_else(|| panic!("{w}: {want:?} missing:\n{}", text.join("\n")))
+            };
+            let (label, progress, ws) = (
+                at("v2 \u{2014} Empty"),
+                at("no phases on roadmap yet \u{b7} planning"),
+                at("workstream ws-e"),
+            );
+            assert!(label < progress && progress < ws, "{w}");
+            assert!(!text.join("\n").contains("0/0 phases done"), "{w}");
+        }
+    }
 }

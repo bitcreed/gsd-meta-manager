@@ -33372,6 +33372,113 @@ mod tests {
         }
     }
 
+    /// `j`/`k` step header to header across the placeholder, and `Space` on the
+    /// empty band's header folds only the placeholder, via the real key path.
+    #[test]
+    fn sentriq_empty_workstream_roadmap_j_steps_over_the_placeholder_and_space_folds_it() {
+        let (_td, mut screen, mut ctx) =
+            sentriq_with_empty_workstream_detail(DetailSubView::RoadmapViz);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let empty_key = roadmap_graph::BandKey::Named(
+            "v0-13-store-listing/v0.13.1 \u{2014} store listing".to_string(),
+        );
+
+        // The pane names the workstream only while the cursor is on its band.
+        press_j_until(
+            &mut screen,
+            &mut ctx,
+            "workstream v0-13-store-listing",
+            40,
+            render,
+        );
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(roadmap_graph::CursorTarget::Band(empty_key.clone()))
+        );
+        let pane = roadmap_list_pane(&render(&screen, &ctx));
+        assert!(pane.iter().any(|r| r.contains("no phases on roadmap yet")));
+
+        // One `j`: v0.14's band header, not the placeholder.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let text = render(&screen, &ctx);
+        assert!(text.contains("workstream v0-14-voice-assistant"), "{text}");
+        assert!(text.contains("4/6 phases done"), "{text}");
+        assert!(matches!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(roadmap_graph::CursorTarget::Band(_))
+        ));
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].roadmap_cursor,
+            Some(roadmap_graph::CursorTarget::Band(empty_key.clone()))
+        );
+
+        // Fold: exactly one toggle, under the workstream's key; only the
+        // placeholder row goes.
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        let toggles = fold_toggles(&ctx);
+        assert_eq!(toggles.len(), 1, "{toggles:?}");
+        assert!(toggles.contains(&empty_key), "{toggles:?}");
+        let state = &ctx.project_states[TEST_ALIAS];
+        let model = roadmap_model_for(state, ctx.view_cache.get(TEST_ALIAS), false, None);
+        assert!(model.rows.iter().any(|row| matches!(
+            row,
+            roadmap_graph::ListRow::Band { key, folded: true, .. } if *key == empty_key
+        )));
+        assert!(!model
+            .rows
+            .iter()
+            .any(|row| matches!(row, roadmap_graph::ListRow::NoPhases { .. })));
+        let text = render(&screen, &ctx);
+        let pane = roadmap_list_pane(&text);
+        assert!(
+            !pane.iter().any(|r| r.contains("no phases on roadmap yet")),
+            "{text}"
+        );
+        assert!(
+            pane.iter().any(|r| r.contains("ws v0.13.1 \u{2014}")),
+            "{text}"
+        );
+        for want in ["Play Release Readiness", "Push-to-Talk Voice"] {
+            assert!(text.contains(want), "{want:?} gone after folding:\n{text}");
+        }
+
+        // A second Space brings the placeholder back.
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(fold_toggles(&ctx).is_empty());
+        let pane = roadmap_list_pane(&render(&screen, &ctx));
+        assert!(pane.iter().any(|r| r.contains("no phases on roadmap yet")));
+    }
+
+    /// The empty workstream adds a band and no phase: every phase key is the
+    /// one the plain sentriq fixture has.
+    #[test]
+    fn sentriq_empty_workstream_roadmap_model_keeps_every_phase_key() {
+        let (_td, _screen, ctx) = sentriq_with_empty_workstream_detail(DetailSubView::RoadmapViz);
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, false, None);
+        let labels: Vec<&str> = model.bands.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels.len(), 4, "{labels:?}");
+        assert!(labels[1].starts_with("ws v0.13 "), "{labels:?}");
+        assert!(
+            labels[2].contains("ws v0.13.1") && labels[2].contains("Store Listing"),
+            "{labels:?}"
+        );
+        assert!(labels[3].starts_with("ws v0.14 "), "{labels:?}");
+        let totals: Vec<usize> = model.bands.iter().map(|b| b.total).collect();
+        assert_eq!(totals, [2, 7, 0, 6]);
+
+        let keys: std::collections::HashSet<&str> =
+            model.phases.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(model.phases.len(), 15);
+        assert_eq!(keys.len(), 15, "every phase key is unique");
+
+        let (_td2, _s, plain_ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
+        let plain = roadmap_model_for(&plain_ctx.project_states[TEST_ALIAS], None, false, None);
+        let plain_keys: std::collections::HashSet<&str> =
+            plain.phases.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, plain_keys);
+    }
+
     // ── the selection behind the Phases tab ───────────────────────────────
 
     /// `j` walks every listed phase — the project's, then each workstream's —
