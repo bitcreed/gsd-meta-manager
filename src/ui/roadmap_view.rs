@@ -83,6 +83,8 @@ const EMPTY: &str = "No roadmap data available";
 const ELLIPSIS: char = '\u{2026}';
 /// The plans column when the count is unknown.
 const NO_PLANS: &str = "\u{2014}";
+/// What an empty workstream band says where a phase count would be.
+const NO_PHASES: &str = "no phases on roadmap yet";
 /// Separator inside a detail line.
 const DOT: &str = " \u{00B7} ";
 
@@ -347,6 +349,7 @@ fn lanes_of(row: &ListRow) -> &str {
         ListRow::ShippedSummary { lanes, .. }
         | ListRow::Band { lanes, .. }
         | ListRow::Connector { lanes, .. }
+        | ListRow::NoPhases { lanes, .. }
         | ListRow::Phase { lanes, .. } => lanes,
     }
 }
@@ -829,6 +832,7 @@ impl RoadmapView<'_> {
             } => self.phase_spans(*node, *lane, (lanes, links), selected, ctx, cols),
             // `{lanes}{▾|▸} {label}  {done}/{total} ━━━…` (D-A07).
             ListRow::Band {
+                band,
                 label,
                 done,
                 total,
@@ -840,7 +844,18 @@ impl RoadmapView<'_> {
                 let (lanes, _) = cap_lanes(lanes, None, cols.cap);
                 let mut spans = lane_spans(&lanes, links, None, plain, &lane, cols.lane);
                 let glyph = if *folded { BAND_FOLDED } else { BAND_OPEN };
-                let tail = format!("{GAP}{done}/{total} ");
+                // A workstream whose roadmap lists no phases carries no
+                // `0/0`: the count says nothing, its placeholder row does.
+                let tail = if self
+                    .model
+                    .bands
+                    .get(*band)
+                    .is_some_and(BandFacts::is_empty_workstream)
+                {
+                    " ".to_string()
+                } else {
+                    format!("{GAP}{done}/{total} ")
+                };
                 let used = cols.lane + 2 + cells(&tail);
                 let label = truncate(label, w.saturating_sub(used));
                 let fill = w.saturating_sub(used + cells(&label));
@@ -880,6 +895,23 @@ impl RoadmapView<'_> {
             ListRow::Connector { lanes, links } => {
                 let (lanes, _) = cap_lanes(lanes, None, cols.cap);
                 lane_spans(&lanes, links, None, plain, &lane, cols.lane)
+            }
+            // `{lanes}   no phases on roadmap yet · planning`, all dim; no
+            // fold glyph, so the row records no fold mark.
+            ListRow::NoPhases { band, lanes, links } => {
+                let (lanes, _) = cap_lanes(lanes, None, cols.cap);
+                let mut spans = lane_spans(&lanes, links, None, plain, &lane, cols.lane);
+                let text = self
+                    .model
+                    .bands
+                    .get(*band)
+                    .map(Self::no_phases_text)
+                    .unwrap_or_default();
+                spans.push(Span::styled(
+                    format!("{}{GAP}{text}", " ".repeat(MARK_CELLS + cols.id)),
+                    dim(),
+                ));
+                spans
             }
         };
         let spans = if selected {
@@ -1027,9 +1059,25 @@ impl RoadmapView<'_> {
         })
     }
 
+    /// What an empty workstream band says in place of a phase count: `no
+    /// phases on roadmap yet`, then the workstream's own status when it has
+    /// one. `scope.status` is escaped already (T-05l-01).
+    fn no_phases_text(b: &BandFacts) -> String {
+        let mut text = String::from(NO_PHASES);
+        if let Some(scope) = b.scope.as_ref().filter(|s| !s.status.is_empty()) {
+            text.push_str(DOT);
+            text.push_str(&scope.status);
+        }
+        text
+    }
+
     /// A band under the cursor: its label, progress and the fold key.
     fn band_items(b: &BandFacts, w: usize, stacked: bool) -> Vec<Item> {
-        let mut progress = format!("{}/{} phases done", b.done, b.total);
+        let mut progress = if b.is_empty_workstream() {
+            Self::no_phases_text(b)
+        } else {
+            format!("{}/{} phases done", b.done, b.total)
+        };
         if b.shipped {
             progress.push_str(DOT);
             progress.push_str("shipped");
@@ -2818,7 +2866,8 @@ mod tests {
                 } => (lanes, links, Some(2 * lane)),
                 ListRow::Band { lanes, links, .. }
                 | ListRow::ShippedSummary { lanes, links, .. }
-                | ListRow::Connector { lanes, links } => (lanes, links, None),
+                | ListRow::Connector { lanes, links }
+                | ListRow::NoPhases { lanes, links, .. } => (lanes, links, None),
             };
             for (i, c) in lanes.chars().enumerate() {
                 if c != ' ' && Some(i) != glyph_at {
@@ -3036,5 +3085,133 @@ mod tests {
             }
         }
         assert!(seen > 0, "{:#?}", rect_text(&buf, list));
+    }
+
+    // ----- quick 261023-05l: a workstream whose roadmap lists no phases -------
+
+    /// An empty workstream band (`ws-e`, status `status`) above a populated
+    /// one (`ws-b`, a single done phase).
+    fn empty_workstream_model(status: &str) -> RoadmapModel {
+        let scope = |id: &str, tag: &str, status: &str| roadmap_graph::Scope {
+            id: id.to_string(),
+            marker: "ws".to_string(),
+            tag: tag.to_string(),
+            status: status.to_string(),
+        };
+        let (empty, full) = (
+            scope("ws-e", "ws v2", status),
+            scope("ws-b", "ws v3", "executing"),
+        );
+        let deps: Vec<String> = Vec::new();
+        let input = ListInput {
+            nodes: vec![ListNode {
+                id: "1",
+                name: "Solo",
+                deps: &deps,
+                band: Some(1),
+                marker: PhaseMarker::Done,
+                done: true,
+                plans: None,
+                goal: None,
+                planned: false,
+                badge: None,
+                scope: Some(&full),
+            }],
+            bands: vec![
+                BandInput {
+                    label: Untrusted::from_untrusted_source("v2 \u{2014} Empty".to_string()),
+                    shipped: false,
+                    declared_phases: 0,
+                    scope: Some(empty.clone()),
+                },
+                BandInput {
+                    label: Untrusted::from_untrusted_source("v3 \u{2014} Full".to_string()),
+                    shipped: false,
+                    declared_phases: 0,
+                    scope: Some(full.clone()),
+                },
+            ],
+        };
+        layout_list(&input, &HashSet::new())
+    }
+
+    #[test]
+    fn an_empty_workstream_band_row_has_no_count_and_its_placeholder_is_dim() {
+        let model = empty_workstream_model("planning");
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, None, 120, 30, &mut state);
+        let (list, _) = panes(Rect::new(0, 0, 120, 30));
+        let text = rect_text(&buf, list);
+        let empty_band = text
+            .iter()
+            .find(|l| l.contains("v2 \u{2014} Empty"))
+            .unwrap_or_else(|| panic!("no empty band row:\n{}", text.join("\n")));
+        assert!(!empty_band.contains("0/0"), "{empty_band}");
+        let full_band = text
+            .iter()
+            .find(|l| l.contains("v3 \u{2014} Full"))
+            .expect("the populated band row");
+        assert!(full_band.contains("1/1"), "{full_band}");
+
+        let (y, line) = text
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains("no phases on roadmap yet"))
+            .map(|(y, l)| (u16::try_from(y).unwrap(), l))
+            .expect("the placeholder row");
+        assert!(
+            line.contains("no phases on roadmap yet \u{b7} planning"),
+            "{line}"
+        );
+        let start = line
+            .find("no phases")
+            .map(|b| line[..b].chars().count())
+            .unwrap();
+        for i in 0.."no phases on roadmap yet \u{b7} planning".chars().count() {
+            let x = list.x + u16::try_from(start + i).unwrap();
+            let cell = buf.cell((x, list.y + y)).expect("in the buffer");
+            if cell.symbol() != " " {
+                assert_eq!(cell.fg, Color::DarkGray, "cell {i} of the placeholder");
+            }
+        }
+    }
+
+    /// The status is omitted together with its separator when the workstream
+    /// states none.
+    #[test]
+    fn an_empty_workstream_placeholder_without_a_status_has_no_separator() {
+        let model = empty_workstream_model("");
+        let mut state = RoadmapViewState::default();
+        let buf = render(&model, None, 120, 30, &mut state);
+        let (list, _) = panes(Rect::new(0, 0, 120, 30));
+        let line = rect_text(&buf, list)
+            .into_iter()
+            .find(|l| l.contains("no phases on roadmap yet"))
+            .expect("the placeholder row");
+        assert!(!line.contains('\u{b7}'), "{line}");
+    }
+
+    #[test]
+    fn an_empty_workstream_band_pane_says_no_phases_on_roadmap_yet() {
+        let model = empty_workstream_model("planning");
+        let cursor = CursorTarget::Band(model.bands[0].key.clone());
+        for (w, h) in [(120u16, 28u16), (80, 30)] {
+            let mut state = RoadmapViewState::default();
+            let buf = render(&model, Some(&cursor), w, h, &mut state);
+            let (_, detail) = panes(Rect::new(0, 0, w, h));
+            let text = rect_text(&buf, detail);
+            let at = |want: &str| {
+                text.iter()
+                    .position(|l| l.contains(want))
+                    .unwrap_or_else(|| panic!("{w}: {want:?} missing:\n{}", text.join("\n")))
+            };
+            let (label, progress, ws) = (
+                at("v2 \u{2014} Empty"),
+                at("no phases on roadmap yet \u{b7} planning"),
+                at("workstream ws-e"),
+            );
+            assert!(label < progress && progress < ws, "{w}");
+            assert!(!text.join("\n").contains("0/0 phases done"), "{w}");
+        }
     }
 }

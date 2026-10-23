@@ -4,7 +4,9 @@
 //! ([`BandInput`]) becomes a [`RoadmapModel`] through [`layout_list`]: one
 //! [`ListRow::Phase`] per phase (no phase ever appears in two rows), one band
 //! row per milestone, one collapsed shipped-summary row, and connector rows
-//! drawn with git-log-style lanes. Dependencies are transitively reduced
+//! drawn with git-log-style lanes. A parallel workstream whose roadmap lists
+//! no phases still gets its band row, followed by one [`ListRow::NoPhases`]
+//! placeholder row (never a cursor target). Dependencies are transitively reduced
 //! first; each dropped edge is kept as an `implied` pair `(dep, via)`.
 //! Per-phase facts (needs, unblocks, parallel, status, wave) and cursor
 //! navigation are pure functions on the model, so exact text ([`lane_text`])
@@ -289,6 +291,10 @@ pub struct Scope {
     /// What marks a scoped PHASE's rows: the marker and the workstream's
     /// milestone, e.g. `ws v0.14`.
     pub tag: String,
+    /// The workstream's own STATE.md `status` (RAW third-party text, display
+    /// only; empty when it states none). Drawn dim on the placeholder row of a
+    /// workstream whose roadmap lists no phases.
+    pub status: String,
 }
 
 /// A [`Scope`] as a [`RoadmapModel`] stores it: everything escaped for display.
@@ -300,6 +306,8 @@ pub struct ScopeFacts {
     pub marker: String,
     /// See [`Scope::tag`], escaped.
     pub tag: String,
+    /// See [`Scope::status`], escaped.
+    pub status: String,
 }
 
 impl ScopeFacts {
@@ -308,6 +316,7 @@ impl ScopeFacts {
             id: esc(&scope.id),
             marker: esc(&scope.marker),
             tag: esc(&scope.tag),
+            status: esc(&scope.status),
         }
     }
 }
@@ -447,6 +456,15 @@ pub enum ListRow {
         lanes: String,
         links: Vec<Option<LaneLink>>,
     },
+    /// The placeholder row under the band of a parallel workstream whose
+    /// roadmap lists no phases. Never a cursor target (like a connector; the
+    /// band header is the stop and the fold handle). The widget draws its text
+    /// from the band's [`ScopeFacts`].
+    NoPhases {
+        band: usize,
+        lanes: String,
+        links: Vec<Option<LaneLink>>,
+    },
     /// A phase; `lanes` carries its status glyph at cell `2 * lane`.
     Phase {
         node: usize,
@@ -509,6 +527,15 @@ pub struct BandFacts {
     /// The parallel workstream this band is (escaped); `None` for one of the
     /// project's own. [`Self::label`] already leads with its marker.
     pub scope: Option<ScopeFacts>,
+}
+
+impl BandFacts {
+    /// A parallel workstream's band whose roadmap lists no phases: the one
+    /// kind of empty band that is drawn (as a header plus a placeholder row).
+    /// The single rule the layout and the widget share.
+    pub fn is_empty_workstream(&self) -> bool {
+        self.scope.is_some() && !self.shipped && self.total == 0
+    }
 }
 
 /// The laid-out Roadmap list.
@@ -597,6 +624,8 @@ fn transitive_reduction(
 enum Slot {
     Summary,
     Band(usize),
+    /// The placeholder row of an empty workstream band.
+    NoPhases(usize),
     Phase(usize),
 }
 
@@ -605,6 +634,8 @@ enum Slot {
 enum LaneKind {
     Summary,
     Band(usize),
+    /// The placeholder row under an empty workstream band.
+    NoPhases(usize),
     /// A fork or merge belonging to this node's row.
     Connector(usize),
     /// A node on a lane.
@@ -797,9 +828,10 @@ fn assign_lanes(seq: &[Slot], reduced: &ParentLists, glyphs: &[&str]) -> Vec<Lan
     let mut out: Vec<LaneRow> = Vec::with_capacity(seq.len());
     for slot in seq {
         let u = match *slot {
-            Slot::Summary | Slot::Band(_) => {
+            Slot::Summary | Slot::Band(_) | Slot::NoPhases(_) => {
                 let kind = match *slot {
                     Slot::Band(b) => LaneKind::Band(b),
+                    Slot::NoPhases(b) => LaneKind::NoPhases(b),
                     _ => LaneKind::Summary,
                 };
                 let (lanes, links) = pass_through(&active, None);
@@ -977,6 +1009,7 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
         .filter(|slot| match *slot {
             Slot::Summary => true,
             Slot::Band(b) => !band_hidden(b),
+            Slot::NoPhases(b) => !phases_hidden(b),
             Slot::Phase(u) => !node_hidden(u),
         })
         .collect();
@@ -1085,6 +1118,11 @@ pub fn layout_list(input: &ListInput<'_>, fold_toggles: &HashSet<BandKey>) -> Ro
                 lanes: row.lanes,
                 links: row.links,
             },
+            LaneKind::NoPhases(band) => ListRow::NoPhases {
+                band,
+                lanes: row.lanes,
+                links: row.links,
+            },
             LaneKind::Connector(_) => ListRow::Connector {
                 lanes: row.lanes,
                 links: row.links,
@@ -1141,7 +1179,9 @@ fn same_scope(a: &ListNode<'_>, b: &ListNode<'_>) -> bool {
 /// The unfolded row sequence (D-A07): the shipped summary (when any band
 /// shipped) followed by every shipped band and its phases; then every
 /// non-shipped band that has phases, each followed by its phases; then the
-/// band-less phases. A non-shipped band without phases draws nothing.
+/// band-less phases. A non-shipped band without phases draws nothing, except a
+/// parallel workstream's ([`BandFacts::is_empty_workstream`]): its header is
+/// followed by one placeholder row.
 fn row_sequence(
     bands: &[BandFacts],
     members: &[Vec<usize>],
@@ -1158,8 +1198,13 @@ fn row_sequence(
             push_band(&mut seq, b);
         }
     }
-    for b in (0..bands.len()).filter(|&b| !bands[b].shipped && !members[b].is_empty()) {
-        push_band(&mut seq, b);
+    for b in (0..bands.len()).filter(|&b| !bands[b].shipped) {
+        if !members[b].is_empty() {
+            push_band(&mut seq, b);
+        } else if bands[b].is_empty_workstream() {
+            seq.push(Slot::Band(b));
+            seq.push(Slot::NoPhases(b));
+        }
     }
     seq.extend(
         band_of
@@ -1256,7 +1301,7 @@ impl RoadmapModel {
                 .phases
                 .get(*node)
                 .map(|p| CursorTarget::Phase(p.key.clone())),
-            ListRow::Connector { .. } => None,
+            ListRow::Connector { .. } | ListRow::NoPhases { .. } => None,
         }
     }
 
@@ -1476,7 +1521,8 @@ impl RoadmapModel {
 
 /// The model as plain text, one line per visible row: the lane column padded
 /// to ten cells (the node cell drawn `o`), then the phase id, `[short]` for a
-/// band, `[shipped]` for the shipped summary, nothing for a connector.
+/// band, `[shipped]` for the shipped summary, `(no phases)` for an empty
+/// workstream's placeholder, nothing for a connector.
 pub fn lane_text(model: &RoadmapModel) -> Vec<String> {
     model
         .rows
@@ -1499,6 +1545,7 @@ pub fn lane_text(model: &RoadmapModel) -> Vec<String> {
                 ListRow::Band { lanes, short, .. } => (lanes.clone(), format!("[{short}]")),
                 ListRow::ShippedSummary { lanes, .. } => (lanes.clone(), "[shipped]".to_string()),
                 ListRow::Connector { lanes, .. } => (lanes.clone(), String::new()),
+                ListRow::NoPhases { lanes, .. } => (lanes.clone(), "(no phases)".to_string()),
             };
             format!("{lanes:<LANE_TEXT_COLUMN$}{label}")
                 .trim_end()
@@ -2161,9 +2208,9 @@ mod tests {
                     .filter(|row| match row {
                         ListRow::Band { label: l, .. } => l == label,
                         ListRow::ShippedSummary { text, .. } => text.contains(label.as_str()),
-                        ListRow::Connector { lanes, .. } | ListRow::Phase { lanes, .. } => {
-                            lanes.contains(label.as_str())
-                        }
+                        ListRow::Connector { lanes, .. }
+                        | ListRow::NoPhases { lanes, .. }
+                        | ListRow::Phase { lanes, .. } => lanes.contains(label.as_str()),
                     })
                     .count();
                 assert_eq!(with_label, 1, "{label}");
@@ -2373,6 +2420,7 @@ mod tests {
             ListRow::ShippedSummary { lanes, links, .. }
             | ListRow::Band { lanes, links, .. }
             | ListRow::Connector { lanes, links }
+            | ListRow::NoPhases { lanes, links, .. }
             | ListRow::Phase { lanes, links, .. } => (lanes, links),
         }
     }
@@ -2672,6 +2720,7 @@ mod tests {
                         connectors += 1;
                         assert_eq!(got, None, "row {i} is a connector");
                     }
+                    ListRow::NoPhases { .. } => unreachable!("no empty workstream here"),
                 }
                 if let Some(t) = &got {
                     assert_eq!(model.row_of(t), Some(i), "target_at and row_of agree");
@@ -2881,9 +2930,9 @@ mod tests {
                     lanes,
                     ..
                 } => shown.extend([label.clone(), short.clone(), lanes.clone()]),
-                ListRow::Connector { lanes, .. } | ListRow::Phase { lanes, .. } => {
-                    shown.push(lanes.clone())
-                }
+                ListRow::Connector { lanes, .. }
+                | ListRow::NoPhases { lanes, .. }
+                | ListRow::Phase { lanes, .. } => shown.push(lanes.clone()),
             }
         }
         for p in &model.phases {
@@ -2927,6 +2976,7 @@ mod tests {
             id: id.to_string(),
             marker: "ws".to_string(),
             tag: tag.to_string(),
+            status: String::new(),
         }
     }
 
@@ -3008,7 +3058,8 @@ mod tests {
             Some(ScopeFacts {
                 id: "ws-a".into(),
                 marker: "ws".into(),
-                tag: "ws v1".into()
+                tag: "ws v1".into(),
+                status: String::new()
             })
         );
     }
@@ -3132,7 +3183,8 @@ mod tests {
     /// of a workstream's STATE.md): escaped before it is stored.
     #[test]
     fn scope_text_is_escaped_before_it_is_stored() {
-        let hostile = scope("ws\u{1b}[2J", "ws \u{202E}v1\u{7}");
+        let mut hostile = scope("ws\u{1b}[2J", "ws \u{202E}v1\u{7}");
+        hostile.status = "plan\u{1b}[2Jning\u{202E}\u{7}".to_string();
         let scopes = [hostile];
         let model = scoped_model(
             &[("1", &[], Some(0), 0)],
@@ -3147,6 +3199,8 @@ mod tests {
             &facts.marker,
             &facts.tag,
             &band_facts.tag,
+            &facts.status,
+            &band_facts.status,
             &model.bands[0].label,
         ] {
             assert!(
@@ -3154,5 +3208,135 @@ mod tests {
                 "raw control reached {text:?}"
             );
         }
+    }
+
+    // ── quick 261023-05l: a workstream whose roadmap lists no phases ─────────
+
+    /// The project's own band (one phase), then ws-a (one phase), ws-e (NO
+    /// phases) and ws-b (one phase): the empty band sits between two populated
+    /// ones.
+    fn empty_workstream_model(toggles: &HashSet<BandKey>) -> RoadmapModel {
+        let scopes = [
+            scope("ws-a", "ws v1"),
+            scope("ws-e", "ws v2"),
+            scope("ws-b", "ws v3"),
+        ];
+        scoped_model(
+            &[
+                ("1", &[], None, 0),
+                ("1", &[], Some(0), 1),
+                ("1", &[], Some(2), 3),
+            ],
+            &scopes,
+            vec![
+                band("v0.12 \u{2014} Own", None),
+                band("v1 \u{2014} A", Some(scopes[0].clone())),
+                band("v2 \u{2014} E", Some(scopes[1].clone())),
+                band("v3 \u{2014} B", Some(scopes[2].clone())),
+            ],
+            toggles,
+        )
+    }
+
+    /// The label column of every row (what follows the ten-cell lane column).
+    fn empty_workstream_labels(model: &RoadmapModel) -> Vec<String> {
+        lane_text(model)
+            .iter()
+            .map(|l| l.chars().skip(LANE_TEXT_COLUMN).collect())
+            .collect()
+    }
+
+    fn empty_workstream_key() -> BandKey {
+        BandKey::Named("ws-e/v2 \u{2014} e".to_string())
+    }
+
+    #[test]
+    fn an_empty_workstream_band_draws_its_header_and_one_placeholder_row() {
+        let model = empty_workstream_model(&HashSet::new());
+        assert_eq!(
+            empty_workstream_labels(&model),
+            [
+                "[v0.12]",
+                "1",
+                "[v1]",
+                "1",
+                "[v2]",
+                "(no phases)",
+                "[v3]",
+                "1"
+            ]
+        );
+        assert_eq!(model.bands[2].total, 0);
+        for (b, band) in model.bands.iter().enumerate() {
+            assert_eq!(band.is_empty_workstream(), b == 2, "band {b}");
+        }
+    }
+
+    /// The D-A07 rule stays for the project's OWN bands: an unscoped,
+    /// non-shipped band with no members draws nothing.
+    #[test]
+    fn an_empty_workstream_rule_never_draws_the_projects_own_empty_band() {
+        let model = scoped_model(
+            &[("1", &[], None, 1)],
+            &[],
+            vec![
+                band("v0.11 \u{2014} Empty", None),
+                band("v0.12 \u{2014} Own", None),
+            ],
+            &HashSet::new(),
+        );
+        assert_eq!(empty_workstream_labels(&model), ["[v0.12]", "1"]);
+        assert!(!model.bands[0].is_empty_workstream());
+        assert!(!model
+            .rows
+            .iter()
+            .any(|row| matches!(row, ListRow::NoPhases { .. })));
+    }
+
+    #[test]
+    fn an_empty_workstream_placeholder_is_never_a_cursor_target() {
+        let model = empty_workstream_model(&HashSet::new());
+        let key = empty_workstream_key();
+        let at = model
+            .row_of(&CursorTarget::Band(key.clone()))
+            .expect("header row");
+        assert!(matches!(
+            model.rows[at + 1],
+            ListRow::NoPhases { band: 2, .. }
+        ));
+        assert_eq!(model.target_at(at + 1), None);
+        let targets = model.visible_targets();
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|t| **t == CursorTarget::Band(key.clone()))
+                .count(),
+            1
+        );
+        // 4 bands + 3 phases: no entry stands for the placeholder.
+        assert_eq!(targets.len(), 7);
+        let next = CursorTarget::Band(BandKey::Named("ws-b/v3 \u{2014} b".to_string()));
+        assert_eq!(model.step(&CursorTarget::Band(key.clone()), 1), next);
+        assert_eq!(model.step(&next, -1), CursorTarget::Band(key));
+    }
+
+    #[test]
+    fn folding_an_empty_workstream_band_hides_only_its_placeholder() {
+        let open = empty_workstream_model(&HashSet::new());
+        let toggles: HashSet<BandKey> = [empty_workstream_key()].into();
+        let folded = empty_workstream_model(&toggles);
+        assert_eq!(folded.rows.len(), open.rows.len() - 1);
+        assert!(!folded
+            .rows
+            .iter()
+            .any(|row| matches!(row, ListRow::NoPhases { .. })));
+        assert!(folded.rows.iter().any(|row| matches!(
+            row,
+            ListRow::Band { key, folded: true, .. } if *key == empty_workstream_key()
+        )));
+        assert_eq!(
+            empty_workstream_labels(&folded),
+            ["[v0.12]", "1", "[v1]", "1", "[v2]", "[v3]", "1"]
+        );
     }
 }
