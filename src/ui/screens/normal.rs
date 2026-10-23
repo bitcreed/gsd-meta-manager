@@ -7,7 +7,8 @@ use super::driver_run::MarkerClass;
 use super::help::HelpScreen;
 use super::{AppContext, Screen, ScreenAction, SortMode};
 use crate::app::{
-    classify_status, format_phase_display, format_workstream_display, DetailSubView, StatusCategory,
+    classify_status, format_phase_display, format_workstream_display, project_status_category,
+    DetailSubView, StatusCategory,
 };
 use crate::state_reader::disk_status::DiskStatus;
 use crate::state_reader::{ProjectPresence, ProjectState};
@@ -60,14 +61,18 @@ impl NormalScreen {
     }
 }
 
-fn status_color(status: &str) -> Color {
-    match classify_status(status) {
+fn category_color(category: &StatusCategory) -> Color {
+    match category {
         StatusCategory::Active => Color::Green,
         StatusCategory::Idle => Color::Yellow,
         StatusCategory::Blocked => Color::Red,
         StatusCategory::Complete => Color::DarkGray,
         StatusCategory::Unknown => Color::Magenta,
     }
+}
+
+fn status_color(status: &str) -> Color {
+    category_color(&classify_status(status))
 }
 
 /// Return the DiskStatus one step below the given threshold.
@@ -1116,8 +1121,8 @@ impl NormalScreen {
                     // project's `.planning/` — third-party text under SAFE-07 —
                     // so each is escaped on the way to a cell while the raw
                     // value keeps serving the lookups and comparisons around it
-                    // (`status_color(&status_str)` below is the clearest case:
-                    // it classifies the RAW status and colours the ESCAPED one).
+                    // (the row colour below is the clearest case: it classifies
+                    // the RAW parsed status, never the ESCAPED display text).
                     //
                     // **Both classes, through the ONE composition (WR-05).**
                     // These cells used to call `crate::text::display_identity`
@@ -1170,9 +1175,16 @@ impl NormalScreen {
                     // A registered project that is no longer a working GSD
                     // project on disk is red whatever its (default) status
                     // says. Presence was decided at parse time; never stat here.
+                    //
+                    // Otherwise the colour is the project's AGGREGATE status
+                    // across the root and every workstream (most-attention /
+                    // most-active wins), so a project whose root says
+                    // `phase_complete` while a workstream is `executing` is not
+                    // painted as finished. No state at all stays "unknown".
                     let row_color = match state {
                         Some(s) if s.presence != ProjectPresence::Present => Color::Red,
-                        _ => status_color(&status_str),
+                        Some(s) => category_color(&project_status_category(s)),
+                        None => status_color(&status_str),
                     };
 
                     // Build status cell: milestone complete, pipeline, or expanded
@@ -1397,7 +1409,9 @@ const SORT_INDICATOR: &str = "sort: attention";
 /// missing indicator and a clipped one look identical.
 ///
 /// **Nothing here is derived from an agent's prose (D-13).** Every count comes
-/// from `classify_status` over `ProjectState`, and the sort indicator is a fixed
+/// from `project_status_category` over `ProjectState` (the aggregate of the root
+/// and every workstream: most-attention / most-active wins, so a project is
+/// counted `done` only when every scope is Complete), and the sort indicator is a fixed
 /// literal selected by a typed enum. No `ResultMessage.result`, no HANDOFF body
 /// and no journal text may ever reach this row: a summary the user reads as a
 /// fleet-wide fact must be telemetry, not testimony.
@@ -1415,7 +1429,7 @@ fn summary_spans(ctx: &AppContext) -> Vec<Span<'static>> {
     let mut complete = 0u32;
 
     for state in ctx.project_states.values() {
-        match classify_status(&state.status) {
+        match project_status_category(state) {
             StatusCategory::Active => active += 1,
             StatusCategory::Blocked => blocked += 1,
             StatusCategory::Idle => idle += 1,
@@ -3233,6 +3247,65 @@ mod tests {
                  drawn:\n{text}"
             );
         }
+    }
+
+    /// A flat project parked at `phase_complete` (no workstreams).
+    fn flat_complete_state() -> ProjectState {
+        ProjectState {
+            status: "phase_complete".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// quick 261023-05j: the footer must not count a project `done` while one of
+    /// its workstreams is still executing.
+    #[test]
+    fn ws_aggregate_footer_counts_sentriq_active_not_done() {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+
+        let mut ctx = ctx_with_aliases(&["flat", "sentriq"]);
+        ctx.project_states
+            .insert("flat".to_string(), flat_complete_state());
+        ctx.project_states
+            .insert("sentriq".to_string(), parse_project_state(&planning));
+        let text = spans_text(&summary_spans(&ctx));
+        assert!(text.contains("1 active"), "footer: {text}");
+        assert!(text.contains("1 done"), "the flat project is done: {text}");
+
+        let alone = sentriq_ctx(&planning);
+        let text = spans_text(&summary_spans(&alone));
+        assert!(text.contains("1 active"), "footer: {text}");
+        assert!(!text.contains("done"), "sentriq must not be done: {text}");
+    }
+
+    /// quick 261023-05j: the row's alias cell takes the aggregate colour.
+    #[test]
+    fn ws_aggregate_row_colour_is_green_for_sentriq_and_dark_gray_for_flat_complete() {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let mut ctx = ctx_with_aliases(&["flatproj", "sentriq"]);
+        ctx.project_states
+            .insert("flatproj".to_string(), flat_complete_state());
+        ctx.project_states
+            .insert("sentriq".to_string(), parse_project_state(&planning));
+
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        let sentriq = row_with(&rows, "sentriq");
+        assert!(
+            text_is_colored(sentriq, "sentriq", Color::Green),
+            "sentriq's own line must be the Active colour"
+        );
+        let flat = row_with(&rows, "flatproj");
+        assert!(text_is_colored(flat, "flatproj", Color::DarkGray));
     }
 
     /// quick-260926-16t: the dashboard `k/n phases` cell is
