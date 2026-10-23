@@ -83,6 +83,8 @@ const EMPTY: &str = "No roadmap data available";
 const ELLIPSIS: char = '\u{2026}';
 /// The plans column when the count is unknown.
 const NO_PLANS: &str = "\u{2014}";
+/// What an empty workstream band says where a phase count would be.
+const NO_PHASES: &str = "no phases on roadmap yet";
 /// Separator inside a detail line.
 const DOT: &str = " \u{00B7} ";
 
@@ -347,6 +349,7 @@ fn lanes_of(row: &ListRow) -> &str {
         ListRow::ShippedSummary { lanes, .. }
         | ListRow::Band { lanes, .. }
         | ListRow::Connector { lanes, .. }
+        | ListRow::NoPhases { lanes, .. }
         | ListRow::Phase { lanes, .. } => lanes,
     }
 }
@@ -829,6 +832,7 @@ impl RoadmapView<'_> {
             } => self.phase_spans(*node, *lane, (lanes, links), selected, ctx, cols),
             // `{lanes}{▾|▸} {label}  {done}/{total} ━━━…` (D-A07).
             ListRow::Band {
+                band,
                 label,
                 done,
                 total,
@@ -840,7 +844,18 @@ impl RoadmapView<'_> {
                 let (lanes, _) = cap_lanes(lanes, None, cols.cap);
                 let mut spans = lane_spans(&lanes, links, None, plain, &lane, cols.lane);
                 let glyph = if *folded { BAND_FOLDED } else { BAND_OPEN };
-                let tail = format!("{GAP}{done}/{total} ");
+                // A workstream whose roadmap lists no phases carries no
+                // `0/0`: the count says nothing, its placeholder row does.
+                let tail = if self
+                    .model
+                    .bands
+                    .get(*band)
+                    .is_some_and(BandFacts::is_empty_workstream)
+                {
+                    " ".to_string()
+                } else {
+                    format!("{GAP}{done}/{total} ")
+                };
                 let used = cols.lane + 2 + cells(&tail);
                 let label = truncate(label, w.saturating_sub(used));
                 let fill = w.saturating_sub(used + cells(&label));
@@ -880,6 +895,23 @@ impl RoadmapView<'_> {
             ListRow::Connector { lanes, links } => {
                 let (lanes, _) = cap_lanes(lanes, None, cols.cap);
                 lane_spans(&lanes, links, None, plain, &lane, cols.lane)
+            }
+            // `{lanes}   no phases on roadmap yet · planning`, all dim; no
+            // fold glyph, so the row records no fold mark.
+            ListRow::NoPhases { band, lanes, links } => {
+                let (lanes, _) = cap_lanes(lanes, None, cols.cap);
+                let mut spans = lane_spans(&lanes, links, None, plain, &lane, cols.lane);
+                let text = self
+                    .model
+                    .bands
+                    .get(*band)
+                    .map(Self::no_phases_text)
+                    .unwrap_or_default();
+                spans.push(Span::styled(
+                    format!("{}{GAP}{text}", " ".repeat(MARK_CELLS + cols.id)),
+                    dim(),
+                ));
+                spans
             }
         };
         let spans = if selected {
@@ -1027,9 +1059,25 @@ impl RoadmapView<'_> {
         })
     }
 
+    /// What an empty workstream band says in place of a phase count: `no
+    /// phases on roadmap yet`, then the workstream's own status when it has
+    /// one. `scope.status` is escaped already (T-05l-01).
+    fn no_phases_text(b: &BandFacts) -> String {
+        let mut text = String::from(NO_PHASES);
+        if let Some(scope) = b.scope.as_ref().filter(|s| !s.status.is_empty()) {
+            text.push_str(DOT);
+            text.push_str(&scope.status);
+        }
+        text
+    }
+
     /// A band under the cursor: its label, progress and the fold key.
     fn band_items(b: &BandFacts, w: usize, stacked: bool) -> Vec<Item> {
-        let mut progress = format!("{}/{} phases done", b.done, b.total);
+        let mut progress = if b.is_empty_workstream() {
+            Self::no_phases_text(b)
+        } else {
+            format!("{}/{} phases done", b.done, b.total)
+        };
         if b.shipped {
             progress.push_str(DOT);
             progress.push_str("shipped");
@@ -2818,7 +2866,8 @@ mod tests {
                 } => (lanes, links, Some(2 * lane)),
                 ListRow::Band { lanes, links, .. }
                 | ListRow::ShippedSummary { lanes, links, .. }
-                | ListRow::Connector { lanes, links } => (lanes, links, None),
+                | ListRow::Connector { lanes, links }
+                | ListRow::NoPhases { lanes, links, .. } => (lanes, links, None),
             };
             for (i, c) in lanes.chars().enumerate() {
                 if c != ' ' && Some(i) != glyph_at {

@@ -3045,6 +3045,7 @@ pub(crate) fn roadmap_model_at(
             id: ws.name.clone(),
             marker: crate::app::workstream_marker(ws).to_string(),
             tag: crate::app::workstream_tag(ws),
+            status: ws.state.status.trim().to_string(),
         })
         .collect();
     let mut nodes: Vec<roadmap_graph::ListNode<'_>> = nodes;
@@ -33281,6 +33282,94 @@ mod tests {
 
         press(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert!(render(&screen, &ctx).contains("Mechanic Mode Foundation"));
+    }
+
+    // ── quick 261023-05l: a workstream whose roadmap lists no phases ─────────
+
+    /// The sentriq fixture plus a THIRD workstream, `v0-13-store-listing`
+    /// (milestone v0.13.1, status `planning`) whose ROADMAP lists no phases and
+    /// which has no `phases/` directory. Workstreams sort by name, so it lands
+    /// between v0-13-public-beta and v0-14-voice-assistant: the empty band sits
+    /// between two populated ones. The shared fixture writer is left alone.
+    fn sentriq_with_empty_workstream_detail(
+        view: DetailSubView,
+    ) -> (tempfile::TempDir, DetailScreen, AppContext) {
+        let td = tempfile::tempdir().expect("temp dir");
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let ws = planning.join("workstreams").join("v0-13-store-listing");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("STATE.md"),
+            "---\ngsd_state_version: \"1.0\"\nmilestone: v0.13.1\n\
+             milestone_name: Store Listing\nstatus: planning\n\
+             last_updated: \"2026-10-20T10:00:00.000Z\"\n---\n\n# Project State\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("ROADMAP.md"),
+            "# Roadmap: Sentriq\n\n## v0.13.1 \u{2014} Store Listing\n\n## Phases\n\n",
+        )
+        .unwrap();
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::parse_project_state(&planning),
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), view);
+        (td, DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    /// The tracer: the Roadmap draws the empty workstream's band and its one
+    /// dim placeholder row between the v0.13 and v0.14 bands, at every width.
+    #[test]
+    fn sentriq_empty_workstream_roadmap_draws_its_band_and_placeholder() {
+        let (_td, screen, ctx) = sentriq_with_empty_workstream_detail(DetailSubView::RoadmapViz);
+        for (width, height) in [(80u16, 60u16), (100, 50), (120, 50), (200, 50)] {
+            let text = render_detail_to_text_at(&screen, &ctx, width, height);
+            for want in [
+                "ws v0.13.1",
+                "Store Listing",
+                "no phases on roadmap yet \u{b7} planning",
+                "Public Beta",
+                "Voice Mechanic",
+                "Play Release Readiness",
+                "Push-to-Talk Voice",
+            ] {
+                assert!(
+                    text.contains(want),
+                    "at {width}x{height} the Roadmap tab does not show {want:?}:\n{text}"
+                );
+            }
+            let pane = roadmap_list_pane(&text);
+            let at = |want: &str| {
+                pane.iter()
+                    .position(|row| row.contains(want))
+                    .unwrap_or_else(|| panic!("{want:?} not in the list pane:\n{text}"))
+            };
+            // The band headers: `ws v0.13 — …` (the Start-now line also names
+            // `ws v0.13 P22`, so the em dash picks the header).
+            let (v13, empty, v14) = (
+                at("ws v0.13 \u{2014}"),
+                at("ws v0.13.1 \u{2014}"),
+                at("ws v0.14 \u{2014}"),
+            );
+            assert!(v13 < empty && empty < v14, "band order:\n{text}");
+            assert_eq!(
+                at("no phases on roadmap yet"),
+                empty + 1,
+                "the placeholder sits right under its band:\n{text}"
+            );
+            assert!(
+                !pane[empty].contains("0/0"),
+                "the empty band carries no count: {:?}",
+                pane[empty]
+            );
+        }
     }
 
     // ── the selection behind the Phases tab ───────────────────────────────
