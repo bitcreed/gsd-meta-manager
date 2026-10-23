@@ -2984,11 +2984,15 @@ impl App {
                     // Worktree-held plans are something to show too, in the
                     // Phases pane and on the Roadmap (quick 261014-0jv); the
                     // dashboard cell is unchanged because `summary_forms`
-                    // yields no form for them (ID-10).
+                    // yields no form for them (ID-10). The same goes for a
+                    // workstream's own lists (quick 261023-05i): a scan entry
+                    // exists only when one of them is non-empty, and the
+                    // dashboard cell reads the project's view alone (I-5).
                     if agents.rows.is_empty()
                         && agents.worktreeless.is_empty()
                         && agents.unmerged.is_empty()
                         && agents.worktree_plans.is_empty()
+                        && agents.workstreams.is_empty()
                     {
                         continue;
                     }
@@ -8401,6 +8405,65 @@ mod tests {
             .get(OBS_ALIAS)
             .expect("worktree plans alone must give the alias a view");
         assert_eq!(view.worktree_plans, vec![wp]);
+        assert_eq!(
+            render_top_screen(&app),
+            before,
+            "the dashboard row must be byte-identical"
+        );
+    }
+
+    /// Quick 261023-05i: a scan whose only data sits in one workstream's own
+    /// lists still gives the alias a view (the Detail tabs read its nested
+    /// workstream view), and the dashboard Status cell does not move (I-5).
+    #[tokio::test]
+    async fn agents_scan_keeps_a_project_whose_only_worktree_work_is_in_a_workstream() {
+        use crate::agents::unmerged::{UnmergedItem, UnmergedKey, UnmergedState};
+        use crate::agents::{waves::PlanRef, ProjectAgents, WorkstreamAgents};
+        use crate::state_reader::workstreams::WorkstreamState;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let mut state = wave_state();
+        state.workstreams.push(WorkstreamState {
+            name: "v0-14-voice".to_string(),
+            ..Default::default()
+        });
+        app.ctx.project_states.insert(OBS_ALIAS.to_string(), state);
+        app.ctx.recompute_filtered_aliases();
+        let before = render_top_screen(&app);
+
+        let item = UnmergedItem {
+            key: UnmergedKey::Plan(PlanRef::from_id("28-02").expect("valid id")),
+            worktree: PathBuf::from("/nonexistent/wt"),
+            branch: None,
+            short_ref: crate::text::Untrusted::from_untrusted_source("a1b2c3d".into()),
+            commits_ahead: Some(1),
+            dirty: Some(0),
+            state: UnmergedState::AwaitingMerge,
+        };
+        app.update(Action::AgentsScanned {
+            per_project: vec![(
+                OBS_ALIAS.to_string(),
+                ProjectAgents {
+                    workstreams: vec![WorkstreamAgents {
+                        name: "v0-14-voice".to_string(),
+                        unmerged: vec![item],
+                        ..Default::default()
+                    }],
+                    scanned_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                    ..Default::default()
+                },
+            )],
+        });
+        app.ctx.recompute_filtered_aliases();
+
+        let view = app
+            .ctx
+            .agent_views
+            .get(OBS_ALIAS)
+            .expect("workstream-only work must give the alias a view");
+        assert!(view.workstreams.contains_key("v0-14-voice"));
+        assert_eq!(view.unmerged_in_phase("28"), 0, "never the project's");
         assert_eq!(
             render_top_screen(&app),
             before,

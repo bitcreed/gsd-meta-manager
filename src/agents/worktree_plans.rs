@@ -21,6 +21,9 @@
 //! * Main precedence: a phase key is skipped when main's `phases/<id>-*` dir
 //!   holds any `PLAN.md` / `*-PLAN.md`, or when main archives the key under
 //!   `milestones/*-phases/` (an archived phase is "held" by main).
+//!
+//! The same rules apply inside a workstream's planning directory
+//! ([`detect_in`] with `.planning/workstreams/<name>`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -118,6 +121,17 @@ struct Candidate<'a> {
 /// all superseded falls through to the next. [`WorktreePlans::others`] counts
 /// the remaining candidates, which the pane title shows as ` +N more`.
 pub fn detect(core: &worktrees::CoreScan, project_root: &Path) -> Vec<WorktreePlans> {
+    detect_in(core, project_root, Path::new(".planning"))
+}
+
+/// [`detect`] over one scope's planning directory: `planning_rel` is joined
+/// onto the main root and onto each worktree path (`.planning` is the project,
+/// `.planning/workstreams/<name>` one workstream; quick 261023-05i).
+pub fn detect_in(
+    core: &worktrees::CoreScan,
+    project_root: &Path,
+    planning_rel: &Path,
+) -> Vec<WorktreePlans> {
     let main_root = core.main_worktree.as_deref().unwrap_or(project_root);
     let mut live: Vec<&worktrees::CoreWorktree> = core
         .worktrees
@@ -128,7 +142,7 @@ pub fn detect(core: &worktrees::CoreScan, project_root: &Path) -> Vec<WorktreePl
         return Vec::new();
     }
     live.sort_by(|a, b| a.path.cmp(&b.path));
-    let main = main_plan_keys(&main_root.join(".planning"));
+    let main = main_plan_keys(&main_root.join(planning_rel));
     let agent_ids: Vec<&str> = core
         .worktrees
         .iter()
@@ -138,7 +152,7 @@ pub fn detect(core: &worktrees::CoreScan, project_root: &Path) -> Vec<WorktreePl
     // Names-only discovery: every holder's candidate dirs, grouped by key.
     let mut by_key: BTreeMap<PhaseNum, (String, Vec<Candidate<'_>>)> = BTreeMap::new();
     for wt in live {
-        for (dir_name, dir) in subdirs(&wt.path.join(".planning").join("phases")) {
+        for (dir_name, dir) in subdirs(&wt.path.join(planning_rel).join("phases")) {
             let Some((id, _)) = split_dir(&dir_name) else {
                 continue;
             };

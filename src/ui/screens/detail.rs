@@ -1856,7 +1856,7 @@ impl DetailScreen {
             WavesRowKind::Merged { first, last } => first..=last,
             WavesRowKind::Plan { wave, plan } => {
                 let id = model.waves[wave].plans[plan].id.clone();
-                return self.focus_agent_of_plan(&id, ctx);
+                return self.focus_agent_of_plan(&id, model.workstream.as_deref(), ctx);
             }
         };
         for wave in &model.waves[covered] {
@@ -1876,16 +1876,30 @@ impl DetailScreen {
     /// attributed row of any liveness — and the focus on content. Navigation
     /// only. With no attributed agent, a status message and the pane keeps
     /// the keyboard.
-    fn focus_agent_of_plan(&mut self, stem: &str, ctx: &mut AppContext) -> ScreenAction {
+    ///
+    /// The agent is matched on the plan AND the scope (quick 261023-05i):
+    /// `workstream` is the pane's workstream, `None` for the project's own, so
+    /// the project's agent on 16-01 and v0.13's agent on 16-01 are never
+    /// mistaken for each other. The search is still over the project's view,
+    /// because Sessions › Agents renders that view and [`agent_line_index`]
+    /// indexes it.
+    fn focus_agent_of_plan(
+        &mut self,
+        stem: &str,
+        workstream: Option<&str>,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         const NO_AGENT: &str = "No agent is attributed to this plan";
         let Some(key) = crate::state_reader::disk_status::plan_index(stem) else {
             return ScreenAction::SetStatusMessage(NO_AGENT.to_string());
         };
         let line = ctx.agent_views.get(&self.alias).and_then(|view| {
             let attributed = |row: &crate::agents::AgentRow| {
-                row.plan
-                    .as_ref()
-                    .is_some_and(|p| p.phase == key.0 && p.plan == key.1)
+                row.workstream.as_deref() == workstream
+                    && row
+                        .plan
+                        .as_ref()
+                        .is_some_and(|p| p.phase == key.0 && p.plan == key.1)
             };
             view.agents
                 .iter()
@@ -1916,10 +1930,15 @@ impl DetailScreen {
                 .view_cache
                 .get(&self.alias)
                 .map_or(0, |c| c.agents_selected.min(last));
-            agent_row_for_line(view, line).and_then(|index| view.agents[index].plan.clone())
+            agent_row_for_line(view, line).and_then(|index| {
+                let row = &view.agents[index];
+                Some((row.plan.clone()?, row.workstream.clone()))
+            })
         });
         match plan {
-            Some(plan) => self.focus_plan_in_phases(&plan, ctx),
+            Some((plan, workstream)) => {
+                self.focus_plan_in_phases(&plan, workstream.as_deref(), ctx)
+            }
             None => {
                 ScreenAction::SetStatusMessage("This agent is not attributed to a plan".to_string())
             }
@@ -1936,6 +1955,7 @@ impl DetailScreen {
     fn focus_plan_in_phases(
         &mut self,
         plan: &crate::agents::waves::PlanRef,
+        workstream: Option<&str>,
         ctx: &mut AppContext,
     ) -> ScreenAction {
         use crate::state_reader::phase_num::phase_key;
@@ -1943,14 +1963,13 @@ impl DetailScreen {
             return ScreenAction::None;
         };
         let wanted = phase_key(&plan.phase.to_string());
-        // An agent's plan belongs to the PROJECT's phases (the agents scan
-        // knows nothing of workstreams), so a workstream's same-numbered phase
-        // is never the answer.
-        let Some(index) = state
-            .scoped_phases()
-            .iter()
-            .position(|p| p.workstream.is_none() && phase_key(&p.phase.number) == wanted)
-        else {
+        // The phase is found by (workstream, number): an agent's plan was
+        // resolved to its scope at scan time (quick 261023-05i), so the
+        // project's Phase 16 and a workstream's Phase 16 are never confused.
+        let Some(index) = state.scoped_phases().iter().position(|p| {
+            p.workstream.map(|ws| ws.name.as_str()) == workstream
+                && phase_key(&p.phase.number) == wanted
+        }) else {
             return ScreenAction::SetStatusMessage(format!(
                 "Plan {} is not a phase in this project",
                 plan.label()
@@ -2833,9 +2852,11 @@ fn disk_suffix_spans(
 ///   project's and its dependencies resolve inside it. A workstream's current
 ///   phase is [`state_reader::workstreams::WorkstreamState::focus_phase_number`]
 ///   (a live `milestone.lock` claim, else the established rule), the same phase
-///   the dashboard names, so `◉` marks the phase the owner is working. The
-///   agent view is the PROJECT's (its worktrees' phases are keyed by bare
-///   number), so it is never applied to a workstream's phases.
+///   the dashboard names, so `◉` marks the phase the owner is working. Each
+///   scope reads its own agent view (quick 261023-05i): the project's phases
+///   the project's, a workstream's phases that workstream's nested
+///   [`AgentView::workstreams`] entry, so a bare phase number never crosses
+///   scopes.
 ///
 /// In-memory state only — no I/O — because the render loop calls it
 /// (CLAUDE.md: never block the render loop). Fold toggles come from `cache`
@@ -2946,20 +2967,25 @@ pub(crate) fn roadmap_model_at(
         .cloned()
         .chain(state.shipped_phases.iter().map(|p| phase_key(&p.number)))
         .collect();
-    let ghosts: Vec<GhostNode> = view
-        .map(|v| {
-            v.worktree_phases
-                .iter()
-                .filter(|g| !held_main.contains(&phase_key(&g.id)))
-                .map(|g| {
-                    let badge = format!("[{} @{}]", g.stage.label(), g.short_ref.shown());
-                    let plans = (g.plans_total > 0).then_some((g.plans_done, g.plans_total));
-                    (g.id.clone(), g.name.shown().to_string(), badge, plans)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let ghosts: Vec<GhostNode> = ghosts_of(view, &held_main);
     let ghost_count = ghosts.len();
+    // The same for each workstream, against its own roadmap and shipped
+    // history and its own nested view (quick 261023-05i). Parallel to
+    // `state.workstreams`.
+    let ws_ghosts: Vec<Vec<GhostNode>> = state
+        .workstreams
+        .iter()
+        .map(|ws| {
+            let held: std::collections::HashSet<String> = ws
+                .state
+                .roadmap_entries()
+                .iter()
+                .map(|(p, _)| phase_key(&p.number))
+                .chain(ws.state.shipped_phases.iter().map(|p| phase_key(&p.number)))
+                .collect();
+            ghosts_of(view.and_then(|v| v.workstreams.get(&ws.name)), &held)
+        })
+        .collect();
     let ghost_nodes: Vec<roadmap_graph::ListNode<'_>> = ghosts
         .iter()
         .map(|(id, name, badge, plans)| roadmap_graph::ListNode {
@@ -2984,31 +3010,10 @@ pub(crate) fn roadmap_model_at(
     let nodes = shipped_nodes
         .into_iter()
         .chain(entries.into_iter().map(|(p, planned)| {
-            let browsed = browsed_inference(state, view, &p.number);
-            let worktree = browsed.and_then(|(_, wp)| wp);
-            let badge: String = match worktree {
-                Some(wp) => format!(
-                    "[{} @{}]",
-                    disk_stage_label(&wp.inference),
-                    wp.short_ref.shown()
-                ),
-                None => disk_suffix_spans(&p.number, &state.phase_disk_statuses, show_badges)
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect(),
-            };
-            let badge = badge.trim();
-            // A main ROADMAP plan checklist still wins the counts; otherwise a
-            // worktree's own PLAN/SUMMARY counts stand in for main's absent ones.
-            let plans =
-                state_reader::phase_plan_counts(p, &state.phase_disk_statuses).or_else(|| {
-                    let wp = worktree?;
-                    worktree_counted.insert(phase_key(&p.number));
-                    Some((
-                        wp.inference.summary_count.min(wp.inference.plan_count),
-                        wp.inference.plan_count,
-                    ))
-                });
+            let (badge, plans, from_worktree) = phase_badge_and_counts(state, view, p, show_badges);
+            if from_worktree {
+                worktree_counted.insert(phase_key(&p.number));
+            }
             roadmap_graph::ListNode {
                 id: &p.number,
                 name: &p.name,
@@ -3023,7 +3028,7 @@ pub(crate) fn roadmap_model_at(
                 plans,
                 goal: state.phase_goals.get(&phase_key(&p.number)),
                 planned,
-                badge: (!badge.is_empty()).then(|| badge.to_string()),
+                badge,
                 scope: None,
             }
         }))
@@ -3043,8 +3048,9 @@ pub(crate) fn roadmap_model_at(
         })
         .collect();
     let mut nodes: Vec<roadmap_graph::ListNode<'_>> = nodes;
-    for (ws, scope) in state.workstreams.iter().zip(&scopes) {
+    for ((ws, scope), ws_ghost) in state.workstreams.iter().zip(&scopes).zip(&ws_ghosts) {
         let owner = &ws.state;
+        let ws_view = view.and_then(|v| v.workstreams.get(&ws.name));
         let band = bands.len();
         bands.push(roadmap_graph::BandInput {
             label: workstream_band_label(ws),
@@ -3054,12 +3060,14 @@ pub(crate) fn roadmap_model_at(
         });
         let focus = ws.focus_phase_number(now);
         nodes.extend(owner.roadmap_entries().into_iter().map(|(p, planned)| {
-            let badge: String =
-                disk_suffix_spans(&p.number, &owner.phase_disk_statuses, show_badges)
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect();
-            let badge = badge.trim();
+            let (badge, plans, from_worktree) =
+                phase_badge_and_counts(owner, ws_view, p, show_badges);
+            if from_worktree {
+                worktree_counted.insert(state_reader::workstreams::scoped_phase_key(
+                    Some(&ws.name),
+                    &p.number,
+                ));
+            }
             roadmap_graph::ListNode {
                 id: &p.number,
                 name: &p.name,
@@ -3079,13 +3087,32 @@ pub(crate) fn roadmap_model_at(
                     p.completed,
                     &owner.phase_disk_statuses,
                 ),
-                plans: state_reader::phase_plan_counts(p, &owner.phase_disk_statuses),
+                plans,
                 goal: owner.phase_goals.get(&phase_key(&p.number)),
                 planned,
-                badge: (!badge.is_empty()).then(|| badge.to_string()),
+                badge,
                 scope: Some(scope),
             }
         }));
+        // Worktree-only phases the workstream's roadmap does not list: ghost
+        // rows inside its own band, after its entries.
+        nodes.extend(
+            ws_ghost
+                .iter()
+                .map(|(id, name, badge, plans)| roadmap_graph::ListNode {
+                    id,
+                    name,
+                    deps: &[],
+                    band: Some(band),
+                    marker: state_reader::PhaseMarker::Future,
+                    done: false,
+                    plans: *plans,
+                    goal: None,
+                    planned: false,
+                    badge: Some(badge.clone()),
+                    scope: Some(scope),
+                }),
+        );
     }
 
     let no_toggles = std::collections::HashSet::new();
@@ -3102,13 +3129,26 @@ pub(crate) fn roadmap_model_at(
     if let Some(view) = view {
         let mut unmerged_nodes = Vec::new();
         for (u, facts) in model.phases.iter_mut().enumerate() {
-            // A workstream's phase is not in the agent view's world: the view
-            // keys worktree plans by bare phase number, which would hand the
-            // project's Phase 16 plans to a workstream's Phase 16.
-            if is_shipped(u) || facts.scope.is_some() {
+            // Each scope reads its own view (quick 261023-05i): the project's
+            // bare-number view would hand the project's Phase 16 plans to a
+            // workstream's Phase 16. A workstream phase's key is
+            // `<directory>/<phase key>` (`scoped_phase_key`); split it at the
+            // first `/` and look the directory up in the nested views.
+            if is_shipped(u) {
                 continue;
             }
-            let k = view.unmerged_in_phase(&facts.key);
+            let (scope_view, bare_key) = if facts.scope.is_some() {
+                match facts.key.split_once('/') {
+                    Some((dir, bare)) => match view.workstreams.get(dir) {
+                        Some(ws_view) => (ws_view, bare),
+                        None => continue,
+                    },
+                    None => continue,
+                }
+            } else {
+                (view, facts.key.as_str())
+            };
+            let k = scope_view.unmerged_in_phase(bare_key);
             facts.unmerged = k;
             // Worktree-sourced counts are not done in main (quick 261014-0jv):
             // `k` already counts their worktree SUMMARYs, so `d` would double it.
@@ -3135,6 +3175,15 @@ pub(crate) fn roadmap_model_at(
                 }
             }
         }
+        // A workstream's ghosts the same way, matched by their scoped key.
+        for (ws, ws_ghost) in state.workstreams.iter().zip(&ws_ghosts) {
+            for (id, ..) in ws_ghost {
+                let key = state_reader::workstreams::scoped_phase_key(Some(&ws.name), id);
+                if let Some(u) = model.phases.iter().position(|f| f.key == key) {
+                    unmerged_nodes.push(u);
+                }
+            }
+        }
         // Through the model, so the lane glyph `layout_list` drew follows.
         for u in unmerged_nodes {
             model.set_phase_status(u, roadmap_graph::PhaseStatus::Unmerged);
@@ -3145,6 +3194,75 @@ pub(crate) fn roadmap_model_at(
             .retain(|&u| phases[u].status != roadmap_graph::PhaseStatus::Unmerged);
     }
     model
+}
+
+/// One listed phase's Roadmap badge and plan counts, for the project's own
+/// phases and for a workstream's alike (quick 261023-05i), so the escaping and
+/// the counting cannot diverge (T-05i-03).
+///
+/// `owner` is the state that owns the phase and `view` the scope's own agents
+/// view. When main holds no plans for the phase and a linked worktree does
+/// ([`browsed_inference`]), the badge is `[<stage> @<ref>]`, built from the
+/// untrusted `short_ref` through `shown()`; otherwise it is the plain disk
+/// badge. A main ROADMAP plan checklist still wins the counts; otherwise the
+/// worktree's own PLAN/SUMMARY counts stand in for main's absent ones. The
+/// flag is true exactly when the counts came from the worktree.
+fn phase_badge_and_counts(
+    owner: &state_reader::ProjectState,
+    view: Option<&AgentView>,
+    p: &state_reader::roadmap_md::RoadmapPhase,
+    show_badges: bool,
+) -> (Option<String>, Option<(u32, u32)>, bool) {
+    let browsed = browsed_inference(owner, view, &p.number);
+    let worktree = browsed.and_then(|(_, wp)| wp);
+    let badge: String = match worktree {
+        Some(wp) => format!(
+            "[{} @{}]",
+            disk_stage_label(&wp.inference),
+            wp.short_ref.shown()
+        ),
+        None => disk_suffix_spans(&p.number, &owner.phase_disk_statuses, show_badges)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect(),
+    };
+    let badge = badge.trim();
+    let mut from_worktree = false;
+    let plans = state_reader::phase_plan_counts(p, &owner.phase_disk_statuses).or_else(|| {
+        let wp = worktree?;
+        from_worktree = true;
+        Some((
+            wp.inference.summary_count.min(wp.inference.plan_count),
+            wp.inference.plan_count,
+        ))
+    });
+    (
+        (!badge.is_empty()).then(|| badge.to_string()),
+        plans,
+        from_worktree,
+    )
+}
+
+/// The ghost nodes (id, name, badge, counts) of `view`'s worktree-only phases
+/// whose keys are not in `held_main` (the roadmap and shipped history of the
+/// scope that owns them). Main stays authoritative: a key main lists is
+/// skipped.
+fn ghosts_of(
+    view: Option<&AgentView>,
+    held_main: &std::collections::HashSet<String>,
+) -> Vec<GhostNode> {
+    view.map(|v| {
+        v.worktree_phases
+            .iter()
+            .filter(|g| !held_main.contains(&crate::state_reader::phase_num::phase_key(&g.id)))
+            .map(|g| {
+                let badge = format!("[{} @{}]", g.stage.label(), g.short_ref.shown());
+                let plans = (g.plans_total > 0).then_some((g.plans_done, g.plans_total));
+                (g.id.clone(), g.name.shown().to_string(), badge, plans)
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// The label of a workstream's Roadmap band: the roadmap's own heading for the
@@ -9597,21 +9715,23 @@ impl WavesWorktree {
     }
 }
 
-/// The agents scan's view as it applies to one listed phase: the project's own
-/// phases get it, a workstream's get none.
+/// The agents scan's view as it applies to one listed phase: each scope reads
+/// its own view (quick 261023-05i).
 ///
-/// The view describes the PROJECT's worktrees, and keys their plans and their
-/// unmerged work by bare phase number. Handed to a workstream's `Phase 16` it
-/// would attribute the project's Phase 16 worktree plans to it.
+/// A project phase gets the project's view; a workstream phase gets that
+/// workstream's nested view ([`AgentView::workstreams`]), or none. The views
+/// key worktree plans and unmerged work by bare phase number, so the project's
+/// view handed to a workstream's `Phase 16` would attribute the project's
+/// Phase 16 worktree plans to it, and the reverse.
 fn agent_view_of<'a>(
     entry: &state_reader::workstreams::ScopedPhase<'_>,
     ctx: &'a AppContext,
     alias: &str,
 ) -> Option<&'a AgentView> {
-    if entry.workstream.is_some() {
-        None
-    } else {
-        ctx.agent_views.get(alias)
+    let view = ctx.agent_views.get(alias)?;
+    match entry.workstream {
+        None => Some(view),
+        Some(ws) => view.workstreams.get(&ws.name),
     }
 }
 
@@ -33269,11 +33389,12 @@ mod tests {
         assert!(!text.contains("--ws"), "{text}");
     }
 
-    /// The agents scan describes the PROJECT's worktrees and keys their plans
-    /// by bare phase number, so it must never be applied to a workstream's
-    /// phase: a worktree holding plans for "27" is not v0.14's Phase 27.
+    /// Each scope reads its own agents view (quick 261023-05i). The project's
+    /// view keys its worktree plans by bare phase number, so it must never
+    /// reach a workstream's phase: a worktree holding project plans for "27"
+    /// is not v0.14's Phase 27.
     #[test]
-    fn sentriq_the_agent_view_is_never_applied_to_a_workstream_phase() {
+    fn sentriq_the_projects_worktree_plans_never_reach_a_same_numbered_workstream_phase() {
         let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
         let view = AgentView {
             worktree_plans: vec![WorktreePlans {
@@ -33812,5 +33933,334 @@ mod tests {
             !text.contains('\u{202e}'),
             "raw U+202E in the breadcrumb:\n{text}"
         );
+    }
+
+    // ── quick 261023-05i: agents-scan details for workstream phases ──
+
+    const WS13: &str = "v0-13-public-beta";
+    const WS14: &str = "v0-14-voice-assistant";
+
+    /// An awaiting-merge unmerged item for plan `id`.
+    fn ws_unmerged(id: &str) -> crate::agents::unmerged::UnmergedItem {
+        use crate::agents::unmerged::{UnmergedItem, UnmergedKey, UnmergedState};
+        UnmergedItem {
+            key: UnmergedKey::Plan(crate::agents::waves::PlanRef::from_id(id).expect("id")),
+            worktree: std::path::PathBuf::from("/wt/lanes-ws"),
+            branch: None,
+            short_ref: Untrusted::from_untrusted_source("lanes-ws".to_string()),
+            commits_ahead: Some(1),
+            dirty: Some(0),
+            state: UnmergedState::AwaitingMerge,
+        }
+    }
+
+    /// A view carrying nested workstream views built from `(name, view)`.
+    fn view_with_workstreams(project: AgentView, nested: Vec<(&str, AgentView)>) -> AgentView {
+        let mut view = project;
+        for (name, mut ws_view) in nested {
+            ws_view.workstream = Some(name.to_string());
+            view.workstreams.insert(name.to_string(), ws_view);
+        }
+        view
+    }
+
+    /// Quick 261023-05i: a workstream's unmerged plans mark only its own
+    /// phase, and the project's same-numbered phase never shares them.
+    #[test]
+    fn sentriq_workstream_unmerged_plans_mark_only_their_own_phase() {
+        use roadmap_graph::PhaseStatus;
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let state = ctx.project_states[TEST_ALIAS].clone();
+        let key13 = format!("{WS13}/16");
+        let key14 = format!("{WS14}/28");
+
+        let view = view_with_workstreams(
+            AgentView {
+                unmerged: vec![ws_unmerged("16-01")],
+                ..Default::default()
+            },
+            vec![(
+                WS14,
+                AgentView {
+                    unmerged: vec![ws_unmerged("28-02"), ws_unmerged("28-03")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&state, None, false, Some(&view));
+        let at = |key: &str| model.phase_index(key).unwrap_or_else(|| panic!("{key}"));
+        assert_eq!(model.phases[at("16")].unmerged, 1);
+        assert_eq!(model.phases[at("16")].status, PhaseStatus::Unmerged);
+        assert_eq!(model.phases[at(&key13)].unmerged, 0);
+        assert_ne!(model.phases[at(&key13)].status, PhaseStatus::Unmerged);
+        assert_eq!(model.phases[at(&key14)].unmerged, 2);
+        assert_eq!(model.phases[at(&key14)].status, PhaseStatus::Unmerged);
+
+        // Swapped: only v0.13 holds 16-01. The project's Phase 16 is clear.
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS13,
+                AgentView {
+                    unmerged: vec![ws_unmerged("16-01")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&state, None, false, Some(&view));
+        assert_eq!(model.phases[at("16")].unmerged, 0);
+        assert_ne!(model.phases[at("16")].status, PhaseStatus::Unmerged);
+        assert_eq!(model.phases[at(&key13)].unmerged, 1);
+
+        // The Phases tab on v0.14 P28 reads the workstream's own view.
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    unmerged: vec![ws_unmerged("28-02"), ws_unmerged("28-03")],
+                    ..Default::default()
+                },
+            )],
+        );
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let text = press_j_until(&mut screen, &mut ctx, "Phase 28:", 20, render);
+        assert!(text.contains("unmerged"), "{text}");
+    }
+
+    /// v0.14's Phase 27 plans, held only by agent worktree `a3e0c1b…`.
+    fn ws14_p27_plans(short_ref: &str) -> WorktreePlans {
+        WorktreePlans {
+            key: "27".to_string(),
+            worktree: std::path::PathBuf::from("/wt/.claude/worktrees/agent-a3e0c1b7655c37392"),
+            phase_dir: std::path::PathBuf::from(
+                "/wt/.claude/worktrees/agent-a3e0c1b7655c37392/.planning/workstreams/\
+                 v0-14-voice-assistant/phases/27-parity-designs-and-wake-word-verdict",
+            ),
+            worktree_name: Untrusted::from_untrusted_source("agent-a3e0c1b7655c37392".to_string()),
+            branch: None,
+            short_ref: Untrusted::from_untrusted_source(short_ref.to_string()),
+            others: 0,
+            inference: waves_inference(
+                &[
+                    ("27-01-parity-audit", Some("Parity audit"), Some(1)),
+                    ("27-02-designs", Some("Designs"), Some(1)),
+                    ("27-03-wake-word", Some("Wake word"), Some(2)),
+                    ("27-04-verdict", Some("Verdict"), Some(2)),
+                ],
+                &[],
+            ),
+        }
+    }
+
+    /// Quick 261023-05i: a workstream phase whose plans only a worktree holds
+    /// shows the worktree badge and counts on the Roadmap and the plans in the
+    /// Phases tab's Waves pane, and a hostile short ref is escaped.
+    #[test]
+    fn sentriq_a_workstream_phase_shows_its_own_worktree_plans_badge_and_counts() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let key = format!("{WS14}/27");
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_plans: vec![ws14_p27_plans("a3e0c1b")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&view));
+        let facts = &model.phases[model.phase_index(&key).expect("listed")];
+        let badge = facts.badge.as_deref().unwrap_or_default();
+        assert!(badge.contains("@a3e0c1b"), "{badge}");
+        assert!(
+            matches!(facts.plans, Some((_, n)) if n > 0),
+            "{:?}",
+            facts.plans
+        );
+        assert_eq!(facts.plans, Some((0, 4)));
+        // The project's own Phase 16 stays untouched.
+        let p16 = &model.phases[model.phase_index("16").expect("listed")];
+        assert!(!p16.badge.as_deref().unwrap_or_default().contains('@'));
+
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+        let render = |s: &DetailScreen, c: &AppContext| render_detail_to_text_at(s, c, 160, 60);
+        let text = press_j_until(&mut screen, &mut ctx, "Phase 27: Parity", 20, render);
+        assert!(
+            text.contains("plans in worktree agent-a3e0c1b7655c37392"),
+            "{text}"
+        );
+        assert!(text.contains("27-01"), "{text}");
+        assert!(!text.contains("No plans yet"), "{text}");
+
+        // A hostile short ref never reaches the badge raw.
+        let hostile = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_plans: vec![ws14_p27_plans("\u{1b}[31mred")],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&hostile));
+        let facts = &model.phases[model.phase_index(&key).expect("listed")];
+        let badge = facts.badge.as_deref().unwrap_or_default();
+        assert!(badge.contains('@'), "{badge}");
+        assert!(!badge.contains('\u{1b}'), "{badge:?}");
+    }
+
+    /// Quick 261023-05i: a worktree-only phase v0.14's roadmap does not list
+    /// is a ghost row inside v0.14's band, never in the project's.
+    #[test]
+    fn sentriq_a_workstream_ghost_phase_sits_in_its_workstream_band() {
+        use crate::agents::worktree_phases::{WorktreePhase, WorktreeStage};
+        let (_td, _screen, ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        let view = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_phases: vec![WorktreePhase {
+                        id: "29".to_string(),
+                        name: Untrusted::from_untrusted_source("wake-word".to_string()),
+                        stage: WorktreeStage::Context,
+                        plans_done: 0,
+                        plans_total: 0,
+                        worktree: std::path::PathBuf::from("/wt/lanes-v014"),
+                        short_ref: Untrusted::from_untrusted_source("lanes-v014".to_string()),
+                        state: crate::agents::unmerged::UnmergedState::AwaitingMerge,
+                    }],
+                    ..Default::default()
+                },
+            )],
+        );
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&view));
+        assert!(model.phase_index("29").is_none(), "never the project's key");
+        let at = model
+            .phase_index(&format!("{WS14}/29"))
+            .expect("a ghost row in v0.14");
+        let facts = &model.phases[at];
+        let band = facts.band.expect("a band");
+        assert_eq!(
+            model.bands[band].scope.as_ref().map(|s| s.id.as_str()),
+            Some(WS14)
+        );
+        assert_eq!(facts.status, roadmap_graph::PhaseStatus::Unmerged);
+        assert!(facts.badge.as_deref().unwrap_or_default().contains('@'));
+        // A phase the workstream's roadmap lists is not duplicated as a ghost.
+        let listed = view_with_workstreams(
+            AgentView::default(),
+            vec![(
+                WS14,
+                AgentView {
+                    worktree_phases: view.workstreams[WS14].worktree_phases.clone(),
+                    ..Default::default()
+                },
+            )],
+        );
+        let mut listed = listed;
+        listed
+            .workstreams
+            .get_mut(WS14)
+            .expect("view")
+            .worktree_phases[0]
+            .id = "26".to_string();
+        let model = roadmap_model_for(&ctx.project_states[TEST_ALIAS], None, true, Some(&listed));
+        let count = model
+            .phases
+            .iter()
+            .filter(|f| f.key == format!("{WS14}/26"))
+            .count();
+        assert_eq!(count, 1, "main's roadmap stays authoritative");
+    }
+
+    /// Two live agents on plan 16-01: A in the project, B in v0.13. The view
+    /// is derived against the sentriq fixture's parsed state.
+    fn two_16_01_agents_ctx(ctx: &mut AppContext) {
+        let row = |path: &str, workstream: Option<&str>| crate::agents::AgentRow {
+            path: std::path::PathBuf::from(path),
+            plan: crate::agents::waves::PlanRef::from_id("16-01"),
+            workstream: workstream.map(str::to_string),
+            liveness: crate::agents::AgentLiveness::Live,
+            ..Default::default()
+        };
+        let agents = crate::agents::ProjectAgents {
+            rows: vec![
+                row("/wt/agent-root16", None),
+                row("/wt/agent-ws16", Some(WS13)),
+            ],
+            ..Default::default()
+        };
+        let view = crate::agents::waves::derive(&agents, &ctx.project_states[TEST_ALIAS]);
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+    }
+
+    /// Quick 261023-05i: `Enter` on a workstream phase's plan row opens
+    /// Sessions › Agents on the agent attributed to THAT workstream's plan,
+    /// even when the project has an agent on a plan with the same id.
+    #[test]
+    fn sentriq_enter_on_a_workstream_plan_selects_that_workstreams_agent() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        two_16_01_agents_ctx(&mut ctx);
+        let view = ctx.agent_views[TEST_ALIAS].clone();
+        assert_eq!(view.agents.len(), 2);
+        assert_eq!(view.workstreams[WS13].agents.len(), 1);
+        let line_of = |path: &str| {
+            let index = view
+                .agents
+                .iter()
+                .position(|r| r.path == std::path::Path::new(path))
+                .expect("row");
+            agent_line_index(&view, index)
+        };
+        let selected = |ctx: &AppContext| ctx.view_cache[TEST_ALIAS].agents_selected;
+
+        screen.focus_agent_of_plan("16-01", Some(WS13), &mut ctx);
+        assert_eq!(selected(&ctx), line_of("/wt/agent-ws16"));
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Agents)
+        );
+
+        screen.focus_agent_of_plan("16-01", None, &mut ctx);
+        assert_eq!(selected(&ctx), line_of("/wt/agent-root16"));
+
+        // A workstream with no agent on the plan gets the status message.
+        let action = screen.focus_agent_of_plan("16-01", Some(WS14), &mut ctx);
+        assert!(matches!(action, ScreenAction::SetStatusMessage(_)));
+    }
+
+    /// Quick 261023-05i: `Enter` on an agent line opens the Phases tab on the
+    /// agent's own scope's phase: `v0-13-public-beta/16` or the project's `16`.
+    #[test]
+    fn sentriq_enter_on_an_agent_opens_its_own_scopes_phase() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Agents);
+        two_16_01_agents_ctx(&mut ctx);
+        let view = ctx.agent_views[TEST_ALIAS].clone();
+        let opened = |ctx: &AppContext| {
+            let state = &ctx.project_states[TEST_ALIAS];
+            let selected = ctx.view_cache[TEST_ALIAS].pipeline_selected;
+            state.scoped_phases()[selected].key()
+        };
+        for (path, want) in [
+            ("/wt/agent-ws16", format!("{WS13}/16")),
+            ("/wt/agent-root16", "16".to_string()),
+        ] {
+            let index = view
+                .agents
+                .iter()
+                .position(|r| r.path == std::path::Path::new(path))
+                .expect("row");
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .agents_selected = agent_line_index(&view, index);
+            screen.agents_enter(&mut ctx);
+            assert_eq!(opened(&ctx), want, "from {path}");
+        }
     }
 }

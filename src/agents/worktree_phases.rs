@@ -14,6 +14,9 @@
 //! (context), else started. Main stays authoritative: the renderer additionally
 //! drops any phase main's ROADMAP already lists. The directory slug is the name
 //! and stays [`Untrusted`].
+//!
+//! The same rules apply inside a workstream's planning directory
+//! ([`detect_in`] with `.planning/workstreams/<name>`).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -126,6 +129,18 @@ pub fn detect(
     rows: &[AgentRow],
     project_root: &std::path::Path,
 ) -> Vec<WorktreePhase> {
+    detect_in(core, rows, project_root, std::path::Path::new(".planning"))
+}
+
+/// [`detect`] over one scope's planning directory: `planning_rel` is joined
+/// onto the main root and onto each worktree path (`.planning` is the project,
+/// `.planning/workstreams/<name>` one workstream; quick 261023-05i).
+pub fn detect_in(
+    core: &worktrees::CoreScan,
+    rows: &[AgentRow],
+    project_root: &std::path::Path,
+    planning_rel: &std::path::Path,
+) -> Vec<WorktreePhase> {
     let main_root = core.main_worktree.as_deref().unwrap_or(project_root);
     let mut live: Vec<&worktrees::CoreWorktree> = core
         .worktrees
@@ -136,7 +151,7 @@ pub fn detect(
         return Vec::new();
     }
     live.sort_by(|a, b| a.path.cmp(&b.path));
-    let main = main_keys(&main_root.join(".planning"));
+    let main = main_keys(&main_root.join(planning_rel));
     let agent_ids: Vec<&str> = core
         .worktrees
         .iter()
@@ -145,7 +160,7 @@ pub fn detect(
 
     let mut found: Vec<(PhaseNum, WorktreePhase)> = Vec::new();
     for wt in live {
-        for (dir_name, dir) in subdirs(&wt.path.join(".planning").join("phases")) {
+        for (dir_name, dir) in subdirs(&wt.path.join(planning_rel).join("phases")) {
             let Some((id, slug)) = split_dir(&dir_name) else {
                 continue;
             };

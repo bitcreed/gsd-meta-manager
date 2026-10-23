@@ -200,6 +200,14 @@ pub struct AgentView {
     /// [`ProjectAgents::worktree_plans`] (quick 261014-0jv). The Phases tab and
     /// the Roadmap read this scan-time list; it never reaches `ProjectState`.
     pub worktree_plans: Vec<super::worktree_plans::WorktreePlans>,
+    /// The workstream directory name this view describes; `None` for the
+    /// project's own view. Identity only, never drawn.
+    pub workstream: Option<String>,
+    /// Each workstream's own view, keyed by directory name (quick
+    /// 261023-05i, I-1). Empty for a project with no workstream agent data and
+    /// always empty inside a workstream's view. A workstream phase reads its
+    /// own scope's view and never the project's bare-number one.
+    pub workstreams: BTreeMap<String, AgentView>,
 }
 
 /// Strip the punctuation a sentence wraps around a captured token.
@@ -351,10 +359,58 @@ fn tally(row: &mut WaveRow, state: PlanState) {
 /// * **Current wave:** the lowest numbered wave with a plan not `Done`.
 ///
 /// Deterministic: two derivations of the same inputs compare equal.
+///
+/// **Scopes (quick 261023-05i).** The returned view is the project's: its
+/// vote, plan states and wave counts read only rows with no workstream, while
+/// its display list keeps every row (I-3). Each workstream that has scan data
+/// or rows gets its own nested view in [`AgentView::workstreams`], derived the
+/// same way from that workstream's parsed state (I-4: with no attributed row
+/// its active phase falls back to that state's own).
 pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
+    let mut view = derive_scope(agents, state, None);
+    for ws in &state.workstreams {
+        let entry = agents.workstreams.iter().find(|w| w.name == ws.name);
+        let rows: Vec<AgentRow> = agents
+            .rows
+            .iter()
+            .filter(|r| r.workstream.as_deref() == Some(ws.name.as_str()))
+            .cloned()
+            .collect();
+        if entry.is_none() && rows.is_empty() {
+            continue;
+        }
+        let scoped = ProjectAgents {
+            rows,
+            scanned_at: agents.scanned_at,
+            unmerged: entry.map(|e| e.unmerged.clone()).unwrap_or_default(),
+            worktree_phases: entry.map(|e| e.worktree_phases.clone()).unwrap_or_default(),
+            worktree_plans: entry.map(|e| e.worktree_plans.clone()).unwrap_or_default(),
+            ..ProjectAgents::default()
+        };
+        view.workstreams.insert(
+            ws.name.clone(),
+            derive_scope(&scoped, &ws.state, Some(&ws.name)),
+        );
+    }
+    view
+}
+
+/// One scope's view: attribution rows are those whose `workstream` equals
+/// `workstream`; the display list is every row `agents` carries.
+fn derive_scope(
+    agents: &ProjectAgents,
+    state: &ProjectState,
+    workstream: Option<&str>,
+) -> AgentView {
+    let scope_rows = || {
+        agents
+            .rows
+            .iter()
+            .filter(move |r| r.workstream.as_deref() == workstream)
+    };
     let vote = |counted: fn(AgentLiveness) -> bool| -> Option<PhaseNum> {
         let mut by_phase: BTreeMap<&PhaseNum, u32> = BTreeMap::new();
-        for row in &agents.rows {
+        for row in scope_rows() {
             if let (true, Some(plan)) = (counted(row.liveness), &row.plan) {
                 *by_phase.entry(&plan.phase).or_default() += 1;
             }
@@ -374,9 +430,7 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
     let di = disk_for(state, &active_phase).unwrap_or(&empty);
 
     let rows_for = |plan: &PlanRef| -> Vec<&AgentRow> {
-        agents
-            .rows
-            .iter()
+        scope_rows()
             .filter(|r| r.plan.as_ref() == Some(plan))
             .collect()
     };
@@ -409,9 +463,7 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
             UnmergedKey::Plan(p) => Some(p),
             UnmergedKey::Quick(_) => None,
         });
-        for plan in agents
-            .rows
-            .iter()
+        for plan in scope_rows()
             .filter_map(|r| r.plan.as_ref())
             .chain(listed_plans)
         {
@@ -487,6 +539,8 @@ pub fn derive(agents: &ProjectAgents, state: &ProjectState) -> AgentView {
         unmerged: agents.unmerged.clone(),
         worktree_phases: agents.worktree_phases.clone(),
         worktree_plans: agents.worktree_plans.clone(),
+        workstream: workstream.map(str::to_string),
+        workstreams: BTreeMap::new(),
     }
 }
 
@@ -673,6 +727,7 @@ impl AgentView {
                 self.plan_total > 0
                     && self.agents.iter().any(|r| {
                         r.liveness.is_running()
+                            && r.workstream == self.workstream
                             && r.plan.as_ref().is_some_and(|p| &p.phase == phase)
                     })
             }
@@ -1532,5 +1587,128 @@ mod tests {
             "input order never changes the view"
         );
         assert_eq!(derive(&agents(view.agents.clone()), &st), view);
+    }
+
+    // --- workstream scopes (quick 261023-05i) ------------------------------
+
+    #[test]
+    fn derive_gives_each_workstream_its_own_view_of_its_unmerged_work() {
+        use super::super::unmerged::UnmergedState::AwaitingMerge;
+        use super::super::WorkstreamAgents;
+        use crate::state_reader::workstreams::WorkstreamState;
+
+        let mut st = ProjectState::default();
+        st.workstreams.push(WorkstreamState {
+            name: "v0-13-beta".to_string(),
+            ..WorkstreamState::default()
+        });
+        let scan = ProjectAgents {
+            unmerged: vec![plan_item("16-01", AwaitingMerge)],
+            workstreams: vec![WorkstreamAgents {
+                name: "v0-13-beta".to_string(),
+                unmerged: vec![plan_item("16-02", AwaitingMerge)],
+                ..WorkstreamAgents::default()
+            }],
+            ..ProjectAgents::default()
+        };
+        let view = derive(&scan, &st);
+        assert_eq!(view.workstream, None);
+        assert_eq!(view.unmerged.len(), 1);
+        assert_eq!(
+            view.unmerged_plan("16-01").map(|i| i.worktree.clone()),
+            Some(PathBuf::from("/wt/u"))
+        );
+        assert!(view.unmerged_plan("16-02").is_none());
+        assert_eq!(view.unmerged_in_phase("16"), 1);
+
+        let ws = view.workstreams.get("v0-13-beta").expect("workstream view");
+        assert_eq!(ws.workstream.as_deref(), Some("v0-13-beta"));
+        assert!(ws.unmerged_plan("16-01").is_none());
+        assert!(ws.unmerged_plan("16-02").is_some());
+        assert_eq!(ws.unmerged_in_phase("16"), 1);
+        assert!(ws.workstreams.is_empty());
+
+        // No workstream data: the view is exactly the project's, with no map.
+        let flat = derive(&agents(Vec::new()), &st);
+        assert!(flat.workstreams.is_empty());
+    }
+
+    fn ws_row(path: &str, plan: &str, workstream: Option<&str>) -> AgentRow {
+        AgentRow {
+            workstream: workstream.map(str::to_string),
+            ..row(path, AgentLiveness::Live, Some(plan))
+        }
+    }
+
+    #[test]
+    fn the_projects_view_counts_only_its_own_rows_and_lists_all() {
+        use crate::state_reader::workstreams::WorkstreamState;
+
+        // Phase 16 in the project (3 plans) and in v0-13-beta (2 plans).
+        let mut st = state(
+            "16",
+            vec![wave(
+                Some(1),
+                &[
+                    "16-01".to_string(),
+                    "16-02".to_string(),
+                    "16-03".to_string(),
+                ],
+            )],
+            &[],
+            3,
+        );
+        st.workstreams.push(WorkstreamState {
+            name: "v0-13-beta".to_string(),
+            state: state(
+                "16",
+                vec![wave(Some(1), &["16-01".to_string(), "16-02".to_string()])],
+                &[],
+                2,
+            ),
+            ..WorkstreamState::default()
+        });
+        let scan = agents(vec![
+            ws_row("/wt/a-project", "16-01", None),
+            ws_row("/wt/b-ws", "16-01", Some("v0-13-beta")),
+            ws_row("/wt/c-ws", "16-02", Some("v0-13-beta")),
+        ]);
+        let view = derive(&scan, &st);
+        assert_eq!(view.agents.len(), 3, "the display list keeps every row");
+        assert_eq!(view.running, 1, "only the project's own row is counted");
+        assert_eq!(view.plan_state("16-01"), Some(PlanState::Running));
+        assert_eq!(view.plan_state("16-02"), Some(PlanState::Queued));
+
+        let ws = &view.workstreams["v0-13-beta"];
+        assert_eq!(ws.agents.len(), 2);
+        assert!(ws
+            .agents
+            .iter()
+            .all(|r| r.workstream.as_deref() == Some("v0-13-beta")));
+        assert_eq!(ws.running, 2);
+        assert_eq!(ws.plan_state("16-02"), Some(PlanState::Running));
+    }
+
+    #[test]
+    fn a_workstream_row_never_switches_the_projects_executor_ladder() {
+        let view = AgentView {
+            active_phase: PhaseNum::parse("16"),
+            plan_total: 3,
+            current_wave: Some(1),
+            max_wave: Some(1),
+            agents: vec![ws_row("/wt/ws", "16-01", Some("v0-13-beta"))],
+            ..AgentView::default()
+        };
+        assert_eq!(view.summary_forms()[0], "1 agent");
+        // The same row with no workstream is the project's own executor.
+        let own = AgentView {
+            agents: vec![ws_row("/wt/own", "16-01", None)],
+            ..view
+        };
+        assert!(
+            own.summary_forms()[0].starts_with("P16"),
+            "{:?}",
+            own.summary_forms()
+        );
     }
 }
