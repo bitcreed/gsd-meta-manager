@@ -91,6 +91,72 @@ pub fn list_dir(dir: &Path) -> Vec<BrowserEntry> {
     dirs
 }
 
+/// [`list_dir`] for the Docs › Files browser, plus one directory entry per
+/// parallel workstream when `dir` IS the planning root (`planning_root ==
+/// Some(dir)`).
+///
+/// Each group entry points at the real `<root>/workstreams/<name>/` directory,
+/// so entering it, opening a doc and editing it all resolve under
+/// `.planning/workstreams/<name>/` with no synthetic view. The groups sit after
+/// the root's own directories and before its files, so [`list_dir`]'s
+/// directories-first contract holds; they are in workstream-name order, the order
+/// `load_workstreams` (and so the Roadmap and Phases tabs) uses.
+///
+/// The root's raw `workstreams/` row stays: the groups are additions, and a root
+/// entry is never removed. Any other `dir`, a `None` root, or a root with no
+/// `workstreams/` directory returns exactly [`list_dir`]`(dir)`.
+///
+/// Closes the Docs-tab item of the `unresolved:` list in
+/// `.planning/debug/resolved/workstreams-not-surfaced.md` ("Docs tab and
+/// Docs > Milestones are still project-only"). Hidden and non-UTF-8 names, and
+/// anything that is not a directory, are skipped.
+pub fn list_docs_dir(dir: &Path, planning_root: Option<&Path>) -> Vec<BrowserEntry> {
+    let mut entries = list_dir(dir);
+    if planning_root != Some(dir) {
+        return entries;
+    }
+    let workstreams_dir = dir.join("workstreams");
+    let Ok(read) = std::fs::read_dir(&workstreams_dir) else {
+        return entries;
+    };
+
+    let mut groups: Vec<BrowserEntry> = Vec::new();
+    for entry in read.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let is_dir = entry
+            .file_type()
+            .map(|t| t.is_dir())
+            .unwrap_or_else(|_| path.is_dir());
+        if !is_dir {
+            continue;
+        }
+        groups.push(BrowserEntry {
+            name: Untrusted::from_untrusted_source(name),
+            path,
+            is_dir: true,
+        });
+    }
+    // Sort ORDER, not display: the raw name, as `load_workstreams` orders them.
+    groups.sort_by(|a, b| {
+        a.name
+            .as_raw_for_logic_only()
+            .cmp(b.name.as_raw_for_logic_only())
+    });
+
+    let first_file = entries
+        .iter()
+        .position(|e| !e.is_dir)
+        .unwrap_or(entries.len());
+    entries.splice(first_file..first_file, groups);
+    entries
+}
+
 /// Compute the entry directory for the docs browser given the current project
 /// state.
 ///
@@ -265,5 +331,86 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_active_phase_dir(planning, &state), planning);
+    }
+
+    fn raw_names(entries: &[BrowserEntry]) -> Vec<String> {
+        entries
+            .iter()
+            // A test ORACLE comparing names, not a render.
+            .map(|e| e.name.as_raw_for_logic_only().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn list_docs_dir_equals_list_dir_for_a_flat_planning_root() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("phases")).unwrap();
+        fs::write(dir.path().join("ROADMAP.md"), "x").unwrap();
+        fs::write(dir.path().join("STATE.md"), "x").unwrap();
+        assert_eq!(
+            list_docs_dir(dir.path(), Some(dir.path())),
+            list_dir(dir.path())
+        );
+        assert_eq!(list_docs_dir(dir.path(), None), list_dir(dir.path()));
+    }
+
+    #[test]
+    fn list_docs_dir_leaves_a_non_root_dir_untouched() {
+        let td = tempdir().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let ws_dir = planning.join("workstreams");
+        assert_eq!(list_docs_dir(&ws_dir, Some(&planning)), list_dir(&ws_dir));
+        let phases = planning.join("phases");
+        assert_eq!(list_docs_dir(&phases, Some(&planning)), list_dir(&phases));
+        // A workstream-less root with a `workstreams/` that is a plain file.
+        let flat = td.path().join("flat");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("workstreams"), "not a dir").unwrap();
+        assert_eq!(list_docs_dir(&flat, Some(&flat)), list_dir(&flat));
+    }
+
+    #[test]
+    fn list_docs_dir_adds_one_group_per_workstream_between_dirs_and_files() {
+        let td = tempdir().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        let entries = list_docs_dir(&planning, Some(&planning));
+        assert_eq!(
+            raw_names(&entries),
+            [
+                "phases",
+                "workstreams",
+                "v0-13-public-beta",
+                "v0-14-voice-assistant",
+                "ROADMAP.md",
+                "STATE.md"
+            ]
+        );
+        for (idx, name) in [(2usize, "v0-13-public-beta"), (3, "v0-14-voice-assistant")] {
+            assert!(entries[idx].is_dir);
+            assert_eq!(entries[idx].path, planning.join("workstreams").join(name));
+        }
+        // Every root entry from before is still listed.
+        for before in list_dir(&planning) {
+            assert!(entries.contains(&before), "lost {:?}", before.name);
+        }
+    }
+
+    #[test]
+    fn list_docs_dir_skips_hidden_and_non_directory_workstream_entries() {
+        let td = tempdir().unwrap();
+        let planning = td.path().join(".planning");
+        fs::create_dir_all(planning.join("workstreams/alpha")).unwrap();
+        fs::create_dir_all(planning.join("workstreams/.hidden")).unwrap();
+        fs::write(planning.join("workstreams/notes.md"), "x").unwrap();
+        let entries = list_docs_dir(&planning, Some(&planning));
+        assert_eq!(raw_names(&entries), ["workstreams", "alpha"]);
     }
 }

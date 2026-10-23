@@ -3170,6 +3170,46 @@ fn workstream_band_label(ws: &state_reader::workstreams::WorkstreamState) -> Unt
     Untrusted::from_untrusted_source(label.trim().to_string())
 }
 
+/// What labels a workstream on the Docs tab: `ws v0.14 — Voice Mechanic`, its
+/// [`crate::app::workstream_marker`] then the Roadmap band's own words
+/// ([`workstream_band_label`]). One [`Untrusted`]: both halves are third-party
+/// text (a directory name or a heading), drawn through `.shown()`.
+fn workstream_docs_label(ws: &state_reader::workstreams::WorkstreamState) -> Untrusted {
+    Untrusted::from_untrusted_source(format!(
+        "{} {}",
+        crate::app::workstream_marker(ws),
+        workstream_band_label(ws).as_raw_for_logic_only()
+    ))
+}
+
+/// The workstream a path under `root` belongs to, if any: its directory name,
+/// and whether `path` IS that workstream directory (`<root>/workstreams/<dir>`)
+/// rather than something below it. `None` for any path outside
+/// `<root>/workstreams/`, and for a first component that is not a plain name.
+fn workstream_of_path<'a>(
+    root: &std::path::Path,
+    path: &'a std::path::Path,
+) -> Option<(&'a str, bool)> {
+    use std::path::Component;
+    let rel = path.strip_prefix(root.join("workstreams")).ok()?;
+    let mut components = rel.components();
+    let first = match components.next()? {
+        Component::Normal(name) => name.to_str()?,
+        _ => return None,
+    };
+    Some((first, components.next().is_none()))
+}
+
+/// [`workstream_docs_label`] of the workstream directory `dir`, looked up by
+/// name in `state`'s workstreams; a workstream the state does not list (or no
+/// state at all) falls back to `ws <dir>`.
+fn workstream_docs_label_for(state: Option<&state_reader::ProjectState>, dir: &str) -> Untrusted {
+    state
+        .and_then(|s| s.workstreams.iter().find(|w| w.name == dir))
+        .map(workstream_docs_label)
+        .unwrap_or_else(|| Untrusted::from_untrusted_source(format!("ws {dir}")))
+}
+
 /// The Roadmap tab's first line (Mockups A/B/C, D-B02):
 /// `{alias} · {milestone} · phase {n} {status} · {k} of {n} phases done`.
 ///
@@ -3493,7 +3533,8 @@ fn switch_to_sub_view(alias: &str, new_view: DetailSubView, ctx: &mut AppContext
             if let (Some(path), Some(state)) = (project_path, project_state) {
                 let planning_dir = path.join(".planning");
                 let entry_dir = crate::browser::resolve_active_phase_dir(&planning_dir, &state);
-                cache.browser_entries = crate::browser::list_dir(&entry_dir);
+                cache.browser_entries =
+                    crate::browser::list_docs_dir(&entry_dir, Some(&planning_dir));
                 cache.browser_root = Some(planning_dir);
                 cache.browser_entry_dir = Some(entry_dir.clone());
                 cache.browser_current_dir = Some(entry_dir);
@@ -3850,7 +3891,8 @@ impl Screen for DetailScreen {
                                 if current != root {
                                     if let Some(parent) = current.parent() {
                                         let parent = parent.to_path_buf();
-                                        cache.browser_entries = crate::browser::list_dir(&parent);
+                                        cache.browser_entries =
+                                            crate::browser::list_docs_dir(&parent, Some(&root));
                                         cache.browser_current_dir = Some(parent);
                                         cache.browser_selected = 0;
                                         cache.browser_scroll_offset = 0;
@@ -5042,7 +5084,10 @@ impl Screen for DetailScreen {
                         let entry = cache.browser_entries.get(cache.browser_selected).cloned();
                         if let Some(entry) = entry {
                             if entry.is_dir {
-                                cache.browser_entries = crate::browser::list_dir(&entry.path);
+                                cache.browser_entries = crate::browser::list_docs_dir(
+                                    &entry.path,
+                                    cache.browser_root.as_deref(),
+                                );
                                 cache.browser_current_dir = Some(entry.path);
                                 cache.browser_selected = 0;
                                 cache.browser_scroll_offset = 0;
@@ -5066,7 +5111,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('g') if current_view == DetailSubView::Browse => {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 if let Some(root) = cache.browser_root.clone() {
-                    cache.browser_entries = crate::browser::list_dir(&root);
+                    cache.browser_entries = crate::browser::list_docs_dir(&root, Some(&root));
                     cache.browser_current_dir = Some(root);
                     cache.browser_selected = 0;
                     cache.browser_scroll_offset = 0;
@@ -5081,7 +5126,8 @@ impl Screen for DetailScreen {
             KeyCode::Char('p') if current_view == DetailSubView::Browse => {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 if let Some(entry_dir) = cache.browser_entry_dir.clone() {
-                    cache.browser_entries = crate::browser::list_dir(&entry_dir);
+                    cache.browser_entries =
+                        crate::browser::list_docs_dir(&entry_dir, cache.browser_root.as_deref());
                     cache.browser_current_dir = Some(entry_dir);
                     cache.browser_selected = 0;
                     cache.browser_scroll_offset = 0;
@@ -8107,6 +8153,20 @@ impl DetailScreen {
                 ));
             }
         }
+        // Inside a workstream's directory the header names the workstream, at
+        // every depth below it, so the grouping stays visible. READ BY A HUMAN:
+        // the label is third-party text, drawn through `.shown()`.
+        let project_state = ctx.project_states.get(&self.alias);
+        if let Some((dir, _)) = root
+            .zip(current)
+            .and_then(|(r, c)| workstream_of_path(r, c))
+        {
+            header_spans.push(Span::raw("  "));
+            header_spans.push(Span::styled(
+                workstream_docs_label_for(project_state, dir).shown(),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
 
         let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
         let header_area = chunks[0];
@@ -8133,16 +8193,34 @@ impl DetailScreen {
                         // see, because the Browse tab's cache was empty in the
                         // probe fixture and the tab rendered its
                         // `(empty directory)` branch. Named by the compiler.
-                        if e.is_dir {
+                        let dir_cue = Span::styled(
+                            "[DIR] ",
+                            Style::default()
+                                .fg(Color::Blue)
+                                .add_modifier(Modifier::BOLD),
+                        );
+                        // A row that IS a workstream directory reads
+                        // `[DIR] ws v0.14 — Voice Mechanic  v0-14-voice-assistant`:
+                        // the Roadmap band's words in Magenta, the directory in
+                        // DarkGray. Every other row is unchanged.
+                        let workstream_row = if e.is_dir {
+                            root.and_then(|r| workstream_of_path(r, &e.path))
+                                .filter(|&(_, itself)| itself)
+                        } else {
+                            None
+                        };
+                        if let Some((dir, _)) = workstream_row {
                             ListItem::new(Line::from(vec![
+                                dir_cue,
                                 Span::styled(
-                                    "[DIR] ",
-                                    Style::default()
-                                        .fg(Color::Blue)
-                                        .add_modifier(Modifier::BOLD),
+                                    workstream_docs_label_for(project_state, dir).shown(),
+                                    Style::default().fg(Color::Magenta),
                                 ),
-                                Span::raw(e.name.shown()),
+                                Span::raw("  "),
+                                Span::styled(e.name.shown(), Style::default().fg(Color::DarkGray)),
                             ]))
+                        } else if e.is_dir {
+                            ListItem::new(Line::from(vec![dir_cue, Span::raw(e.name.shown())]))
                         } else {
                             ListItem::new(Line::from(Span::raw(e.name.shown())))
                         }
@@ -33208,5 +33286,217 @@ mod tests {
         assert_eq!(label(&workstream("v0.9", None)), "v0.9");
         assert_eq!(label(&workstream("", Some("Voice"))), "v0-9-dir");
         assert_eq!(label(&workstream("  ", None)), "v0-9-dir");
+    }
+
+    // ── quick 261023-05h: the Docs tab includes each workstream's planning docs ──
+    //
+    // Fixture: the sentriq-shaped tree. The root holds `phases/`, `workstreams/`,
+    // ROADMAP.md and STATE.md; `workstreams/v0-13-public-beta/` and
+    // `workstreams/v0-14-voice-assistant/` each hold their own docs and phases.
+
+    /// A Detail screen on the sentriq-shaped tree with the project registered
+    /// (so Docs resolves a real `.planning/`), parsed, and the Docs sub-view
+    /// `view` entered through the real `switch_to_sub_view`.
+    fn sentriq_docs_detail(
+        view: DetailSubView,
+        extra: impl FnOnce(&std::path::Path),
+    ) -> (tempfile::TempDir, DetailScreen, AppContext) {
+        use crate::config::RegisteredProject;
+        let td = tempfile::tempdir().expect("temp dir");
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        extra(&planning);
+        let mut ctx = test_ctx();
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: td.path().to_path_buf(),
+                added: "2026-10-23".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::parse_project_state(&planning),
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), view.clone());
+        switch_to_sub_view(TEST_ALIAS, view, &mut ctx);
+        (td, DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    /// Add a hostile workstream: its directory name and milestone heading carry
+    /// U+202E (right-to-left override).
+    fn add_hostile_workstream(planning: &std::path::Path) {
+        let dir = planning.join("workstreams").join("v0-15-\u{202e}evil");
+        std::fs::create_dir_all(dir.join("phases")).expect("hostile dir");
+        std::fs::write(
+            dir.join("ROADMAP.md"),
+            "# Roadmap: Sentriq\n\n## v0.15 \u{2014} Evil\u{202e}Name\n\n## Phases\n\n\
+             - [ ] **Phase 30: Hostile Phase** - x\n",
+        )
+        .expect("hostile roadmap");
+        std::fs::write(
+            dir.join("STATE.md"),
+            "---\nmilestone: v0.15\nmilestone_name: Evil\u{202e}Name\n---\n\n# State\n",
+        )
+        .expect("hostile state");
+    }
+
+    /// Press `j` / `k` until the Docs › Files selection names `name`, at most
+    /// 60 times (the REAL key path, so the selection is whatever keys reach).
+    fn browse_select(screen: &mut DetailScreen, ctx: &mut AppContext, name: &str) {
+        for _ in 0..60 {
+            let cache = &ctx.view_cache[TEST_ALIAS];
+            let Some(target) = cache
+                .browser_entries
+                .iter()
+                .position(|e| e.name.as_raw_for_logic_only() == name)
+            else {
+                break;
+            };
+            if target == cache.browser_selected {
+                return;
+            }
+            let key = if target > cache.browser_selected {
+                'j'
+            } else {
+                'k'
+            };
+            press(screen, ctx, KeyCode::Char(key));
+        }
+        panic!(
+            "never selected {name:?}:\n{}",
+            render_detail_to_text_at(screen, ctx, 120, 40)
+        );
+    }
+
+    #[test]
+    fn sentriq_docs_files_root_lists_each_workstream_as_a_labelled_group() {
+        let (_td, mut screen, mut ctx) = sentriq_docs_detail(DetailSubView::Browse, |_| {});
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        for (width, height) in [(120u16, 40u16), (80, 40)] {
+            let text = render_detail_to_text_at(&screen, &ctx, width, height);
+            for want in [
+                "ws v0.13",
+                "Public Beta",
+                "ws v0.14",
+                "Voice Mechanic",
+                "[DIR] phases",
+                "[DIR] workstreams",
+                "ROADMAP.md",
+                "STATE.md",
+            ] {
+                assert!(
+                    text.contains(want),
+                    "at {width}x{height} Docs > Files has no {want:?}:\n{text}"
+                );
+            }
+        }
+        // The label carries the Roadmap band's own words, then the directory.
+        let wide = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(
+            wide.contains("[DIR] ws v0.14 \u{2014} Voice Mechanic  v0-14-voice-assistant"),
+            "{wide}"
+        );
+    }
+
+    #[test]
+    fn sentriq_docs_files_workstream_docs_open_under_the_workstream_directory() {
+        let (td, mut screen, mut ctx) = sentriq_docs_detail(DetailSubView::Browse, |_| {});
+        let planning = td.path().join(".planning");
+        let ws14 = planning.join("workstreams/v0-14-voice-assistant");
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        browse_select(&mut screen, &mut ctx, "v0-14-voice-assistant");
+        {
+            let cache = &ctx.view_cache[TEST_ALIAS];
+            assert!(cache.browser_entries[cache.browser_selected]
+                .path
+                .ends_with("workstreams/v0-14-voice-assistant"));
+        }
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].browser_current_dir.as_deref(),
+            Some(ws14.as_path())
+        );
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        for want in [
+            "STATE.md",
+            "ROADMAP.md",
+            "REQUIREMENTS.md",
+            "MILESTONE-CONTEXT.md",
+            "[DIR] phases",
+            "ws v0.14",
+        ] {
+            assert!(text.contains(want), "no {want:?}:\n{text}");
+        }
+
+        browse_select(&mut screen, &mut ctx, "STATE.md");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].browser_file_path.as_deref(),
+            Some(ws14.join("STATE.md").as_path())
+        );
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(
+            text.contains("Project State \u{2014} v0.14 Voice Mechanic"),
+            "{text}"
+        );
+        assert!(
+            text.contains("ws v0.14"),
+            "header names the workstream in View: {text}"
+        );
+        match screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx) {
+            ScreenAction::SuspendAndEdit(path, _) => assert_eq!(path, ws14.join("STATE.md")),
+            _ => panic!("expected an edit of the workstream's STATE.md"),
+        }
+
+        // Back to the list, down into the phases.
+        press(&mut screen, &mut ctx, KeyCode::Esc);
+        browse_select(&mut screen, &mut ctx, "phases");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        browse_select(&mut screen, &mut ctx, "26-push-to-talk-voice");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 80);
+        assert!(text.contains("26-14-PLAN.md"), "{text}");
+        assert!(text.contains("ws v0.14"), "{text}");
+    }
+
+    #[test]
+    fn a_path_maps_to_its_workstream_only_under_the_workstreams_directory() {
+        use std::path::Path;
+        let root = Path::new("/p/.planning");
+        fn of<'a>(root: &Path, p: &'a str) -> Option<(&'a str, bool)> {
+            workstream_of_path(root, Path::new(p))
+        }
+        let of = |p| of(root, p);
+        assert_eq!(of("/p/.planning/workstreams/ws-a"), Some(("ws-a", true)));
+        assert_eq!(
+            of("/p/.planning/workstreams/ws-a/phases/26-x"),
+            Some(("ws-a", false))
+        );
+        assert_eq!(of("/p/.planning/workstreams"), None);
+        assert_eq!(of("/p/.planning/phases/26-x"), None);
+        assert_eq!(of("/elsewhere/workstreams/ws-a"), None);
+    }
+
+    #[test]
+    fn sentriq_docs_files_escapes_workstream_labels() {
+        let (_td, mut screen, mut ctx) =
+            sentriq_docs_detail(DetailSubView::Browse, add_hostile_workstream);
+        press(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(text.contains("ws v0.15"), "{text}");
+        assert!(!text.contains('\u{202e}'), "raw U+202E drawn:\n{text}");
+        // Entering the hostile group keeps the header escaped too.
+        browse_select(&mut screen, &mut ctx, "v0-15-\u{202e}evil");
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(text.contains("ws v0.15"), "{text}");
+        assert!(!text.contains('\u{202e}'), "raw U+202E drawn:\n{text}");
     }
 }
