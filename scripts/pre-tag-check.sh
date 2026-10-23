@@ -34,6 +34,12 @@
 #                               (point it at a name that does not exist).
 #   PRE_TAG_CHECK_IN_CONTAINER  set by the dispatch on the INNER run. Asking
 #                               for --container while it is set is a hard error.
+#   PRE_TAG_CONTAINER_CACHE_MAX_GB
+#                               cap on EACH cache volume, in decimal GB (10^9
+#                               bytes, as `docker system df` reports). Default
+#                               20. Whole numbers only; 0 wipes both volumes on
+#                               every run. A volume over the cap is wiped before
+#                               the run, so that run is cold.
 #
 # Usage: ./scripts/pre-tag-check.sh [--container] [vX.Y.Z]
 
@@ -137,6 +143,35 @@ if [ "$CONTAINER" -eq 1 ]; then
 		exit 2
 	fi
 
+	# --- 1b. CACHE CAP VALIDATION ------------------------------------------
+	# A USAGE error, so it runs before ANY side effect (runtime probe, build,
+	# volume operation). The value ends up in a script that runs as root and
+	# deletes files, so it is validated down to 1-9 decimal digits here and is
+	# later handed over as a positional argument, never spliced into script text.
+	#
+	# Consumed only by --container: a bare run never touches container storage.
+	CACHE_MAX_GB_RAW="${PRE_TAG_CONTAINER_CACHE_MAX_GB:-}"
+	[ -n "$CACHE_MAX_GB_RAW" ] || CACHE_MAX_GB_RAW=20
+	case "$CACHE_MAX_GB_RAW" in
+	*[!0-9]*)
+		CACHE_MAX_GB_BAD=1
+		;;
+	*)
+		CACHE_MAX_GB_BAD=0
+		[ "${#CACHE_MAX_GB_RAW}" -le 9 ] || CACHE_MAX_GB_BAD=1
+		;;
+	esac
+	if [ "$CACHE_MAX_GB_BAD" -eq 1 ]; then
+		echo "$PROG: PRE_TAG_CONTAINER_CACHE_MAX_GB must be a whole number of GB (1-9 decimal digits), got: '$CACHE_MAX_GB_RAW'" >&2
+		usage >&2
+		exit 2
+	fi
+	# 10# forces base 10: a value like 08 must never be read as (invalid) octal.
+	# GB is 10^9 bytes, the unit `docker system df` reports in. 0 falls out as
+	# "wipe every run": du of even an empty volume is more than 0 bytes.
+	CACHE_MAX_GB=$((10#$CACHE_MAX_GB_RAW))
+	CACHE_CAP_BYTES=$((CACHE_MAX_GB * 1000000000))
+
 	# --- 2. RUNTIME RESOLUTION ---------------------------------------------
 	# A runtime BINARY whose daemon does not answer is not a usable runtime, so
 	# probe `<runtime> info` and not merely `command -v`.
@@ -181,9 +216,17 @@ if [ "$CONTAINER" -eq 1 ]; then
 	# cannot lean on cwd to decide what to bind-mount.
 	CONTAINER_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 	CONTAINER_REPO_ROOT=$(cd -- "$CONTAINER_SCRIPT_DIR/.." && pwd)
-	CONTAINER_IMAGE="gsdmm-pre-tag-check:latest"
+	CONTAINER_IMAGE_REPO="gsdmm-pre-tag-check"
+	CONTAINER_IMAGE="$CONTAINER_IMAGE_REPO:latest"
 	CONTAINER_TARGET_VOL="gsdmm-pretag-target"
 	CONTAINER_CARGO_VOL="gsdmm-pretag-cargo-home"
+	# OWNERSHIP. Every image this script builds and every volume it creates
+	# carries this one label, held in one variable so build, volume create and
+	# prune cannot drift apart. The two volumes are ALSO owned by their FIXED
+	# NAMES: volumes created before the label existed carry none, and a volume
+	# cannot be relabelled. So every deletion goes by exact name or by label,
+	# never global. gsdmm-target and gsdmm-cargo are NOT ours; never touch them.
+	CONTAINER_LABEL="gsdmm.pre-tag-check=1"
 
 	echo "$RULE"
 	echo "!!! CONTAINER MODE !!!"
@@ -192,6 +235,7 @@ if [ "$CONTAINER" -eq 1 ]; then
 	echo "  image      : $CONTAINER_IMAGE"
 	echo "  dockerfile : $CONTAINER_SCRIPT_DIR/pre-tag-check.Dockerfile"
 	echo "  repo       : $CONTAINER_REPO_ROOT -> /work"
+	echo "  cache cap  : $CACHE_MAX_GB GB per volume (PRE_TAG_CONTAINER_CACHE_MAX_GB)"
 	echo "$THIN"
 	echo "  The gates below run inside an ubuntu-24.04 lookalike, after the SAME"
 	echo "  scripts/install-conformance-oracle.sh the publish job calls has"
@@ -205,8 +249,9 @@ if [ "$CONTAINER" -eq 1 ]; then
 	# near-instant, and a stale image is a lie about what was tested.
 	# The build context is scripts/ and the Dockerfile copies nothing from it:
 	# the repo arrives as a bind mount at run time, not as an image layer.
-	echo "+ $RUNTIME build -t $CONTAINER_IMAGE -f pre-tag-check.Dockerfile $CONTAINER_SCRIPT_DIR"
+	echo "+ $RUNTIME build --label $CONTAINER_LABEL -t $CONTAINER_IMAGE -f pre-tag-check.Dockerfile $CONTAINER_SCRIPT_DIR"
 	if ! "$RUNTIME" build \
+		--label "$CONTAINER_LABEL" \
 		-t "$CONTAINER_IMAGE" \
 		-f "$CONTAINER_SCRIPT_DIR/pre-tag-check.Dockerfile" \
 		"$CONTAINER_SCRIPT_DIR"; then
@@ -218,24 +263,90 @@ if [ "$CONTAINER" -eq 1 ]; then
 	fi
 	echo
 
-	# --- 4. VOLUME BOOTSTRAP -----------------------------------------------
+	# Reclaim OUR superseded images: a rebuild after a Dockerfile edit re-tags
+	# :latest and leaves the previous image dangling. Scoped to dangling images
+	# carrying our label (no -a), so nothing of anyone else's can match.
+	# The BuildKit builder cache is deliberately NOT pruned: its prune has no
+	# label filter and would hit every other project's cache on this machine.
+	# Reclaiming it is the operator's global decision, not this script's.
+	echo "+ $RUNTIME image prune -f --filter label=$CONTAINER_LABEL"
+	if ! "$RUNTIME" image prune -f --filter "label=$CONTAINER_LABEL"; then
+		echo "WARNING: pruning this script's dangling images failed; continuing." >&2
+	fi
+	echo
+
+	# --- 4. VOLUME BOOTSTRAP + CACHE CAP -----------------------------------
 	# Two stable named volumes so the cargo cache survives between runs — a cold
-	# run is three profiles compiled from scratch.
+	# run is three profiles compiled from scratch. Nothing ever reclaimed them, so
+	# they are now BOUNDED: each is measured before every run and wiped when over
+	# the cap (the next build is then cold).
 	#
-	# Named volumes are created ROOT-OWNED, and the gate run is unprivileged, so
-	# chown them first. The privileged step runs the SAME freshly-built image
-	# (deliberately: no second image to pull, audit or keep current), mounts
-	# ONLY the two volumes and never the repo, and runs nothing but chown.
+	# Inspect-then-create (not a blind create): podman's create errors on an
+	# existing name, while docker silently ignores labels on an existing one.
 	for vol in "$CONTAINER_TARGET_VOL" "$CONTAINER_CARGO_VOL"; do
-		"$RUNTIME" volume create "$vol" >/dev/null 2>&1 || true
+		if ! "$RUNTIME" volume inspect "$vol" >/dev/null 2>&1; then
+			if ! "$RUNTIME" volume create --label "$CONTAINER_LABEL" "$vol" >/dev/null; then
+				echo "$RULE" >&2
+				echo "HARD ERROR: could not create the cache volume $vol." >&2
+				echo "THIS RUN HAS CERTIFIED NOTHING; there is no fallback to a local run." >&2
+				echo "$RULE" >&2
+				exit 1
+			fi
+		fi
 	done
+
+	# Named volumes are created ROOT-OWNED, and the gate run is unprivileged, so
+	# the privileged step also chowns them. It runs the SAME freshly-built image
+	# (deliberately: no second image to pull, audit or keep current), mounts ONLY
+	# the two volumes and never the repo.
+	#
+	# The script is a SINGLE-QUOTED CONSTANT. Host values (cap, uid:gid, the
+	# name=mountpoint pairs) arrive as positional arguments and are never spliced
+	# into its text. Report mode never reaches the delete path, and the post-run
+	# report additionally mounts the volumes :ro as a backstop.
+	CONTAINER_PREP_SCRIPT='
+set -eu
+mode=$1
+cap=$2
+owner=$3
+shift 3
+cap_h=$(numfmt --to=si "$cap")
+for pair in "$@"; do
+	name=${pair%%=*}
+	mount=${pair#*=}
+	bytes=$(du -sb "$mount" | cut -f1)
+	human=$(numfmt --to=si "$bytes")
+	if [ "$mode" = report ]; then
+		echo "post-run cache size: $name  $human ($bytes bytes)"
+		if [ "$bytes" -gt "$cap" ]; then
+			echo "  over the cap of $cap_h: it will be wiped at the start of the next --container run"
+		fi
+		continue
+	fi
+	if [ "$bytes" -gt "$cap" ]; then
+		echo "cache volume $name: $human ($bytes bytes), cap $cap_h -> WIPING"
+		echo "  !!! contents exceed the cap, so this volume is wiped and the next build is COLD !!!"
+		find "$mount" -mindepth 1 -delete
+		after=$(du -sb "$mount" | cut -f1)
+		echo "  after wipe: $(numfmt --to=si "$after") ($after bytes)"
+	else
+		echo "cache volume $name: $human ($bytes bytes), cap $cap_h -> KEPT"
+	fi
+done
+if [ "$mode" = prep ]; then
+	for pair in "$@"; do
+		chown -R "$owner" "${pair#*=}"
+	done
+fi
+'
 	if ! "$RUNTIME" run --rm -u 0:0 \
 		-v "$CONTAINER_TARGET_VOL:/cargo-target" \
 		-v "$CONTAINER_CARGO_VOL:/cargo-home" \
 		"$CONTAINER_IMAGE" \
-		chown -R "$(id -u):$(id -g)" /cargo-target /cargo-home; then
+		bash -c "$CONTAINER_PREP_SCRIPT" prep-script prep "$CACHE_CAP_BYTES" "$(id -u):$(id -g)" \
+		"$CONTAINER_TARGET_VOL=/cargo-target" "$CONTAINER_CARGO_VOL=/cargo-home"; then
 		echo "$RULE" >&2
-		echo "HARD ERROR: could not chown the cache volumes to $(id -u):$(id -g)." >&2
+		echo "HARD ERROR: the cache-volume prep step (size check, cap wipe, chown to $(id -u):$(id -g)) failed." >&2
 		echo "The gate run is unprivileged and would fail to write its build cache." >&2
 		echo "THIS RUN HAS CERTIFIED NOTHING; there is no fallback to a local run." >&2
 		echo "$RULE" >&2
@@ -262,10 +373,15 @@ if [ "$CONTAINER" -eq 1 ]; then
 	# it is stale. That surfaces in `git status`, and it is arguably what you
 	# want to find out before tagging — CI would fail on it too. Read-only
 	# would simply break the three gates that legitimately compile.
+	#
+	# CARGO_INCREMENTAL=0 mirrors CI: release.yml installs its toolchains with
+	# dtolnay/rust-toolchain (lines 25, 84, 108), which exports it into the job.
+	# It also stops debug/incremental (3.5 GB measured) from regrowing.
 	"$RUNTIME" run --rm \
 		-u "$(id -u):$(id -g)" \
 		--cpuset-cpus 0-3 \
 		-e HOME=/home/runner \
+		-e CARGO_INCREMENTAL=0 \
 		-e CARGO_TARGET_DIR=/cargo-target \
 		-e CARGO_HOME=/cargo-home \
 		-e PRE_TAG_CHECK_IN_CONTAINER=1 \
@@ -276,6 +392,18 @@ if [ "$CONTAINER" -eq 1 ]; then
 		"$CONTAINER_IMAGE" \
 		bash -c "$CONTAINER_INNER"
 	CONTAINER_RC=$?
+
+	# Evidence only: report each volume's size after the run. Read-only mounts,
+	# report mode, and a failure here is a WARNING that never alters CONTAINER_RC.
+	echo
+	if ! "$RUNTIME" run --rm -u 0:0 \
+		-v "$CONTAINER_TARGET_VOL:/cargo-target:ro" \
+		-v "$CONTAINER_CARGO_VOL:/cargo-home:ro" \
+		"$CONTAINER_IMAGE" \
+		bash -c "$CONTAINER_PREP_SCRIPT" prep-script report "$CACHE_CAP_BYTES" - \
+		"$CONTAINER_TARGET_VOL=/cargo-target" "$CONTAINER_CARGO_VOL=/cargo-home"; then
+		echo "WARNING: could not measure the cache volumes after the run." >&2
+	fi
 
 	echo
 	echo "$RULE"
