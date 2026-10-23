@@ -1,5 +1,5 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "gsd-meta-manager doesn't show the parallel milestone (workstreams v0-13-public-beta, v0-14-voice-assistant) and active Phase 26 for registered project sentriq at /home/blk/projects/flutter/sentriq. Reproduce read-only, fix root cause with regression test."
 created: 2026-10-22
 updated: 2026-10-23
@@ -57,11 +57,20 @@ updated: 2026-10-23
   belongs to. Session stays open (do not mark resolved). Presentation choice must fit the
   existing tab UI and UI-SPEC conventions and be marked `[INFERRED — audit]`.
 
+## Final Human Verification (2026-10-23) — SESSION CLOSED
+
+- Round 1 (dashboard, fix 0fd27fa): CONFIRMED FIXED by the owner.
+- Round 2 (Detail 1:Roadmap and 2:Phases, fix d1b1457): CONFIRMED FIXED by the owner
+  ("Looks great").
+- Both rounds verified end-to-end against the real sentriq project. The "Session stays open"
+  note in the section above is superseded: the session is resolved and archived.
+
 ## Current Focus
 
-- next_action (2026-10-23, round 2): human verification of the Detail screen's 1:Roadmap and
-  2:Phases tabs against the real sentriq project (fix commit d1b1457). Round 1 (dashboard) was
-  already verified by the owner.
+- status (2026-10-23): RESOLVED. Both rounds verified by the owner ("Looks great"); nothing
+  further to investigate. The `unresolved:` list below records the known, deliberate limits.
+- (history) next_action, round 2: human verification of the Detail screen's 1:Roadmap and
+  2:Phases tabs against the real sentriq project (fix commit d1b1457) — done, confirmed.
 
 - round 2 (Detail tabs) hypothesis: CONFIRMED (see Resolution.root_cause, round 2). Both tabs read
   only the project's own `ProjectState` (`state.phases`, `state.milestones`,
@@ -310,6 +319,7 @@ fix: >
   the Status cell (the same D-R-P-E-V pipeline for the focus phase); rows are `height(1 + lines)`,
   capped at 4 lines with a `ws +N more` tail, and click hit-testing is height-aware
   (`dashboard_row_at`). The old `[N ws]` suffix is removed.
+human_verification: { result: confirmed, date: 2026-10-23, round_1: "dashboard (0fd27fa) confirmed fixed", round_2: "Detail Roadmap/Phases tabs (d1b1457) confirmed fixed — owner: 'Looks great'" }
 verification_round_2:
   target_test: { result: pass, test: "five end-to-end tests in ui::screens::detail::tests (sentriq_roadmap_tab_lists_each_workstream_milestone_and_its_phases, sentriq_phases_tab_lists_workstream_phases_marked_with_their_milestone, sentriq_phases_tab_shows_phase_26_with_its_workstream_and_fourteen_plans, sentriq_roadmap_enter_opens_the_workstream_phase_not_a_same_numbered_one, sentriq_waves_pane_e_edits_the_plan_inside_the_workstream): RED on the unmodified production code (5 failed), GREEN after" }
   more_tests: "detail.rs: model (bands/keys/focus/lapsed claim), Space folds one band, j/PageDown bounds, scoped selection sharing, --ws remedies, agent view not applied, waves model keys, finished phase opens its waves to 26-01..26-14 (waved fixture), band-label fallbacks; roadmap_graph.rs: same-number phases, dependency scope, wave/parallel scope, scoped band label + independent fold, cursor across scopes, escaped scope text; workstreams.rs: scoped keys, scoped_phases order/identity/flat-project parity. +22 tests in total."
