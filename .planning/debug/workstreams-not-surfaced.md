@@ -48,9 +48,45 @@ updated: 2026-10-23
 - Also run `cargo clippy --all-targets`.
 - sentriq tree is READ-ONLY.
 
+## Human Verification Result (2026-10-23)
+
+- Dashboard fix VERIFIED: the overview now lists sentriq's workstreams.
+- NEW GAP: the Detail screen's `1:Roadmap` and `2:Phases` tabs still read only the root
+  `.planning/`. The user expects the v0.13 and v0.14 milestones and their phases there,
+  including Phase 26 and its plans 26-01..26-14, each marked with the workstream/milestone it
+  belongs to. Session stays open (do not mark resolved). Presentation choice must fit the
+  existing tab UI and UI-SPEC conventions and be marked `[INFERRED — audit]`.
+
 ## Current Focus
 
-- hypothesis: CONFIRMED (see Resolution.root_cause). The workstream DATA layer is correct, and two
+- next_action (2026-10-23, round 2): human verification of the Detail screen's 1:Roadmap and
+  2:Phases tabs against the real sentriq project (fix commit d1b1457). Round 1 (dashboard) was
+  already verified by the owner.
+
+- round 2 (Detail tabs) hypothesis: CONFIRMED (see Resolution.root_cause, round 2). Both tabs read
+  only the project's own `ProjectState` (`state.phases`, `state.milestones`,
+  `state.phase_disk_statuses`); `ProjectState.workstreams` was never consulted, and phase numbers
+  were treated as globally unique keys (they are not: root and v0.13 both have a Phase 16).
+- round 2 reasoning_checkpoint:
+    hypothesis: "The Detail Roadmap and Phases tabs omit workstreams because every list, key and
+      lookup they use is built from the project's own roadmap alone (roadmap_model_for / render_roadmap
+      read state.phases + state.milestones; render_pipeline_tab / selected_waves / pipeline_selected
+      index state.phases), and a bare phase number is their only phase identity."
+    confirming_evidence:
+      - "RED on unmodified production code: 5 end-to-end tests (Roadmap lists v0.13/v0.14 bands and phases at 80/100/120/200 cols; Phases lists ws rows; Phase 26 + 14 plans; Enter opens the ws phase; `e` edits the ws plan) all fail; the printed frames show only `v0.12` with phases 15 and 16"
+      - "sentriq fixture and the real tree both have two roadmaps with a Phase 16 (root + v0.13), so a number-keyed merge would silently collide"
+      - "the real tree through the fixed code (read-only): bands `v0.12 8/9`, `ws v0.13 7/7`, `ws v0.14 4/6`, 22 listed phases, Phase 26 `[E 14/14]` with all 14 plans under w1..w6"
+    falsification_test: "a hand-seeded mutant at each of: scoped key, dependency scope, parallel scope, agent-view scope, edit path, selection sharing, waves key, live-claim focus must fail at least one test; the 5 end-to-end tests must fail on the unmodified production code"
+    fix_rationale: "make a phase's identity (workstream, number) instead of the number alone, and read each phase against the state that owns it: one scoped band per workstream in the single Roadmap model, one scoped phase list behind the Phases tab's index. The alternative (a scope switcher that swaps the whole tab to one workstream) was rejected because the owner asked to SEE v0.13 and v0.14 and their phases, each marked, not to switch to them."
+    blind_spots: "the box view (`v`) still draws the project's own phases only; a workstream with no roadmap phases draws no band (layout skips member-less bands); the agents/worktree view is not applied to workstream phases; the Docs tab and Docs>Milestones are still project-only; dashboard counts/sort/filter still read only the root"
+    candidate_causes:
+      - "code: tabs read only the root ProjectState (CONFIRMED)"
+      - "code: phase number used as a global identity key (CONFIRMED, fixed by scoped keys)"
+      - "data: the state reader did not load the workstreams (ELIMINATED: ProjectState.workstreams holds both, each with phases, disk statuses and goals)"
+      - "config/environment: no `.planning/active-workstream` (CONFIRMED benign: ws markers show `ws`, not `ws*`)"
+    and_gate: "yes — omission needed BOTH the root-only lists AND number-only identity: listing workstream phases without scoped keys would have collided root 16 with v0.13 16 (wrong selection, wrong Enter target, shared fold state), so both had to change together"
+
+- round 1 hypothesis: CONFIRMED (see Resolution.root_cause, round 1). The workstream DATA layer is correct, and two
   downstream layers dropped it: the dashboard drew a workstream only as a trailing "[N ws]" count
   after the root's unbounded phase label (clipped away at every ordinary width), and the model's
   per-workstream active phase (declared 24 / frontier 27) never produced 26.
@@ -73,7 +109,8 @@ updated: 2026-10-23
       - "config/environment: no .planning/active-workstream, session-scoped pointers live in tmp (CONFIRMED benign: workstreams still listed, just none 'active')"
       - "code: detection / STATE.md parse of the long stopped_at (ELIMINATED)"
     and_gate: "yes — the omission needed BOTH the clipped count-only UI AND a phase rule that cannot name 26; fixing either alone still leaves the owner without 'v0.14 · Phase 26' on screen"
-- next_action: human verification of the dashboard against the real sentriq project.
+- round 1 next_action (done, verified by the owner): human verification of the dashboard against
+  the real sentriq project.
 
 ## Evidence
 
@@ -127,6 +164,62 @@ updated: 2026-10-23
               ws v0.14 P26: Push-to-Talk Voice      D  R  P  E  V
   ```
 
+### Round 2 evidence (Detail 1:Roadmap and 2:Phases)
+
+- timestamp: 2026-10-23 — code read: `render_roadmap` (detail.rs, pre-fix 6595) builds its model with
+  `roadmap_model_for(state, ..)` (pre-fix 2852), whose nodes are `state.shipped_phases`,
+  `state.roadmap_entries()` and ghosts, and whose bands are `state.milestones` (+ a synthetic one);
+  `render_pipeline_tab` (pre-fix 7180) lists `state.phases`, clamps `pipeline_selected` against
+  `state.phases.len()` and reads `state.phase_disk_statuses`; `selected_waves` (pre-fix 1785),
+  `roadmap_activate` (pre-fix 1737), `share_pipeline_selection` (pre-fix 3139) and the j/k/PageDown
+  arms (pre-fix 3719, 4051) all index `state.phases` and match phases by bare `phase_key(number)`.
+  `ProjectState.workstreams` appears in none of them.
+- timestamp: 2026-10-23 — RED on UNMODIFIED production code (only the fixture's Phase 26 grown from 3
+  to 14 plans): `sentriq_roadmap_tab_lists_each_workstream_milestone_and_its_phases`,
+  `sentriq_phases_tab_lists_workstream_phases_marked_with_their_milestone`,
+  `sentriq_phases_tab_shows_phase_26_with_its_workstream_and_fourteen_plans`,
+  `sentriq_roadmap_enter_opens_the_workstream_phase_not_a_same_numbered_one`,
+  `sentriq_waves_pane_e_edits_the_plan_inside_the_workstream` — 5 failed, 13 other `sentriq_` tests
+  passed. The failing frames showed the Roadmap with only `v0.12 — Actuation Routines` (phases 15, 16)
+  and the Phases list with only `P15` / `P16`; pressing `j` 20-40 times never reached anything else.
+- timestamp: 2026-10-23 — GREEN after the fix (commit d1b1457): the same 5 pass. Full suite
+  `rtk proxy cargo test --no-fail-fast` (raw, to a log file): 88 targets, 4136 passed, 1 failed
+  (the expected `envelope::policy` git-version witness: installed git 2.53.0 vs derived 2.55.0), 24
+  ignored. `cargo clippy --all-targets`: 0 warnings. `cargo fmt --check`: clean.
+- timestamp: 2026-10-23 — hand-seeded mutants, each killed: agent view applied to workstream phases
+  (agent-view test); scoped key ignoring the workstream (11 tests); dependency index ignoring scope
+  (2 graph tests); `parallel` without the scope filter (1 graph test); `e` edit path without the
+  workstream directory (e-edit test); `share_pipeline_selection` with a bare key (shared-selection
+  test); Waves model key not scoped (waves-key test); workstream focus ignoring the live claim
+  (model test). All reverted; the suite was re-run green after.
+- timestamp: 2026-10-23 — the REAL sentriq tree, READ-ONLY (a throwaway in-crate probe, deleted before
+  commit, called only `parse_project_state` and rendered the Detail screen into a `TestBackend`; nothing
+  under /home/blk/projects/flutter/sentriq was written): `workstreams = [v0-13-public-beta,
+  v0-14-voice-assistant]`, 22 listed phases (9 root, 7 v0.13, 6 v0.14); bands
+  `v0.12 Actuation Routines 8/9`, `ws v0.13 Public Beta 7/7`, `ws v0.14 — Voice Mechanic 4/6`.
+  Roadmap tab at 150 columns (excerpt; the v0.14 band shows its REAL dependency lanes, W1..W4):
+  ```
+  ▾ ws v0.13 Public Beta  7/7 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ◍ 16  Beta Build Channel            0/3  W1   ...   ◉ 22  Play Release Readiness   0/3  W1
+  ▾ ws v0.14 — Voice Mechanic  4/6 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ◍ 23  Mechanic Mode Foundation and Cost Guardrails   11/11  W1
+  ├─╮
+  ◍ │ 24  Live Read-Only Queries and Online Lookup      11/11  W2
+  │ ◍ 25  Conversation Memory                            4/4  W2
+  ├─╯
+  ◍ 26  Push-to-Talk Voice                             14/14  W3
+  ├─╮
+  ◦ │ 27  Parity, Designs and Wake-Word Verdict            —  W4
+    ◉ 28  Mechanic Toolbox, Full Data Access and Voice-Started Actions  7/9  W4
+  ```
+  Phases tab, Phase 26 selected: `ws v0.14 P26: Push-to-Talk Voice  6w`, right pane
+  `Phase 26: Push-to-Talk Voice` / `ws v0.14 Voice Mechanic · workstream v0-14-voice-assistant` /
+  `[E 14/14]` / `Verify: human_needed — /gsd-verify-work 26 --ws v0-14-voice-assistant`, and the Waves
+  pane `w1–w6 ✓ 14/14 done` which, opened (`Enter` into the pane, `Enter` on the row), lists
+  `26-01 … 26-14` under w1 (6 plans), w2 (4), w3..w6 (1 each), each with title, state and tokens.
+  (Phase 28 is `◉` active in the Roadmap here because the live claim now names 28, not 26: the sentriq
+  tree moved on since round 1; the display follows the claim by design.)
+
 ## Eliminated
 
 - hypothesis: workstream directories with dashed names are not detected
@@ -147,10 +240,31 @@ updated: 2026-10-23
   evidence: it reads 24 on disk now, while state.json (written 38 minutes earlier, which GSD
   derives from STATE.md's current_phase) says "Phase 4 of 6" = phase 26 — GSD's one Current
   Position slot is overwritten by whichever parallel session wrote last. (2026-10-23)
+- hypothesis (round 2): the Detail tabs omit workstreams because the state reader never loaded their
+  phases, disk statuses or goals
+  evidence: every `WorkstreamState.state` is a full `ProjectState` from the same `parse_project_state`
+  (phases, `milestones`, `phase_disk_statuses`, `phase_goals`, plan counts); the real tree yields 22
+  listed phases once the tabs read them. The data was there; the tabs did not read it. (2026-10-23)
+- hypothesis (round 2): phase numbers are a safe identity across the project's and the workstreams'
+  roadmaps
+  evidence: sentriq's root and v0-13-public-beta both have a Phase 16 (and the real tree has the same
+  collision). A number-keyed merge would open/select/fold/edit the wrong phase; the end-to-end tests
+  `..._enter_opens_the_workstream_phase_not_a_same_numbered_one` and
+  `..._phases_selection_is_shared_with_the_roadmap_by_scoped_key` pin it. (2026-10-23)
 
 ## Resolution
 
 root_cause: >
+  ROUND 2 (Detail 1:Roadmap and 2:Phases, fixed in d1b1457). Both tabs read only the project's own
+  `ProjectState`, and identified a phase by its bare number. Pre-fix locations in
+  `src/ui/screens/detail.rs` (at 0bab7d4): `roadmap_model_for` 2852 (nodes from `state.shipped_phases` /
+  `state.roadmap_entries()`, bands from `state.milestones`), `render_roadmap` 6595,
+  `render_pipeline_tab` 7180 (list from `state.phases`, `pipeline_selected` clamped to
+  `state.phases.len()`, disk data from `state.phase_disk_statuses`), `selected_waves` 1785,
+  `roadmap_activate` 1737, `share_pipeline_selection` 3139 and the j/k/PageDown arms 3719 / 4051 (all
+  index `state.phases` and match `phase_key(number)`). `ProjectState.workstreams` was never read, and
+  a bare number is not a safe key: sentriq's root and v0-13-public-beta both have a Phase 16.
+  ROUND 1 (dashboard, fixed in 0fd27fa).
   Two layers dropped data the reader had loaded correctly (detection `workstreams.rs:load_workstreams`
   and per-workstream parse were sound).
   (1) UI: `src/ui/screens/normal.rs` (the removed `ws_suffix`, formerly lines ~1014-1026) drew a
@@ -163,6 +277,29 @@ root_cause: >
   parallel sessions and the frontier lands on phase 27, which has no directory — so no layer could
   ever name the phase being worked (26).
 fix: >
+  ROUND 2 (d1b1457). A phase's identity is now (workstream, number): `scoped_phase_key`
+  (`state_reader/workstreams.rs:170`) keeps the project's bare `phase_key` and prefixes a workstream's
+  with `<dir>/`. `ProjectState::scopes` / `scoped_phases` / `scoped_phase_count`
+  (`state_reader/mod.rs:356-382`) give the project's phases then each workstream's, each read against
+  the state that owns it (`ScopedPhase.owner`). Roadmap: `roadmap_graph.rs` gains `Scope` on
+  `ListNode` / `BandInput` (dependencies resolve only inside a scope, `resolve_deps` :57; band and phase
+  keys carry it, `band_key` :1119 / `scoped_key` :1131; `parallel`, `wave_step` and `max_wave_of` :1376
+  are per roadmap) and `PhaseFacts.scope` / `BandFacts.scope`; `roadmap_model_at` (`detail.rs:2901`;
+  `roadmap_model_for` is its `Utc::now()` wrapper) appends ONE band per workstream
+  (`workstream_band_label` :3201 -> `ws v0.14 — Voice Mechanic`) with the workstream's live-claim focus
+  phase as the current one; `roadmap_view.rs` names a workstream phase in Start-now
+  (`ws v0.14 P26 …`), adds a `workstream <dir>` line to the band / phase detail panes and uses the
+  phase's own roadmap for "wave N of M". Phases: `pipeline_selected` indexes `scoped_phases`
+  (`render_pipeline_tab` :7326, `selected_waves` :1786, the j/k/PageDown arms, `share_pipeline_selection`
+  :3280, `roadmap_activate` :1681); rows read `ws v0.14 P26: Push-to-Talk Voice` (`workstream_prefix`
+  :8928, workstream colour), the selected workstream phase shows `ws v0.14 Voice Mechanic · workstream
+  <dir>`, the Waves model carries `workstream` and a scoped `phase_key` (fold toggles never collide),
+  `e` opens the plan under `workstreams/<dir>/phases/` (`waves_edit` :2037), every printed `/gsd-…`
+  remedy carries `--ws <dir>` (`verification_hint_spans` :9216 and the `No plans yet` hint), and the
+  agents scan's view (the PROJECT's worktrees, keyed by bare number) is never applied to a workstream
+  phase (`agent_view_of` :9512). `app.rs` gains `workstream_marker` / `workstream_milestone_label` /
+  `workstream_tag`, shared with the dashboard's `format_workstream_display`.
+  ROUND 1 (0fd27fa).
   `WorkstreamState` now carries the workstream's `milestone.lock` as a typed `MilestoneClaim`
   (phase + heartbeat only; size-capped read) and exposes `live_claim_phase` / `focus_phase_number` /
   `focus_phase` / `focus_inference` (`src/state_reader/workstreams.rs`): a live claim (GSD's own 4 h
@@ -173,7 +310,17 @@ fix: >
   the Status cell (the same D-R-P-E-V pipeline for the focus phase); rows are `height(1 + lines)`,
   capped at 4 lines with a `ws +N more` tail, and click hit-testing is height-aware
   (`dashboard_row_at`). The old `[N ws]` suffix is removed.
-verification:
+verification_round_2:
+  target_test: { result: pass, test: "five end-to-end tests in ui::screens::detail::tests (sentriq_roadmap_tab_lists_each_workstream_milestone_and_its_phases, sentriq_phases_tab_lists_workstream_phases_marked_with_their_milestone, sentriq_phases_tab_shows_phase_26_with_its_workstream_and_fourteen_plans, sentriq_roadmap_enter_opens_the_workstream_phase_not_a_same_numbered_one, sentriq_waves_pane_e_edits_the_plan_inside_the_workstream): RED on the unmodified production code (5 failed), GREEN after" }
+  more_tests: "detail.rs: model (bands/keys/focus/lapsed claim), Space folds one band, j/PageDown bounds, scoped selection sharing, --ws remedies, agent view not applied, waves model keys, finished phase opens its waves to 26-01..26-14 (waved fixture), band-label fallbacks; roadmap_graph.rs: same-number phases, dependency scope, wave/parallel scope, scoped band label + independent fold, cursor across scopes, escaped scope text; workstreams.rs: scoped keys, scoped_phases order/identity/flat-project parity. +22 tests in total."
+  mutation_check: { result: pass, reason: "Stryker is not applicable to this Rust crate; mutants hand-seeded at the fix sites and killed", mutant_killed: "agent view applied to workstream phases; scoped key ignoring the workstream (11 tests); dependency index ignoring scope; parallel without scope filter; edit path without the workstream dir; share_pipeline_selection with a bare key; unscoped waves key; focus ignoring the live claim" }
+  no_op_deletion: { result: pass, deletion_justified_by_rca: true, note: "nothing was deleted: the project's own keys, rows and panes are byte-for-byte unchanged (scope None); all ~2900 pre-existing lib tests pass unmodified apart from `scope: None` / the verification_hint_spans signature" }
+  adjacent_tests: { result: pass, suites_run: ["rtk proxy cargo test --no-fail-fast (raw, to a log): 88 targets, 4136 passed, 1 failed (envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against: installed git 2.53.0 vs derived 2.55.0, the expected machine-local witness), 24 ignored", "cargo clippy --all-targets: 0 warnings", "cargo fmt --check: clean"] }
+  revert_and_reconfirm: { result: pass, bug_returned_on_revert: true, fixed_on_reapply: true, note: "the 5 end-to-end tests were run RED on the unmodified production code before any production edit (only the fixture grew Phase 26 to 14 plans), then GREEN after" }
+  read_only_real_check: "the real sentriq tree through the fixed Detail screen (parse + render only, nothing written under it): see Evidence, Round 2"
+  guardrail_verdict: accepted
+  oracle_type: "specified (the owner's stated expectation: v0.13 and v0.14 and their phases, Phase 26 and plans 26-01..26-14, each marked with its workstream/milestone) with metamorphic checks (a project without workstreams renders exactly as before; a same-numbered phase in two roadmaps stays two phases); boundary neighbours: same number in root and workstream, workstream with and without a live claim, claim lapse, folded vs open band, first/last/over-the-end selection index, flat vs waved plans"
+verification_round_1:
   target_test: { result: pass, test: "ui::screens::normal::tests::sentriq_parallel_workstreams_are_drawn_with_their_milestone_and_active_phase (RED on unmodified code at 60/120/200 columns, GREEN after)" }
   mutation_check: { result: pass, reason: "Stryker is not applicable to this Rust crate; mutants seeded by hand at both fix sites were killed", mutant_killed: "(a) live_claim_phase forced to None -> the_v014_focus_is_the_live_claim_26_not_declared_24_nor_frontier_27 and the dashboard test FAIL; (b) dashboard_row_at replaced by ListRegion::row_at -> mouse_click_below_a_project_with_workstreams_selects_the_project_under_the_pointer FAILS" }
   no_op_deletion: { result: pass, deletion_justified_by_rca: true, note: "the only removed behaviour is the clipped [N ws] suffix, replaced by strictly more information" }
@@ -186,13 +333,24 @@ inferred_decisions:
   - "[INFERRED — audit] A live `<workstream>/milestone.lock` claim outranks STATE.md `current_phase` and the disk frontier for the workstream's displayed phase: it is GSD's structured claim, STATE.md's slot is demonstrably clobbered (24 vs 26), and the claim is validated (4 h window mirrored from gsd-core, phase must be on the roadmap, size-capped read). The established rule stays the fallback."
   - "[INFERRED — audit] Root rows keep their existing phase rule and ignore the root milestone.lock (root claim is 2 days old; changing root behaviour is out of scope)."
   - "[INFERRED — audit] The workstream Status cell shows the focus phase's D-R-P-E-V pipeline (the dashboard's existing vocabulary); the workstream's own status text only appears as the line tint, and as the text fallback when it has no phase."
-  - "[INFERRED — audit] Attribution trailer uses the harness-reported model (Sonnet 5.5) rather than the 'Opus 5.5' in the dispatch brief."
+  - "[INFERRED — audit] Round-1 commits 0fd27fa / 0bab7d4 carry a Sonnet 5.5 trailer (left as-is per operator); round-2 commits were reworded by the coordinator to the briefed 'Opus 5.5' trailer; the Claude-Session line is as briefed."
+  - "[INFERRED — audit, round 2] PRESENTATION: ONE combined list per tab, not a scope switcher. Roadmap: after the project's own band(s), one band per workstream labelled `ws v0.14 — Voice Mechanic` (the dashboard's `ws` marker + the workstream's own milestone heading), its phases listed under it like any milestone's. Phases: one flat list, the project's phases then each workstream's, each workstream row led by `ws v0.14 P26:` in Magenta (UI-SPEC: Magenta is the workstream cue; the words carry the meaning, never the colour alone). Chosen because the owner asked to SEE v0.13 and v0.14 and their phases, each marked, and because both existing tabs already group by band / list by row, so no new key, tab or screen is needed (the Roadmap/Phases/help key tables are unchanged)."
+  - "[INFERRED — audit, round 2] A phase's identity is (workstream, number): the project's keys are unchanged, a workstream's is `<dir>/<phase key>`. Dependencies, waves, `parallel`, `[`/`]`, folds, the Waves fold toggles, Enter, `e` and the Roadmap<->Phases selection sharing all use it. Rejected: renumbering or de-duplicating same-numbered phases (it would hide real phases)."
+  - "[INFERRED — audit, round 2] A workstream's `◉` (current) phase is `WorkstreamState::focus_phase_number` (live milestone.lock claim, else the established rule) — the SAME phase the dashboard names — rather than the established rule alone. The Waves pane's `active` flag follows the same phase."
+  - "[INFERRED — audit, round 2] The agents scan's view (the project's worktrees; plans keyed by bare phase number) is not applied to workstream phases: no worktree badge, no worktree-held plan counts, no unmerged post-pass, no `Enter`-to-agent for them. Applying it would attribute the project's Phase N worktree plans to a workstream's Phase N."
+  - "[INFERRED — audit, round 2] Every `/gsd-…` remedy printed for a workstream phase (`Verify:` line, `No plans yet`) carries `--ws <dir>`, GSD's own workstream flag (`gsd-core/references/workstream-flag.md`), because a bare command would resolve against whichever planning directory the session picks. `e` opens the plan from `<project>/.planning/workstreams/<dir>/phases/`."
+  - "[INFERRED — audit, round 2] A finished workstream phase keeps the existing Waves default (`w1–w6 ✓ 14/14 done`, merged and collapsed, design I-4) — the plans 26-01..26-14 are one `Enter` into the pane and one `Enter` on that row away, exactly as for the project's own finished phases. Not changed: consistency over a special case."
+  - "[INFERRED — audit, round 2] Only the workstream's active milestone band is drawn (its `phases` + planned entries); a workstream's shipped/closed milestones and its `shipped_phases` are not. A workstream whose roadmap lists no phase draws no band (the layout skips member-less bands)."
 files_changed:
   - src/state_reader/workstreams.rs
   - src/app.rs
   - src/ui/screens/normal.rs
+  - "round 2: src/state_reader/workstreams.rs, src/state_reader/mod.rs, src/app.rs, src/ui/roadmap_graph.rs, src/ui/roadmap_view.rs, src/ui/mod.rs (test literal), src/ui/screens/detail.rs"
 unresolved:
   - "After the v0.14 claim's 4 h heartbeat window lapses with no new heartbeat, the workstream falls back to the established rule and shows `P27` (a phase with no directory). Deliberate (GSD's own liveness rule), but visible."
   - "Dashboard row colour, attention badge, summary counts and sort still read only the root STATE.md: a project whose root is phase_complete but whose workstream is executing still counts as `done` in the footer."
-  - "The dashboard `/` filter does not search workstream text; the Detail screen (Roadmap/Phases/Docs tabs) is still root-only."
+  - "The dashboard `/` filter does not search workstream text. The Detail screen's Docs tab and Docs > Milestones are still project-only; the Roadmap tab's box view (`v`) still draws only the project's own phases; the Roadmap header line (`v0.12 … 8 of 9 phases done`) still describes the project's own milestone (each workstream's count is on its band)."
   - "The `ws*` active marker needs `.planning/active-workstream`; GSD 1.18 mostly keeps the active pointer per session in a temp dir, so it is usually absent (sentriq has none)."
+  - "Workstream phases get no agents/worktree integration on the Detail tabs (worktree plans, unmerged work, Sessions>Agents cross-jump); the agents scan itself is project-scoped."
+  - "A workstream whose roadmap lists no phases is not drawn on the Roadmap, and a workstream's closed milestones are not shown."
+  - "The Roadmap `Start now:` line now also lists active/ready workstream phases (e.g. `ws v0.14 P27 …`), so on a project with several workstreams it truncates earlier."
