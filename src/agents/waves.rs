@@ -1632,4 +1632,83 @@ mod tests {
         let flat = derive(&agents(Vec::new()), &st);
         assert!(flat.workstreams.is_empty());
     }
+
+    fn ws_row(path: &str, plan: &str, workstream: Option<&str>) -> AgentRow {
+        AgentRow {
+            workstream: workstream.map(str::to_string),
+            ..row(path, AgentLiveness::Live, Some(plan))
+        }
+    }
+
+    #[test]
+    fn the_projects_view_counts_only_its_own_rows_and_lists_all() {
+        use crate::state_reader::workstreams::WorkstreamState;
+
+        // Phase 16 in the project (3 plans) and in v0-13-beta (2 plans).
+        let mut st = state(
+            "16",
+            vec![wave(
+                Some(1),
+                &[
+                    "16-01".to_string(),
+                    "16-02".to_string(),
+                    "16-03".to_string(),
+                ],
+            )],
+            &[],
+            3,
+        );
+        st.workstreams.push(WorkstreamState {
+            name: "v0-13-beta".to_string(),
+            state: state(
+                "16",
+                vec![wave(Some(1), &["16-01".to_string(), "16-02".to_string()])],
+                &[],
+                2,
+            ),
+            ..WorkstreamState::default()
+        });
+        let scan = agents(vec![
+            ws_row("/wt/a-project", "16-01", None),
+            ws_row("/wt/b-ws", "16-01", Some("v0-13-beta")),
+            ws_row("/wt/c-ws", "16-02", Some("v0-13-beta")),
+        ]);
+        let view = derive(&scan, &st);
+        assert_eq!(view.agents.len(), 3, "the display list keeps every row");
+        assert_eq!(view.running, 1, "only the project's own row is counted");
+        assert_eq!(view.plan_state("16-01"), Some(PlanState::Running));
+        assert_eq!(view.plan_state("16-02"), Some(PlanState::Queued));
+
+        let ws = &view.workstreams["v0-13-beta"];
+        assert_eq!(ws.agents.len(), 2);
+        assert!(ws
+            .agents
+            .iter()
+            .all(|r| r.workstream.as_deref() == Some("v0-13-beta")));
+        assert_eq!(ws.running, 2);
+        assert_eq!(ws.plan_state("16-02"), Some(PlanState::Running));
+    }
+
+    #[test]
+    fn a_workstream_row_never_switches_the_projects_executor_ladder() {
+        let view = AgentView {
+            active_phase: PhaseNum::parse("16"),
+            plan_total: 3,
+            current_wave: Some(1),
+            max_wave: Some(1),
+            agents: vec![ws_row("/wt/ws", "16-01", Some("v0-13-beta"))],
+            ..AgentView::default()
+        };
+        assert_eq!(view.summary_forms()[0], "1 agent");
+        // The same row with no workstream is the project's own executor.
+        let own = AgentView {
+            agents: vec![ws_row("/wt/own", "16-01", None)],
+            ..view
+        };
+        assert!(
+            own.summary_forms()[0].starts_with("P16"),
+            "{:?}",
+            own.summary_forms()
+        );
+    }
 }

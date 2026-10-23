@@ -449,10 +449,10 @@ pub fn scan_project_with_probe(
     let base_sha = core.base_sha.as_deref();
     let planning = project_root.join(".planning");
     let workstream_names = workstream_scope::names(&planning);
-    // Phase → its directory relative to `<project>/.planning`, or `None` when
-    // main has no directory for it. `find_phase_dir` runs at most once per
-    // distinct phase per scan.
-    let mut phase_dirs: HashMap<PhaseNum, Option<PathBuf>> = HashMap::new();
+    // (Scope, phase) → its directory relative to the scope's planning
+    // directory in main, or `None` when main has no directory for it.
+    // `find_phase_dir` runs at most once per distinct pair per scan.
+    let mut phase_dirs: HashMap<(Option<String>, PhaseNum), Option<PathBuf>> = HashMap::new();
     let mut rows: Vec<AgentRow> = core
         .worktrees
         .iter()
@@ -481,22 +481,48 @@ pub fn scan_project_with_probe(
                     wt.ledger_plan.as_deref(),
                 )
             });
+            // The scope the plan belongs to (quick 261023-05i): names only,
+            // from the row's description and branch plus the directory
+            // listings of main and of this worktree. A project with no
+            // workstreams reads nothing here.
+            let workstream = plan.as_ref().and_then(|plan| {
+                let branch = wt.branch.as_ref().map(Untrusted::as_raw_for_logic_only);
+                let texts: Vec<&str> = description.into_iter().chain(branch).collect();
+                workstream_scope::resolve(
+                    plan,
+                    &texts,
+                    &wt.path.join(".planning"),
+                    &planning,
+                    &workstream_names,
+                )
+            });
             // One `read_dir` per attributed row; the phase directory is
-            // resolved once per distinct phase, from MAIN's own listing.
+            // resolved once per distinct (scope, phase), from MAIN's own
+            // listing, and the SUMMARY is looked for in the same scope of the
+            // worktree's copy.
             let summary_in_worktree = plan.as_ref().is_some_and(|plan| {
-                let relative = phase_dirs.entry(plan.phase.clone()).or_insert_with(|| {
-                    disk_status::find_phase_dir(&planning, &plan.phase.padded())
-                        .and_then(|dir| dir.strip_prefix(&planning).ok().map(Path::to_path_buf))
-                });
+                let main_scope = workstream_scope::scope_planning(&planning, workstream.as_deref());
+                let relative = phase_dirs
+                    .entry((workstream.clone(), plan.phase.clone()))
+                    .or_insert_with(|| {
+                        disk_status::find_phase_dir(&main_scope, &plan.phase.padded()).and_then(
+                            |dir| dir.strip_prefix(&main_scope).ok().map(Path::to_path_buf),
+                        )
+                    });
+                let wt_scope = workstream_scope::scope_planning(
+                    &wt.path.join(".planning"),
+                    workstream.as_deref(),
+                );
                 !wt.prunable
                     && relative.as_deref().is_some_and(|relative| {
-                        worktree_holds_summary(&wt.path.join(".planning").join(relative), plan)
+                        worktree_holds_summary(&wt_scope.join(relative), plan)
                     })
             });
             let evidence = processes::worktree_evidence(wt, probe, &roots);
             let liveness = classify_observed(facts, summary_in_worktree, evidence, now);
             let mut row = AgentRow {
                 plan,
+                workstream,
                 summary_in_worktree,
                 path: wt.path.clone(),
                 branch: wt.branch.clone(),

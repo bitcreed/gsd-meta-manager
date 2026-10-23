@@ -22,10 +22,12 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use common::git;
+use gsd_meta_manager::agents::adapters::{AdapterReport, AgentAdapter, CoreSnapshot, Enrichment};
 use gsd_meta_manager::agents::unmerged::UnmergedKey;
 use gsd_meta_manager::agents::waves::{self, PlanRef};
 use gsd_meta_manager::agents::{scan_project_with, ProjectAgents};
 use gsd_meta_manager::state_reader::parse_project_state;
+use gsd_meta_manager::text::Untrusted;
 use tempfile::TempDir;
 
 const WS13: &str = "v0-13-public-beta";
@@ -263,4 +265,124 @@ fn workstream_worktree_plans_and_phases_are_found_under_the_workstream_only() {
     let ids: Vec<&str> = ws.worktree_phases.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(ids, vec!["27", "29"]);
     assert!(entry(&scan, WS13).is_none());
+}
+
+/// `git worktree add -b worktree-<name> .claude/worktrees/<name>`.
+fn add_agent_worktree(root: &Path, name: &str) -> PathBuf {
+    add_worktree(
+        root,
+        &format!("worktree-{name}"),
+        &format!(".claude/worktrees/{name}"),
+    )
+}
+
+/// The row whose worktree directory is `name`.
+fn row_of<'a>(scan: &'a ProjectAgents, name: &str) -> &'a gsd_meta_manager::agents::AgentRow {
+    scan.rows
+        .iter()
+        .find(|r| r.path.file_name().is_some_and(|n| n == name))
+        .unwrap_or_else(|| panic!("no row for {name}: {:?}", scan.rows))
+}
+
+/// Each agent row resolves to the scope its worktree works in: path evidence
+/// picks v0.13 or the project, an ambiguous plan stays with the project, and a
+/// plan only one scope holds goes to that scope.
+#[test]
+fn agent_rows_resolve_to_the_workstream_their_worktree_works_in() {
+    let Some((_tmp, root)) = workstream_repo() else {
+        return;
+    };
+    let in_ws13 = add_agent_worktree(&root, "agent-p16-01-1790386401");
+    put(
+        &in_ws13,
+        &format!(".planning/workstreams/{WS13}/phases/16-beta-build-channel/16-01-SUMMARY.md"),
+        "# summary\n",
+    );
+    let in_project = add_agent_worktree(&root, "agent-p16-01-1790386402");
+    put(
+        &in_project,
+        ".planning/phases/16-raw-can-button-replay-poc/16-01-SUMMARY.md",
+        "# summary\n",
+    );
+    add_agent_worktree(&root, "agent-p16-01-1790386403");
+    add_agent_worktree(&root, "agent-p26-01-1790386404");
+
+    let scan = scan(&root);
+    let ws13 = row_of(&scan, "agent-p16-01-1790386401");
+    assert_eq!(ws13.workstream.as_deref(), Some(WS13));
+    assert!(ws13.summary_in_worktree, "checked in v0.13's own copy");
+
+    let project = row_of(&scan, "agent-p16-01-1790386402");
+    assert_eq!(project.workstream, None);
+    assert!(project.summary_in_worktree);
+
+    let bare = row_of(&scan, "agent-p16-01-1790386403");
+    assert_eq!(bare.workstream, None, "ambiguous stays with the project");
+    assert!(!bare.summary_in_worktree);
+
+    let voice = row_of(&scan, "agent-p26-01-1790386404");
+    assert_eq!(voice.workstream.as_deref(), Some(WS14));
+    assert!(!voice.summary_in_worktree);
+
+    // derive: the project's view lists all four rows but counts only its own.
+    let view = waves::derive(&scan, &parse_project_state(&root.join(".planning")));
+    assert_eq!(view.agents.len(), 4);
+    assert_eq!(view.workstreams[WS13].agents.len(), 1);
+    assert_eq!(view.workstreams[WS14].agents.len(), 1);
+}
+
+/// A test-only adapter giving every agent worktree one scripted description.
+struct Described(&'static str);
+
+impl AgentAdapter for Described {
+    fn name(&self) -> &'static str {
+        "described"
+    }
+
+    fn enrich(&self, snap: &CoreSnapshot<'_>) -> AdapterReport {
+        let per_worktree = snap
+            .worktrees
+            .iter()
+            .enumerate()
+            .filter(|(_, wt)| wt.agent_pattern)
+            .map(|(index, _)| {
+                (
+                    index,
+                    Enrichment {
+                        description: Some(Untrusted::from_untrusted_source(self.0.into())),
+                        last_activity: Some(snap.now),
+                        lock_released: Some(false),
+                        ..Enrichment::default()
+                    },
+                )
+            })
+            .collect();
+        AdapterReport {
+            per_worktree,
+            worktreeless: Vec::new(),
+        }
+    }
+}
+
+/// An agent whose description names a workstream picks it among the candidate
+/// scopes, where path evidence alone would leave it with the project.
+#[test]
+fn an_agent_description_naming_a_workstream_picks_it_among_candidates() {
+    let Some((_tmp, root)) = workstream_repo() else {
+        return;
+    };
+    add_agent_worktree(&root, "agent-a1b2c3d4e5f60718");
+    let adapters: Vec<Box<dyn AgentAdapter>> = vec![Box::new(Described(
+        "Execute plan 1 of phase 16 --ws v0-13-public-beta",
+    ))];
+    let scan = scan_project_with(&root, &adapters, SystemTime::now());
+    let row = row_of(&scan, "agent-a1b2c3d4e5f60718");
+    assert_eq!(row.plan, Some(plan("16-01")));
+    assert_eq!(row.workstream.as_deref(), Some(WS13));
+
+    // The same agent without the naming stays with the project.
+    let adapters: Vec<Box<dyn AgentAdapter>> =
+        vec![Box::new(Described("Execute plan 1 of phase 16"))];
+    let scan = scan_project_with(&root, &adapters, SystemTime::now());
+    assert_eq!(row_of(&scan, "agent-a1b2c3d4e5f60718").workstream, None);
 }

@@ -1856,7 +1856,7 @@ impl DetailScreen {
             WavesRowKind::Merged { first, last } => first..=last,
             WavesRowKind::Plan { wave, plan } => {
                 let id = model.waves[wave].plans[plan].id.clone();
-                return self.focus_agent_of_plan(&id, ctx);
+                return self.focus_agent_of_plan(&id, model.workstream.as_deref(), ctx);
             }
         };
         for wave in &model.waves[covered] {
@@ -1876,16 +1876,30 @@ impl DetailScreen {
     /// attributed row of any liveness — and the focus on content. Navigation
     /// only. With no attributed agent, a status message and the pane keeps
     /// the keyboard.
-    fn focus_agent_of_plan(&mut self, stem: &str, ctx: &mut AppContext) -> ScreenAction {
+    ///
+    /// The agent is matched on the plan AND the scope (quick 261023-05i):
+    /// `workstream` is the pane's workstream, `None` for the project's own, so
+    /// the project's agent on 16-01 and v0.13's agent on 16-01 are never
+    /// mistaken for each other. The search is still over the project's view,
+    /// because Sessions › Agents renders that view and [`agent_line_index`]
+    /// indexes it.
+    fn focus_agent_of_plan(
+        &mut self,
+        stem: &str,
+        workstream: Option<&str>,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         const NO_AGENT: &str = "No agent is attributed to this plan";
         let Some(key) = crate::state_reader::disk_status::plan_index(stem) else {
             return ScreenAction::SetStatusMessage(NO_AGENT.to_string());
         };
         let line = ctx.agent_views.get(&self.alias).and_then(|view| {
             let attributed = |row: &crate::agents::AgentRow| {
-                row.plan
-                    .as_ref()
-                    .is_some_and(|p| p.phase == key.0 && p.plan == key.1)
+                row.workstream.as_deref() == workstream
+                    && row
+                        .plan
+                        .as_ref()
+                        .is_some_and(|p| p.phase == key.0 && p.plan == key.1)
             };
             view.agents
                 .iter()
@@ -1916,10 +1930,15 @@ impl DetailScreen {
                 .view_cache
                 .get(&self.alias)
                 .map_or(0, |c| c.agents_selected.min(last));
-            agent_row_for_line(view, line).and_then(|index| view.agents[index].plan.clone())
+            agent_row_for_line(view, line).and_then(|index| {
+                let row = &view.agents[index];
+                Some((row.plan.clone()?, row.workstream.clone()))
+            })
         });
         match plan {
-            Some(plan) => self.focus_plan_in_phases(&plan, ctx),
+            Some((plan, workstream)) => {
+                self.focus_plan_in_phases(&plan, workstream.as_deref(), ctx)
+            }
             None => {
                 ScreenAction::SetStatusMessage("This agent is not attributed to a plan".to_string())
             }
@@ -1936,6 +1955,7 @@ impl DetailScreen {
     fn focus_plan_in_phases(
         &mut self,
         plan: &crate::agents::waves::PlanRef,
+        workstream: Option<&str>,
         ctx: &mut AppContext,
     ) -> ScreenAction {
         use crate::state_reader::phase_num::phase_key;
@@ -1943,14 +1963,13 @@ impl DetailScreen {
             return ScreenAction::None;
         };
         let wanted = phase_key(&plan.phase.to_string());
-        // An agent's plan belongs to the PROJECT's phases (the agents scan
-        // knows nothing of workstreams), so a workstream's same-numbered phase
-        // is never the answer.
-        let Some(index) = state
-            .scoped_phases()
-            .iter()
-            .position(|p| p.workstream.is_none() && phase_key(&p.phase.number) == wanted)
-        else {
+        // The phase is found by (workstream, number): an agent's plan was
+        // resolved to its scope at scan time (quick 261023-05i), so the
+        // project's Phase 16 and a workstream's Phase 16 are never confused.
+        let Some(index) = state.scoped_phases().iter().position(|p| {
+            p.workstream.map(|ws| ws.name.as_str()) == workstream
+                && phase_key(&p.phase.number) == wanted
+        }) else {
             return ScreenAction::SetStatusMessage(format!(
                 "Plan {} is not a phase in this project",
                 plan.label()
@@ -34157,5 +34176,91 @@ mod tests {
             .filter(|f| f.key == format!("{WS14}/26"))
             .count();
         assert_eq!(count, 1, "main's roadmap stays authoritative");
+    }
+
+    /// Two live agents on plan 16-01: A in the project, B in v0.13. The view
+    /// is derived against the sentriq fixture's parsed state.
+    fn two_16_01_agents_ctx(ctx: &mut AppContext) {
+        let row = |path: &str, workstream: Option<&str>| crate::agents::AgentRow {
+            path: std::path::PathBuf::from(path),
+            plan: crate::agents::waves::PlanRef::from_id("16-01"),
+            workstream: workstream.map(str::to_string),
+            liveness: crate::agents::AgentLiveness::Live,
+            ..Default::default()
+        };
+        let agents = crate::agents::ProjectAgents {
+            rows: vec![
+                row("/wt/agent-root16", None),
+                row("/wt/agent-ws16", Some(WS13)),
+            ],
+            ..Default::default()
+        };
+        let view = crate::agents::waves::derive(&agents, &ctx.project_states[TEST_ALIAS]);
+        ctx.agent_views.insert(TEST_ALIAS.to_string(), view);
+    }
+
+    /// Quick 261023-05i: `Enter` on a workstream phase's plan row opens
+    /// Sessions › Agents on the agent attributed to THAT workstream's plan,
+    /// even when the project has an agent on a plan with the same id.
+    #[test]
+    fn sentriq_enter_on_a_workstream_plan_selects_that_workstreams_agent() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Pipeline);
+        two_16_01_agents_ctx(&mut ctx);
+        let view = ctx.agent_views[TEST_ALIAS].clone();
+        assert_eq!(view.agents.len(), 2);
+        assert_eq!(view.workstreams[WS13].agents.len(), 1);
+        let line_of = |path: &str| {
+            let index = view
+                .agents
+                .iter()
+                .position(|r| r.path == std::path::Path::new(path))
+                .expect("row");
+            agent_line_index(&view, index)
+        };
+        let selected = |ctx: &AppContext| ctx.view_cache[TEST_ALIAS].agents_selected;
+
+        screen.focus_agent_of_plan("16-01", Some(WS13), &mut ctx);
+        assert_eq!(selected(&ctx), line_of("/wt/agent-ws16"));
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Agents)
+        );
+
+        screen.focus_agent_of_plan("16-01", None, &mut ctx);
+        assert_eq!(selected(&ctx), line_of("/wt/agent-root16"));
+
+        // A workstream with no agent on the plan gets the status message.
+        let action = screen.focus_agent_of_plan("16-01", Some(WS14), &mut ctx);
+        assert!(matches!(action, ScreenAction::SetStatusMessage(_)));
+    }
+
+    /// Quick 261023-05i: `Enter` on an agent line opens the Phases tab on the
+    /// agent's own scope's phase: `v0-13-public-beta/16` or the project's `16`.
+    #[test]
+    fn sentriq_enter_on_an_agent_opens_its_own_scopes_phase() {
+        let (_td, mut screen, mut ctx) = sentriq_workstreams_detail(DetailSubView::Agents);
+        two_16_01_agents_ctx(&mut ctx);
+        let view = ctx.agent_views[TEST_ALIAS].clone();
+        let opened = |ctx: &AppContext| {
+            let state = &ctx.project_states[TEST_ALIAS];
+            let selected = ctx.view_cache[TEST_ALIAS].pipeline_selected;
+            state.scoped_phases()[selected].key()
+        };
+        for (path, want) in [
+            ("/wt/agent-ws16", format!("{WS13}/16")),
+            ("/wt/agent-root16", "16".to_string()),
+        ] {
+            let index = view
+                .agents
+                .iter()
+                .position(|r| r.path == std::path::Path::new(path))
+                .expect("row");
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .agents_selected = agent_line_index(&view, index);
+            screen.agents_enter(&mut ctx);
+            assert_eq!(opened(&ctx), want, "from {path}");
+        }
     }
 }
