@@ -2417,6 +2417,10 @@ impl AppContext {
         }
         let (term, column) = parse_filter(&self.filter_text);
         let term_lower = term.to_lowercase();
+        // One clock reading per recompute, like the dashboard's one per frame:
+        // the drawn workstream line (and so what the filter matches) depends on
+        // whether a milestone claim is live at this instant.
+        let now = chrono::Utc::now();
         self.filtered_aliases = all
             .into_iter()
             .filter(|alias| {
@@ -2434,6 +2438,7 @@ impl AppContext {
                             || state.is_some_and(|s| {
                                 s.status.to_lowercase().contains(&term_lower)
                                     || format_phase_display(s).to_lowercase().contains(&term_lower)
+                                    || workstream_text_matches(s, &term_lower, now)
                             })
                     }
                     // `term` still applies across every column, so `/term/h` is
@@ -2453,6 +2458,40 @@ impl AppContext {
             .collect();
         self.pin_selection_to_alias(previously_selected);
     }
+}
+
+/// Does any parallel workstream of `state` match the already-lowercased filter
+/// term?
+///
+/// The haystack per workstream is what the dashboard draws plus the
+/// workstream's two identifying names: its directory name, its STATE.md
+/// milestone id and milestone name, and the drawn line itself
+/// ([`crate::app::format_workstream_display`]), which carries the marker, the
+/// milestone label and the *focus* phase as `P<n>: <name>`. Only the focus
+/// phase is searched, never every phase on the workstream's roadmap, so the
+/// filter finds exactly the words the user can see.
+///
+/// Every workstream is checked, including any past the dashboard's line cap.
+/// The match is raw and logic-only: the milestone name is read through
+/// `as_raw_for_logic_only` and nothing here is ever rendered, consistent with
+/// the existing filter matching the raw `filter_text`.
+fn workstream_text_matches(
+    state: &ProjectState,
+    term_lower: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    state.workstreams.iter().any(|ws| {
+        ws.name.to_lowercase().contains(term_lower)
+            || ws.state.milestone.to_lowercase().contains(term_lower)
+            || ws.state.milestone_name.as_ref().is_some_and(|name| {
+                name.as_raw_for_logic_only()
+                    .to_lowercase()
+                    .contains(term_lower)
+            })
+            || crate::app::format_workstream_display(ws, now)
+                .to_lowercase()
+                .contains(term_lower)
+    })
 }
 
 #[cfg(test)]
@@ -3711,5 +3750,56 @@ mod tests {
              left holding a stale number for the next open to inherit"
         );
         assert!(!cache.loading_commit_detail);
+    }
+
+    // -----------------------------------------------------------------------
+    // Dashboard `/` filter matches parallel-workstream text (261023-05k)
+    // -----------------------------------------------------------------------
+
+    /// A dashboard holding a flat control project and the sentriq-shaped
+    /// fixture (see `write_sentriq_workstreams_fixture`).
+    fn sentriq_filter_ctx(
+        td: &tempfile::TempDir,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> AppContext {
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(&planning, now);
+        let mut ctx = ctx_with_aliases(&["flatproj", "sentriq"]);
+        ctx.project_states.insert(
+            "sentriq".to_string(),
+            crate::state_reader::parse_project_state(&planning),
+        );
+        ctx
+    }
+
+    fn filtered_for(ctx: &mut AppContext, filter: &str) -> Vec<String> {
+        ctx.filter_text = filter.to_string();
+        ctx.recompute_filtered_aliases();
+        ctx.filtered_aliases.clone()
+    }
+
+    #[test]
+    fn sentriq_dashboard_filter_matches_workstream_milestone_dir_and_focus_phase() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut ctx = sentriq_filter_ctx(&td, chrono::Utc::now());
+        let cases = [
+            ("voice", "dir / milestone name / focus phase name"),
+            ("v0.14", "milestone id"),
+            ("push-to-talk", "focus phase name"),
+            ("PUSH-TO-TALK", "focus phase name, case-insensitive"),
+            ("assistant", "workstream directory name only"),
+            ("mechanic", "milestone name only"),
+            ("p26", "focus phase number"),
+            ("v0.13", "milestone id of the unclaimed workstream"),
+            ("public beta", "milestone name of the unclaimed workstream"),
+            ("play release", "focus phase of the unclaimed workstream"),
+        ];
+        for (query, source) in cases {
+            assert_eq!(
+                filtered_for(&mut ctx, query),
+                vec!["sentriq".to_string()],
+                "/{query} must keep sentriq (exercises: {source})"
+            );
+        }
     }
 }
