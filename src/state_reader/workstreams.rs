@@ -12,6 +12,7 @@
 //! recursion guard (added in plan 8 task 2) that skips workstream loading when the
 //! dir is already inside a `workstreams/` parent, bounding depth to one level.
 
+use super::disk_status::DiskStatus;
 use super::phase_num::PhaseNum;
 use chrono::{DateTime, Duration, Utc};
 use std::io::Read;
@@ -108,16 +109,59 @@ impl WorkstreamState {
             .then(|| phase.clone())
     }
 
+    /// The most advanced phase that has a directory and is not yet implemented.
+    ///
+    /// **Real** means the phase's disk status is above
+    /// [`DiskStatus::NoDirectory`]: somebody has started it on disk. A roadmap
+    /// entry with no directory is a phase nobody has touched, and naming it as
+    /// where the work stands is the defect this step exists to close (sentriq's
+    /// v0.14: the disk frontier says 27, which has no directory, while 28 is
+    /// partly built). **Unfinished** means the status is below
+    /// [`DiskStatus::Executed`], the same implementation threshold the disk
+    /// frontier uses; an executed phase awaiting verification or gap closure is
+    /// not where building happens. Both bounds compare against the derived `Ord`
+    /// rather than listing variants, so a variant inserted between them is
+    /// included automatically.
+    ///
+    /// Ranking is the most advanced stage first, then the lowest number within a
+    /// stage. Stage outranks number because work in flight beats an earlier phase
+    /// that, in a parallel milestone, may merely be waiting on a dependency. A
+    /// phase whose number does not parse as a [`PhaseNum`] is skipped, as it
+    /// abstains in [`ProjectState::active_phase_number`].
+    ///
+    /// Works on the in-memory state only — the render loop calls this, so it
+    /// must not touch the filesystem.
+    ///
+    /// [`ProjectState::active_phase_number`]: super::ProjectState::active_phase_number
+    fn real_unfinished_phase(&self) -> Option<PhaseNum> {
+        self.state
+            .phases
+            .iter()
+            .filter_map(|p| {
+                let status = self.state.phase_disk_statuses.get(&p.number)?.status;
+                if status <= DiskStatus::NoDirectory || status >= DiskStatus::Executed {
+                    return None;
+                }
+                Some((status, std::cmp::Reverse(PhaseNum::parse(&p.number)?)))
+            })
+            .max()
+            .map(|(_, std::cmp::Reverse(num))| num)
+    }
+
     /// The phase this workstream is working on, for display.
     ///
-    /// **A live claim first, then [`ProjectState::active_phase_number`].** A
-    /// workstream is the unit GSD uses to run a milestone's phases in PARALLEL,
-    /// which is exactly where the fallback is weakest: `STATE.md`'s
-    /// `current_phase` is one slot shared by every session (sentriq's v0.14 says
-    /// 24 while its owner works 26), and the disk frontier is the first phase
-    /// that is not yet executed — here 27, which has no directory at all. The
-    /// claim is the one input that says which phase a session is working on, so
-    /// it leads while it is live and the established rule answers when it is not.
+    /// **Three steps: a live claim, else the most advanced real unfinished phase,
+    /// else [`ProjectState::active_phase_number`].** A workstream is the unit GSD
+    /// uses to run a milestone's phases in PARALLEL, which is exactly where the
+    /// established rule is weakest: `STATE.md`'s `current_phase` is one slot
+    /// shared by every session (sentriq's v0.14 says 24 while its owner works
+    /// 26), and the disk frontier is the first phase that is not yet executed —
+    /// here 27, which has no directory at all. The claim is the one input that
+    /// says which phase a session is working on, so it leads while it is live.
+    /// Once it lapses (or there never was one) the established rule alone could
+    /// still land on a phase nobody has started, so the middle step prefers a
+    /// phase that really is mid-build (28). The established rule answers only
+    /// when no listed phase is real and unfinished.
     ///
     /// `None` only when the workstream's roadmap lists no phase, so there is
     /// nothing to name.
@@ -129,6 +173,7 @@ impl WorkstreamState {
         }
         Some(
             self.live_claim_phase(now)
+                .or_else(|| self.real_unfinished_phase())
                 .unwrap_or_else(|| self.state.active_phase_number()),
         )
     }
@@ -262,8 +307,9 @@ pub fn load_workstreams(planning_dir: &Path) -> Vec<WorkstreamState> {
 ///   pointer per session in a temp dir, so on disk there usually is none).
 /// - `v0-14-voice-assistant` carries GSD's single-slot hazards: STATE.md
 ///   declares `current_phase: 24` (stale — parallel sessions clobber it), the
-///   disk frontier lands on phase 27 (which has NO directory), and a live
-///   `milestone.lock` claims phase 26. Its `stopped_at` is a long quoted string
+///   disk frontier lands on phase 27 (which has NO directory; with the claim
+///   lapsed or absent the focus falls back to phase 28, the only real
+///   unfinished phase), and a live `milestone.lock` claims phase 26. Its `stopped_at` is a long quoted string
 ///   holding `;` `(` `)` and `,`. Phase 26 verified `gaps_found`; phase 28 is
 ///   partly built; `phases/` also holds an `archived-…-phases` directory, and
 ///   `quick/` and `milestones/archived-…-phases/` exist beside it. Phase 26 holds
@@ -692,8 +738,9 @@ mod tests {
         );
     }
 
-    /// A workstream with no lock keeps the established rule, so v0.13 — every
-    /// phase executed, STATE.md declaring 20 — still resolves to its last phase.
+    /// A workstream with no lock and no real unfinished phase keeps the
+    /// established rule, so v0.13 — every phase executed, STATE.md declaring 20
+    /// — still resolves to its last phase.
     #[test]
     fn a_workstream_without_a_claim_keeps_the_established_active_phase() {
         let (_td, root, now) = sentriq();
@@ -711,8 +758,11 @@ mod tests {
 
     /// GSD's own window: a claim not heartbeated for four hours is abandoned, so
     /// the display falls back instead of pinning a dead session's phase forever.
+    /// The fallback names the phase where work really stands — 28, partly built
+    /// — and not the established rule's 27, which has no directory at all.
     #[test]
-    fn an_expired_claim_falls_back_to_the_established_active_phase() {
+    fn a_lapsed_claim_falls_back_to_the_real_unfinished_phase_28_not_the_directoryless_27() {
+        use crate::state_reader::disk_status::DiskStatus;
         let (_td, root, now) = sentriq();
         let v14 = ws(&root, "v0-14-voice-assistant");
 
@@ -724,7 +774,47 @@ mod tests {
         );
         let expired = now + MILESTONE_CLAIM_TTL;
         assert_eq!(v14.live_claim_phase(expired), None);
-        assert_eq!(v14.focus_phase_number(expired), Some(PhaseNum::from(27)));
+        assert_eq!(v14.focus_phase_number(expired), Some(PhaseNum::from(28)));
+        assert_eq!(
+            v14.focus_phase(expired).expect("28 is on the roadmap").name,
+            "Mechanic Toolbox, Full Data Access and Voice-Started Actions"
+        );
+        assert_eq!(
+            v14.focus_inference(expired)
+                .expect("28 has a directory")
+                .status,
+            DiskStatus::Partial
+        );
+
+        // What did NOT change: the established rule still says 27, and 27 still
+        // has no directory. Only the fallback stopped trusting it.
+        assert_eq!(v14.state.active_phase_number(), PhaseNum::from(27));
+        assert_eq!(
+            v14.state.phase_disk_statuses["27"].status,
+            DiskStatus::NoDirectory
+        );
+    }
+
+    /// No lock at all takes the same fallback as a lapsed one.
+    #[test]
+    fn an_absent_claim_falls_back_to_the_real_unfinished_phase_28() {
+        use crate::state_reader::disk_status::DiskStatus;
+        let (td, _, now) = sentriq();
+        let planning = td.path().join(".planning");
+        fs::remove_file(planning.join("workstreams/v0-14-voice-assistant/milestone.lock")).unwrap();
+        let root = parse_project_state(&planning);
+        let v14 = ws(&root, "v0-14-voice-assistant");
+
+        assert!(v14.claim.is_none());
+        assert_eq!(v14.focus_phase_number(now), Some(PhaseNum::from(28)));
+        assert_eq!(
+            v14.focus_phase(now).expect("28 is on the roadmap").name,
+            "Mechanic Toolbox, Full Data Access and Voice-Started Actions"
+        );
+        assert_eq!(
+            v14.focus_inference(now).expect("28 has a directory").status,
+            DiskStatus::Partial
+        );
     }
 
     /// A heartbeat dated far in the future (a skewed clock, a hand-edited lock)
@@ -756,7 +846,109 @@ mod tests {
 
         assert_eq!(v14.claim.as_ref().unwrap().phase, Some(PhaseNum::from(99)));
         assert_eq!(v14.live_claim_phase(now), None);
-        assert_eq!(v14.focus_phase_number(now), Some(PhaseNum::from(27)));
+        assert_eq!(v14.focus_phase_number(now), Some(PhaseNum::from(28)));
+    }
+
+    /// With no listed phase both real and unfinished, the third step is the
+    /// established rule verbatim. Phase 28's directory is gone and STATE.md
+    /// declares 28, so `active_phase_number` says 28 while the lowest
+    /// directory-less phase is 27: the two differ, and the focus is the former.
+    #[test]
+    fn without_a_real_unfinished_phase_the_established_rule_still_answers() {
+        use crate::state_reader::disk_status::DiskStatus;
+        let (td, _, now) = sentriq();
+        let planning = td.path().join(".planning");
+        let v14_dir = planning.join("workstreams/v0-14-voice-assistant");
+        fs::remove_dir_all(
+            v14_dir.join("phases/28-mechanic-toolbox-full-data-access-and-voice-started-actions"),
+        )
+        .unwrap();
+        let state_md = fs::read_to_string(v14_dir.join("STATE.md")).unwrap();
+        assert!(state_md.contains("current_phase: 24"));
+        fs::write(
+            v14_dir.join("STATE.md"),
+            state_md.replace("current_phase: 24", "current_phase: 28"),
+        )
+        .unwrap();
+        let root = parse_project_state(&planning);
+        let v14 = ws(&root, "v0-14-voice-assistant");
+
+        assert_eq!(
+            v14.state.phase_disk_statuses["28"].status,
+            DiskStatus::NoDirectory
+        );
+        assert_eq!(v14.state.active_phase_number(), PhaseNum::from(28));
+        let expired = now + MILESTONE_CLAIM_TTL;
+        assert_eq!(v14.live_claim_phase(expired), None);
+        assert_eq!(
+            v14.focus_phase_number(expired),
+            Some(v14.state.active_phase_number())
+        );
+        assert_eq!(v14.focus_phase_number(expired), Some(PhaseNum::from(28)));
+    }
+
+    const WS14_P27: &str =
+        "workstreams/v0-14-voice-assistant/phases/27-parity-designs-and-wake-word-verdict";
+
+    /// Work in flight beats an earlier phase that is merely discussed or
+    /// planned: in a parallel milestone that earlier phase may be waiting on a
+    /// dependency. Stage first, then number.
+    #[test]
+    fn an_in_progress_phase_outranks_a_lower_numbered_discussed_or_planned_one() {
+        use crate::state_reader::disk_status::DiskStatus;
+        let (td, _, now) = sentriq();
+        let planning = td.path().join(".planning");
+        let expired = now + MILESTONE_CLAIM_TTL;
+        let dir = planning.join(WS14_P27);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("27-CONTEXT.md"), "# Context\n").unwrap();
+        let root = parse_project_state(&planning);
+        let v14 = ws(&root, "v0-14-voice-assistant");
+        assert_eq!(
+            v14.state.phase_disk_statuses["27"].status,
+            DiskStatus::Discussed
+        );
+        assert_eq!(v14.focus_phase_number(expired), Some(PhaseNum::from(28)));
+
+        fs::write(dir.join("27-01-PLAN.md"), "# Plan\n").unwrap();
+        let root = parse_project_state(&planning);
+        let v14 = ws(&root, "v0-14-voice-assistant");
+        assert_eq!(
+            v14.state.phase_disk_statuses["27"].status,
+            DiskStatus::Planned
+        );
+        assert_eq!(v14.focus_phase_number(expired), Some(PhaseNum::from(28)));
+    }
+
+    /// Two phases at the same stage: the lower-numbered one wins. A live claim
+    /// still leads over both.
+    #[test]
+    fn the_lowest_numbered_of_equally_advanced_in_progress_phases_wins() {
+        use crate::state_reader::disk_status::DiskStatus;
+        let (td, _, now) = sentriq();
+        let planning = td.path().join(".planning");
+        let dir = planning.join(WS14_P27);
+        fs::create_dir_all(&dir).unwrap();
+        for f in ["27-01-PLAN.md", "27-02-PLAN.md", "27-01-SUMMARY.md"] {
+            fs::write(dir.join(f), "# x\n").unwrap();
+        }
+        let root = parse_project_state(&planning);
+        let v14 = ws(&root, "v0-14-voice-assistant");
+
+        assert_eq!(
+            v14.state.phase_disk_statuses["27"].status,
+            DiskStatus::Partial
+        );
+        assert_eq!(
+            v14.state.phase_disk_statuses["28"].status,
+            DiskStatus::Partial
+        );
+        assert_eq!(
+            v14.focus_phase_number(now + MILESTONE_CLAIM_TTL),
+            Some(PhaseNum::from(27))
+        );
+        assert_eq!(v14.focus_phase_number(now), Some(PhaseNum::from(26)));
     }
 
     /// The lock is third-party JSON: every shape GSD writes parses, and no

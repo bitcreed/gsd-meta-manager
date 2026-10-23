@@ -1769,7 +1769,8 @@ impl DetailScreen {
         let (inf, worktree) = browsed_inference(entry.owner, view, &phase.number)?;
         // The phase the pane calls active is the phase its OWN roadmap works:
         // the project's active phase, or a workstream's focus (live claim,
-        // else the established rule — the phase the dashboard names for it).
+        // else its most advanced real unfinished phase, else the established
+        // rule — the phase the dashboard names for it).
         let active = match entry.workstream {
             None => crate::state_reader::phase_num::same_phase(
                 &entry.owner.active_phase_number().to_string(),
@@ -2851,7 +2852,8 @@ fn disk_suffix_spans(
 ///   ([`roadmap_graph::Scope`]) so a workstream's `Phase 16` is not the
 ///   project's and its dependencies resolve inside it. A workstream's current
 ///   phase is [`state_reader::workstreams::WorkstreamState::focus_phase_number`]
-///   (a live `milestone.lock` claim, else the established rule), the same phase
+///   (a live `milestone.lock` claim, else its most advanced real unfinished
+///   phase, else the established rule), the same phase
 ///   the dashboard names, so `◉` marks the phase the owner is working. Each
 ///   scope reads its own agent view (quick 261023-05i): the project's phases
 ///   the project's, a workstream's phases that workstream's nested
@@ -33253,7 +33255,7 @@ mod tests {
     /// own band, then ONE scoped band per workstream, each holding its own
     /// roadmap's phases under scoped keys — and `◉` on the phase the owner is
     /// working in v0.14 (26, the live claim), not on the declared 24 nor on the
-    /// frontier 27, until the claim lapses.
+    /// frontier 27. Once the claim lapses the `◉` moves to 28, not 27.
     #[test]
     fn sentriq_roadmap_model_has_a_scoped_band_per_workstream_and_marks_the_focus_phase() {
         let (_td, _screen, ctx) = sentriq_workstreams_detail(DetailSubView::RoadmapViz);
@@ -33307,14 +33309,16 @@ mod tests {
         assert_ne!(status("v0-14-voice-assistant/27"), Active);
 
         // GSD's own liveness window: past it the claim is abandoned and the
-        // established rule (the disk frontier, 27) answers.
+        // fallback names the real unfinished phase, 28 (partly built), never the
+        // directory-less frontier 27.
         let lapsed = roadmap_model_at(state, None, false, None, now + chrono::Duration::hours(5));
         let status = |key: &str| {
             let at = lapsed.phase_index(key).expect("listed");
             lapsed.phases[at].status
         };
-        assert_eq!(status("v0-14-voice-assistant/27"), Active);
+        assert_eq!(status("v0-14-voice-assistant/28"), Active);
         assert_eq!(status("v0-14-voice-assistant/26"), Done);
+        assert_ne!(status("v0-14-voice-assistant/27"), Active);
     }
 
     /// The Roadmap's `Space` folds ONE workstream's band. Two workstreams on
