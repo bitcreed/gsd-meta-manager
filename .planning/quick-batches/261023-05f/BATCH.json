@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "batch_id": "261023-05f",
+  "created_at": "2026-10-23T05:06:31.692Z",
+  "options": {},
+  "base_revision": "76bad1d61b988896c6993986528c8fd9ccbf8bb7",
+  "items": [
+    {
+      "quick_id": "261023-05g",
+      "client_id": null,
+      "description": "Detail screen Roadmap header reflects workstream milestones: the Roadmap tab header line (today e.g. `v0.12 … 8 of 9 phases done`, project-only) must also summarise each workstream's milestone (e.g. `ws v0.13 7/7 · ws v0.14 4/6`), consistent with the workstream bands added in d1b1457 (src/ui/screens/detail.rs roadmap_model_at / render_roadmap, app.rs workstream_milestone_label). Regression test with the sentriq-shaped fixture. Background: .planning/debug/resolved/workstreams-not-surfaced.md (unresolved list). Do not touch the removed `v` box view.",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/ui/screens/detail.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261023-05h",
+      "client_id": null,
+      "description": "Detail screen Docs tab includes each workstream's planning docs (STATE.md, ROADMAP.md, REQUIREMENTS.md, MILESTONE-CONTEXT.md, HANDOFF.json if listed, phase docs under workstreams/<dir>/phases/) grouped or labelled by workstream (e.g. a `ws v0.14 — Voice Mechanic` group or `ws v0.14` prefix), and Docs > Milestones shows workstream milestones too. Opening a workstream doc must open the file under .planning/workstreams/<dir>/. Regression tests with the sentriq-shaped fixture; root docs unchanged for flat projects.",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/browser.rs",
+        "src/archive.rs",
+        "src/ui/screens/detail.rs",
+        "src/ui/screens/mod.rs",
+        "README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261023-05i",
+      "client_id": null,
+      "description": "Agent and worktree details for workstream phases: wherever root phases show agents-scan data (worktree badge, worktree-held plan counts, unmerged post-pass, Enter-to-agent / Sessions>Agents cross-jump in the Detail 1:Roadmap and 2:Phases tabs), show them for workstream phases too, matching worktrees whose .planning copy or branch belongs to that workstream (workstreams/<dir>/phases/...), never attributing the project's Phase N worktree plans to a workstream's Phase N (agent_view_of in detail.rs currently refuses workstream phases). Regression tests including the same-number collision (root P16 vs v0.13 P16).",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/agents/mod.rs",
+        "src/agents/workstream_scope.rs",
+        "src/agents/unmerged.rs",
+        "src/agents/worktree_phases.rs",
+        "src/agents/worktree_plans.rs",
+        "src/agents/waves.rs",
+        "src/app.rs",
+        "src/ui/screens/detail.rs",
+        "tests/agents_workstreams.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 2,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261023-05j",
+      "client_id": null,
+      "description": "Dashboard row colour, attention badges, footer/summary counts and sort account for workstreams: a project whose root is phase_complete but has an executing workstream must not count as `done` (sentriq footer today says `1 done` while v0.14 is executing); derive an aggregate status from root + workstreams (most-active / most-attention wins) for colour, badge, footer counts and sort, in src/ui/screens/normal.rs and app.rs classify_status. Regression tests with the sentriq-shaped fixture; flat projects unchanged.",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/app.rs",
+        "src/ui/screens/normal.rs",
+        "src/ui/screens/mod.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261023-05k",
+      "client_id": null,
+      "description": "Dashboard `/` filter matches workstream text: the filter must match a project when the query matches any workstream's milestone id/name, workstream dir name, or focus phase name/number (e.g. `voice`, `v0.14`, `push-to-talk`). Regression tests with the sentriq-shaped fixture.",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/ui/screens/mod.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 2,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261023-05l",
+      "client_id": null,
+      "description": "Workstream with no roadmap phases gets a minimal band: on the Detail Roadmap tab (and wherever a workstream band/row is drawn, e.g. Phases list), a workstream whose roadmap lists no phases currently draws nothing because the layout skips member-less bands; give it a minimal representation (band header `ws vX.Y — Name` plus a dim placeholder line like `no phases on roadmap yet` with its status), foldable like other bands, without breaking selection/cursor indexing. Regression tests.",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/ui/roadmap_graph.rs",
+        "src/ui/roadmap_view.rs",
+        "src/ui/screens/detail.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 3,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261023-05m",
+      "client_id": null,
+      "description": "Stale-lock fallback prefers a real unfinished phase: when a workstream's milestone.lock claim is older than GSD's 4 h TTL (or absent), WorkstreamState::focus_phase_number (src/state_reader/workstreams.rs) falls back to the established rule which can pick a phase with no directory (sentriq v0.14 picks P27 while 28 is partial 7/9 and 23-26 executed). Make the fallback prefer a real (has directory), unfinished phase (e.g. lowest-numbered in-progress phase with plans), falling back to the old rule only when none exists. Regression tests using the sentriq-shaped fixture with a lapsed claim.",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/workstreams.rs",
+        "src/ui/screens/detail.rs",
+        "src/app.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 4,
+      "commit": null,
+      "failure_reason": null
+    }
+  ]
+}
