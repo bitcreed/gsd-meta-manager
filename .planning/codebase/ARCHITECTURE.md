@@ -109,7 +109,7 @@ The binary has two independent execution modes selected by `src/main.rs` before 
 
 **Presentation Layer:**
 - Purpose: render current state to the terminal; translate keys to `ScreenAction`s
-- Location: `src/ui/mod.rs`, `src/ui/screens/*.rs`, `src/ui/project_list.rs`, `src/ui/roadmap_widget.rs`
+- Location: `src/ui/mod.rs`, `src/ui/screens/*.rs`, `src/ui/project_list.rs`, `src/ui/roadmap_view.rs`
 - Contains: `Screen` trait implementors (one per view/dialog), shared `AppContext`
 - Depends on: `ratatui`, `App`/`AppContext` state (read-only at render time)
 - Used by: `ui::render`, called once per frame from `run_tui_loop`

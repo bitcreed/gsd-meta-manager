@@ -164,7 +164,7 @@ src/
 │   └── git_ops.rs           Shell out to `git log` / `git diff --stat`
 └── ui/
     ├── mod.rs               ui::render entry point — delegates to top screen
-    ├── roadmap_widget.rs    Custom ratatui widget for roadmap visualization
+    ├── roadmap_view.rs      Roadmap tab widget: lanes list and detail pane
     └── screens/
         ├── mod.rs           Screen trait, ScreenAction, AppContext, ProjectViewCache
         ├── normal.rs        Project list (default screen)

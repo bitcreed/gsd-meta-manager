@@ -270,12 +270,11 @@ Tab-specific keys:
 
 | Tab | Key | Action |
 |-----|-----|--------|
-| Roadmap | `j` `k` `g` `G` `PgUp` `PgDn` | On the list view: move the phase cursor, jump to top / bottom, or page |
+| Roadmap | `j` `k` `g` `G` `PgUp` `PgDn` | Move the phase cursor, jump to top / bottom, or page |
 | Roadmap | `h` / `l` | Jump to a dependency / to a phase it unblocks; repeat to cycle |
 | Roadmap | `[` / `]` | Previous / next phase in the same wave |
 | Roadmap | `Space` | Fold / unfold the milestone |
 | Roadmap | `Enter` | Open the phase in Phases. On a milestone row, fold / unfold it; on the shipped-milestones row, open Docs › Milestones |
-| Roadmap | `v` | Switch between the graph list and the box view |
 | Phases | `→` / `Enter` / `Space` | Focus the Waves pane (on top of the right side, under the ladder) |
 | Waves pane | `j` `k` `g` `G` `PgUp` `PgDn` | Move the row cursor, top / bottom, page |
 | Waves pane | `Enter` / `Space` | Fold / unfold a wave (or a merged `w1–w10 ✓` row); on a plan, jump to its agent in Sessions › Agents |
@@ -331,12 +330,11 @@ Config filter) ignore the mouse.
 Not mouse-driven, on purpose: a Queue double-click does nothing, because
 `Enter` there marks the action done and saves the queue (select with a click,
 then press `Enter`); the Config `d` scope switch, breadcrumbs, the Git mode
-line, footers and titles are labels, not controls; the Roadmap box view (`v`)
-has no cursor, and the phase names in its detail pane's Needs / Unblocks /
-Parallel lines are not links (`h` / `l` follow them); the wheel over the Backlog
-list while its content pane is open does nothing; dialogs, the help overlay and
-text entry ignore the mouse; drag, right / middle click, hover and horizontal
-scroll are ignored.
+line, footers and titles are labels, not controls; the phase names in the
+Roadmap detail pane's Needs / Unblocks / Parallel lines are not links (`h` /
+`l` follow them); the wheel over the Backlog list while its content pane is
+open does nothing; dialogs, the help overlay and text entry ignore the mouse;
+drag, right / middle click, hover and horizontal scroll are ignored.
 
 To start with mouse capture off, set `"mouse": false` under `preferences` in
 `config.json` (see [Configuration](docs/CONFIGURATION.md)).

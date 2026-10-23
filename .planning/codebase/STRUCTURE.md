@@ -58,7 +58,7 @@ gsd-meta-manager/
 │   └── ui/                           # Presentation layer
 │       ├── mod.rs                     #  render() dispatch to top of screen_stack
 │       ├── project_list.rs              #  project list widget
-│       ├── roadmap_widget.rs              #  roadmap visualization widget
+│       ├── roadmap_view.rs                #  Roadmap tab lanes widget
 │       └── screens/                        #  one file per modal screen/tab
 │           ├── mod.rs                       #  Screen trait, AppContext, ScreenAction
 │           ├── normal.rs                      #  base dashboard/list screen

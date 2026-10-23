@@ -177,7 +177,7 @@ src/
   ui/                  -- ratatui widgets and screen stack
     screens/           -- one Screen impl per detail tab
     project_list.rs
-    roadmap_widget.rs
+    roadmap_view.rs
 tests/
   registry_test.rs       -- registry CRUD integration tests
   state_reader_test.rs   -- .planning/ parser integration tests
