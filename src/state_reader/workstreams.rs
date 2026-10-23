@@ -12,6 +12,7 @@
 //! recursion guard (added in plan 8 task 2) that skips workstream loading when the
 //! dir is already inside a `workstreams/` parent, bounding depth to one level.
 
+use super::disk_status::DiskStatus;
 use super::phase_num::PhaseNum;
 use chrono::{DateTime, Duration, Utc};
 use std::io::Read;
@@ -108,16 +109,59 @@ impl WorkstreamState {
             .then(|| phase.clone())
     }
 
+    /// The most advanced phase that has a directory and is not yet implemented.
+    ///
+    /// **Real** means the phase's disk status is above
+    /// [`DiskStatus::NoDirectory`]: somebody has started it on disk. A roadmap
+    /// entry with no directory is a phase nobody has touched, and naming it as
+    /// where the work stands is the defect this step exists to close (sentriq's
+    /// v0.14: the disk frontier says 27, which has no directory, while 28 is
+    /// partly built). **Unfinished** means the status is below
+    /// [`DiskStatus::Executed`], the same implementation threshold the disk
+    /// frontier uses; an executed phase awaiting verification or gap closure is
+    /// not where building happens. Both bounds compare against the derived `Ord`
+    /// rather than listing variants, so a variant inserted between them is
+    /// included automatically.
+    ///
+    /// Ranking is the most advanced stage first, then the lowest number within a
+    /// stage. Stage outranks number because work in flight beats an earlier phase
+    /// that, in a parallel milestone, may merely be waiting on a dependency. A
+    /// phase whose number does not parse as a [`PhaseNum`] is skipped, as it
+    /// abstains in [`ProjectState::active_phase_number`].
+    ///
+    /// Works on the in-memory state only — the render loop calls this, so it
+    /// must not touch the filesystem.
+    ///
+    /// [`ProjectState::active_phase_number`]: super::ProjectState::active_phase_number
+    fn real_unfinished_phase(&self) -> Option<PhaseNum> {
+        self.state
+            .phases
+            .iter()
+            .filter_map(|p| {
+                let status = self.state.phase_disk_statuses.get(&p.number)?.status;
+                if status <= DiskStatus::NoDirectory || status >= DiskStatus::Executed {
+                    return None;
+                }
+                Some((status, std::cmp::Reverse(PhaseNum::parse(&p.number)?)))
+            })
+            .max()
+            .map(|(_, std::cmp::Reverse(num))| num)
+    }
+
     /// The phase this workstream is working on, for display.
     ///
-    /// **A live claim first, then [`ProjectState::active_phase_number`].** A
-    /// workstream is the unit GSD uses to run a milestone's phases in PARALLEL,
-    /// which is exactly where the fallback is weakest: `STATE.md`'s
-    /// `current_phase` is one slot shared by every session (sentriq's v0.14 says
-    /// 24 while its owner works 26), and the disk frontier is the first phase
-    /// that is not yet executed — here 27, which has no directory at all. The
-    /// claim is the one input that says which phase a session is working on, so
-    /// it leads while it is live and the established rule answers when it is not.
+    /// **Three steps: a live claim, else the most advanced real unfinished phase,
+    /// else [`ProjectState::active_phase_number`].** A workstream is the unit GSD
+    /// uses to run a milestone's phases in PARALLEL, which is exactly where the
+    /// established rule is weakest: `STATE.md`'s `current_phase` is one slot
+    /// shared by every session (sentriq's v0.14 says 24 while its owner works
+    /// 26), and the disk frontier is the first phase that is not yet executed —
+    /// here 27, which has no directory at all. The claim is the one input that
+    /// says which phase a session is working on, so it leads while it is live.
+    /// Once it lapses (or there never was one) the established rule alone could
+    /// still land on a phase nobody has started, so the middle step prefers a
+    /// phase that really is mid-build (28). The established rule answers only
+    /// when no listed phase is real and unfinished.
     ///
     /// `None` only when the workstream's roadmap lists no phase, so there is
     /// nothing to name.
@@ -129,6 +173,7 @@ impl WorkstreamState {
         }
         Some(
             self.live_claim_phase(now)
+                .or_else(|| self.real_unfinished_phase())
                 .unwrap_or_else(|| self.state.active_phase_number()),
         )
     }
@@ -262,8 +307,9 @@ pub fn load_workstreams(planning_dir: &Path) -> Vec<WorkstreamState> {
 ///   pointer per session in a temp dir, so on disk there usually is none).
 /// - `v0-14-voice-assistant` carries GSD's single-slot hazards: STATE.md
 ///   declares `current_phase: 24` (stale — parallel sessions clobber it), the
-///   disk frontier lands on phase 27 (which has NO directory), and a live
-///   `milestone.lock` claims phase 26. Its `stopped_at` is a long quoted string
+///   disk frontier lands on phase 27 (which has NO directory; with the claim
+///   lapsed or absent the focus falls back to phase 28, the only real
+///   unfinished phase), and a live `milestone.lock` claims phase 26. Its `stopped_at` is a long quoted string
 ///   holding `;` `(` `)` and `,`. Phase 26 verified `gaps_found`; phase 28 is
 ///   partly built; `phases/` also holds an `archived-…-phases` directory, and
 ///   `quick/` and `milestones/archived-…-phases/` exist beside it. Phase 26 holds
