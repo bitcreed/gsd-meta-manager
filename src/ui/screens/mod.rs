@@ -2425,33 +2425,35 @@ impl AppContext {
             .into_iter()
             .filter(|alias| {
                 let state = self.project_states.get(alias);
+                // Every column at once: alias, root status, root phase label and
+                // workstream text. Shared by the All and NeedsHuman arms so the
+                // two cannot drift apart.
+                let matches_any_column = || {
+                    alias.to_lowercase().contains(&term_lower)
+                        || state.is_some_and(|s| {
+                            s.status.to_lowercase().contains(&term_lower)
+                                || format_phase_display(s).to_lowercase().contains(&term_lower)
+                                || workstream_text_matches(s, &term_lower, now)
+                        })
+                };
                 match column {
                     FilterColumn::Name => alias.to_lowercase().contains(&term_lower),
+                    // Workstream lines are drawn inside the Phase cell, so `/p`
+                    // sees their text too.
                     FilterColumn::Phase => state.is_some_and(|s| {
                         format_phase_display(s).to_lowercase().contains(&term_lower)
+                            || workstream_text_matches(s, &term_lower, now)
                     }),
                     FilterColumn::Status => {
                         state.is_some_and(|s| s.status.to_lowercase().contains(&term_lower))
                     }
-                    FilterColumn::All => {
-                        alias.to_lowercase().contains(&term_lower)
-                            || state.is_some_and(|s| {
-                                s.status.to_lowercase().contains(&term_lower)
-                                    || format_phase_display(s).to_lowercase().contains(&term_lower)
-                                    || workstream_text_matches(s, &term_lower, now)
-                            })
-                    }
+                    FilterColumn::All => matches_any_column(),
                     // `term` still applies across every column, so `/term/h` is
                     // "matches term AND needs a human". The all-rows form needs
                     // no special case: an empty term makes `contains` true for
                     // every alias, so `needs_human` alone decides (OBS-07).
                     FilterColumn::NeedsHuman => {
-                        let matches_term = alias.to_lowercase().contains(&term_lower)
-                            || state.is_some_and(|s| {
-                                s.status.to_lowercase().contains(&term_lower)
-                                    || format_phase_display(s).to_lowercase().contains(&term_lower)
-                            });
-                        matches_term && self.needs_attention_for(alias)
+                        matches_any_column() && self.needs_attention_for(alias)
                     }
                 }
             })
@@ -3800,6 +3802,131 @@ mod tests {
                 vec!["sentriq".to_string()],
                 "/{query} must keep sentriq (exercises: {source})"
             );
+        }
+    }
+
+    #[test]
+    fn sentriq_dashboard_filter_ignores_non_focus_phases_and_keeps_root_matches() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut ctx = sentriq_filter_ctx(&td, chrono::Utc::now());
+        assert!(
+            filtered_for(&mut ctx, "conversation memory").is_empty(),
+            "P25 is not the focus phase of any workstream, so its name is not drawn \
+             and must not match"
+        );
+        assert!(filtered_for(&mut ctx, "zz-no-such-text").is_empty());
+        assert_eq!(
+            filtered_for(&mut ctx, "ram catalog"),
+            vec!["sentriq".to_string()],
+            "the root phase label still matches"
+        );
+        assert_eq!(
+            filtered_for(&mut ctx, "phase_complete"),
+            vec!["sentriq".to_string()],
+            "the root status still matches"
+        );
+    }
+
+    #[test]
+    fn sentriq_dashboard_filter_column_forms_apply_workstream_text_to_phase_and_needs_human() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut ctx = sentriq_filter_ctx(&td, chrono::Utc::now());
+        // The fixture's v0.13 workstream carries a live HANDOFF, which since
+        // 261023-05j makes the whole project need a human. Clear every attention
+        // signal so the `/h` half of this test controls that input itself.
+        {
+            let state = ctx.project_states.get_mut("sentriq").unwrap();
+            assert!(
+                state_has_attention_evidence(state),
+                "premise: the fixture's HANDOFF workstream flags the project"
+            );
+            state.paused = false;
+            state.external_job_waiting = false;
+            for ws in &mut state.workstreams {
+                ws.state.paused = false;
+                ws.state.external_job_waiting = false;
+            }
+        }
+        assert_eq!(
+            filtered_for(&mut ctx, "v0.14/p"),
+            vec!["sentriq".to_string()],
+            "workstream lines are drawn in the Phase cell, so /p sees them"
+        );
+        assert!(
+            filtered_for(&mut ctx, "v0.14/n").is_empty(),
+            "/n matches the alias only"
+        );
+        assert!(
+            filtered_for(&mut ctx, "v0.14/s").is_empty(),
+            "/s matches the root status only"
+        );
+        assert!(
+            filtered_for(&mut ctx, "voice/h").is_empty(),
+            "sentriq does not need a human yet"
+        );
+        pause(&mut ctx, "sentriq");
+        assert_eq!(
+            filtered_for(&mut ctx, "voice/h"),
+            vec!["sentriq".to_string()],
+            "term half of /h includes workstream text once the project needs a human"
+        );
+    }
+
+    #[test]
+    fn sentriq_dashboard_filter_matches_a_workstream_hidden_behind_the_line_cap() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut ctx = sentriq_filter_ctx(&td, chrono::Utc::now());
+        let state = ctx.project_states.get_mut("sentriq").unwrap();
+        let v013 = state
+            .workstreams
+            .iter()
+            .find(|w| w.name == "v0-13-public-beta")
+            .unwrap()
+            .clone();
+        let v014 = state
+            .workstreams
+            .iter()
+            .find(|w| w.name == "v0-14-voice-assistant")
+            .unwrap()
+            .clone();
+        // The dashboard draws at most 4 workstream lines (`MAX_WORKSTREAM_LINES`,
+        // private to normal.rs). Six entries put v0.14 last, behind `ws +N more`.
+        let mut rebuilt = Vec::new();
+        for i in 1..=4 {
+            let mut copy = v013.clone();
+            copy.name = format!("v0-13-copy-{i}");
+            rebuilt.push(copy);
+        }
+        rebuilt.push(v013);
+        rebuilt.push(v014);
+        assert_eq!(rebuilt.len(), 6);
+        state.workstreams = rebuilt;
+        for query in ["push-to-talk", "assistant"] {
+            assert_eq!(
+                filtered_for(&mut ctx, query),
+                vec!["sentriq".to_string()],
+                "/{query} must match a workstream hidden behind the line cap"
+            );
+        }
+    }
+
+    #[test]
+    fn sentriq_dashboard_filter_follows_the_drawn_workstream_line_at_live_and_lapsed_instants() {
+        let td = tempfile::TempDir::new().unwrap();
+        let now = chrono::Utc::now();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(&planning, now);
+        let state = crate::state_reader::parse_project_state(&planning);
+        assert!(!state.workstreams.is_empty());
+        for t in [now, now + chrono::Duration::hours(5)] {
+            for ws in &state.workstreams {
+                let line = crate::app::format_workstream_display(ws, t).to_lowercase();
+                assert!(
+                    workstream_text_matches(&state, &line, t),
+                    "the filter must match the drawn line {line:?} for {} at {t}",
+                    ws.name
+                );
+            }
         }
     }
 }
