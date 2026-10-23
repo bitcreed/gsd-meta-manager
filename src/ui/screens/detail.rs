@@ -3210,6 +3210,46 @@ fn workstream_docs_label_for(state: Option<&state_reader::ProjectState>, dir: &s
         .unwrap_or_else(|| Untrusted::from_untrusted_source(format!("ws {dir}")))
 }
 
+/// How Docs › Milestones names the milestone `key` (a key of
+/// `archive::parse_milestone_key`'s grammar), on a list row and in the
+/// breadcrumb:
+///
+/// - the project's own archived milestone: its bare version, Yellow, as ever;
+/// - a workstream's active milestone: `ws v0.14 — Voice Mechanic`, Magenta (the
+///   Files tab's label);
+/// - one a workstream archived: `ws v0.13 · archived v0.13`, Magenta;
+/// - a key that does not parse: today's Yellow escaped text.
+///
+/// A workstream the state does not list falls back to `ws <dir>`. Every
+/// third-party string is escaped (`shown`).
+fn archive_milestone_span(key: &str, state: Option<&state_reader::ProjectState>) -> Span<'static> {
+    use crate::archive::{parse_milestone_key, MilestoneSource};
+    let magenta = Style::default().fg(Color::Magenta);
+    match parse_milestone_key(key) {
+        Some(MilestoneSource::Workstream { workstream }) => Span::styled(
+            workstream_docs_label_for(state, workstream).shown(),
+            magenta,
+        ),
+        Some(MilestoneSource::WorkstreamArchive {
+            workstream,
+            version,
+        }) => {
+            let tag = state
+                .and_then(|s| s.workstreams.iter().find(|w| w.name == workstream))
+                .map(crate::app::workstream_tag)
+                .unwrap_or_else(|| format!("ws {workstream}"));
+            Span::styled(
+                Untrusted::from_untrusted_source(format!("{tag} \u{00B7} archived {version}"))
+                    .shown(),
+                magenta,
+            )
+        }
+        Some(MilestoneSource::Root { .. }) | None => {
+            Span::styled(shown(key), Style::default().fg(Color::Yellow))
+        }
+    }
+}
+
 /// The Roadmap tab's first line (Mockups A/B/C, D-B02):
 /// `{alias} · {milestone} · phase {n} {status} · {k} of {n} phases done`.
 ///
@@ -3574,10 +3614,14 @@ fn switch_to_sub_view(alias: &str, new_view: DetailSubView, ctx: &mut AppContext
             cache.archive_loading = true;
             if let (Some(project), Some(tx)) = (ctx.config.projects.get(alias), &ctx.event_tx) {
                 let tx = tx.clone();
-                let milestones_dir = project.path.join(".planning/milestones");
+                // The project's `.planning/`, not its `milestones/`: discovery
+                // covers the root's archives AND each workstream's milestones
+                // (quick 261023-05h). Keys are resolved by
+                // `archive::parse_milestone_key`, never as raw path segments.
+                let planning_dir = project.path.join(".planning");
                 let alias_owned = alias.to_string();
                 tokio::task::spawn_blocking(move || {
-                    let milestones = crate::archive::discover_milestones(&milestones_dir);
+                    let milestones = crate::archive::discover_all_milestones(&planning_dir);
                     let _ = tx.send(Action::ArchiveMilestonesDiscovered {
                         alias: alias_owned,
                         milestones,
@@ -4895,11 +4939,13 @@ impl Screen for DetailScreen {
                                 let selected = cache.archive_selected[0];
                                 // A NAVIGATION KEY: it becomes the
                                 // `ArchiveDepth` discriminant, a
-                                // `ctx.archive_cache` map key and a path
-                                // segment under `.planning/milestones`, so the
-                                // raw bytes are what all three need. Nothing
-                                // below draws it; the render reads it back out
-                                // of the cache and escapes it there.
+                                // `ctx.archive_cache` map key and, resolved by
+                                // `archive::parse_milestone_key` (never used as
+                                // a raw path segment), the directory the loader
+                                // reads, so the raw bytes are what all three
+                                // need. Nothing below draws it; the render
+                                // reads it back out of the cache and escapes
+                                // it there.
                                 if let Some(milestone) = cache
                                     .archive_milestones
                                     .get(selected)
@@ -4914,16 +4960,15 @@ impl Screen for DetailScreen {
                                         cache.archive_loading = true;
                                         if let Some(project) = ctx.config.projects.get(&self.alias)
                                         {
-                                            let milestones_dir =
-                                                project.path.join(".planning/milestones");
+                                            let planning_dir = project.path.join(".planning");
                                             if let Some(tx) = &ctx.event_tx {
                                                 let tx = tx.clone();
                                                 let alias = self.alias.clone();
                                                 let ms = milestone.clone();
                                                 tokio::task::spawn_blocking(move || {
                                                     let data =
-                                                        crate::archive::load_milestone_archive(
-                                                            &milestones_dir,
+                                                        crate::archive::load_milestone_by_key(
+                                                            &planning_dir,
                                                             &ms,
                                                         );
                                                     let _ = tx.send(Action::ArchiveLoaded {
@@ -7938,16 +7983,19 @@ impl DetailScreen {
                     frame.render_widget(empty, content_area);
                     return;
                 }
+                let project_state = ctx.project_states.get(&self.alias);
                 let items: Vec<ListItem> = cache
                     .archive_milestones
                     .iter()
                     .map(|v| {
                         // READ BY A HUMAN, through a `ListItem` (preserves the
-                        // whole class). A milestone version string scanned out
-                        // of `.planning/archive/` directory names.
-                        ListItem::new(Line::from(Span::styled(
-                            v.shown(),
-                            Style::default().fg(Color::Yellow),
+                        // whole class). A milestone key scanned out of
+                        // `.planning/` directory and file names: a version, or
+                        // a workstream's directory name, labelled by
+                        // `archive_milestone_span` (which escapes it).
+                        ListItem::new(Line::from(archive_milestone_span(
+                            v.as_raw_for_logic_only(),
+                            project_state,
                         )))
                     })
                     .collect();
@@ -8303,24 +8351,22 @@ impl DetailScreen {
         // and escaped at the render with `shown` for that reason. **Residual:
         // `ArchiveDepth`'s `milestone` field is not typed; direction is
         // under-protection, silent, and it is bounded only by the probe.**
+        //
+        // The three milestone spans go through `archive_milestone_span`, which
+        // escapes the key and labels a workstream's milestone (`ws v0.14 — …`).
+        let project_state = ctx.project_states.get(alias);
         match depth {
             ArchiveDepth::MilestoneList => {}
             ArchiveDepth::PhaseList { milestone } => {
                 spans.push(Span::raw(" > "));
-                spans.push(Span::styled(
-                    shown(milestone),
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(archive_milestone_span(milestone, project_state));
             }
             ArchiveDepth::FileList {
                 milestone,
                 phase_idx,
             } => {
                 spans.push(Span::raw(" > "));
-                spans.push(Span::styled(
-                    shown(milestone),
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(archive_milestone_span(milestone, project_state));
                 if let Some(data) = ctx.archive_cache.get(alias, milestone) {
                     if let Some(phase) = data.phases.get(*phase_idx) {
                         spans.push(Span::raw(" > "));
@@ -8334,10 +8380,7 @@ impl DetailScreen {
                 ..
             } => {
                 spans.push(Span::raw(" > "));
-                spans.push(Span::styled(
-                    shown(milestone),
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(archive_milestone_span(milestone, project_state));
                 if let Some(idx) = phase_idx {
                     if let Some(data) = ctx.archive_cache.get(alias, milestone) {
                         if let Some(phase) = data.phases.get(*idx) {
@@ -33301,6 +33344,17 @@ mod tests {
         view: DetailSubView,
         extra: impl FnOnce(&std::path::Path),
     ) -> (tempfile::TempDir, DetailScreen, AppContext) {
+        let (td, screen, mut ctx) = sentriq_docs_base(view.clone(), extra);
+        switch_to_sub_view(TEST_ALIAS, view, &mut ctx);
+        (td, screen, ctx)
+    }
+
+    /// [`sentriq_docs_detail`] without entering the sub-view yet (the Milestones
+    /// tests set `event_tx` first, because entering spawns the discovery).
+    fn sentriq_docs_base(
+        view: DetailSubView,
+        extra: impl FnOnce(&std::path::Path),
+    ) -> (tempfile::TempDir, DetailScreen, AppContext) {
         use crate::config::RegisteredProject;
         let td = tempfile::tempdir().expect("temp dir");
         let planning = td.path().join(".planning");
@@ -33324,8 +33378,7 @@ mod tests {
             crate::state_reader::parse_project_state(&planning),
         );
         ctx.detail_sub_view_per_project
-            .insert(TEST_ALIAS.to_string(), view.clone());
-        switch_to_sub_view(TEST_ALIAS, view, &mut ctx);
+            .insert(TEST_ALIAS.to_string(), view);
         (td, DetailScreen::new(TEST_ALIAS.to_string()), ctx)
     }
 
@@ -33498,5 +33551,266 @@ mod tests {
         let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
         assert!(text.contains("ws v0.15"), "{text}");
         assert!(!text.contains('\u{202e}'), "raw U+202E drawn:\n{text}");
+    }
+
+    // ── quick 261023-05h: Docs › Milestones lists each workstream's milestones ──
+
+    /// Fixture steps as plain fns: blocking `std::fs` calls inside an `async fn`
+    /// body (closures included) trip `tests/async_blocking_guard.rs`.
+    fn write_root_archive_v0_11(planning: &std::path::Path) {
+        std::fs::create_dir_all(planning.join("milestones")).expect("milestones dir");
+        std::fs::write(planning.join("milestones/v0.11-ROADMAP.md"), "# v0.11\n")
+            .expect("root archive");
+    }
+
+    fn write_workstream_archive_v0_13(planning: &std::path::Path) {
+        let dir = planning.join("workstreams/v0-13-public-beta/milestones");
+        std::fs::create_dir_all(&dir).expect("ws archive dir");
+        std::fs::write(dir.join("v0.13-ROADMAP.md"), "# v0.13\n").expect("archive");
+    }
+
+    /// Apply an archive action the way `App::update` does.
+    fn apply_archive_action(ctx: &mut AppContext, action: Action) {
+        match action {
+            Action::ArchiveMilestonesDiscovered { alias, milestones } => {
+                let cache = ctx.view_cache.entry(alias).or_default();
+                cache.archive_milestones = milestones
+                    .into_iter()
+                    .map(Untrusted::from_untrusted_source)
+                    .collect();
+                cache.archive_loading = false;
+            }
+            Action::ArchiveLoaded {
+                alias,
+                milestone,
+                data,
+            } => {
+                let cache = ctx.view_cache.entry(alias.clone()).or_default();
+                cache.archive_loading = false;
+                ctx.archive_cache.insert(alias, milestone, data);
+            }
+            _ => {}
+        }
+    }
+
+    /// Receive (2 s timeout) and apply archive actions until `wanted` matches;
+    /// returns the matching action.
+    async fn next_archive_action(
+        ctx: &mut AppContext,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        wanted: impl Fn(&Action) -> bool,
+    ) -> Action {
+        loop {
+            let next = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
+            let Ok(Some(action)) = next else {
+                panic!("no wanted archive action within 2 s");
+            };
+            if wanted(&action) {
+                apply_archive_action(ctx, action.clone());
+                return action;
+            }
+            apply_archive_action(ctx, action);
+        }
+    }
+
+    #[tokio::test]
+    async fn sentriq_docs_milestones_lists_workstream_milestones_and_opens_their_docs_in_place() {
+        let (td, mut screen, mut ctx) =
+            sentriq_docs_base(DetailSubView::Archive, write_root_archive_v0_11);
+        let planning = td.path().join(".planning");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.event_tx = Some(tx);
+        switch_to_sub_view(TEST_ALIAS, DetailSubView::Archive, &mut ctx);
+
+        let discovered = next_archive_action(&mut ctx, &mut rx, |a| {
+            matches!(a, Action::ArchiveMilestonesDiscovered { .. })
+        })
+        .await;
+        let Action::ArchiveMilestonesDiscovered { milestones, .. } = discovered else {
+            unreachable!()
+        };
+        assert_eq!(
+            milestones,
+            ["v0.11", "v0-13-public-beta/", "v0-14-voice-assistant/"]
+        );
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        for want in [
+            "v0.11",
+            "ws v0.13",
+            "Public Beta",
+            "ws v0.14",
+            "Voice Mechanic",
+        ] {
+            assert!(text.contains(want), "no {want:?}:\n{text}");
+        }
+
+        // The v0.14 row, then into it.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        next_archive_action(&mut ctx, &mut rx, |a| {
+            matches!(a, Action::ArchiveLoaded { milestone, .. } if milestone == "v0-14-voice-assistant/")
+        })
+        .await;
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        for want in [
+            "STATE.md",
+            "ROADMAP.md",
+            "REQUIREMENTS.md",
+            "MILESTONE-CONTEXT.md",
+            "Phase 26: Push To Talk Voice",
+            "Archive > ws v0.14",
+        ] {
+            assert!(text.contains(want), "no {want:?}:\n{text}");
+        }
+        assert!(!text.contains("HANDOFF.json"), "{text}");
+
+        // STATE.md is the fourth top-level file.
+        for _ in 0..3 {
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        let want_path =
+            std::fs::canonicalize(planning.join("workstreams/v0-14-voice-assistant/STATE.md"))
+                .expect("canonical STATE.md");
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].archive_file_path.as_deref(),
+            Some(want_path.as_path())
+        );
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(
+            text.contains("Project State \u{2014} v0.14 Voice Mechanic"),
+            "{text}"
+        );
+        match screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx) {
+            ScreenAction::SuspendAndEdit(path, _) => assert_eq!(path, want_path),
+            _ => panic!("a workstream's active-milestone doc opens in $EDITOR"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sentriq_docs_milestones_archived_workstream_files_stay_read_only() {
+        let (_td, mut screen, mut ctx) =
+            sentriq_docs_base(DetailSubView::Archive, write_workstream_archive_v0_13);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.event_tx = Some(tx);
+        switch_to_sub_view(TEST_ALIAS, DetailSubView::Archive, &mut ctx);
+        next_archive_action(&mut ctx, &mut rx, |a| {
+            matches!(a, Action::ArchiveMilestonesDiscovered { .. })
+        })
+        .await;
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(text.contains("ws v0.13 \u{00B7} archived v0.13"), "{text}");
+        // Rows: v0-13-public-beta/, v0-13-public-beta/v0.13, v0-14-voice-assistant/.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        next_archive_action(&mut ctx, &mut rx, |a| {
+            matches!(a, Action::ArchiveLoaded { milestone, .. } if milestone == "v0-13-public-beta/v0.13")
+        })
+        .await;
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        match screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx) {
+            ScreenAction::SetStatusMessage(msg) => {
+                assert_eq!(msg, "Archived files are read-only")
+            }
+            _ => panic!("an archived workstream milestone is read-only"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sentriq_docs_milestones_refresh_rediscovers_workstream_milestones() {
+        let (td, _screen, mut ctx) = sentriq_docs_base(DetailSubView::Archive, |_| {});
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.event_tx = Some(tx);
+        // A visited Archive tab: a non-empty list and one loaded workstream key.
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .archive_milestones = vec![Untrusted::from_untrusted_source("stale".to_string())];
+        ctx.archive_cache.insert(
+            TEST_ALIAS.to_string(),
+            "v0-13-public-beta/".to_string(),
+            crate::archive::MilestoneArchive {
+                version: "v0-13-public-beta/".to_string(),
+                top_level_files: Vec::new(),
+                phases: Vec::new(),
+            },
+        );
+        ctx.schedule_archive_refresh(TEST_ALIAS, td.path());
+
+        let discovered = next_archive_action(&mut ctx, &mut rx, |a| {
+            matches!(a, Action::ArchiveMilestonesDiscovered { .. })
+        })
+        .await;
+        let Action::ArchiveMilestonesDiscovered { milestones, .. } = discovered else {
+            unreachable!()
+        };
+        assert!(
+            milestones.contains(&"v0-13-public-beta/".to_string()),
+            "{milestones:?}"
+        );
+        assert!(
+            milestones.contains(&"v0-14-voice-assistant/".to_string()),
+            "{milestones:?}"
+        );
+
+        let loaded = next_archive_action(&mut ctx, &mut rx, |a| {
+            matches!(a, Action::ArchiveLoaded { milestone, .. } if milestone == "v0-13-public-beta/")
+        })
+        .await;
+        let Action::ArchiveLoaded { data, .. } = loaded else {
+            unreachable!()
+        };
+        let top: Vec<&str> = data
+            .top_level_files
+            .iter()
+            .map(|f| f.name.as_raw_for_logic_only())
+            .collect();
+        assert!(top.contains(&"HANDOFF.json"), "{top:?}");
+        let numbers: Vec<String> = data.phases.iter().map(|p| p.number.padded()).collect();
+        assert_eq!(numbers, ["16", "17", "18", "19", "20", "21", "22"]);
+    }
+
+    #[test]
+    fn sentriq_docs_milestones_escapes_workstream_labels() {
+        let (td, mut screen, mut ctx) =
+            sentriq_docs_base(DetailSubView::Archive, add_hostile_workstream);
+        let planning = td.path().join(".planning");
+        let keys = crate::archive::discover_all_milestones(&planning);
+        let hostile = keys
+            .iter()
+            .find(|k| k.starts_with("v0-15-"))
+            .expect("the hostile workstream is discovered")
+            .clone();
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.archive_milestones = keys
+            .iter()
+            .cloned()
+            .map(Untrusted::from_untrusted_source)
+            .collect();
+        ctx.archive_cache.insert(
+            TEST_ALIAS.to_string(),
+            hostile.clone(),
+            crate::archive::load_milestone_by_key(&planning, &hostile),
+        );
+
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(text.contains("ws v0.15"), "{text}");
+        assert!(
+            !text.contains('\u{202e}'),
+            "raw U+202E in the list:\n{text}"
+        );
+
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .archive_depth = crate::archive::ArchiveDepth::PhaseList { milestone: hostile };
+        screen.focus = DetailFocus::Content;
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 40);
+        assert!(text.contains("ws v0.15"), "{text}");
+        assert!(
+            !text.contains('\u{202e}'),
+            "raw U+202E in the breadcrumb:\n{text}"
+        );
     }
 }
