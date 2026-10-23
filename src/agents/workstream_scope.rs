@@ -63,9 +63,10 @@ fn plan_entries(dir: &Path, plan: &PlanRef) -> Vec<String> {
         .collect()
 }
 
-/// Whether `text` has a token (a run of `[A-Za-z0-9._-]`) equal to `name`.
+/// Whether `text` has a token (a run of identity characters,
+/// [`crate::text::is_identity_char`]: `[A-Za-z0-9._-]`) equal to `name`.
 fn names_token(text: &str, name: &str) -> bool {
-    text.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    text.split(|c: char| !crate::text::is_identity_char(c))
         .any(|token| token == name)
 }
 
