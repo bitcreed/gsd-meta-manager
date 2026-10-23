@@ -644,7 +644,7 @@ fn repair_line(line: &str) -> Option<String> {
 ///
 /// Char-wise, never byte-wise: a naive byte scan for `"` or `\` over a value
 /// carrying em-dashes and 4-byte characters is the panic class this crate has
-/// already paid for twice (`untrusted::bounded`, `ui::roadmap_widget`).
+/// already paid for twice (`untrusted::bounded`, the since-deleted Roadmap boxes widget).
 fn yaml_double_quoted(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');

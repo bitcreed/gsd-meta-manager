@@ -455,9 +455,11 @@ impl ProjectState {
 
 /// What a phase's row says about itself: behind you, under way, or ahead.
 ///
-/// **One decision, two call sites** ([`crate::ui::roadmap_widget`] and the
-/// Detail screen's Phases list). Both used to inline the same three arms over
-/// the same two inputs, and the inputs disagreed:
+/// **One decision, two call sites**: [`ProjectState::phase_marker`] for a
+/// project's own phases and a direct [`PhaseMarker::decide`] for workstream
+/// phases, both inside `roadmap_model_for` in `src/ui/screens/detail.rs`. The
+/// callers used to inline the same three arms over the same two inputs, and
+/// the inputs disagreed:
 ///
 /// - "is this phase current?" moved onto [`ProjectState::active_phase_number`]
 ///   (`max(STATE.md, disk frontier)`, arithmetic only when neither exists), while
@@ -476,25 +478,15 @@ impl ProjectState {
 /// to at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseMarker {
-    /// Implementation is behind this phase. Rendered `+`.
+    /// Implementation is behind this phase.
     Done,
-    /// The phase [`ProjectState::active_phase_number`] names. Rendered `*`.
+    /// The phase [`ProjectState::active_phase_number`] names.
     Current,
-    /// Not started, or at least not finished and not current. Rendered `o`.
+    /// Not started, or at least not finished and not current.
     Future,
 }
 
 impl PhaseMarker {
-    /// The ASCII glyph, matching the Detail screen's legend
-    /// (`+ done  * current  o future`).
-    pub fn glyph(self) -> &'static str {
-        match self {
-            PhaseMarker::Done => "+",
-            PhaseMarker::Current => "*",
-            PhaseMarker::Future => "o",
-        }
-    }
-
     /// Decide one phase's marker from that phase's own evidence.
     ///
     /// **Current outranks done**, which inverts what both call sites used to

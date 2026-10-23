@@ -2,7 +2,6 @@ pub mod glyphs;
 pub mod mouse;
 pub mod roadmap_graph;
 pub mod roadmap_view;
-pub mod roadmap_widget;
 pub mod screens;
 
 use crate::app::App;
@@ -804,64 +803,19 @@ mod tests {
         }
     }
 
-    /// **The two-direction property at a REAL render site, in a real terminal
-    /// buffer**, spot-checked on `roadmap_widget.rs` — one of the eight files
-    /// converted for the same reason `normal.rs` was.
+    /// Pins the ratatui behaviour that the census doc's "What this census does
+    /// NOT claim" section rests on: control graphemes are dropped before a cell
+    /// exists. Moved out of the since-deleted Roadmap boxes widget spot-check.
     ///
-    /// The generic pin above compares two function results. This renders the
-    /// widget the operator actually looks at into a `ratatui::buffer::Buffer`
-    /// and compares CELLS, which is the only level at which the claim "the
-    /// operator can see what is there" means anything.
-    ///
-    /// **It also measures the dependency behaviour this census refuses to rely
-    /// on silently.** ratatui filters `char::is_control` graphemes before a cell
+    /// **The dependency behaviour, MEASURED here rather than quoted from a
+    /// changelog.** ratatui filters `char::is_control` graphemes before a cell
     /// exists, so an un-composed site DROPS a raw `ESC`/`DEL`/C1 and renders as
     /// though it were not there — which is precisely why the un-composed sites
-    /// were a false claim rather than a live leak. After the conversion those
-    /// same bytes arrive as `strip_terminal_controls`' visible replacement, so
-    /// the cells differ. Both directions are asserted; either alone would be
-    /// satisfiable by a no-op.
+    /// were a false claim rather than a live leak.
     #[test]
-    fn the_roadmap_widget_renders_a_clean_phase_name_unchanged_and_a_control_one_differently() {
-        use crate::state_reader::roadmap_md::RoadmapPhase;
+    fn ratatui_drops_a_c1_grapheme_before_a_cell_exists() {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
-        use ratatui::widgets::Widget;
-
-        fn phase(name: &str, number: &str) -> RoadmapPhase {
-            RoadmapPhase {
-                number: number.to_string(),
-                name: name.to_string(),
-                description: String::new(),
-                completed: false,
-                total_plans: 3,
-                completed_plans: 1,
-                depends_on: Vec::new(),
-            }
-        }
-
-        fn rendered(name: &str, number: &str) -> Buffer {
-            let area = Rect::new(0, 0, 60, 8);
-            let mut buffer = Buffer::empty(area);
-            let phases = [phase(name, number)];
-            let disk_statuses = std::collections::HashMap::new();
-            super::roadmap_widget::RoadmapWidget {
-                phases: &phases,
-                current_phase_num: 21.into(),
-                disk_statuses: &disk_statuses,
-                scroll_offset: 0,
-            }
-            .render(area, &mut buffer);
-            buffer
-        }
-
-        fn text_of(buffer: &Buffer) -> String {
-            buffer
-                .content()
-                .iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect()
-        }
 
         // **The dependency behaviour, MEASURED here rather than quoted from a
         // changelog.** ratatui drops `char::is_control` graphemes before a cell
@@ -881,54 +835,10 @@ mod tests {
              the residual named in this module's census doc has moved — that is \
              the whole point of measuring it here."
         );
-
-        // Direction 1 — behaviour-preserving. A clean phase name and number
-        // reach the cells exactly as they did before the conversion, because
-        // `strip_terminal_controls` is the identity on both.
-        let clean_name = "Injection Hardening";
-        let clean_number = "21";
-        assert_eq!(
-            strip_terminal_controls(clean_name),
-            clean_name,
-            "the clean fixture must be a fixed point of the added half, or \
-             direction 1 is vacuous"
-        );
-        let clean = rendered(clean_name, clean_number);
-        let clean_text = text_of(&clean);
-        assert!(
-            clean_text.contains(&invisible_class_half(clean_name)),
-            "a clean phase name must reach the cells exactly as the \
-             pre-conversion half rendered it; got {clean_text:?}"
-        );
-        assert!(
-            clean_text.contains("P21:"),
-            "a clean phase number must reach the cells unchanged; got \
-             {clean_text:?}"
-        );
-
-        // Direction 2 — NOT a no-op. `DEL` in the name and `U+009B` in the
-        // number now reach the cells as the visible `CONTROL_REPLACEMENT`,
-        // where the measurement above shows they previously reached them as
-        // NOTHING AT ALL. Without this direction the conversion could have been
-        // a no-op at all nine files and no test would have said so.
-        let hostile = rendered("Injection\u{7f} Hardening", "2\u{9b}1");
-        assert_ne!(
-            hostile, clean,
-            "a phase name carrying DEL and a number carrying U+009B must reach \
-             the cells DIFFERENTLY from their control-free twins once both \
-             classes are composed. Equality here means the conversion is a \
-             no-op at this render site."
-        );
-        let hostile_text = text_of(&hostile);
-        assert!(
-            hostile_text.contains(crate::text::CONTROL_REPLACEMENT),
-            "the control characters must arrive as the visible replacement, so \
-             the operator can see that something was there; got {hostile_text:?}"
-        );
     }
 
-    /// The same two directions at `queue_delete_confirm.rs`'s prompt — the
-    /// second of the eight files spot-checked, and a `.planning/queue.md`-derived
+    /// The same two directions at `queue_delete_confirm.rs`'s prompt — one
+    /// of the eight files converted, and a `.planning/queue.md`-derived
     /// value rather than a `ROADMAP.md`-derived one.
     ///
     /// This drives [`super::screens::queue_delete_confirm::prompt_text`], the

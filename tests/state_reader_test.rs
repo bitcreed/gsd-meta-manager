@@ -1452,16 +1452,6 @@ fn a_phase_complete_on_disk_but_unchecked_in_the_roadmap_reads_done() {
         PhaseMarker::Done,
         "phase 3 is Complete on disk with verification passed"
     );
-    assert_eq!(phase3_glyph(&state), "+");
-}
-
-fn phase3_glyph(state: &gsd_meta_manager::state_reader::ProjectState) -> &'static str {
-    state
-        .phases
-        .iter()
-        .find(|p| p.number == "3")
-        .map(|p| state.phase_marker(p).glyph())
-        .unwrap()
 }
 
 /// Every phase in picsync's shape, so a fix that only moves phase 3 and breaks
@@ -1680,61 +1670,6 @@ fn state_md_behind_the_disk_frontier_is_clamped_up_to_it() {
         Some(gsd_meta_manager::state_reader::disk_status::DiskStatus::Complete),
         "the badge beside the glyph still says Complete — they must agree"
     );
-}
-
-/// The glyph column read off rendered cells, not off the decision that produced
-/// them — the only form of this assertion that catches a marker which is decided
-/// correctly and drawn wrong.
-///
-/// picsync's reported row, verbatim: `1:+ 2:+ 3:+ 4:* 5:o`. (Its real roadmap has
-/// eight phases; this fixture carries the five the report turns on.)
-#[test]
-fn the_rendered_roadmap_draws_the_current_glyph_on_the_frontier_not_behind_it() {
-    use gsd_meta_manager::ui::roadmap_widget::RoadmapWidget;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Widget;
-
-    let tmp = picsync_shaped_planning_dir();
-    let state = parse_project_state(tmp.path());
-
-    let area = Rect::new(0, 0, 60, 40);
-    let mut buf = Buffer::empty(area);
-    RoadmapWidget {
-        phases: &state.phases,
-        // The one notion of "current phase". Every call site goes through it.
-        current_phase_num: state.active_phase_number(),
-        disk_statuses: &state.phase_disk_statuses,
-        scroll_offset: 0,
-    }
-    .render(area, &mut buf);
-
-    assert_eq!(
-        rendered_glyph_column(&buf, area),
-        vec!['+', '+', '+', '*', 'o'],
-        "phase 3 is done on disk; the frontier, phase 4, is where the `*` belongs"
-    );
-}
-
-/// The glyph column, read off the rendered cells. Mirrors the helper in
-/// `ui::roadmap_widget`'s own tests: a content line is the one carrying
-/// `P<number>:`, and the glyph sits immediately before its leading space.
-fn rendered_glyph_column(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect) -> Vec<char> {
-    let mut out = Vec::new();
-    for y in area.y..area.y + area.height {
-        let row: String = (area.x..area.x + area.width)
-            .map(|x| buf[(x, y)].symbol())
-            .collect::<Vec<_>>()
-            .concat();
-        if let Some(i) = row.find(" P") {
-            if row[i + 2..].starts_with(|c: char| c.is_ascii_digit()) {
-                if let Some(g) = row[..i].chars().next_back() {
-                    out.push(g);
-                }
-            }
-        }
-    }
-    out
 }
 
 /// Zero-padded roadmap ids and a zero-padded STATE.md number resolve to the same
@@ -2086,45 +2021,6 @@ fn the_clamp_orders_decimal_phases_between_their_neighbours() {
         ..Default::default()
     };
     assert_eq!(lags.active_phase_number(), 8);
-}
-
-/// The rendered Roadmap tab: one `P7.1` box, carrying `*` and its disk plan
-/// count, and no `P07.1` box at all.
-#[test]
-fn the_rendered_roadmap_marks_the_decimal_phase_current_once() {
-    use gsd_meta_manager::ui::roadmap_widget::RoadmapWidget;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Widget;
-
-    let tmp = ttbook_shaped_planning_dir();
-    let state = parse_project_state(tmp.path());
-
-    let area = Rect::new(0, 0, 80, 30);
-    let mut buf = Buffer::empty(area);
-    RoadmapWidget {
-        phases: &state.phases,
-        current_phase_num: state.active_phase_number(),
-        disk_statuses: &state.phase_disk_statuses,
-        scroll_offset: 0,
-    }
-    .render(area, &mut buf);
-
-    assert_eq!(rendered_glyph_column(&buf, area), vec!['+', '+', '+', '*']);
-    let text: String = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<Vec<_>>()
-                .concat()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(!text.contains("P07.1"), "no duplicate row:\n{text}");
-    assert!(
-        !text.contains("0/?"),
-        "every phase here has plans on disk:\n{text}"
-    );
 }
 
 /// Symptom 3a: a roadmap that never back-filled a phase's plan list
