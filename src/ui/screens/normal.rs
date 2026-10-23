@@ -373,8 +373,16 @@ pub(crate) fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
     alias_badge(BadgeInputs {
         driven_and_live,
         needs_human: ctx.needs_human_for(alias),
-        is_paused: state.map(|s| s.paused).unwrap_or(false),
-        external_job_waiting: state.map(|s| s.external_job_waiting).unwrap_or(false),
+        // Root OR any workstream, matching the `needs_human` predicate above.
+        is_paused: state
+            .map(|s| s.paused || s.workstreams.iter().any(|ws| ws.state.paused))
+            .unwrap_or(false),
+        external_job_waiting: state
+            .map(|s| {
+                s.external_job_waiting
+                    || s.workstreams.iter().any(|ws| ws.state.external_job_waiting)
+            })
+            .unwrap_or(false),
         has_session,
         // Gated like the driven surface above: with the flag off no launcher
         // marker reaches the badge, whatever an earlier scan cached.
@@ -3306,6 +3314,93 @@ mod tests {
         );
         let flat = row_with(&rows, "flatproj");
         assert!(text_is_colored(flat, "flatproj", Color::DarkGray));
+    }
+
+    /// The sentriq fixture, parsed, with an async-jobs manifest in the v0.14
+    /// workstream when `external_job` is set.
+    fn sentriq_state_with_job(external_job: bool) -> (TempDir, ProjectState) {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(
+            &planning,
+            chrono::Utc::now(),
+        );
+        // The shared fixture's v0.13 HANDOFF.json declares no `phase` or
+        // `timestamp`, so the parser reads it as a CURRENT pause (written =
+        // mtime, newer than STATE.md). Real sentriq's is behind the workstream's
+        // current phase; declare phase 16 (< current_phase 20) so this fixture
+        // carries a genuinely stale HANDOFF and only the async-jobs file differs.
+        fs::write(
+            planning
+                .join("workstreams")
+                .join("v0-13-public-beta")
+                .join("HANDOFF.json"),
+            "{\"phase\": \"16\", \"next_action\": \"verify\"}\n",
+        )
+        .unwrap();
+        if external_job {
+            let jobs = planning
+                .join("workstreams")
+                .join("v0-14-voice-assistant")
+                .join("async-jobs");
+            fs::create_dir_all(&jobs).unwrap();
+            fs::write(jobs.join("job.json"), "{}").unwrap();
+        }
+        let state = parse_project_state(&planning);
+        (td, state)
+    }
+
+    /// quick 261023-05j: a workstream waiting on an external job raises the
+    /// badge, the attention-first rank and survives the `/h` filter.
+    #[test]
+    fn ws_aggregate_workstream_external_job_raises_badge_sort_and_filter() {
+        let (_td, state) = sentriq_state_with_job(true);
+        let ws = state
+            .workstreams
+            .iter()
+            .find(|w| w.name == "v0-14-voice-assistant")
+            .expect("v0.14 workstream");
+        assert!(ws.state.external_job_waiting, "fixture sanity");
+        assert!(!state.external_job_waiting, "the root itself is quiet");
+
+        let mut ctx = ctx_with_aliases(&["alpha", "sentriq"]);
+        ctx.project_states.insert("sentriq".to_string(), state);
+        assert_eq!(row_badge(&ctx, "sentriq"), Some(NEEDS_HUMAN_BADGE));
+
+        ctx.sort_mode = SortMode::AttentionFirst;
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["sentriq".to_string(), "alpha".to_string()]
+        );
+
+        let mut screen = NormalScreen::new();
+        search(&mut screen, &mut ctx, "/h");
+        assert_eq!(ctx.filtered_aliases, vec!["sentriq".to_string()]);
+    }
+
+    /// The control: a STALE workstream HANDOFF is not a pause, so with no
+    /// async-jobs file the project raises nothing and sorts alphabetically.
+    #[test]
+    fn ws_aggregate_stale_workstream_handoff_does_not_raise_attention() {
+        let (_td, state) = sentriq_state_with_job(false);
+        let stale = state
+            .workstreams
+            .iter()
+            .find(|w| w.name == "v0-13-public-beta")
+            .expect("v0.13 workstream");
+        assert!(!stale.state.paused, "a stale HANDOFF is not paused");
+
+        let mut ctx = ctx_with_aliases(&["alpha", "sentriq"]);
+        ctx.project_states.insert("sentriq".to_string(), state);
+        assert_eq!(row_badge(&ctx, "sentriq"), None);
+
+        ctx.sort_mode = SortMode::AttentionFirst;
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["alpha".to_string(), "sentriq".to_string()]
+        );
     }
 
     /// quick-260926-16t: the dashboard `k/n phases` cell is
