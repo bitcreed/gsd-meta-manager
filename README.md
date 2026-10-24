@@ -418,6 +418,12 @@ Windows builds (CI checks that it compiles) but is not exercised at runtime.
 Saving config from the Defaults tab is refused there, and the driver launcher is
 unavailable.
 
+The experimental driver's sandbox is Linux-only (`bwrap` under a systemd user
+scope); where it is unavailable a launch can run unsandboxed after a second
+confirm, and the TUI lists which protections that run lacks. What the sandbox
+does, what each missing protection means and which risks stay open are in
+[docs/DRIVER-SANDBOX.md](docs/DRIVER-SANDBOX.md).
+
 Codex session detection is best-effort: it relies on Codex CLI process details
 that may change between releases. Interactive `codex` sessions are shown
 alongside Claude sessions and can be reached with `Tab` under tmux;
