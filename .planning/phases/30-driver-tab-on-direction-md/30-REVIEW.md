@@ -1,61 +1,47 @@
 ---
 phase: 30-driver-tab-on-direction-md
-reviewed: 2026-10-23T00:00:00Z
+reviewed: 2026-10-24T00:00:00Z
 depth: standard
-files_reviewed: 7
+files_reviewed: 4
 files_reviewed_list:
-  - src/app.rs
   - src/driver/direction.rs
-  - src/driver/steer.rs
-  - src/ui/screens/detail.rs
-  - src/ui/screens/driver_launch.rs
-  - src/ui/screens/driver_run.rs
-  - src/ui/screens/driver_steer.rs
+  - src/driverctl_cli.rs
+  - tests/driver_lock.rs
+  - tests/driverctl_race.rs
 findings:
   critical: 0
-  warning: 2
+  warning: 3
   info: 3
-  total: 5
+  total: 6
 status: issues_found
 ---
 
-# Phase 30: Code Review Report (re-review of `git diff e05ad64 HEAD`)
+# Phase 30: Code Review Report (incremental re-review of `git diff 7f1f044 HEAD`)
 
-**Reviewed:** 2026-10-23
+**Reviewed:** 2026-10-24
 **Depth:** standard
-**Files Reviewed:** 7
+**Files Reviewed:** 4
 **Status:** issues_found
 
 ## Summary
 
-Scope: `git diff e05ad64 HEAD` for the seven files that changed after the last review. `src/driver/direction.rs` was read from `git show HEAD:src/driver/direction.rs` only. The working-tree copy carries another agent's uncommitted edits and was not used. The diff breaks down as follows.
+Scope: `git diff 7f1f044 HEAD` on four files, produced by quick task 261023-v1s (commits 717d724, 801c656, d960678). The working tree had no edits to these files (`git status` showed only `.planning/` changes), so I read them directly. I did not run the tests or clippy.
 
-- **Quick 261021-101:** the fixes for WR-02, WR-07 and IN-04.
-- **Quick 261021-1id:** the glyph and DIM label routing through `crate::ui::glyphs`.
-- **Quick 261020-vxg and 261021-0jg:** macOS and Windows build gating.
-- **Commit 39dad19:** test environment assumptions.
-- **The Phase 28 and workstream series:** most of `detail.rs` and `app.rs`.
+I traced the new code against its tests and found it sound on the paths it targets.
 
-I traced the following and found them sound.
+- **`give_back_newest` (`direction.rs`).** I walked the three racing unit tests step by step (inode and bytes at each exchange). In `a_save_landing_right_after_the_exchange_back_is_not_reverted`, round 1 places save 2 and brings save 3 back, which is not the expected displaced file. Round 2 places save 3 and brings save 2 back, which equals the previous placing, so it is dropped. Save 3 stands. The `expect`/`placing` hand-off (`expect = replace(placing, back)`) is correct. Inode reuse cannot produce a false "unchanged": a reused inode would have to carry byte-identical content, and dropping an identical copy loses nothing.
+- **`send_and_read` / `read_reply` (`driverctl_cli.rs`).** On an AF_UNIX stream, a peer that closes with unread data sets `ECONNRESET` on the other end, but queued data is still delivered first. `read_reply` stops at the first `\n` and never issues the read that would surface the reset, so a queued `busy` line is returned. Only `BrokenPipe` and `ConnectionReset` trigger the relay, and a failed relay falls back to the original send error. The new tests are `cfg(all(test, unix))`-gated like the rest of the module.
+- **`wait_for_exec_started_or_report` (`driver_lock.rs`).** `exec_started` is journaled from `ExecutionEvent::SessionStarted` (`journal/mod.rs:2197`), the agent's own init event. It is therefore emitted after the exec, which is what the comment claims. The wait is bounded (600 x 50 ms) and reports an early child exit.
+- **Handshake (`driverctl_race.rs`).** The yield cannot deadlock. `yield_one_splice` is bounded by `wait_until` (4 s) and by `tool_exited`. `tool` runs past its deadline only while `ok == 0 && !human_finished`, and `human_finished`/`tool_exited` are set from drop guards, so a panic on either side releases the other. `ok` is incremented before `done`, so a human that sees `done > begun` also sees `ok >= 1`.
 
-- **`run_loop` guarded reads.** Its three reads (`DIRECTION.md`, the displaced temp, the exchange-back temp) go through `open_run_file` (`O_NOFOLLOW | O_NONBLOCK`, type check on the handle). A refusal is an `Io` error, a missing file is still `NoDirection`, and an unreadable displaced file is still a mismatch that is given back.
-- **macOS exchange.** `rustix` 1.1.5 defines `RenameFlags::EXCHANGE` for Apple targets as `RENAME_SWAP`, and `renameat_with` is `cfg(any(apple, linux_kernel, ..))`. The `any(linux, macos)` gating in `direction.rs` therefore compiles. `direction_lock` is `cfg(unix)`, which covers macOS.
-- **`model_name_ok` and the `--model` argv.** The model reaches the detached launch as a separate argv element (`launcher/run.rs:1147`, `sandbox.rs:374`), never through a shell. The brackets cannot inject anything, and the leading-alphanumeric rule still blocks flag-shaped values. The relaunch prefill shares the predicate, so a recorded `claude-opus-5[1m]` (the real identity in the fixtures) is now kept.
-- **Glyph registry.** All ten Driver glyph constants are `&'static str` aliases of registry constants, so the "no glyph is derived from file content" guarantee is intact. Every new glyph is 1 cell, so no column arithmetic (`RUN_WORD_CELLS`, `ITEM_WORD_CELLS`, `DRIVER_LIVE_MARKER` cell reservation) shifts. Each status still has a distinct glyph.
-- **`scroll_offset` and `generic_viewport` removal from `DetailScreen`.** No other file reads them. The Driver tab keeps its own `driver_viewport` and its `move_driver_selection` and `scroll_driver_output` arms, and the removed `_ =>` fallback only served the retired Roadmap box view. `switch_to_sub_view` and `switch_to_tab` lost one parameter, and every call site (keys, mouse, `opened_on`) was updated.
-- **Workstream additions.** The code in `detail.rs` (`scoped_phases`, `scoped_phase_count`, `focus_agent_of_plan`) and `app.rs` (`project_status_category`, `format_workstream_display`, the `agents.workstreams.is_empty()` scan condition) touches the Detail screen's shared `pipeline_selected` and `roadmap_cursor` only through clamped indices. I found no panic path and nothing that reaches the Driver tab. This was a read-through, not an audit of Phase 28.
-- **Test changes.** The log-replacement test now renames a staged file and asserts the inode differs. The `cfg(unix)` helpers in `app.rs` match their callers' gating.
-
-I did not run any tests. Another agent is running timing-sensitive stress tests on this machine, and building the lib test binary would compete with it.
-
-No critical findings. Two new warnings sit next to the WR-02 fix, which closed the symptom (a blocking `open`) but not the class (an unguarded open in the same run directory). Three info items remain.
+No critical findings. The two carried warnings (WR-08, WR-09) and the carried info item (IN-06) apply unchanged at HEAD. WR-09 is slightly wider now. One new warning sits in the new give-back path.
 
 ## Prior findings status
 
-- **WR-02** (run-directory files opened without a file-type guard): **Resolved.** `read_run_file` (`src/driver/direction.rs`, in `mod imp`) wraps `open_run_file`. `run_loop` uses it for the target read, the displaced-temp compare and the exchange-back read. The new test `steer_run_refuses_a_fifo_direction_without_blocking` (`src/driver/steer.rs`) covers the path the old review named (the `c`/`a` keys reach `write_body` with no guarded read before it) and asserts `DIRECTION.lock` is released afterwards. Two sibling gaps in the same class remain: see WR-08 and WR-09.
-- **WR-07** (model rule narrower than `claude --model`): **Resolved.** `model_name_ok` admits `[` and `]` (`driver_launch.rs:232-241`). The tests accept `opus[1m]`, `sonnet[1m]`, `claude-sonnet-4-5[1m]` and `anthropic.claude-3-5-sonnet-20240620-v1:0`, and refuse `-opus[1m]`. `relaunch_prefill` shares the predicate, so a recorded `opus[1m]` is no longer dropped for the default.
-- **IN-04** (lint popup whose findings get zero rows is forced clipped): **Resolved.** Both `LintPopupScreen` (`driver_launch.rs:1512-1527`) and `EditLintConfirmScreen` (`driver_steer.rs:877-899`) skip `fit_list` at a zero row budget. New tests pin the exact heights (80x8 and 80x7) and assert `y` confirms. See IN-07 for a disclosure side effect of this fix.
-- **IN-05** (body-relative `DIRECTION.md:<line>` differs from `driver check` and the launcher's refusal): **Still stands.** `launch_preflight` (`driver_launch.rs:389`) and `request_new_run_check` (`app.rs:1692`) lint `split_frontmatter(&text).1`. `launcher/run.rs:240` and `driver_cli.rs:459` lint the whole file, and `launch_error_copy` (`driver_launch.rs:451`) prints the launcher's whole-file numbers. Nothing in the diff touched this. The disposition correctly records it as deferred.
+- **WR-08** (`DIRECTION.lock` opened by path with symlink-following, truncating-write semantics): **Still applies.** `src/driver/lock.rs` is untouched by `7f1f044..HEAD`. `acquire_at` still opens with `create(true).read(true).write(true).truncate(false)` and no `O_NOFOLLOW` (`lock.rs:201-209`), then `set_len(0)` (`:265`) and `set_permissions(0o644)` (`:278`). `direction.rs` still reaches it unchanged through `direction_lock` in `locked()` (`:641`).
+- **WR-09** (`run_loop`'s guarded read has no 1 MiB size cap): **Still applies, and the surface grew.** `read_run_file` (`direction.rs:588-593`) still ends in an unbounded `read_to_end`. The new `seen()` (`:558-565`) calls it for every displaced and given-back file, and each `Seen` keeps the whole byte vector. One splice now reads a planted large file up to three times, plus once per give-back round (up to 8), all under `DIRECTION.lock`.
+- **IN-06** (macOS exchange failure reported under Linux syscall name): **Still applies.** `direction.rs:770` still reports `renameat2(RENAME_EXCHANGE)`. The new give-back messages (`:689`, `:704`) do not name the syscall, but `:770` and the module doc are unchanged.
+- IN-05 and IN-07 are outside these files and are not re-reported.
 
 ## Warnings
 
@@ -70,9 +56,9 @@ If `DIRECTION.lock` is a symlink to a file the user can write (for example `~/.s
 - fill it with the holder record;
 - chmod it to 0644.
 
-This is the T-30-04/T-30-24 threat model: 30-SECURITY lists the run directory as writable by an `--unsandboxed` run. The same class that WR-02 closed for reads (a planted entry in the run directory) therefore still applies to the lock open, with a destructive write instead of a hang. A FIFO at that name does not block on Linux (`O_RDWR`). It fails at `set_len` with `Unavailable`, which `locked()` turns into a steer error.
+This is the T-30-04/T-30-24 threat model: 30-SECURITY lists the run directory as writable by an `--unsandboxed` run. The class that WR-02 closed for reads (a planted entry in the run directory) therefore still applies to the lock open, with a destructive write instead of a hang. A FIFO at that name does not block on Linux (`O_RDWR`). It fails at `set_len` with `Unavailable`, which `locked()` turns into a steer error.
 
-Severity is Warning, not Critical. The code is pre-existing (Phase 17/27) and `lock.rs` is outside this review's file set. Reaching it needs a writer in the run directory, and an `--unsandboxed` run can already act as the user. But the phase claims "one guarded open for every run-dir read", and the lock open is the one run-directory open that writes.
+Severity is Warning, not Critical. The code is pre-existing (Phase 17/27) and `lock.rs` is outside this file set. Reaching it needs a writer in the run directory, and an `--unsandboxed` run can already act as the user. But the phase claims "one guarded open for every run-dir read", and the lock open is the one run-directory open that writes.
 **Fix:** Open the lock through the same guard discipline. In `acquire_at`, add `custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)` on unix, and after the open refuse anything that is not a regular file before `flock` or `set_len`:
 ```rust
 let meta = file.metadata().map_err(|e| LockError::Unavailable { detail: e.to_string() })?;
@@ -84,12 +70,10 @@ if !meta.file_type().is_file() {
 ```
 `launcher.lock` goes through the same function and gets the same protection. Add a test with a symlinked `DIRECTION.lock` pointing at a sentinel file, and assert the sentinel is unchanged and `steer_run` returns `Failed`.
 
-**DTAB impact:** none of DTAB-01..04 is defeated. DTAB-03's "takes the shared flock" still holds for a regular lock file. This is a hardening gap, not a functional one.
-
 ### WR-09: `run_loop`'s guarded read has no size cap, although every other run-directory reader enforces 1 MiB
 
-**File:** `src/driver/direction.rs` (`read_run_file` and its three callers in `run_loop`), reached from `src/driver/steer.rs` `steer_run` and `apply_edit`
-**Issue:** `read_run_file` ends in `file.read_to_end(&mut bytes)`. The reader that feeds the tab caps at `DIRECTION_READ_MAX_BYTES` (1 MiB, `driver_frontmatter.rs:770`, `take(..+1)` at `:870`). The editor temp caps at `EDIT_TEMP_MAX_BYTES` (`steer.rs:595`, `:632`). The write path has no cap. `request_steer` goes straight to `steer_run` and then `write_body` with no capped read first. A regular file of arbitrary size at `DIRECTION.md` (a sparse multi-GB file is enough) is read fully into memory under `DIRECTION.lock`, once for the target and again for the displaced inode after the exchange. 30-SECURITY T-30-04 names `DIRECTION_READ_MAX_BYTES` + `take` as the mitigation for this same planted-file threat, so the cap exists for the display path and was not carried into the write path when WR-02 moved it onto `open_run_file`. The previous `std::fs::read` was equally unbounded, so this is not a regression. But the new `read_run_file` doc comment ("a planted entry cannot park the caller") overstates what it guarantees.
+**File:** `src/driver/direction.rs:588-593` (`read_run_file`; callers in `run_loop` at `:723`, and via `seen()` at `:563`, `:779`, `:804`, `:695`), reached from `src/driver/steer.rs` `steer_run` and `apply_edit`
+**Issue:** `read_run_file` ends in `file.read_to_end(&mut bytes)`. The reader that feeds the tab caps at `DIRECTION_READ_MAX_BYTES` (1 MiB, `driver_frontmatter.rs:770`, `take(..+1)` at `:870`). The editor temp caps at `EDIT_TEMP_MAX_BYTES` (`steer.rs:595`, `:632`). The write path has no cap. A regular file of arbitrary size at `DIRECTION.md` (a sparse multi-GB file is enough) is read fully into memory under `DIRECTION.lock`. Since 261023-v1s it is read again for the displaced inode (`seen`), again for the exchange-back, and once per give-back round, with each `Seen` holding its own copy of the bytes. 30-SECURITY T-30-04 names `DIRECTION_READ_MAX_BYTES` + `take` as the mitigation for this planted-file threat, so the cap exists for the display path and was not carried into the write path. The doc comment on `read_run_file` ("a planted entry cannot park the caller") overstates what it guarantees.
 **Fix:** Cap the read and treat an over-cap file as a refusal.
 ```rust
 fn read_run_file(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -106,22 +90,37 @@ fn read_run_file(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 ```
-Add a test that `steer_run` over a file just past the cap returns `Failed` without allocating it.
+`seen()` already maps a failed read to `bytes: None`, so an over-cap displaced file is compared by inode alone and still gives back correctly. Add a test that `steer_run` over a file just past the cap returns `Failed` without allocating it.
 
-**DTAB impact:** none defeated. DTAB-03's edits still work for any legitimately sized `DIRECTION.md`.
+### WR-10: A give-back `ENOENT` strands the human's newest save at a hidden temp name, where the next launch sweeps it
+
+**File:** `src/driver/direction.rs:684-694` (`give_back_newest`, the `exchange` error arm), swept by `src/launcher/run.rs:613` and `src/driverctl/serve.rs:930` (`STALE_TEMP_AGE` = 60 s)
+**Issue:** Before 261023-v1s the newest save was restored with `std::fs::rename(&temp_path, &target)`. That works whether or not `DIRECTION.md` exists at that instant. The replacement is `renameat2(RENAME_EXCHANGE)`, which fails with `ENOENT` when `DIRECTION.md` is absent. The window is the same one the fix is about: between the exchange back (`:792`) and the give-back exchange, DIRECTION.md holds the older displaced file. An editor or tool that saves by unlink-then-create, or a `git checkout` that removes the file, hits it. In that case:
+
+- `give_back_newest` returns `Err("could not put a newer save back; a displaced file was left at .DIRECTION.md.fm.<pid>.<n>")`.
+- The human's newest bytes exist only at the dot-named temp.
+- `DIRECTION.md` is absent.
+- Any later gsd-mm launch or `driverctl serve` for that run calls `sweep_stale_temps` with a 60 s threshold, which deletes the temp. The save is then gone.
+
+The first exchange in `run_loop` already treats `ENOENT` specially (`:764`, returned as `NoDirection`). The new loop has no equivalent, and here the temp holds a human's file rather than the tool's own, so the right outcome is to restore it, not to report an error.
+**Fix:** On `ENOENT`, restore with a no-replace rename, which cannot overwrite anything a newer writer creates in the meantime:
+```rust
+Err(errno) if errno == rustix::io::Errno::NOENT => {
+    match renameat_with(dir, temp_name, dir, DIRECTION_FILE, RenameFlags::NOREPLACE) {
+        Ok(()) => return Ok(()),
+        // Something re-created DIRECTION.md in between: exchange on the next round.
+        Err(rustix::io::Errno::EXIST) => continue,
+        Err(e) => return Err(io_err("could not restore a newer save", e)),
+    }
+}
+```
+`RenameFlags::NOREPLACE` is available on Linux and Apple targets in rustix 1.x. Add a race-hook point between the exchange back and the give-back (a new `Point`) so a unit test can unlink `DIRECTION.md` there and assert the newest save ends up at `DIRECTION.md`.
 
 ## Info
 
-### IN-05: Body-relative `DIRECTION.md:<line>` in the TUI differs from `driver check` and the launcher's own refusal (carried, unchanged)
-
-**File:** `src/ui/screens/driver_launch.rs:389`, `src/app.rs:1692`, against `src/launcher/run.rs:240` and `src/driver_cli.rs:459`
-**Issue:** See "Prior findings status". The TUI numbers findings from the first body line (the editor contract). The launcher and `driver check` number them against the whole file. `launch_error_copy` can therefore print "DIRECTION.md:57" for a problem the form showed as "DIRECTION.md:25". The window is narrow, because the preflight normally catches the problem first. It is deferred in the disposition.
-**Fix:** Label the TUI numbers with their base (`body line 25`), or re-base `DirectionInvalid` problems by the frontmatter line count in `launch_error_copy`.
-**DTAB impact:** none.
-
 ### IN-06: macOS exchange failure on a volume without `RENAME_SWAP` surfaces under the Linux syscall name
 
-**File:** `src/driver/direction.rs` (the `io_err("renameat2(RENAME_EXCHANGE)", errno)` arm of `run_loop`; the module doc and `unsupported()` were updated for macOS, this string was not)
+**File:** `src/driver/direction.rs:770` (the `io_err("renameat2(RENAME_EXCHANGE)", errno)` arm of `run_loop`)
 **Issue:** 261020-vxg enabled the exchange path on macOS, where `renameatx_np(RENAME_SWAP)` fails with `ENOTSUP` on volumes that do not implement it (non-APFS/HFS+: SMB, NFS, exFAT). The arm still reports `renameat2(RENAME_EXCHANGE): <errno>`. A macOS user steering a project on such a volume gets a Linux syscall name and a bare errno, with no hint that the volume is the cause. The design is deliberately fail-closed with no plain-rename fallback, so the only gap is the message. Linux filesystems without `RENAME_EXCHANGE` (EINVAL) have always had the same bare message.
 **Fix:** Name the operation portably and map the unsupported errnos:
 ```rust
@@ -135,17 +134,21 @@ Err(errno) => {
     return Err(io_err("atomic rename exchange", why));
 }
 ```
-**DTAB impact:** none on Linux. On macOS with an unsupporting volume DTAB-03 steering fails closed (by design), so this only affects diagnosability.
 
-### IN-07: At a zero row budget both lint popups drop every finding and leave a header that ends in a colon
+### IN-08: `contended > 0` is satisfied by any busy tool thread, so it does not show the read-to-exchange window was raced
 
-**File:** `src/ui/screens/driver_launch.rs:1512-1527` (`LintPopupScreen`), `src/ui/screens/driver_steer.rs:877-899` (`EditLintConfirmScreen`)
-**Issue:** The IN-04 fix (leave the list out at a zero budget) is what the prior review proposed, and it does make `y` live. A side effect is that at those one or two terminal heights the popup reads "driver check found 10 problem(s) in your edit:" directly above "Apply it anyway?". The user confirms an edit that lint rejected without seeing any finding. The same applies when `rows == 1` and the first finding does not fit: `fit_list` returns only `… N more`. The count is disclosed, so this is not a safety hole. It is a thin-disclosure choice on the lint-override confirmation specifically.
-**Fix:** When the list is dropped, end the header without the colon, or add a `(enlarge the terminal to list them)` hint on the muted row. Alternatively keep `y` inert at a zero budget for `EditLintConfirmScreen` (the override), and live only for `LintPopupScreen` (the "edit again" popup, where disclosure is not what `y` accepts).
-**DTAB impact:** none.
+**File:** `tests/driverctl_race.rs:253-256` (the sample), `:467-474` (the assertion)
+**Issue:** The header and the assertion message claim `contended > 0` means "a save started while a splice was in flight, so the race was exercised". The sample is `begun > done` read before the save is written. The tool thread loops splice after splice with no pause, so `begun > done` holds for nearly all of the tool's duty cycle: the lock wait, temp write and fsync all count as "in flight". The save then lands anywhere in that span, usually not in the narrow read-to-exchange window. A harness in which no save ever raced a read-to-exchange window would still pass the assertion. The non-vacuity proof the file really has is `editor_race_naive_positive_control` (LOST > 0), not this assertion. It is not a correctness hazard, but the failure message ("the race was never exercised") promises more than the check delivers.
+**Fix:** Either reword the header and message to "a save landed while the tool was busy", or measure the real window: have the tool publish a counter bumped right after its read and cleared after the exchange (this needs a hook in the library, which the unit-level `race_hook` already provides under `cfg(test)` only), or assert on an outcome that needs the race, such as `tool` containing `gave-up` or a non-zero regen count in the naive control.
+
+### IN-09: Exhausting the give-back leaves the newest save at the temp name and an older one at `DIRECTION.md`
+
+**File:** `src/driver/direction.rs:684-709` (`give_back_newest`, the loop exit)
+**Issue:** After round N the file at `DIRECTION.md` is the previous `placing` and the file that just came back, which is the newest, sits at the temp name. When all `GIVE_BACK_ROUNDS` (8) rounds see a fresh save, the function returns `Err("newer saves kept arriving; a displaced file was left at ...")` in that state. The message is accurate, but the temp is exactly what `sweep_stale_temps` deletes after 60 s (see WR-10). Eight consecutive racing saves within microseconds is not a realistic input, so this is documentation-level.
+**Fix:** On exhaustion, do one more exchange so the newest file ends at `DIRECTION.md` and the older one is what is left at the temp name. Failing that, say in the error that the file will be removed by the next sweep.
 
 ---
 
-_Reviewed: 2026-10-23_
+_Reviewed: 2026-10-24_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
