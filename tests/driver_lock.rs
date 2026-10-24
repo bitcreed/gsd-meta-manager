@@ -358,6 +358,46 @@ async fn wait_for_lock_or_report(
     ))
 }
 
+/// Wait for the child's journal to carry an `exec_started` record (its agent
+/// was spawned and has announced itself), or say what happened instead.
+/// Bounded like [`wait_for_lock_or_report`]: 600 polls of 50 ms, and a child
+/// that exits first is reported with its status and output.
+async fn wait_for_exec_started_or_report(
+    child: &mut std::process::Child,
+    journal: &Path,
+    capture: &ChildCapture,
+) -> Result<(), String> {
+    use gsd_meta_manager::journal::reader::{self, ParsedLine, TailCursor};
+
+    for _ in 0..600 {
+        let started = reader::tail_lines(journal, TailCursor::default())
+            .map(|read| {
+                read.lines.iter().any(|line| {
+                    matches!(reader::parse_line(line),
+                        ParsedLine::Record(record) if record.kind == "exec_started")
+                })
+            })
+            .unwrap_or(false);
+        if started {
+            return Ok(());
+        }
+        if let Some(status) = child
+            .try_wait()
+            .expect("the child's exit status is readable")
+        {
+            return Err(format!(
+                "the child driver exited with {status} BEFORE its agent started{}",
+                capture.report()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!(
+        "the child driver's agent never started within 30s{}",
+        capture.report()
+    ))
+}
+
 #[tokio::test]
 async fn a_second_drive_reports_which_run_holds_the_lock() {
     let root = project_root();
@@ -587,6 +627,24 @@ async fn the_lock_is_released_when_the_holding_process_dies() {
         .expect("the driver binary is built and spawnable");
 
     wait_for_lock_or_report(&mut child, &planning, &capture)
+        .await
+        .unwrap_or_else(|why| panic!("{why}"));
+
+    // Then wait until the driver has spawned its `claude` stand-in and the
+    // stand-in has spoken (the journal's `exec_started` record). Killing the
+    // driver while it is still FORKING that child leaves the forked copy holding
+    // the lock's open file description until its exec closes it (O_CLOEXEC): the
+    // lock then outlives the reaped driver by that window. The pre-tag container
+    // measured it at 77 us .. 3.9 ms, the holder a `tokio-rt-worker` child still
+    // running the driver's image, and the single acquire below was refused 6
+    // times in 1 000 under load (quick 261023-v1s). After `exec_started` that
+    // fork has exec'd, so the acquire tests D-19 exactly, and the orphaned
+    // stand-in described below is really alive at the kill, so a lock
+    // descriptor leaked into it fails the acquire.
+    let journal = gsd_meta_manager::journal::run_paths(&planning, RUN_A)
+        .expect("the fixture run id is a plain path component")
+        .journal;
+    wait_for_exec_started_or_report(&mut child, &journal, &capture)
         .await
         .unwrap_or_else(|why| panic!("{why}"));
 
