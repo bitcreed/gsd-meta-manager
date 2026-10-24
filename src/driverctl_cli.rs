@@ -238,10 +238,6 @@ fn connect_within(
 fn request(req: &Value) -> Result<Value, ClientError> {
     use std::time::Instant;
 
-    let transport = |what: &str, err: std::io::Error| ClientError::Transport {
-        detail: format!("{what}: {err}"),
-    };
-
     let path = match std::env::var_os("DRIVERCTL_SOCK") {
         Some(path) if !path.is_empty() => path,
         _ => return Err(ClientError::NoSocket),
@@ -249,6 +245,26 @@ fn request(req: &Value) -> Result<Value, ClientError> {
     let deadline = Instant::now() + CLIENT_TIMEOUT;
 
     let mut stream = connect_within(&path, CLIENT_TIMEOUT)?;
+    let mut line = serde_json::to_vec(req).map_err(|e| ClientError::BadResponse {
+        detail: format!("could not encode the request: {e}"),
+    })?;
+    line.push(b'\n');
+    send_and_read(&mut stream, &line, deadline)
+}
+
+/// Send one request line on a connected stream, then read the reply object, all
+/// under `deadline`.
+#[cfg(unix)]
+fn send_and_read(
+    stream: &mut std::os::unix::net::UnixStream,
+    line: &[u8],
+    deadline: std::time::Instant,
+) -> Result<Value, ClientError> {
+    use std::time::Instant;
+
+    let transport = |what: &str, err: std::io::Error| ClientError::Transport {
+        detail: format!("{what}: {err}"),
+    };
     stream
         .set_write_timeout(Some(
             deadline
@@ -256,16 +272,37 @@ fn request(req: &Value) -> Result<Value, ClientError> {
                 .max(Duration::from_millis(1)),
         ))
         .map_err(|e| transport("set write timeout", e))?;
+    if let Err(sent) = stream.write_all(line) {
+        // A server may answer without reading the request: the `busy` refusal
+        // (serve.rs `refuse_busy`) writes its reply and closes. A send that then
+        // fails because the peer is gone can still have that whole reply queued
+        // here, so relay it; the send failure stands only when there is none
+        // (quick 261023-v1s).
+        if matches!(
+            sent.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        ) {
+            if let Ok(reply) = read_reply(stream, deadline) {
+                return Ok(reply);
+            }
+        }
+        return Err(transport("send request", sent));
+    }
+    read_reply(stream, deadline)
+}
 
-    let mut line = serde_json::to_vec(req).map_err(|e| ClientError::BadResponse {
-        detail: format!("could not encode the request: {e}"),
-    })?;
-    line.push(b'\n');
-    stream
-        .write_all(&line)
-        .map_err(|e| transport("send request", e))?;
+/// Read one reply line (until a newline or EOF, under `deadline` and a size cap)
+/// and parse it as a JSON object.
+#[cfg(unix)]
+fn read_reply(
+    stream: &mut std::os::unix::net::UnixStream,
+    deadline: std::time::Instant,
+) -> Result<Value, ClientError> {
+    use std::time::Instant;
 
-    // Read until a newline or EOF, under a total deadline and a size cap.
+    let transport = |what: &str, err: std::io::Error| ClientError::Transport {
+        detail: format!("{what}: {err}"),
+    };
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
     while !buf.ends_with(b"\n") && (buf.len() as u64) < MAX_REPLY_BYTES {
@@ -604,6 +641,44 @@ mod tests {
             "the backlog never filled after {} connects",
             held.len()
         );
+    }
+
+    /// Quick 261023-v1s: the server's `busy` refusal (serve.rs `refuse_busy`)
+    /// answers WITHOUT reading the request and closes, so the client's send can
+    /// fail with EPIPE although the answer is already queued for it. The answer
+    /// must be relayed; reporting "send request: Broken pipe" instead turned a
+    /// `busy` deny into an "unreachable" deny under load.
+    #[test]
+    fn a_reply_queued_before_the_peer_closed_is_read_even_though_the_send_fails() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        server
+            .write_all(b"{\"ok\":false,\"error\":\"busy\"}\n")
+            .unwrap();
+        drop(server);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+
+        let reply = send_and_read(&mut client, b"{\"cmd\":\"show\"}\n", deadline)
+            .expect("the busy reply queued before the close must be relayed");
+
+        assert!(!reply_ok(&reply), "{reply}");
+        assert_eq!(reply_error(&reply), "busy", "{reply}");
+    }
+
+    /// The control: a peer that closed WITHOUT replying is still a send failure.
+    #[test]
+    fn a_send_to_a_peer_that_closed_without_a_reply_is_still_a_send_failure() {
+        use std::os::unix::net::UnixStream;
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        drop(server);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+
+        let err = send_and_read(&mut client, b"{}\n", deadline).unwrap_err();
+
+        assert!(err.to_string().starts_with("send request: "), "{err}");
     }
 
     #[test]
