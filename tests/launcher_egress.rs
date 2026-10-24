@@ -198,6 +198,15 @@ impl Rig {
         self.handle.take().expect("running").stop()
     }
 
+    /// A client connection with a bounded read.
+    fn connect(&self) -> UnixStream {
+        let client = UnixStream::connect(&self.sock).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("timeout");
+        client
+    }
+
     /// Send `raw` and read the whole response (the server closes after one).
     fn exchange(&self, raw: &[u8]) -> String {
         let mut client = UnixStream::connect(&self.sock).expect("connect");
@@ -344,4 +353,209 @@ fn count_tokens_is_forwarded() {
         [format!("Bearer {REAL_TOKEN}")]
     );
     assert_eq!(rig.stop().inference_forwarded, 1);
+}
+
+// ------------------------------------------------- task 2: body and framing
+
+/// A request with an arbitrary header block and body, framed as the caller says.
+fn raw_request(extra_headers: &[&str], body: &[u8]) -> Vec<u8> {
+    let mut out = b"POST /v1/messages?beta=true HTTP/1.1\r\nhost: x\r\n".to_vec();
+    for header in extra_headers {
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(body);
+    out
+}
+
+fn with_length(body: &str) -> Vec<u8> {
+    let length = format!("content-length: {}", body.len());
+    raw_request(
+        &[&length, "content-type: application/json"],
+        body.as_bytes(),
+    )
+}
+
+#[test]
+fn server_side_fetch_bodies_are_refused() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    let bodies = [
+        r#"{"model":"m","messages":[],"mcp_servers":[]}"#,
+        r#"{"model":"m","messages":[],"container":{"skills":[]}}"#,
+        r#"{"model":"m","messages":[],"tools":[{"type":"web_fetch_20260318","name":"web_fetch"}]}"#,
+        r#"{"model":"m","messages":[],"tools":[{"type":"code_execution_20260521","name":"code_execution"}]}"#,
+        r#"{"model":"m","messages":[],"tools":[{"type":"advisor_20260301","name":"advisor"}]}"#,
+        r#"{"model":"m","messages":[],"tools":[{"type":"mcp_toolset","mcp_server_name":"x"}]}"#,
+        r#"{"model":"m","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"https://x.example/?d=1"}}]}]}]}"#,
+        r#"{"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"file_01"}}]}]}"#,
+        r#"{"model":"m","messages":[{"role":"user","content":[{"type":"container_upload","file_id":"file_01"}]}]}"#,
+    ];
+    for body in bodies {
+        let response = rig.exchange(&with_length(body));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 403"),
+            "{body}: {response}"
+        );
+        assert!(
+            !response.contains("x.example"),
+            "a refusal must not echo a URL from the body: {response}"
+        );
+    }
+    assert_eq!(stub.connections(), 0, "a refused body dialled upstream");
+    assert_eq!(rig.stop().inference_denied, bodies.len() as u64);
+}
+
+#[test]
+fn web_search_and_client_tools_pass() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    for body in [
+        r#"{"model":"m","messages":[],"tools":[{"name":"Bash","input_schema":{}}]}"#,
+        r#"{"model":"m","messages":[],"tools":[{"name":"Bash","input_schema":{}},{"type":"web_search_20250305","name":"web_search","max_uses":5}]}"#,
+        r#"{"model":"m","messages":[],"tools":[{"type":"custom","name":"x","input_schema":{}}],"container":null}"#,
+    ] {
+        let response = rig.exchange(&with_length(body));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 200"),
+            "{body}: {response}"
+        );
+    }
+    assert_eq!(stub.seen().len(), 3);
+}
+
+#[test]
+fn chunked_bodies_are_reframed_with_content_length() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    let wire = raw_request(
+        &[
+            "transfer-encoding: chunked",
+            "content-type: application/json",
+        ],
+        b"7;ext=1\r\n{\"model\"\r\n12\r\n:\"m\",\"messages\":[]}\r\n0\r\nX-Trailer: t\r\n\r\n",
+    );
+
+    let response = rig.exchange(&wire);
+
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 200"),
+        "{response}"
+    );
+    let seen = stub.seen();
+    assert_eq!(seen.len(), 1);
+    let decoded = r#"{"model":"m","messages":[]}"#;
+    assert_eq!(seen[0].body, decoded.as_bytes());
+    assert_eq!(
+        seen[0].header("content-length"),
+        [decoded.len().to_string()]
+    );
+    assert!(
+        seen[0].header("transfer-encoding").is_empty(),
+        "{}",
+        seen[0].head
+    );
+    assert!(seen[0].header("x-trailer").is_empty(), "{}", seen[0].head);
+}
+
+#[test]
+fn encoded_or_ambiguous_framing_is_refused() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    let body = r#"{"model":"m","messages":[]}"#;
+    let length = format!("content-length: {}", body.len());
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "content-encoding: gzip",
+            raw_request(&[&length, "content-encoding: gzip"], body.as_bytes()),
+        ),
+        (
+            "both Content-Length and Transfer-Encoding",
+            raw_request(&[&length, "transfer-encoding: chunked"], body.as_bytes()),
+        ),
+        (
+            "duplicate Content-Length",
+            raw_request(&[&length, &length], body.as_bytes()),
+        ),
+        (
+            "upgrade",
+            raw_request(&[&length, "upgrade: websocket"], body.as_bytes()),
+        ),
+        (
+            "expect other than 100-continue",
+            raw_request(&[&length, "expect: nope"], body.as_bytes()),
+        ),
+        ("malformed JSON", with_length("{\"model\": ")),
+        ("not an object", with_length("[]")),
+        ("empty body", raw_request(&[], b"")),
+    ];
+    for (name, wire) in &cases {
+        let response = rig.exchange(wire);
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 4"),
+            "{name}: {response}"
+        );
+    }
+    assert_eq!(stub.connections(), 0, "a refused request dialled upstream");
+
+    // The identity encoding is the one non-trivial header value that IS accepted.
+    let wire = raw_request(&[&length, "content-encoding: identity"], body.as_bytes());
+    let response = rig.exchange(&wire);
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 200"),
+        "{response}"
+    );
+}
+
+#[test]
+fn oversized_bodies_are_refused_before_reading() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    // Only the head is sent: the 413 must not wait for a body that never comes.
+    let wire = raw_request(&["content-length: 33554433"], b"");
+
+    let response = rig.exchange(&wire);
+
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 413"),
+        "{response}"
+    );
+    assert_eq!(stub.connections(), 0);
+}
+
+#[test]
+fn expect_continue_is_answered_locally() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    let body = r#"{"model":"m","messages":[]}"#;
+    let head = raw_request(
+        &[
+            &format!("content-length: {}", body.len()),
+            "expect: 100-continue",
+        ],
+        b"",
+    );
+    let mut client = rig.connect();
+    client.write_all(&head).expect("write the head");
+
+    // The interim response arrives before any body is sent, and before upstream.
+    let mut interim = Vec::new();
+    let mut byte = [0u8; 1];
+    while !interim.ends_with(b"\r\n\r\n") {
+        client
+            .read_exact(&mut byte)
+            .expect("read the interim response");
+        interim.push(byte[0]);
+    }
+    assert_eq!(interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+    assert_eq!(stub.connections(), 0, "100 Continue came from upstream");
+
+    client.write_all(body.as_bytes()).expect("write the body");
+    let mut rest = Vec::new();
+    let _ = client.read_to_end(&mut rest);
+    let rest = String::from_utf8_lossy(&rest);
+    assert!(status_line(&rest).starts_with("HTTP/1.1 200"), "{rest}");
+    assert_eq!(stub.seen().len(), 1);
+    assert!(stub.seen()[0].header("expect").is_empty());
 }

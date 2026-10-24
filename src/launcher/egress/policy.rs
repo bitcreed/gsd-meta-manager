@@ -126,6 +126,69 @@ pub fn forwarded_headers(headers: &[Header]) -> Vec<Header> {
         .collect()
 }
 
+/// The verdict on an inference request body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyVerdict {
+    Forward,
+    /// Refused; the text names the field or the tool-type string (policy data,
+    /// never a URL or a value from the body).
+    Deny(String),
+}
+
+/// Why a request is refused, and with which status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Denial {
+    /// 403: the policy forbids it.
+    Forbidden(String),
+    /// 400: the request is malformed or framed in a way the proxy will not judge.
+    BadRequest(String),
+    /// 413: over the body bound.
+    TooLarge(String),
+}
+
+impl Denial {
+    pub fn status(&self) -> u16 {
+        match self {
+            Denial::Forbidden(_) => 403,
+            Denial::BadRequest(_) => 400,
+            Denial::TooLarge(_) => 413,
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            Denial::Forbidden(r) | Denial::BadRequest(r) | Denial::TooLarge(r) => r,
+        }
+    }
+}
+
+/// How the request body is delimited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    Length(u64),
+    Chunked,
+}
+
+/// RED stub: judged in the GREEN commit.
+pub fn inference_body_verdict(_body: &serde_json::Value) -> BodyVerdict {
+    BodyVerdict::Forward
+}
+
+/// RED stub: judged in the GREEN commit.
+pub fn judge_body(_bytes: &[u8]) -> BodyVerdict {
+    BodyVerdict::Forward
+}
+
+/// RED stub: judged in the GREEN commit.
+pub fn framing_verdict(_headers: &[Header]) -> Result<Framing, Denial> {
+    Ok(Framing::Length(0))
+}
+
+/// RED stub: judged in the GREEN commit.
+pub fn wants_continue(_headers: &[Header]) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +322,228 @@ mod tests {
                 "accept"
             ]
         );
+    }
+
+    // ---------------------------------------------------------- body verdict
+
+    use serde_json::json;
+
+    fn denied(body: serde_json::Value) -> bool {
+        matches!(inference_body_verdict(&body), BodyVerdict::Deny(_))
+    }
+
+    #[test]
+    fn client_tools_and_web_search_are_forwarded() {
+        for body in [
+            json!({"model": "m", "messages": [], "tools": [{"name": "Bash", "input_schema": {}}]}),
+            json!({"model": "m", "messages": [], "tools": [
+                {"name": "Bash", "input_schema": {}},
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]}),
+            json!({"model": "m", "messages": [], "tools": [
+                {"type": "custom", "name": "x", "input_schema": {}},
+                {"type": "web_search_20260209", "name": "web_search"}]}),
+            json!({"model": "m", "messages": [], "container": null}),
+            json!({"model": "m", "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                {"type": "search_result", "source": "https://x.example/a", "title": "t",
+                 "content": [{"type": "text", "text": "r"}]}]}]}),
+        ] {
+            assert_eq!(
+                inference_body_verdict(&body),
+                BodyVerdict::Forward,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn server_side_reach_is_denied_at_the_top_level_and_in_tools() {
+        for body in [
+            json!({"messages": [], "mcp_servers": []}),
+            json!({"messages": [], "mcp_servers": [{"type": "url", "url": "https://x.example"}]}),
+            json!({"messages": [], "container": {"skills": []}}),
+            json!({"messages": [], "container": "container_011"}),
+            json!({"messages": [], "tools": [{"type": "web_fetch_20260318", "name": "web_fetch"}]}),
+            json!({"messages": [], "tools": [{"type": "web_fetch_20250910", "name": "web_fetch"}]}),
+            json!({"messages": [], "tools": [{"type": "code_execution_20260521", "name": "code_execution"}]}),
+            json!({"messages": [], "tools": [{"type": "advisor_20260301", "name": "advisor"}]}),
+            json!({"messages": [], "tools": [{"type": "mcp_toolset", "mcp_server_name": "x"}]}),
+            json!({"messages": [], "tools": [{"type": "computer_20251124", "name": "computer"}]}),
+            json!({"messages": [], "tools": [{"type": "bash_20250124", "name": "bash"}]}),
+            json!({"messages": [], "tools": [{"name": "Bash"}, {"type": "web_fetch_20260318"}]}),
+            json!({"messages": [], "tools": [{"type": 5, "name": "x"}]}),
+            json!({"messages": [], "tools": ["web_fetch"]}),
+            json!({"messages": [], "tools": {"type": "web_fetch_20260318"}}),
+        ] {
+            assert!(denied(body.clone()), "{body}");
+        }
+    }
+
+    #[test]
+    fn remote_sources_and_server_blocks_are_denied_wherever_they_nest() {
+        let url_image =
+            json!({"type": "image", "source": {"type": "url", "url": "https://x.example/?d=1"}});
+        for body in [
+            json!({"messages": [{"role": "user", "content": [url_image.clone()]}]}),
+            json!({"messages": [{"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t", "content": [url_image.clone()]}]}]}),
+            json!({"messages": [{"role": "user", "content": [
+                {"type": "document", "source": {"type": "file", "file_id": "file_01"}}]}]}),
+            json!({"system": [{"type": "document", "source": {"type": "url", "url": "https://x.example/a.pdf"}}],
+                   "messages": []}),
+            json!({"messages": [{"role": "user", "content": [
+                {"type": "container_upload", "file_id": "file_01"}]}]}),
+            json!({"messages": [{"role": "assistant", "content": [
+                {"type": "mcp_tool_use", "id": "m", "name": "n", "server_name": "s", "input": {}}]}]}),
+            json!({"messages": [{"role": "user", "content": [
+                {"type": "tool_result", "content": [
+                    {"type": "mcp_tool_result", "tool_use_id": "m", "content": []}]}]}]}),
+        ] {
+            assert!(denied(body.clone()), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_denial_names_the_field_or_type_and_never_echoes_a_url() {
+        let url = "https://attacker.example/?d=SECRET";
+        let BodyVerdict::Deny(reason) =
+            inference_body_verdict(&json!({"messages": [{"role": "user",
+            "content": [{"type": "image", "source": {"type": "url", "url": url}}]}]}))
+        else {
+            panic!("a url-sourced image must be denied");
+        };
+        assert!(
+            !reason.contains("attacker") && !reason.contains("SECRET"),
+            "{reason}"
+        );
+        let BodyVerdict::Deny(reason) = inference_body_verdict(
+            &json!({"messages": [], "tools": [{"type": "web_fetch_20260318"}]}),
+        ) else {
+            panic!("a web_fetch tool must be denied");
+        };
+        assert!(reason.contains("web_fetch_20260318"), "{reason}");
+    }
+
+    #[test]
+    fn a_body_that_is_not_an_object_or_not_json_is_denied() {
+        for bytes in [
+            &b"[]"[..],
+            b"\"text\"",
+            b"null",
+            b"42",
+            b"",
+            b"{",
+            b"{\"model\": }",
+            b"\xff\xfe",
+        ] {
+            assert!(
+                matches!(judge_body(bytes), BodyVerdict::Deny(_)),
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        // Nested past serde_json's recursion limit (128): a parse error, a deny.
+        let deep = format!("{}1{}", "[".repeat(300), "]".repeat(300));
+        assert!(matches!(judge_body(deep.as_bytes()), BodyVerdict::Deny(_)));
+        let deep_object = format!("{{\"a\":{}1{}}}", "[".repeat(300), "]".repeat(300));
+        assert!(matches!(
+            judge_body(deep_object.as_bytes()),
+            BodyVerdict::Deny(_)
+        ));
+        assert_eq!(
+            judge_body(br#"{"model":"m","messages":[]}"#),
+            BodyVerdict::Forward
+        );
+    }
+
+    // ------------------------------------------------------------- framing
+
+    fn hdrs(pairs: &[(&str, &str)]) -> Vec<Header> {
+        pairs
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), v.as_bytes().to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn framing_accepts_one_length_or_chunked() {
+        assert_eq!(
+            framing_verdict(&hdrs(&[("Content-Length", "12")])),
+            Ok(Framing::Length(12))
+        );
+        assert_eq!(
+            framing_verdict(&hdrs(&[("content-length", "33554432")])),
+            Ok(Framing::Length(33_554_432))
+        );
+        assert_eq!(
+            framing_verdict(&hdrs(&[("Transfer-Encoding", "chunked")])),
+            Ok(Framing::Chunked)
+        );
+        assert_eq!(
+            framing_verdict(&hdrs(&[("Transfer-Encoding", " Chunked ")])),
+            Ok(Framing::Chunked)
+        );
+        assert_eq!(framing_verdict(&hdrs(&[])), Ok(Framing::Length(0)));
+        assert_eq!(
+            framing_verdict(&hdrs(&[
+                ("Content-Length", "2"),
+                ("Content-Encoding", "identity")
+            ])),
+            Ok(Framing::Length(2))
+        );
+    }
+
+    #[test]
+    fn framing_refuses_ambiguity_and_encodings_it_cannot_inspect() {
+        for headers in [
+            hdrs(&[("Content-Length", "2"), ("Transfer-Encoding", "chunked")]),
+            hdrs(&[("Content-Length", "2"), ("Content-Length", "2")]),
+            hdrs(&[("Content-Length", "2, 2")]),
+            hdrs(&[("Content-Length", "+2")]),
+            hdrs(&[("Content-Length", "-1")]),
+            hdrs(&[("Content-Length", "")]),
+            hdrs(&[("Content-Length", "0x10")]),
+            hdrs(&[("Transfer-Encoding", "gzip, chunked")]),
+            hdrs(&[("Transfer-Encoding", "identity")]),
+            hdrs(&[
+                ("Transfer-Encoding", "chunked"),
+                ("Transfer-Encoding", "chunked"),
+            ]),
+            hdrs(&[("Content-Length", "2"), ("Content-Encoding", "gzip")]),
+            hdrs(&[("Content-Length", "2"), ("Content-Encoding", "br")]),
+            hdrs(&[
+                ("Content-Length", "2"),
+                ("Content-Encoding", "identity, gzip"),
+            ]),
+            hdrs(&[("Content-Length", "2"), ("Upgrade", "websocket")]),
+            hdrs(&[("Content-Length", "2"), ("Expect", "something-else")]),
+        ] {
+            assert!(
+                matches!(framing_verdict(&headers), Err(Denial::BadRequest(_))),
+                "{headers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn framing_refuses_a_body_over_the_cap_before_reading_it() {
+        for length in ["33554433", "99999999999", "18446744073709551616"] {
+            assert!(
+                matches!(
+                    framing_verdict(&hdrs(&[("Content-Length", length)])),
+                    Err(Denial::TooLarge(_))
+                ),
+                "{length}"
+            );
+        }
+    }
+
+    #[test]
+    fn expect_100_continue_is_accepted_and_flagged() {
+        let headers = hdrs(&[("Content-Length", "2"), ("Expect", "100-continue")]);
+        assert_eq!(framing_verdict(&headers), Ok(Framing::Length(2)));
+        assert!(wants_continue(&headers));
+        assert!(!wants_continue(&hdrs(&[("Content-Length", "2")])));
     }
 }

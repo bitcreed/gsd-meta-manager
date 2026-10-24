@@ -243,6 +243,14 @@ pub fn error_response(status: u16, message: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// RED stub: decoded in the GREEN commit.
+pub async fn read_chunked_body<R>(_reader: &mut R, _leftover: Vec<u8>) -> Result<Vec<u8>, ReadError>
+where
+    R: AsyncRead + Unpin,
+{
+    Ok(Vec::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +373,87 @@ mod tests {
             json["error"]["message"],
             "gsd-meta-manager egress: no \"quotes\" survive"
         );
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_is_decoded_extensions_and_trailers_discarded() {
+        let wire = b"5\r\nhello\r\n6;ext=1;other=\"x\"\r\n world\r\n0\r\nTrailer-One: a\r\nTrailer-Two: b\r\n\r\n";
+        let mut reader = &wire[..];
+        let body = read_chunked_body(&mut reader, Vec::new())
+            .await
+            .expect("body");
+        assert_eq!(body, b"hello world");
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_may_start_in_the_leftover_and_continue_on_the_wire() {
+        let mut reader = &b"llo\r\n0\r\n\r\n"[..];
+        let body = read_chunked_body(&mut reader, b"5\r\nhe".to_vec())
+            .await
+            .expect("body");
+        assert_eq!(body, b"hello");
+    }
+
+    #[tokio::test]
+    async fn malformed_chunking_is_refused() {
+        for wire in [
+            &b"zz\r\nhello\r\n0\r\n\r\n"[..],
+            b"+5\r\nhello\r\n0\r\n\r\n",
+            b"\r\nhello\r\n0\r\n\r\n",
+            b"5\r\nhelloXX0\r\n\r\n",
+            b"5\nhello\r\n0\r\n\r\n",
+            b"00000000000000000005\r\nhello\r\n0\r\n\r\n",
+        ] {
+            let mut reader = wire;
+            assert!(
+                matches!(
+                    read_chunked_body(&mut reader, Vec::new()).await,
+                    Err(ReadError::Malformed(_))
+                ),
+                "{:?}",
+                String::from_utf8_lossy(wire)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trailer_flood_is_refused() {
+        let mut wire = b"0\r\n".to_vec();
+        for i in 0..200 {
+            wire.extend_from_slice(format!("T{i}: v\r\n").as_bytes());
+        }
+        wire.extend_from_slice(b"\r\n");
+        let mut reader = &wire[..];
+        assert!(matches!(
+            read_chunked_body(&mut reader, Vec::new()).await,
+            Err(ReadError::Malformed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_over_the_cap_is_refused_before_its_data_is_read() {
+        // 0x2000001 = BODY_MAX_BYTES + 1, announced and never sent.
+        let mut reader = &b"2000001\r\n"[..];
+        assert!(matches!(
+            read_chunked_body(&mut reader, Vec::new()).await,
+            Err(ReadError::BodyTooLarge)
+        ));
+        // A chunk just under the cap whose data never arrives is a close, not a
+        // cap-sized allocation.
+        let wire = b"1ffffff\r\n";
+        let mut reader = &wire[..];
+        assert!(matches!(
+            read_chunked_body(&mut reader, Vec::new()).await,
+            Err(ReadError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_cut_short_is_closed() {
+        let mut reader = &b"5\r\nhel"[..];
+        assert!(matches!(
+            read_chunked_body(&mut reader, Vec::new()).await,
+            Err(ReadError::Closed)
+        ));
     }
 }
