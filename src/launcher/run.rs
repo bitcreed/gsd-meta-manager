@@ -93,8 +93,8 @@ use crate::driverctl::serve::{
     STALE_TEMP_AGE, TICK,
 };
 use crate::driverctl::store::{
-    CapLimits, DriverSpec, LaunchSpec, RunState, RunStore, TerminalOutcome, TerminalStatus,
-    EXTRA_ACTIVE_SECONDS, LOG_FILE, STATE_FILE,
+    CapLimits, DriverSpec, LaunchPosture, LaunchSpec, RunState, RunStore, TerminalOutcome,
+    TerminalStatus, EXTRA_ACTIVE_SECONDS, EXTRA_INFERENCE_REQUESTS, LOG_FILE, STATE_FILE,
 };
 use crate::envelope::policy::EnvelopePolicy;
 use crate::error::LockError;
@@ -136,6 +136,10 @@ const ACTIVE_PERSIST_EVERY: Duration = Duration::from_secs(15);
 
 /// The header-free egress log, under the run's launcher state directory (D-05).
 const EGRESS_LOG: &str = "egress.log";
+
+/// Printed once by a bwrap launch when the launcher's own environment routes HTTPS
+/// through a proxy: the egress server connects directly (RESEARCH Open Question 2).
+const HOST_PROXY_WARNING: &str = "driver launch: this host routes HTTPS through a proxy (HTTPS_PROXY); the sandbox's egress proxy connects directly and does not chain through it, see docs/DRIVER-SANDBOX.md";
 
 /// The `state.json` key counting auth relaunches (D-23).
 const EXTRA_AUTH_RELAUNCHES: &str = "auth_relaunches";
@@ -187,6 +191,10 @@ pub struct LaunchOptions {
     pub open_pr: bool,
     /// The PR caps the end-of-run push checks a pull request against (SAFE-06).
     pub pr_policy: EnvelopePolicy,
+    /// The hosts the egress CONNECT proxy may tunnel to (D-07): the project's
+    /// `driver.egress` already resolved by `RegisteredProject::driver_egress_allowlist`.
+    /// Empty means no CONNECT egress at all. Unused by a degraded launch (no proxy).
+    pub egress_allow: Vec<String>,
 }
 
 /// How the run stands when [`launch`] returns.
@@ -592,6 +600,10 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     // D-28: the host probes, after every refusal that needs no process and before
     // the lock, so a host that cannot sandbox writes nothing.
     let posture = decide(&detect(), opts.unsandboxed)?;
+    if matches!(posture, Posture::BwrapScope) && host_routes_https_through_a_proxy() {
+        // RESEARCH Open Question 2 [inferred — audit]: warn, do not chain.
+        eprintln!("{HOST_PROXY_WARNING}");
+    }
     // D-13: a run whose active wall clock is used up is refused before anything is
     // written, the lock file included.
     check_wall_clock_budget(&run_dir, &opts.limits)?;
@@ -825,13 +837,19 @@ fn run_one_launch(
         sandbox_missing: ctx.posture.missing().to_vec(),
         prompt_version: Some(ctx.prompt_version.clone()),
     })?;
+    // D-10, D-07: which token posture this launch ran under and which hosts it could
+    // reach, on the record before the driver exists.
+    lock_store(&session.store).record_launch_posture(&launch_posture(ctx))?;
 
     let budget = Budget {
         prior_active,
         remaining,
     };
     match supervise(session, ctx, n, &unit, &scope, &budget) {
-        Ok(exited) => finish_launch(session, ctx, &exited),
+        Ok(exited) => {
+            record_inference_requests(session, ctx, &exited);
+            finish_launch(session, ctx, &exited)
+        }
         Err(e) => {
             // No request writes to the store past this point.
             session.stop_serving();
@@ -843,6 +861,53 @@ fn run_one_launch(
             Err(e)
         }
     }
+}
+
+/// The posture facts one launch records right after `begin_launch` (D-10, D-07).
+///
+/// `auth` names the token the launch holds; `egress_allow` is the CONNECT allowlist of
+/// a bwrap launch (possibly empty) and absent for a degraded one, which runs no proxy.
+/// 28.1-09 adds `protections_absent`.
+fn launch_posture(ctx: &LaunchContext) -> LaunchPosture {
+    LaunchPosture {
+        auth: Some(ctx.token.source.posture().to_owned()),
+        egress_allow: match ctx.posture {
+            Posture::BwrapScope => Some(ctx.opts.egress_allow.clone()),
+            Posture::Degraded { .. } => None,
+        },
+        protections_absent: None,
+    }
+}
+
+/// The run's `inference_requests` after a launch that forwarded `forwarded` API
+/// requests (D-14): the stored total plus this launch's count.
+fn next_inference_total(state: &RunState, forwarded: u64) -> u64 {
+    state
+        .extra
+        .get(EXTRA_INFERENCE_REQUESTS)
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(forwarded)
+}
+
+/// Write the run's API-request total after a bwrap launch (D-14). A store error is
+/// reported and does not change how the launch ends, like `record_push_basis`.
+fn record_inference_requests(session: &Session, ctx: &LaunchContext, exited: &Exited) {
+    if !matches!(ctx.posture, Posture::BwrapScope) {
+        return;
+    }
+    let mut store = lock_store(&session.store);
+    let total = next_inference_total(store.state(), exited.egress.inference_forwarded);
+    if let Err(e) = store.set_launcher_key(EXTRA_INFERENCE_REQUESTS, serde_json::json!(total)) {
+        eprintln!("driver launch: could not record the API request count: {e}");
+    }
+}
+
+/// Whether the launcher's own environment sets an HTTPS proxy (either spelling).
+fn host_routes_https_through_a_proxy() -> bool {
+    ["HTTPS_PROXY", "https_proxy"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
 }
 
 /// Decide what follows a launch that ran to its end (D-05, D-15, D-16, D-23): build
@@ -1509,7 +1574,7 @@ impl EgressGuard {
         let handle = EgressServer::start(
             listener,
             EgressSpec {
-                allow_hosts: Vec::new(),
+                allow_hosts: ctx.opts.egress_allow.clone(),
                 token,
                 upstream: Upstream::Tls {
                     host: INFERENCE_HOST.to_owned(),
@@ -1750,7 +1815,33 @@ mod tests {
             unsandboxed: false,
             open_pr: false,
             pr_policy: crate::launcher::push::policy_for("p", None),
+            egress_allow: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_inference_total_adds_this_launchs_count_to_the_stored_one() {
+        let mut state = RunState::default();
+        assert_eq!(next_inference_total(&state, 0), 0, "absent counts as zero");
+        assert_eq!(next_inference_total(&state, 4), 4);
+        state
+            .extra
+            .insert(EXTRA_INFERENCE_REQUESTS.to_owned(), serde_json::json!(5));
+        assert_eq!(next_inference_total(&state, 3), 8, "the sum carries on");
+        state.extra.insert(
+            EXTRA_INFERENCE_REQUESTS.to_owned(),
+            serde_json::json!("junk"),
+        );
+        assert_eq!(
+            next_inference_total(&state, 2),
+            2,
+            "a malformed total restarts"
+        );
+        state.extra.insert(
+            EXTRA_INFERENCE_REQUESTS.to_owned(),
+            serde_json::json!(u64::MAX),
+        );
+        assert_eq!(next_inference_total(&state, 9), u64::MAX, "saturates");
     }
 
     fn words(argv: &[OsString]) -> Vec<String> {

@@ -100,7 +100,7 @@ fn a_crashed_run_relaunches_with_the_argv_the_tab_builds() {
     let mut args = form.args.clone();
     args.project = ALIAS.to_string();
     args.run_id = RUN_ID.to_string();
-    let options = launch_options_for(ALIAS, fx.project(), &args, false, None);
+    let options = launch_options_for(ALIAS, fx.project(), &args, false, None, Vec::new());
     assert_eq!(options.run_id, RUN_ID, "the SAME run id is relaunched");
     assert!(!options.unsandboxed);
     assert_eq!(options.loop_mode, LoopMode::Loop);
@@ -163,7 +163,7 @@ fn a_new_run_launches_with_the_argv_the_tab_builds() {
     let mut args = LaunchForm::fresh().args;
     args.project = ALIAS.to_string();
     args.run_id = new_run.run_id.clone();
-    let options = launch_options_for(ALIAS, fx.project(), &args, false, None);
+    let options = launch_options_for(ALIAS, fx.project(), &args, false, None, Vec::new());
     let argv = foreground_argv(launch_argv(&options, None));
     let as_text: Vec<String> = argv
         .iter()

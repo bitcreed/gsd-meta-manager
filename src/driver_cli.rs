@@ -296,6 +296,21 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
             .get(&alias)
             .and_then(|p| p.driver_opt_in.as_ref()),
     );
+    // D-07: the project's egress allowlist, resolved here so a malformed value
+    // refuses the launch before anything is written. The detached child runs this
+    // same code with the same `--config`.
+    let egress_allow = match registry
+        .projects
+        .get(&alias)
+        .map(gsd_meta_manager::config::RegisteredProject::driver_egress_allowlist)
+        .transpose()
+    {
+        Ok(hosts) => hosts.unwrap_or_default(),
+        Err(e) => {
+            err_line(&format!("driver launch: projects.{alias}.{e}"));
+            return 1;
+        }
+    };
     let options = LaunchOptions {
         project,
         alias,
@@ -317,6 +332,7 @@ fn launch_main(args: &LaunchArgs, config: Option<PathBuf>) -> i32 {
         // runs this same function with the same `--config`.
         open_pr: registry.preferences.driver_open_pr(),
         pr_policy,
+        egress_allow,
     };
     if !args.foreground {
         return match launch_detached(&options, config.as_deref()) {

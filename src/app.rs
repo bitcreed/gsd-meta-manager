@@ -1533,6 +1533,31 @@ impl App {
             .projects
             .get(alias)
             .and_then(|project| project.driver_opt_in.clone());
+        // D-07: resolved here, on this thread, so a malformed `driver.egress` refuses the
+        // launch with the reason in the status line and starts nothing.
+        let egress_allow = match self
+            .ctx
+            .config
+            .projects
+            .get(alias)
+            .map(crate::config::RegisteredProject::driver_egress_allowlist)
+            .transpose()
+        {
+            Ok(hosts) => hosts.unwrap_or_default(),
+            Err(error) => {
+                self.ctx.status_message = Some((
+                    format!(
+                        "Not launching {}: projects.{}.{}",
+                        crate::text::render_for_terminal(run_id),
+                        crate::text::render_for_terminal(alias),
+                        crate::text::render_for_terminal(&error.to_string())
+                    ),
+                    std::time::Instant::now(),
+                ));
+                self.needs_redraw = true;
+                return;
+            }
+        };
         let config_path = self.ctx.config_path.clone();
         let launch = self.launch_seams.launch;
         let (alias_for_task, run_id_for_task) = (alias.to_string(), run_id.to_string());
@@ -1543,6 +1568,7 @@ impl App {
                 &args,
                 open_pr,
                 opt_in.as_ref(),
+                egress_allow,
             );
             let result = launch(&options, Some(&config_path)).map_err(|error| {
                 crate::ui::screens::driver_launch::launch_error_copy(&run_id_for_task, &error)

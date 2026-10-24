@@ -304,7 +304,8 @@ pub fn relaunch_prefill(fm: &DriverFrontmatter) -> LaunchForm {
 /// The [`LaunchOptions`] `driver launch` builds from `args` (`src/driver_cli.rs`), so
 /// the tab launches exactly what the CLI would: the registry alias and project path,
 /// all three caps, `open_pr` from the preferences, the PR policy from the project's
-/// opt-in, and no prompt override.
+/// opt-in, the project's resolved egress allowlist (`egress_allow`, D-07) and no prompt
+/// override.
 ///
 /// [`LaunchOptions`]: crate::launcher::run::LaunchOptions
 #[cfg(target_os = "linux")]
@@ -314,6 +315,7 @@ pub fn launch_options_for(
     args: &LaunchArgs,
     open_pr: bool,
     opt_in: Option<&crate::config::DriverOptIn>,
+    egress_allow: Vec<String>,
 ) -> crate::launcher::run::LaunchOptions {
     use crate::driverctl::store::CapLimits;
     use crate::launcher::push::policy_for;
@@ -338,6 +340,7 @@ pub fn launch_options_for(
         unsandboxed: args.unsandboxed,
         open_pr,
         pr_policy: policy_for(alias, opt_in),
+        egress_allow,
     }
 }
 
@@ -1837,7 +1840,8 @@ mod tests {
     fn launcher_launch_options_mirror_what_driver_launch_builds() {
         let mut args = launch_defaults();
         args.run_id = RUN.to_string();
-        let opts = launch_options_for("alias", Path::new("/p"), &args, true, None);
+        let hosts = vec!["index.crates.io".to_string(), "crates.io".to_string()];
+        let opts = launch_options_for("alias", Path::new("/p"), &args, true, None, hosts.clone());
         assert_eq!(opts.alias, "alias");
         assert_eq!(opts.project, Path::new("/p"));
         assert_eq!(opts.run_id, RUN);
@@ -1853,6 +1857,10 @@ mod tests {
         );
         assert!(!opts.unsandboxed);
         assert!(opts.open_pr);
+        assert_eq!(
+            opts.egress_allow, hosts,
+            "the egress allowlist reaches the launcher"
+        );
     }
 
     /// The golden argv: the daemon is started with exactly this vector.
@@ -1861,7 +1869,7 @@ mod tests {
     fn launcher_launch_the_default_options_produce_the_golden_argv() {
         let mut args = launch_defaults();
         args.run_id = "20261019-run0".to_string();
-        let opts = launch_options_for("alias", Path::new("/proj"), &args, false, None);
+        let opts = launch_options_for("alias", Path::new("/proj"), &args, false, None, Vec::new());
         let argv: Vec<String> =
             crate::launcher::run::launch_argv(&opts, Some(Path::new("/cfg/registry.json")))
                 .into_iter()
