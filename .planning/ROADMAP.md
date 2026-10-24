@@ -1185,10 +1185,32 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 0 plans
+**Plans**: 10 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 28.1 to break down)
+**Wave 1**
+- [ ] 28.1-01-PLAN.md — launcher-side egress server library: token-injecting inference proxy (path allowlist, body policy), deny-by-default CONNECT with resolved-address guard, header-free log, counters; rustls/httparse (LNCH-09, LNCH-12)
+- [ ] 28.1-02-PLAN.md — gate hooks and agent-tool deny rules as managed settings bound at /etc/claude-code (tmpfs-/etc on every bwrap), host policy merged, pinned shim; live nested-claude proof (LNCH-12, LNCH-13)
+- [ ] 28.1-03-PLAN.md — planted-file detection by file reads only, push gate before the checkout fetch, `driver push --ack-planted`, hardened launcher git (LNCH-11, LNCH-13)
+- [ ] 28.1-04-PLAN.md — posture data: `protections_absent`/`egress_allow`/`auth`/`planted`/`inference_requests` keys, overlay and namespace probes, per-project egress allowlist config (LNCH-15, LNCH-12, LNCH-09)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 28.1-05-PLAN.md — in-sandbox `bridge` subcommand: binds the port before starting the driver, relays TCP to the egress socket, returns the driver's exit code, fails closed; CI proof against a real EgressServer (LNCH-09)
+- [ ] 28.1-06-PLAN.md — Driver tab, launch form and degraded confirm show absent protections, planted findings, auth posture; docs/DRIVER-SANDBOX.md residual risks (LNCH-15, LNCH-14, LNCH-11, LNCH-12)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 28.1-10-PLAN.md — `--unshare-net/ipc/uts` + `/run` tmpfs profile, egress socket re-bind, dummy-token env; live netns probes and a real claude through the bridge and TLS proxy (LNCH-09, LNCH-12, LNCH-13)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 28.1-07-PLAN.md — `driver launch` through the egress proxy: per-launch server, bridged driver, allowlist applied, posture recorded; live SC1 launch and D-11 setup-token reach probe (LNCH-09, LNCH-12, LNCH-13)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 28.1-08-PLAN.md — `$HOME` by allowlist (derived from the host), per-run gitconfig, registry overlay, GSD/rtk-only hooks; live D-16 probe (LNCH-10, LNCH-13)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 28.1-09-PLAN.md — planted-file ro binds and per-launch detection record, `protections_absent` on every launch, final live sweep of sockets, runtime dir and `~/.claude` (LNCH-11, LNCH-15, LNCH-13)
+
+**Human UAT (non-blocking)**: D-11's setup-token half needs a browser-minted token (`gsd-meta-manager driver auth setup`); until then the reach probe records `NOT-RUN: no setup-token`.
 
 ### Phase 29: Master Prompt & Run Templates
 

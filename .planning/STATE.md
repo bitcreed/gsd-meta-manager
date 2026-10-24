@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 milestone: v1.15.0
 current_phase: "28.1"
-current_phase_name: Sandbox Egress & Agent-Channel Isolation
-status: planning
+current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
+status: executing
 stopped_at: Phase 28.1 context gathered
-last_updated: "2026-10-24T18:58:45.921Z"
+last_updated: "2026-10-24T20:22:44.144Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 30 complete, transitioned to Phase 28.1
-state_head: f450d0c953bed1b139650ce1824460837ff7392a
+state_head: 89525f6b6990b209377786fba0d7213c0dcd6d4d
 progress:
   total_phases: 10
   completed_phases: 14
-  total_plans: 9
+  total_plans: 10
   completed_plans: 112
 milestone_name: Workstream Visibility
 ---
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 
 ## Current Position
 
-Status: Ready to plan
+Status: Ready to execute
   Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
   261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
   regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
@@ -269,7 +269,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 28.1 — Sandbox Egress & Agent-Channel Isolation
+Phase: 28.1 (Sandbox Egress & Agent-Channel Isolation (INSERTED)) — READY TO EXECUTE
 Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
