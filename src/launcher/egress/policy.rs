@@ -350,14 +350,149 @@ pub fn wants_continue(headers: &[Header]) -> bool {
         .any(|v| v.is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue")))
 }
 
-/// RED stub: judged in the GREEN commit.
-pub fn ip_denied(_ip: std::net::IpAddr) -> Option<&'static str> {
-    None
+/// Cloud metadata singletons: addresses a sandbox must never reach through a
+/// name that resolves to them.
+const METADATA_V4: &[[u8; 4]] = &[
+    [169, 254, 169, 254], // AWS, GCP, Azure, most clouds
+    [169, 254, 170, 2],   // AWS ECS task metadata
+    [100, 100, 100, 200], // Alibaba
+    [168, 63, 129, 16],   // Azure wire server
+    [192, 0, 0, 192],     // Oracle
+];
+
+/// The class of an address a `CONNECT` must never reach, or `None` for a public
+/// one (D-06, RESEARCH Pattern 3).
+///
+/// The class names the kind of address and never the address. Every IPv6 form
+/// that carries an IPv4 address (IPv4-mapped `::ffff:0:0/96`, the deprecated
+/// IPv4-compatible `::a.b.c.d`, NAT64 `64:ff9b::/96` and 6to4 `2002::/16`) is
+/// judged as that IPv4 address, so a name cannot smuggle `10.0.0.1` past the
+/// guard in an IPv6 coat.
+pub fn ip_denied(ip: std::net::IpAddr) -> Option<&'static str> {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => v4_class(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return v4_class(v4);
+            }
+            let s = v6.segments();
+            if v6.is_unspecified() {
+                return Some("unspecified");
+            }
+            if v6.is_loopback() {
+                return Some("loopback");
+            }
+            let embedded = |hi: u16, lo: u16| {
+                v4_class(std::net::Ipv4Addr::new(
+                    (hi >> 8) as u8,
+                    hi as u8,
+                    (lo >> 8) as u8,
+                    lo as u8,
+                ))
+            };
+            if s[..6] == [0, 0, 0, 0, 0, 0] {
+                // The deprecated IPv4-compatible form: judged as its IPv4 address,
+                // and refused as reserved when that address is public.
+                return embedded(s[6], s[7]).or(Some("reserved"));
+            }
+            if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+                return embedded(s[6], s[7]);
+            }
+            if s[0] == 0x2002 {
+                return embedded(s[1], s[2]);
+            }
+            if s[0] == 0xfd00 && s[1] == 0x0ec2 {
+                return Some("metadata");
+            }
+            if v6.is_multicast() {
+                return Some("multicast");
+            }
+            if (s[0] & 0xfe00) == 0xfc00 {
+                return Some("ula");
+            }
+            if (s[0] & 0xffc0) == 0xfe80 {
+                return Some("link-local");
+            }
+            None
+        }
+    }
 }
 
-/// RED stub: judged in the GREEN commit.
-pub fn connect_verdict(_host: &str, _port: u16, _allow_hosts: &[String]) -> Result<(), Denial> {
-    Ok(())
+fn v4_class(v4: std::net::Ipv4Addr) -> Option<&'static str> {
+    let o = v4.octets();
+    if METADATA_V4.contains(&o) {
+        Some("metadata")
+    } else if v4.is_loopback() {
+        Some("loopback")
+    } else if v4.is_unspecified() || o[0] == 0 {
+        Some("unspecified")
+    } else if v4.is_private() {
+        Some("private")
+    } else if v4.is_link_local() {
+        Some("link-local")
+    } else if o[0] == 100 && (o[1] & 0xc0) == 64 {
+        Some("cgnat")
+    } else if v4.is_broadcast() {
+        Some("broadcast")
+    } else if v4.is_multicast() {
+        Some("multicast")
+    } else if o[0] >= 240 || (o[0] == 192 && o[1] == 0 && o[2] == 0) {
+        Some("reserved")
+    } else {
+        None
+    }
+}
+
+/// A host name as compared: ASCII-lowercase, one trailing root dot removed.
+fn normalize_host(host: &str) -> String {
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
+}
+
+/// Whether `host` is, or would be read by a resolver as, an IP literal: bracketed,
+/// a parseable address, or ending in a numeric label (`2130706433`, `127.1`,
+/// `0x7f.0.0.1`, `010.0.0.1`), which `getaddrinfo` takes as an IPv4 address.
+fn looks_like_ip_literal(host: &str) -> bool {
+    if host.starts_with('[') || host.contains(':') || host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let last = host.rsplit('.').next().unwrap_or(host);
+    let numeric = !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit());
+    let hex = last
+        .strip_prefix("0x")
+        .or_else(|| last.strip_prefix("0X"))
+        .is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit()));
+    numeric || hex
+}
+
+/// May a `CONNECT` to `host:port` be tunnelled, given the run's allowlist (D-06)?
+///
+/// Deny by default. Refused: any IP literal, even an allowlisted one (the
+/// allowlist is names only); `api.anthropic.com`, even allowlisted (inference
+/// goes only through the reverse proxy, which holds the token and judges the
+/// body); any port but 443; any name not in `allow_hosts` (exact,
+/// ASCII-case-insensitive, root dot ignored). Every refusal is a
+/// [`Denial::Forbidden`] whose reason is policy text.
+pub fn connect_verdict(host: &str, port: u16, allow_hosts: &[String]) -> Result<(), Denial> {
+    let no = |reason: &str| Err(Denial::Forbidden(reason.to_owned()));
+    if looks_like_ip_literal(host) {
+        return no("CONNECT to an IP literal is refused");
+    }
+    let host = normalize_host(host);
+    if host == super::INFERENCE_HOST {
+        return no("the inference host is reachable only through the inference proxy");
+    }
+    if port != 443 {
+        return no("CONNECT is limited to port 443");
+    }
+    if allow_hosts
+        .iter()
+        .any(|allowed| normalize_host(allowed) == host)
+    {
+        Ok(())
+    } else {
+        no("host is not on the egress allowlist")
+    }
 }
 
 #[cfg(test)]

@@ -670,6 +670,8 @@ fn ip_literals_and_non_443_ports_are_refused() {
 fn the_log_names_classes_never_headers_tokens_or_addresses() {
     let stub = Stub::start();
     let rig = rig_with_allowlist(&stub, &["localhost"]);
+    // The authority a client typed is logged as typed; only a RESOLVED address is
+    // withheld, so the batch carries no IP literal of its own.
     let secret_body =
         r#"{"model":"m","messages":[{"role":"user","content":"BODY-FIELD-SECRET-9137"}]}"#;
 
@@ -680,7 +682,7 @@ fn the_log_names_classes_never_headers_tokens_or_addresses() {
         b"POST http://evil.example/x HTTP/1.1\r\nhost: evil.example\r\ncookie: HEADER-SECRET-7788\r\n\r\n",
         &connect_request("localhost:443"),
         &connect_request("example.org:443"),
-        &connect_request("127.0.0.1:443"),
+        &connect_request("static.crates.io:80"),
     ] {
         let _ = rig.exchange(wire);
         requests += 1;

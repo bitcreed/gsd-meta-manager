@@ -30,29 +30,71 @@ impl Kind {
     }
 }
 
-/// RED stub: sanitised in the GREEN commit.
+/// The longest any one logged field may be.
+const FIELD_MAX_CHARS: usize = 200;
+
+/// A request-derived value made safe to write as one field of one line: control
+/// characters, `\n`, `\r` and the field separator `|` become spaces, the result
+/// is trimmed and cut at 200 characters (the `store::header_safe` idiom).
 pub fn clean(text: &str) -> String {
-    text.to_owned()
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c == '|' || c.is_control() { ' ' } else { c })
+        .take(FIELD_MAX_CHARS)
+        .collect();
+    cleaned.trim().to_owned()
 }
 
-/// RED stub: formatted in the GREEN commit.
+/// One log line: `timestamp|kind|subject|path|status|verdict\n`, every
+/// request-derived field passed through [`clean`].
 pub fn line(
-    _timestamp: &str,
-    _kind: Kind,
-    _subject: &str,
-    _path: &str,
-    _status: u16,
-    _verdict: &str,
+    timestamp: &str,
+    kind: Kind,
+    subject: &str,
+    path: &str,
+    status: u16,
+    verdict: &str,
 ) -> String {
-    String::new()
+    format!(
+        "{}|{}|{}|{}|{}|{}\n",
+        clean(timestamp),
+        kind.as_str(),
+        clean(subject),
+        clean(path),
+        status,
+        clean(verdict)
+    )
 }
 
-/// RED stub: the writer lands in the GREEN commit.
-pub struct EgressLog;
+/// The append-only `egress.log`, mode 0600.
+pub struct EgressLog {
+    file: tokio::sync::Mutex<tokio::fs::File>,
+}
 
 impl EgressLog {
-    pub fn open(_path: &Path) -> io::Result<EgressLog> {
-        Ok(EgressLog)
+    /// Open (creating it 0600 if need be) `path` for appending. Synchronous, so it
+    /// runs before the server's runtime exists and no `async fn` blocks.
+    pub fn open(path: &Path) -> io::Result<EgressLog> {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        Ok(EgressLog {
+            file: tokio::sync::Mutex::new(tokio::fs::File::from_std(file)),
+        })
+    }
+
+    /// Append one line. A write failure is dropped: the log never stops traffic.
+    pub async fn record(&self, kind: Kind, subject: &str, path: &str, status: u16, verdict: &str) {
+        use tokio::io::AsyncWriteExt;
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let text = line(&timestamp, kind, subject, path, status, verdict);
+        let mut file = self.file.lock().await;
+        let _ = file.write_all(text.as_bytes()).await;
+        let _ = file.flush().await;
     }
 }
 
