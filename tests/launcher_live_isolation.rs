@@ -254,6 +254,11 @@ fn sandbox_isolates_host_credentials_and_services() {
 
     let _ = fs::remove_file(&sock);
     let _listener = UnixListener::bind(&sock).expect("bind the probe socket");
+    // The egress socket is re-bound next to it, so it must exist (a dummy listener:
+    // the egress path itself is proved by `launcher_live_egress`).
+    let egress_sock = egress_socket_path_for(&sock, &run_dir);
+    let _ = fs::remove_file(&egress_sock);
+    let _egress_listener = UnixListener::bind(&egress_sock).expect("bind the egress socket");
 
     // The host environment, with the four secrets the launcher must keep out.
     let mut host_env: Vec<(OsString, OsString)> = std::env::vars_os().collect();
@@ -290,7 +295,7 @@ fn sandbox_isolates_host_credentials_and_services() {
             run_dir: run_dir.clone(),
             config_dir: config_dir.clone(),
             socket: sock.clone(),
-            egress_socket: egress_socket_path_for(&sock, &run_dir),
+            egress_socket: egress_sock.clone(),
         },
         &home,
     );
