@@ -26,7 +26,13 @@
 //! are the second: emitted right after `launches`, **only when set**, so a block
 //! that predates the launcher keeps its bytes. `prompt_version` (Phase 29, D-03:
 //! `driver-prompt/1.0.0` or `custom:<sha8>`) is the third, right after the sandbox
-//! keys, under the same only-when-set rule.
+//! keys, under the same only-when-set rule. Phase 28.1 (D-26, D-27) adds five more,
+//! in this order right after `prompt_version`, each only when set: `auth`
+//! (`setup-token` | `host-token`), `protections_absent` (the protections the launch
+//! lacked; an empty list `[]` is a real answer, "lacked nothing", and differs from an
+//! absent key, "not recorded"), `egress_allow` (the CONNECT allowlist the launch ran
+//! with), `inference_requests` (a count) and `planted` (the planted paths the push
+//! step flagged).
 //!
 //! # Reading is tolerant, with one exception
 //!
@@ -392,6 +398,28 @@ pub struct DriverFrontmatter {
     /// before Phase 29 and emitted only when set, so those stay byte-identical.
     #[serde(default)]
     pub prompt_version: Option<String>,
+    /// How the launch authenticated the agent: `setup-token` (a stored token) or
+    /// `host-token` (the host login token) (28.1, D-10). Additive; `None` = not
+    /// recorded (a run older than 28.1, or a `driverctl serve` launch).
+    #[serde(default)]
+    pub auth: Option<String>,
+    /// The protections this launch lacked, in the fixed vocabulary order (28.1,
+    /// D-26, D-27). `Some(vec![])` means "lacked nothing" and is distinct from `None`
+    /// ("not recorded"). Kept apart from `sandbox_missing`, which names host tool
+    /// pieces (causes), not protections (effects).
+    #[serde(default)]
+    pub protections_absent: Option<Vec<String>>,
+    /// The hosts the egress proxy allowed CONNECT to for this launch (28.1, D-07).
+    /// `Some(vec![])` means "no CONNECT egress at all".
+    #[serde(default)]
+    pub egress_allow: Option<Vec<String>>,
+    /// How many inference requests the run's proxy forwarded (28.1); run-cumulative.
+    #[serde(default)]
+    pub inference_requests: Option<u64>,
+    /// Planted paths (driver-chosen strings) the push step flagged (28.1);
+    /// run-cumulative.
+    #[serde(default)]
+    pub planted: Option<Vec<String>>,
     #[serde(default)]
     pub connected: Vec<Connection>,
     #[serde(default = "default_stale_after")]
@@ -615,6 +643,22 @@ impl DriverFrontmatter {
         if let Some(version) = &self.prompt_version {
             lines.push(format!("prompt_version: {}", quote(version)));
         }
+        // 28.1 D-26/D-27: the same additive rule, fixed order, no version bump.
+        if let Some(auth) = &self.auth {
+            lines.push(format!("auth: {}", quote(auth)));
+        }
+        let list = |key: &str, items: &Option<Vec<String>>, lines: &mut Vec<String>| {
+            if let Some(items) = items {
+                let quoted: Vec<String> = items.iter().map(|i| quote(i)).collect();
+                lines.push(format!("{key}: [{}]", quoted.join(", ")));
+            }
+        };
+        list("protections_absent", &self.protections_absent, &mut lines);
+        list("egress_allow", &self.egress_allow, &mut lines);
+        if let Some(count) = self.inference_requests {
+            lines.push(format!("inference_requests: {count}"));
+        }
+        list("planted", &self.planted, &mut lines);
         if self.connected.is_empty() {
             lines.push("connected: []".to_string());
         } else {
@@ -1287,6 +1331,77 @@ mod tests {
             "{text}"
         );
         assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm);
+    }
+
+    #[test]
+    fn the_28_1_posture_keys_round_trip_in_fixed_order_after_prompt_version() {
+        let mut fm = parse_driver_frontmatter(RUN1B).unwrap();
+        assert_eq!(
+            (
+                &fm.auth,
+                &fm.protections_absent,
+                &fm.egress_allow,
+                &fm.inference_requests,
+                &fm.planted
+            ),
+            (&None, &None, &None, &None, &None)
+        );
+        // Absent keys: byte-identical to a block that predates 28.1.
+        let plain = fm.emit();
+        for key in [
+            "auth:",
+            "protections_absent",
+            "egress_allow",
+            "inference_requests",
+            "planted",
+        ] {
+            assert!(
+                !plain.contains(key),
+                "{key} emitted only when set:\n{plain}"
+            );
+        }
+
+        fm.prompt_version = Some("driver-prompt/1.0.0".to_owned());
+        fm.auth = Some("setup-token".to_owned());
+        fm.protections_absent = Some(vec!["registry-overlay".to_owned()]);
+        fm.egress_allow = Some(vec!["github.com".to_owned(), "crates.io".to_owned()]);
+        fm.inference_requests = Some(42);
+        fm.planted = Some(vec!["a/.git".to_owned()]);
+        let text = fm.emit();
+        assert!(
+            text.contains(
+                "prompt_version: \"driver-prompt/1.0.0\"\nauth: \"setup-token\"\n\
+                 protections_absent: [\"registry-overlay\"]\n\
+                 egress_allow: [\"github.com\", \"crates.io\"]\n\
+                 inference_requests: 42\nplanted: [\"a/.git\"]\nconnected:"
+            ),
+            "{text}"
+        );
+        assert_eq!(parse_driver_frontmatter(&text).unwrap(), fm);
+
+        // LNCH-15 empty edge: `[]` is emitted and parsed back as Some(vec![]).
+        fm.protections_absent = Some(Vec::new());
+        fm.egress_allow = Some(Vec::new());
+        fm.planted = None;
+        fm.inference_requests = None;
+        let text = fm.emit();
+        assert!(text.contains("\nprotections_absent: []\n"), "{text}");
+        assert!(text.contains("\negress_allow: []\n"), "{text}");
+        let back = parse_driver_frontmatter(&text).unwrap();
+        assert_eq!(back.protections_absent, Some(Vec::new()));
+        assert_eq!(back, fm);
+    }
+
+    #[test]
+    fn a_hostile_planted_path_stays_inside_its_quoted_item() {
+        let mut fm = parse_driver_frontmatter(RUN1B).unwrap();
+        fm.planted = Some(vec!["]\nstatus: done".to_owned()]);
+        fm.auth = Some("x\nlaunches: 9".to_owned());
+        let text = fm.emit();
+        let back = parse_driver_frontmatter(&text).unwrap();
+        assert_eq!(back, fm);
+        assert_eq!(back.status, parse_driver_frontmatter(RUN1B).unwrap().status);
+        assert_eq!(back.launches, 1);
     }
 
     #[test]

@@ -223,6 +223,20 @@ const EXTRA_SANDBOX_MISSING: &str = "sandbox_missing";
 /// every [`RunStore::begin_launch`] like the posture.
 const EXTRA_PROMPT_VERSION: &str = "prompt_version";
 
+/// The 28.1 posture keys (D-26, D-27), also in the forward-compatible `extra` map.
+/// The first three are the launch's own: [`RunStore::begin_launch`] clears them and
+/// [`RunStore::record_launch_posture`] sets them. None collides with
+/// [`RUN_STATE_FIELDS`].
+const EXTRA_PROTECTIONS_ABSENT: &str = "protections_absent";
+const EXTRA_EGRESS_ALLOW: &str = "egress_allow";
+const EXTRA_AUTH: &str = "auth";
+/// Planted paths the push step flagged: run-cumulative, so `begin_launch` leaves it
+/// alone and the launcher writes it with [`RunStore::set_launcher_list`].
+pub const EXTRA_PLANTED: &str = "planted";
+/// The count of inference requests the run's proxy forwarded: run-cumulative, written
+/// with [`RunStore::set_launcher_key`].
+pub const EXTRA_INFERENCE_REQUESTS: &str = "inference_requests";
+
 /// The `state.json` key holding the summed active wall-clock seconds (D-13).
 pub const EXTRA_ACTIVE_SECONDS: &str = "active_seconds";
 
@@ -265,6 +279,22 @@ pub struct PushRecord {
     pub outcome: String,
     /// The pull request the push step opened for this push, if any.
     pub pr: Option<String>,
+}
+
+/// The 28.1 posture a launch records right after [`RunStore::begin_launch`] (D-26,
+/// D-27, D-10). `None` leaves a key absent ("not recorded"); `Some(vec![])` records
+/// an explicit empty list ("lacked nothing").
+///
+/// A separate struct, not [`LaunchSpec`] fields, so the many `LaunchSpec` literals
+/// elsewhere do not change `[inferred — audit]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchPosture {
+    /// The protections this launch lacks, in the fixed vocabulary order.
+    pub protections_absent: Option<Vec<String>>,
+    /// The hosts the CONNECT proxy may reach for this launch.
+    pub egress_allow: Option<Vec<String>>,
+    /// `setup-token` | `host-token`.
+    pub auth: Option<String>,
 }
 
 /// The driver process a launch starts.
@@ -417,6 +447,17 @@ fn header_safe(value: &str) -> String {
     cleaned.trim().to_owned()
 }
 
+/// A string array out of `state.extra`, for the frontmatter projection. A value that
+/// is not an array is treated as absent; non-string items are skipped.
+fn extra_string_list(state: &RunState, key: &str) -> Option<Vec<String>> {
+    state.extra.get(key).and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect()
+    })
+}
+
 /// The latest connected driver connection, if any (spike `driver_conn`).
 fn driver_connection(state: &mut RunState) -> Option<&mut Connection> {
     state
@@ -559,6 +600,18 @@ pub fn frontmatter_for(state: &RunState, direction: &DirectionInfo) -> DriverFro
             .get(EXTRA_PROMPT_VERSION)
             .and_then(Value::as_str)
             .map(str::to_owned),
+        auth: state
+            .extra
+            .get(EXTRA_AUTH)
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        protections_absent: extra_string_list(state, EXTRA_PROTECTIONS_ABSENT),
+        egress_allow: extra_string_list(state, EXTRA_EGRESS_ALLOW),
+        inference_requests: state
+            .extra
+            .get(EXTRA_INFERENCE_REQUESTS)
+            .and_then(Value::as_u64),
+        planted: extra_string_list(state, EXTRA_PLANTED),
         connected: state.connections.clone(),
         heartbeat_stale_after_s: HEARTBEAT_STALE_AFTER_S,
         last_event: state.last_event.clone().unwrap_or_default(),
@@ -928,6 +981,14 @@ impl RunStore {
             None => {
                 next.extra.remove(EXTRA_PROMPT_VERSION);
             }
+        }
+
+        // D-26/D-27: the 28.1 posture belongs to THIS launch too. `begin_launch`
+        // clears it; the launcher records it again right after (a `driverctl serve`
+        // launch records none, so it never inherits a launcher launch's posture).
+        // `planted` and `inference_requests` are run-cumulative and stay.
+        for key in [EXTRA_PROTECTIONS_ABSENT, EXTRA_EGRESS_ALLOW, EXTRA_AUTH] {
+            next.extra.remove(key);
         }
 
         let host = host_name();
@@ -1413,6 +1474,66 @@ impl RunStore {
         let mut next = self.state.clone();
         next.extra.insert(key.to_owned(), value);
         self.commit(next, &[], Regen::HeartbeatOnly)
+    }
+
+    /// Write one launcher-owned LIST key of `state.json`'s `extra` map (`planted`,
+    /// ...): every item is made header-safe (one line, no `|`, at most 200
+    /// characters), then the array is stored through [`set_launcher_key`]
+    /// (Self::set_launcher_key), which refuses every typed [`RunState`] field.
+    ///
+    /// Launcher-side only.
+    pub fn set_launcher_list(
+        &mut self,
+        key: &'static str,
+        items: &[String],
+    ) -> Result<(), StoreError> {
+        let list = items
+            .iter()
+            .map(|item| Value::String(header_safe(item)))
+            .collect();
+        self.set_launcher_key(key, Value::Array(list))
+    }
+
+    /// Record this launch's 28.1 posture (`protections_absent`, `egress_allow`,
+    /// `auth`) right after [`begin_launch`](Self::begin_launch) cleared the last
+    /// launch's. `None` leaves a key absent; `Some(vec![])` stores an empty array.
+    /// The frontmatter is regenerated now, so the posture is visible at once.
+    ///
+    /// Launcher-side only.
+    pub fn record_launch_posture(&mut self, posture: &LaunchPosture) -> Result<(), StoreError> {
+        let list = |items: &Vec<String>| {
+            Value::Array(
+                items
+                    .iter()
+                    .map(|i| Value::String(header_safe(i)))
+                    .collect(),
+            )
+        };
+        let mut next = self.state.clone();
+        for (key, value) in [
+            (
+                EXTRA_PROTECTIONS_ABSENT,
+                posture.protections_absent.as_ref().map(list),
+            ),
+            (EXTRA_EGRESS_ALLOW, posture.egress_allow.as_ref().map(list)),
+            (
+                EXTRA_AUTH,
+                posture
+                    .auth
+                    .as_deref()
+                    .map(|a| Value::String(header_safe(a))),
+            ),
+        ] {
+            match value {
+                Some(value) => {
+                    next.extra.insert(key.to_owned(), value);
+                }
+                None => {
+                    next.extra.remove(key);
+                }
+            }
+        }
+        self.commit(next, &[], Regen::Always)
     }
 
     /// Log one launcher-side `RUN | <event> | k=v ...` line that changes no state

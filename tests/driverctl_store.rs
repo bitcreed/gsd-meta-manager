@@ -23,8 +23,8 @@ use gsd_meta_manager::driver::direction::parse_direction;
 use gsd_meta_manager::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
 use gsd_meta_manager::driverctl::protocol::Response;
 use gsd_meta_manager::driverctl::store::{
-    frontmatter_for, CapLimits, DriverSpec, GateDecision, LaunchSpec, RunState, RunStore,
-    StoreError, TerminalOutcome, TerminalStatus,
+    frontmatter_for, CapLimits, DriverSpec, GateDecision, LaunchPosture, LaunchSpec, RunState,
+    RunStore, StoreError, TerminalOutcome, TerminalStatus, EXTRA_INFERENCE_REQUESTS, EXTRA_PLANTED,
 };
 use gsd_meta_manager::launcher::gate::{new_tripped, CapGate};
 use gsd_meta_manager::state_reader::driver_frontmatter::{
@@ -2160,4 +2160,148 @@ fn frontmatter_for_derives_the_never_launched_block_and_matches_the_store() {
             .as_deref(),
         Some("driver-prompt/1.0.0")
     );
+}
+
+// ---------------------------------------------------------------- 28.1 posture keys (28.1-04, D-26/D-27)
+
+fn full_posture() -> LaunchPosture {
+    LaunchPosture {
+        protections_absent: Some(vec!["registry-overlay".to_owned()]),
+        egress_allow: Some(vec!["github.com".to_owned(), "crates.io".to_owned()]),
+        auth: Some("setup-token".to_owned()),
+    }
+}
+
+#[test]
+fn posture_keys_are_set_or_removed_per_launch() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        store.record_launch_posture(&full_posture()).unwrap();
+    }
+    let state = fx.state_json();
+    assert_eq!(
+        state["protections_absent"],
+        serde_json::json!(["registry-overlay"])
+    );
+    assert_eq!(
+        state["egress_allow"],
+        serde_json::json!(["github.com", "crates.io"])
+    );
+    assert_eq!(state["auth"], "setup-token");
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.auth.as_deref(), Some("setup-token"));
+    assert_eq!(
+        fm.protections_absent,
+        Some(vec!["registry-overlay".to_owned()])
+    );
+    assert_eq!(
+        fm.egress_allow,
+        Some(vec!["github.com".to_owned(), "crates.io".to_owned()])
+    );
+
+    // Launch 2 records nothing (a `driverctl serve` launch): the keys are gone.
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+    }
+    let state = fx.state_json();
+    for key in ["protections_absent", "egress_allow", "auth"] {
+        assert!(state.get(key).is_none(), "{key} must not be inherited");
+    }
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(
+        (fm.auth, fm.protections_absent, fm.egress_allow),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn an_empty_protections_list_is_recorded_and_differs_from_absent() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        store
+            .record_launch_posture(&LaunchPosture {
+                protections_absent: Some(Vec::new()),
+                egress_allow: Some(Vec::new()),
+                auth: None,
+            })
+            .unwrap();
+    }
+    assert_eq!(fx.state_json()["protections_absent"], serde_json::json!([]));
+    let text = fx.read("DIRECTION.md");
+    assert!(text.contains("\nprotections_absent: []\n"), "{text}");
+    let fm = parse_driver_frontmatter(&text).unwrap();
+    assert_eq!(fm.protections_absent, Some(Vec::new()));
+    assert_eq!(fm.egress_allow, Some(Vec::new()));
+    assert_eq!(fm.auth, None);
+}
+
+#[test]
+fn a_hostile_posture_word_is_made_header_safe() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.begin_launch(standalone()).unwrap();
+    store
+        .record_launch_posture(&LaunchPosture {
+            protections_absent: Some(vec!["a|b\nstatus: done".to_owned()]),
+            egress_allow: None,
+            auth: Some("x\nlaunches: 9".to_owned()),
+        })
+        .unwrap();
+    drop(store);
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.launches, 1);
+    assert_eq!(
+        fm.protections_absent,
+        Some(vec!["a b status: done".to_owned()])
+    );
+    assert_eq!(fm.auth.as_deref(), Some("x launches: 9"));
+}
+
+#[test]
+fn planted_and_inference_requests_survive_a_new_launch() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        store
+            .set_launcher_list(EXTRA_PLANTED, &["sub/.git".to_owned(), "x|y\nz".to_owned()])
+            .unwrap();
+        store
+            .set_launcher_key(EXTRA_INFERENCE_REQUESTS, serde_json::json!(7))
+            .unwrap();
+        let fm = store.frontmatter();
+        assert_eq!(
+            fm.planted,
+            Some(vec!["sub/.git".to_owned(), "x y z".to_owned()])
+        );
+        assert_eq!(fm.inference_requests, Some(7));
+    }
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        let fm = store.frontmatter();
+        assert_eq!(
+            fm.planted,
+            Some(vec!["sub/.git".to_owned(), "x y z".to_owned()])
+        );
+        assert_eq!(fm.inference_requests, Some(7));
+    }
+    let fm = parse_driver_frontmatter(&fx.read("DIRECTION.md")).unwrap();
+    assert_eq!(fm.inference_requests, Some(7));
+    assert_eq!(fm.planted.map(|p| p.len()), Some(2));
+}
+
+#[test]
+fn the_launcher_list_writer_refuses_a_typed_run_state_field() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    let err = store
+        .set_launcher_list("status", &["x".to_owned()])
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Io { .. }), "{err}");
 }
