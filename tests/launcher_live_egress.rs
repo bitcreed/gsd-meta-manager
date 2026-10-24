@@ -41,14 +41,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gsd_meta_manager::driverctl::serve::socket_path;
+use gsd_meta_manager::launcher::auth::resolve_launch_token;
 use gsd_meta_manager::launcher::egress::upstream::Upstream;
 use gsd_meta_manager::launcher::egress::{
     socket_path_for, EgressServer, EgressSpec, EgressStats, TokenProvider,
 };
 use gsd_meta_manager::launcher::sandbox::{
     bridged_command, bwrap_argv, child_env, egress_env_sets, LaunchPaths, SandboxSpec, BRIDGE_PORT,
+    DUMMY_OAUTH_TOKEN,
 };
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+
+#[path = "launcher_support/mod.rs"]
+mod launcher_support;
 
 /// The wall-clock bound on the sandboxed probe.
 const PROBE_BOUND: Duration = Duration::from_secs(90);
@@ -548,4 +554,248 @@ fn the_network_namespace_leaves_only_the_egress_bridge() {
         "Xwayland's socket did not answer the host"
     );
     assert!(stats.inference_forwarded >= 1);
+}
+
+// =========================================================================
+// 28.1-07 SC1: a REAL `driver launch` (real systemd-run and bwrap, only `claude`
+// faked) reaches the API and the operator's package hosts only through the
+// launcher's proxy, with no usable token inside.
+// =========================================================================
+
+/// The fake driver of the full launch. It answers `--version`, then probes from
+/// inside the sandbox and writes `KEY=VALUE` lines under the (writable) per-run
+/// config directory, then ends the run the way a well-mannered driver does.
+///
+/// `__DUMMY__` and `__MODEL__` are filled in by the test. The `msgs` body asks the
+/// current Haiku model for one token, so the request spends well under $0.01.
+const FULL_LAUNCH_CLAUDE: &str = r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "2.1.303 (Claude Code)"; exit 0; fi
+OUT="$CLAUDE_CONFIG_DIR/live-egress.txt"
+: > "$OUT"
+say() { printf '%s=%s\n' "$1" "$2" >> "$OUT"; }
+driverctl log start --mode headless --loop-mode loop
+BODY='{"model":"__MODEL__","max_tokens":1,"messages":[{"role":"user","content":"Reply with one word."}]}'
+say msgs "$(curl -s -o "$CLAUDE_CONFIG_DIR/msgs-body.txt" -m 60 -w '%{http_code}' -X POST "$ANTHROPIC_BASE_URL/v1/messages?beta=true" -H 'anthropic-version: 2023-06-01' -H 'anthropic-beta: oauth-2025-04-20' -H 'content-type: application/json' -d "$BODY")"
+say sessions "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$ANTHROPIC_BASE_URL/v1/code/sessions")"
+say crates "$(curl -s -o /dev/null -m 30 -w '%{http_code}' https://index.crates.io/config.json)"
+git ls-remote https://github.com/rust-lang/cargo HEAD > /dev/null 2>&1
+say git_ls_rc "$?"
+say example_connect "$(curl -s -o /dev/null -m 15 -w '%{http_connect}' https://example.com)"
+if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "__DUMMY__" ]; then say token_is_dummy yes; else say token_is_dummy no; fi
+hashes=""
+for f in /proc/[0-9]*/environ; do
+  v=$(tr '\0' '\n' < "$f" 2>/dev/null | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' | head -n 1)
+  if [ -n "$v" ]; then hashes="$hashes$(printf '%s' "$v" | sha256sum | cut -d' ' -f1),"; fi
+done
+say environ_token_hashes "$hashes"
+driverctl show > /dev/null 2>&1
+say driverctl_rc "$?"
+driverctl log end --reason stop
+printf '%s\n' '{"type":"result","subtype":"success"}'
+exit 0
+"#;
+
+/// The Haiku model id the live request names. The claude-api skill lists
+/// `claude-haiku-5-5` as the current Haiku, but a direct host-side request with the
+/// same OAuth token answers `429 rate_limit_error` for that id (measured 2026-10-24,
+/// no proxy involved) and 200 for `claude-haiku-4-5`, so the request names the
+/// latter `[inferred — audit]`.
+const LIVE_HAIKU_MODEL: &str = "claude-haiku-4-5";
+
+/// Why the full-launch test cannot run on this host, if it cannot.
+fn full_launch_skip_reason() -> Option<String> {
+    if let Err(e) = bwrap_netns_runs_here() {
+        return Some(e);
+    }
+    if let Err(e) = curl_runs_here() {
+        return Some(e);
+    }
+    let systemd = Command::new("systemctl")
+        .args(["--user", "is-system-running"])
+        .stdin(Stdio::null())
+        .output();
+    match systemd {
+        Ok(out)
+            if matches!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                "running" | "degraded"
+            ) => {}
+        other => return Some(format!("the user systemd manager is not usable: {other:?}")),
+    }
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        return Some("XDG_RUNTIME_DIR is not set".to_owned());
+    }
+    if let Err(e) = resolve_launch_token(chrono::Utc::now()) {
+        return Some(format!("no launch token resolves from the real HOME: {e}"));
+    }
+    None
+}
+
+fn sha_hex(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+#[test]
+#[ignore = "needs bwrap, a user systemd, network and a token; spends under $0.01; run with -- --ignored --nocapture"]
+fn a_real_launch_reaches_the_api_only_through_the_proxy() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(reason) = full_launch_skip_reason() {
+        println!("SKIP: {reason}");
+        return;
+    }
+    let real_token = resolve_launch_token(chrono::Utc::now())
+        .expect("a launch token")
+        .value;
+
+    let target_tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("launcher-live");
+    let mut fx = launcher_support::Fixture::new_in(&target_tmp);
+    fx.runtime_dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    // Only `claude` is fake: the host's real systemd-run, bwrap and systemctl run.
+    for fake in ["systemd-run", "bwrap", "systemctl"] {
+        fs::remove_file(fx.shims().join(fake)).expect("remove a fake tool");
+    }
+    let claude = FULL_LAUNCH_CLAUDE
+        .replace("__DUMMY__", DUMMY_OAUTH_TOKEN)
+        .replace("__MODEL__", LIVE_HAIKU_MODEL);
+    launcher_support::write_executable(&fx.shims(), "claude", &claude);
+    // The project must be its own repository with no remote: inside this checkout the
+    // run-end push would resolve this repository's `origin`.
+    let init = Command::new("git")
+        .args(["init", "-q"])
+        .arg(fx.project())
+        .stdin(Stdio::null())
+        .output()
+        .expect("git init");
+    assert!(init.status.success(), "git init failed");
+    fs::write(
+        fx.registry(),
+        serde_json::json!({
+            "version": 2,
+            "projects": {launcher_support::ALIAS: {
+                "path": fx.project(),
+                "added": "2026-01-01T00:00:00Z",
+                "driver": {"egress": {"presets": ["rust", "github-read"]}},
+            }}
+        })
+        .to_string(),
+    )
+    .expect("registry");
+    fs::set_permissions(fx.registry(), fs::Permissions::from_mode(0o600)).expect("chmod");
+
+    let mut path = fx.shims().into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
+        .arg("--config")
+        .arg(fx.registry())
+        .args([
+            "driver",
+            "launch",
+            launcher_support::ALIAS,
+            launcher_support::RUN_ID,
+        ])
+        .arg("--prompt-file")
+        .arg(fx.prompt_file())
+        .arg("--foreground")
+        // The real HOME, XDG_CONFIG_HOME and XDG_RUNTIME_DIR are inherited so the real
+        // token resolves; only the launcher's data root is private.
+        .env("PATH", path)
+        .env("XDG_DATA_HOME", fx.scratch.path().join("data"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the launcher");
+    let deadline = Instant::now() + Duration::from_secs(240);
+    let status = loop {
+        match child.try_wait().expect("wait for the launcher") {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the launch did not end within 240 s");
+            }
+            None => std::thread::sleep(Duration::from_millis(100)),
+        }
+    };
+    let mut launcher_stderr = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut launcher_stderr);
+    }
+    println!("LAUNCHER exit={status} stderr=\n{launcher_stderr}");
+    assert!(status.success(), "the launch failed: {launcher_stderr}");
+
+    let live = fs::read_to_string(fx.config_dir().join("live-egress.txt")).unwrap_or_default();
+    for line in live.lines() {
+        println!("{line}");
+    }
+    let kv = parse_lines(&live);
+    let get = |k: &str| kv.get(k).map_or("<absent>", String::as_str).to_owned();
+    let msgs_body = fs::read_to_string(fx.config_dir().join("msgs-body.txt")).unwrap_or_default();
+    assert_eq!(
+        get("msgs"),
+        "200",
+        "the inference call: {}",
+        msgs_body.chars().take(400).collect::<String>()
+    );
+    assert_eq!(get("sessions"), "403", "an account path is refused");
+    assert_eq!(get("crates"), "200", "index.crates.io through CONNECT");
+    assert_eq!(get("git_ls_rc"), "0", "git ls-remote through CONNECT");
+    assert_eq!(get("example_connect"), "403", "a host off the allowlist");
+    assert_eq!(get("token_is_dummy"), "yes");
+    assert_eq!(get("driverctl_rc"), "0", "the driverctl socket still works");
+    let real_hash = sha_hex(&real_token);
+    assert!(
+        !get("environ_token_hashes").contains(&real_hash),
+        "a process inside holds the real token"
+    );
+
+    // What the launcher recorded.
+    let state = fx.state_json();
+    let auth = state["auth"].as_str().unwrap_or_default().to_owned();
+    println!("auth={auth}");
+    assert!(
+        matches!(auth.as_str(), "setup-token" | "host-token"),
+        "{state}"
+    );
+    assert_eq!(
+        state["egress_allow"],
+        serde_json::json!([
+            "index.crates.io",
+            "static.crates.io",
+            "crates.io",
+            "github.com",
+            "codeload.github.com",
+            "objects.githubusercontent.com"
+        ])
+    );
+    let requests = state["inference_requests"].as_u64().unwrap_or(0);
+    println!("inference_requests={requests}");
+    assert!(requests >= 1, "{state}");
+
+    let log = fs::read_to_string(fx.state_dir().join("egress.log")).unwrap_or_default();
+    for line in log.lines() {
+        println!("egress.log: {line}");
+    }
+    assert!(log.contains("|inference|POST|/v1/messages|200|"), "{log}");
+    assert!(
+        log.contains("|connect|CONNECT index.crates.io:443|-|200|"),
+        "{log}"
+    );
+    assert!(
+        log.contains("|connect|CONNECT example.com:443|-|403|"),
+        "{log}"
+    );
+    assert!(
+        !log.contains(&real_token),
+        "the real token is in egress.log"
+    );
+    assert!(
+        !live.contains(&real_token),
+        "the real token reached the probe"
+    );
 }
