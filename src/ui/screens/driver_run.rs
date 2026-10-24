@@ -1070,6 +1070,7 @@ fn header_row_4(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
         Some(other) => spans.push(Span::raw(shown_capped(other))),
         None => spans.push(Span::styled("(not recorded)", muted_style())),
     }
+    push_posture_28_1(&mut spans, fm);
     spans.push(Span::styled(HEADER_SEP, label_style()));
     match fm.prompt_version.as_deref() {
         Some(version) => {
@@ -1086,7 +1087,63 @@ fn header_row_4(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
         }
         None => spans.push(Span::styled("prompt (not recorded)", muted_style())),
     }
+    if let Some(hosts) = fm.egress_allow.as_ref() {
+        spans.push(Span::styled(HEADER_SEP, label_style()));
+        spans.push(Span::raw(format!("egress {} hosts", hosts.len())));
+    }
+    if let Some(requests) = fm.inference_requests {
+        spans.push(Span::styled(HEADER_SEP, label_style()));
+        spans.push(Span::raw(format!("api {requests}")));
+    }
     clip_line(Line::from(spans), width)
+}
+
+/// The hint shown beside a `host-token` run: the stored setup token narrows the
+/// server-side scope of the credential the agent holds (28.1, D-10).
+pub const AUTH_SETUP_HINT: &str = "run driver auth setup";
+
+/// How many planted findings `planted` stands for: one per item, except a final
+/// `+N more` overflow item, which counts as N (D-22).
+fn planted_count(items: &[String]) -> usize {
+    let overflow = |item: &String| -> Option<usize> {
+        let rest = item
+            .trim()
+            .trim_start_matches(|c: char| !c.is_ascii_digit() && c != '+');
+        let rest = rest.strip_prefix('+')?.strip_suffix(" more")?;
+        rest.trim().parse::<usize>().ok()
+    };
+    match items.split_last() {
+        Some((last, head)) => head.len() + overflow(last).unwrap_or(1),
+        None => 0,
+    }
+}
+
+/// The 28.1 posture words of header row 4, each only when the run recorded it:
+/// ` PLANTED <n>` (Yellow, BOLD), ` absent: <a, b>` (Yellow) and ` auth <word>` with
+/// the [`AUTH_SETUP_HINT`] for `host-token` (D-10, D-22, D-27). Every value goes
+/// through `shown_capped`.
+fn push_posture_28_1(spans: &mut Vec<Span<'static>>, fm: &DriverFrontmatter) {
+    let warn = Style::default().fg(Color::Yellow);
+    if let Some(planted) = fm.planted.as_ref().filter(|p| !p.is_empty()) {
+        spans.push(Span::styled(
+            format!(" PLANTED {}", planted_count(planted)),
+            warn.add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(absent) = fm.protections_absent.as_ref().filter(|a| !a.is_empty()) {
+        let list = absent
+            .iter()
+            .map(|item| shown_capped(item))
+            .collect::<Vec<_>>()
+            .join(", ");
+        spans.push(Span::styled(format!(" absent: {list}"), warn));
+    }
+    if let Some(auth) = fm.auth.as_deref() {
+        spans.push(Span::raw(format!(" auth {}", shown_capped(auth))));
+        if auth == "host-token" {
+            spans.push(Span::styled(format!(" {AUTH_SETUP_HINT}"), warn));
+        }
+    }
 }
 
 /// Header row 5: `current_item · phase {current_phase} · {current_step}`, absent
@@ -4872,6 +4929,92 @@ mod tests {
         );
     }
 
+    /// The fixture with the five 28.1 keys written as the frontmatter emitter writes them.
+    fn posture_fm(auth: &str) -> DriverFrontmatter {
+        let text = FIXTURE.replacen(
+            "launches: 1\n",
+            &format!(
+                "launches: 1\nsandbox: \"bwrap\"\nprompt_version: \"driver-prompt/1.0.0\"\n\
+                 auth: \"{auth}\"\n\
+                 protections_absent: [\"registry-overlay\"]\n\
+                 egress_allow: [\"crates.io\", \"static.crates.io\"]\n\
+                 inference_requests: 12\n\
+                 planted: [\".git/config\", \"+3 more\"]\n"
+            ),
+            1,
+        );
+        parse_driver_frontmatter(&text).expect("a frontmatter with the five 28.1 keys parses")
+    }
+
+    #[test]
+    fn posture_row_shows_absent_planted_auth_egress_and_api() {
+        let fm = posture_fm("host-token");
+        let row = header_row_4(&fm, 200);
+        assert_eq!(
+            text_of(&row),
+            "  sandbox bwrap PLANTED 4 absent: registry-overlay auth host-token run driver auth setup  \u{B7}  prompt driver-prompt/1.0.0  \u{B7}  egress 2 hosts  \u{B7}  api 12"
+        );
+        let style_of = |needle: &str| {
+            row.spans
+                .iter()
+                .find(|span| span.content.contains(needle))
+                .unwrap_or_else(|| panic!("no span with {needle}"))
+                .style
+        };
+        let planted = style_of("PLANTED");
+        assert_eq!(planted.fg, Some(Color::Yellow));
+        assert!(planted.add_modifier.contains(Modifier::BOLD));
+        let absent = style_of("absent:");
+        assert_eq!(absent.fg, Some(Color::Yellow));
+        assert!(!absent.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(style_of(AUTH_SETUP_HINT).fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn a_setup_token_run_shows_no_auth_hint() {
+        let row = header_row_4(&posture_fm("setup-token"), 200);
+        let text = text_of(&row);
+        assert!(text.contains(" auth setup-token"), "{text}");
+        assert!(!text.contains(AUTH_SETUP_HINT), "{text}");
+    }
+
+    #[test]
+    fn an_empty_absent_or_planted_list_adds_nothing_to_the_row() {
+        let mut fm = posture_fm("setup-token");
+        fm.protections_absent = Some(vec![]);
+        fm.planted = Some(vec![]);
+        let text = text_of(&header_row_4(&fm, 200));
+        assert!(
+            !text.contains("PLANTED") && !text.contains("absent:"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn posture_row_is_unchanged_without_the_28_1_keys() {
+        // The pre-28.1 golden of `the_full_header_has_six_rows_with_the_ui_spec_content`.
+        let mut fm = parse_driver_frontmatter(FIXTURE).expect("fixture");
+        fm.sandbox = Some("degraded".into());
+        fm.sandbox_missing = Some(vec!["bwrap".into(), "systemd-run".into()]);
+        fm.prompt_version = Some("custom:3fa9c0d1".into());
+        assert_eq!(
+            (
+                fm.auth.is_some(),
+                fm.protections_absent.is_some(),
+                fm.egress_allow.is_some()
+            ),
+            (false, false, false)
+        );
+        assert_eq!(
+            (fm.inference_requests.is_some(), fm.planted.is_some()),
+            (false, false)
+        );
+        assert_eq!(
+            text_of(&header_row_4(&fm, 200)),
+            "  sandbox UNSANDBOXED missing: bwrap, systemd-run  \u{B7}  prompt custom:3fa9c0d1"
+        );
+    }
+
     #[test]
     fn empty_header_fields_render_their_named_placeholders() {
         let entry = entry_edit("20261020-a", running(), |fm| {
@@ -5361,6 +5504,10 @@ mod tests {
             fm.sandbox = Some("degraded".into());
             fm.sandbox_missing = Some(vec![evil.into()]);
             fm.prompt_version = Some(evil.into());
+            fm.auth = Some(evil.into());
+            fm.protections_absent = Some(vec![evil.into()]);
+            fm.egress_allow = Some(vec![evil.into()]);
+            fm.planted = Some(vec![evil.into()]);
             fm.last_event = crate::state_reader::driver_frontmatter::LastEvent {
                 at: Some(evil.into()),
                 item: Some(evil.into()),

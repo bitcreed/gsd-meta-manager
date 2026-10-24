@@ -1231,6 +1231,13 @@ fn probe_ctx(identity: &str) -> AppContext {
     launcher_frontmatter.current_step = Some(identity.to_string());
     launcher_frontmatter.sandbox_missing = Some(vec![identity.to_string()]);
     launcher_frontmatter.prompt_version = Some(identity.to_string());
+    // 28.1 posture sites (T-28.1-25): header row 4 draws `auth`, `protections_absent`
+    // and `planted` (`driver_run::push_posture_28_1`); `egress_allow` is drawn as a
+    // count only, so its hostile entry is covered by never reaching the screen raw.
+    launcher_frontmatter.auth = Some(identity.to_string());
+    launcher_frontmatter.protections_absent = Some(vec![identity.to_string()]);
+    launcher_frontmatter.egress_allow = Some(vec![identity.to_string()]);
+    launcher_frontmatter.planted = Some(vec![identity.to_string()]);
     launcher_frontmatter.last_event = crate::state_reader::driver_frontmatter::LastEvent {
         at: Some(identity.to_string()),
         item: Some(identity.to_string()),
@@ -1709,6 +1716,10 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          selected run's header rows 1-2 (`driver_run::header_row_1` / `header_row_2`: \
          the run id and the unknown status word) from `launcher_runs[0]` — populated by \
          `probe_ctx`, with `launcher_listed` set so the pane does not read `Loading...`. \
+         Since 28.1-06 header row 4 also draws the posture words `auth`, \
+         `protections_absent` (` absent: ..`) and `planted` (a count), each `auth` and \
+         `protections_absent` value through `shown_capped`; `egress_allow` and \
+         `inference_requests` reach the row only as counts. \
          The legacy surface (`driver_runs`, the live output pane, the injection rows) is \
          the next state's.",
     ),
