@@ -1,7 +1,7 @@
 ---
 phase: 30-driver-tab-on-direction-md
-verified: 2026-10-21T06:00:00Z
-status: human_needed
+verified: 2026-10-24T05:00:00Z
+status: passed
 score: 6/6 must-haves verified
 covered_files:
   - .planning/phases/30-driver-tab-on-direction-md/30-01-PLAN.md
@@ -37,41 +37,47 @@ covered_files:
   - tests/driver_tab_launch_e2e.rs
   - tests/editor_command.rs
   - tests/launcher_config_dir.rs
-covered_digest: "v3:sha256:a69c8d6624d5fe55230d44e3ae8530291b1323b2a6def42bf2d47870d9a6048a"
+covered_digest: "v3:sha256:1d0db4153ebf5a0af741cd71319e31ec90858c465d397dea2d8d7873a86da1ab"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
-  previous_status: gaps_found
-  previous_score: 5/6
-  gaps_closed:
-    - "D-15/D-22: the polite-stop confirmation shows 'Nothing is killed.' (closed by 30-06)"
+  previous_status: human_needed
+  previous_score: 6/6
+  gaps_closed: []
   gaps_remaining: []
   regressions: []
 gaps: []
 deferred: []
-human_verification:
-  - test: "Read the DarkGray labels and the glyphs U+2016, U+25C8, U+2691 on the real terminal theme and font"
-    expected: "Labels are legible; each glyph renders as a single cell"
-    why_human: "Terminal theme and font are unobservable from a TestBackend"
-  - test: "Judge the density of the FULL tier at 100x30"
-    expected: "Header, items, caps, connected and log read as a coherent view"
-    why_human: "Subjective layout quality"
+advisory:
+  - finding: "WR-08 (open, pre-existing): DIRECTION.lock is opened by path in lock.rs acquire_at, following symlinks and truncating via set_len; a symlink planted as DIRECTION.lock in a run dir could make a steer truncate and chmod a user-writable file"
+    category: security
+    reason: "Hardening gap in Phase 17/27 code; needs a hostile writer already in the user's run dir; does not defeat DTAB-03 (the shared flock is still taken on a regular lock file). Recommended follow-up: O_NOFOLLOW|O_NONBLOCK plus a regular-file check in acquire_at."
+    evidence_status: "30-REVIEW.md WR-08 (code-read, no failing test)"
+  - finding: "WR-09 (open): run_loop's guarded read has no 1 MiB size cap, unlike the other run-dir readers"
+    category: other
+    reason: "Memory-only concern on a user-owned DIRECTION.md; steering and flock guarantees intact."
+    evidence_status: "30-REVIEW.md WR-09"
 ---
 
-# Phase 30: Driver Tab on DIRECTION.md Verification Report (re-verification)
+# Phase 30: Driver Tab on DIRECTION.md Verification Report (re-verification, post-staleness)
 
 **Phase Goal:** The TUI observes and steers driver runs only through the run's files. Status, caps, heartbeat and crash detection come from the tool-written frontmatter, and steering is an edit to DIRECTION.md.
-**Verified:** 2026-10-21
-**Status:** human_needed
-**Re-verification:** Yes, after gap-closure plans 30-06..30-09
+**Verified:** 2026-10-24
+**Status:** passed
+**Re-verification:** Yes. The prior report (human_needed, 6/6) went stale because later quick tasks changed covered files. This pass checks those changes did not regress any must-have, and records that the two former human items are resolved by UAT.
 
-## Prior gap: closed
+Verified against COMMITTED code: a clean detached worktree at HEAD `fcf5e9e`, not the main checkout (another agent has uncommitted edits to `src/driver/direction.rs` and `tests/driverctl_race.rs`). The fingerprint above was computed in that worktree.
 
-| Prior gap | Status | Evidence |
-|-----------|--------|----------|
-| D-15/D-22: polite-stop confirm clipped "Nothing is killed." | CLOSED | `wrapped_rows` (`src/ui/screens/confirm_popup.rs:194-199`) now calls `Paragraph::line_count` with `Wrap { trim: false }`, the same wrapper `render_confirm_popup` draws the body with (line 270), instead of `ceil(chars/width)`. `popup_rect` is sized from it (line 262). `driver_steer::launcher_steer_the_polite_stop_sentence_survives_every_width` (`driver_steer.rs:1201`) uses the 18-char run id and asserts the whole stripped prompt plus a blank spacer row at 50x24, 60x16, 80x12, 80x24, 100x30, 120x40 and 160x40. Ran it: passes. The prompt string at `driver_steer.rs:320` still ends "Nothing is killed. [y/n]". |
+## What changed since the last verification (f2b53ba..HEAD, driver files)
 
-Defense in depth added by 30-06: a clipped popup disarms `y`, Enter-on-Yes and a Yes click (`confirm_popup.rs` `confirm_unless_clipped`, lines 112-125) and shows `CLIPPED_HINT`. The same sizing is reused by the launch form (`driver_launch.rs:943-966`, `fit_list`) and the edit-lint confirmation (`driver_steer.rs:879-897`), which resolves the earlier WR-05 and UI D5 findings.
+Nine files, +246/-96. Read in full for direction.rs, steer.rs, driver_steer.rs; the rest by stat plus tests.
+
+| Change | Effect on a must-have |
+|--------|-----------------------|
+| `direction.rs`: `run_loop` reads DIRECTION.md and the displaced inode through `read_run_file` (wraps `open_run_file`); exchange now gated on `linux or macos` (WR-02 fix, quick 261021-101) | Strengthens SC3. Every write is still a `write_body` closure under `DIRECTION.lock`; the frontmatter handling is unchanged. New test `steer_run_refuses_a_fifo_direction_without_blocking` (steer.rs:1858) asserts `Failed` and that the lock is released. |
+| `driver_steer.rs` `EditLintConfirmScreen`: skips `fit_list` at a zero row budget (IN-04 fix) | Strengthens SC3. Test `launcher_edit_the_lint_confirmation_confirms_when_its_findings_get_no_rows` pins `y` confirming at 80x7. |
+| `driver_launch.rs`: `model_name_ok` admits `[`/`]`, `relaunch_prefill` shares it (WR-07 fix) | Strengthens SC4. This closes the warning the prior report left open. |
+| `driver_run.rs`, `app.rs`, `detail.rs`: glyph registry (quick 261021-1id) and the workstream/roadmap quick tasks (05g..05m, wtw) | No SC1/SC2 regression: lib tests pass; UAT test 2 drove the real binary and the layout matched 30-UI-SPEC. |
 
 ## Goal Achievement
 
@@ -79,39 +85,25 @@ Defense in depth added by 30-06: a clipped popup disarms `y`, Enter-on-Yes and a
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | SC1: Driver tab lists run dirs; selected run shows status, items, caps, audit, heartbeat, `connected[]`, from frontmatter, no Claude call | VERIFIED | Unchanged since prior verification; regression check: lib tests pass, and no `Command::new` in `driver_run.rs`, `driver_steer.rs`, `driver_launch.rs`, `driver_confirm.rs`, `steer.rs`, `driver_frontmatter.rs` (grep rc=1). 30-07 added `open_run_file` (`driver_frontmatter.rs:786`), now used by `read_driver_run_text` (856), so the reads are also non-following and non-blocking. |
-| 2 | SC2: `running` + free lock shown crashed; stale heartbeat flagged; dashboard marks driven/parked/crashed | VERIFIED | Unchanged code path (derive/derive_status, `launcher_markers_for`); regression tests pass. 30-07 adds the "Loading..." state so the FULL header no longer shows a false Yellow "(no control line)" while the body loads (`launcher_view_full_header_says_loading_until_the_detail_arrives`). |
-| 3 | SC3: set control, answer/un-hold, open in `$EDITOR`; every edit through the shared flock, frontmatter untouched | VERIFIED | Only `write_body` closures write DIRECTION.md. 30-07 `Plan::Keep` (`direction.rs:534`, `616`) makes a no-op write leave inode, mtime and temp untouched, so "Nothing was written" is true. 30-08 `editor_command` (`app.rs:708`, consumed at `main.rs:849`) opens `$EDITOR` values with arguments through `sh -c '<editor> "$@"'` with the path as a separate argv element; `tests/editor_command.rs` 5 passed, including the hostile-path test. |
-| 4 | SC4: start a new run, relaunch a crashed one, tail LOG.md live; injection UI not the steering path | VERIFIED | `tests/driver_tab_launch_e2e.rs` 2 passed. `read_log_delta` now tails through one checked handle (`driver_run.rs:1764`, `open_run_file`). 30-09: a refused new-run request closes the slug input; launch preflight uses the launcher's `control_line` (`driver_launch.rs:390`) and body-relative lint lines. |
-| 5 | Status words come from the lock probe, never the frontmatter `status:` word alone | VERIFIED | Unchanged. |
-| 6 | D-15/D-22: polite stop is distinguishable from kill; confirmation says "Nothing is killed." | VERIFIED | See "Prior gap: closed". |
+| 1 | SC1: Driver tab lists run dirs; the selected run shows status, items, caps, audit, heartbeat, `connected[]` from frontmatter, no Claude call | VERIFIED | `grep "Command::new"` over `driver_run.rs`, `driver_steer.rs`, `driver_launch.rs`, `driver_confirm.rs`, `steer.rs`, `driver_frontmatter.rs` returns nothing. UAT test 2 (real release binary, 100x30 tmux, populated fixture) drew header, 5 items, 3 caps bars plus audit, 2 connected rows and the LOG tail. |
+| 2 | SC2: `running` + free lock shown crashed; stale heartbeat flagged; dashboard marks driven/parked/crashed | VERIFIED | `derive_status` (`driver_frontmatter.rs:751`) and `launcher_markers_for` (`app.rs:387`) present and exercised; UAT capture shows `x crashed ... reason run lock released without a final status`. Lib tests pass. |
+| 3 | SC3: set control, answer/un-hold, open in `$EDITOR`; every edit via the shared flock, frontmatter untouched | VERIFIED | steer.rs doc and code: every DIRECTION.md write is a `write_body` closure (`steer.rs:21`). `editor_command` (`app.rs:839`) with tests `editor_command_*` and `tests/editor_command.rs` (5 passed). FIFO test above. |
+| 4 | SC4: start a new run, relaunch a crashed one, tail LOG.md live; injection UI is not the steering path | VERIFIED | `tests/driver_tab_launch_e2e.rs` 2 passed; `launcher_new_run`, `launcher_launch`, `read_log_delta` tests pass. |
+| 5 | Status words come from the lock probe, never the frontmatter `status:` word alone | VERIFIED | `derive_status` takes the probe; unchanged by the later commits. |
+| 6 | D-15/D-22: polite stop is distinguishable from kill; the confirmation says "Nothing is killed." | VERIFIED | `launcher_steer_the_polite_stop_sentence_survives_every_width` and the `confirm_popup` clip guard are in the passing lib run. |
 
-**Score:** 6/6 truths verified.
+**Score:** 6/6 truths verified. No behavior-dependent truth lacks a test (cancel/rollback/ordering paths have named tests listed above).
 
-### Required Artifacts and Key Links (gap-closure plans)
-
-`verify.artifacts` for 30-06..30-09: all 14 artifacts exist with no issues. `verify.key-links` could not parse the plans' prose `from`/`to` fields ("Source file not found"), so links were checked by grep:
-
-| Link | Status | Evidence |
-|------|--------|----------|
-| `render_confirm_popup` -> `ConfirmPopup::record` (clipped guard) | WIRED | `driver_steer.rs:375,897`, `driver_launch.rs:1036,1152,1525`, `driver_confirm.rs:515` all `.record(render_confirm_popup(..))` |
-| `PoliteStopScreen::render` -> `wrapped_rows` sizing | WIRED | `driver_steer.rs:375` via `render_confirm_popup` |
-| `open_run_file` -> `read_direction`, `apply_edit`, `read_log_delta`, `read_driver_run_text` | WIRED | `steer.rs:623,758`, `driver_run.rs:1764`, `driver_frontmatter.rs:856` |
-| `write_body` -> `Plan::Keep` early return | WIRED | `direction.rs:534,616` |
-| `main.rs` -> `editor_command` | WIRED | `main.rs:849` |
-| `LaunchFormScreen::render` -> `body_room`/`fit_list`/`wrapped_rows` | WIRED | `driver_launch.rs:944-950` |
-| `launch_preflight` -> `control_line`/`lint_direction` | WIRED | `driver_launch.rs:370,390` |
-| Kill confirm -> `DetailScreen::render_main_only` | WIRED | `driver_confirm.rs:449` |
-
-### Behavioral Spot-Checks
+### Behavioral Spot-Checks (committed worktree, targeted, under `nice`)
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Gap-closure and steering/launch tests (`launcher_steer`, `confirm_popup`, `launcher_launch`, `launcher_new_run`, `open_run_file`, `write_body`, `apply_edit`, `read_log_delta`, `editor_command`) | `cargo test --lib -- <filters>` | 151 passed, 0 failed | PASS |
-| New-run / relaunch e2e and editor stub tests | `cargo test --test driver_tab_launch_e2e --test editor_command` | 2 passed; 5 passed | PASS |
-| Source changed since the orchestrator's full run? | `git diff --stat f2b53ba..HEAD -- src tests Cargo.toml` | empty (docs-only commits after f2b53ba) | PASS |
-| Full suite (orchestrator evidence, f2b53ba) | `cargo test --no-fail-fast` | 4068 passed, 1 failed (`envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`, the known machine-local git-version witness), 24 ignored | PASS (accepted) |
-| clippy (orchestrator evidence) | `cargo clippy --all-targets -- -D warnings` | clean | PASS |
+| Steering, popup, launch, new-run, guarded open, write_body, apply_edit, log delta, FIFO, launcher view | `cargo test --lib -- launcher_steer confirm_popup launcher_launch launcher_new_run open_run_file write_body apply_edit read_log_delta fifo launcher_view` | 182 passed, 0 failed | PASS |
+| Broader driver, editor, launcher lib filter | `cargo test --lib -- driver editor launcher` | 1083 passed, 0 failed | PASS |
+| New-run/relaunch e2e, editor stubs | `cargo test --test driver_tab_launch_e2e --test editor_command` | 2 passed; 5 passed | PASS |
+| Launcher config-dir | `cargo test --test launcher_config_dir` | 11 passed | PASS |
+
+The full suite was not re-run, by instruction. The orchestrator's earlier full run (4068 passed; the one failure is the known machine-local git-version witness) predates the quick tasks; the targeted gate above covers the changed driver surface.
 
 ### Requirements Coverage
 
@@ -122,34 +114,31 @@ Defense in depth added by 30-06: a clipped popup disarms `y`, Enter-on-Yes and a
 | DTAB-03 | 30-04, 06, 07, 08, 09 | SATISFIED | Truths 3 and 6 |
 | DTAB-04 | 30-02, 04, 05, 07, 09 | SATISFIED | Truth 4 |
 
-All four IDs appear in plan frontmatter, are checked `[x]` in REQUIREMENTS.md (lines 233-245) and are "Complete" in the traceability table (365-368). No orphans.
+All four IDs appear in plan frontmatter, are `[x]` in REQUIREMENTS.md (lines 233-245) and "Complete" in the traceability table (365-368). No orphans.
 
 ### Anti-Patterns Found
 
-No unreferenced TBD/FIXME/XXX markers in the files changed by the phase (the only `XXXX` hits are `\uXXXX` in doc comments).
+No `TBD`/`FIXME`/`XXX` markers in the phase's source files (only `\uXXXX` doc text). No `Command::new` in the Driver tab sources.
 
-Open review findings (`30-REVIEW-DISPOSITION.md`: 3 open, 1 deferred, 8 fixed). Judged against the goal:
+Open review findings (`30-REVIEW-DISPOSITION.md`: WR-08, WR-09, IN-06, IN-07 open; IN-05 deferred; WR-02, WR-07, IN-04 and eight others fixed), judged against the must-haves:
 
-| Finding | Location | Severity | Defeats a must-have? |
-|---------|----------|----------|----------------------|
-| WR-07 (open): `model_name_ok` rejects `[`/`]`, so the launch form refuses `opus[1m]`-style typed models; a recorded `opus[1m]` is not prefilled on relaunch and falls back to the default `opus` with `defaulted.model` still true (`driver_launch.rs:231-239,262-270,619`) | regression from 30-09 `9ad47bd` | Warning | No. SC4 (start a new run, relaunch a crashed one) holds: the model field has a working default (`opus`), accepts any alphanumeric-led name with `. _ : -`, and the CLI path is unaffected. The loss is a convenience (1M-context selector via the TUI form); a relaunch reads the default as an unedited, visibly "defaulted" value rather than silently trusting a recorded one. The reviewer's fix is one line plus one test. Recommend fixing in a follow-up. |
-| WR-02 (open): `run_loop` in `src/driver/direction.rs:600,651` reads DIRECTION.md and the displaced inode by path (`std::fs::read`), so a FIFO planted as DIRECTION.md could block the `spawn_blocking` steer worker | pre-existing shared engine (also `driverctl`'s) | Warning | No. It needs a hostile file already planted in the user's own run dir, blocks only a worker thread (the render loop is unaffected), and writes nothing. SC3's flock and frontmatter-untouched guarantees are intact. Security audit: SECURED, `threats_open: 0`. |
-| IN-04 (open): lint popup whose findings get zero rows is forced into the clipped, unconfirmable state | `confirm_popup.rs` | Info | No (fails safe: `n`/Esc still work, `y` is inert). |
-| IN-05 (deferred): body-relative vs file-relative `DIRECTION.md:<line>` across tools | cross-tool | Info | No. |
-| UI audit remaining (22/24, no BLOCK) | `driver_steer.rs:102,127,142,610` generic success copies about 90 chars cut at 62 cells at 80 columns; D7 popup background tier; un-ellipsised LOG clip | Warning/minor | No. The key facts are in the first 62 cells. |
+| Finding | Severity | Defeats a must-have? |
+|---------|----------|----------------------|
+| WR-08: `DIRECTION.lock` opened by path, follows symlinks, truncates (`lock.rs` `acquire_at`) | Warning | No. Pre-existing Phase 17/27 code, outside the phase's file set. Needs a hostile writer already in the user's run dir (an `--unsandboxed` run can already act as the user). The shared flock still holds for a regular lock file; frontmatter is untouched. Recorded in `advisory`; recommend fixing in a hardening follow-up. |
+| WR-09: no size cap on `run_loop`'s guarded read | Warning | No. Memory only, user-owned file. |
+| IN-05 (deferred): body-relative vs file-relative `DIRECTION.md:<line>` across tools | Info | No. |
+| IN-06: macOS exchange failure on a volume without `RENAME_SWAP` reports the Linux syscall name | Info | No. |
+| IN-07: at a zero row budget both lint popups drop every finding, leaving a colon-ended header | Info | No. The popup stays confirmable. |
 
-### Human Verification Required
+### Human Verification
 
-Only subjective or real-terminal items remain; everything checkable was settled from code and tests.
-
-1. **DarkGray label contrast and glyph rendering** - Test: view the Driver tab in the user's terminal theme and font. Expected: labels legible, `‖ ◈ ⚑` render as single cells. Why human: the terminal theme and font are unobservable from a TestBackend.
-2. **FULL-tier density at 100x30** - Test: open a populated run at 100x30. Expected: header, items, caps, connected and log read as a coherent view. Why human: subjective layout quality.
+None outstanding. Both former items are resolved by `30-UAT.md` (status complete, 2/2 passed, commit 4af7366): glyphs and labels were operator-signed on the real terminal; FULL-tier density at 100x30 was settled by driving the real release binary against a populated fixture, with the captured screen matching 30-UI-SPEC. No concrete reason to reopen either.
 
 ### Gaps Summary
 
-The one prior gap (polite-stop confirmation clipping "Nothing is killed.") is closed, with the sizing fix, a clip guard that makes any cut-off confirmation unconfirmable, and a width-matrix test at an 18-character run id. No regressions: all four ROADMAP success criteria and all four requirement IDs remain met and wired, and no source has changed since the full-suite run. No gaps remain. Warnings WR-07 and WR-02 do not defeat any must-have or the phase goal; fixing WR-07 is recommended before the next release. The status is `human_needed` only because the two subjective, real-terminal items above cannot be settled without the user's terminal.
+No gaps. The later quick tasks either strengthen Phase 30 (WR-02, WR-07 and IN-04 fixes, with tests) or touch unrelated surfaces (workstream/roadmap views), and none regressed a success criterion or a requirement. The two open warnings (WR-08, WR-09) are hardening of shared, pre-existing code and are carried as advisories, not blockers.
 
 ---
 
-_Verified: 2026-10-21_
+_Verified: 2026-10-24_
 _Verifier: Claude (gsd-verifier)_
