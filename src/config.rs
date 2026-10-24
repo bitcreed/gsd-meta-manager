@@ -96,6 +96,173 @@ impl RegisteredProject {
             })
             .transpose()
     }
+
+    /// The hosts the driver's CONNECT egress proxy may reach for this project
+    /// (28.1, D-07): the `projects.<alias>.driver.egress` key expanded to a host list.
+    ///
+    /// `{"presets": [...], "hosts": [...]}`: each preset in [`EGRESS_PRESETS`] expands
+    /// to its hosts, in the order named, then the free-form hosts; every host is
+    /// lowercased and the first occurrence is kept. An absent key (or `driver: {}`) is
+    /// an EMPTY list: the default is no CONNECT egress at all and no preset is implied.
+    ///
+    /// An unknown preset, a non-string entry, a host that is not a plain DNS name (a
+    /// scheme, port, path, wildcard, IP literal, a single label) or the inference host
+    /// is an [`EgressConfigError`] naming the entry, never a silent default. The key
+    /// lives in the flattened `extra` map like `runtime()`, so a typo is a refusal at
+    /// drive time and the key round-trips through a load-and-save untouched
+    /// `[inferred — audit]`.
+    pub fn driver_egress_allowlist(&self) -> Result<Vec<String>, EgressConfigError> {
+        let Some(driver) = self.extra.get(EGRESS_KEY) else {
+            return Ok(Vec::new());
+        };
+        let driver = driver
+            .as_object()
+            .ok_or_else(|| EgressConfigError::new("`driver` must be an object"))?;
+        let Some(egress) = driver.get(EGRESS_SUBKEY) else {
+            return Ok(Vec::new());
+        };
+        let egress = egress
+            .as_object()
+            .ok_or_else(|| EgressConfigError::new("`driver.egress` must be an object"))?;
+
+        let mut hosts: Vec<String> = Vec::new();
+        let mut push = |host: String| {
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        };
+        for entry in egress_entries(egress.get("presets"), "presets")? {
+            let name = entry
+                .as_str()
+                .ok_or_else(|| EgressConfigError::new(format!("preset {entry} is not a string")))?;
+            let (_, preset_hosts) = EGRESS_PRESETS
+                .iter()
+                .find(|(preset, _)| *preset == name)
+                .ok_or_else(|| {
+                    let known: Vec<&str> = EGRESS_PRESETS.iter().map(|(p, _)| *p).collect();
+                    EgressConfigError::new(format!(
+                        "unknown egress preset {name:?}; the presets are {}",
+                        known.join(", ")
+                    ))
+                })?;
+            for host in *preset_hosts {
+                push((*host).to_owned());
+            }
+        }
+        for entry in egress_entries(egress.get("hosts"), "hosts")? {
+            let raw = entry
+                .as_str()
+                .ok_or_else(|| EgressConfigError::new(format!("host {entry} is not a string")))?;
+            push(validate_egress_host(raw)?);
+        }
+        Ok(hosts)
+    }
+}
+
+/// The manager-config key holding a project's driver settings (28.1, D-07):
+/// `projects.<alias>.driver.egress`.
+pub const EGRESS_KEY: &str = "driver";
+
+/// The key under [`EGRESS_KEY`] holding the egress allowlist.
+const EGRESS_SUBKEY: &str = "egress";
+
+/// The inference host: reached only through the inference proxy, never CONNECT.
+const INFERENCE_HOST: &str = "api.anthropic.com";
+
+/// The named egress presets an operator may opt a project into (CONTEXT D-07), in the
+/// order they are documented. Nothing here is implied: the default allowlist is empty.
+pub const EGRESS_PRESETS: &[(&str, &[&str])] = &[
+    (
+        "rust",
+        &["index.crates.io", "static.crates.io", "crates.io"],
+    ),
+    (
+        "github-read",
+        &[
+            "github.com",
+            "codeload.github.com",
+            "objects.githubusercontent.com",
+        ],
+    ),
+    ("npm", &["registry.npmjs.org"]),
+    ("python", &["pypi.org", "files.pythonhosted.org"]),
+];
+
+/// Why `projects.<alias>.driver.egress` was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressConfigError {
+    /// What was wrong, naming the offending entry.
+    pub detail: String,
+}
+
+impl EgressConfigError {
+    fn new(detail: impl Into<String>) -> Self {
+        EgressConfigError {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for EgressConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "driver.egress: {}", self.detail)
+    }
+}
+
+impl std::error::Error for EgressConfigError {}
+
+/// The array behind `presets` / `hosts`: absent is empty, a non-array is an error.
+fn egress_entries<'a>(
+    value: Option<&'a Value>,
+    key: &str,
+) -> Result<&'a [Value], EgressConfigError> {
+    match value {
+        None => Ok(&[]),
+        Some(Value::Array(items)) => Ok(items),
+        Some(other) => Err(EgressConfigError::new(format!(
+            "`{key}` must be an array of strings, got {other}"
+        ))),
+    }
+}
+
+/// One free-form egress host, lowercased: a plain DNS name of at least two
+/// `a-z0-9-` labels (no label starting or ending with `-`), at most 253 characters,
+/// whose last label is not all digits (that would be an IP literal), and not the
+/// inference host.
+fn validate_egress_host(raw: &str) -> Result<String, EgressConfigError> {
+    let host = raw.to_ascii_lowercase();
+    let bad = |why: &str| EgressConfigError::new(format!("host {raw:?} {why}"));
+    if host.is_empty() || host.len() > 253 {
+        return Err(bad("must be 1 to 253 characters"));
+    }
+    if host == INFERENCE_HOST {
+        return Err(bad(
+            "is the inference host, which is reached only through the inference proxy",
+        ));
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 {
+        return Err(bad("must be a dotted DNS name with at least two labels"));
+    }
+    for label in &labels {
+        let chars_ok = !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !chars_ok || label.starts_with('-') || label.ends_with('-') {
+            return Err(bad(
+                "must be a plain host name (no scheme, port, path, wildcard or IP literal)",
+            ));
+        }
+    }
+    if labels
+        .last()
+        .is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(bad("is an IP literal, not a host name"));
+    }
+    Ok(host)
 }
 
 /// The user's deliberate designation of a project as drivable (D-14).
@@ -779,6 +946,144 @@ mod tests {
             "running the migration on an already-migrated config must change nothing"
         );
         assert_eq!(config.version, CONFIG_SCHEMA_VERSION);
+    }
+
+    fn egress_project(driver: serde_json::Value) -> RegisteredProject {
+        let mut extra = Map::new();
+        if !driver.is_null() {
+            extra.insert(EGRESS_KEY.to_owned(), driver);
+        }
+        RegisteredProject {
+            path: PathBuf::from("/p"),
+            added: "now".to_owned(),
+            driver_opt_in: None,
+            extra,
+        }
+    }
+
+    fn allow(driver: serde_json::Value) -> Result<Vec<String>, EgressConfigError> {
+        egress_project(driver).driver_egress_allowlist()
+    }
+
+    #[test]
+    fn no_egress_key_means_no_egress_at_all() {
+        assert_eq!(allow(serde_json::Value::Null), Ok(vec![]));
+        assert_eq!(allow(serde_json::json!({})), Ok(vec![]));
+        assert_eq!(allow(serde_json::json!({"egress": {}})), Ok(vec![]));
+        assert_eq!(
+            allow(serde_json::json!({"egress": {"presets": [], "hosts": []}})),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn presets_then_hosts_expand_lowercased_with_the_first_occurrence_kept() {
+        let got = allow(serde_json::json!({"egress": {
+            "presets": ["rust", "github-read"],
+            "hosts": ["Example.ORG", "crates.io"]
+        }}))
+        .unwrap();
+        assert_eq!(
+            got,
+            [
+                "index.crates.io",
+                "static.crates.io",
+                "crates.io",
+                "github.com",
+                "codeload.github.com",
+                "objects.githubusercontent.com",
+                "example.org"
+            ]
+        );
+        assert_eq!(
+            allow(serde_json::json!({"egress": {"presets": ["npm"]}})),
+            Ok(vec!["registry.npmjs.org".to_owned()])
+        );
+        assert_eq!(
+            allow(serde_json::json!({"egress": {"presets": ["python"]}})),
+            Ok(vec![
+                "pypi.org".to_owned(),
+                "files.pythonhosted.org".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn an_unknown_preset_or_a_non_string_entry_is_refused_naming_it() {
+        let err = allow(serde_json::json!({"egress": {"presets": ["rsut"]}})).unwrap_err();
+        assert!(err.detail.contains("rsut"), "{err}");
+        assert!(allow(serde_json::json!({"egress": {"hosts": [7]}})).is_err());
+        assert!(allow(serde_json::json!({"egress": {"presets": [null]}})).is_err());
+        assert!(allow(serde_json::json!({"egress": {"hosts": "x.org"}})).is_err());
+        assert!(allow(serde_json::json!({"egress": "rust"})).is_err());
+        assert!(allow(serde_json::json!("egress")).is_err());
+    }
+
+    #[test]
+    fn a_host_that_is_not_a_plain_dns_name_is_refused_naming_it() {
+        for bad in [
+            "https://x.org",
+            "x.org:443",
+            "x.org/p",
+            "*.x.org",
+            "1.2.3.4",
+            "[::1]",
+            "localhost",
+            "api.anthropic.com",
+            "API.Anthropic.com",
+            "",
+            "x..org",
+            "x.org.",
+            "-x.org",
+            "x-.org",
+            "x_y.org",
+            "x.org\n",
+        ] {
+            let err = allow(serde_json::json!({"egress": {"hosts": [bad]}})).unwrap_err();
+            assert!(err.detail.contains(&format!("{bad:?}")), "{bad:?}: {err}");
+        }
+        let long = format!("{}.org", "a".repeat(250));
+        assert!(allow(serde_json::json!({"egress": {"hosts": [long]}})).is_err());
+        let err =
+            allow(serde_json::json!({"egress": {"hosts": ["api.anthropic.com"]}})).unwrap_err();
+        assert!(err.detail.contains("inference proxy"), "{err}");
+    }
+
+    #[test]
+    fn the_presets_are_exactly_the_context_lists_and_never_the_inference_host() {
+        let names: Vec<&str> = EGRESS_PRESETS.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["rust", "github-read", "npm", "python"]);
+        for (_, hosts) in EGRESS_PRESETS {
+            assert!(!hosts.contains(&INFERENCE_HOST));
+            for host in *hosts {
+                assert_eq!(validate_egress_host(host).as_deref(), Ok(*host));
+            }
+        }
+    }
+
+    #[test]
+    fn an_egress_key_round_trips_through_load_and_save_untouched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(
+            dir.path(),
+            r#"{"version":2,"projects":{"a":{"path":"/p","added":"x","driver":{"egress":{"presets":["rust"],"hosts":["example.org"]}}}}}"#,
+        );
+        let config = load_config(&path).expect("loads");
+        assert_eq!(
+            config.projects["a"].driver_egress_allowlist().unwrap(),
+            [
+                "index.crates.io",
+                "static.crates.io",
+                "crates.io",
+                "example.org"
+            ]
+        );
+        save_config(&config, &path).expect("saves");
+        let reloaded = load_config(&path).expect("reloads");
+        assert_eq!(
+            reloaded.projects["a"].extra["driver"],
+            serde_json::json!({"egress":{"presets":["rust"],"hosts":["example.org"]}})
+        );
     }
 
     #[test]

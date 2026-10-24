@@ -63,6 +63,14 @@ The file is JSON. The top-level shape mirrors the `Config` struct in `src/config
 |-------|------|-------------|
 | `path` | string | Absolute path to the project root. The binary canonicalizes paths when adding via CLI. |
 | `added` | string | Timestamp recorded when the project was added (free-form string field). |
+| `driver.egress.presets` | array of strings | Optional. Named package and git host sets the sandboxed driver's CONNECT proxy may reach for this project. Each name expands as: `rust` = `index.crates.io`, `static.crates.io`, `crates.io`; `github-read` = `github.com`, `codeload.github.com`, `objects.githubusercontent.com`; `npm` = `registry.npmjs.org`; `python` = `pypi.org`, `files.pythonhosted.org`. An unknown name is refused when the launch reads the config. |
+| `driver.egress.hosts` | array of strings | Optional. Extra hosts to allow, written as plain DNS names (`example.org`): no scheme, port, path, wildcard or IP literal, at least two labels. Lowercased; the first occurrence wins when a host repeats a preset's. `api.anthropic.com` is refused: the inference host is reached only through the inference proxy. |
+
+The default for `driver.egress` is **empty, which means no CONNECT egress at all**: no preset is implied. The active list is recorded on the run as `egress_allow` in `state.json` and the `DIRECTION.md` frontmatter. A malformed entry is refused with a message naming it, never silently dropped. Example:
+
+```json
+"driver": { "egress": { "presets": ["rust", "github-read"], "hosts": ["example.org"] } }
+```
 
 ### `preferences`
 
