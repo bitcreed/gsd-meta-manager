@@ -14,9 +14,9 @@ use std::sync::Mutex;
 use chrono::Utc;
 use gsd_meta_manager::launcher::auth::{resolve_launch_token, TokenSource};
 use gsd_meta_manager::launcher::config_dir::{
-    hook_command, managed_settings, read_host_managed, run_state_dir_in, seed, settings_transform,
-    GateCommands, SeedSpec, DENY_TOOLS, DROPPED_SETTINGS_KEYS, LINK_FROM_HOST, MANAGED_FILE,
-    MANAGED_SUBDIR,
+    hook_command, hook_is_kept, managed_settings, read_host_managed, run_state_dir_in, seed,
+    settings_transform, GateCommands, SeedSpec, DENY_TOOLS, DROPPED_SETTINGS_KEYS, LINK_FROM_HOST,
+    MANAGED_FILE, MANAGED_SUBDIR,
 };
 use gsd_meta_manager::launcher::sandbox::child_env;
 use serde_json::{json, Value};
@@ -37,6 +37,25 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// is written and every process that runs it exits inside this lock, and
 /// [`run_shim`] retries the rare residual `ETXTBSY` (a fork from outside the file).
 static EXEC_LOCK: Mutex<()> = Mutex::new(());
+
+/// The host home the hook filter reasons about (D-19).
+const HOME: &str = "/home/u";
+
+/// The `$HOME` entries the sandbox re-binds in these tests.
+fn roots() -> Vec<PathBuf> {
+    [
+        "/home/u/.claude/hooks",
+        "/home/u/.claude/gsd-core",
+        "/home/u/.nvm/versions/node/v24",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+fn transform(host: Value, gate: Option<&GateCommands>) -> Value {
+    settings_transform(host, gate, Path::new(HOME), &roots())
+}
 
 fn gate() -> GateCommands {
     GateCommands {
@@ -60,17 +79,17 @@ fn host_fixture() -> Value {
         "env": {"ANTHROPIC_API_KEY": "k", "GH_TOKEN": "g", "FOO": "bar"},
         "hooks": {
             "PreToolUse": [
-                {"matcher": "Bash", "hooks": [{"type": "command", "command": "gsd-guard"}]},
-                {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk-rewrite"}]}
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "/home/u/.claude/hooks/gsd-guard.sh"}]},
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "/home/u/.claude/hooks/rtk-rewrite.sh"}]}
             ],
-            "Stop": [{"hooks": [{"type": "command", "command": "user-stop"}]}]
+            "Stop": [{"hooks": [{"type": "command", "command": "rtk hook stop"}]}]
         }
     })
 }
 
 #[test]
 fn settings_transform_keeps_user_hooks_in_order_and_drops_the_auth_keys() {
-    let out = settings_transform(host_fixture(), Some(&gate()));
+    let out = transform(host_fixture(), Some(&gate()));
 
     for key in [
         "statusLine",
@@ -90,13 +109,13 @@ fn settings_transform_keeps_user_hooks_in_order_and_drops_the_auth_keys() {
     assert_eq!(pre[0]["matcher"], "Agent|Task");
     assert_eq!(pre[0]["hooks"][0]["onFailure"], "block");
     assert_eq!(command_of(&pre[0]), HOOK);
-    assert_eq!(command_of(&pre[1]), "gsd-guard");
-    assert_eq!(command_of(&pre[2]), "rtk-rewrite");
+    assert_eq!(command_of(&pre[1]), "/home/u/.claude/hooks/gsd-guard.sh");
+    assert_eq!(command_of(&pre[2]), "/home/u/.claude/hooks/rtk-rewrite.sh");
 
     // D-17: the user's entry, then the heartbeat, then the Stop guard LAST.
     let stop = out["hooks"]["Stop"].as_array().unwrap();
     assert_eq!(stop.len(), 3);
-    assert_eq!(command_of(&stop[0]), "user-stop");
+    assert_eq!(command_of(&stop[0]), "rtk hook stop");
     assert_eq!(command_of(&stop[1]), HOOK);
     assert_eq!(command_of(&stop[2]), GUARD);
     assert!(stop[2].get("matcher").is_none());
@@ -121,23 +140,23 @@ fn settings_transform_keeps_user_hooks_in_order_and_drops_the_auth_keys() {
 
 #[test]
 fn settings_transform_without_a_gate_adds_no_hook_and_keeps_the_user_hooks() {
-    let out = settings_transform(host_fixture(), None);
+    let out = transform(host_fixture(), None);
     let pre = out["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(pre.len(), 2);
-    assert_eq!(command_of(&pre[0]), "gsd-guard");
-    assert_eq!(command_of(&pre[1]), "rtk-rewrite");
+    assert_eq!(command_of(&pre[0]), "/home/u/.claude/hooks/gsd-guard.sh");
+    assert_eq!(command_of(&pre[1]), "/home/u/.claude/hooks/rtk-rewrite.sh");
     assert!(!out.to_string().contains("driverctl"), "{out}");
     assert!(out.get("permissions").is_none(), "the deny list is managed");
     assert_eq!(out["skipWebFetchPreflight"], true);
     assert_eq!(out["disableClaudeAiConnectors"], true);
-    let bare = settings_transform(json!({}), None);
+    let bare = transform(json!({}), None);
     assert!(bare.get("hooks").is_none(), "{bare}");
 }
 
 #[test]
 fn degraded_deny_list_is_appended_to_the_hosts_own_without_duplicates() {
     let host = json!({"permissions": {"deny": ["Bash(rm:*)", "Cron*"], "allow": ["Read"]}});
-    let out = settings_transform(host, Some(&gate()));
+    let out = transform(host, Some(&gate()));
     let deny: Vec<&str> = out["permissions"]["deny"]
         .as_array()
         .unwrap()
@@ -154,7 +173,7 @@ fn degraded_deny_list_is_appended_to_the_hosts_own_without_duplicates() {
 #[test]
 fn settings_transform_of_nothing_is_exactly_the_driverctl_entries() {
     for host in [json!({}), json!([1, 2]), json!("text"), Value::Null] {
-        let out = settings_transform(host.clone(), Some(&gate()));
+        let out = transform(host.clone(), Some(&gate()));
         let hooks = out["hooks"].as_object().expect("a hooks object");
         let mut events: Vec<&str> = hooks.keys().map(String::as_str).collect();
         events.sort_unstable();
@@ -204,9 +223,158 @@ fn settings_transform_of_nothing_is_exactly_the_driverctl_entries() {
 
 #[test]
 fn settings_transform_replaces_a_hooks_value_that_is_not_an_object() {
-    let out = settings_transform(json!({"hooks": "nope", "env": 3}), Some(&gate()));
+    let out = transform(json!({"hooks": "nope", "env": 3}), Some(&gate()));
     assert_eq!(out["hooks"]["PreToolUse"][0]["matcher"], "Agent|Task");
     assert_eq!(out["env"], 3, "a non-object env is left alone");
+}
+
+fn hooks_of(out: &Value, event: &str) -> Vec<String> {
+    out["hooks"][event]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .flat_map(|entry| entry["hooks"].as_array().cloned().unwrap_or_default())
+                .filter_map(|hook| hook["command"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_claudear_hooks_are_dropped() {
+    let host = json!({"hooks": {
+        "PermissionRequest": [{"hooks": [{"type": "command", "command":
+            "/home/u/.local/share/pipx/venvs/claudear/bin/python -m claudear.hooks.permission"}]}],
+        "Notification": [{"hooks": [{"type": "command", "command": "curl -s localhost:8787/x"}]}],
+        "PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]},
+            {"matcher": "Bash", "hooks": [{"type": "command", "command":
+                "bash /home/u/.claude/hooks/gsd-validate-commit.sh"}]},
+            {"matcher": "Read", "hooks": [{"type": "command", "command":
+                "node /home/u/.claude/hooks/gsd-x.js /home/u/.secret/x"}]}
+        ],
+    }});
+    let out = transform(host, None);
+    assert!(out["hooks"].get("PermissionRequest").is_none(), "{out}");
+    assert!(out["hooks"].get("Notification").is_none(), "{out}");
+    assert_eq!(
+        hooks_of(&out, "PreToolUse"),
+        ["bash /home/u/.claude/hooks/gsd-validate-commit.sh"]
+    );
+    assert!(!out.to_string().contains("claudear"), "{out}");
+}
+
+#[test]
+fn gsd_and_rtk_hooks_survive_in_order_and_an_emptied_matcher_disappears() {
+    let node = "\"$(for n in \"/home/u/.nvm/versions/node/v24/bin/node\" \"$(command -v node)\" /usr/bin/node; do [ -x \"$n\" ] && echo \"$n\" && break; done)\" \"/home/u/.claude/hooks/gsd-context-monitor.js\"";
+    let host = json!({"hooks": {"PostToolUse": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": node}]},
+        {"matcher": "Edit", "hooks": [
+            {"type": "command", "command": "echo dropped"},
+            {"type": "command", "command": "/home/u/.claude/hooks/rtk-rewrite.sh"}
+        ]},
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]},
+        {"matcher": "Write", "hooks": [{"type": "command", "command": "echo nope"}]},
+        {"matcher": "Task", "hooks": [{"type": "prompt", "prompt": "be careful"}]}
+    ]}});
+    let out = transform(host, None);
+    let list = out["hooks"]["PostToolUse"].as_array().unwrap();
+    let matchers: Vec<&str> = list
+        .iter()
+        .map(|e| e["matcher"].as_str().unwrap())
+        .collect();
+    assert_eq!(matchers, ["*", "Edit", "Bash"]);
+    assert_eq!(command_of(&list[0]), node);
+    assert_eq!(list[1]["hooks"].as_array().unwrap().len(), 1);
+    assert_eq!(command_of(&list[1]), "/home/u/.claude/hooks/rtk-rewrite.sh");
+    assert_eq!(command_of(&list[2]), "rtk hook claude");
+}
+
+#[test]
+fn hook_is_kept_decides_on_the_program_and_on_every_home_path_it_names() {
+    let home = Path::new(HOME);
+    let roots = roots();
+    for kept in [
+        "bash /home/u/.claude/hooks/gsd-validate-commit.sh",
+        "/home/u/.claude/hooks/rtk-rewrite.sh",
+        "rtk hook claude",
+        "/usr/local/bin/rtk hook claude",
+        "node /home/u/.claude/gsd-core/bin/gsd-tools.cjs query init",
+        "FOO=1 node /home/u/.claude/hooks/a.js",
+        // `~`, `$HOME`, `${HOME}` and `"$HOME"` spellings, expanded before the root check.
+        "node ~/.claude/hooks/a.js",
+        "node $HOME/.claude/hooks/a.js",
+        "node ${HOME}/.claude/hooks/a.js",
+        "node \"$HOME\"/.claude/hooks/a.js",
+        "node \"$HOME/.claude/hooks/a.js\"",
+    ] {
+        assert!(hook_is_kept(kept, home, &roots), "{kept}");
+    }
+    for dropped in [
+        "/home/u/.local/share/pipx/venvs/claudear/bin/python -m claudear.hooks.permission",
+        "curl -s localhost:8787/x",
+        "curl -s http://127.0.0.1:8787/x /home/u/.claude/hooks/a.js",
+        "rtk hook claude --notify localhost:8787",
+        "echo hi",
+        "",
+        "node /home/u/.claude/hooks/a.js /home/u/.secret/x",
+        "node ~/.secret/x.js .claude/hooks/",
+        "node $HOME/.secret/x.js .claude/hooks/",
+        "node ${HOME}/.secret/x.js .claude/hooks/",
+        "node \"$HOME\"/.secret/x.js .claude/hooks/",
+        "node /home/u/.claude/scripts/a.js",
+        "node /home/u",
+    ] {
+        assert!(!hook_is_kept(dropped, home, &roots), "{dropped}");
+    }
+    // A path outside `$HOME` needs no root: `/usr/bin/node` is visible through `/`.
+    assert!(hook_is_kept(
+        "/usr/bin/node /home/u/.claude/hooks/a.js",
+        home,
+        &roots
+    ));
+    // With no roots no home path is allowed, but a bare rtk call still is.
+    assert!(!hook_is_kept("node /home/u/.claude/hooks/a.js", home, &[]));
+    assert!(hook_is_kept("rtk hook claude", home, &[]));
+}
+
+#[test]
+fn seed_filters_the_host_hooks_by_the_keep_roots_in_both_postures() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let hooks = home.join(".claude/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let keep = format!("bash {}/gsd-ok.sh", hooks.display());
+    fs::write(
+        home.join(".claude/settings.json"),
+        json!({"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": keep}]},
+            {"matcher": "Bash", "hooks": [{"type": "command", "command":
+                format!("{}/.local/share/pipx/venvs/claudear/bin/python -m claudear.hooks.permission", home.display())}]}
+        ]}})
+        .to_string(),
+    )
+    .unwrap();
+    for managed in [true, false] {
+        let mut spec = spec_in(root.path());
+        spec.config_dir = root.path().join(format!("cfg-{managed}"));
+        spec.host_claude_dir = home.join(".claude");
+        spec.managed = managed;
+        spec.keep_roots = vec![hooks.clone()];
+        seed(&spec).unwrap();
+        let settings = read_json(&spec.config_dir.join("settings.json"));
+        let commands = hooks_of(&settings, "PreToolUse");
+        assert!(commands.contains(&keep), "managed={managed}: {commands:?}");
+        assert!(
+            !settings.to_string().contains("claudear"),
+            "managed={managed}: {settings}"
+        );
+        // And with no roots at all, the GSD hook is gone as well.
+        spec.keep_roots = Vec::new();
+        seed(&spec).unwrap();
+        let settings = read_json(&spec.config_dir.join("settings.json"));
+        assert!(!hooks_of(&settings, "PreToolUse").contains(&keep));
+    }
 }
 
 fn spec_in(root: &Path) -> SeedSpec {
@@ -218,6 +386,7 @@ fn spec_in(root: &Path) -> SeedSpec {
         socket: root.join("driverctl.sock"),
         managed: false,
         host_managed_dir: root.join("no-host-managed"),
+        keep_roots: Vec::new(),
     }
 }
 
@@ -377,7 +546,7 @@ fn seed_adds_the_stop_guard_as_the_last_stop_entry_naming_the_quoted_run_dir() {
     let shim = spec.config_dir.join("bin/driverctl");
     let stop = settings["hooks"]["Stop"].as_array().unwrap();
     assert_eq!(stop.len(), 3, "idempotent: two seeds do not stack entries");
-    assert_eq!(command_of(&stop[0]), "user-stop");
+    assert_eq!(command_of(&stop[0]), "rtk hook stop");
     assert_eq!(command_of(&stop[1]), hook_command(&shim, "hook"));
     let quoted = format!(
         "'{}'",
@@ -457,6 +626,7 @@ fn no_refresh_token_material_reaches_the_sandbox() {
         socket: home.path().join("run.sock"),
         managed: true,
         host_managed_dir: home.path().join("no-host-managed"),
+        keep_roots: Vec::new(),
     };
     seed(&spec).unwrap();
     let env = child_env(
@@ -525,6 +695,7 @@ fn next_shim_with_fake_binary(root: &TempDir) -> (PathBuf, PathBuf) {
         socket: root.path().join("run.sock"),
         managed: false,
         host_managed_dir: root.path().join("no-host-managed"),
+        keep_roots: Vec::new(),
     };
     seed(&spec).unwrap();
     (spec.config_dir.join("bin/gsd-meta-manager"), record)
@@ -751,7 +922,10 @@ fn managed_seed_is_idempotent_and_keeps_the_gate_out_of_settings_json() {
     let settings: Value = serde_json::from_str(&text).unwrap();
     // The user's kept hooks stay, in order, and nothing fires twice.
     assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
-    assert_eq!(command_of(&settings["hooks"]["PreToolUse"][0]), "gsd-guard");
+    assert_eq!(
+        command_of(&settings["hooks"]["PreToolUse"][0]),
+        "/home/u/.claude/hooks/gsd-guard.sh"
+    );
     assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
     assert_eq!(settings["skipWebFetchPreflight"], true);
     assert_eq!(settings["disableClaudeAiConnectors"], true);

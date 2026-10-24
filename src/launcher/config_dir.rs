@@ -150,6 +150,10 @@ pub struct SeedSpec {
     /// The host's managed-settings directory ([`HOST_MANAGED_DIR`] in production),
     /// merged into the per-run managed file.
     pub host_managed_dir: PathBuf,
+    /// The `$HOME` entries the sandbox re-binds (`HomeSetup::keep_roots`): a user hook
+    /// survives into the per-run settings only when every `$HOME` path it names lies
+    /// inside one of these (D-19). Empty keeps no user hook.
+    pub keep_roots: Vec<PathBuf>,
 }
 
 /// The two quoted shim command lines the gate's hooks run.
@@ -264,6 +268,12 @@ fn append_unique(map: &mut Map<String, Value>, key: &str, items: &[Value]) {
     }
 }
 
+/// STUB (28.1-08 RED).
+pub fn hook_is_kept(command: &str, home: &Path, roots: &[PathBuf]) -> bool {
+    let _ = (command, home, roots);
+    true
+}
+
 /// The per-run settings from the host's: a pure function of the host settings
 /// value and, for the degraded posture, the gate's command lines.
 ///
@@ -280,7 +290,13 @@ fn append_unique(map: &mut Map<String, Value>, key: &str, items: &[Value]) {
 ///   keep their order. `gate = Some(..)` is the degraded posture: the gate entries
 ///   are added as in Phase 28 (see [`insert_gate_hooks`]) and [`DENY_TOOLS`] is
 ///   appended to `permissions.deny`, because no managed tier exists to carry it.
-pub fn settings_transform(host: Value, gate: Option<&GateCommands>) -> Value {
+pub fn settings_transform(
+    host: Value,
+    gate: Option<&GateCommands>,
+    home: &Path,
+    keep_roots: &[PathBuf],
+) -> Value {
+    let _ = (home, keep_roots);
     let mut settings = match host {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -464,6 +480,8 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
     };
 
     let host_settings = Value::Object(read_host_settings(&spec.host_claude_dir));
+    // The host `$HOME` the keep roots are relative to: `host_claude_dir` is `~/.claude`.
+    let home = spec.host_claude_dir.parent().unwrap_or(Path::new("/"));
     let settings = if spec.managed {
         let managed_dir = spec.config_dir.join(MANAGED_SUBDIR);
         create_private_dir(&managed_dir)?;
@@ -471,9 +489,9 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
         let rendered = serde_json::to_vec_pretty(&managed)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomic(&managed_dir.join(MANAGED_FILE), &rendered, 0o600)?;
-        settings_transform(host_settings, None)
+        settings_transform(host_settings, None, home, &spec.keep_roots)
     } else {
-        settings_transform(host_settings, Some(&gate))
+        settings_transform(host_settings, Some(&gate), home, &spec.keep_roots)
     };
     let rendered = serde_json::to_vec_pretty(&settings)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -527,6 +545,7 @@ mod tests {
             socket: PathBuf::from("/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock"),
             managed: false,
             host_managed_dir: root.path().join("no-host-managed"),
+            keep_roots: Vec::new(),
         }
     }
 

@@ -685,6 +685,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         socket: sock.clone(),
         managed: matches!(posture, Posture::BwrapScope),
         host_managed_dir: PathBuf::from(HOST_MANAGED_DIR),
+        keep_roots: home_setup.keep_roots.clone(),
     });
     if let Err(e) = seeded {
         session.close();

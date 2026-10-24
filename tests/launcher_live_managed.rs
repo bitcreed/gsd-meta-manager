@@ -179,6 +179,13 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
     let egress_sock = socket_path_for(&socket, &run_dir);
     let _ = fs::remove_file(&egress_sock);
     let egress_listener = UnixListener::bind(&egress_sock).expect("bind the egress socket");
+    let home_setup = HomeSetup::for_host(
+        &home,
+        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
+        detect().overlay,
+        &root,
+    )
+    .expect("derive the $HOME setup");
     seed(&SeedSpec {
         config_dir: config_dir.clone(),
         host_claude_dir: home.join(".claude"),
@@ -187,6 +194,7 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
         socket: socket.clone(),
         managed: true,
         host_managed_dir: PathBuf::from(HOST_MANAGED_DIR),
+        keep_roots: home_setup.keep_roots.clone(),
     })
     .expect("seed the per-run config dir");
 
@@ -230,13 +238,6 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
     let env = child_env(std::env::vars_os(), &sets);
 
     // ---- the managed run: nested claude inside the network-isolated sandbox ---
-    let home_setup = HomeSetup::for_host(
-        &home,
-        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
-        detect().overlay,
-        &root,
-    )
-    .expect("derive the $HOME setup");
     let spec = SandboxSpec::from_host(
         LaunchPaths {
             project: project.clone(),

@@ -299,6 +299,28 @@ fn sandbox_isolates_host_credentials_and_services() {
     // D-16: an unlisted file in the real home and a home symlink to a project `.env`.
     let planted = Planted::plant(&home, &project.join(".env"));
 
+    let home_setup = HomeSetup::for_host(
+        &home,
+        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
+        detect().overlay,
+        &root,
+    )
+    .expect("derive the $HOME setup");
+    for bind in &home_setup.binds {
+        let (tag, path) = match bind {
+            HomeBind::Ro(p) => ("ro", p),
+            HomeBind::Overlay(p) => ("overlay", p),
+            HomeBind::Tmpfs { path, .. } => ("tmpfs", path),
+        };
+        println!(
+            "LIVE allowlist {tag} ~/{}",
+            path.strip_prefix(&home).unwrap_or(path).display()
+        );
+    }
+    match home_setup.dangling_notice(&home) {
+        Some(line) => println!("LIVE {line}"),
+        None => println!("LIVE dangling: none"),
+    }
     let sock = socket_path("probe28", &run_dir).expect("the run's socket path");
     seed(&SeedSpec {
         config_dir: config_dir.clone(),
@@ -308,6 +330,7 @@ fn sandbox_isolates_host_credentials_and_services() {
         socket: sock.clone(),
         managed: true,
         host_managed_dir: PathBuf::from(HOST_MANAGED_DIR),
+        keep_roots: home_setup.keep_roots.clone(),
     })
     .expect("seed the per-run config dir");
 
@@ -348,28 +371,6 @@ fn sandbox_isolates_host_credentials_and_services() {
         ],
     );
 
-    let home_setup = HomeSetup::for_host(
-        &home,
-        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
-        detect().overlay,
-        &root,
-    )
-    .expect("derive the $HOME setup");
-    for bind in &home_setup.binds {
-        let (tag, path) = match bind {
-            HomeBind::Ro(p) => ("ro", p),
-            HomeBind::Overlay(p) => ("overlay", p),
-            HomeBind::Tmpfs { path, .. } => ("tmpfs", path),
-        };
-        println!(
-            "LIVE allowlist {tag} ~/{}",
-            path.strip_prefix(&home).unwrap_or(path).display()
-        );
-    }
-    match home_setup.dangling_notice(&home) {
-        Some(line) => println!("LIVE {line}"),
-        None => println!("LIVE dangling: none"),
-    }
     let spec = SandboxSpec::from_host(
         LaunchPaths {
             project: project.clone(),
