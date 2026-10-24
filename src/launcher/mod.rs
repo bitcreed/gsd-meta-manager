@@ -76,6 +76,8 @@ pub mod sandbox;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod auth;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod bridge;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod config_dir;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod egress;

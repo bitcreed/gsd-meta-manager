@@ -8,7 +8,7 @@
 //! outside its sandbox. The agent is reached only through `bwrap` (or, in 28-04,
 //! the explicit degraded spawn).
 //!
-//! Five shapes:
+//! Six shapes:
 //!
 //! * [`spawn_launch_child`], the long-lived driver child: a process-group leader
 //!   with stdin `/dev/null` (no TTY, no `tmux`), stdout and stderr to a file, and
@@ -20,6 +20,8 @@
 //!   (`claude setup-token`, 28-06).
 //! * [`run_bounded_with_stderr`], [`run_bounded`] that also keeps the last line of
 //!   the command's stderr (the push step's `git` and `gh`, 28-08).
+//! * [`spawn_bridged_child`], the driver as the in-sandbox bridge's child
+//!   (28.1-05): environment and stdio inherited, so it is bwrap's own.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -63,6 +65,22 @@ pub fn spawn_launch_child(
         .stderr(err)
         .process_group(0);
     cmd.spawn()
+}
+
+/// Start `argv` as the in-sandbox bridge's child (28.1-05, D-08).
+///
+/// * The environment and all three stdio streams are inherited: the bridge is
+///   bwrap's command, and the driver it runs must see exactly the environment the
+///   launcher built for the sandbox, with `claude`'s stream-json on the stdout
+///   the launcher gave bwrap.
+/// * **No `env_clear`, no `process_group`, deliberately:** the bridge holds no
+///   policy and no secret, so there is nothing to scrub, and the child stays in the
+///   sandbox's own group so one signal to the group reaches both.
+pub fn spawn_bridged_child(argv: &[OsString]) -> std::io::Result<Child> {
+    let (program, args) = argv.split_first().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "an empty command line")
+    })?;
+    Command::new(program).args(args).spawn()
 }
 
 /// Run a short host command and return its status and stdout, within `budget`.

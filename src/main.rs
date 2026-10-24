@@ -106,6 +106,25 @@ fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse_checked();
     match cli.command.take() {
         Some(Commands::Driverctl { action }) => std::process::exit(driverctl_cli::run(action)),
+        // The in-sandbox bridge (28.1-05, D-08): before `init_tracing` for the
+        // same reason as `driverctl`, it creates no file and writes no stdout.
+        // Its exit code is the driver's, handed back to bwrap.
+        Some(Commands::Bridge {
+            port,
+            sock,
+            command,
+        }) => {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            std::process::exit(gsd_meta_manager::launcher::bridge::run(
+                port, &sock, &command,
+            ));
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                let _ = (port, sock, command);
+                eprintln!("gsd-meta-manager bridge: needs Linux or macOS");
+                std::process::exit(1);
+            }
+        }
         // `next` is the read-only router hint (Phase 29, D-21): dispatched here,
         // before `init_tracing`, because tracing creates a log file and `next`
         // must write nothing, in or out of the sandbox.
@@ -438,6 +457,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Driverctl { .. }) => {
             return Err(anyhow::anyhow!(
                 "driverctl is dispatched in `main` before the async runtime exists"
+            ));
+        }
+        // Never reached: `main` dispatches `bridge` before tracing and this
+        // runtime exist (28.1-05).
+        Some(Commands::Bridge { .. }) => {
+            return Err(anyhow::anyhow!(
+                "bridge is dispatched in `main` before the async runtime exists"
             ));
         }
         // Never reached either: `main` runs `driver` synchronously, before this

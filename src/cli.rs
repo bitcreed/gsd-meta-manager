@@ -420,6 +420,34 @@ pub enum Commands {
         #[command(subcommand)]
         action: DriverctlAction,
     },
+    // The sandbox's one way out (Phase 28.1, D-08). bwrap runs this as its
+    // command inside the network-isolated profile: it binds `127.0.0.1:<port>`,
+    // relays every connection to the bound-in egress socket, runs the driver
+    // after `--` as its child and hands the child's exit code back to bwrap.
+    //
+    // **Hidden, because users never type it**: the launcher builds the bwrap
+    // argv that names it, the general rule the `Commands::Envelope` block above
+    // states at length.
+    //
+    // **Deliberately NOT `#[cfg]`-gated**, for the reason `Driverctl` is not: the
+    // sandbox re-enters the released binary, so a platform without the launcher
+    // gets a typed refusal from the handler, not "unknown subcommand".
+    //
+    // `main` dispatches it before `init_tracing`: it creates no file and writes
+    // nothing to stdout (claude's stream-json shares it).
+    /// Internal: the in-sandbox TCP-to-unix-socket bridge that runs the driver
+    #[command(hide = true)]
+    Bridge {
+        /// Loopback TCP port to listen on (127.0.0.1)
+        #[arg(long)]
+        port: u16,
+        /// Unix socket of the launcher-side egress server
+        #[arg(long)]
+        sock: PathBuf,
+        /// The driver command line, after `--`
+        #[arg(last = true, required = true, num_args = 1..)]
+        command: Vec<OsString>,
+    },
     // The launcher half of the autonomous driver (Phase 28, D-01): the host-side
     // owner of the run lock, the embedded store, the per-run Claude config, auth
     // and the sandbox. Unlike `driverctl`, users type this one, so it is NOT
@@ -994,6 +1022,45 @@ mod tests {
             long.contains("must be") && long.contains("`list`") && long.contains("path"),
             "the long help must carry the open-by-path collision note (D-04): {long}"
         );
+    }
+
+    // ── The hidden in-sandbox `bridge` (Phase 28.1, D-08) ────────────────
+
+    #[test]
+    fn bridge_takes_a_port_a_socket_and_the_driver_command_after_the_separator() {
+        let cli = checked(&[
+            "bridge",
+            "--port",
+            "3128",
+            "--sock",
+            "/run/egress.sock",
+            "--",
+            "claude",
+            "-p",
+            "--output-format",
+            "stream-json",
+        ])
+        .expect("parses");
+        match cli.command {
+            Some(Commands::Bridge {
+                port,
+                sock,
+                command,
+            }) => {
+                assert_eq!(port, 3128);
+                assert_eq!(sock, PathBuf::from("/run/egress.sock"));
+                assert_eq!(
+                    command,
+                    ["claude", "-p", "--output-format", "stream-json"].map(OsString::from)
+                );
+            }
+            _ => panic!("did not resolve to Commands::Bridge"),
+        }
+    }
+
+    #[test]
+    fn bridge_without_a_driver_command_is_a_usage_error() {
+        assert!(checked(&["bridge", "--port", "1", "--sock", "/s"]).is_err());
     }
 
     // ── The hidden `driverctl` client (Phase 27, D-01, D-02) ─────────────
