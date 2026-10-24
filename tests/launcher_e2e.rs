@@ -516,13 +516,26 @@ fn launch_runs_the_driver_in_the_scope_and_records_its_end() {
     assert_eq!(view.derived, DerivedStatus::AsWritten(RunStatus::Stopped));
     assert_eq!(probe_at(&run_lock_path(&fx.run_dir)), LockProbe::Free);
 
-    // The seeded gate: PreToolUse[0] blocks on failure (hand-off 1).
-    let settings: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(config_dir.join("settings.json")).unwrap())
-            .unwrap();
-    let gate = &settings["hooks"]["PreToolUse"][0];
+    // The seeded gate (28.1 D-12): a bwrap-scope launch keeps it in the managed file
+    // bound at /etc/claude-code, PreToolUse[0] blocking on failure (hand-off 1), and
+    // never in the per-run settings.json, so no hook fires twice.
+    let managed: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(config_dir.join("managed/managed-settings.json")).unwrap(),
+    )
+    .unwrap();
+    let gate = &managed["hooks"]["PreToolUse"][0];
     assert_eq!(gate["matcher"], "Agent|Task");
     assert_eq!(gate["hooks"][0]["onFailure"], "block");
+    assert!(managed["permissions"]["deny"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t == "RemoteTrigger"));
+    let per_run = fs::read_to_string(config_dir.join("settings.json")).unwrap();
+    assert!(
+        !per_run.contains("driverctl"),
+        "settings.json holds no gate entry: {per_run}"
+    );
     assert!(config_dir.join("bin/driverctl").is_file());
 
     // The cap limits are recorded (D-12..D-14); enforcement is 28-05.

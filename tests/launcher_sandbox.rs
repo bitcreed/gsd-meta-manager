@@ -20,7 +20,8 @@ use std::process::{Command, Stdio};
 
 use gsd_meta_manager::driverctl::serve::socket_path;
 use gsd_meta_manager::launcher::sandbox::{
-    bwrap_argv, child_env, claude_argv, LaunchPaths, SandboxSpec, EXTRA_STRIP_ENV, STRIP_ENV,
+    bwrap_argv, child_env, claude_argv, etc_entries_in, EtcEntry, LaunchPaths, SandboxSpec,
+    EXTRA_STRIP_ENV, STRIP_ENV,
 };
 use tempfile::TempDir;
 
@@ -63,6 +64,13 @@ fn golden_bwrap_argv() {
         .map(|rel| PathBuf::from("/home/u").join(rel))
         .collect(),
         runtime_dir: Some(PathBuf::from("/run/user/1000")),
+        etc_entries: vec![
+            EtcEntry::Bind(PathBuf::from("/etc/hosts")),
+            EtcEntry::Symlink {
+                target: PathBuf::from("../run/systemd/resolve/stub-resolv.conf"),
+                path: PathBuf::from("/etc/resolv.conf"),
+            },
+        ],
     };
     let command = vec![OsString::from("claude"), OsString::from("-p")];
     let expected: Vec<String> = [
@@ -77,6 +85,21 @@ fn golden_bwrap_argv() {
         "/proc",
         "--tmpfs",
         "/tmp",
+        // D-12: /etc is a tmpfs of read-only re-binds, the per-run managed dir sits at
+        // /etc/claude-code, and the whole of /etc is remounted read-only
+        "--tmpfs",
+        "/etc",
+        "--ro-bind-try",
+        "/etc/hosts",
+        "/etc/hosts",
+        "--symlink",
+        "../run/systemd/resolve/stub-resolv.conf",
+        "/etc/resolv.conf",
+        "--ro-bind",
+        &format!("{CFG}/managed"),
+        "/etc/claude-code",
+        "--remount-ro",
+        "/etc",
         // home masks: directories, then files
         "--tmpfs",
         "/home/u/.ssh",
@@ -130,6 +153,10 @@ fn golden_bwrap_argv() {
         "--ro-bind",
         &format!("{CFG}/bin"),
         &format!("{CFG}/bin"),
+        // the managed file is not rewritable through the writable config dir
+        "--ro-bind",
+        &format!("{CFG}/managed"),
+        &format!("{CFG}/managed"),
         // runtime dir tmpfs, then only the driverctl socket
         "--tmpfs",
         "/run/user/1000",
@@ -163,7 +190,7 @@ fn masks_are_omitted_when_absent() {
         !argv.iter().any(|a| a.starts_with(&home_str)),
         "an empty home must add no mask flag: {argv:?}"
     );
-    // The fixed prefix up to the project bind is exactly root, /dev, /proc, /tmp.
+    // The fixed prefix is exactly root, /dev, /proc, /tmp, then the /etc block.
     assert_eq!(
         argv[..10],
         [
@@ -179,7 +206,80 @@ fn masks_are_omitted_when_absent() {
             "/tmp"
         ]
     );
-    assert_eq!(argv[10], "--bind");
+    // Nothing between the /etc block and the project bind: no mask flag at all.
+    let remount = argv
+        .windows(2)
+        .position(|w| w == ["--remount-ro", "/etc"])
+        .expect("the /etc block ends with --remount-ro /etc");
+    assert_eq!(argv[remount + 2], "--bind");
+    assert_eq!(argv[remount + 3], "/work/proj");
+}
+
+#[test]
+fn the_etc_block_precedes_remount_and_skips_host_claude_code() {
+    let etc = TempDir::new().unwrap();
+    fs::write(etc.path().join("hosts"), "127.0.0.1 localhost\n").unwrap();
+    fs::write(etc.path().join(".hidden"), "x").unwrap();
+    fs::create_dir(etc.path().join("ssl")).unwrap();
+    fs::create_dir(etc.path().join("claude-code")).unwrap();
+    fs::write(etc.path().join("claude-code/managed-settings.json"), "{}").unwrap();
+    std::os::unix::fs::symlink("../run/resolv.conf", etc.path().join("resolv.conf")).unwrap();
+
+    let entries = etc_entries_in(etc.path());
+    let p = |name: &str| etc.path().join(name);
+    // Sorted by file name (dot-names included), the host claude-code skipped, a
+    // symlink kept as a symlink.
+    assert_eq!(
+        entries,
+        [
+            EtcEntry::Bind(p(".hidden")),
+            EtcEntry::Bind(p("hosts")),
+            EtcEntry::Symlink {
+                target: PathBuf::from("../run/resolv.conf"),
+                path: p("resolv.conf")
+            },
+            EtcEntry::Bind(p("ssl")),
+        ]
+    );
+    assert!(etc_entries_in(&etc.path().join("absent")).is_empty());
+
+    let spec = SandboxSpec {
+        home: PathBuf::from("/home/u"),
+        paths: paths(),
+        tmpfs_masks: Vec::new(),
+        null_masks: Vec::new(),
+        runtime_dir: None,
+        etc_entries: entries,
+    };
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+    let at = |flag: &str, a: &str| {
+        argv.windows(2)
+            .position(|w| w[0] == flag && w[1] == a)
+            .unwrap_or_else(|| panic!("{flag} {a} missing: {argv:?}"))
+    };
+    let tmpfs = at("--tmpfs", "/etc");
+    let managed = at("--ro-bind", &format!("{CFG}/managed"));
+    let remount = at("--remount-ro", "/etc");
+    assert_eq!(argv[managed + 2], "/etc/claude-code");
+    assert!(tmpfs < at("--ro-bind-try", &p("hosts").display().to_string()));
+    assert!(at("--ro-bind-try", &p("hosts").display().to_string()) < managed);
+    assert!(managed < remount);
+    // The host's own claude-code is never re-bound; the only /etc/claude-code
+    // argument is the managed dir's destination.
+    let host_cc = p("claude-code").display().to_string();
+    assert!(!argv.contains(&host_cc), "{argv:?}");
+    // The /etc block precedes the project bind and the config-dir bind, and the
+    // config-dir bind is followed by the managed re-bind at the managed path.
+    let cfg_bind = at("--bind", CFG);
+    let managed_rebind = argv
+        .windows(3)
+        .position(|w| {
+            w[0] == "--ro-bind"
+                && w[1] == format!("{CFG}/managed")
+                && w[2] == format!("{CFG}/managed")
+        })
+        .expect("managed re-bound at its own path");
+    assert!(remount < cfg_bind && cfg_bind < managed_rebind);
 }
 
 #[test]
@@ -192,6 +292,7 @@ fn a_socket_outside_the_runtime_dir_is_not_re_bound() {
         tmpfs_masks: Vec::new(),
         null_masks: Vec::new(),
         runtime_dir: Some(PathBuf::from("/run/user/1000")),
+        etc_entries: Vec::new(),
     };
     let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
     assert!(argv.iter().any(|a| a == "/run/user/1000"));
@@ -287,7 +388,12 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
     let run_dir = project.join(".planning/meta-manager/drivers/probe28");
     let config_dir = root.join("config");
     let home = root.join("home");
-    for dir in [&run_dir, &config_dir.join("bin"), &home] {
+    for dir in [
+        &run_dir,
+        &config_dir.join("bin"),
+        &config_dir.join("managed"),
+        &home,
+    ] {
         fs::create_dir_all(dir).unwrap();
     }
     fs::write(config_dir.join("settings.json"), "{}").unwrap();

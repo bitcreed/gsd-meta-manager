@@ -237,7 +237,7 @@ pub struct SandboxSpec {
 /// The entries of `/etc` as [`EtcEntry`] values, sorted by file name, without
 /// `claude-code` (the per-run managed dir takes its place). An unreadable `/etc`
 /// yields an empty list.
-fn read_etc_entries(etc: &Path) -> Vec<EtcEntry> {
+pub fn etc_entries_in(etc: &Path) -> Vec<EtcEntry> {
     let Ok(entries) = std::fs::read_dir(etc) else {
         return Vec::new();
     };
@@ -293,7 +293,7 @@ impl SandboxSpec {
             tmpfs_masks,
             null_masks,
             runtime_dir,
-            etc_entries: read_etc_entries(Path::new("/etc")),
+            etc_entries: etc_entries_in(Path::new("/etc")),
         }
     }
 }
