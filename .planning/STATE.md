@@ -4,17 +4,16 @@ milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: planning
-stopped_at: Phase 30 complete, ready to plan Phase 28.1
-last_updated: "2026-10-24T18:43:00.574Z"
+stopped_at: Phase 28.1 context gathered
+last_updated: "2026-10-24T18:58:45.921Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 30 complete, transitioned to Phase 28.1
-state_head: c8b4843a8d20df7d8c26d2890f05398f815ddcfb
+state_head: f450d0c953bed1b139650ce1824460837ff7392a
 progress:
   total_phases: 10
   completed_phases: 14
   total_plans: 9
   completed_plans: 112
-  percent: 70
 milestone_name: Workstream Visibility
 ---
 
@@ -946,9 +945,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-24T18:50:00.000Z
-Stopped at: Phase 30 complete, ready to plan Phase 28.1
-Resume file: None
+Last session: 2026-10-24T18:58:44.947Z
+Stopped at: Phase 28.1 context gathered
+Resume file: .planning/phases/28.1-sandbox-egress-agent-channel-isolation/28.1-CONTEXT.md
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
 milestone stays open.
