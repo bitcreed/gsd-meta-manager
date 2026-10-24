@@ -42,6 +42,10 @@
 //! after the writable config-dir bind, so the driver cannot rewrite the file
 //! through the config dir.
 //!
+//! 28.1 (D-03) also replaces `/run` with an empty tmpfs, right after the `/etc` block, so no
+//! host filesystem socket under `/run` or `/var/run` is reachable; the runtime-dir
+//! tmpfs and the two sockets are mounted inside it afterwards.
+//!
 //! 28.1 (D-02, D-04) cuts the profile off the host network: `--unshare-net` leaves
 //! a fresh namespace with only `lo`, `--unshare-ipc` and `--unshare-uts` drop the
 //! host's SysV IPC and hostname (the hostname is fixed to [`SANDBOX_HOSTNAME`]). The only
@@ -149,14 +153,19 @@ pub const STRIP_ENV_SUFFIXES: &[&str] = &[
 ];
 
 /// True when the launcher removes `key` from the driver's environment: the exact
-/// lists [`STRIP_ENV`], [`EXTRA_STRIP_ENV`], [`MORE_STRIP_ENV`] plus the
-/// [`STRIP_ENV_PREFIXES`] and [`STRIP_ENV_SUFFIXES`] families.
+/// lists [`STRIP_ENV`], [`EXTRA_STRIP_ENV`], [`MORE_STRIP_ENV`] and
+/// [`ROUTING_STRIP_ENV`] plus the [`STRIP_ENV_PREFIXES`] and [`STRIP_ENV_SUFFIXES`]
+/// families.
 ///
 /// This stays a denylist because the driver legitimately needs a long tail of
-/// ordinary variables (`PATH`, proxies, toolchain homes, `ANTHROPIC_BASE_URL`, ...)
-/// that an allowlist would have to guess `[inferred — audit]`. The launcher's own
-/// values (`CLAUDE_CODE_OAUTH_TOKEN`, ...) are applied AFTER this filter by
-/// [`child_env`], so a family match never removes what the launcher sets.
+/// ordinary variables (`PATH`, toolchain homes, `HTTPS_PROXY` for a degraded
+/// run, ...) that an allowlist would have to guess `[inferred — audit]`.
+/// `ANTHROPIC_BASE_URL` and the catch-all proxy variable are no longer among them:
+/// the bwrap posture sets its own base URL and proxy values
+/// ([`egress_env_sets`]) and the host's must not survive in either posture, while
+/// the host's ordinary `HTTP(S)_PROXY` still passes for degraded runs. The
+/// launcher's own values (`CLAUDE_CODE_OAUTH_TOKEN`, ...) are applied AFTER this
+/// filter by [`child_env`], so a family match never removes what the launcher sets.
 pub fn is_stripped_env(key: &std::ffi::OsStr) -> bool {
     let Some(name) = key.to_str() else {
         // A non-UTF-8 name matches no family; it is not a credential convention.
@@ -167,17 +176,42 @@ pub fn is_stripped_env(key: &std::ffi::OsStr) -> bool {
         .iter()
         .chain(EXTRA_STRIP_ENV)
         .chain(MORE_STRIP_ENV)
+        .chain(ROUTING_STRIP_ENV)
         .any(|exact| name == *exact)
         || STRIP_ENV_PREFIXES.iter().any(|p| upper.starts_with(p))
         || STRIP_ENV_SUFFIXES.iter().any(|x| upper.ends_with(x))
 }
 
-/// Routing variables stripped in both postures (stub).
-pub const ROUTING_STRIP_ENV: &[&str] = &[];
+/// Routing and session variables stripped in BOTH postures (D-09a, RESEARCH
+/// Pitfall 14) `[inferred — audit]`: the launching shell's `TMUX` session, a
+/// catch-all `ALL_PROXY` that would bypass the bridge, the Bedrock/Vertex/Foundry
+/// switches that send inference to another provider, extra request headers, and a
+/// host `ANTHROPIC_BASE_URL`. The bwrap posture then sets its own base URL and
+/// proxy values ([`egress_env_sets`]); the degraded posture sets none.
+pub const ROUTING_STRIP_ENV: &[&str] = &[
+    "TMUX",
+    "TMUX_PANE",
+    "ALL_PROXY",
+    "all_proxy",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_BASE_URL",
+];
 
-/// Variables set in both postures (stub).
+/// The variables set in both postures (D-09a, RESEARCH Pitfall 14): no telemetry,
+/// error reporting, auto-update or other non-essential traffic from the driver,
+/// and the claude.ai MCP connectors off. In the bwrap posture they also keep the
+/// driver quiet on a network that has only the egress allowlist.
 pub fn common_env_sets() -> Vec<(&'static str, OsString)> {
-    Vec::new()
+    vec![
+        ("DISABLE_TELEMETRY", os("1")),
+        ("DISABLE_ERROR_REPORTING", os("1")),
+        ("DISABLE_AUTOUPDATER", os("1")),
+        ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", os("1")),
+        ("ENABLE_CLAUDEAI_MCP_SERVERS", os("false")),
+    ]
 }
 
 /// Directories under `$HOME` the sandbox replaces with an empty tmpfs.
@@ -376,6 +410,12 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
     argv.push(os("/etc/claude-code"));
     argv.push(os("--remount-ro"));
     argv.push(os("/etc"));
+    // D-03: `/run` (and `/var/run`, its symlink) holds the host's root-equivalent
+    // sockets (`docker.sock`, the system bus, snapd, ssh-unix-local). It is an empty
+    // tmpfs here; the runtime dir below is then a tmpfs inside it, so `/run` lists
+    // only the mount point `user`.
+    argv.push(os("--tmpfs"));
+    argv.push(os("/run"));
     for dir in &spec.tmpfs_masks {
         argv.push(os("--tmpfs"));
         argv.push(dir.as_os_str().to_owned());
@@ -771,6 +811,8 @@ mod tests {
             "/etc/claude-code",
             "--remount-ro",
             "/etc",
+            "--tmpfs",
+            "/run",
             "--tmpfs",
             "/home/u/.ssh",
             "--ro-bind",

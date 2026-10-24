@@ -16,7 +16,11 @@
 // reaches the egress server (200 for `/v1/messages`, 403 for an account path), a
 // CONNECT to a host off the allowlist is refused (403), a direct connection to a
 // public address fails, and a listener the test opened on the HOST's loopback is
-// unreachable. The host-side controls (the test process connects to the same
+// unreachable, and so are a listener on the host's LAN address, a host abstract
+// unix socket and (when the host has it) Xwayland's `@/tmp/.X11-unix/X0`. No
+// `docker.sock` or system bus socket is visible under the `/run` tmpfs, `/run`
+// lists only the runtime-dir mount point, and no SysV shared-memory segment is
+// listed. The host-side controls (the test process connects to the same
 // listeners) keep the "unreachable" results from being vacuous.
 //
 // The probe prints only `KEY=VALUE` lines, never the content of a host file.
@@ -26,8 +30,10 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
+use std::net::UdpSocket;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::os::unix::net::UnixListener;
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::net::{SocketAddr as UnixSocketAddr, UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,7 +54,10 @@ use tempfile::TempDir;
 const PROBE_BOUND: Duration = Duration::from_secs(90);
 
 /// The in-sandbox probe. `$1` is the port of a listener the test opened on the
-/// host's loopback. Every line is `KEY=VALUE`.
+/// host's loopback, `$2` the `ip:port` of one on the host's LAN address (`none`
+/// when the host has no route), `$3` the name of a host abstract unix socket and
+/// `$4` is `x11` when the host also lists Xwayland's abstract socket. Every line
+/// is `KEY=VALUE`.
 ///
 /// `ifaces` reads `/proc/net/dev`, not `/sys/class/net`: the sandbox keeps the
 /// host's `/sys` (a read-only bind of `/`), and a sysfs mount belongs to the network
@@ -56,7 +65,7 @@ const PROBE_BOUND: Duration = Duration::from_secs(90);
 /// even inside a fresh namespace. `/proc` is mounted inside the sandbox and
 /// answers for its own namespace.
 const PROBE: &str = r#"
-host_port=$1
+host_port=$1; lan=$2; abstract=$3; x11=$4
 echo "ifaces=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | paste -sd, -)"
 echo "hostname=$(cat /proc/sys/kernel/hostname)"
 echo "msgs=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -d '{}' "$ANTHROPIC_BASE_URL/v1/messages")"
@@ -64,6 +73,21 @@ echo "sessions=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$ANTHROPIC_BASE_U
 echo "connect=$(curl -s -o /dev/null -m 10 -w '%{http_connect}' https://example.com)"
 curl -s -o /dev/null -m 5 --noproxy '*' https://1.1.1.1; echo "direct_rc=$?"
 curl -s -o /dev/null -m 5 --noproxy '*' "http://127.0.0.1:$host_port/"; echo "loopback_rc=$?"
+if [ "$lan" != none ]; then
+  curl -s -o /dev/null -m 5 --noproxy '*' "http://$lan/"; echo "lan_rc=$?"
+else
+  echo "lan_rc=skipped"
+fi
+curl -s -o /dev/null -m 5 --noproxy '*' --abstract-unix-socket "$abstract" http://localhost/; echo "abstract_rc=$?"
+if [ "$x11" = x11 ]; then
+  curl -s -o /dev/null -m 5 --noproxy '*' --abstract-unix-socket /tmp/.X11-unix/X0 http://localhost/; echo "x11_rc=$?"
+else
+  echo "x11_rc=skipped"
+fi
+if [ -S /run/docker.sock ]; then echo "docker_sock=present"; else echo "docker_sock=absent"; fi
+if [ -S /run/dbus/system_bus_socket ]; then echo "system_bus=present"; else echo "system_bus=absent"; fi
+echo "run_entries=$(ls -A /run | paste -sd, -)"
+echo "shm=$(tail -n +2 /proc/sysvipc/shm | wc -l | tr -d ' ')"
 "#;
 
 // ----------------------------------------------------------------- the stub
@@ -355,6 +379,22 @@ impl Rig {
     }
 }
 
+/// The host's LAN address: the source address of a UDP socket "connected" to a
+/// public address (connecting sends no packet). `None` when the host has no route.
+fn host_lan_ip() -> Option<std::net::IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("1.1.1.1:53").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Whether the host lists the abstract socket `@name` in `/proc/net/unix`.
+fn host_lists_abstract(name: &str) -> bool {
+    fs::read_to_string("/proc/net/unix")
+        .map(|text| text.lines().any(|l| l.ends_with(&format!(" @{name}"))))
+        .unwrap_or(false)
+}
+
 #[test]
 #[ignore = "needs bwrap with network namespaces and curl; run with -- --ignored --nocapture"]
 fn the_network_namespace_leaves_only_the_egress_bridge() {
@@ -369,8 +409,28 @@ fn the_network_namespace_leaves_only_the_egress_bridge() {
         host_port, BRIDGE_PORT,
         "pick another run: the port collides with the bridge"
     );
+    // A listener on the host's LAN address (what claudear-style local agents sit on).
+    let lan_listener = host_lan_ip().and_then(|ip| TcpListener::bind((ip, 0)).ok());
+    let lan_arg = lan_listener
+        .as_ref()
+        .map_or("none".to_owned(), |l| l.local_addr().unwrap().to_string());
+    // A host abstract unix socket.
+    let abstract_name = format!("gsdmm-probe-{}", std::process::id());
+    let abstract_listener = UnixListener::bind_addr(
+        &UnixSocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap(),
+    )
+    .expect("bind the host abstract socket");
+    let x11 = host_lists_abstract("/tmp/.X11-unix/X0");
 
-    let (ok, stdout, stderr) = rig.probe(PROBE, &[host_port.to_string()]);
+    let (ok, stdout, stderr) = rig.probe(
+        PROBE,
+        &[
+            host_port.to_string(),
+            lan_arg.clone(),
+            abstract_name.clone(),
+            if x11 { "x11" } else { "none" }.to_owned(),
+        ],
+    );
     println!("LIVE probe exit ok={ok}");
     print!("{stdout}");
     if !stderr.trim().is_empty() {
@@ -382,9 +442,32 @@ fn the_network_namespace_leaves_only_the_egress_bridge() {
         stats.inference_forwarded, stats.connect_denied
     );
 
-    // The host-side non-vacuity control: the listener answers a connect from here.
-    let control = TcpStream::connect(("127.0.0.1", host_port));
-    println!("host_loopback_control={}", control.is_ok());
+    // The host-side non-vacuity controls: every listener answers a connect from here.
+    let loopback_control = TcpStream::connect(("127.0.0.1", host_port)).is_ok();
+    let lan_control = lan_listener
+        .as_ref()
+        .map(|l| TcpStream::connect(l.local_addr().unwrap()).is_ok());
+    let abstract_control = UnixStream::connect_addr(
+        &UnixSocketAddr::from_abstract_name(abstract_name.as_bytes()).unwrap(),
+    )
+    .is_ok();
+    let x11_control = x11.then(|| {
+        UnixStream::connect_addr(&UnixSocketAddr::from_abstract_name(b"/tmp/.X11-unix/X0").unwrap())
+            .is_ok()
+    });
+    let host_docker = Path::new("/run/docker.sock").exists();
+    let host_bus = Path::new("/run/dbus/system_bus_socket").exists();
+    let host_shm = fs::read_to_string("/proc/sysvipc/shm")
+        .map(|t| t.lines().skip(1).count())
+        .unwrap_or(0);
+    println!("host_loopback_control={loopback_control}");
+    println!("host_lan_control={lan_control:?} (lan listener {lan_arg})");
+    println!("host_abstract_control={abstract_control}");
+    println!("host_x11_control={x11_control:?}");
+    println!("host_docker_sock_present={host_docker}");
+    println!("host_system_bus_present={host_bus}");
+    println!("host_shm_segments={host_shm}");
+    drop(abstract_listener);
 
     let got = parse_lines(&stdout);
     let value = |key: &str| got.get(key).map_or("<missing>", String::as_str).to_owned();
@@ -415,14 +498,54 @@ fn the_network_namespace_leaves_only_the_egress_bridge() {
         "0",
         "a direct connection to a public address must fail"
     );
-    assert_ne!(
+    // curl exit 7 is "failed to connect": the destination does not exist inside, which
+    // is a stronger result than a protocol error from something that answered.
+    assert_eq!(
         value("loopback_rc"),
-        "0",
+        "7",
         "the host's loopback must be unreachable"
     );
+    if lan_listener.is_some() {
+        assert_eq!(
+            value("lan_rc"),
+            "7",
+            "the host's LAN address must be unreachable"
+        );
+    }
+    assert_eq!(
+        value("abstract_rc"),
+        "7",
+        "a host abstract socket must be unreachable"
+    );
+    if x11 {
+        assert_eq!(
+            value("x11_rc"),
+            "7",
+            "Xwayland's abstract socket must be unreachable"
+        );
+    }
+    assert_eq!(value("docker_sock"), "absent");
+    assert_eq!(value("system_bus"), "absent");
+    assert_eq!(value("run_entries"), "user");
+    assert_eq!(value("shm"), "0");
+
     assert!(
-        control.is_ok(),
+        loopback_control,
         "the host-side control could not reach its own listener"
+    );
+    assert_ne!(
+        lan_control,
+        Some(false),
+        "the LAN listener did not answer the host"
+    );
+    assert!(
+        abstract_control,
+        "the abstract listener did not answer the host"
+    );
+    assert_ne!(
+        x11_control,
+        Some(false),
+        "Xwayland's socket did not answer the host"
     );
     assert!(stats.inference_forwarded >= 1);
 }
