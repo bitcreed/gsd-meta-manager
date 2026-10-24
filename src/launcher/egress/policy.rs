@@ -249,11 +249,12 @@ fn remote_source(value: &serde_json::Value) -> Option<String> {
 }
 
 /// A request-derived string reduced to what can safely be echoed in a refusal:
-/// ASCII letters, digits and `_ . -`, at most 48 characters.
+/// the identity alphabet (ASCII letters, digits and `_ . -`, delegated to
+/// `text::is_identity_char`), anything else becoming `?`, at most 48 characters.
 fn policy_word(text: &str) -> String {
     text.chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+            if crate::text::is_identity_char(c) {
                 c
             } else {
                 '?'
