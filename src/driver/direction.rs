@@ -27,7 +27,10 @@
 //!    exchange is a typed error, because the fallback is exactly the bug.
 //! 3. **Newest human save wins (D-12).** If, after exchanging back, the file now
 //!    at the temp name is *not* the tool's own stale bytes, a newer rename-save
-//!    replaced ours in the meantime; it is renamed into place before the retry.
+//!    replaced ours in the meantime; it is put in place before the retry by
+//!    **exchange**, never a plain rename, which would revert a still newer save
+//!    landing at that instant (fact 2). The exchange repeats while what comes
+//!    back is not, unchanged, the older file it displaced (quick 261023-v1s).
 //! 4. **An insane body is never written back (D-12).** An in-place editor save
 //!    (truncate, then write) can be observed half done. A body missing either
 //!    `## Direction` or `## Items` is [`SpliceOutcome::SkippedInsaneBody`] and the
@@ -477,7 +480,7 @@ pub fn sweep_stale_temps(run_dir: &Path, older_than: Duration) -> std::io::Resul
 mod imp {
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -490,8 +493,76 @@ mod imp {
     };
     use crate::error::LockError;
 
+    /// Test-only seam: a per-thread callback fired at the instants of the
+    /// exchange-verify loop where a human save can race the splice, so a unit
+    /// test can land a save there deterministically. Compiled out of every
+    /// non-test build.
+    #[cfg(test)]
+    pub(super) mod race_hook {
+        use std::cell::RefCell;
+
+        /// Where in the loop the hook fires.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(crate) enum Point {
+            /// The temp is written and fsynced; the exchange is next.
+            BeforeExchange,
+            /// The tool's file was just exchanged in; nothing verified yet.
+            AfterExchange,
+            /// A mismatch was just exchanged back.
+            AfterExchangeBack,
+        }
+
+        type Hook = Box<dyn FnMut(Point)>;
+
+        thread_local! {
+            static HOOK: RefCell<Option<Hook>> = RefCell::new(None);
+        }
+
+        /// Install `hook` for the calling thread (replacing any previous one).
+        pub(crate) fn set(hook: impl FnMut(Point) + 'static) {
+            HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+        }
+
+        /// Remove the calling thread's hook.
+        pub(crate) fn clear() {
+            HOOK.with(|h| *h.borrow_mut() = None);
+        }
+
+        pub(super) fn fire(point: Point) {
+            HOOK.with(|h| {
+                if let Some(hook) = h.borrow_mut().as_mut() {
+                    hook(point);
+                }
+            });
+        }
+    }
+
     /// Process-wide counter that makes every temp name unique within a process.
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// How many exchanges one give-back makes while ever newer saves keep
+    /// arriving before it gives up and reports the file left at the temp name.
+    const GIVE_BACK_ROUNDS: u32 = 8;
+
+    /// One file as seen at a temp name: its inode and its bytes (`None` when
+    /// unreadable). Only this process renames to or from a temp name, so two
+    /// equal `Seen`s are the same file, unchanged (an in-place write into a
+    /// displaced inode changes its bytes, so it never compares equal).
+    #[derive(PartialEq, Eq)]
+    struct Seen {
+        dev: u64,
+        ino: u64,
+        bytes: Option<Vec<u8>>,
+    }
+
+    fn seen(path: &Path) -> std::io::Result<Seen> {
+        let meta = std::fs::symlink_metadata(path)?;
+        Ok(Seen {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            bytes: read_run_file(path).ok(),
+        })
+    }
 
     /// What the caller wants written for the body it was just shown.
     enum Plan {
@@ -597,6 +668,46 @@ mod imp {
         file.sync_all()
     }
 
+    /// Put the newer file at `temp_name` in place by exchange, then check that
+    /// what came back is, unchanged, the file `expect` believed to be at
+    /// `DIRECTION.md`; that one is older, so it is dropped. Anything else that
+    /// comes back landed in the meantime and is newer still, so it goes in
+    /// place the same way. A human's file is never unlinked unless a newer one
+    /// is in place, and never renamed over anything.
+    fn give_back_newest(
+        dir: &File,
+        temp_name: &str,
+        temp_path: &Path,
+        mut expect: Option<Seen>,
+        mut placing: Seen,
+    ) -> Result<(), DirectionError> {
+        for _ in 0..GIVE_BACK_ROUNDS {
+            if let Err(errno) = exchange(dir, temp_name, DIRECTION_FILE) {
+                // Never unlink here: the temp name holds a human's bytes.
+                return Err(io_err(
+                    format!(
+                        "could not put a newer save back; a displaced file was left at {}",
+                        temp_path.display()
+                    ),
+                    errno,
+                ));
+            }
+            let back = seen(temp_path).map_err(|e| io_err(temp_path.display(), e))?;
+            if expect.as_ref() == Some(&back) {
+                let _ = std::fs::remove_file(temp_path);
+                return Ok(());
+            }
+            expect = Some(std::mem::replace(&mut placing, back));
+        }
+        Err(io_err(
+            format!(
+                "newer saves kept arriving; a displaced file was left at {}",
+                temp_path.display()
+            ),
+            format!("{GIVE_BACK_ROUNDS} give-back exchanges did not settle"),
+        ))
+    }
+
     /// The exchange-verify loop shared by the splice and the body write.
     fn run_loop<P>(run_dir: &Path, mut plan: P) -> Result<SpliceOutcome, DirectionError>
     where
@@ -643,6 +754,9 @@ mod imp {
                 return Err(io_err(temp_path.display(), e));
             }
 
+            #[cfg(test)]
+            race_hook::fire(race_hook::Point::BeforeExchange);
+
             // Our file goes in place AND the displaced inode comes back to the
             // temp name. No fallback to a plain rename (module fact 2).
             match exchange(&dir, &temp_name, DIRECTION_FILE) {
@@ -657,12 +771,17 @@ mod imp {
                 }
             }
 
+            #[cfg(test)]
+            race_hook::fire(race_hook::Point::AfterExchange);
+
             // D-23: compare BODY BYTES, not inode identity. An unreadable or
             // non-UTF-8 displaced file is a mismatch: give it back.
-            let displaced_matches = read_run_file(&temp_path)
-                .ok()
-                .and_then(|bytes| String::from_utf8(bytes).ok())
-                .is_some_and(|displaced| split_frontmatter(&displaced).1 == body);
+            let displaced = seen(&temp_path).ok();
+            let displaced_matches = displaced
+                .as_ref()
+                .and_then(|d| d.bytes.as_deref())
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .is_some_and(|text| split_frontmatter(text).1 == body);
             if displaced_matches {
                 let _ = std::fs::remove_file(&temp_path);
                 return Ok(SpliceOutcome::Ok);
@@ -680,19 +799,20 @@ mod imp {
                     errno,
                 ));
             }
-            match read_run_file(&temp_path) {
-                Ok(bytes) if bytes == new_content.as_bytes() => {
-                    // Our own stale file: drop it and try again.
-                    let _ = std::fs::remove_file(&temp_path);
-                }
-                Ok(_) => {
-                    // An even newer rename-save replaced ours in the meantime:
-                    // the newest human bytes win, then retry.
-                    std::fs::rename(&temp_path, &target)
-                        .map_err(|e| io_err(target.display(), e))?;
-                }
-                Err(e) => return Err(io_err(temp_path.display(), e)),
+            #[cfg(test)]
+            race_hook::fire(race_hook::Point::AfterExchangeBack);
+            let back = seen(&temp_path).map_err(|e| io_err(temp_path.display(), e))?;
+            if back.bytes.as_deref() == Some(new_content.as_bytes()) {
+                // Our own stale file: drop it and try again.
+                let _ = std::fs::remove_file(&temp_path);
+                continue;
             }
+            // An even newer rename-save replaced ours in the meantime and now
+            // sits at the temp name, while the older displaced file is at
+            // DIRECTION.md. The newest human bytes win (fact 3), put back by
+            // EXCHANGE, never by a plain rename: a still newer save landing
+            // right now would be reverted by one (fact 2, quick 261023-v1s).
+            give_back_newest(&dir, &temp_name, &temp_path, displaced, back)?;
         }
         Ok(SpliceOutcome::GaveUp)
     }
@@ -993,6 +1113,103 @@ mod tests {
                 format!("{}{human}", block(1)),
                 "the tool block goes above the human's block, which is preserved byte-for-byte"
             );
+        }
+
+        /// Land a rename-save of `body` over `DIRECTION.md`, the way an editor does.
+        fn rename_save(run_dir: &std::path::Path, body: &str) {
+            let tmp = run_dir.join("DIRECTION.md.editor");
+            std::fs::write(&tmp, body).expect("editor temp");
+            std::fs::rename(&tmp, run_dir.join(DIRECTION_FILE)).expect("editor rename");
+        }
+
+        fn save(n: u32) -> String {
+            BODY.replace(
+                "- control: run",
+                &format!("- control: run\n- note: save {n}"),
+            )
+        }
+
+        /// Install a hook that lands `save(n)` at the FIRST firing of each listed
+        /// point, then splice once and return the report.
+        fn splice_racing(
+            dir: &tempfile::TempDir,
+            saves: &[(super::super::imp::race_hook::Point, u32)],
+        ) -> SpliceReport {
+            use super::super::imp::race_hook;
+            let run_dir = dir.path().to_path_buf();
+            let mut pending: Vec<_> = saves.to_vec();
+            race_hook::set(move |point| {
+                if let Some(i) = pending.iter().position(|&(p, _)| p == point) {
+                    let (_, n) = pending.remove(i);
+                    rename_save(&run_dir, &save(n));
+                }
+            });
+            let report = splice_frontmatter(dir.path(), &block(1));
+            race_hook::clear();
+            report.expect("splice")
+        }
+
+        /// Quick 261023-v1s, the lost rename-save. Save 1 lands between the
+        /// tool's read and its exchange, so the verify mismatches. Save 2 lands
+        /// before the exchange back, so save 2 comes back to the temp name and
+        /// the older save 1 to `DIRECTION.md`. Save 3 lands right after the
+        /// exchange back. Putting save 2 in place with a plain rename then
+        /// reverts save 3: a read-then-rename loss (module fact 2). The newest
+        /// save must stand, and the retry splices onto it.
+        #[test]
+        fn a_save_landing_right_after_the_exchange_back_is_not_reverted() {
+            use super::super::imp::race_hook::Point;
+
+            let dir = run_dir_with(BODY);
+            let report = splice_racing(
+                &dir,
+                &[
+                    (Point::BeforeExchange, 1),
+                    (Point::AfterExchange, 2),
+                    (Point::AfterExchangeBack, 3),
+                ],
+            );
+
+            let after = read(&dir);
+            assert_eq!(
+                split_frontmatter(&after).1,
+                save(3),
+                "the newest rename-save (save 3) must stand; DIRECTION.md is:\n{after}"
+            );
+            assert_eq!(report.outcome, SpliceOutcome::Ok, "the retry lands");
+            assert_eq!(after, format!("{}{}", block(1), save(3)));
+            assert!(no_temps_left(&dir), "every superseded file is cleaned up");
+        }
+
+        /// Module fact 3's single newer save: save 2 lands before the exchange
+        /// back and is put in place, then the retry builds on it.
+        #[test]
+        fn a_newer_save_found_at_the_exchange_back_is_put_in_place() {
+            use super::super::imp::race_hook::Point;
+
+            let dir = run_dir_with(BODY);
+            let report = splice_racing(
+                &dir,
+                &[(Point::BeforeExchange, 1), (Point::AfterExchange, 2)],
+            );
+
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+            assert_eq!(read(&dir), format!("{}{}", block(1), save(2)));
+            assert!(no_temps_left(&dir));
+        }
+
+        /// Module fact 2's plain mismatch: save 1 lands between the read and the
+        /// exchange, is given back, and the retry builds on it.
+        #[test]
+        fn a_save_landing_before_the_exchange_is_given_back_and_built_on() {
+            use super::super::imp::race_hook::Point;
+
+            let dir = run_dir_with(BODY);
+            let report = splice_racing(&dir, &[(Point::BeforeExchange, 1)]);
+
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+            assert_eq!(read(&dir), format!("{}{}", block(1), save(1)));
+            assert!(no_temps_left(&dir));
         }
 
         #[test]

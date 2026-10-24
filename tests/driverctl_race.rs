@@ -26,7 +26,21 @@
 // NON-VACUITY. A passing race test proves nothing if the race never happens.
 // `editor_race_naive_positive_control` runs the obvious read-once-then-rename
 // strategy — kept HERE, test-only, so the library carries no naive strategy —
-// and requires LOST > 0.
+// and requires LOST > 0. Each exchange case also requires `contended > 0` (a
+// save started while a splice was in flight) and `ok > 0` (the tool landed one).
+//
+// THE YIELD. Every splice attempt's window, from its read to its exchange,
+// contains the temp's fsync (D-23, it must precede the exchange). On overlay
+// in the pre-tag container that window is ~5 ms p50, 94 % of it fsync, while
+// this human saves every ~1.3 ms, so ~88 % of attempts are overlapped by a save
+// and a 1 s case gets only ~20 splices, about half of them GaveUp (the designed
+// human-wins outcome). Now and then none lands, and `ok > 0` failed about 1 run
+// in 40 per case (quick 261023-v1s; on tmpfs the window is ~33 us and the
+// failure never happened). So the human does not hope for a quiet window, it
+// grants one: until the tool's first ok, whenever a splice has completed since
+// its last yield, the human saves nothing until a splice that BEGAN after the
+// yield has finished. That splice sees no save at all, so a correct splice
+// lands it. After the first ok the human's cadence is exactly the original one.
 //
 // `flock` is per open file description, so the two writers in
 // `two_writers_under_direction_lock_lose_nothing` contend like two processes.
@@ -170,22 +184,76 @@ fn latest(path: &Path, re: &Regex) -> Option<u64> {
     re.captures(&text)?.get(1)?.as_str().parse().ok()
 }
 
+/// The counters the human and the tool share in one case (see the header).
+///
+/// The tool bumps `begun` before each splice and `done` after it, and `ok` when
+/// the splice landed, so `begun > done` means a splice is in flight. The two
+/// flags are set by drop guards, so a panicking thread still releases the other.
+#[derive(Default)]
+struct Handshake {
+    begun: AtomicU64,
+    done: AtomicU64,
+    ok: AtomicU64,
+    tool_exited: AtomicBool,
+    human_finished: AtomicBool,
+}
+
+/// Sets its flag when dropped, panics included.
+struct SetOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for SetOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The human's yield: save nothing until a splice that BEGAN after this call
+/// has finished, so that one splice sees no save at all. Bounded by
+/// `wait_until` (2 x DIRECTION_LOCK_BUDGET), and over early if the tool exited.
+/// Returns `done` at the end, the mark for "a splice completed since".
+fn yield_one_splice(hs: &Handshake) -> u64 {
+    let begun = hs.begun.load(Ordering::SeqCst);
+    wait_until(&hs.tool_exited, || hs.done.load(Ordering::SeqCst) > begun);
+    hs.done.load(Ordering::SeqCst)
+}
+
 struct HumanResult {
     saves: u64,
     lost: u64,
     transient: u64,
+    yields: u64,
+    contended: u64,
 }
 
-fn human(path: PathBuf, style: Style, deadline: Instant, seed: &str) -> HumanResult {
+fn human(
+    path: PathBuf,
+    style: Style,
+    deadline: Instant,
+    seed: &str,
+    hs: &Handshake,
+) -> HumanResult {
+    let _finished = SetOnDrop(&hs.human_finished);
     let re = Regex::new(r"human edit (\d+)").expect("counter regex");
     let mut rng = XorShift::seeded(seed);
     let (mut k, mut saves, mut lost, mut transient) = (0u64, 0u64, 0u64, 0u64);
+    let (mut yields, mut contended, mut done_at_yield) = (0u64, 0u64, 0u64);
     while Instant::now() < deadline {
+        // Until the tool has landed one splice, yield one quiet splice whenever
+        // a splice has completed since the last yield. After the first ok the
+        // cadence is exactly the unhandshaken one.
+        if hs.ok.load(Ordering::SeqCst) == 0 && hs.done.load(Ordering::SeqCst) > done_at_yield {
+            yields += 1;
+            done_at_yield = yield_one_splice(hs);
+        }
         k += 1;
         // The editor buffer keeps whatever header it loaded.
         let loaded = fs::read_to_string(&path).unwrap_or_default();
         let (block, _) = split_frontmatter(&loaded);
         let data = format!("{}{}", block.unwrap_or_default(), body(k));
+        // A splice in flight now means this save races it.
+        if hs.begun.load(Ordering::SeqCst) > hs.done.load(Ordering::SeqCst) {
+            contended += 1;
+        }
         match style {
             Style::Rename => {
                 let tmp = path.with_extension("md.human");
@@ -205,10 +273,18 @@ fn human(path: PathBuf, style: Style, deadline: Instant, seed: &str) -> HumanRes
             }
         }
     }
+    // The deadline came with no splice landed yet: one final quiet splice. The
+    // tool keeps splicing past its deadline until this returns.
+    if hs.ok.load(Ordering::SeqCst) == 0 {
+        yields += 1;
+        yield_one_splice(hs);
+    }
     HumanResult {
         saves,
         lost,
         transient,
+        yields,
+        contended,
     }
 }
 
@@ -232,11 +308,22 @@ fn naive_splice(run_dir: &Path, fm: &str) -> &'static str {
     "ok"
 }
 
-fn tool(run_dir: PathBuf, strategy: Strategy, deadline: Instant) -> (u64, BTreeMap<String, u64>) {
+fn tool(
+    run_dir: PathBuf,
+    strategy: Strategy,
+    deadline: Instant,
+    hs: &Handshake,
+) -> (u64, BTreeMap<String, u64>) {
+    let _exited = SetOnDrop(&hs.tool_exited);
     let (mut n, mut tally) = (0u64, BTreeMap::new());
-    while Instant::now() < deadline {
+    // Past the deadline the tool stops at once if it has landed a splice, and
+    // otherwise only once the human's final yield is over.
+    while Instant::now() < deadline
+        || (hs.ok.load(Ordering::SeqCst) == 0 && !hs.human_finished.load(Ordering::SeqCst))
+    {
         n += 1;
         let fm = format!("---\n{FM_MARKER} race\nn: {n}\n---\n");
+        hs.begun.fetch_add(1, Ordering::SeqCst);
         let outcome = match strategy {
             Strategy::Exchange => match splice_frontmatter(&run_dir, &fm) {
                 Ok(report) => report.outcome.as_str(),
@@ -244,6 +331,10 @@ fn tool(run_dir: PathBuf, strategy: Strategy, deadline: Instant) -> (u64, BTreeM
             },
             Strategy::Naive => naive_splice(&run_dir, &fm),
         };
+        if outcome == "ok" {
+            hs.ok.fetch_add(1, Ordering::SeqCst);
+        }
+        hs.done.fetch_add(1, Ordering::SeqCst);
         *tally.entry(outcome.to_string()).or_insert(0) += 1;
     }
     (n, tally)
@@ -254,6 +345,8 @@ struct CaseResult {
     regens: u64,
     lost: u64,
     transient: u64,
+    yields: u64,
+    contended: u64,
     final_sane: bool,
     tool: BTreeMap<String, u64>,
     leftover_temps: usize,
@@ -265,14 +358,17 @@ fn run_case(strategy: Strategy, style: Style, secs: f64) -> CaseResult {
     fs::write(&path, body(0)).expect("seed DIRECTION.md");
     let deadline = Instant::now() + Duration::from_secs_f64(secs);
     let seed = format!("{}-{}", strategy.name(), style.name());
+    let hs = Arc::new(Handshake::default());
 
     let human_thread = thread::spawn({
         let path = path.clone();
-        move || human(path, style, deadline, &seed)
+        let hs = Arc::clone(&hs);
+        move || human(path, style, deadline, &seed, &hs)
     });
     let tool_thread = thread::spawn({
         let run_dir = dir.path().to_path_buf();
-        move || tool(run_dir, strategy, deadline)
+        let hs = Arc::clone(&hs);
+        move || tool(run_dir, strategy, deadline, &hs)
     });
     let human = human_thread.join().expect("human thread");
     let (regens, tool) = tool_thread.join().expect("tool thread");
@@ -289,13 +385,15 @@ fn run_case(strategy: Strategy, style: Style, secs: f64) -> CaseResult {
         regens,
         lost: human.lost,
         transient: human.transient,
+        yields: human.yields,
+        contended: human.contended,
         final_sane,
         tool,
         leftover_temps,
     };
     // The spike's `race-test.txt` line, so a full run can be pasted into a SUMMARY.
     println!(
-        "{:8} {:7} saves={:6} regens={:7} LOST={:5} transient={:4} final_body_sane={} tool={:?}",
+        "{:8} {:7} saves={:6} regens={:7} LOST={:5} transient={:4} final_body_sane={} yields={:3} contended={:6} tool={:?}",
         strategy.name(),
         style.name(),
         result.saves,
@@ -303,6 +401,8 @@ fn run_case(strategy: Strategy, style: Style, secs: f64) -> CaseResult {
         result.lost,
         result.transient,
         result.final_sane,
+        result.yields,
+        result.contended,
         result.tool,
     );
     result
@@ -314,6 +414,13 @@ fn run_case(strategy: Strategy, style: Style, secs: f64) -> CaseResult {
 /// expected losses per second, so on a loaded machine a 1 s run can exceed it by
 /// scheduling noise alone. It is asserted only by the long, `#[ignore]`d run
 /// (`check_inplace_bound`); the default smoke keeps the deterministic invariants.
+///
+/// `ok > 0` is one of them only because of the human's yield (see the header):
+/// without it, a splice whose fsync-bearing window (~5 ms on overlay) outlasts
+/// the human's ~1.3 ms save interval gives up on every attempt, and a 1 s case
+/// sometimes lands none (quick 261023-v1s). The yield never fires once the tool
+/// has landed a splice, so the in-place loss count the bound checks is measured
+/// on the unhandshaken cadence from the first ok on.
 fn assert_exchange_holds(secs: f64, check_inplace_bound: bool) {
     let rename = run_case(Strategy::Exchange, Style::Rename, secs);
     let inplace = run_case(Strategy::Exchange, Style::Inplace, secs);
@@ -355,6 +462,14 @@ fn assert_exchange_holds(secs: f64, check_inplace_bound: bool) {
         assert!(
             case.tool.get("ok").copied().unwrap_or(0) > 0,
             "{name}: the tool must have spliced at least once: {:?}",
+            case.tool
+        );
+        assert!(
+            case.contended > 0,
+            "{name}: no save landed while a splice was in flight, so the race was never \
+             exercised (saves={}, yields={}, tool={:?})",
+            case.saves,
+            case.yields,
             case.tool
         );
     }
