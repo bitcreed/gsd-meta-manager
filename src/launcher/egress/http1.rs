@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use super::policy::Header;
+use super::policy::{Framing, Header};
 use super::INFERENCE_HOST;
 
 /// The most a request head (request line, headers and the blank line) may take.
@@ -137,10 +137,28 @@ fn parse_head(bytes: &[u8]) -> Result<Head, ReadError> {
     })
 }
 
-/// Read a `Content-Length` body of `len` bytes, `leftover` first, within
-/// [`BODY_TIMEOUT`]. The buffer grows with what actually arrives, never to the
-/// claimed length up front, so a lying `Content-Length` costs nothing.
+/// Read the request body the head announced, `leftover` first, within
+/// [`BODY_TIMEOUT`] and [`BODY_MAX_BYTES`]. A chunked body is decoded.
 pub async fn read_body<R>(
+    reader: &mut R,
+    leftover: Vec<u8>,
+    framing: Framing,
+) -> Result<Vec<u8>, ReadError>
+where
+    R: AsyncRead + Unpin,
+{
+    match framing {
+        Framing::Length(len) => {
+            let len = usize::try_from(len).map_err(|_| ReadError::BodyTooLarge)?;
+            read_length_body(reader, leftover, len).await
+        }
+        Framing::Chunked => read_chunked_body(reader, leftover).await,
+    }
+}
+
+/// A `Content-Length` body. The buffer grows with what actually arrives, never to
+/// the claimed length up front, so a lying `Content-Length` costs nothing.
+async fn read_length_body<R>(
     reader: &mut R,
     leftover: Vec<u8>,
     len: usize,
@@ -167,6 +185,122 @@ where
         Ok(body)
     };
     match tokio::time::timeout(BODY_TIMEOUT, fill).await {
+        Ok(result) => result,
+        Err(_) => Err(ReadError::Timeout),
+    }
+}
+
+/// The longest chunk-size line (size and extensions) or trailer line accepted.
+const LINE_MAX_BYTES: usize = 4096;
+
+/// The most trailer lines accepted (and discarded) after the last chunk.
+const TRAILER_LINES_MAX: usize = 32;
+
+/// Buffered access to the wire for the chunked decoder, `leftover` first.
+struct Wire<'a, R> {
+    reader: &'a mut R,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl<R: AsyncRead + Unpin> Wire<'_, R> {
+    /// Read more bytes from the wire.
+    async fn fill(&mut self) -> Result<(), ReadError> {
+        self.buf.drain(..self.pos);
+        self.pos = 0;
+        let mut chunk = [0u8; 8192];
+        let n = self.reader.read(&mut chunk).await?;
+        if n == 0 {
+            return Err(ReadError::Closed);
+        }
+        self.buf.extend_from_slice(&chunk[..n]);
+        Ok(())
+    }
+
+    /// One CRLF-terminated line, without the CRLF. A bare LF is not a line end.
+    async fn line(&mut self) -> Result<Vec<u8>, ReadError> {
+        loop {
+            if let Some(i) = self.buf[self.pos..].windows(2).position(|w| w == b"\r\n") {
+                let line = self.buf[self.pos..self.pos + i].to_vec();
+                self.pos += i + 2;
+                return Ok(line);
+            }
+            if self.buf.len() - self.pos > LINE_MAX_BYTES {
+                return Err(ReadError::Malformed("chunk line is too long".to_owned()));
+            }
+            self.fill().await?;
+        }
+    }
+
+    /// Append exactly `n` bytes to `out`.
+    async fn take(&mut self, n: usize, out: &mut Vec<u8>) -> Result<(), ReadError> {
+        let mut need = n;
+        while need > 0 {
+            if self.pos == self.buf.len() {
+                self.fill().await?;
+            }
+            let k = (self.buf.len() - self.pos).min(need);
+            out.extend_from_slice(&self.buf[self.pos..self.pos + k]);
+            self.pos += k;
+            need -= k;
+        }
+        Ok(())
+    }
+}
+
+/// The size on a chunk-size line: hex digits only, optionally followed by
+/// `;extensions`, which are ignored.
+fn chunk_size(line: &[u8]) -> Result<u64, ReadError> {
+    let malformed = || ReadError::Malformed("chunk size is not hexadecimal".to_owned());
+    let digits = line.split(|b| *b == b';').next().unwrap_or(&[]);
+    let digits = digits.trim_ascii_end();
+    if digits.is_empty() || digits.len() > 16 || !digits.iter().all(u8::is_ascii_hexdigit) {
+        return Err(malformed());
+    }
+    let text = std::str::from_utf8(digits).map_err(|_| malformed())?;
+    u64::from_str_radix(text, 16).map_err(|_| malformed())
+}
+
+/// Decode a `Transfer-Encoding: chunked` body: hex sizes, extensions ignored,
+/// trailers read and discarded, the decoded size capped at [`BODY_MAX_BYTES`]
+/// (a chunk that would pass the cap is refused before its data is read).
+pub async fn read_chunked_body<R>(reader: &mut R, leftover: Vec<u8>) -> Result<Vec<u8>, ReadError>
+where
+    R: AsyncRead + Unpin,
+{
+    let decode = async {
+        let mut wire = Wire {
+            reader,
+            buf: leftover,
+            pos: 0,
+        };
+        let mut body = Vec::new();
+        loop {
+            let size = chunk_size(&wire.line().await?)?;
+            if size == 0 {
+                break;
+            }
+            let room = (BODY_MAX_BYTES - body.len()) as u64;
+            if size > room {
+                return Err(ReadError::BodyTooLarge);
+            }
+            wire.take(size as usize, &mut body).await?;
+            let mut crlf = Vec::with_capacity(2);
+            wire.take(2, &mut crlf).await?;
+            if crlf != b"\r\n" {
+                return Err(ReadError::Malformed(
+                    "chunk data is not followed by CRLF".to_owned(),
+                ));
+            }
+        }
+        for _ in 0..TRAILER_LINES_MAX {
+            if wire.line().await?.is_empty() {
+                return Ok(body);
+            }
+        }
+        Err(ReadError::Malformed("too many trailer lines".to_owned()))
+    };
+    match tokio::time::timeout(BODY_TIMEOUT, decode).await {
         Ok(result) => result,
         Err(_) => Err(ReadError::Timeout),
     }
@@ -243,14 +377,6 @@ pub fn error_response(status: u16, message: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// RED stub: decoded in the GREEN commit.
-pub async fn read_chunked_body<R>(_reader: &mut R, _leftover: Vec<u8>) -> Result<Vec<u8>, ReadError>
-where
-    R: AsyncRead + Unpin,
-{
-    Ok(Vec::new())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,12 +436,12 @@ mod tests {
     #[tokio::test]
     async fn a_content_length_body_is_read_from_the_leftover_then_the_wire() {
         let mut reader = &b"cdef"[..];
-        let body = read_body(&mut reader, b"ab".to_vec(), 6)
+        let body = read_body(&mut reader, b"ab".to_vec(), Framing::Length(6))
             .await
             .expect("body");
         assert_eq!(body, b"abcdef");
         let mut reader = &b""[..];
-        let body = read_body(&mut reader, b"abcdefgh".to_vec(), 3)
+        let body = read_body(&mut reader, b"abcdefgh".to_vec(), Framing::Length(3))
             .await
             .expect("body");
         assert_eq!(body, b"abc");
@@ -325,12 +451,17 @@ mod tests {
     async fn a_short_body_and_an_oversized_length_are_refused() {
         let mut reader = &b"cd"[..];
         assert!(matches!(
-            read_body(&mut reader, b"ab".to_vec(), 6).await,
+            read_body(&mut reader, b"ab".to_vec(), Framing::Length(6)).await,
             Err(ReadError::Closed)
         ));
         let mut reader = &b""[..];
         assert!(matches!(
-            read_body(&mut reader, Vec::new(), BODY_MAX_BYTES + 1).await,
+            read_body(
+                &mut reader,
+                Vec::new(),
+                Framing::Length(BODY_MAX_BYTES as u64 + 1)
+            )
+            .await,
             Err(ReadError::BodyTooLarge)
         ));
     }

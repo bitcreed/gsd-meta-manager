@@ -169,24 +169,185 @@ pub enum Framing {
     Chunked,
 }
 
-/// RED stub: judged in the GREEN commit.
-pub fn inference_body_verdict(_body: &serde_json::Value) -> BodyVerdict {
-    BodyVerdict::Forward
+/// The server-side tool types an inference body may carry: `web_search_*` only
+/// (D-05). Every other server tool (`web_fetch_*`, `code_execution_*`,
+/// `advisor_*`, `mcp_toolset`, `computer_*`, `tool_search_*`) asks Anthropic's
+/// servers to fetch, run or connect on the driver's behalf.
+const ALLOWED_TOOL_TYPE_PREFIX: &str = "web_search_";
+
+/// Block types that are server-side reach by themselves, wherever they nest.
+const DENIED_BLOCK_TYPES: &[&str] = &["container_upload", "mcp_tool_use", "mcp_tool_result"];
+
+/// Judge a parsed `/v1/messages` body: forward only what asks the server for
+/// nothing beyond inference and `web_search` (D-05, RESEARCH Q1 rules 3-5).
+///
+/// A tool-type ALLOWLIST rather than a list of known-bad types, because the
+/// server-tool family keeps growing; and a recursive walk for `source.type` of
+/// `url` or `file`, because those content blocks are the same server-side fetch
+/// channel through `messages[]` (an image URL inside a `tool_result` included).
+/// The reason names the field or the tool-type string (policy data) and never a
+/// URL or a value from the body.
+pub fn inference_body_verdict(body: &serde_json::Value) -> BodyVerdict {
+    use serde_json::Value;
+    let Some(object) = body.as_object() else {
+        return BodyVerdict::Deny("body is not a JSON object".to_owned());
+    };
+    if object.contains_key("mcp_servers") {
+        return BodyVerdict::Deny("mcp_servers".to_owned());
+    }
+    if object.get("container").is_some_and(|c| !c.is_null()) {
+        return BodyVerdict::Deny("container".to_owned());
+    }
+    match object.get("tools") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(tools)) => {
+            for tool in tools {
+                let Value::Object(tool) = tool else {
+                    return BodyVerdict::Deny("a tools entry is not an object".to_owned());
+                };
+                match tool.get("type") {
+                    None => {}
+                    Some(Value::String(kind))
+                        if kind == "custom" || kind.starts_with(ALLOWED_TOOL_TYPE_PREFIX) => {}
+                    Some(Value::String(kind)) => {
+                        return BodyVerdict::Deny(format!("server tool {}", policy_word(kind)));
+                    }
+                    Some(_) => {
+                        return BodyVerdict::Deny("a tool type is not a string".to_owned());
+                    }
+                }
+            }
+        }
+        Some(_) => return BodyVerdict::Deny("tools is not a list".to_owned()),
+    }
+    match remote_source(body) {
+        Some(why) => BodyVerdict::Deny(why),
+        None => BodyVerdict::Forward,
+    }
 }
 
-/// RED stub: judged in the GREEN commit.
-pub fn judge_body(_bytes: &[u8]) -> BodyVerdict {
-    BodyVerdict::Forward
+/// Why `value` (or anything inside it) reaches outside the request, or `None`.
+fn remote_source(value: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::Object(source)) = map.get("source") {
+                if let Some(kind @ ("url" | "file")) = source.get("type").and_then(Value::as_str) {
+                    return Some(format!("{kind}-sourced content block"));
+                }
+            }
+            if let Some(kind) = map.get("type").and_then(Value::as_str) {
+                if DENIED_BLOCK_TYPES.contains(&kind) {
+                    return Some(format!("{kind} block"));
+                }
+            }
+            map.values().find_map(remote_source)
+        }
+        Value::Array(items) => items.iter().find_map(remote_source),
+        _ => None,
+    }
 }
 
-/// RED stub: judged in the GREEN commit.
-pub fn framing_verdict(_headers: &[Header]) -> Result<Framing, Denial> {
-    Ok(Framing::Length(0))
+/// A request-derived string reduced to what can safely be echoed in a refusal:
+/// ASCII letters, digits and `_ . -`, at most 48 characters.
+fn policy_word(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+                c
+            } else {
+                '?'
+            }
+        })
+        .take(48)
+        .collect()
 }
 
-/// RED stub: judged in the GREEN commit.
-pub fn wants_continue(_headers: &[Header]) -> bool {
-    false
+/// Parse `bytes` as JSON and judge it: malformed JSON, a body that is not an
+/// object and JSON nested past serde_json's recursion limit are all denied, so
+/// nothing the proxy could not fully read is forwarded.
+pub fn judge_body(bytes: &[u8]) -> BodyVerdict {
+    match serde_json::from_slice::<serde_json::Value>(bytes) {
+        Ok(value) => inference_body_verdict(&value),
+        Err(_) => BodyVerdict::Deny("body is not valid JSON".to_owned()),
+    }
+}
+
+/// The header values called `name` as text; a value that is not UTF-8 is `None`.
+fn values<'a>(headers: &'a [Header], name: &'a str) -> impl Iterator<Item = Option<&'a str>> {
+    headers
+        .iter()
+        .filter(move |h| header_is(h, name))
+        .map(|(_, value)| std::str::from_utf8(value).ok())
+}
+
+/// How the request body is delimited, or why the proxy will not judge it
+/// (RESEARCH Q1 rule 2, Pitfall 3).
+///
+/// Refused: an `Upgrade`; a `Content-Encoding` other than `identity` (the body
+/// could not be inspected); an `Expect` other than `100-continue`; both
+/// `Content-Length` and `Transfer-Encoding`, or either twice (a second request
+/// could ride along); a `Transfer-Encoding` other than a lone `chunked`; a
+/// `Content-Length` that is not plain decimal digits. A length over
+/// [`BODY_MAX_BYTES`](super::http1::BODY_MAX_BYTES) is [`Denial::TooLarge`],
+/// decided from the head alone.
+pub fn framing_verdict(headers: &[Header]) -> Result<Framing, Denial> {
+    let bad = |reason: &str| Err(Denial::BadRequest(reason.to_owned()));
+    if headers.iter().any(|h| header_is(h, "upgrade")) {
+        return bad("Upgrade is not supported");
+    }
+    for value in values(headers, "content-encoding") {
+        let identity = value.is_some_and(|v| {
+            v.split(',')
+                .all(|token| token.trim().eq_ignore_ascii_case("identity"))
+        });
+        if !identity {
+            return bad("only an identity Content-Encoding is accepted");
+        }
+    }
+    for value in values(headers, "expect") {
+        if !value.is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue")) {
+            return bad("only Expect: 100-continue is supported");
+        }
+    }
+    let lengths: Vec<Option<&str>> = values(headers, "content-length").collect();
+    let encodings: Vec<Option<&str>> = values(headers, "transfer-encoding").collect();
+    if !lengths.is_empty() && !encodings.is_empty() {
+        return bad("both Content-Length and Transfer-Encoding");
+    }
+    match (lengths.as_slice(), encodings.as_slice()) {
+        ([], []) => Ok(Framing::Length(0)),
+        ([], [encoding]) => {
+            if encoding.is_some_and(|e| e.trim().eq_ignore_ascii_case("chunked")) {
+                Ok(Framing::Chunked)
+            } else {
+                bad("only a chunked Transfer-Encoding is supported")
+            }
+        }
+        ([], _) => bad("more than one Transfer-Encoding header"),
+        ([length], []) => {
+            let Some(digits) = length
+                .map(str::trim)
+                .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            else {
+                return bad("Content-Length is not a number");
+            };
+            let cap = super::http1::BODY_MAX_BYTES as u64;
+            match digits.parse::<u64>() {
+                Ok(n) if n <= cap => Ok(Framing::Length(n)),
+                _ => Err(Denial::TooLarge("request body is too large".to_owned())),
+            }
+        }
+        _ => bad("more than one Content-Length header"),
+    }
+}
+
+/// Whether the client sent `Expect: 100-continue` and waits for the interim
+/// response before sending the body. Only meaningful after [`framing_verdict`]
+/// accepted the headers.
+pub fn wants_continue(headers: &[Header]) -> bool {
+    values(headers, "expect")
+        .any(|v| v.is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue")))
 }
 
 #[cfg(test)]

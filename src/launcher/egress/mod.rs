@@ -38,7 +38,7 @@ use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 
 use self::http1::{Head, ReadError};
-use self::policy::Target;
+use self::policy::{BodyVerdict, Denial, Target};
 use self::upstream::{Connector, Upstream};
 
 /// The one host inference requests go to, and the host `CONNECT` never tunnels.
@@ -355,23 +355,8 @@ async fn deny(client: &mut UnixStream, ctx: &Ctx, status: u16, reason: &str) {
     send(client, &http1::error_response(status, reason)).await;
 }
 
-/// The `Content-Length` of a request that has one: this task's minimal framing.
-fn content_length(head: &Head) -> Result<usize, &'static str> {
-    let mut found = None;
-    for (name, value) in &head.headers {
-        if name.eq_ignore_ascii_case("content-length") {
-            if found.is_some() {
-                return Err("duplicate Content-Length");
-            }
-            let text = std::str::from_utf8(value).map_err(|_| "Content-Length is not a number")?;
-            found = Some(
-                text.trim()
-                    .parse::<usize>()
-                    .map_err(|_| "Content-Length is not a number")?,
-            );
-        }
-    }
-    Ok(found.unwrap_or(0))
+async fn refuse(client: &mut UnixStream, ctx: &Ctx, denial: &Denial) {
+    deny(client, ctx, denial.status(), denial.reason()).await;
 }
 
 async fn inference(
@@ -381,11 +366,22 @@ async fn inference(
     leftover: Vec<u8>,
     target: &str,
 ) {
-    let len = match content_length(head) {
-        Ok(len) => len,
-        Err(reason) => return deny(client, ctx, 400, reason).await,
+    let framing = match policy::framing_verdict(&head.headers) {
+        Ok(framing) => framing,
+        Err(denial) => return refuse(client, ctx, &denial).await,
     };
-    let body = match http1::read_body(client, leftover, len).await {
+    if policy::wants_continue(&head.headers) {
+        // Answered here: the interim response never comes from the upstream.
+        let sent = tokio::time::timeout(
+            REPLY_TIMEOUT,
+            client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n"),
+        )
+        .await;
+        if !matches!(sent, Ok(Ok(()))) {
+            return;
+        }
+    }
+    let body = match http1::read_body(client, leftover, framing).await {
         Ok(body) => body,
         Err(e) => {
             if let Some((status, reason)) = read_error_reply(&e) {
@@ -394,6 +390,9 @@ async fn inference(
             return;
         }
     };
+    if let BodyVerdict::Deny(reason) = policy::judge_body(&body) {
+        return deny(client, ctx, 403, &reason).await;
+    }
     let token = ctx.current_token().await;
     let headers = policy::forwarded_headers(&head.headers);
     let Some(request) = http1::request_bytes("POST", target, &headers, &token, &body) else {

@@ -434,7 +434,7 @@ fn chunked_bodies_are_reframed_with_content_length() {
             "transfer-encoding: chunked",
             "content-type: application/json",
         ],
-        b"7;ext=1\r\n{\"model\"\r\n12\r\n:\"m\",\"messages\":[]}\r\n0\r\nX-Trailer: t\r\n\r\n",
+        b"8;ext=1\r\n{\"model\"\r\n13\r\n:\"m\",\"messages\":[]}\r\n0\r\nX-Trailer: t\r\n\r\n",
     );
 
     let response = rig.exchange(&wire);
