@@ -583,3 +583,115 @@ fn non_github_remote_skips_the_pr() {
     assert_eq!(lines_of(&log, "pr-skipped").len(), 1, "{log}");
     assert!(!gh_log(&fx).exists(), "gh never started");
 }
+
+// ---------------------------------------------------------------- planted files (28.1-03)
+
+use gsd_meta_manager::launcher::push::{mirror_path, planted};
+
+/// Record the baseline the launcher will record at launch (28.1-09): the checkout
+/// as it is now, in the run's launcher state directory.
+fn write_baseline(fx: &Fixture) {
+    let snapshot = planted::snapshot(fx.project());
+    planted::save_baseline_if_absent(&fx.state_dir(), &snapshot).expect("baseline");
+}
+
+/// Where a planted command would leave its mark.
+fn marker(fx: &Fixture) -> PathBuf {
+    fx.scratch.path().join("planted-marker")
+}
+
+/// A driver that commits once, then plants an `fsmonitor` that would `touch` the marker.
+fn plant_fsmonitor_scenario(fx: &Fixture) -> String {
+    format!(
+        r#"
+driverctl log start --mode headless --loop-mode loop
+echo "driver work" > feature.txt
+git add feature.txt
+git commit --quiet -m "driver work"
+printf '[core]\n\tfsmonitor = "touch {}; false"\n' >> .git/config
+driverctl log end --reason all-done
+printf '%s\n' '{{"type":"result","subtype":"success"}}'
+"#,
+        marker(fx).display()
+    )
+}
+
+/// Everything the refusal must leave undone.
+fn assert_planted_refusal(fx: &Fixture, origin: &Remote, push: &std::process::Output) {
+    assert_eq!(push.status.code(), Some(1), "{}", stdout(push));
+    assert!(
+        stderr(push).contains("planted_git_config"),
+        "{}",
+        stderr(push)
+    );
+    let state = fx.state_json();
+    assert_eq!(state["status"], "parked");
+    assert_eq!(state["status_reason"], "push-refused:planted_git_config");
+    let log = fx.log();
+    let refusals = lines_of(&log, "push-refused");
+    assert!(!refusals.is_empty(), "{log}");
+    assert!(
+        refusals
+            .iter()
+            .all(|l| l.contains("reason=planted_git_config") && l.contains("findings=")),
+        "{log}"
+    );
+    assert!(lines_of(&log, "push").is_empty(), "no push is recorded");
+    assert!(
+        !origin.refs().contains("gsd-auto"),
+        "the remote gained a ref: {}",
+        origin.refs()
+    );
+    let root = fx.scratch.path().join("data/gsd-meta-manager/driver");
+    let mirror = mirror_path(&root, &fs::canonicalize(fx.project()).expect("canonical"));
+    let private_ref = Command::new("git")
+        .arg("--git-dir")
+        .arg(&mirror)
+        .args(["rev-parse", "--verify", "--quiet", "refs/gsdmm/r28"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+    assert!(
+        !private_ref.status.success(),
+        "the mirror fetched from the planted checkout"
+    );
+    assert!(!marker(fx).exists(), "the planted command ran on the host");
+}
+
+#[test]
+fn a_planted_fsmonitor_parks_the_run_and_fetches_nothing() {
+    let fx = Fixture::new();
+    let origin = Remote::new(&fx, "origin.git");
+    init_project(&fx, &origin.url());
+    write_baseline(&fx);
+    fx.write_scenario(&plant_fsmonitor_scenario(&fx));
+
+    let launched = fx.launch(&[]);
+    assert!(launched.status.success(), "{}", stderr(&launched));
+    assert_eq!(
+        fx.state_json()["status_reason"],
+        "push-refused:planted_git_config"
+    );
+
+    let again = run_push(&fx);
+    assert_planted_refusal(&fx, &origin, &again);
+}
+
+#[test]
+fn strict_mode_without_a_baseline_still_refuses() {
+    let fx = Fixture::new();
+    let origin = Remote::new(&fx, "origin.git");
+    init_project(&fx, &origin.url());
+    fx.write_scenario(&plant_fsmonitor_scenario(&fx));
+
+    let launched = fx.launch(&[]);
+    assert!(launched.status.success(), "{}", stderr(&launched));
+    assert!(
+        !fx.state_dir().join(planted::BASELINE_FILE).exists(),
+        "this test runs without a baseline"
+    );
+
+    let again = run_push(&fx);
+    assert_planted_refusal(&fx, &origin, &again);
+}

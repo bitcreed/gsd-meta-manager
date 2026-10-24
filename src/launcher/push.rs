@@ -28,6 +28,8 @@
 //! launcher spawn file. Synchronous, like the rest of the launcher: never call it
 //! from an `async fn`.
 
+pub mod planted;
+
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
@@ -39,6 +41,7 @@ use chrono::{SecondsFormat, Utc};
 use regex::Regex;
 use serde_json::Value;
 
+use super::config_dir::run_state_dir_in;
 use super::process::run_bounded_with_stderr;
 use super::LauncherError;
 use crate::config::DriverOptIn;
@@ -64,6 +67,10 @@ pub const KEY_LAUNCH_BRANCH: &str = "launch_branch";
 
 /// The `state.json` key holding the commit the first launch started from.
 pub const KEY_LAUNCH_START_SHA: &str = "launch_start_sha";
+
+/// The reason a push is refused, and the run parked, when the driver planted
+/// something in the checkout that the host's own git could run (D-23).
+pub const REASON_PLANTED_GIT: &str = "planted_git_config";
 
 /// The mirror config key that pins the push URL.
 const PUSH_URL_KEY: &str = "gsdmm.pushUrl";
@@ -438,6 +445,16 @@ fn remove_scan_dir(mirror: &Path, scan_dir: &Path) {
 ///
 /// `store` is the run's store, held by the caller together with the run lock.
 pub fn push_run(ctx: &PushContext, store: &mut RunStore) -> PushOutcome {
+    push_run_with(ctx, store, false)
+}
+
+/// [`push_run`] with the operator's `--ack-planted` decision.
+///
+/// The planted-file gate (D-23) sits after the destination check and **before**
+/// the fetch: `git fetch <checkout>` starts `git-upload-pack` inside the
+/// driver-written repository, so a planted config must be found by reading files
+/// first (RESEARCH Pitfall 10).
+pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool) -> PushOutcome {
     let (branch, start_sha, prior) = {
         let state = store.state();
         if !matches!(
@@ -509,6 +526,37 @@ pub fn push_run(ctx: &PushContext, store: &mut RunStore) -> PushOutcome {
             reason,
             format!("{dest} is outside {}", default_namespace(&ctx.alias)),
         );
+    }
+
+    let planted = planted_findings(ctx);
+    if !planted.is_empty() {
+        for line in planted::render_bounded(&planted) {
+            eprintln!("driver push: planted: {line}");
+        }
+        if !ack_planted {
+            if let Err(e) = store.park_after_push(&format!("push-refused:{REASON_PLANTED_GIT}")) {
+                eprintln!("driver push: could not park the run: {e}");
+            }
+            log_event(
+                store,
+                "push-refused",
+                vec![
+                    ("reason", Some(REASON_PLANTED_GIT.to_owned())),
+                    ("findings", Some(planted.len().to_string())),
+                ],
+            );
+            return refused(
+                REASON_PLANTED_GIT,
+                format!(
+                    "{} git-relevant planted finding(s) in the checkout; nothing was fetched or \
+                     pushed and the run is parked; inspect them, then run `gsd-meta-manager \
+                     driver push {} {} --ack-planted`",
+                    planted.len(),
+                    ctx.alias,
+                    ctx.run_id
+                ),
+            );
+        }
     }
 
     let refspec = format!("+refs/heads/{branch}:{private_ref}");
@@ -656,6 +704,18 @@ pub fn push_run(ctx: &PushContext, store: &mut RunStore) -> PushOutcome {
         open_pull_request(ctx, store, &url, &dest, &branch);
     }
     PushOutcome::Pushed { dest, sha: tip }
+}
+
+/// The git-relevant planted findings in the checkout right now, against the
+/// baseline recorded for the run (strict mode when there is none). File reads only.
+fn planted_findings(ctx: &PushContext) -> Vec<planted::Finding> {
+    let state_dir = run_state_dir_in(&ctx.driver_root, &ctx.project, &ctx.run_id);
+    let baseline = planted::load_baseline(&state_dir).ok().flatten();
+    let now = planted::snapshot(&ctx.project);
+    planted::findings(baseline.as_ref(), &now, &ctx.project)
+        .into_iter()
+        .filter(planted::Finding::is_git_relevant)
+        .collect()
 }
 
 /// A pull-request URL as `gh pr create` prints it: one `https://` word.
