@@ -322,4 +322,235 @@ editor_race_smoke`, each reverted from a saved copy; `grep -rn V1S-MUTANT src te
 
 mutants: M-B 3/3 M-C 3/3
 
-<!-- v1s:continue -->
+## Scan of race/timing tests
+
+Patterns: **P-a** a progress / non-vacuity assertion on work that must complete within a
+fixed wall-clock window while racing a competitor; **P-b** a fixed sleep or gap that must
+outlast or undercut I/O-bound work (fsync, flock hold, child spawn); **P-c** a wall-clock
+upper bound on I/O-bound work. Prior evidence: qs8's 1 200 `driverctl_race` binary runs
+(whose only `other` failures were `editor_race_smoke`) and this task's 600 BEFORE + 600 AFTER
+binary runs of the same binary (every test in it runs each iteration). Line numbers are at
+the fix commit for tests/driverctl_race.rs and at 08fc9f7 elsewhere (unchanged files).
+
+| file | test | pattern | evidence (file:line) | verdict |
+|------|------|---------|----------------------|---------|
+| tests/driverctl_race.rs | editor_race_smoke | P-a (`ok > 0` in 1.0 s vs an fsync window) | the yield + `ok`/`contended` asserts in `assert_exchange_holds` | FIXED here (F1) and its product race F2 fixed in src |
+| tests/driverctl_race.rs | editor_race_full (ignored) | P-a (same `ok > 0`), in-place Poisson bound (statistical, 15 s) | `assert_exchange_holds(15.0, true)` | covered by the same fix; scanned empirically (`--ignored`, exact, profile 0, n=5) |
+| tests/driverctl_race.rs | editor_race_naive_positive_control | P-a (LOST > 0 within 4 x 0.5 s) | naive LOST 10 per case in every M1/M2 case (max permitted by the human's single read-back) | not flaky: 0 failures in 1 200 qs8 + 1 200 v1s binary runs |
+| tests/driverctl_race.rs | two_writers_under_direction_lock_lose_nothing | was P-b (100 us gap vs fsync hold) | handshake since ffb2914 (qs8) | not flaky since qs8: 0 failures in 1 200 v1s binary runs |
+| tests/driverctl_race.rs | poisson_q99_matches_known_values | none (pure) | - | not flagged |
+| tests/driverctl_lock_race.rs | single_attempt_is_refused_under_a_probe_hold | **P-b**: the single `acquire_at` must land inside a 30 ms LOCK_SH hold that starts before it | :68-70 | FLAGGED, measured |
+| tests/driverctl_lock_race.rs | retrying_acquire_wins_under_a_probe_hold | P-b in the safe direction (500 ms budget outlasts a 30 ms hold) | :89-91 | flagged with the file (same binary) |
+| tests/driverctl_lock_race.rs | stress_no_false_refusal_with_retry_and_some_without | **P-a**: the no-retry arm needs > 0 refusals in 2 000 cycles against two polling probers | :128-150 | FLAGGED, measured (same binary) |
+| tests/driverctl_lock_race.rs | real_holder_is_still_refused_within_budget | **P-b**: an 800 ms hold must outlast a 500 ms budget started after the hold (300 ms margin) | :160-170 | FLAGGED, measured (same binary) |
+| tests/driverctl_lock_race.rs | concurrent_probes_never_see_each_other | none: an early hold release only makes the expected `Free` more likely | :201 | not flagged |
+| tests/driver_lock.rs | a_duplicate_start_refuses_promptly_rather_than_blocking | **P-c**: a whole in-process `drive` (config, envelope, then LOCK_NB) must refuse within 1 s | :443 | FLAGGED, measured |
+| tests/driver_lock.rs | acquiring_the_run_lock_does_not_block_the_async_runtime | P-c, 5 s for the same refusal | :495 | flagged with the file |
+| tests/driver_lock.rs | a_child_that_dies_before_taking_the_lock_... | P-c, a child refused at registry lookup reported < 10 s | :701 | flagged with the file |
+| tests/driver_lock.rs | other 5 tests | 30 s polls for the holder record (:222, :329) | - | not flagged (30 s vs ms) |
+| tests/driverctl_store.rs | the_run_lock_is_held_until_the_store_drops | 5 ms retry against a lock held for the whole call | :878-884 | not flagged: the holder never releases during the retry |
+| tests/driverctl_store.rs | cr01_scan_tick_survives_a_fifo_... | P-c, 30 s for one `scan_tick` | :1307 | not flagged (30 s vs ms) |
+| tests/driverctl_store.rs | the rest (heartbeat/coalescing tests) | an injected clock (`open_clocked`, :927), not wall time | - | not flagged |
+| tests/driverctl_serve.rs | gap_scan_tick_observes_verification_writes | **P-a**: a `gap-observed` line within 5 s from a serve whose scan TICK is 2 s (serve.rs:114), with a spawned server under load | :475-486 | FLAGGED, measured |
+| tests/driverctl_serve.rs | second_serve_is_refused_and_does_not_steal_the_socket | P-c, a refused child serve < 5 s | :352-363 | flagged with the file |
+| tests/driverctl_serve.rs | stalled_connection_does_not_block_the_gate / a_flood_of_idle_connections_... | P-b: a 200/500 ms sleep then one client, inside CONN_TIMEOUT = 10 s (serve.rs:111), client deadline 15 s (driverctl_cli.rs:60) | :773, :802 | flagged with the file (>= 19x margin) |
+| tests/driverctl_serve.rs | the rest | `wait_exit(10 s)` / `wait_listening(10 s)` hang guards | :119-133, :186-203 | flagged with the file |
+| tests/executor_lifecycle.rs | a_child_that_keeps_emitting_is_never_killed_by_the_idle_cap | **P-b**: 20 heartbeats from a `sleep 0.05`-paced shell child must each arrive within a 400 ms idle cap | :486-521 | FLAGGED, measured |
+| tests/executor_lifecycle.rs | the other 13 | P-c with >= 3x margins on 400 ms..10 s caps, lower bounds on deterministic timers, 15-60 s hang guards | :313-319, :377, :422-428, :473, :606, :648, :704, :903 | flagged with the file |
+| tests/driver_kill_startup.rs | a_stop_during_agent_startup_tears_down_... | **P-c**: a stop during agent startup must finish below DRIVER_TEARDOWN_GRACE = 12 s (kill.rs:57) | :419 | FLAGGED, measured |
+| tests/driver_kill.rs | 3 tests | 15 s settle sleep then absence checks; 10-30 s polls | :58-61, :449, :599 | not flagged: the sleeps wait FOR something to be gone, longer only helps |
+| tests/driver_reattach.rs | 3 tests (1 ignored) | 30 s polls; a 500 ms sleep before asserting the run is still ALIVE | :524, :547 | not flagged: a longer stall only makes "still alive" more certain |
+| tests/journal_crash.rs | 3 tests | 20 s for the writer child to produce PRODUCING_BYTES, then SIGKILL | :113-131 | not flagged (20 s vs ms; the produced-size check is what guards non-vacuity) |
+| tests/bounded_output.rs | 2 tests | P-c: a 300 ms collection window must return < 3-5 s | :19-25, :66-75 | not flagged (>= 10x) |
+| tests/driverctl_reconcile.rs, tests/driverctl_replay.rs | 1 poll each | 10 s poll for a log line | :138-154, :150-163 | not flagged (10 s vs ms) |
+| tests/driver_iteration_loop.rs | the_step_cap_... / CR-01 run-cap test | P-c: a 1 s run cap must end the run < 15 s | :531-560 | not flagged (15x) |
+| tests/launcher_e2e.rs, tests/launcher_degraded.rs, tests/launcher_caps.rs | refusal < 5-10 s; a >= 10 s lower bound; a 4.5 s sleep before a negative "no new round" check | :740-746, :958; :393-399; :229 | not flagged (generous P-c; a lower bound; a sleep whose overrun cannot fail the check) |
+| tests/envelope_credential.rs, tests/envelope_tracer.rs | 30 s fail-closed budget; deadline poll | :353-384; :250-276 | not flagged (30 s vs ms) |
+| tests/envelope_carrier_reach.rs, tests/envelope_interior_path.rs, tests/envelope_word_set.rs | guard-latency bounds (< 5 s vs measured 29-420 ms) and a linearity RATIO (documented to fall, not rise, under load) | word_set :1670-1745; interior_path :2008; carrier_reach :1879 | not flagged: CPU-bound guard work, not lock/fsync; >= 10x margins measured in-file |
+| tests/driverctl_client.rs, tests/driver_inbox.rs, tests/executor_transport.rs, tests/launcher_config_dir.rs, tests/launcher_live_scope.rs | 5 s socket read timeout in a fake server; 25 ms poll sleeps; 30 s hang guard; live systemd (skips without it) | client :64-80; inbox :225; transport :308 | not flagged |
+| tests/async_blocking_guard.rs, driver_goal_seam.rs, envelope_command_position.rs, envelope_pr_cap.rs, envelope_wrapper_bypass.rs, envelope_wrapper_class.rs, launcher_caps (rest), launcher_live_isolation.rs, prompt_acceptance.rs, state_reader_test.rs | grep hit on `timeout`/`deadline` as a word or a constant, no wall-clock race | - | not flagged |
+
+### Empirical scan (label `scan`, profile A, binary unless noted, base tree 3222d97+e3b0c44298fc = the fix commit's code)
+
+```
+scan profile=0 mode=exact  n=5   fail=0 other=0 timeout=0 ... target=driverctl_race filter=editor_race_full extra='--ignored'
+scan profile=A mode=binary n=200 fail=0 other=0 timeout=0 ... target=driverctl_lock_race filter=single_attempt_is_refused_under_a_probe_hold
+scan profile=A mode=binary n=200 fail=0 other=3 timeout=0 ... target=driverctl_serve filter=gap_scan_tick_observes_verification_writes
+scan profile=A mode=binary n=200 fail=0 other=0 timeout=0 ... target=driver_kill_startup filter=a_stop_during_agent_startup_tears_down_...
+scan profile=A mode=binary n=200 fail=0 other=1 timeout=0 ... target=driver_lock filter=a_duplicate_start_refuses_promptly_rather_than_blocking
+scan profile=A mode=binary n=100 fail=0 other=0 timeout=0 ... target=executor_lifecycle filter=a_child_that_keeps_emitting_is_never_killed_by_the_idle_cap
+```
+
+`executor_lifecycle` takes ~25 s per binary run (host), so its n was reduced to the 100
+floor `[INFERRED — audit]`. Every flagged test passed every run. Two tests NOT flagged by the
+static scan failed in the `other` column, so the static scan under-flagged them; both are
+treated as shown flaky:
+
+- **S1, `driverctl_serve::a_flood_of_idle_connections_is_answered_busy_and_the_gate_denies`,
+  3/200 (iterations 1, 132, 182).** All three: `the deny reason carries the server's answer:
+  ... "LAUNCHER CAP: driverctl unreachable (send request: Broken pipe (os error 32)); ..."`
+  (tests/driverctl_serve.rs:811). The static scan read this test's 500 ms sleep as a safe
+  P-b; the failure is elsewhere (below).
+- **S2, `driver_lock::the_lock_is_released_when_the_holding_process_dies`, 1/200
+  (iteration 35):** `a SIGKILLed holder releases the lock by dying ...: HeldBy { run_id:
+  "2026-07-29T12-00-00Z-aaaa", pgid: 8025, ... }` (tests/driver_lock.rs:606): the single
+  `lock::acquire` straight after `child.kill(); child.wait()` found the lock still held,
+  naming the just-reaped driver.
+
+### S1: the flood test, cause and fix (deviation: src/driverctl_cli.rs)
+
+**Measurement.** The three scan failures and the BEFORE run below all carry the same reason,
+`send request: Broken pipe (os error 32)`: the CLIENT's write failed, not its read. Code:
+`refuse_busy` (src/driverctl/serve.rs:772-777) "answer[s] `busy` without reading the request
+and close[s]", while the client (src/driverctl_cli.rs `request`, :236-268 at base) wrote its
+request and turned any write error into `Transport { "send request: ..." }` before reading
+anything. On a unix stream socket a write to a closed peer fails with EPIPE even though the
+peer's reply is already queued for reading, so whenever the 33rd connection's `busy` answer
+and close beat the client's write (a scheduling race, only seen under profile A's load), the
+queued `busy` was discarded and the gate denied with the "unreachable" reason.
+
+**Causal test (deterministic, red on base).** `request` was split, with no behaviour change,
+into `send_and_read` + `read_reply`, and a socketpair unit test writes `{"ok":false,
+"error":"busy"}\n` from the server end and closes it BEFORE the client sends. On the base
+logic: `a_reply_queued_before_the_peer_closed_is_read_even_though_the_send_fails ...
+FAILED: Transport { detail: "send request: Broken pipe (os error 32)" }`, the exact field
+error. With the fix (after a BrokenPipe/ConnectionReset send failure, read; relay a complete
+reply if there is one, else the send failure stands): 4/4 pass, and the control
+`a_send_to_a_peer_that_closed_without_a_reply_is_still_a_send_failure` passes both before
+and after.
+
+**Verdict: product defect** (client robustness; fail-closed was preserved, the reason was
+wrong). No assertion, budget or timeout in the test changed.
+
+```
+scan profile=A mode=binary n=200 fail=1 other=0 timeout=0 tree=3222d97+e3b0c44298fc ... filter=a_flood_of_idle_connections_is_answered_busy_and_the_gate_denies note=flood-before
+scan profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+e3b0c44298fc ... note=flood-before
+scan profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+c669389732b4 ... note=flood-after
+scan profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+c669389732b4 ... note=flood-after
+```
+Before: 4/400 at profile A (3 in the scan line's `other` column + 1), 0/200 at profile 0.
+After: 0/200 at A and 0/200 at 0. Tree suffix `c669389732b4` = the diff of fix commit
+**801c656** (`fix(quick-261023-v1s): relay a reply queued before the server closed when the
+send fails`), recomputed just before the commit.
+
+### S2: the SIGKILL lock-release test, cause and fix (deviation: tests/driver_lock.rs)
+
+**Measurement (probe `V1S-PROBE-S2-holders`, temporary, reverted).** On a refused acquire,
+the probe listed every live process with a descriptor on the lock file (`/proc/*/fd`), then
+polled until the lock freed. `exact` mode, profile B, n=1000:
+
+```
+probe profile=B mode=exact n=1000 fail=6 other=0 timeout=0 tree=801c656+ea6f74899566 ... target=driver_lock filter=the_lock_is_released_when_the_holding_process_dies note=V1S-PROBE-S2-holders
+```
+
+| failure | refusal names            | live fd holders at the scan                                                                                     | lock free after |
+|---------|--------------------------|-----------------------------------------------------------------------------------------------------------------|-----------------|
+| 1       | killed driver pid 2723   | none (already gone)                                                                                             | 80 us           |
+| 2       | killed driver pid 4964   | none                                                                                                            | 86 us           |
+| 3       | killed driver pid 8182   | pid 8194, comm `tokio-rt-worker`, ppid 1 (re-parented), pgrp 8182, exe `gsd-meta-manager`, the DRIVER's cmdline | 1.82 ms         |
+| 4       | killed driver pid 10601  | none                                                                                                            | 77 us           |
+| 5       | killed driver pid 11688  | pid 11700, comm `tokio-rt-worker`, ppid 1, exe `gsd-meta-manager`, the driver's cmdline                         | 81 us           |
+| 6       | killed driver pid 14604  | none                                                                                                            | 3.87 ms         |
+
+The holder is a child FORKED by the driver (from a tokio worker thread) that has not yet
+exec'd: it still runs the driver's image and command line. A fork copies the descriptor
+table, so it shares the lock's open file description until its exec closes the O_CLOEXEC fd,
+77 us to 3.9 ms later. The test kills the driver as soon as the holder record appears,
+which is exactly when the driver forks its `claude` stand-in, and its single `lock::acquire`
+straight after the reap then sometimes lands inside that window.
+
+**Verdict: not a product defect; a test timing assumption (P-b).** flock (D-19) is released
+when the last reference to the description closes; the kernel did release it within 3.9 ms
+every time, with no process left holding it. The window is inherent to fork-then-exec of any
+child while holding a flock (POSIX record locks would avoid it, but switching lock type is an
+architectural change, Rule 4, out of scope; recorded here as a note, not a defect).
+
+**Fix (test-side).** A first candidate, retrying the recovering acquire within
+ACQUIRE_RETRY_BUDGET (500 ms), was REJECTED by a mutant: with the lock fd's FD_CLOEXEC
+cleared (M-S2, `fcntl_setfd(.., empty)` in `acquire_at`, marker `V1S-MUTANT`) the ORIGINAL
+test fails 3/3 but the retrying one passed 3/3, i.e. the retry hid a real descriptor leak.
+The shipped fix keeps the single acquire and its message untouched and adds a condition, not
+a margin: before the SIGKILL the test waits (bounded, 600 x 50 ms, reporting an early child
+exit with its output, like `wait_for_lock_or_report`) until the run's journal carries an
+`exec_started` record, i.e. the stand-in has been spawned, exec'd and spoken. The fork window
+has then closed, and the orphaned stand-in really exists at the kill, so a leaked descriptor
+now fails the acquire. Mutant M-S2 against the fix: failed 3/3 (`a SIGKILLed holder releases
+the lock by dying ...`); reverted, `grep -rn V1S-MUTANT src tests` empty. Local: driver_lock
+8/8 pass.
+
+```
+scan  profile=A mode=binary n=200  fail=0 other=1 timeout=0 tree=3222d97+e3b0c44298fc ... filter=a_duplicate_start_refuses_promptly_rather_than_blocking   (the scan line; S2 in `other`)
+scan  profile=0 mode=binary n=200  fail=0 other=0 timeout=0 tree=801c656+e3b0c44298fc ... filter=the_lock_is_released_when_the_holding_process_dies note=sigkill-before
+probe profile=B mode=exact  n=1000 fail=6 other=0 timeout=0 tree=801c656+ea6f74899566 ... note=V1S-PROBE-S2-holders   (probe only changes the failure path)
+scan  profile=B mode=exact  n=1000 fail=0 other=0 timeout=0 tree=801c656+ac6881601251 ... note=sigkill-after
+scan  profile=A mode=binary n=200  fail=0 other=0 timeout=0 tree=801c656+ac6881601251 ... note=sigkill-after
+scan  profile=0 mode=binary n=200  fail=0 other=0 timeout=0 tree=801c656+ac6881601251 ... note=sigkill-after
+```
+Before: A binary 1/200, 0 binary 0/200, B exact 6/1000. After: 0/200, 0/200, 0/1000. The B
+exact BEFORE is the probe run `[INFERRED — audit]`: its first acquire and failure test are
+the original code (the probe only adds diagnostics after a refusal). Tree suffix
+`ac6881601251` = the diff of fix commit **d960678** (`fix(quick-261023-v1s): kill the lock
+holder only after its agent fork has exec'd`), recomputed just before the commit.
+
+### Scan summary
+
+| target (flagged or shown flaky) | runs | failures | verdict |
+|---------------------------------|------|----------|---------|
+| editor_race_full (`--ignored`, exact, profile 0) | 5 | 0 | passes with the fix |
+| driverctl_lock_race (binary A) | 200 | 0 | not flaky |
+| driverctl_serve gap_scan_tick (binary A) | 200 | 0 (target) | not flaky; S1 surfaced in `other` |
+| driver_kill_startup (binary A) | 200 | 0 | not flaky |
+| driver_lock duplicate_start (binary A) | 200 | 0 (target) | not flaky; S2 surfaced in `other` |
+| executor_lifecycle keeps_emitting (binary A, n reduced to 100) | 100 | 0 | not flaky |
+| **S1** driverctl_serve flood test | 600 before / 400 after | 4 before -> 0 after | FIXED, product (src/driverctl_cli.rs, 801c656) |
+| **S2** driver_lock SIGKILL test | 1 400 / 1 400 | 7 before -> 0 after | FIXED, test-side (tests/driver_lock.rs, d960678) |
+
+No open findings. Note for the static scan: both shown-flaky tests were NOT flagged by the
+static patterns (S1 looked like a safe P-b sleep; S2's acquire-after-reap is a P-b gap of
+zero against an unlisted competitor, a forked child), so binary-mode `other` columns were
+what caught them.
+
+## Release and local gates (final tree d960678, src/tests diff clean)
+
+`./scripts/pre-tag-check.sh --container v1.15.0`, run alone, after every stress run:
+
+```
+=== PRE-TAG SUMMARY ===
+  gate 1  tag / Cargo.toml version   PASS
+  gate 2  MSRV check                 PASS
+  gate 3  cargo build --release      PASS
+  gate 4  cargo test                 FAILED      (see gate4-test.log)
+  gate 5  cargo clippy -D warnings   PASS
+  gate 6  cargo package --locked     PASS
+```
+
+pretag_container: FAIL 5/6 head=d96067862080ba4db5fb41d6bb224f45929efa3b — BLOCKER outside this task: gate 4's only failure is the git-version witness, because the image this run rebuilt now carries git 2.56.0
+
+Gate 4 ran `cargo test --no-fail-fast` (89 test results); exactly one test failed:
+`envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`
+(`left: "git version 2.56.0"`, `right: "git version 2.55.0"`). The container banner read
+**MISMATCH** (installed 2.56.0 vs constant 2.55.0). The pre-tag run rebuilt
+`gsdmm-pre-tag-check:latest` (created 2026-10-24T08:11Z, `docker run --rm
+gsdmm-pre-tag-check:latest git --version` = `git version 2.56.0`): `ppa:git-core/ppa` has
+moved from 2.55.0 (the version scripts/pre-tag-check.Dockerfile:19-22 documents) to 2.56.0.
+Per CLAUDE.md, a container MISMATCH "means the Dockerfile's git has drifted from the constant
+and the image needs fixing", and the witness itself says the correct response is to re-derive
+the constants against the new git. That is a release-engineering decision (and the runner's
+ambient git is the authority for it), independent of this task's code; it was NOT done here
+`[INFERRED — audit]`. Every other test in the container, including all of driverctl_race,
+driverctl_serve and driver_lock, passed.
+
+Local gates, sequentially after the pre-tag run (host git 2.53.0):
+- `rtk proxy cargo test --no-fail-fast`: 89 test results; the only failure is
+  `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`.
+- `rtk proxy cargo clippy --all-targets -- -D warnings`: rc 0, 0 warnings.
+- `cargo fmt --check`: clean.
+
+local_gates: full-suite only-witness clippy 0-warnings fmt clean
+
+Integrity: `git rev-parse 'v1.15.0^{commit}'` = 08fc9f7286f15a79c8819582f916c28becf54056 (=
+`tag_v1_15_0`); `git status -sb` = `master...origin/master [ahead 16]` (nothing pushed; the
+16 include the concurrent session's docs commits); `git worktree list` = the main tree only;
+branches `dev`, `master` only; no gsdmm container left running (every harness and pre-tag
+container is `--rm`).
+

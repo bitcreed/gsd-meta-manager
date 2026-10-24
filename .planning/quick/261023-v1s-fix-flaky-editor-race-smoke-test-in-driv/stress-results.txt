@@ -13,3 +13,18 @@ after profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=fcf5e9e+31d595e2
 after profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190 date=2026-10-24T04:55:33Z
 after profile=B mode=binary n=200 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190 date=2026-10-24T05:08:20Z
 probe profile=B mode=binary n=20 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190 date=2026-10-24T05:09:34Z target=driverctl_race filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-after-mechanism
+scan profile=0 mode=exact n=5 fail=0 other=0 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T05:14:14Z target=driverctl_race filter=editor_race_full tmpfs=0 extra='--ignored'
+scan profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T05:17:50Z target=driverctl_lock_race filter=single_attempt_is_refused_under_a_probe_hold tmpfs=0
+scan profile=A mode=binary n=200 fail=0 other=3 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T05:25:30Z target=driverctl_serve filter=gap_scan_tick_observes_verification_writes tmpfs=0
+scan profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T05:26:25Z target=driver_kill_startup filter=a_stop_during_agent_startup_tears_down_the_agent_group_and_records_a_killed_run tmpfs=0
+scan profile=A mode=binary n=200 fail=0 other=1 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T05:46:59Z target=driver_lock filter=a_duplicate_start_refuses_promptly_rather_than_blocking tmpfs=0
+scan profile=A mode=binary n=100 fail=0 other=0 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T06:29:02Z target=executor_lifecycle filter=a_child_that_keeps_emitting_is_never_killed_by_the_idle_cap tmpfs=0
+scan profile=A mode=binary n=200 fail=1 other=0 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T06:36:53Z target=driverctl_serve filter=a_flood_of_idle_connections_is_answered_busy_and_the_gate_denies tmpfs=0 note=flood-before
+scan profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+e3b0c44298fc date=2026-10-24T06:44:10Z target=driverctl_serve filter=a_flood_of_idle_connections_is_answered_busy_and_the_gate_denies tmpfs=0 note=flood-before
+scan profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+c669389732b4 date=2026-10-24T06:52:31Z target=driverctl_serve filter=a_flood_of_idle_connections_is_answered_busy_and_the_gate_denies tmpfs=0 note=flood-after
+scan profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=3222d97+c669389732b4 date=2026-10-24T06:59:48Z target=driverctl_serve filter=a_flood_of_idle_connections_is_answered_busy_and_the_gate_denies tmpfs=0 note=flood-after
+probe profile=B mode=exact n=1000 fail=6 other=0 timeout=0 tree=801c656+ea6f74899566 date=2026-10-24T07:01:32Z target=driver_lock filter=the_lock_is_released_when_the_holding_process_dies tmpfs=0 note=V1S-PROBE-S2-holders
+scan profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=801c656+e3b0c44298fc date=2026-10-24T07:22:35Z target=driver_lock filter=the_lock_is_released_when_the_holding_process_dies tmpfs=0 note=sigkill-before
+scan profile=B mode=exact n=1000 fail=0 other=0 timeout=0 tree=801c656+ac6881601251 date=2026-10-24T07:27:23Z target=driver_lock filter=the_lock_is_released_when_the_holding_process_dies tmpfs=0 note=sigkill-after
+scan profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=801c656+ac6881601251 date=2026-10-24T07:47:56Z target=driver_lock filter=the_lock_is_released_when_the_holding_process_dies tmpfs=0 note=sigkill-after
+scan profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=801c656+ac6881601251 date=2026-10-24T08:08:22Z target=driver_lock filter=the_lock_is_released_when_the_holding_process_dies tmpfs=0 note=sigkill-after
