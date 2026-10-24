@@ -1,0 +1,10 @@
+probe profile=0 mode=exact n=2 fail=0 other=0 timeout=0 tree=08fc9f7+e3b0c44298fc date=2026-10-24T03:36:23Z target=driverctl_race filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-tracer
+before profile=0 mode=binary n=200 fail=1 other=0 timeout=0 tree=08fc9f7+e3b0c44298fc date=2026-10-24T03:45:39Z
+before profile=A mode=binary n=200 fail=1 other=0 timeout=0 tree=08fc9f7+e3b0c44298fc date=2026-10-24T03:57:08Z
+before profile=B mode=binary n=200 fail=5 other=0 timeout=0 tree=08fc9f7+e3b0c44298fc date=2026-10-24T04:11:09Z
+probe profile=B mode=binary n=40 fail=2 other=0 timeout=0 tree=ee65618+e3b0c44298fc date=2026-10-24T04:13:56Z target=driverctl_race filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-M1-overlay
+probe profile=B mode=binary n=40 fail=0 other=0 timeout=0 tree=ee65618+e3b0c44298fc date=2026-10-24T04:15:17Z target=driverctl_race filter=editor_race_smoke tmpfs=1 note=V1S-PROBE-M1-tmpfs
+probe profile=B mode=binary n=40 fail=1 other=0 timeout=0 tree=5e952d0+fa9f6a5cbc1c date=2026-10-24T04:18:55Z target=driverctl_race_probe filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-M2-overlay
+probe profile=B mode=binary n=40 fail=0 other=0 timeout=0 tree=5e952d0+fa9f6a5cbc1c date=2026-10-24T04:20:23Z target=driverctl_race_probe filter=editor_race_smoke tmpfs=1 note=V1S-PROBE-M2-tmpfs
+probe profile=B mode=binary n=40 fail=0 other=0 timeout=0 tree=b189c0d+66c47c678413 date=2026-10-24T04:23:41Z target=driverctl_race_probe filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-M3a-overlay-nosync
+probe profile=B mode=binary n=40 fail=4 other=0 timeout=0 tree=4784524+334f74febd3f date=2026-10-24T04:25:37Z target=driverctl_race_probe filter=editor_race_smoke tmpfs=1 note=V1S-PROBE-M3b-tmpfs-delay5000us
