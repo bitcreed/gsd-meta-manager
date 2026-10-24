@@ -12,7 +12,11 @@
 //!   project's own `CLAUDE.md`, not the operator's personal rules;
 //! * [`settings_transform`] of the host `settings.json`: minus `statusLine`,
 //!   `enabledPlugins`, `remoteControlAtStartup`, `agentPushNotifEnabled` and
-//!   `apiKeyHelper`, minus any `env` entry the process scrub strips. The PreToolUse
+//!   `apiKeyHelper`, minus any `env` entry the process scrub strips, and **minus every
+//!   user hook that is not a GSD or rtk hook whose `$HOME` paths all lie inside the
+//!   sandbox's allowlist** (28.1-08, D-19: [`hook_is_kept`]; the claudear hooks reach
+//!   the operator's phone bridge, and under the allowlist they would fail on every
+//!   event anyway). The PreToolUse
 //!   `Agent|Task` entry goes FIRST and carries `"onFailure": "block"` (hand-off 1),
 //!   so a dead socket or a missing binary fails closed;
 //! * **28.1 (D-12, D-13): the gate lives in the managed tier.** For a bwrap-scope
@@ -268,10 +272,144 @@ fn append_unique(map: &mut Map<String, Value>, key: &str, items: &[Value]) {
     }
 }
 
-/// STUB (28.1-08 RED).
+/// Path markers that make a command a GSD hook (D-19): the directories the GSD
+/// installer puts its hook and helper scripts in.
+const GSD_HOOK_MARKERS: &[&str] = &[
+    ".claude/hooks/",
+    ".claude/gsd-core/",
+    ".claude/get-shit-done/",
+    ".claude/scripts/",
+];
+
+/// Host names a kept hook may not reach: the operator's local agents and phone
+/// bridges listen there (T-28.1-35).
+const LOCAL_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]"];
+
+/// `text` without the candidate lists of `for <var> in <words>; do` loops.
+///
+/// GSD wraps `node` as `$(for n in "<installer's node>" "$(command -v node)"
+/// /usr/bin/node; do [ -x "$n" ] && ... && break; done)` followed by the script. The
+/// first candidate is the node the installer saw, which may be gone or outside the
+/// allowlist on this host; the loop then falls through to the next. A candidate that
+/// is probed with `-x` cannot leak anything, so it is not a path the hook "names"
+/// `[inferred — audit]`.
+fn without_probe_lists(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("for ") {
+        let after_for = &rest[start + 4..];
+        let list = after_for.find(" in ").and_then(|in_at| {
+            let list_start = in_at + 4;
+            let end = after_for[list_start..]
+                .find("; do")
+                .or_else(|| after_for[list_start..].find(";do"))?;
+            Some((list_start, list_start + end))
+        });
+        match list {
+            Some((from, to)) => {
+                out.push_str(&rest[..start + 4 + from]);
+                rest = &after_for[to..];
+            }
+            None => {
+                out.push_str(&rest[..start + 4]);
+                rest = after_for;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The words of `command` that are absolute paths under `home`, after `~`, `$HOME`
+/// and `${HOME}` are expanded and quotes removed.
+///
+/// A word is a run of characters outside whitespace and the shell's separators, so
+/// `$(for n in "/a/b" ...)` and `FOO=/a/b` both yield `/a/b`. This is a conservative
+/// scanner, not a shell parser `[inferred — audit]`: a variable other than `$HOME`
+/// is not expanded.
+fn home_paths_named(command: &str, home: &Path) -> Vec<PathBuf> {
+    let home_text = home.to_string_lossy();
+    let expanded = command
+        .replace("${HOME}", &home_text)
+        .replace("$HOME", &home_text)
+        .replace(['"', '\''], "");
+    without_probe_lists(&expanded)
+        .split(|c: char| c.is_whitespace() || ";|&<>()`=,{}".contains(c))
+        .filter_map(|word| {
+            let path = if word == "~" {
+                home.to_owned()
+            } else if let Some(rest) = word.strip_prefix("~/") {
+                home.join(rest)
+            } else if word.starts_with('/') {
+                PathBuf::from(word)
+            } else {
+                return None;
+            };
+            path.starts_with(home).then_some(path)
+        })
+        .collect()
+}
+
+/// True when the hook `command` may reach the driver (D-19): it is a GSD or rtk
+/// hook, it does not reach a local service, and every path under `home` it names
+/// lies inside one of `roots` (the `$HOME` entries the sandbox re-binds, so the hook
+/// would run there).
+///
+/// A GSD hook names a file in [`GSD_HOOK_MARKERS`]; an rtk hook has `rtk` as the
+/// basename of one of its words. Anything else (the claudear hooks that reach the
+/// operator's phone bridge, a user's own scripts) is dropped, in both postures
+/// `[inferred — audit]`.
 pub fn hook_is_kept(command: &str, home: &Path, roots: &[PathBuf]) -> bool {
-    let _ = (command, home, roots);
-    true
+    if LOCAL_HOSTS.iter().any(|host| command.contains(host)) {
+        return false;
+    }
+    let home_text = home.to_string_lossy();
+    let expanded = command
+        .replace("${HOME}", &home_text)
+        .replace("$HOME", &home_text)
+        .replace(['"', '\''], "");
+    let names_gsd = GSD_HOOK_MARKERS
+        .iter()
+        .any(|marker| expanded.contains(marker));
+    let names_rtk = expanded.split_whitespace().any(|word| {
+        Path::new(word)
+            .file_name()
+            .is_some_and(|name| name == "rtk")
+    });
+    if !(names_gsd || names_rtk) {
+        return false;
+    }
+    home_paths_named(command, home)
+        .iter()
+        .all(|path| roots.iter().any(|root| path.starts_with(root)))
+}
+
+/// Drop every user hook of `hooks` that [`hook_is_kept`] refuses, in place (D-19).
+///
+/// Only `command` hooks can be GSD or rtk hooks, so any other type is dropped. A
+/// matcher entry whose hooks were all dropped disappears, and so does an event whose
+/// entries all did; entries that were empty before keep their place, and kept
+/// entries keep their order.
+fn filter_user_hooks(hooks: &mut Map<String, Value>, home: &Path, roots: &[PathBuf]) {
+    let keep = |hook: &Value| {
+        hook.get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| hook_is_kept(command, home, roots))
+    };
+    for entries in hooks.values_mut() {
+        let Value::Array(list) = entries else {
+            continue;
+        };
+        list.retain_mut(|entry| {
+            let Some(Value::Array(inner)) = entry.get_mut("hooks") else {
+                return true;
+            };
+            let had = inner.len();
+            inner.retain(&keep);
+            had == 0 || !inner.is_empty()
+        });
+    }
+    hooks.retain(|_, entries| !matches!(entries, Value::Array(list) if list.is_empty()));
 }
 
 /// The per-run settings from the host's: a pure function of the host settings
@@ -285,6 +423,8 @@ pub fn hook_is_kept(command: &str, home: &Path, roots: &[PathBuf]) -> bool {
 /// * `skipWebFetchPreflight` and `disableClaudeAiConnectors` are always `true`
 ///   (D-09a: the preflight and the connector fetch would otherwise reach hosts the
 ///   egress proxy refuses);
+/// * the user's hooks are filtered by [`hook_is_kept`] against `home` and `keep_roots`
+///   before the gate's are added (D-19, 28.1-08);
 /// * `gate = None` is the bwrap posture: the gate lives in the managed file
 ///   ([`managed_settings`]), so no hook is added here and the user's GSD/rtk hooks
 ///   keep their order. `gate = Some(..)` is the degraded posture: the gate entries
@@ -296,7 +436,6 @@ pub fn settings_transform(
     home: &Path,
     keep_roots: &[PathBuf],
 ) -> Value {
-    let _ = (home, keep_roots);
     let mut settings = match host {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -314,6 +453,10 @@ pub fn settings_transform(
         .is_some_and(|hooks| !hooks.is_object())
     {
         settings.insert("hooks".to_owned(), json!({}));
+    }
+    // D-19: only GSD and rtk hooks reach the driver, whatever the posture.
+    if let Some(Value::Object(hooks)) = settings.get_mut("hooks") {
+        filter_user_hooks(hooks, home, keep_roots);
     }
     if let Some(gate) = gate {
         let hooks = settings

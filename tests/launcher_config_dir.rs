@@ -301,6 +301,8 @@ fn hook_is_kept_decides_on_the_program_and_on_every_home_path_it_names() {
         "/usr/local/bin/rtk hook claude",
         "node /home/u/.claude/gsd-core/bin/gsd-tools.cjs query init",
         "FOO=1 node /home/u/.claude/hooks/a.js",
+        // GSD's node wrapper: a stale installer node among the probed candidates.
+        "\"$(for n in \"/home/u/.nvm/versions/node/v99.0.0/bin/node\" \"$(command -v node)\" /usr/bin/node; do [ -x \"$n\" ] && printf '%s' \"$n\" && break; done)\" \"/home/u/.claude/hooks/gsd-x.js\"",
         // `~`, `$HOME`, `${HOME}` and `"$HOME"` spellings, expanded before the root check.
         "node ~/.claude/hooks/a.js",
         "node $HOME/.claude/hooks/a.js",
@@ -318,6 +320,8 @@ fn hook_is_kept_decides_on_the_program_and_on_every_home_path_it_names() {
         "echo hi",
         "",
         "node /home/u/.claude/hooks/a.js /home/u/.secret/x",
+        // Only the `for ... in` candidate list is exempt, not the rest of the line.
+        "for n in /usr/bin/node; do node /home/u/.secret/x /home/u/.claude/hooks/a.js; done",
         "node ~/.secret/x.js .claude/hooks/",
         "node $HOME/.secret/x.js .claude/hooks/",
         "node ${HOME}/.secret/x.js .claude/hooks/",
