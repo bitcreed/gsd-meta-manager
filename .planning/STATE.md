@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.15.0
-current_phase: 30
-current_phase_name: Driver Tab on DIRECTION.md
-status: shipped
-stopped_at: v1.15.0 released (interim, mid v2.0); next is /gsd-verify-work 28, then /gsd-verify-work 30
-last_updated: "2026-10-24T18:17:26.846Z"
+current_phase: "28.1"
+current_phase_name: Sandbox Egress & Agent-Channel Isolation
+status: planning
+stopped_at: Phase 28 complete, ready to plan Phase 28.1
+last_updated: "2026-10-24T18:34:08.408Z"
 last_activity: 2026-10-24
-last_activity_desc: v1.15.0 released — Workstream Visibility
-state_head: 736e134e2f1d46521d17c3a6e5f0dc8e541a2003
+last_activity_desc: Phase 28 complete, transitioned to Phase 28.1
+state_head: 5797842adc8d8026e526969712d5ba7ed24dded2
 progress:
   total_phases: 10
-  completed_phases: 12
+  completed_phases: 13
   total_plans: 9
   completed_plans: 112
+  percent: 65
 milestone_name: Workstream Visibility
 ---
 
@@ -21,14 +22,23 @@ milestone_name: Workstream Visibility
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-19)
+See: .planning/PROJECT.md (updated 2026-10-24)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 30 — Driver Tab on DIRECTION.md
+**Current focus:** Phase 28.1 — Sandbox Egress & Agent-Channel Isolation
 
 ## Current Position
 
-Status: v1.15.0 shipped 2026-10-23 (interim release; v2.0 milestone still open)
+Status: Ready to plan
+  Phase 28 (Sandboxed Driver Launcher) complete 2026-10-24: 9/9 plans, verification passed 6/6,
+  UAT 2/2 on agent evidence (auth setup; the macOS degraded-mode item was run on a real macOS 26.6.2
+  host, the local docker-osx VM, with HEAD built natively) `[inferred — audit]`. LNCH-01..08 and the
+  DRIVE-01 launcher half complete; SECURITY threats_open 0. The 2026-10-24 isolation audit (open
+  network, $HOME denylist, abstract sockets, planted files) is owned by Phase 28.1.
+  Next: `/gsd-plan-phase 28.1` (or discuss first), and `/gsd-verify-work 30` is still pending.
+
+Earlier (2026-10-23):
+Status: v1.15.0 shipped (interim release; v2.0 milestone still open)
   GSD workstreams (`.planning/workstreams/<dir>/`) surfaced across the TUI: debug session
   workstreams-not-surfaced (dashboard lines per workstream, lock-aware active phase, Detail Roadmap
   and Phases tabs) and quick batch 261023-05f (05g Roadmap header, 05h Docs tab, 05i agent/worktree
@@ -253,8 +263,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 30 (Driver Tab on DIRECTION.md) — EXECUTING
-Plan: 9 of 9
+Phase: 28.1 — Sandbox Egress & Agent-Channel Isolation
+Plan: Not started
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -288,7 +298,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-24 - Completed quick task 261023-v1s: fix flaky driverctl_race editor_race_smoke test
+Last activity: 2026-10-24 — Phase 28 complete, transitioned to Phase 28.1
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -417,7 +427,7 @@ verify-phase if the gate is fixed.
 
 **Velocity:**
 
-- Total plans completed: 79
+- Total plans completed: 88
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -436,6 +446,7 @@ verify-phase if the gate is fixed.
 | 26.1 | 11 | - | - |
 | 27 | 6 | - | - |
 | 29 | 8 | - | - |
+| 28 | 9 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -764,6 +775,8 @@ Recent decisions affecting current work:
 - [Phase 26.1 -> 28/29] **Carried risk (operator-accepted):** launcher gap-cap deny at limit+1 / kill
   at limit+2 was never reached under a real Opus driver (scripted Haiku r261-l7 only). Phases 28 and 29
   must exercise launcher deny/kill under the real driver, with the prompt divergence rule disabled.
+  **RESOLVED by Phase 28 (2026-10-24):** acceptance d33 ran a real Opus driver to
+  `cap-tripped gap_rounds kill-scope` (28-VERIFICATION.md, DRIVE-01 row) `[inferred — audit]`.
 - [Phase 27] Advisory, not blocking: 27-REVIEW.md CR-01 (critical — gap scan has no type/size guard on
   driver-plantable files, a FIFO can hang the store mutex) and WR-01..09 open (27-REVIEW-DISPOSITION.md).
   Phase 28 runs `driverctl serve` under the launcher, so fix or defer before relying on it
@@ -925,11 +938,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-23T12:00:00.000Z
-Stopped at: v1.15.0 released — Workstream Visibility
+Last session: 2026-10-24T18:40:00.000Z
+Stopped at: Phase 28 complete, ready to plan Phase 28.1
 Resume file: None
 
-Next: `/gsd-verify-work 28`, then `/gsd-verify-work 30`. v1.15.0 is an interim release; the v2.0
+Next: `/gsd-plan-phase 28.1`; `/gsd-verify-work 30` still pending. v1.15.0 is an interim release; the v2.0
 milestone stays open.
 
 Earlier (2026-10-21): Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md

@@ -100,7 +100,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust (completed 2026-10-16)
 - [x] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02 (completed 2026-10-18)
 - [x] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md (completed 2026-10-19)
-- [ ] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode
+- [x] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode (completed 2026-10-24)
 - [ ] **Phase 28.1: Sandbox Egress & Agent-Channel Isolation** (INSERTED) - `--unshare-net` + allowlisting egress proxy, `$HOME` allowlist, planted-file guard, agent-tool denies, nested-agent cap check, degraded-mode gap reporting
 - [x] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation (completed 2026-10-20)
 - [ ] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control`
@@ -1086,7 +1086,7 @@ default. Hosts without bwrap or systemd-run get an explicit degraded mode.
      degraded mode then runs unsandboxed, with caps enforced by process supervision, and the posture
      is recorded on the run and shown in the TUI. Headless operation never needs tmux.
 
-**Plans**: 9/9 plans executed
+**Plans**: 9/9 plans complete
 
 Plans:
 **Wave 1**
@@ -1447,7 +1447,7 @@ Plans:
 | 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
-| 28. Sandboxed Driver Launcher | 9/9 | In Progress | - |
+| 28. Sandboxed Driver Launcher | 9/9 | Complete    | 2026-10-24 |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
 | 30. Driver Tab on DIRECTION.md | 9/9 | In Progress | - |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |

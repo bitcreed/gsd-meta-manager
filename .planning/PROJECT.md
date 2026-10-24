@@ -60,6 +60,7 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Running agents & live wave view — lock-free scan of agent worktrees (commits ahead, dirty count), pluggable runtime-adapter seam with a Claude Code adapter (subagent meta, transcript-mtime liveness, worktree-less subagents), plans grouped by PLAN `wave:` with done/finished/running/stalled/queued states, width-fitted dashboard Status summary, Sessions › Agents sub-view, and an estimated `~fixed/total` for code-fixer runs (AGENT-01..07) — Phase 25
 - ✓ driverctl & driver frontmatter — `gsd-meta-manager driverctl serve|log|hook|show` is the single writer of a run's `state.json`, LOG.md and the DIRECTION.md frontmatter (exchange-verify splice via `renameat2(RENAME_EXCHANGE)`, 0 lost rename-saves under an editor race); typed `DriverFrontmatter` schema v1 with `stalled`/`crashed` terminal states set only by the launcher; counters (dispatches, coalesced 45 s gap rounds, heartbeat) from tool-observed state only; three recorded spike runs replay with identical LOG lines and counts (DCTL-01..04) — Phase 27
 - ✓ Master prompt & run templates — embedded, versioned `driver-prompt/1.0.0` recorded on every run (`custom:<sha8>` for overrides); `driver new` mints `<yyyymmdd>-<slug>` with self-ignoring run dir, DIRECTION.md and LOG.md templates; `driver check` lints the reviewable plan; one 8-rule stop precedence stated identically in prompt and template; crash-and-relaunch reconciliation and gate-enforced `control: pause|stop`; `next <project> --json` advisory router hint (PRMT-01..05, DRIVE-03, DRIVE-01 prompt half by operator sign-off) — Phase 29
+- ✓ Sandboxed driver launcher — `driver launch` runs the headless master in bwrap under `systemd-run --user --scope` (scope kill on stop, flock against a second launcher, `crash-detected` on relaunch); hard caps enforced from outside (dispatch, wall clock + RuntimeMaxSec, gap deny L+1 / kill L+2, rate-limit park); RO host `~/.claude`, masked credentials and scrubbed env, per-run `CLAUDE_CONFIG_DIR`; stored `claude setup-token` auth with `driver auth setup|status`; `driver push` outside the sandbox into `gsd-auto/<alias>/<run-id>` with secret scan, protected-branch refusal and PR cap; explicit `--unsandboxed` degraded mode (refused by default, posture recorded, `!`/UNSANDBOXED in the Driver tab), proven on a real macOS host (LNCH-01..08, DRIVE-01 launcher half). Network egress and agent-channel isolation gaps from the 2026-10-24 audit move to Phase 28.1 — Phase 28
 
 ### Active
 
@@ -90,12 +91,9 @@ Phases 26-31 replace them.*
   driver-plantable files with no type/size guard, under the store mutex) and WR-01..09 open
   (27-REVIEW-DISPOSITION.md). Close or explicitly defer them before Phase 28's launcher relies on
   `driverctl serve` `[inferred — audit]`.
-- **Sandboxed launcher.** It provides:
-  - bwrap under `systemd-run --user --scope`;
-  - an outside-sandbox flock and hard caps;
-  - a per-run `CLAUDE_CONFIG_DIR` with setup-token auth;
-  - a push step outside the sandbox;
-  - a macOS degraded mode.
+- **Sandbox egress & agent-channel isolation (emerged, Phase 28 audit 2026-10-24).** Close the open
+  network, the `$HOME` denylist, abstract sockets and planted files. Phase 28.1
+  (`28.1-AUDIT-FINDINGS.md`).
 - **Master prompt 1.1 (emerged, Phase 29).** Route a "reconcile first" refusal to reconcile-then-
   continue instead of a stop-rule-2 park, and fix IN-01 (`$RUN_DIR`/`$PROJECT_ROOT` used as env vars).
   Backlog 999.7.
@@ -195,11 +193,11 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | Spike 003 rubric and instruments frozen before spend; post-hoc fixes recorded only as redesign inputs (Phase 26) | Pre-registration (PREREG_SHA 4ba6195) keeps the verdict mechanical. Adapting the instruments to the results would launder it | ✓ Good. The verdict is honest, and the gap double-count was identified as a redesign input |
 | Phases 19/21/22/23 superseded, code kept until a dedicated retirement phase (31) `[inferred]` | Removing code before the launcher's push step owns SAFE-01/03/06 would leave a gap. An explicit phase keeps the removal reviewable | — Pending |
 | v2.0 restructured in place, not closed and reopened `[inferred]` | Closing would need a release tag and an audit of two phases that cannot close. v2.0 never released, and the major-bump rationale still holds | — Pending |
-| Containers (Phase 22) replaced by bwrap + `systemd-run --user --scope` on Linux, with a recorded degraded mode on macOS `[inferred]` | Verified with auth in spikes 001/002, with no new dependency (bollard never added). Containers move to Future Requirements | — Pending |
+| Containers (Phase 22) replaced by bwrap + `systemd-run --user --scope` on Linux, with a recorded degraded mode on macOS `[inferred]` | Verified with auth in spikes 001/002, with no new dependency (bollard never added). Containers move to Future Requirements | ✓ Good — Phase 28 (live bwrap isolation + scope kill on Linux; `--unsandboxed` degraded run proven on macOS 26.6.2). Egress/agent-channel gaps → Phase 28.1 |
 | Status frontmatter on DIRECTION.md is tool-written by driverctl (single writer, exchange-verify splice), never by the model | Spike 002 measured 0 lost rename-saves in 12,943. The driver made 18 driverctl calls with 0 hand-edits. The Rust reader already parses it | ✓ Good — Phase 27 shipped it (verification 4/4; ported editor race 0 lost saves; SC1 replay identical); CR-01 + WR-01..09 review findings open |
 | driverctl Gate denies on transport error, unset socket, unreadable reply and server `ok:false` (Phase 27, D-25 deviation from the spike) | A sandboxed driver must fail closed when the single writer is unreachable | — Pending (Phase 28 wires the Gate) |
 | `crashed` and `stalled` are set only by the launcher via `RunStore::set_terminal`; no driver op reaches them; `caps.dispatches.used` counts only hook-observed, Gate-allowed dispatches (Phase 27) | Terminal and cap state must come from tool-observed facts, never the model's own claims | ✓ Good — mutation-checked: each single-writer guard fails its test when removed |
-| Auth through a long-lived `claude setup-token` token passed as an env var; no refresh token in the sandbox | Spike 002 measured that a host refresh rotates the refresh token and revokes the previous access token, so copied credentials would log the host out | — Pending (Phase 28) |
+| Auth through a long-lived `claude setup-token` token passed as an env var; no refresh token in the sandbox | Spike 002 measured that a host refresh rotates the refresh token and revokes the previous access token, so copied credentials would log the host out | ✓ Good — Phase 28 shipped it (launcher_auth 11/11; stored token is the only `CLAUDE_CODE_OAUTH_TOKEN`, host refresh token never enters the sandbox) |
 | OQ-R1: driver stop rules outrank a human `answer:`; only a budget edit lifts them `[inferred]` | Spike 002 finding 5 default. Open human call | ⚠️ Revisit — human to confirm |
 | OQ-R2: driven runs do not see the user's global CLAUDE.md; GSD + rtk hooks kept `[inferred]` | Spike 002 A2.1 default. The driver's rules come from its prompt | ⚠️ Revisit — human to confirm |
 | Phase 29 closed on accepted acceptance outcomes (operator decision 2026-10-20): o1 ADJUST x2 accepted; h2 H2-5 FAIL ruled a rubric setup flaw (item already done at relaunch, so no recovery owed; harness precondition fixed in WR-07, 04a7a40); no re-run | The real-Opus third gaps_found park was never reached live; carried risk is covered by 28-09 d33, h4 and the deterministic reconcile suites. A further paid run would test the model, not the prompt | ✓ Accepted — DRIVE-01 prompt half closed |
@@ -223,4 +221,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-20 after Phase 29 (master prompt & run templates shipped, PRMT-01..05, DRIVE-03, DRIVE-01; review 0/12 open)*
+*Last updated: 2026-10-24 after Phase 28 (sandboxed driver launcher shipped, LNCH-01..08, DRIVE-01 launcher half; UAT 2/2 incl. a real macOS degraded run; isolation hardening carried to Phase 28.1)*

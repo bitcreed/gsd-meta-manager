@@ -81,7 +81,7 @@
     {
       "number": "28",
       "name": "Sandboxed Driver Launcher",
-      "status": "in_progress"
+      "status": "complete"
     },
     {
       "number": "29",
@@ -105,9 +105,9 @@
     }
   ],
   "next": {
-    "command": "/gsd-progress",
-    "label": "Show progress",
-    "reason": "Unsure of state — showing progress"
+    "command": "/gsd-progress --next",
+    "label": "Advance to the next step (plan phase 28.1)",
+    "reason": "Phase 17 of 21 — needs a plan"
   },
-  "updated_at": "2026-10-24T18:16:00.715Z"
+  "updated_at": "2026-10-24T18:34:08.439Z"
 }
