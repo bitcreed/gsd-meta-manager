@@ -30,6 +30,13 @@
 //
 // `flock` is per open file description, so the two writers in
 // `two_writers_under_direction_lock_lose_nothing` contend like two processes.
+// That test hands the lock over with a handshake in both directions, not a
+// fixed gap. The lock's retry is a poll with backoff, so it has no queue and no
+// fairness (D-13/D-20), and a writer that re-takes the lock 100 µs after
+// releasing it starves a polling one whenever the hold dwarfs the gap. The hold
+// is mostly the temp file's fsync: ~60 µs on tmpfs, ~3 ms (up to 27 ms) on
+// overlay in the pre-tag container, where the fixed gap timed out about 1 run
+// in 10 (quick 261023-qs8).
 //
 // Linux-only: the splice is `renameat2(RENAME_EXCHANGE)`.
 // ============================================================================
@@ -39,14 +46,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use gsd_meta_manager::driver::direction::{
     body_sane, splice_frontmatter, split_frontmatter, write_body, SpliceOutcome, DIRECTION_FILE,
-    FM_MARKER, TEMP_PREFIX,
+    DIRECTION_LOCK_BUDGET, FM_MARKER, TEMP_PREFIX,
 };
 use regex::Regex;
 use tempfile::TempDir;
@@ -385,27 +392,71 @@ fn editor_race_full() {
     assert_exchange_holds(15.0, true);
 }
 
+/// Wait, at most `2 x DIRECTION_LOCK_BUDGET`, until `ready()` holds. The bound
+/// keeps a broken lock path a failed assertion rather than a hung test.
+fn wait_until(stop: &AtomicBool, ready: impl Fn() -> bool) {
+    let since = Instant::now();
+    while !ready() && !stop.load(Ordering::Relaxed) && since.elapsed() < 2 * DIRECTION_LOCK_BUDGET {
+        thread::sleep(Duration::from_micros(50));
+    }
+}
+
 #[test]
 fn two_writers_under_direction_lock_lose_nothing() {
     let dir = TempDir::new().expect("temp dir");
     let path = dir.path().join(DIRECTION_FILE);
     fs::write(&path, body(0)).expect("seed DIRECTION.md");
 
+    // The lock hand-over is an explicit handshake, in both directions. The
+    // lock's retry is a poll with backoff and gives no fairness, so whichever
+    // writer re-takes it straight away starves the other once a hold (mostly
+    // fsync) dwarfs the gap. A fixed 100 µs splicer gap starved the human on
+    // overlay; yielding in one direction only just made the human starve the
+    // splicer instead (quick 261023-qs8).
+    //
+    // * `requested` is the write the human is about to make; `acquired` the
+    //   newest write whose edit closure ran, which write_body only does once
+    //   locked() has dealt with DIRECTION.lock (and the `!lock_timed_out`
+    //   assertion below proves it was really held). While requested > acquired
+    //   the splicer starts no new splice, so the human waits for at most the
+    //   splice already in flight.
+    // * `begun` / `done` count splices. Before its next write the human waits
+    //   until every splice begun so far has finished, so no splice waits behind
+    //   more than one human write, and until a new one has begun, so the next
+    //   write meets a busy lock.
+    let requested = Arc::new(AtomicU64::new(0));
+    let acquired = Arc::new(AtomicU64::new(0));
+    let begun = Arc::new(AtomicU64::new(0));
+    let done = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     let splicer = thread::spawn({
         let stop = Arc::clone(&stop);
+        let requested = Arc::clone(&requested);
+        let acquired = Arc::clone(&acquired);
+        let begun = Arc::clone(&begun);
+        let done = Arc::clone(&done);
         let run_dir = dir.path().to_path_buf();
         move || {
             let (mut n, mut failures) = (0u64, 0u64);
             while !stop.load(Ordering::Relaxed) {
+                wait_until(&stop, || {
+                    requested.load(Ordering::SeqCst) <= acquired.load(Ordering::SeqCst)
+                });
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                // Splice right away: straight after an acquisition this contends
+                // for the lock while the human still holds it.
                 n += 1;
                 let fm = format!("---\n{FM_MARKER} race\nn: {n}\n---\n");
+                begun.fetch_add(1, Ordering::SeqCst);
                 match splice_frontmatter(&run_dir, &fm) {
                     Ok(report) if report.outcome == SpliceOutcome::Ok => {}
                     _ => failures += 1,
                 }
-                // Still thousands of times more often than a real run, but with
-                // gaps the other writer's lock retry can land in.
+                done.fetch_add(1, Ordering::SeqCst);
+                // CPU relief only: fairness comes from the handshake, not from
+                // hoping the human's retry lands in this gap.
                 thread::sleep(Duration::from_micros(100));
             }
             (n, failures)
@@ -413,8 +464,19 @@ fn two_writers_under_direction_lock_lose_nothing() {
     });
 
     let re = Regex::new(r"human edit (\d+)").expect("counter regex");
+    let mut contended = 0u64;
     for k in 1..=200u64 {
+        let before = begun.load(Ordering::SeqCst);
+        wait_until(&stop, || {
+            done.load(Ordering::SeqCst) >= before && begun.load(Ordering::SeqCst) > before
+        });
+        requested.store(k, Ordering::SeqCst);
+        // A splice in flight now means this write meets a busy lock.
+        if begun.load(Ordering::SeqCst) > done.load(Ordering::SeqCst) {
+            contended += 1;
+        }
         let report = write_body(dir.path(), |old| {
+            acquired.fetch_max(k, Ordering::SeqCst);
             re.replace(old, format!("human edit {k}")).into_owned()
         })
         .expect("write_body");
@@ -437,6 +499,12 @@ fn two_writers_under_direction_lock_lose_nothing() {
     stop.store(true, Ordering::Relaxed);
     let (splices, failures) = splicer.join().expect("splicer thread");
     assert!(splices > 0, "the splicer must have run concurrently");
+    println!("two writers: splices={splices} contended_writes={contended}/200");
+    assert!(
+        contended > 0,
+        "no write ever started while a splice was in flight: the test no longer \
+         exercises contention for DIRECTION.lock"
+    );
     assert_eq!(failures, 0, "no splice may fail or give up under the lock");
     assert!(
         body_sane(split_frontmatter(&fs::read_to_string(&path).expect("read")).1),
