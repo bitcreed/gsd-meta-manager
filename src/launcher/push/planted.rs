@@ -12,7 +12,7 @@
 //! Files are never reverted, deleted or rewritten here: the guard reports, the
 //! push refuses, and the operator decides (the non-intrusive constraint).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -34,7 +34,13 @@ pub const TRACKED_FILES: &[&str] = &[
 ];
 
 /// Directories whose regular files are each hashed (D-21).
-pub const TRACKED_DIRS: &[&str] = &[];
+pub const TRACKED_DIRS: &[&str] = &[
+    ".git/hooks",
+    ".claude/hooks",
+    ".claude/agents",
+    ".claude/commands",
+    ".claude/skills",
+];
 
 /// Directory names the nested-repository walk never enters. A plant inside one of
 /// them is an accepted residual `[inferred — audit]`.
@@ -49,6 +55,9 @@ pub const MAX_CONFIG_BYTES: u64 = 1_048_576;
 
 /// The most findings [`render_bounded`] lists.
 pub const MAX_RECORDED: usize = 20;
+
+/// How many includes deep the guard follows a config.
+const MAX_INCLUDE_DEPTH: usize = 4;
 
 /// The most bytes of one tracked file that are hashed.
 const MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
@@ -204,13 +213,205 @@ pub fn snapshot(project: &Path) -> Snapshot {
     snapshot_with_limit(project, MAX_WALK_ENTRIES)
 }
 
+/// A shared count of directory entries visited by the snapshot's walks.
+struct Budget {
+    used: usize,
+    limit: usize,
+}
+
+impl Budget {
+    /// Count one entry; `false` once the limit is passed.
+    fn take(&mut self) -> bool {
+        self.used += 1;
+        self.used <= self.limit
+    }
+}
+
+/// `path` as a `/`-separated relative string.
+fn rel_string(path: &Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// `path` without `.` and resolved `..`, with no filesystem access.
+fn normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Hash every regular file below `rel` (symlinks are recorded, not followed).
+fn walk_tracked_dir(project: &Path, rel: &str, budget: &mut Budget, snap: &mut Snapshot) {
+    let mut stack = vec![PathBuf::from(rel)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(project.join(&dir)) else {
+            continue;
+        };
+        for ent in entries.flatten() {
+            if !budget.take() {
+                snap.truncated = true;
+                return;
+            }
+            let Ok(kind) = ent.file_type() else { continue };
+            let child = dir.join(ent.file_name());
+            if kind.is_dir() {
+                stack.push(child);
+            } else {
+                snap.files.insert(rel_string(&child), entry_of(&ent.path()));
+            }
+        }
+    }
+}
+
+/// Find every `.git` entry below the checkout except the root one: never into a
+/// `.git` itself, never through a symlink, never into [`SKIP_DIR_NAMES`].
+fn walk_nested_git(project: &Path, budget: &mut Budget, snap: &mut Snapshot) {
+    let mut stack = vec![PathBuf::new()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(project.join(&dir)) else {
+            continue;
+        };
+        for ent in entries.flatten() {
+            if !budget.take() {
+                snap.truncated = true;
+                return;
+            }
+            let Ok(kind) = ent.file_type() else { continue };
+            let name = ent.file_name();
+            let name = name.to_string_lossy();
+            let child = dir.join(&*name);
+            if name == ".git" {
+                if !dir.as_os_str().is_empty() {
+                    let key = rel_string(&child);
+                    snap.git_entries.insert(key.clone(), entry_of(&ent.path()));
+                    if kind.is_dir() {
+                        let config = format!("{key}/config");
+                        snap.git_entries
+                            .insert(config.clone(), entry_of(&project.join(&config)));
+                    }
+                }
+                continue;
+            }
+            if kind.is_dir() && !SKIP_DIR_NAMES.contains(&&*name) {
+                stack.push(child);
+            }
+        }
+    }
+}
+
+/// The root `.git` and the pointer files of its worktrees.
+fn record_root_git(project: &Path, snap: &mut Snapshot) {
+    let root = entry_of(&project.join(".git"));
+    let is_dir = root == Entry::Dir;
+    snap.git_entries.insert(".git".to_owned(), root);
+    if !is_dir {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(project.join(".git/worktrees")) else {
+        return;
+    };
+    for ent in entries.flatten() {
+        let name = ent.file_name();
+        for file in ["commondir", "gitdir", "config.worktree"] {
+            let rel = format!(".git/worktrees/{}/{file}", name.to_string_lossy());
+            let entry = entry_of(&project.join(&rel));
+            if entry != Entry::Absent {
+                snap.git_entries.insert(rel, entry);
+            }
+        }
+    }
+}
+
+/// The git config files the snapshot knows of, relative to the checkout.
+fn config_paths(snap: &Snapshot) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    if matches!(snap.files.get(".git/config"), Some(e) if *e != Entry::Absent) {
+        paths.push(".git/config".to_owned());
+    }
+    paths.extend(
+        snap.git_entries
+            .iter()
+            .filter(|(path, entry)| {
+                **entry != Entry::Absent
+                    && (path.ends_with("/.git/config")
+                        || (path.starts_with(".git/worktrees/")
+                            && path.ends_with("/config.worktree")))
+            })
+            .map(|(path, _)| path.clone()),
+    );
+    paths
+}
+
+/// `target` as the snapshot and the findings name it: relative to the checkout
+/// when it is inside, else absolute.
+fn display_rel(project: &Path, target: &Path) -> String {
+    match target.strip_prefix(project) {
+        Ok(rel) => rel_string(rel),
+        Err(_) => target.to_string_lossy().into_owned(),
+    }
+}
+
+/// The files a config's `include.path` / `includeIf.*.path` keys name, resolved
+/// against the including file's directory. `~` forms are not expanded.
+fn include_targets(config_path: &Path, text: &str) -> Vec<PathBuf> {
+    let base = config_path.parent().unwrap_or(Path::new("."));
+    parse_config(text)
+        .into_iter()
+        .filter(|k| matches!(k.section.as_str(), "include" | "includeif") && k.name == "path")
+        .filter(|k| !k.value.is_empty() && !k.value.starts_with('~'))
+        .map(|k| normalize(&base.join(&k.value)))
+        .collect()
+}
+
+/// Record every include target of the configs the snapshot holds, and of those
+/// targets in turn, so a change to an included file is a finding even when the
+/// config that names it did not change.
+fn record_includes(project: &Path, config: &Path, depth: usize, snap: &mut Snapshot) {
+    let Some(Ok(text)) = read_config(config) else {
+        return;
+    };
+    for target in include_targets(config, &text) {
+        let key = format!("include:{}", display_rel(project, &target));
+        if snap.git_entries.contains_key(&key) {
+            continue;
+        }
+        snap.git_entries.insert(key, entry_of(&target));
+        if depth < MAX_INCLUDE_DEPTH {
+            record_includes(project, &target, depth + 1, snap);
+        }
+    }
+}
+
 /// [`snapshot`] with the walk limit a test can lower.
 pub fn snapshot_with_limit(project: &Path, limit: usize) -> Snapshot {
-    let _ = limit;
     let mut snap = Snapshot::new();
+    let mut budget = Budget { used: 0, limit };
     for rel in TRACKED_FILES {
         snap.files
             .insert((*rel).to_owned(), entry_of(&project.join(rel)));
+    }
+    for rel in TRACKED_DIRS {
+        walk_tracked_dir(project, rel, &mut budget, &mut snap);
+    }
+    record_root_git(project, &mut snap);
+    if !snap.truncated {
+        walk_nested_git(project, &mut budget, &mut snap);
+    }
+    for rel in config_paths(&snap) {
+        record_includes(project, &project.join(rel), 0, &mut snap);
     }
     snap
 }
@@ -236,15 +437,41 @@ impl ConfigKey {
         }
     }
 
-    /// Whether this key can make git run a program or load more configuration.
+    /// Whether this key can make git run a program or load more configuration
+    /// (the D-22 list and RESEARCH Pattern 7's extension of it `[ASSUMED]`, RESEARCH
+    /// A5: a key missed here is still caught by the base rule that any change to a
+    /// tracked git config is itself a git-relevant finding).
     fn runs_something(&self) -> bool {
+        let (section, name) = (self.section.as_str(), self.name.as_str());
         matches!(
-            self.name.as_str(),
-            "fsmonitor" | "hookspath" | "sshcommand" | "pager" | "editor" | "textconv"
-        ) || matches!(
-            self.section.as_str(),
-            "alias" | "filter" | "credential" | "include" | "includeif"
-        )
+            name,
+            "fsmonitor"
+                | "hookspath"
+                | "sshcommand"
+                | "pager"
+                | "editor"
+                | "textconv"
+                | "command"
+                | "cmd"
+                | "program"
+                | "external"
+                | "driver"
+                | "helper"
+                | "uploadpack"
+                | "receivepack"
+                | "packobjectshook"
+                | "templatedir"
+                | "proxy"
+                | "worktreeconfig"
+                | "gitproxy"
+                | "askpass"
+                | "alternaterefscommand"
+        ) || (name == "worktree" && section == "core")
+            || (name == "update" && section == "submodule")
+            || matches!(
+                section,
+                "alias" | "filter" | "credential" | "include" | "includeif" | "pager"
+            )
     }
 }
 
@@ -382,17 +609,41 @@ fn read_config(path: &Path) -> Option<Result<String, FindingKind>> {
 /// Whether `rel` names a git config file.
 fn is_config_path(rel: &str) -> bool {
     rel == ".git/config"
+        || rel.ends_with("/.git/config")
+        || (rel.starts_with(".git/worktrees/") && rel.ends_with("/config.worktree"))
 }
 
-/// The exec-key findings of one config file.
-fn scan_config(project: &Path, rel: &str, out: &mut Vec<Finding>) {
-    match read_config(&project.join(rel)) {
+/// The exec-key findings of one config file and, followed to
+/// [`MAX_INCLUDE_DEPTH`], of the files it includes.
+fn scan_tree(
+    project: &Path,
+    rel: &str,
+    depth: usize,
+    seen: &mut BTreeSet<String>,
+    out: &mut Vec<Finding>,
+) {
+    if !seen.insert(rel.to_owned()) {
+        return;
+    }
+    let path = project.join(rel);
+    match read_config(&path) {
         Some(Ok(text)) => {
             for key in exec_keys_in(&text) {
                 out.push(Finding {
                     path: rel.to_owned(),
                     kind: FindingKind::GitConfigKey(key),
                 });
+            }
+            if depth < MAX_INCLUDE_DEPTH {
+                for target in include_targets(&path, &text) {
+                    scan_tree(
+                        project,
+                        &display_rel(project, &target),
+                        depth + 1,
+                        seen,
+                        out,
+                    );
+                }
             }
         }
         Some(Err(kind)) => out.push(Finding {
@@ -405,7 +656,7 @@ fn scan_config(project: &Path, rel: &str, out: &mut Vec<Finding>) {
 
 // ---------------------------------------------------------------- findings
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Change {
     Created,
     Removed,
@@ -438,11 +689,182 @@ fn diff(base: &BTreeMap<String, Entry>, now: &BTreeMap<String, Entry>) -> Vec<(S
         .collect()
 }
 
+fn generic(path: &str, change: Change) -> Finding {
+    Finding {
+        path: path.to_owned(),
+        kind: match change {
+            Change::Created => FindingKind::Created,
+            Change::Removed => FindingKind::Removed,
+            Change::Changed => FindingKind::Changed,
+        },
+    }
+}
+
+fn base_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// The directory a `gitdir: <path>` file names, or `None` for anything else.
+fn gitfile_target(file: &Path) -> Option<PathBuf> {
+    let text = read_pointer(file)?;
+    let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(normalize(&file.parent()?.join(target)))
+}
+
+/// The content of a small regular file (a pointer), never through a symlink.
+fn read_pointer(file: &Path) -> Option<String> {
+    let meta = fs::symlink_metadata(file).ok()?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&fs::read(file).ok()?).into_owned())
+}
+
+/// Where `.git/worktrees/<n>/commondir` points, resolved.
+fn commondir_target(project: &Path, rel: &str) -> Option<PathBuf> {
+    let file = project.join(rel);
+    let text = read_pointer(&file)?;
+    let target = text.lines().next()?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(normalize(&file.parent()?.join(target)))
+}
+
+/// Whether a commondir pointer leaves the checkout's own `.git` (a pointer that
+/// cannot be read counts as leaving it).
+fn commondir_is_foreign(project: &Path, rel: &str) -> bool {
+    commondir_target(project, rel).is_none_or(|t| t != normalize(&project.join(".git")))
+}
+
+/// Whether the gitfile at `rel` names one of the checkout's own worktree
+/// directories (a known harness worktree).
+fn gitfile_is_own(project: &Path, rel: &str) -> bool {
+    gitfile_target(&project.join(rel))
+        .is_some_and(|t| t.starts_with(normalize(&project.join(".git/worktrees"))))
+}
+
+/// Whether a gitfile target is shaped like a linked worktree of some repository
+/// (`<repo>/.git/worktrees/<name>`).
+fn is_linked_worktree_target(target: &Path) -> bool {
+    let parent = target.parent();
+    parent
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n == "worktrees")
+        && parent
+            .and_then(Path::parent)
+            .and_then(|p| p.file_name())
+            .is_some_and(|n| n == ".git")
+}
+
+/// What one changed `git_entries` path means against a baseline.
+fn entry_change(
+    project: &Path,
+    path: &str,
+    change: Change,
+    now: &Snapshot,
+    out: &mut Vec<Finding>,
+    trees: &mut Vec<String>,
+) {
+    let push = |out: &mut Vec<Finding>, kind: FindingKind| {
+        out.push(Finding {
+            path: path.to_owned(),
+            kind,
+        });
+    };
+    if let Some(included) = path.strip_prefix("include:") {
+        out.push(Finding {
+            path: included.to_owned(),
+            kind: FindingKind::GitConfigKey("included-file-changed".to_owned()),
+        });
+        if change != Change::Removed {
+            trees.push(included.to_owned());
+        }
+        return;
+    }
+    if path == ".git" {
+        return push(out, FindingKind::WorktreePointer);
+    }
+    let name = base_name(path);
+    if name == ".git" {
+        match (change, now.git_entries.get(path)) {
+            (Change::Removed, _) => out.push(generic(path, change)),
+            (_, Some(Entry::File(_))) => {
+                if !gitfile_is_own(project, path) {
+                    push(out, FindingKind::WorktreePointer);
+                }
+            }
+            _ => push(out, FindingKind::NestedGit),
+        }
+        return;
+    }
+    if path.starts_with(".git/worktrees/") {
+        match name {
+            "commondir" => {
+                if change != Change::Removed && commondir_is_foreign(project, path) {
+                    push(out, FindingKind::WorktreePointer);
+                }
+            }
+            "gitdir" => {
+                if change == Change::Changed {
+                    push(out, FindingKind::WorktreePointer);
+                }
+            }
+            "config.worktree" => {
+                out.push(generic(path, change));
+                if change != Change::Removed {
+                    trees.push(path.to_owned());
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+    // A nested repository's own config.
+    if change != Change::Removed {
+        out.push(generic(path, change));
+        trees.push(path.to_owned());
+    }
+}
+
+/// Strict mode: with nothing to compare against, a pointer that leaves the
+/// checkout is a finding wherever it is.
+fn strict_pointers(project: &Path, now: &Snapshot, out: &mut Vec<Finding>) {
+    for (path, entry) in &now.git_entries {
+        let name = base_name(path);
+        let mut flag = false;
+        if path == ".git" {
+            // A linked worktree's own `.git` file points into its repository's
+            // `.git/worktrees/`: that shape is not a plant `[inferred — audit]`.
+            if matches!(entry, Entry::File(_)) {
+                flag = gitfile_target(&project.join(".git"))
+                    .is_none_or(|t| !is_linked_worktree_target(&t));
+            }
+        } else if name == ".git" {
+            if matches!(entry, Entry::File(_)) {
+                flag = !gitfile_is_own(project, path);
+            }
+        } else if path.starts_with(".git/worktrees/") && name == "commondir" {
+            flag = commondir_is_foreign(project, path);
+        }
+        if flag {
+            out.push(Finding {
+                path: path.clone(),
+                kind: FindingKind::WorktreePointer,
+            });
+        }
+    }
+}
+
 /// What the checkout holds now that a baseline (or its absence) makes suspect.
 ///
 /// With a baseline: every path whose entry differs, and the exec keys of every
 /// git config that is new or changed. Without one (a run older than 28.1, or a
-/// lost baseline): strict mode, every git config found is scanned. Sorted by path,
+/// lost baseline): strict mode, every git config found is scanned and every
+/// pointer that leaves the checkout's own `.git` is a finding. Sorted by path,
 /// then kind.
 pub fn findings(baseline: Option<&Snapshot>, now: &Snapshot, project: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -452,31 +874,41 @@ pub fn findings(baseline: Option<&Snapshot>, now: &Snapshot, project: &Path) -> 
             kind: FindingKind::ScanTruncated,
         });
     }
-    let mut configs: Vec<String> = Vec::new();
+    let mut trees: Vec<String> = Vec::new();
     match baseline {
         Some(base) => {
             for (path, change) in diff(&base.files, &now.files) {
-                if is_config_path(&path) {
-                    configs.push(path.clone());
+                if is_config_path(&path) && change != Change::Removed {
+                    trees.push(path.clone());
                 }
-                out.push(Finding {
-                    path,
-                    kind: match change {
-                        Change::Created => FindingKind::Created,
-                        Change::Removed => FindingKind::Removed,
-                        Change::Changed => FindingKind::Changed,
-                    },
-                });
+                out.push(generic(&path, change));
+            }
+            for (path, change) in diff(&base.git_entries, &now.git_entries) {
+                entry_change(project, &path, change, now, &mut out, &mut trees);
             }
         }
         None => {
-            configs.extend(now.files.keys().filter(|p| is_config_path(p)).cloned());
+            trees.extend(config_paths(now));
+            strict_pointers(project, now, &mut out);
         }
     }
-    configs.sort();
-    configs.dedup();
-    for rel in &configs {
-        scan_config(project, rel, &mut out);
+    // A worktree whose commondir leaves the checkout lends git that repository's
+    // config: read it, in either mode.
+    for path in now.git_entries.keys() {
+        if path.starts_with(".git/worktrees/")
+            && base_name(path) == "commondir"
+            && commondir_is_foreign(project, path)
+        {
+            if let Some(target) = commondir_target(project, path) {
+                trees.push(target.join("config").to_string_lossy().into_owned());
+            }
+        }
+    }
+    trees.sort();
+    trees.dedup();
+    let mut seen = BTreeSet::new();
+    for rel in &trees {
+        scan_tree(project, rel, 0, &mut seen, &mut out);
     }
     out.sort();
     out.dedup();
