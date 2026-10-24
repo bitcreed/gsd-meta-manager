@@ -24,14 +24,19 @@
 //!    stdout, and the sandbox's data directory may be unwritable, so the bridge
 //!    never initialises tracing (`main` dispatches it first) and reports only on
 //!    stderr, one `gsd-meta-manager bridge: ...` line per failure.
-//! 6. **Synchronous: std threads only** (launcher fact 2). Every connection is two
+//! 6. **Exit codes follow the shell.** The driver's own code; `128 + signal` when a
+//!    signal ended it; `127` when the program does not exist and `126` when it
+//!    exists but cannot be run; `70` for a port that cannot be bound. A caller
+//!    (bwrap, then the launcher) can tell "no way out" from "the driver failed".
+//! 7. **Synchronous: std threads only** (launcher fact 2). Every connection is two
 //!    detached pump threads, ended by EOF on either side.
 
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
@@ -39,6 +44,15 @@ use super::process::spawn_bridged_child;
 
 /// The exit code when the loopback port cannot be bound (`EX_SOFTWARE`).
 const EXIT_BIND_FAILED: i32 = 70;
+
+/// The exit code when the driver program does not exist (the shell's 127).
+const EXIT_NOT_FOUND: i32 = 127;
+
+/// The exit code when the driver program exists but cannot be run (the shell's 126).
+const EXIT_NOT_RUNNABLE: i32 = 126;
+
+/// The exit code when the bridge itself fails after the port is bound.
+const EXIT_FAILED: i32 = 1;
 
 /// How long the accept loop waits after an `accept` fault before trying again, so
 /// a persistent fault (out of file descriptors) does not spin a core.
@@ -60,31 +74,38 @@ pub fn run(port: u16, sock: &Path, command: &[OsString]) -> i32 {
         .spawn(move || accept_loop(&listener, &sock));
     if let Err(e) = accept {
         eprintln!("gsd-meta-manager bridge: cannot start the accept thread: {e}");
-        return 1;
+        return EXIT_FAILED;
     }
 
     let mut child = match spawn_bridged_child(command) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("gsd-meta-manager bridge: cannot start the driver: {e}");
-            return 1;
+            return if e.kind() == ErrorKind::NotFound {
+                EXIT_NOT_FOUND
+            } else {
+                EXIT_NOT_RUNNABLE
+            };
         }
     };
     match child.wait() {
-        Ok(status) => status.code().unwrap_or(1),
+        Ok(status) => status
+            .code()
+            .or_else(|| status.signal().map(|signal| 128 + signal))
+            .unwrap_or(EXIT_FAILED),
         Err(e) => {
             eprintln!("gsd-meta-manager bridge: cannot wait for the driver: {e}");
-            1
+            EXIT_FAILED
         }
     }
 }
 
 /// Accept connections for ever; the process ending ends this thread.
-fn accept_loop(listener: &TcpListener, sock: &PathBuf) {
+fn accept_loop(listener: &TcpListener, sock: &Path) {
     loop {
         match listener.accept() {
             Ok((tcp, _)) => {
-                let sock = sock.clone();
+                let sock = sock.to_path_buf();
                 // A thread that cannot start costs this one connection (the
                 // stream is dropped with the closure); the loop carries on.
                 let _ = thread::Builder::new()
