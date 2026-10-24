@@ -19,7 +19,8 @@
 //!   credential files masked, each only when it exists (a mask over a missing
 //!   path aborts bwrap);
 //! * the per-run config directory read-write;
-//! * `--unshare-pid --new-session --die-with-parent`.
+//! * `--unshare-pid --new-session --die-with-parent` (28.1 adds the network, IPC and UTS
+//!   namespaces, see below).
 //!
 //! 28-03 hardened this profile without changing a signature in this file:
 //!
@@ -40,6 +41,15 @@
 //! `[inferred — audit]`. `<cfg>/managed` is also re-bound read-only at its own path
 //! after the writable config-dir bind, so the driver cannot rewrite the file
 //! through the config dir.
+//!
+//! 28.1 (D-02, D-04) cuts the profile off the host network: `--unshare-net` leaves
+//! a fresh namespace with only `lo`, `--unshare-ipc` and `--unshare-uts` drop the
+//! host's SysV IPC and hostname (the hostname is fixed to [`SANDBOX_HOSTNAME`]). The only
+//! way out is the run's egress socket, re-bound next to the driverctl socket inside
+//! the runtime-dir tmpfs and reached through `gsd-meta-manager bridge` (see
+//! [`bridged_command`]), which listens on `127.0.0.1:`[`BRIDGE_PORT`]. Claude Code
+//! is pointed at that port by [`egress_env_sets`] and holds only
+//! [`DUMMY_OAUTH_TOKEN`]; the real token lives in the launcher-side egress server.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -49,6 +59,19 @@ use crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL;
 
 /// The first word of every scope unit name (D-08).
 pub const SCOPE_PREFIX: &str = "gsdmm-driver";
+
+/// The loopback port of the in-sandbox bridge (D-08). Fixed: the sandbox's network
+/// namespace is private and empty, so nothing else can hold the port
+/// `[inferred — audit]`.
+pub const BRIDGE_PORT: u16 = 3128;
+
+/// The token the driver holds (D-04): well-formed enough for Claude Code to accept,
+/// worth nothing upstream. The egress server replaces whatever credential arrives.
+pub const DUMMY_OAUTH_TOKEN: &str = "sk-ant-oat01-DUMMY-placeholder-not-a-real-token";
+
+/// The hostname inside the sandbox's UTS namespace (D-02): the host's name is not
+/// leaked `[inferred — audit]`.
+pub const SANDBOX_HOSTNAME: &str = "gsdmm-sandbox";
 
 /// The environment variables removed from the child before the launcher sets its
 /// own (D-19): the spike list verbatim. Session identity of the launching
@@ -205,6 +228,9 @@ pub struct LaunchPaths {
     pub config_dir: PathBuf,
     /// The run's driverctl socket: re-bound inside the runtime-dir tmpfs.
     pub socket: PathBuf,
+    /// The run's egress socket ([`crate::launcher::egress::socket_path_for`]): re-bound
+    /// next to the driverctl socket, the bridge's only way out.
+    pub egress_socket: PathBuf,
 }
 
 /// One host `/etc` entry re-created inside the sandbox's tmpfs `/etc` (D-12).
@@ -392,8 +418,22 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         if paths.socket.starts_with(runtime) {
             bind(&mut argv, "--bind", &paths.socket);
         }
+        if paths.egress_socket.starts_with(runtime) {
+            bind(&mut argv, "--bind", &paths.egress_socket);
+        }
     }
-    argv.push(os("--unshare-pid"));
+    // D-02: a fresh network namespace (only `lo`), SysV IPC and UTS; the bridge is the
+    // sandbox's one way out.
+    for flag in [
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+    ] {
+        argv.push(os(flag));
+    }
+    argv.push(os("--hostname"));
+    argv.push(os(SANDBOX_HOSTNAME));
     // A new session drops the operator's controlling terminal, so the model cannot
     // `ioctl(TIOCSTI)` keystrokes into the shell that launched it (WR-01).
     argv.push(os("--new-session"));
@@ -403,6 +443,44 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
     argv.push(os("--"));
     argv.extend(command.iter().cloned());
     argv
+}
+
+/// The command bwrap runs: the bridge, then the driver as its child (D-08).
+///
+/// `<exe> bridge --port <port> --sock <sock> -- <inner...>` (the 28.1-05
+/// subcommand). `exe` is this binary, readable inside because the root is bound
+/// read-only.
+pub fn bridged_command(exe: &Path, port: u16, sock: &Path, inner: &[OsString]) -> Vec<OsString> {
+    let mut argv = vec![
+        exe.as_os_str().to_owned(),
+        os("bridge"),
+        os("--port"),
+        OsString::from(port.to_string()),
+        os("--sock"),
+        sock.as_os_str().to_owned(),
+        os("--"),
+    ];
+    argv.extend(inner.iter().cloned());
+    argv
+}
+
+/// The environment that sends every Claude Code request to the bridge (D-04):
+/// the base URL and both proxy spellings at `http://127.0.0.1:<port>`, loopback
+/// exempt from the proxy, no gzip request bodies (the egress server reads the body
+/// to judge it), and the dummy token. Applied after the scrub by [`child_env`].
+pub fn egress_env_sets(port: u16) -> Vec<(&'static str, OsString)> {
+    let url = OsString::from(format!("http://127.0.0.1:{port}"));
+    vec![
+        ("ANTHROPIC_BASE_URL", url.clone()),
+        ("HTTPS_PROXY", url.clone()),
+        ("https_proxy", url.clone()),
+        ("HTTP_PROXY", url.clone()),
+        ("http_proxy", url),
+        ("NO_PROXY", os("127.0.0.1,localhost")),
+        ("no_proxy", os("127.0.0.1,localhost")),
+        ("CLAUDE_CODE_GZIP_REQUEST_BODIES", os("0")),
+        ("CLAUDE_CODE_OAUTH_TOKEN", os(DUMMY_OAUTH_TOKEN)),
+    ]
 }
 
 /// The `systemd-run` command line that runs `inner` in a transient user scope.
@@ -517,6 +595,7 @@ mod tests {
             run_dir: PathBuf::from("/work/proj/.planning/meta-manager/drivers/r1"),
             config_dir: PathBuf::from("/data/driver/ab12cd34/r1/claude-config"),
             socket: PathBuf::from("/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock"),
+            egress_socket: PathBuf::from("/run/user/1000/gsdmm-driverctl/egress-ab12cd34.sock"),
         }
     }
 
@@ -720,19 +799,19 @@ mod tests {
             "--bind",
             "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock",
             "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock",
-            "--unshare-pid",
-            "--new-session",
-            "--die-with-parent",
-            "--chdir",
-            "/work/proj",
-            "--",
-            "claude",
-            "-p",
+            "--bind",
+            "/run/user/1000/gsdmm-driverctl/egress-ab12cd34.sock",
+            "/run/user/1000/gsdmm-driverctl/egress-ab12cd34.sock",
         ]
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
-        assert_eq!(argv, expected);
+        let tail = "--unshare-pid --unshare-net --unshare-ipc --unshare-uts --hostname \
+                    gsdmm-sandbox --new-session --die-with-parent --chdir /work/proj -- \
+                    claude -p";
+        let (head, rest) = argv.split_at(expected.len());
+        assert_eq!(head, expected);
+        assert_eq!(rest.join(" "), tail);
     }
 
     /// The index of the adjacent `flag, path` pair (or `flag, path, path` bind).

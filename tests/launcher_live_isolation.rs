@@ -26,6 +26,7 @@ use std::process::{Command, Stdio};
 
 use gsd_meta_manager::driverctl::serve::socket_path;
 use gsd_meta_manager::launcher::config_dir::{seed, SeedSpec, HOST_MANAGED_DIR};
+use gsd_meta_manager::launcher::egress::socket_path_for as egress_socket_path_for;
 use gsd_meta_manager::launcher::sandbox::{
     bwrap_argv, child_env, systemd_run_argv, LaunchPaths, SandboxSpec,
 };
@@ -289,6 +290,7 @@ fn sandbox_isolates_host_credentials_and_services() {
             run_dir: run_dir.clone(),
             config_dir: config_dir.clone(),
             socket: sock.clone(),
+            egress_socket: egress_socket_path_for(&sock, &run_dir),
         },
         &home,
     );

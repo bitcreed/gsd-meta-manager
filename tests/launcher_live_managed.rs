@@ -167,6 +167,7 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
             run_dir: run_dir.clone(),
             config_dir: config_dir.clone(),
             socket,
+            egress_socket: root.join("egress.sock"),
         },
         &home,
     );

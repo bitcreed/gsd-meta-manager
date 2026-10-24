@@ -19,15 +19,17 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use gsd_meta_manager::driverctl::serve::socket_path;
+use gsd_meta_manager::launcher::egress::socket_path_for;
 use gsd_meta_manager::launcher::sandbox::{
-    bwrap_argv, child_env, claude_argv, etc_entries_in, EtcEntry, LaunchPaths, SandboxSpec,
-    EXTRA_STRIP_ENV, STRIP_ENV,
+    bridged_command, bwrap_argv, child_env, claude_argv, egress_env_sets, etc_entries_in, EtcEntry,
+    LaunchPaths, SandboxSpec, BRIDGE_PORT, DUMMY_OAUTH_TOKEN, EXTRA_STRIP_ENV, STRIP_ENV,
 };
 use tempfile::TempDir;
 
 const RUN: &str = "/work/proj/.planning/meta-manager/drivers/r1";
 const CFG: &str = "/data/driver/ab12cd34/r1/claude-config";
 const SOCK: &str = "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock";
+const EGRESS: &str = "/run/user/1000/gsdmm-driverctl/egress-ab12cd34.sock";
 
 fn paths() -> LaunchPaths {
     LaunchPaths {
@@ -35,6 +37,7 @@ fn paths() -> LaunchPaths {
         run_dir: PathBuf::from(RUN),
         config_dir: PathBuf::from(CFG),
         socket: PathBuf::from(SOCK),
+        egress_socket: PathBuf::from(EGRESS),
     }
 }
 
@@ -157,13 +160,22 @@ fn golden_bwrap_argv() {
         "--ro-bind",
         &format!("{CFG}/managed"),
         &format!("{CFG}/managed"),
-        // runtime dir tmpfs, then only the driverctl socket
+        // runtime dir tmpfs, then the driverctl socket, then the egress socket
         "--tmpfs",
         "/run/user/1000",
         "--bind",
         SOCK,
         SOCK,
+        "--bind",
+        EGRESS,
+        EGRESS,
+        // D-02: own pid, network, ipc and uts namespaces under a fixed hostname
         "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--hostname",
+        "gsdmm-sandbox",
         "--new-session",
         "--die-with-parent",
         "--chdir",
@@ -300,6 +312,94 @@ fn a_socket_outside_the_runtime_dir_is_not_re_bound() {
 }
 
 #[test]
+fn the_egress_socket_is_re_bound_after_the_driverctl_socket_and_only_inside_the_runtime_dir() {
+    let spec = SandboxSpec {
+        home: PathBuf::from("/home/u"),
+        paths: paths(),
+        tmpfs_masks: Vec::new(),
+        null_masks: Vec::new(),
+        runtime_dir: Some(PathBuf::from("/run/user/1000")),
+        etc_entries: Vec::new(),
+    };
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+    let at = |flag: &str, a: &str| {
+        argv.windows(2)
+            .position(|w| w[0] == flag && w[1] == a)
+            .unwrap_or_else(|| panic!("{flag} {a} missing: {argv:?}"))
+    };
+    let runtime = at("--tmpfs", "/run/user/1000");
+    let driverctl = at("--bind", SOCK);
+    let egress = at("--bind", EGRESS);
+    assert_eq!(driverctl, runtime + 2);
+    assert_eq!(
+        egress,
+        driverctl + 3,
+        "the egress bind follows the driverctl bind"
+    );
+
+    let mut elsewhere = paths();
+    elsewhere.egress_socket = PathBuf::from("/elsewhere/egress.sock");
+    let spec = SandboxSpec {
+        paths: elsewhere,
+        ..spec
+    };
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+    assert!(!argv.iter().any(|a| a == "/elsewhere/egress.sock"));
+}
+
+#[test]
+fn golden_bridged_command() {
+    let inner = [OsString::from("claude"), OsString::from("-p")];
+    let command = bridged_command(
+        std::path::Path::new("/x/gsdmm"),
+        BRIDGE_PORT,
+        std::path::Path::new(EGRESS),
+        &inner,
+    );
+    assert_eq!(
+        strings(&command),
+        ["/x/gsdmm", "bridge", "--port", "3128", "--sock", EGRESS, "--", "claude", "-p"]
+    );
+}
+
+#[test]
+fn golden_egress_env_sets() {
+    let url = "http://127.0.0.1:3128";
+    let sets: Vec<(String, String)> = egress_env_sets(3128)
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_string_lossy().into_owned()))
+        .collect();
+    let want = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+    assert_eq!(
+        sets,
+        [
+            want("ANTHROPIC_BASE_URL", url),
+            want("HTTPS_PROXY", url),
+            want("https_proxy", url),
+            want("HTTP_PROXY", url),
+            want("http_proxy", url),
+            want("NO_PROXY", "127.0.0.1,localhost"),
+            want("no_proxy", "127.0.0.1,localhost"),
+            want("CLAUDE_CODE_GZIP_REQUEST_BODIES", "0"),
+            want("CLAUDE_CODE_OAUTH_TOKEN", DUMMY_OAUTH_TOKEN),
+        ]
+    );
+    assert_eq!(BRIDGE_PORT, 3128);
+    assert!(egress_env_sets(8080)
+        .iter()
+        .all(|(_, v)| !v.to_string_lossy().contains("3128")));
+    // The egress socket sits beside the driverctl socket, in the same private dir.
+    assert_eq!(
+        socket_path_for(
+            std::path::Path::new(SOCK),
+            std::path::Path::new("/nonexistent/run")
+        )
+        .parent(),
+        std::path::Path::new(SOCK).parent()
+    );
+}
+
+#[test]
 fn golden_child_env() {
     let mut host: Vec<(OsString, OsString)> = STRIP_ENV
         .iter()
@@ -403,6 +503,9 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
     let sock = socket_path("probe28", &run_dir).expect("the run's socket path");
     let _ = fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).expect("bind the probe socket");
+    let egress_sock = socket_path_for(&sock, &run_dir);
+    let _ = fs::remove_file(&egress_sock);
+    let egress_listener = UnixListener::bind(&egress_sock).expect("bind the probe egress socket");
 
     let spec = SandboxSpec::from_host(
         LaunchPaths {
@@ -410,12 +513,15 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
             run_dir,
             config_dir,
             socket: sock.clone(),
+            egress_socket: egress_sock.clone(),
         },
         &home,
     );
     let script = format!(
-        "ls -A \"$XDG_RUNTIME_DIR\"; test -S '{}' && echo SOCK_OK",
-        sock.display()
+        "ls -A \"$XDG_RUNTIME_DIR\"; ls -A \"$(dirname '{sock}')\"; \
+         test -S '{sock}' && echo SOCK_OK; test -S '{egress}' && echo EGRESS_OK",
+        sock = sock.display(),
+        egress = egress_sock.display()
     );
     let argv = bwrap_argv(
         &spec,
@@ -432,7 +538,9 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
         .output()
         .expect("run bwrap");
     drop(listener);
+    drop(egress_listener);
     let _ = fs::remove_file(&sock);
+    let _ = fs::remove_file(&egress_sock);
 
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     println!("LIVE runtime dir inside the sandbox:\n{stdout}");
@@ -441,5 +549,22 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
         "bwrap failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(stdout, "gsdmm-driverctl\nSOCK_OK\n");
+    // `ls -A` sorts: the runtime dir holds only `gsdmm-driverctl`, and that holds
+    // exactly the two sockets of the run (the egress one next to the driverctl one).
+    let mut names = [
+        sock.file_name().unwrap().to_string_lossy().into_owned(),
+        egress_sock
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    names.sort();
+    assert_eq!(
+        stdout,
+        format!(
+            "gsdmm-driverctl\n{}\n{}\nSOCK_OK\nEGRESS_OK\n",
+            names[0], names[1]
+        )
+    );
 }

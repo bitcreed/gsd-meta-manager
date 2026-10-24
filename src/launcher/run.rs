@@ -63,6 +63,7 @@ use serde_json::Value;
 
 use super::auth::{host_access_token, resolve_launch_token, AuthError};
 use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec, HOST_MANAGED_DIR};
+use super::egress;
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::host::{decide, detect, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
@@ -1334,6 +1335,7 @@ fn supervise(
         run_dir: ctx.run_dir.clone(),
         config_dir: ctx.config_dir.clone(),
         socket: ctx.sock.clone(),
+        egress_socket: egress::socket_path_for(&ctx.sock, &ctx.run_dir),
     };
     let prompt = render_prompt(
         &ctx.template,
