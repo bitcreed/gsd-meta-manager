@@ -275,14 +275,18 @@ const GIT_HARDENING: &[&str] = &[
 
 /// `args` with [`GIT_HARDENING`] in front of them.
 fn hardened_git_args(args: Vec<OsString>) -> Vec<OsString> {
-    args
+    let mut full = os(GIT_HARDENING);
+    full.extend(args);
+    full
 }
 
 /// Run `git` with `args` (they name their repository), within `budget`.
 ///
 /// `GIT_TERMINAL_PROMPT=0` so a credential prompt cannot hang the launcher, and
-/// `GIT_ALLOW_PROTOCOL` so the `ext::` transport is out of reach.
+/// `GIT_ALLOW_PROTOCOL` so the `ext::` transport is out of reach. Every call starts
+/// with [`GIT_HARDENING`]; this is the only path that starts a launcher `git`.
 fn git(args: Vec<OsString>, budget: Duration) -> GitRun {
+    let args = hardened_git_args(args);
     match run_bounded_with_stderr(
         "git",
         &args,
@@ -552,7 +556,13 @@ pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool)
         for line in planted::render_bounded(&planted) {
             eprintln!("driver push: planted: {line}");
         }
-        if !ack_planted {
+        if ack_planted {
+            log_event(
+                store,
+                "push-ack-planted",
+                vec![("findings", Some(planted.len().to_string()))],
+            );
+        } else {
             if let Err(e) = store.park_after_push(&format!("push-refused:{REASON_PLANTED_GIT}")) {
                 eprintln!("driver push: could not park the run: {e}");
             }
@@ -857,8 +867,11 @@ fn open_pull_request(
 ///
 /// Refuses (`run_live`) while a launcher holds the run lock: the launcher pushes
 /// once at its own run end. Otherwise takes the run lock for the push, opens the
-/// store and calls [`push_run`].
-pub fn push_finished_run(ctx: &PushContext) -> Result<PushOutcome, LauncherError> {
+/// store and calls [`push_run_with`].
+pub fn push_finished_run(
+    ctx: &PushContext,
+    ack_planted: bool,
+) -> Result<PushOutcome, LauncherError> {
     if !valid_run_id(&ctx.run_id) {
         return Err(LauncherError::InvalidRun {
             detail: format!("run id {:?} is not a plain run id", ctx.run_id),
@@ -910,7 +923,7 @@ pub fn push_finished_run(ctx: &PushContext) -> Result<PushOutcome, LauncherError
         project,
         ..ctx.clone()
     };
-    Ok(push_run(&ctx, &mut store))
+    Ok(push_run_with(&ctx, &mut store, ack_planted))
 }
 
 #[cfg(test)]

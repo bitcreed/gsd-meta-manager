@@ -477,6 +477,10 @@ pub enum DriverAction {
         project: String,
         /// The run id: `.planning/meta-manager/drivers/<run-id>`
         run_id: String,
+        /// Push even though planted git files were found in the checkout, after
+        /// you inspected them
+        #[arg(long)]
+        ack_planted: bool,
     },
     /// Create a new run: a self-ignoring run directory with a DIRECTION.md and LOG.md
     /// template (id `<yyyymmdd>-<slug>`, UTC)
@@ -1329,8 +1333,13 @@ mod tests {
     #[test]
     fn driver_push_takes_a_project_and_a_run_id() {
         match driver_action(&["push", "p", "r1"]).expect("parses") {
-            DriverAction::Push { project, run_id } => {
+            DriverAction::Push {
+                project,
+                run_id,
+                ack_planted,
+            } => {
                 assert_eq!((project.as_str(), run_id.as_str()), ("p", "r1"));
+                assert!(!ack_planted, "the ack is never implied");
             }
             _ => panic!("not a push"),
         }
@@ -1342,9 +1351,14 @@ mod tests {
 
     #[test]
     fn driver_push_takes_an_ack_for_planted_files() {
-        let parsed = driver_action(&["push", "p28", "r28", "--ack-planted"]);
-        assert!(parsed.is_ok(), "--ack-planted is a flag of driver push");
-        assert!(driver_action(&["push", "p28", "r28"]).is_ok());
+        match driver_action(&["push", "p28", "r28", "--ack-planted"]).expect("parses") {
+            DriverAction::Push { ack_planted, .. } => assert!(ack_planted),
+            _ => panic!("not a push"),
+        }
+        match driver_action(&["push", "p28", "r28"]).expect("parses") {
+            DriverAction::Push { ack_planted, .. } => assert!(!ack_planted),
+            _ => panic!("not a push"),
+        }
     }
 
     #[test]

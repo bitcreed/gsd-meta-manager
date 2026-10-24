@@ -62,7 +62,11 @@ pub fn run(action: DriverAction, config: Option<PathBuf>) -> i32 {
             run_id,
             wait_secs,
         } => stop_main(&project, &run_id, wait_secs, config),
-        DriverAction::Push { project, run_id } => push_main(&project, &run_id, config),
+        DriverAction::Push {
+            project,
+            run_id,
+            ack_planted,
+        } => push_main(&project, &run_id, ack_planted, config),
         DriverAction::New { project, slug } => new_main(&project, &slug, config),
         DriverAction::Check { project, run_id } => check_main(&project, &run_id, config),
         DriverAction::Auth { action } => auth_main(action),
@@ -475,7 +479,7 @@ fn check_main(_target: &str, _run_id: &str, _config: Option<PathBuf>) -> i32 {
 /// `0` for a push, an already-done push or nothing to push; `1` for a refusal or
 /// a failure.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn push_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
+fn push_main(target: &str, run_id: &str, ack_planted: bool, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::launcher::config_dir::driver_root;
     use gsd_meta_manager::launcher::push::{policy_for, push_finished_run, PushContext};
 
@@ -502,7 +506,7 @@ fn push_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
         driver_root,
         open_pr: registry.preferences.driver_open_pr(),
     };
-    match push_finished_run(&ctx) {
+    match push_finished_run(&ctx, ack_planted) {
         Ok(outcome) => {
             if outcome.is_success() {
                 out_line(&format!("driver push: run {run_id}: {outcome}"));
@@ -517,7 +521,7 @@ fn push_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn push_main(_target: &str, _run_id: &str, _config: Option<PathBuf>) -> i32 {
+fn push_main(_target: &str, _run_id: &str, _ack_planted: bool, _config: Option<PathBuf>) -> i32 {
     report("push", &LauncherError::UnsupportedPlatform)
 }
 
