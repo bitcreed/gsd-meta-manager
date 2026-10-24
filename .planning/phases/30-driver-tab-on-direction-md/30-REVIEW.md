@@ -1,120 +1,151 @@
 ---
 phase: 30-driver-tab-on-direction-md
-reviewed: 2026-10-21T00:00:00Z
+reviewed: 2026-10-23T00:00:00Z
 depth: standard
-files_reviewed: 15
+files_reviewed: 7
 files_reviewed_list:
   - src/app.rs
   - src/driver/direction.rs
   - src/driver/steer.rs
-  - src/journal/reader.rs
-  - src/main.rs
-  - src/state_reader/driver_frontmatter.rs
-  - src/ui/screens/confirm_popup.rs
-  - src/ui/screens/create_project.rs
   - src/ui/screens/detail.rs
-  - src/ui/screens/driver_confirm.rs
   - src/ui/screens/driver_launch.rs
   - src/ui/screens/driver_run.rs
   - src/ui/screens/driver_steer.rs
-  - tests/editor_command.rs
-  - tests/launcher_config_dir.rs
 findings:
   critical: 0
   warning: 2
-  info: 2
-  total: 4
+  info: 3
+  total: 5
 status: issues_found
 ---
 
-# Phase 30: Code Review Report (re-review of gap-closure plans 30-06..30-09)
+# Phase 30: Code Review Report (re-review of `git diff e05ad64 HEAD`)
 
-**Reviewed:** 2026-10-21
+**Reviewed:** 2026-10-23
 **Depth:** standard
-**Files Reviewed:** 15
+**Files Reviewed:** 7
 **Status:** issues_found
 
 ## Summary
 
-Incremental review of `git diff dc5934f HEAD` over the listed files: the word-wrap-accurate popup sizing and the clipped-popup guard (30-06), the guarded run-directory open, `Plan::Keep` and the unterminated-heading fix (30-07), `editor_command` (30-08), and the launch form reordering, `model_name_ok`, body-relative lint numbering and `control_line` reuse (30-09).
+Scope: `git diff e05ad64 HEAD` for the seven files that changed after the last review. `src/driver/direction.rs` was read from `git show HEAD:src/driver/direction.rs` only. The working-tree copy carries another agent's uncommitted edits and was not used. The diff breaks down as follows.
 
-Most of the prior round is genuinely resolved. The new code is mostly careful. Highlights I traced and found sound:
+- **Quick 261021-101:** the fixes for WR-02, WR-07 and IN-04.
+- **Quick 261021-1id:** the glyph and DIM label routing through `crate::ui::glyphs`.
+- **Quick 261020-vxg and 261021-0jg:** macOS and Windows build gating.
+- **Commit 39dad19:** test environment assumptions.
+- **The Phase 28 and workstream series:** most of `detail.rs` and `app.rs`.
 
-- `open_run_file` (`O_NOFOLLOW | O_NONBLOCK`, type check on the handle, ELOOP mapped to "not a regular file") and its three callers `read_driver_run_text`, `read_direction` and `apply_edit`. `apply_edit` now opens the temp once and reads, sizes and caps that handle.
-- `read_log_delta` and `tail_file`: the `(dev, ino)` is taken from the same handle the loop tails, `tail_file` seeks every call, and the restart and reset logic is unchanged.
-- `Plan::Keep` in `run_loop` and the `steer_run` and `apply_edit` closures that feed it. A conflict, a refusal and an already-set control word all return the live body, so no temp, no exchange and no inode change happen. The retry-after-race arms still resolve correctly.
-- `fit_list`, `body_room`, `wrapped_rows` and `popup_rect`. `body_room.1 == popup body_h`, so the `clipped = body_rows > body_h` test agrees with what the fitted callers computed.
-- `editor_command`. The path and line ride as separate argv elements after `$0` and never enter the script text. `tests/editor_command.rs` exercises hostile names against a real `sh`.
+I traced the following and found them sound.
 
-`rtk proxy cargo test --no-fail-fast --test editor_command --test launcher_config_dir` passes (5 and 11 tests).
+- **`run_loop` guarded reads.** Its three reads (`DIRECTION.md`, the displaced temp, the exchange-back temp) go through `open_run_file` (`O_NOFOLLOW | O_NONBLOCK`, type check on the handle). A refusal is an `Io` error, a missing file is still `NoDirection`, and an unreadable displaced file is still a mismatch that is given back.
+- **macOS exchange.** `rustix` 1.1.5 defines `RenameFlags::EXCHANGE` for Apple targets as `RENAME_SWAP`, and `renameat_with` is `cfg(any(apple, linux_kernel, ..))`. The `any(linux, macos)` gating in `direction.rs` therefore compiles. `direction_lock` is `cfg(unix)`, which covers macOS.
+- **`model_name_ok` and the `--model` argv.** The model reaches the detached launch as a separate argv element (`launcher/run.rs:1147`, `sandbox.rs:374`), never through a shell. The brackets cannot inject anything, and the leading-alphanumeric rule still blocks flag-shaped values. The relaunch prefill shares the predicate, so a recorded `claude-opus-5[1m]` (the real identity in the fixtures) is now kept.
+- **Glyph registry.** All ten Driver glyph constants are `&'static str` aliases of registry constants, so the "no glyph is derived from file content" guarantee is intact. Every new glyph is 1 cell, so no column arithmetic (`RUN_WORD_CELLS`, `ITEM_WORD_CELLS`, `DRIVER_LIVE_MARKER` cell reservation) shifts. Each status still has a distinct glyph.
+- **`scroll_offset` and `generic_viewport` removal from `DetailScreen`.** No other file reads them. The Driver tab keeps its own `driver_viewport` and its `move_driver_selection` and `scroll_driver_output` arms, and the removed `_ =>` fallback only served the retired Roadmap box view. `switch_to_sub_view` and `switch_to_tab` lost one parameter, and every call site (keys, mouse, `opened_on`) was updated.
+- **Workstream additions.** The code in `detail.rs` (`scoped_phases`, `scoped_phase_count`, `focus_agent_of_plan`) and `app.rs` (`project_status_category`, `format_workstream_display`, the `agents.workstreams.is_empty()` scan condition) touches the Detail screen's shared `pipeline_selected` and `roadmap_cursor` only through clamped indices. I found no panic path and nothing that reaches the Driver tab. This was a read-through, not an audit of Phase 28.
+- **Test changes.** The log-replacement test now renames a staged file and asserts the inode differs. The `cfg(unix)` helpers in `app.rs` match their callers' gating.
 
-No critical findings. Two warnings remain: one prior finding only partly closed, and one regression introduced by the new model rule.
+I did not run any tests. Another agent is running timing-sensitive stress tests on this machine, and building the lib test binary would compete with it.
+
+No critical findings. Two new warnings sit next to the WR-02 fix, which closed the symptom (a blocking `open`) but not the class (an unguarded open in the same run directory). Three info items remain.
 
 ## Prior findings status
 
-- **WR-01** (launch form accepts a model the launch rejects): **Resolved.** `commit_edit` now requires `model_name_ok(text)` (`src/ui/screens/driver_launch.rs:619`). `model_name_ok` demands an alphanumeric first character, so `-x` and `--foreground` are refused in the form (`:231-240`). The rule is too narrow in the other direction, see new WR-07.
-- **WR-02** (run-directory files opened without a file-type guard): **Partly resolved, still present.** `read_driver_run_text`, `read_direction`, `apply_edit` and `read_log_delta` all go through `open_run_file` now (`src/state_reader/driver_frontmatter.rs:772-825`, `src/driver/steer.rs:622-625` and `751-770`, `src/ui/screens/driver_run.rs:1764`). `DIRECTION.md` is still read by path, unguarded, inside `run_loop` (`src/driver/direction.rs:601`, `651`, `672`). Re-reported below.
-- **WR-03** (no-op writes rewrite `DIRECTION.md`): **Resolved.** `Plan::Keep` (`src/driver/direction.rs:501-503`, `:532-534`, `:616`) returns `SpliceOutcome::Ok` before the mode read, the temp and the exchange. Tests assert the same inode and mtime and no temp (`direction.rs` `write_body_leaves_the_file_alone_when_the_body_is_unchanged`, `steer.rs` `steer_run_unchanged_and_refused_leave_the_inode_alone`, `apply_edit_conflict_leaves_the_inode_alone`).
-- **WR-04** (two line-number bases): **Resolved for the TUI paths.** `launch_preflight` (`driver_launch.rs:388`) and `request_new_run_check` (`src/app.rs:1559-1561`) lint `split_frontmatter(&text).1`, as `apply_edit` does. A smaller cross-tool remainder is recorded as IN-05.
-- **WR-05** (spend and "keeps running" disclosure clipped first): **Resolved.** `essential_lines` puts the title, the spend and detach paragraph, the `fresh-per-item` line and the sandbox rows before the six fields. `fitted_body_lines` (`driver_launch.rs:943-966`) adds findings only into the rows left, and the lint popups fit their lists after the header and question. A clipped popup is inert on `y` (`confirm_popup.rs` `confirm_unless_clipped`).
-- **WR-06** (`$EDITOR` with arguments): **Resolved.** `editor_command` (`src/app.rs:708-730`) wraps a string with shell-special characters in `sh -c '<editor> "$@"'`. `src/main.rs:849` spawns the returned pair. The only remainder is that a missing wrapped editor now surfaces as `sh` exit 127 (`EditorExit::Failed`) instead of `SpawnError`. That is cosmetic and not reported.
-- **IN-01** (`set_item_field` on an unterminated last heading): **Resolved.** `terminated` is initialised from the byte before `segment.start` (`src/driver/steer.rs:455-456`), so the new line opens with `eol`. A test covers the `answer` path.
-- **IN-02** (slug input stays pending when the request is refused): **Resolved.** The unregistered-alias and no-event-channel early returns in `request_new_run` now route through `finish_new_run(Err(NewRunFailure::Other(..)))` (`src/app.rs:1454-1471`), which pops the slug input.
-- **IN-03** (form and launcher read `control` differently): **Resolved.** `launch_preflight` calls `control_line(&text)` (`driver_launch.rs:390`), the function `launcher::run::preflight_direction` uses, and `control_blocking` compares the word exactly (`!= "run"`), as the launcher does.
+- **WR-02** (run-directory files opened without a file-type guard): **Resolved.** `read_run_file` (`src/driver/direction.rs`, in `mod imp`) wraps `open_run_file`. `run_loop` uses it for the target read, the displaced-temp compare and the exchange-back read. The new test `steer_run_refuses_a_fifo_direction_without_blocking` (`src/driver/steer.rs`) covers the path the old review named (the `c`/`a` keys reach `write_body` with no guarded read before it) and asserts `DIRECTION.lock` is released afterwards. Two sibling gaps in the same class remain: see WR-08 and WR-09.
+- **WR-07** (model rule narrower than `claude --model`): **Resolved.** `model_name_ok` admits `[` and `]` (`driver_launch.rs:232-241`). The tests accept `opus[1m]`, `sonnet[1m]`, `claude-sonnet-4-5[1m]` and `anthropic.claude-3-5-sonnet-20240620-v1:0`, and refuse `-opus[1m]`. `relaunch_prefill` shares the predicate, so a recorded `opus[1m]` is no longer dropped for the default.
+- **IN-04** (lint popup whose findings get zero rows is forced clipped): **Resolved.** Both `LintPopupScreen` (`driver_launch.rs:1512-1527`) and `EditLintConfirmScreen` (`driver_steer.rs:877-899`) skip `fit_list` at a zero row budget. New tests pin the exact heights (80x8 and 80x7) and assert `y` confirms. See IN-07 for a disclosure side effect of this fix.
+- **IN-05** (body-relative `DIRECTION.md:<line>` differs from `driver check` and the launcher's refusal): **Still stands.** `launch_preflight` (`driver_launch.rs:389`) and `request_new_run_check` (`app.rs:1692`) lint `split_frontmatter(&text).1`. `launcher/run.rs:240` and `driver_cli.rs:459` lint the whole file, and `launch_error_copy` (`driver_launch.rs:451`) prints the launcher's whole-file numbers. Nothing in the diff touched this. The disposition correctly records it as deferred.
 
 ## Warnings
 
-### WR-02: Run-directory files are opened without a file-type guard, although the phase hardens one reader against exactly that
+### WR-08: `DIRECTION.lock` is opened by path with symlink-following and truncating-write semantics, the one run-directory open the hardening still skips
 
-**File:** `src/driver/direction.rs:601`, `651`, `672` (reached from `src/app.rs:1718-1724` through `src/driver/steer.rs:551`)
-**Issue:** This is the residual of the prior finding. The guarded open now covers every read the Driver tab makes before a write. It does not cover the read inside the write itself. `run_loop`, the engine behind `write_body`, still does `std::fs::read(&target)` by path, and the same for the displaced inode after `renameat2(RENAME_EXCHANGE)` (`std::fs::read(&temp_path)`) and the exchange-back (`std::fs::read(&temp_path)`). Those opens block on a FIFO with no writer and follow symlinks.
+**File:** `src/driver/direction.rs` (`locked()` in `mod imp`, via `direction_lock`) reaching `src/driver/lock.rs:196-260` (`acquire_at`, `write_holder`)
+**Issue:** `locked()` takes `<run>/DIRECTION.lock` before every `write_body` and splice. `acquire_at` opens that path with `OpenOptions::new().create(true).read(true).write(true).truncate(false)`. This follows symlinks and has no `O_NOFOLLOW` and no file-type check. After the `flock`, `write_holder` calls `file.set_len(0)`, writes the holder JSON through the handle, and then `set_permissions(0o644)`.
 
-The 30-07 SUMMARY dismisses this as "a normal steering path does not get that far", on the grounds that the guarded reads in the preflight, `prepare_edit`, `live_body` and `apply_edit` come first. That is true for the editor flow and false for the `c` and `a` keys. `request_steer` calls `steering_target`, which only validates names and the channel, then `spawn_blocking(steer_run)`, and `steer_run` goes straight to `write_body`. No guarded read precedes it. Whenever the cached run row is stale (a watcher refresh has not landed), a `DIRECTION.md` swapped for a FIFO makes the worker block in `open(2)`. By then `locked()` has taken `DIRECTION.lock`, so the stuck worker also holds the lock, and the driver's own `driverctl` splices wait on it until they time out. This is the T-30-04 threat model (a sibling sandbox or an `--unsandboxed` run with write access to the run directory), which the phase claims to have closed ("one guarded open for every run-dir read").
-**Fix:** Give `run_loop` the same guard. A shared helper in `driver_frontmatter` (or a `direction.rs`-local copy, since `direction.rs` is also `driverctl`'s) avoids duplicating the open flags.
+If `DIRECTION.lock` is a symlink to a file the user can write (for example `~/.ssh/authorized_keys` or a dotfile), pressing `c` or `a` on that run, or confirming an edit, makes the TUI:
+
+- truncate that file;
+- fill it with the holder record;
+- chmod it to 0644.
+
+This is the T-30-04/T-30-24 threat model: 30-SECURITY lists the run directory as writable by an `--unsandboxed` run. The same class that WR-02 closed for reads (a planted entry in the run directory) therefore still applies to the lock open, with a destructive write instead of a hang. A FIFO at that name does not block on Linux (`O_RDWR`). It fails at `set_len` with `Unavailable`, which `locked()` turns into a steer error.
+
+Severity is Warning, not Critical. The code is pre-existing (Phase 17/27) and `lock.rs` is outside this review's file set. Reaching it needs a writer in the run directory, and an `--unsandboxed` run can already act as the user. But the phase claims "one guarded open for every run-dir read", and the lock open is the one run-directory open that writes.
+**Fix:** Open the lock through the same guard discipline. In `acquire_at`, add `custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)` on unix, and after the open refuse anything that is not a regular file before `flock` or `set_len`:
 ```rust
-// run_loop, instead of std::fs::read(&target)
-let bytes = match crate::state_reader::driver_frontmatter::open_run_file(&target)
-    .and_then(|mut f| { let mut b = Vec::new(); f.read_to_end(&mut b).map(|_| b) })
-{
-    Ok(b) => b,
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SpliceOutcome::NoDirection),
-    Err(e) => return Err(io_err(target.display(), e)),
-};
+let meta = file.metadata().map_err(|e| LockError::Unavailable { detail: e.to_string() })?;
+if !meta.file_type().is_file() {
+    return Err(LockError::Unavailable {
+        detail: format!("{} is not a regular file", path.display()),
+    });
+}
 ```
-Use the same helper for the two `temp_path` reads (treat a refusal as a mismatch, which the code already does for an unreadable displaced file). Add a test that `steer_run` over a FIFO `DIRECTION.md` returns within a few seconds, like the existing `read_direction_refuses_a_fifo_without_blocking`.
+`launcher.lock` goes through the same function and gets the same protection. Add a test with a symlinked `DIRECTION.lock` pointing at a sentinel file, and assert the sentinel is unchanged and `steer_run` returns `Failed`.
 
-### WR-07: The model rule is narrower than `claude --model`, so the form refuses `opus[1m]`-style names that the CLI accepts
+**DTAB impact:** none of DTAB-01..04 is defeated. DTAB-03's "takes the shared flock" still holds for a regular lock file. This is a hardening gap, not a functional one.
 
-**File:** `src/ui/screens/driver_launch.rs:231-240` (applied at `:619`)
-**Issue:** 30-09 replaced the old typed-model check (any non-control string clap accepts, up to 100 characters) with the recorded-model charset `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`. That fixes the flag-looking-value problem (WR-01), but it also refuses `]` and `[`. Claude Code's long-context selector is a bracket suffix (`opus[1m]`, `sonnet[1m]`, `claude-sonnet-4-5[1m]`). The `driver launch` CLI still accepts these, since `LaunchArgs::model` is any string. A user who wants a 1M-context driver run therefore cannot type it into the form, and the only message is "must be a model name". The new test even pins `claude-opus-4-7:1m` as the good form, which is not a Claude model syntax. The relaunch prefill has the same gap (a recorded `opus[1m]` is silently dropped for the default), but that is existing behaviour. The leading-alphanumeric rule alone is what closes the argv-injection hole, and clap's own parse is still run afterwards.
-**Fix:** Allow the bracket suffix, keeping the alphanumeric first character and the length bound:
+### WR-09: `run_loop`'s guarded read has no size cap, although every other run-directory reader enforces 1 MiB
+
+**File:** `src/driver/direction.rs` (`read_run_file` and its three callers in `run_loop`), reached from `src/driver/steer.rs` `steer_run` and `apply_edit`
+**Issue:** `read_run_file` ends in `file.read_to_end(&mut bytes)`. The reader that feeds the tab caps at `DIRECTION_READ_MAX_BYTES` (1 MiB, `driver_frontmatter.rs:770`, `take(..+1)` at `:870`). The editor temp caps at `EDIT_TEMP_MAX_BYTES` (`steer.rs:595`, `:632`). The write path has no cap. `request_steer` goes straight to `steer_run` and then `write_body` with no capped read first. A regular file of arbitrary size at `DIRECTION.md` (a sparse multi-GB file is enough) is read fully into memory under `DIRECTION.lock`, once for the target and again for the displaced inode after the exchange. 30-SECURITY T-30-04 names `DIRECTION_READ_MAX_BYTES` + `take` as the mitigation for this same planted-file threat, so the cap exists for the display path and was not carried into the write path when WR-02 moved it onto `open_run_file`. The previous `std::fs::read` was equally unbounded, so this is not a regression. But the new `read_run_file` doc comment ("a planted entry cannot park the caller") overstates what it guarantees.
+**Fix:** Cap the read and treat an over-cap file as a refusal.
 ```rust
-first.is_ascii_alphanumeric()
-    && model.chars().count() <= 64
-    && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-' | '[' | ']'))
+fn read_run_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    const CAP: u64 = crate::state_reader::driver_frontmatter::DIRECTION_READ_MAX_BYTES;
+    let file = crate::state_reader::driver_frontmatter::open_run_file(path)?;
+    let mut bytes = Vec::new();
+    file.take(CAP + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > CAP {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DIRECTION.md is larger than 1 MiB",
+        ));
+    }
+    Ok(bytes)
+}
 ```
-Update `launcher_launch_a_typed_model_that_looks_like_a_flag_is_refused` to accept `opus[1m]`, and keep `-x`, `--foreground`, `a b` and `.opus` as the refused set.
+Add a test that `steer_run` over a file just past the cap returns `Failed` without allocating it.
+
+**DTAB impact:** none defeated. DTAB-03's edits still work for any legitimately sized `DIRECTION.md`.
 
 ## Info
 
-### IN-04: A lint popup whose findings get zero rows is forced into the clipped, unconfirmable state
+### IN-05: Body-relative `DIRECTION.md:<line>` in the TUI differs from `driver check` and the launcher's own refusal (carried, unchanged)
 
-**File:** `src/ui/screens/driver_launch.rs:1519-1523`, `src/ui/screens/driver_steer.rs:895`
-**Issue:** `LintPopupScreen` and `EditLintConfirmScreen` pass `room.saturating_sub(taken).min(..)` to `fit_list` without a `> 0` guard. When that budget is 0, which is the terminal height at which the header and the question exactly fill the room, `fit_list` returns a lone `… k more` row ("so the caller's popup is taller than `rows` and clips"). The popup is then clipped and `y` is inert, although the header and the question would have fit without it. `fitted_body_lines` in the launch form has the guard (`if left > 0`); these two popups do not. It affects one or two terminal heights, and the safe direction is a refused `y`.
-**Fix:** Skip the list when the budget is 0, as the form does:
+**File:** `src/ui/screens/driver_launch.rs:389`, `src/app.rs:1692`, against `src/launcher/run.rs:240` and `src/driver_cli.rs:459`
+**Issue:** See "Prior findings status". The TUI numbers findings from the first body line (the editor contract). The launcher and `driver check` number them against the whole file. `launch_error_copy` can therefore print "DIRECTION.md:57" for a problem the form showed as "DIRECTION.md:25". The window is narrow, because the preflight normally catches the problem first. It is deferred in the disposition.
+**Fix:** Label the TUI numbers with their base (`body line 25`), or re-base `DirectionInvalid` problems by the frontmatter line count in `launch_error_copy`.
+**DTAB impact:** none.
+
+### IN-06: macOS exchange failure on a volume without `RENAME_SWAP` surfaces under the Linux syscall name
+
+**File:** `src/driver/direction.rs` (the `io_err("renameat2(RENAME_EXCHANGE)", errno)` arm of `run_loop`; the module doc and `unsupported()` were updated for macOS, this string was not)
+**Issue:** 261020-vxg enabled the exchange path on macOS, where `renameatx_np(RENAME_SWAP)` fails with `ENOTSUP` on volumes that do not implement it (non-APFS/HFS+: SMB, NFS, exFAT). The arm still reports `renameat2(RENAME_EXCHANGE): <errno>`. A macOS user steering a project on such a volume gets a Linux syscall name and a bare errno, with no hint that the volume is the cause. The design is deliberately fail-closed with no plain-rename fallback, so the only gap is the message. Linux filesystems without `RENAME_EXCHANGE` (EINVAL) have always had the same bare message.
+**Fix:** Name the operation portably and map the unsupported errnos:
 ```rust
-let rows = room.saturating_sub(taken).min(POPUP_PROBLEMS_SHOWN + 1);
-if rows > 0 { body.extend(fit_list(problems, rows, inner)); }
+Err(errno) => {
+    let _ = std::fs::remove_file(&temp_path);
+    let why = if matches!(errno, rustix::io::Errno::NOTSUP | rustix::io::Errno::INVAL) {
+        format!("{errno} (this filesystem does not support an atomic rename exchange)")
+    } else {
+        errno.to_string()
+    };
+    return Err(io_err("atomic rename exchange", why));
+}
 ```
+**DTAB impact:** none on Linux. On macOS with an unsupporting volume DTAB-03 steering fails closed (by design), so this only affects diagnosability.
 
-### IN-05: Body-relative `DIRECTION.md:<line>` in the TUI now differs from `driver check` and the launcher's own refusal
+### IN-07: At a zero row budget both lint popups drop every finding and leave a header that ends in a colon
 
-**File:** `src/ui/screens/driver_launch.rs:388` (preflight), `src/app.rs:1559-1561`, against `src/launcher/run.rs:246` (`lint_direction(&text)`), whose `DirectionInvalid` problems feed `launch_error_copy` (`driver_launch.rs:456`)
-**Issue:** WR-04's fix numbers TUI findings from the first body line, which matches the editor. The launcher and `driver check` still lint the whole file, with the tool block counted. If the file changes between the preflight and the launch, `launch_error_copy` prints "First problem: DIRECTION.md:57: ..." with a whole-file number, and the same problem is "DIRECTION.md:25" in the form. The label gives no hint which base is meant. The window is narrow (the preflight normally prevents it), so this is informational.
-**Fix:** Either prefix the TUI numbers with a base-revealing label (`body line 25`), or have `launch_error_copy` re-base a `DirectionInvalid` problem by the frontmatter line count. Whichever is chosen, the message and the editor should name the same line.
+**File:** `src/ui/screens/driver_launch.rs:1512-1527` (`LintPopupScreen`), `src/ui/screens/driver_steer.rs:877-899` (`EditLintConfirmScreen`)
+**Issue:** The IN-04 fix (leave the list out at a zero budget) is what the prior review proposed, and it does make `y` live. A side effect is that at those one or two terminal heights the popup reads "driver check found 10 problem(s) in your edit:" directly above "Apply it anyway?". The user confirms an edit that lint rejected without seeing any finding. The same applies when `rows == 1` and the first finding does not fit: `fit_list` returns only `… N more`. The count is disclosed, so this is not a safety hole. It is a thin-disclosure choice on the lint-override confirmation specifically.
+**Fix:** When the list is dropped, end the header without the colon, or add a `(enlarge the terminal to list them)` hint on the muted row. Alternatively keep `y` inert at a zero budget for `EditLintConfirmScreen` (the override), and live only for `LintPopupScreen` (the "edit again" popup, where disclosure is not what `y` accepts).
+**DTAB impact:** none.
 
 ---
 
-_Reviewed: 2026-10-21_
+_Reviewed: 2026-10-23_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
