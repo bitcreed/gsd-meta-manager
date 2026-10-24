@@ -606,37 +606,35 @@ mod tests {
     #[test]
     fn the_golden_allowlist_with_overlay() {
         let got = paths(&home_allowlist(&facts(), true));
+        // Parents before children: by depth, then name. Pinned literally so a change
+        // to a derivation rule shows up as a diff of this list.
         let want = [
             "tmpfs /home/u/.cache",
             "ro /home/u/.gsd",
-            "ro /home/u/.cargo/bin",
-            "ro /home/u/.cargo/env",
-            "ro /home/u/.rustup",
-            "ro /home/u/.config/rtk",
-            "ro /home/u/.local/bin/rtk",
-            "ro /home/u/.cargo/config",
-            "ro /home/u/.local/bin/claude",
-            "ro /home/u/.claude/hooks",
-            "ro /home/u/.claude/agents",
-            "ro /home/u/.claude/skills",
-            "ro /home/u/.claude/scripts",
-            "ro /home/u/.claude/commands",
-            "ro /home/u/.claude/gsd-core",
-            "ro /home/u/.claude/.gsd-profile",
-            "ro /home/u/.claude/get-shit-done",
-            "ro /home/u/.cargo/config.toml",
             "ro /home/u/.gsd-capabilities.json",
-            "ro /home/u/.local/share/claude",
-            "ro /home/u/.nvm/versions/node/v24",
+            "ro /home/u/.rustup",
+            "ro /home/u/.cargo/bin",
+            "ro /home/u/.cargo/config",
+            "ro /home/u/.cargo/config.toml",
+            "ro /home/u/.cargo/env",
             "overlay /home/u/.cargo/git",
             "overlay /home/u/.cargo/registry",
+            "ro /home/u/.claude/.gsd-profile",
+            "ro /home/u/.claude/agents",
+            "ro /home/u/.claude/commands",
+            "ro /home/u/.claude/get-shit-done",
+            "ro /home/u/.claude/gsd-core",
+            "ro /home/u/.claude/hooks",
+            "ro /home/u/.claude/scripts",
+            "ro /home/u/.claude/skills",
+            "ro /home/u/.config/rtk",
+            "ro /home/u/.local/bin/claude",
+            "ro /home/u/.local/bin/rtk",
+            "ro /home/u/.local/share/claude",
             "tmpfs /home/u/.local/share/rtk",
+            "ro /home/u/.nvm/versions/node/v24",
         ];
-        let mut want: Vec<String> = want.iter().map(|s| (*s).to_owned()).collect();
-        want.sort_by_key(|entry| {
-            let path = entry.split_once(' ').unwrap().1.to_owned();
-            (Path::new(&path).components().count(), path)
-        });
+        let want: Vec<String> = want.iter().map(|s| (*s).to_owned()).collect();
         assert_eq!(got, want);
         assert!(!got.iter().any(|e| e == "ro /home/u/.cargo"));
         assert!(!got.iter().any(|e| e == "ro /home/u/.local"));
@@ -833,6 +831,95 @@ mod tests {
         assert!(!line.contains("s10"));
         assert!(line.ends_with(", and 2 more"));
         assert_eq!(HomeSetup::default().dangling_notice(home), None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn for_host_writes_a_private_gitconfig_and_names_only_host_entries_as_roots() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::TempDir::new().unwrap();
+        let home = root.path().join("home");
+        let state = root.path().join("state");
+        fs::create_dir_all(home.join(".gsd")).unwrap();
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        let setup = HomeSetup::for_host(
+            &home,
+            Path::new("/nonexistent/gsd-meta-manager"),
+            true,
+            &state,
+        )
+        .unwrap();
+        let gitconfig = setup.gitconfig.clone().unwrap();
+        assert_eq!(gitconfig, state.join(GITCONFIG_FILE));
+        let mode = fs::metadata(&gitconfig).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Only the three keys, whatever the host's own git configuration holds.
+        let text = fs::read_to_string(&gitconfig).unwrap();
+        for line in text.lines() {
+            let line = line.trim();
+            assert!(
+                line.is_empty()
+                    || ["[user]", "[init]"].contains(&line)
+                    || ["name = ", "email = ", "defaultBranch = "]
+                        .iter()
+                        .any(|key| line.starts_with(key)),
+                "unexpected gitconfig line {line:?}"
+            );
+        }
+        assert!(setup.keep_roots.contains(&home.join(".gsd")));
+        assert!(setup
+            .keep_roots
+            .iter()
+            .all(|root| !root.starts_with(home.join(".ssh"))));
+        assert!(setup.binds.iter().any(
+            |bind| matches!(bind, HomeBind::Tmpfs { path, .. } if path == &home.join(".cache"))
+        ));
+        assert!(!setup
+            .keep_roots
+            .iter()
+            .any(|root| root == &home.join(".cache")));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn two_launches_write_separate_gitconfigs_and_leave_no_temp_file() {
+        let root = tempfile::TempDir::new().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let states: Vec<PathBuf> = ["a", "b"]
+            .iter()
+            .map(|name| {
+                let dir = root.path().join(name);
+                fs::create_dir_all(&dir).unwrap();
+                dir
+            })
+            .collect();
+        let handles: Vec<_> = states
+            .iter()
+            .flat_map(|state| std::iter::repeat_n(state.clone(), 3))
+            .map(|state| {
+                let home = home.clone();
+                std::thread::spawn(move || {
+                    HomeSetup::for_host(&home, Path::new("/nonexistent/x"), false, &state).unwrap()
+                })
+            })
+            .collect();
+        let setups: Vec<HomeSetup> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(setups[0].gitconfig, Some(states[0].join(GITCONFIG_FILE)));
+        assert_eq!(setups[3].gitconfig, Some(states[1].join(GITCONFIG_FILE)));
+        for state in &states {
+            let names: Vec<String> = fs::read_dir(state)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, [GITCONFIG_FILE], "{state:?}");
+        }
+        // Whatever the interleaving, a reader sees the whole file.
+        assert_eq!(
+            fs::read(states[0].join(GITCONFIG_FILE)).unwrap(),
+            fs::read(states[1].join(GITCONFIG_FILE)).unwrap()
+        );
     }
 
     #[test]

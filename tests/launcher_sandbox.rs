@@ -271,6 +271,65 @@ fn home_str_join(home: &std::path::Path, rel: &str) -> String {
 }
 
 #[test]
+fn no_flag_names_a_credential_directory_and_the_home_block_precedes_the_run_binds() {
+    use gsd_meta_manager::launcher::sandbox::TMPFS_MASK_DIRS;
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let state = root.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    for rel in TMPFS_MASK_DIRS {
+        fs::create_dir_all(home.join(rel)).unwrap();
+        fs::write(home.join(rel).join("secret"), "x").unwrap();
+    }
+    fs::create_dir_all(home.join(".gsd")).unwrap();
+    let setup = HomeSetup::for_host(
+        &home,
+        std::path::Path::new("/nonexistent/exe"),
+        true,
+        &state,
+    )
+    .unwrap();
+    let spec = SandboxSpec::from_host(paths(), &home, &setup);
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+    for rel in TMPFS_MASK_DIRS {
+        let mask = home.join(rel).display().to_string();
+        assert!(
+            !argv.iter().any(|a| a.starts_with(&mask)),
+            "{mask} must appear in no flag (D-20): {argv:?}"
+        );
+    }
+    let at = |flag: &str, a: &str| {
+        argv.windows(2)
+            .position(|w| w[0] == flag && w[1] == a)
+            .unwrap_or_else(|| panic!("{flag} {a} missing: {argv:?}"))
+    };
+    let home_str = home.display().to_string();
+    let run = at("--tmpfs", "/run");
+    let tmpfs = at("--tmpfs", &home_str);
+    let gsd = at("--ro-bind", &home.join(".gsd").display().to_string());
+    let gitconfig = at("--ro-bind", &state.join("gitconfig").display().to_string());
+    let project = at("--bind", "/work/proj");
+    let cfg = at("--bind", CFG);
+    let runtime = at("--tmpfs", "/run/user/1000");
+    assert_eq!(argv[run + 2..run + 4], ["--size", "268435456"]);
+    assert_eq!(tmpfs, run + 4, "the sized tmpfs follows --tmpfs /run");
+    assert!(tmpfs < gsd && gsd < gitconfig, "binds, then the gitconfig");
+    assert!(gitconfig < project && project < cfg && cfg < runtime);
+    assert_eq!(argv[gitconfig + 2], format!("{home_str}/.gitconfig"));
+    // Every `$HOME` mount is a single tmpfs, a read-only bind or an overlay: nothing
+    // is bound read-write under the home but the project, config dir and sockets.
+    for (i, a) in argv.iter().enumerate() {
+        if a == "--bind" {
+            let target = &argv[i + 1];
+            assert!(
+                !target.starts_with(&home_str),
+                "{target} is bound read-write under the home"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_etc_block_precedes_remount_and_skips_host_claude_code() {
     let etc = TempDir::new().unwrap();
     fs::write(etc.path().join("hosts"), "127.0.0.1 localhost\n").unwrap();

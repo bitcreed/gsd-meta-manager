@@ -163,7 +163,11 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
     // The sandbox run logs into the writable config dir; the control logs elsewhere.
     let sandbox_log = config_dir.join("hook.log");
     let control_log = root.join("control-hook.log");
-    let logger = root.join("logger.sh");
+    // The gate binary stand-in must be reachable inside the sandbox, whose `$HOME` is
+    // now an allowlist (28.1-08, D-16): the writable config dir is bound, the scratch
+    // root is not.
+    fs::create_dir_all(&config_dir).unwrap();
+    let logger = config_dir.join("logger.sh");
     fs::write(&logger, logger_script(&sandbox_log)).unwrap();
     fs::set_permissions(&logger, fs::Permissions::from_mode(0o755)).unwrap();
 
