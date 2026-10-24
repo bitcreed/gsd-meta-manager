@@ -5,10 +5,10 @@ current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: shipped
 stopped_at: v1.15.0 released (interim, mid v2.0); next is /gsd-verify-work 28, then /gsd-verify-work 30
-last_updated: "2026-10-24T02:00:36.103Z"
+last_updated: "2026-10-24T08:23:22.129Z"
 last_activity: 2026-10-24
 last_activity_desc: v1.15.0 released — Workstream Visibility
-state_head: 5ee12e10746b0aad56c48809c2bb76b259120193
+state_head: 58acaa2bb12ea1d99599369bc5249bfae7c27b31
 progress:
   total_phases: 10
   completed_phases: 12
@@ -288,7 +288,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-24 - Completed quick task 261023-qs8: fix flaky driverctl_race two-writers direction-lock test
+Last activity: 2026-10-24 - Completed quick task 261023-v1s: fix flaky driverctl_race editor_race_smoke test
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -920,6 +920,7 @@ Recent decisions affecting current work:
 | 261023-p51 | bound pre-tag-check --container Docker storage (cache cap, label-scoped prune, --clean) | 2026-10-23 | 062d4b3 | [261023-p51-bound-pre-tag-check-container-storage](./quick/261023-p51-bound-pre-tag-check-container-storage/) |
 | 261023-pxh | Fix crate packaging excludes (root-anchor /assets/) and add pre-tag-check gate 6 cargo package --locked | 2026-10-23 | eccf0fe | [261023-pxh-fix-crate-packaging-excludes-and-add-pre](./quick/261023-pxh-fix-crate-packaging-excludes-and-add-pre/) |
 | 261023-qs8 | Fix flaky driverctl_race two-writers direction-lock test (two-way lock handshake; 22/200 -> 0/200 in container) | 2026-10-23 | 5ee12e1 | [261023-qs8-fix-flaky-driverctl-race-two-writers-dir](./quick/261023-qs8-fix-flaky-driverctl-race-two-writers-dir/) |
+| 261023-v1s | fix flaky driverctl_race editor_race_smoke (product give-back race + test quiet splice); also driverctl_serve flood and driver_lock SIGKILL flakes | 2026-10-24 | 58acaa2 | [261023-v1s-fix-flaky-editor-race-smoke-test-in-driv](./quick/261023-v1s-fix-flaky-editor-race-smoke-test-in-driv/) |
 
 ## Session Continuity
 
