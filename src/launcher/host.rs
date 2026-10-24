@@ -499,13 +499,9 @@ mod tests {
 
     #[test]
     fn the_bwrap_probe_unshares_the_namespaces_the_profile_does() {
-        for flag in [
-            "--unshare-pid",
-            "--unshare-net",
-            "--unshare-ipc",
-            "--unshare-uts",
-        ] {
-            assert!(BWRAP_PROBE_ARGS.contains(&flag), "{flag}");
+        for ns in ["pid", "net", "ipc", "uts"] {
+            let flag = format!("--unshare-{ns}");
+            assert!(BWRAP_PROBE_ARGS.contains(&flag.as_str()), "{flag}");
         }
         assert_eq!(BWRAP_PROBE_ARGS.last(), Some(&"true"));
     }
