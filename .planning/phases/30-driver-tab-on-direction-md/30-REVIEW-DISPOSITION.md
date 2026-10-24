@@ -11,14 +11,26 @@ findings:
     severity: warning
     disposition: open
     title: "`run_loop`'s guarded read has no size cap, although every other run-directory reader enforces 1 MiB"
-  - id: IN-05
-    severity: info
-    disposition: deferred
-    title: "Body-relative `DIRECTION.md:<line>` in the TUI differs from `driver check` and the launcher's own refusal (carried, unchanged)"
+  - id: WR-10
+    severity: warning
+    disposition: open
+    title: "A give-back `ENOENT` strands the human's newest save at a hidden temp name, where the next launch sweeps it"
   - id: IN-06
     severity: info
     disposition: open
     title: "macOS exchange failure on a volume without `RENAME_SWAP` surfaces under the Linux syscall name"
+  - id: IN-08
+    severity: info
+    disposition: open
+    title: "`contended > 0` is satisfied by any busy tool thread, so it does not show the read-to-exchange window was raced"
+  - id: IN-09
+    severity: info
+    disposition: open
+    title: "Exhausting the give-back leaves the newest save at the temp name and an older one at `DIRECTION.md`"
+  - id: IN-05
+    severity: info
+    disposition: deferred
+    title: "Body-relative `DIRECTION.md:<line>` in the TUI differs from `driver check` and the launcher's own refusal (carried, unchanged)"
   - id: IN-07
     severity: info
     disposition: open
@@ -67,9 +79,9 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 4
-total: 16
-recorded: 2026-10-24T04:34:13.868Z
+open: 7
+total: 19
+recorded: 2026-10-24T18:41:08.771Z
 ---
 
 # Phase 30: Code Review Disposition
@@ -78,9 +90,12 @@ recorded: 2026-10-24T04:34:13.868Z
 |---------|----------|-------------|--------|
 | WR-08 | warning | open | - |
 | WR-09 | warning | open | - |
-| IN-05 | info | deferred | [INFERRED — audit] carried from the 2026-10-21 ledger: same finding re-reported 2026-10-23 with a "(carried, unchanged)" title suffix, which the ledger script read as an id reuse; only visible if DIRECTION.md changes between preflight and launch; body-relative numbering is the D-17/D-18 editor contract; relabel or re-base in a later cleanup |
+| WR-10 | warning | open | - |
 | IN-06 | info | open | - |
-| IN-07 | info | open | - |
+| IN-08 | info | open | - |
+| IN-09 | info | open | - |
+| IN-05 | info | deferred | [INFERRED — audit] carried from the 2026-10-21 ledger: same finding re-reported 2026-10-23 with a "(carried, unchanged)" title suffix, which the ledger script read as an id reuse; only visible if DIRECTION.md changes between preflight and launch; body-relative numbering is the D-17/D-18 editor contract; relabel or re-base in a later cleanup (not in the current review) |
+| IN-07 | info | open | - (not in the current review) |
 | WR-02 | warning | fixed | fixed by quick 261021-101 64f73e7 (run_loop opens DIRECTION.md and the exchanged temp through open_run_file) (not in the current review) |
 | WR-07 | warning | fixed | fixed by quick 261021-101 a3201ba (model_name_ok admits [ and ]; relaunch_prefill shares the predicate) (not in the current review) |
 | IN-04 | info | fixed | fixed by quick 261021-101 ce352c0 (both lint popups skip fit_list at a zero row budget) (not in the current review) |
