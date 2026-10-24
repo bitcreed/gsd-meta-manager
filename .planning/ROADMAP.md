@@ -1185,7 +1185,7 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 6/10 plans executed
+**Plans**: 7/10 plans executed
 
 Plans:
 **Wave 1**
@@ -1199,7 +1199,7 @@ Plans:
 - [x] 28.1-06-PLAN.md — Driver tab, launch form and degraded confirm show absent protections, planted findings, auth posture; docs/DRIVER-SANDBOX.md residual risks (LNCH-15, LNCH-14, LNCH-11, LNCH-12)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 28.1-10-PLAN.md — `--unshare-net/ipc/uts` + `/run` tmpfs profile, egress socket re-bind, dummy-token env; live netns probes and a real claude through the bridge and TLS proxy (LNCH-09, LNCH-12, LNCH-13)
+- [x] 28.1-10-PLAN.md — `--unshare-net/ipc/uts` + `/run` tmpfs profile, egress socket re-bind, dummy-token env; live netns probes and a real claude through the bridge and TLS proxy (LNCH-09, LNCH-12, LNCH-13)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 28.1-07-PLAN.md — `driver launch` through the egress proxy: per-launch server, bridged driver, allowlist applied, posture recorded; live SC1 launch and D-11 setup-token reach probe (LNCH-09, LNCH-12, LNCH-13)
