@@ -103,7 +103,10 @@ exec "$@"
 "#;
 
 const BWRAP_SHIM: &str = r#"#!/bin/sh
-# Fake bwrap: log, drop the options, exec the command.
+# Fake bwrap: log, drop the options, exec the command. A bridged command
+# (`<exe> bridge ... -- <cmd>`, 28.1-07) drops the bridge too: there is no network
+# namespace here, so the real bridge would bind its fixed port on the host. The
+# bridge is proved by tests/launcher_bridge.rs and the live tests.
 {
   printf 'bwrap'
   for a in "$@"; do
@@ -119,6 +122,13 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "--" ]; then shift; break; fi
   shift
 done
+if [ "$2" = "bridge" ]; then
+  shift
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--" ]; then shift; break; fi
+    shift
+  done
+fi
 exec "$@"
 "#;
 

@@ -20,12 +20,50 @@ use gsd_meta_manager::driver::lock::{
     acquire_at, probe_at, read_holder_at, run_lock_path, LockProbe,
 };
 use gsd_meta_manager::launcher::prompt::{custom_version, MASTER_PROMPT};
+use gsd_meta_manager::launcher::sandbox::DUMMY_OAUTH_TOKEN;
 use gsd_meta_manager::state_reader::driver_frontmatter::{
     read_driver_run, DerivedStatus, RunStatus,
 };
 use launcher_support::{
     wait_until, Fixture, BODY, RUN_ID, TOKEN, WAITING_SCENARIO, WELL_MANNERED_SCENARIO,
 };
+
+/// The egress socket path the fake bwrap logged in its `--bind` line.
+fn egress_socket_of(shim: &str) -> String {
+    let marker = "/egress-";
+    let at = shim
+        .find(marker)
+        .unwrap_or_else(|| panic!("no egress socket in:\n{shim}"));
+    let start = shim[..at].rfind(' ').map_or(0, |i| i + 1);
+    let end = shim[at..]
+        .find(".sock")
+        .map(|i| at + i + ".sock".len())
+        .unwrap();
+    shim[start..end].to_owned()
+}
+
+/// Assert no regular file under `dir` (recursively, symlinks not followed) holds `secret`.
+fn assert_token_in_no_file(dir: &std::path::Path, secret: &str) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            assert_token_in_no_file(&path, secret);
+        } else if meta.is_file() {
+            let bytes = fs::read(&path).unwrap_or_default();
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(secret),
+                "the real token is in {}",
+                path.display()
+            );
+        }
+    }
+}
 
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
@@ -462,13 +500,43 @@ fn launch_runs_the_driver_in_the_scope_and_records_its_end() {
             .is_some_and(|l| l.starts_with(&format!("PATH={}/bin:", config_dir.display()))),
         "the shim dir leads PATH:\n{env}"
     );
+    // 28.1 D-04: the sandboxed driver holds the DUMMY token and the bridge URL; the
+    // real (stored) token is the launcher-side egress server's and is in no env
+    // value, argv word or file.
     assert_eq!(
         fx.recorded("token.txt"),
-        TOKEN,
-        "the stored token reaches the child"
+        DUMMY_OAUTH_TOKEN,
+        "the driver holds the dummy token"
+    );
+    for want in [
+        "ANTHROPIC_BASE_URL=http://127.0.0.1:3128",
+        "HTTPS_PROXY=http://127.0.0.1:3128",
+        "https_proxy=http://127.0.0.1:3128",
+        "HTTP_PROXY=http://127.0.0.1:3128",
+        "http_proxy=http://127.0.0.1:3128",
+        "NO_PROXY=127.0.0.1,localhost",
+        "no_proxy=127.0.0.1,localhost",
+        "ENABLE_CLAUDEAI_MCP_SERVERS=false",
+        "DISABLE_TELEMETRY=1",
+    ] {
+        assert!(env.lines().any(|l| l == want), "{want} in:\n{env}");
+    }
+
+    // The bridge wraps the driver: `<exe> bridge --port 3128 --sock <egress sock> --`.
+    let egress_sock = egress_socket_of(&shim);
+    assert!(
+        shim.contains(&format!(
+            "bridge --port 3128 --sock {egress_sock} -- claude -p "
+        )),
+        "the driver runs behind the bridge: {shim}"
+    );
+    assert!(
+        shim.contains(&format!("--bind {egress_sock} {egress_sock}")),
+        "the egress socket is bound into the sandbox: {shim}"
     );
 
-    // The token is in the environment only: no argv, no file the launcher wrote.
+    // The real token is nowhere: no argv, no file the launcher wrote, no state-dir
+    // file, not the egress log.
     assert!(!shim.contains(TOKEN), "token in a shim argv line");
     for name in ["LOG.md", "state.json", "DIRECTION.md"] {
         assert!(!fx.run_file(name).contains(TOKEN), "token in {name}");
@@ -484,6 +552,13 @@ fn launch_runs_the_driver_in_the_scope_and_records_its_end() {
             .unwrap()
             .contains(TOKEN),
         "token in the launch log"
+    );
+    assert_token_in_no_file(&fx.state_dir(), TOKEN);
+    assert_token_in_no_file(&config_dir, TOKEN);
+    assert_token_in_no_file(&fx.run_dir, TOKEN);
+    assert!(
+        fx.state_dir().join("egress.log").is_file(),
+        "the egress log exists"
     );
 
     // The prompt was rendered from the template (D-03).
@@ -1083,4 +1158,74 @@ fn detached_second_launch_returns_3() {
     assert!(wait_until(Duration::from_secs(20), || {
         probe_at(&run_lock_path(&fx.run_dir)) == LockProbe::Free
     }));
+}
+
+/// The egress socket path a run of this fixture binds (D-09): `egress-<hash8>.sock`
+/// beside the driverctl socket in the fixture's private runtime dir.
+fn egress_socket_for(fx: &Fixture, run_id: &str) -> std::path::PathBuf {
+    let run_dir = fs::canonicalize(
+        fx.project()
+            .join(".planning/meta-manager/drivers")
+            .join(run_id),
+    )
+    .unwrap();
+    let sock =
+        gsd_meta_manager::driverctl::serve::socket_path_in(Some(&fx.runtime_dir), run_id, &run_dir)
+            .unwrap();
+    gsd_meta_manager::launcher::egress::socket_path_for(&sock, &run_dir)
+}
+
+#[test]
+fn a_stale_egress_socket_is_replaced_at_the_next_launch() {
+    // LNCH-09 concurrency (explicit): a launcher killed before it could clean up
+    // leaves its egress socket behind. The next launch holds the run lock, so the
+    // dead socket is replaced and the launch goes on.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let stale = egress_socket_for(&fx, RUN_ID);
+    drop(std::os::unix::net::UnixListener::bind(&stale).expect("a dead socket file"));
+    assert!(stale.exists(), "the stale socket is on disk");
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.state_json()["status"], "stopped");
+    assert!(
+        fx.shim_log().contains(&stale.display().to_string()),
+        "the launch used the same egress path: {}",
+        fx.shim_log()
+    );
+    assert!(
+        !stale.exists(),
+        "the launcher removes its socket at the end"
+    );
+}
+
+#[test]
+fn two_runs_get_separate_egress_sockets() {
+    // LNCH-09 concurrency (explicit): two runs of one project never share an
+    // egress socket, so one run's stop cannot cut the other's proxy.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let second = fx.project().join(".planning/meta-manager/drivers/r29");
+    fs::create_dir_all(&second).unwrap();
+    fs::write(second.join("DIRECTION.md"), BODY).unwrap();
+
+    for run_id in [RUN_ID, "r29"] {
+        let out = fx
+            .launch_command(run_id, &[])
+            .output()
+            .expect("the binary is spawnable");
+        assert!(out.status.success(), "{run_id}: {}", stderr(&out));
+    }
+    let first = egress_socket_for(&fx, RUN_ID);
+    let other = egress_socket_for(&fx, "r29");
+    assert_ne!(first, other, "one egress socket per run dir");
+    let shim = fx.shim_log();
+    for sock in [&first, &other] {
+        assert!(
+            shim.contains(&format!("--sock {} --", sock.display())),
+            "{} bridged in:\n{shim}",
+            sock.display()
+        );
+    }
 }

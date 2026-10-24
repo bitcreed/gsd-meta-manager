@@ -61,9 +61,12 @@ use chrono::Utc;
 use rustix::process::Signal;
 use serde_json::Value;
 
-use super::auth::{host_access_token, resolve_launch_token, AuthError};
+use super::auth::{host_access_token, resolve_launch_token, AuthError, TokenSource};
 use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec, HOST_MANAGED_DIR};
-use super::egress;
+use super::egress::upstream::Upstream;
+use super::egress::{
+    self, EgressHandle, EgressServer, EgressSpec, EgressStats, TokenProvider, INFERENCE_HOST,
+};
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::host::{decide, detect, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
@@ -71,8 +74,9 @@ use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::prompt::{self, ResolvedPrompt};
 use super::push;
 use super::sandbox::{
-    bwrap_argv, child_env, claude_argv, render_prompt, scope_unit_name, systemd_run_argv,
-    LaunchPaths, SandboxSpec, MAX_PROMPT_BYTES,
+    bridged_command, bwrap_argv, child_env, claude_argv, common_env_sets, egress_env_sets,
+    render_prompt, scope_unit_name, systemd_run_argv, LaunchPaths, SandboxSpec, BRIDGE_PORT,
+    MAX_PROMPT_BYTES,
 };
 use super::LauncherError;
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
@@ -129,6 +133,9 @@ const RUNTIME_MAX_GRACE_S: u64 = 300;
 
 /// The monitor writes the summed active seconds at most this often (D-13).
 const ACTIVE_PERSIST_EVERY: Duration = Duration::from_secs(15);
+
+/// The header-free egress log, under the run's launcher state directory (D-05).
+const EGRESS_LOG: &str = "egress.log";
 
 /// The `state.json` key counting auth relaunches (D-23).
 const EXTRA_AUTH_RELAUNCHES: &str = "auth_relaunches";
@@ -387,6 +394,11 @@ struct LaunchContext {
     state_dir: PathBuf,
     config_dir: PathBuf,
     sock: PathBuf,
+    /// The run's egress socket, beside the driverctl socket (D-09). Only a
+    /// bwrap-scope launch binds it.
+    egress_sock: PathBuf,
+    /// This binary: the sandbox runs it as `bridge` (D-08).
+    binary: PathBuf,
     home: PathBuf,
     /// The launcher's per-user data root (the push mirror lives under it).
     driver_root: PathBuf,
@@ -527,6 +539,8 @@ struct Exited {
     user_stopped: bool,
     /// The cap the monitor tripped (and so killed the driver for), if any.
     tripped: Option<String>,
+    /// What this launch's egress server counted (all zero without one, D-14).
+    egress: EgressStats,
 }
 
 /// How the wait on the driver child ended.
@@ -625,10 +639,11 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
 
     let config_dir = state_dir.join("claude-config");
     let binary = std::env::current_exe().map_err(|e| io_error("locate this binary", e))?;
+    let egress_sock = egress::socket_path_for(&sock, &run_dir);
     let seeded = seed(&SeedSpec {
         config_dir: config_dir.clone(),
         host_claude_dir: home.join(".claude"),
-        binary,
+        binary: binary.clone(),
         run_dir: run_dir.clone(),
         socket: sock.clone(),
         managed: matches!(posture, Posture::BwrapScope),
@@ -660,6 +675,8 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         state_dir,
         config_dir,
         sock,
+        egress_sock,
+        binary,
         home,
         driver_root: root,
         user_stop,
@@ -1335,7 +1352,7 @@ fn supervise(
         run_dir: ctx.run_dir.clone(),
         config_dir: ctx.config_dir.clone(),
         socket: ctx.sock.clone(),
-        egress_socket: egress::socket_path_for(&ctx.sock, &ctx.run_dir),
+        egress_socket: ctx.egress_sock.clone(),
     };
     let prompt = render_prompt(
         &ctx.template,
@@ -1344,6 +1361,13 @@ fn supervise(
         ctx.opts.loop_mode.as_str(),
     );
     let driver_argv = claude_argv(&prompt, &ctx.opts.model, ctx.opts.max_budget_usd);
+    // D-04, D-09: a sandboxed launch holds its token in a launcher-side egress server
+    // and runs the driver behind the bridge. The guard stops the server on every
+    // return path below (normal end, cap kill, user stop, startup failure).
+    let egress_guard = match ctx.posture {
+        Posture::BwrapScope => Some(EgressGuard::start(ctx)?),
+        Posture::Degraded { .. } => None,
+    };
     // D-29: the degraded driver is `claude` itself: same env, config dir and socket,
     // but no bwrap and no scope, so none of the 28-03 isolation applies to it.
     let argv = match ctx.posture {
@@ -1351,7 +1375,8 @@ fn supervise(
             let spec = SandboxSpec::from_host(paths, &ctx.home);
             // D-13: the backstop behind the monitor. A degraded launch has none (D-29).
             let runtime_max = budget.remaining.map(runtime_max_sec);
-            systemd_run_argv(unit, runtime_max, &bwrap_argv(&spec, &driver_argv))
+            let bridged = bridged_command(&ctx.binary, BRIDGE_PORT, &ctx.egress_sock, &driver_argv);
+            systemd_run_argv(unit, runtime_max, &bwrap_argv(&spec, &bridged))
         }
         Posture::Degraded { .. } => driver_argv,
     };
@@ -1361,19 +1386,27 @@ fn supervise(
         path.push(":");
         path.push(host_path);
     }
-    let env = child_env(
-        std::env::vars_os(),
-        &[
-            ("CLAUDE_CONFIG_DIR", ctx.config_dir.clone().into_os_string()),
-            ("DRIVERCTL_SOCK", ctx.sock.clone().into_os_string()),
-            // Read by the master prompt (spike 001-003 `MASTER-PROMPT.md`), not by this
-            // crate: it tells the driver's scripts the launcher already holds the run
-            // lock, so they must not try to take it (IN-01).
-            ("DRIVER_LOCK_HELD", "1".into()),
-            ("PATH", path),
-            ("CLAUDE_CODE_OAUTH_TOKEN", ctx.token.value.clone().into()),
-        ],
-    );
+    let mut sets: Vec<(&str, std::ffi::OsString)> = vec![
+        ("CLAUDE_CONFIG_DIR", ctx.config_dir.clone().into_os_string()),
+        ("DRIVERCTL_SOCK", ctx.sock.clone().into_os_string()),
+        // Read by the master prompt (spike 001-003 `MASTER-PROMPT.md`), not by this
+        // crate: it tells the driver's scripts the launcher already holds the run
+        // lock, so they must not try to take it (IN-01).
+        ("DRIVER_LOCK_HELD", "1".into()),
+        ("PATH", path),
+    ];
+    sets.extend(common_env_sets());
+    match ctx.posture {
+        // D-04: the sandboxed driver holds a dummy token and the bridge URL; the
+        // real token lives in the egress server and nowhere the sandbox can read.
+        Posture::BwrapScope => sets.extend(egress_env_sets(BRIDGE_PORT)),
+        // D-27: the degraded driver has no proxy to hide the token behind.
+        Posture::Degraded { .. } => {
+            sets.push(("CLAUDE_CODE_OAUTH_TOKEN", ctx.token.value.clone().into()));
+        }
+    }
+    let env = child_env(std::env::vars_os(), &sets);
+    drop(sets);
 
     let out_path = ctx.state_dir.join(format!("launch-{n}.jsonl"));
     let out = fs::OpenOptions::new()
@@ -1431,6 +1464,8 @@ fn supervise(
     if !user_stopped && tripped.is_none() {
         containment.stop_leftovers();
     }
+    // The driver is gone: stop the egress server and keep what it counted (D-14).
+    let egress = egress_guard.map(EgressGuard::finish).unwrap_or_default();
 
     let rc = status
         .code()
@@ -1441,7 +1476,69 @@ fn supervise(
         stream: summarize_stream_file(&out_path, Utc::now()),
         user_stopped,
         tripped: tripped.or_else(|| tripped_cap(&ctx.tripped)),
+        egress,
     })
+}
+
+/// One launch's egress server (D-04, D-09): the run's token and the CONNECT allowlist
+/// live here, on the launcher side. Dropping the guard stops the server and removes
+/// the socket file, so every return path out of [`supervise`] cleans up.
+struct EgressGuard {
+    handle: Option<EgressHandle>,
+    sock: PathBuf,
+}
+
+impl EgressGuard {
+    /// Bind the run's egress socket (the run lock is held, so a stale socket from a
+    /// killed launcher is replaced) and start serving it with this launch's token.
+    fn start(ctx: &LaunchContext) -> Result<Self, LauncherError> {
+        let listener =
+            bind_run_socket(&ctx.egress_sock).map_err(|e| io_error("bind the egress socket", e))?;
+        // Declared before the server starts so a failed start still removes the file.
+        let mut guard = EgressGuard {
+            handle: None,
+            sock: ctx.egress_sock.clone(),
+        };
+        let token = match ctx.token.source {
+            TokenSource::Stored => TokenProvider::Static(ctx.token.value.clone()),
+            TokenSource::Host => TokenProvider::Host {
+                claude_dir: ctx.home.join(".claude"),
+                initial: ctx.token.value.clone(),
+            },
+        };
+        let handle = EgressServer::start(
+            listener,
+            EgressSpec {
+                allow_hosts: Vec::new(),
+                token,
+                upstream: Upstream::Tls {
+                    host: INFERENCE_HOST.to_owned(),
+                    port: 443,
+                },
+                log_path: ctx.state_dir.join(EGRESS_LOG),
+            },
+        )
+        .map_err(|e| io_error("start the egress server", e))?;
+        guard.handle = Some(handle);
+        Ok(guard)
+    }
+
+    /// Stop the server and return what it counted.
+    fn finish(mut self) -> EgressStats {
+        self.handle
+            .take()
+            .map(EgressHandle::stop)
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for EgressGuard {
+    fn drop(&mut self) {
+        // The handle (when still held) stops the server as it drops; the socket file
+        // is removed best effort either way.
+        self.handle.take();
+        let _ = fs::remove_file(&self.sock);
+    }
 }
 
 /// Wait for `child`, running [`tick_once`] and then [`CapMonitor::after_tick`] about

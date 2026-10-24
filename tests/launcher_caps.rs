@@ -568,10 +568,12 @@ fn revoked_host_token_relaunches_twice_then_parks() {
     assert_eq!(state["auth_relaunches"], 2);
     assert_eq!(state["launches"], 3);
 
-    // Every relaunch re-read the host's CURRENT access token ...
+    // 28.1 D-04: a sandboxed driver holds the dummy token on every launch; the
+    // host token each launch's egress server uses is the launcher's alone ...
+    let dummy = gsd_meta_manager::launcher::sandbox::DUMMY_OAUTH_TOKEN;
     assert_eq!(
         fx.recorded("tokens.txt"),
-        "at-host-1\nat-host-2\nat-host-3\n"
+        format!("{dummy}\n{dummy}\n{dummy}\n")
     );
     // ... and neither it nor the refresh token reached any record.
     for secret in ["at-host", "rt-decoy"] {
@@ -580,6 +582,25 @@ fn revoked_host_token_relaunches_twice_then_parks() {
         assert!(!fx.run_file("DIRECTION.md").contains(secret));
     }
     assert!(!fx.any_driver_alive());
+}
+
+#[test]
+fn an_unsandboxed_relaunch_re_reads_the_hosts_current_access_token() {
+    // The degraded posture (D-27) keeps the real token in the driver's
+    // environment, so the re-read of the host's CURRENT token on each auth
+    // relaunch (D-23) is observable there.
+    let fx = Fixture::new();
+    fx.write_token(None);
+    write_host_credentials(&fx, "at-host-1", 3600);
+    fx.write_scenario(&revoked_scenario(3600));
+
+    let out = fx.launch(&["--unsandboxed"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(launch_lines(&fx.log()), 3, "{}", fx.log());
+    assert_eq!(
+        fx.recorded("tokens.txt"),
+        "at-host-1\nat-host-2\nat-host-3\n"
+    );
 }
 
 #[test]
@@ -621,9 +642,13 @@ fn revoked_stored_token_parks_without_relaunch() {
         state["status_reason"],
         "auth: stored token rejected \u{2014} rerun driver auth setup"
     );
+    // The stored token is the egress server's; the sandboxed driver holds the dummy.
     assert_eq!(
         fx.recorded("tokens.txt"),
-        format!("{}\n", launcher_support::TOKEN)
+        format!(
+            "{}\n",
+            gsd_meta_manager::launcher::sandbox::DUMMY_OAUTH_TOKEN
+        )
     );
 }
 

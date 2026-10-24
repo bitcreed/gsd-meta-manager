@@ -18,6 +18,7 @@ use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::{Command, Output, Stdio};
 
+use gsd_meta_manager::launcher::sandbox::DUMMY_OAUTH_TOKEN;
 use launcher_support::{write_executable, Fixture, RUN_ID, TOKEN, WELL_MANNERED_SCENARIO};
 use sha2::{Digest, Sha256};
 
@@ -290,7 +291,9 @@ fn an_empty_stored_token_is_refused_at_launch() {
 #[test]
 fn stored_token_wins_over_the_host_token() {
     // LNCH-05 adjacency + ordering (explicit): both exist, the stored one is
-    // passed alone; ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are never consulted.
+    // held alone; ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are never consulted.
+    // 28.1 D-04: a sandboxed driver is handed the DUMMY token; the stored one is
+    // the egress server's and appears in nothing the launcher wrote.
     let fx = Fixture::new();
     fx.write_scenario(WELL_MANNERED_SCENARIO);
     host_credentials(&fx, 120);
@@ -301,7 +304,11 @@ fn stored_token_wins_over_the_host_token() {
     assert!(out.status.success(), "{}", text(&out));
 
     let passed = fx.recorded("token.txt");
-    assert_eq!(sha(&passed), sha(TOKEN), "the stored token was passed");
+    assert_eq!(
+        passed, DUMMY_OAUTH_TOKEN,
+        "the driver holds the dummy token"
+    );
+    assert_ne!(sha(&passed), sha(TOKEN), "not the stored token");
     assert_ne!(sha(&passed), sha(HOST_ACCESS), "not the host token");
 
     let env = fx.recorded("env.txt");
@@ -320,24 +327,74 @@ fn stored_token_wins_over_the_host_token() {
         "exactly one token variable"
     );
 
-    // The refresh token and the host access token appear nowhere the launcher wrote.
+    // No real token (stored, host access or refresh) appears anywhere the launcher
+    // wrote or the sandbox can read: the run dir, the state dir, the egress log.
     let mut written = vec![env, fx.log(), fx.shim_log(), fx.run_file("state.json")];
     written.push(fs::read_to_string(fx.config_dir().join("settings.json")).unwrap_or_default());
+    written.push(fs::read_to_string(fx.state_dir().join("egress.log")).unwrap_or_default());
     for body in written {
-        for secret in [HOST_REFRESH, HOST_ACCESS, "auth-token-from-the-parent-env"] {
+        for secret in [
+            TOKEN,
+            HOST_REFRESH,
+            HOST_ACCESS,
+            "auth-token-from-the-parent-env",
+        ] {
             assert!(!body.contains(secret), "{secret} leaked into:\n{body}");
         }
     }
 }
 
 #[test]
-fn without_a_stored_token_the_host_access_token_is_passed_and_never_the_refresh_token() {
+fn stored_token_wins_and_is_passed_to_an_unsandboxed_driver() {
+    // D-27: the degraded posture has no proxy to hide the token behind, so the
+    // driver keeps the real stored token in its environment, as before 28.1.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    host_credentials(&fx, 120);
+
+    let out = fx.launch(&["--unsandboxed"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let passed = fx.recorded("token.txt");
+    assert_eq!(sha(&passed), sha(TOKEN), "the stored token was passed");
+    assert_ne!(sha(&passed), sha(HOST_ACCESS), "not the host token");
+}
+
+#[test]
+fn without_a_stored_token_the_host_access_token_is_held_by_the_launcher_and_never_the_refresh_token(
+) {
     let fx = Fixture::new();
     fx.write_scenario(WELL_MANNERED_SCENARIO);
     fx.write_token(None);
     host_credentials(&fx, 120);
 
     let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(
+        fx.recorded("token.txt"),
+        DUMMY_OAUTH_TOKEN,
+        "the sandboxed driver never holds the host access token"
+    );
+    for body in [
+        fx.recorded("env.txt"),
+        fx.log(),
+        fx.shim_log(),
+        fs::read_to_string(fx.state_dir().join("egress.log")).unwrap_or_default(),
+    ] {
+        assert!(
+            !body.contains(HOST_REFRESH) && !body.contains(HOST_ACCESS),
+            "host token leaked:\n{body}"
+        );
+    }
+}
+
+#[test]
+fn without_a_stored_token_the_host_access_token_is_passed_to_an_unsandboxed_driver() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    fx.write_token(None);
+    host_credentials(&fx, 120);
+
+    let out = fx.launch(&["--unsandboxed"]);
     assert!(out.status.success(), "{}", text(&out));
     assert_eq!(sha(&fx.recorded("token.txt")), sha(HOST_ACCESS));
     for body in [fx.recorded("env.txt"), fx.log(), fx.shim_log()] {
