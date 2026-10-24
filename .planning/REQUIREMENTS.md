@@ -215,7 +215,7 @@ Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â
 
   Localhost/LAN services, abstract sockets and host filesystem sockets (e.g. `/run/docker.sock`) are
   unreachable.
-- [ ] **LNCH-10**: `$HOME` is exposed by allowlist (tmpfs plus ro re-binds of toolchains, GSD files and
+- [x] **LNCH-10**: `$HOME` is exposed by allowlist (tmpfs plus ro re-binds of toolchains, GSD files and
   a per-run gitconfig). An unlisted credential file in `$HOME` is unreadable inside.
 - [x] **LNCH-11**: Project files that the operator's later unsandboxed tools execute are ro inside the
   sandbox where present, and detected after the run. Covered: `.git/config`, hooks, worktree pointers,
@@ -391,7 +391,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |
 | LNCH-09 | Phase 28.1 | Complete |
-| LNCH-10 | Phase 28.1 | Pending |
+| LNCH-10 | Phase 28.1 | Complete |
 | LNCH-11 | Phase 28.1 | Complete |
 | LNCH-12 | Phase 28.1 | Complete |
 | LNCH-13 | Phase 28.1 | Pending |
