@@ -168,6 +168,10 @@ struct Rig {
 
 impl Rig {
     fn start(upstream: SocketAddr, token: TokenProvider, allow_hosts: &[&str]) -> Rig {
+        Rig::start_with(Upstream::Plain(upstream), token, allow_hosts)
+    }
+
+    fn start_with(upstream: Upstream, token: TokenProvider, allow_hosts: &[&str]) -> Rig {
         let dir = tempfile::Builder::new()
             .prefix("e")
             .tempdir_in("/tmp")
@@ -180,7 +184,7 @@ impl Rig {
             EgressSpec {
                 allow_hosts: allow_hosts.iter().map(|h| (*h).to_owned()).collect(),
                 token,
-                upstream: Upstream::Plain(upstream),
+                upstream,
                 log_path: log.clone(),
             },
         )
@@ -917,4 +921,33 @@ fn a_client_that_disconnects_mid_body_ends_only_its_own_request() {
             "{response}"
         );
     }
+}
+
+// ------------------------------------------------------------- live (opt-in)
+
+/// The one test that leaves the machine: it dials `api.anthropic.com:443` over
+/// TLS through the real `Upstream::anthropic()` connector, with a bogus token, and
+/// expects the API's own 401. It proves the rustls configuration (ring provider,
+/// webpki roots, ALPN `http/1.1`) against the real host, which the plain-TCP stub
+/// cannot. No credential of the user's is involved.
+///
+///   cargo test --test launcher_egress -- --ignored --nocapture
+#[test]
+#[ignore = "live: dials api.anthropic.com over TLS with a bogus token"]
+fn the_tls_upstream_reaches_the_real_inference_host() {
+    let rig = Rig::start_with(
+        Upstream::anthropic(),
+        TokenProvider::Static("sk-ant-oat01-BOGUS-live-tls-probe-not-a-real-token".to_owned()),
+        &[],
+    );
+    let body = r#"{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
+
+    let response = rig.exchange(&inference_request("/v1/messages", body));
+
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 401"),
+        "expected the API's own 401 for a bogus token: {response}"
+    );
+    assert!(response.contains("authentication_error"), "{response}");
+    assert_eq!(rig.stop().inference_forwarded, 1);
 }
