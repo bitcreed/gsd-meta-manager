@@ -9919,6 +9919,7 @@ mod tests {
         crate::launcher::host::HostCaps {
             missing: Vec::new(),
             claude_version: Some((2, 1, 295)),
+            overlay: true,
         }
     }
 
@@ -10103,6 +10104,7 @@ mod tests {
         crate::launcher::host::HostCaps {
             missing: vec!["bwrap".to_string()],
             claude_version: Some((2, 1, 295)),
+            overlay: false,
         }
     }
 
@@ -10112,6 +10114,7 @@ mod tests {
         crate::launcher::host::HostCaps {
             missing: Vec::new(),
             claude_version: Some((2, 0, 1)),
+            overlay: true,
         }
     }
 

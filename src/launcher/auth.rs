@@ -50,6 +50,17 @@ pub enum TokenSource {
     Host,
 }
 
+impl TokenSource {
+    /// The posture word a launch records as `auth` (28.1, D-10): `setup-token` for
+    /// the stored token, `host-token` for the host login token.
+    pub fn posture(&self) -> &'static str {
+        match self {
+            TokenSource::Stored => "setup-token",
+            TokenSource::Host => "host-token",
+        }
+    }
+}
+
 /// A token for one launch.
 #[derive(Clone, PartialEq, Eq)]
 pub struct LaunchToken {
@@ -475,6 +486,12 @@ mod tests {
         std::fs::write(&path, body).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         path
+    }
+
+    #[test]
+    fn the_token_source_posture_words_are_setup_token_and_host_token() {
+        assert_eq!(TokenSource::Stored.posture(), "setup-token");
+        assert_eq!(TokenSource::Host.posture(), "host-token");
     }
 
     fn now() -> DateTime<Utc> {

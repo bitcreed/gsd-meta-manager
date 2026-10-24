@@ -2763,6 +2763,7 @@ mod tests {
         let ready = HostCaps {
             missing: Vec::new(),
             claude_version: Some((2, 1, 295)),
+            overlay: true,
         };
         let dir = tempfile::tempdir().expect("temp dir");
 
@@ -2807,6 +2808,7 @@ mod tests {
         let ready = HostCaps {
             missing: Vec::new(),
             claude_version: Some((2, 1, 295)),
+            overlay: true,
         };
         let dir = tempfile::tempdir().expect("temp dir");
         crate::driver::steer::tests::write_run(
@@ -2845,6 +2847,7 @@ mod tests {
         let ready = HostCaps {
             missing: Vec::new(),
             claude_version: Some((2, 1, 295)),
+            overlay: true,
         };
         let dir = tempfile::tempdir().expect("temp dir");
 
@@ -2882,6 +2885,7 @@ mod tests {
             &HostCaps {
                 missing: vec!["bwrap".to_string(), "systemd-run".to_string()],
                 claude_version: Some((2, 1, 295)),
+                overlay: false,
             },
         );
         assert_eq!(degraded.missing, ["bwrap", "systemd-run"]);
@@ -2891,6 +2895,7 @@ mod tests {
             &HostCaps {
                 missing: Vec::new(),
                 claude_version: Some((2, 0, 1)),
+                overlay: true,
             },
         );
         assert!(old.claude_refusal.is_some_and(|d| d.contains("2.0.1")));
@@ -2899,6 +2904,7 @@ mod tests {
             &HostCaps {
                 missing: Vec::new(),
                 claude_version: None,
+                overlay: true,
             },
         );
         assert!(none.claude_refusal.is_some());
