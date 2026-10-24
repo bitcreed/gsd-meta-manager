@@ -37,6 +37,11 @@ Status: v1.15.0 shipped 2026-10-23 (interim release; v2.0 milestone still open)
   27 and 29 complete, Phases 28 and 30 executed (verification pending), and quick tasks
   261019-foc/guw/hqu, 261020-f80/vxg, 261021-0jg/101/1id/1if.
   Next: `/gsd-verify-work 28`, then `/gsd-verify-work 30` `[inferred — audit]`.
+  Re-tag: the first v1.15.0 publish (tag at 450713f) failed `cargo publish` verify because the
+  `assets/` exclude dropped src/**/assets; nothing reached crates.io. Fixed by quick 261023-pxh
+  (plus 261023-qs8 flaky race test, 261023-p51 container storage cap); v1.15.0 re-tagged on the
+  commit after this note and force-pushed with operator approval. Container dry run: 6/6 gates PASS.
+  Known flake left open: `editor_race_smoke` (tests/driverctl_race.rs:348), 11/200 in container.
 
 Earlier (2026-10-21):
 Status: Phase complete — ready for verification
