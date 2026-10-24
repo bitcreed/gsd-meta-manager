@@ -4,17 +4,17 @@ milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: planning
-stopped_at: Phase 28 complete, ready to plan Phase 28.1
-last_updated: "2026-10-24T18:34:08.408Z"
+stopped_at: Phase 30 complete, ready to plan Phase 28.1
+last_updated: "2026-10-24T18:43:00.574Z"
 last_activity: 2026-10-24
-last_activity_desc: Phase 28 complete, transitioned to Phase 28.1
-state_head: 5797842adc8d8026e526969712d5ba7ed24dded2
+last_activity_desc: Phase 30 complete, transitioned to Phase 28.1
+state_head: c8b4843a8d20df7d8c26d2890f05398f815ddcfb
 progress:
   total_phases: 10
-  completed_phases: 13
+  completed_phases: 14
   total_plans: 9
   completed_plans: 112
-  percent: 65
+  percent: 70
 milestone_name: Workstream Visibility
 ---
 
@@ -30,6 +30,13 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 ## Current Position
 
 Status: Ready to plan
+  Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
+  261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
+  regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
+  left open (advisory; PROJECT.md Active item). DTAB-01..04 complete. Current phase stays 28.1.
+  Next: `/gsd-plan-phase 28.1` (or discuss first).
+
+Earlier (2026-10-24):
   Phase 28 (Sandboxed Driver Launcher) complete 2026-10-24: 9/9 plans, verification passed 6/6,
   UAT 2/2 on agent evidence (auth setup; the macOS degraded-mode item was run on a real macOS 26.6.2
   host, the local docker-osx VM, with HEAD built natively) `[inferred — audit]`. LNCH-01..08 and the
@@ -298,7 +305,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-24 — Phase 28 complete, transitioned to Phase 28.1
+Last activity: 2026-10-24 — Phase 30 complete, transitioned to Phase 28.1
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -427,7 +434,7 @@ verify-phase if the gate is fixed.
 
 **Velocity:**
 
-- Total plans completed: 88
+- Total plans completed: 97
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -447,6 +454,7 @@ verify-phase if the gate is fixed.
 | 27 | 6 | - | - |
 | 29 | 8 | - | - |
 | 28 | 9 | - | - |
+| 30 | 9 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -938,11 +946,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-24T18:40:00.000Z
-Stopped at: Phase 28 complete, ready to plan Phase 28.1
+Last session: 2026-10-24T18:50:00.000Z
+Stopped at: Phase 30 complete, ready to plan Phase 28.1
 Resume file: None
 
-Next: `/gsd-plan-phase 28.1`; `/gsd-verify-work 30` still pending. v1.15.0 is an interim release; the v2.0
+Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
 milestone stays open.
 
 Earlier (2026-10-21): Next: `/gsd-verify-work 28` (Sandboxed Driver Launcher: 28-UAT.md is `testing`, 28-VERIFICATION.md

@@ -61,6 +61,7 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ driverctl & driver frontmatter — `gsd-meta-manager driverctl serve|log|hook|show` is the single writer of a run's `state.json`, LOG.md and the DIRECTION.md frontmatter (exchange-verify splice via `renameat2(RENAME_EXCHANGE)`, 0 lost rename-saves under an editor race); typed `DriverFrontmatter` schema v1 with `stalled`/`crashed` terminal states set only by the launcher; counters (dispatches, coalesced 45 s gap rounds, heartbeat) from tool-observed state only; three recorded spike runs replay with identical LOG lines and counts (DCTL-01..04) — Phase 27
 - ✓ Master prompt & run templates — embedded, versioned `driver-prompt/1.0.0` recorded on every run (`custom:<sha8>` for overrides); `driver new` mints `<yyyymmdd>-<slug>` with self-ignoring run dir, DIRECTION.md and LOG.md templates; `driver check` lints the reviewable plan; one 8-rule stop precedence stated identically in prompt and template; crash-and-relaunch reconciliation and gate-enforced `control: pause|stop`; `next <project> --json` advisory router hint (PRMT-01..05, DRIVE-03, DRIVE-01 prompt half by operator sign-off) — Phase 29
 - ✓ Sandboxed driver launcher — `driver launch` runs the headless master in bwrap under `systemd-run --user --scope` (scope kill on stop, flock against a second launcher, `crash-detected` on relaunch); hard caps enforced from outside (dispatch, wall clock + RuntimeMaxSec, gap deny L+1 / kill L+2, rate-limit park); RO host `~/.claude`, masked credentials and scrubbed env, per-run `CLAUDE_CONFIG_DIR`; stored `claude setup-token` auth with `driver auth setup|status`; `driver push` outside the sandbox into `gsd-auto/<alias>/<run-id>` with secret scan, protected-branch refusal and PR cap; explicit `--unsandboxed` degraded mode (refused by default, posture recorded, `!`/UNSANDBOXED in the Driver tab), proven on a real macOS host (LNCH-01..08, DRIVE-01 launcher half). Network egress and agent-channel isolation gaps from the 2026-10-24 audit move to Phase 28.1 — Phase 28
+- ✓ Driver tab on DIRECTION.md — the TUI observes runs only through the run's files (status, caps, heartbeat and crash from the tool-written frontmatter, lock-probe status rule) and steers by editing DIRECTION.md (`control`, answer, unhold, `$EDITOR` edit under `DIRECTION.lock`, polite stop; nothing is killed); launch form and relaunch from the tab; FULL tier legible at 100x30 (DTAB-01..04). Re-verified 2026-10-24 after quick 261023-v1s hardened the give-back exchange — Phase 30
 
 ### Active
 
@@ -97,8 +98,11 @@ Phases 26-31 replace them.*
 - **Master prompt 1.1 (emerged, Phase 29).** Route a "reconcile first" refusal to reconcile-then-
   continue instead of a stop-rule-2 park, and fix IN-01 (`$RUN_DIR`/`$PROJECT_ROOT` used as env vars).
   Backlog 999.7.
-- **Driver tab on DIRECTION.md.** It reads status, caps, heartbeat and crash state, and steers by
-  editing `control`.
+- **DIRECTION.md write-path hardening (emerged, Phase 30 re-review 2026-10-24).** 30-REVIEW.md
+  WR-10 (`give_back_newest` exchange error incl. ENOENT leaves the newest save at a dot-temp the
+  60 s sweep can delete; fix: NOREPLACE rename on ENOENT), WR-08 (`DIRECTION.lock` opened following
+  symlinks, `src/driver/lock.rs`) and WR-09 (`read_run_file` has no 1 MiB cap) are open in
+  30-REVIEW-DISPOSITION.md; none blocked verification `[inferred — audit]`.
 - **Retirement.** The superseded Phase 19, 21 and 22 code is removed or rewired.
 
 ### Out of Scope
@@ -221,4 +225,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-24 after Phase 28 (sandboxed driver launcher shipped, LNCH-01..08, DRIVE-01 launcher half; UAT 2/2 incl. a real macOS degraded run; isolation hardening carried to Phase 28.1)*
+*Last updated: 2026-10-24 after Phase 30 (Driver tab on DIRECTION.md, DTAB-01..04; re-verified 6/6 after quick 261023-v1s, UAT 2/2, SECURITY threats_open 0; review WR-08/09/10 carried as an Active item)*

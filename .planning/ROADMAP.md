@@ -103,7 +103,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode (completed 2026-10-24)
 - [ ] **Phase 28.1: Sandbox Egress & Agent-Channel Isolation** (INSERTED) - `--unshare-net` + allowlisting egress proxy, `$HOME` allowlist, planted-file guard, agent-tool denies, nested-agent cap check, degraded-mode gap reporting
 - [x] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation (completed 2026-10-20)
-- [ ] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control`
+- [x] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control` (completed 2026-10-24)
 - [ ] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded
 - [ ] **Phase 32: GSD Capabilities: Visibility & Per-Project Control** - See every GSD capability per project and across projects; toggle and configure them per project from the TUI
 
@@ -1290,7 +1290,7 @@ DIRECTION.md.
 
      The Phase 18 stream-json injection UI is no longer the steering path.
 
-**Plans**: 9/9 plans executed (4 gap-closure plans planned)
+**Plans**: 9/9 plans complete (4 gap-closure plans planned)
 
 Plans:
 
@@ -1449,7 +1449,7 @@ Plans:
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | Complete    | 2026-10-24 |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
-| 30. Driver Tab on DIRECTION.md | 9/9 | In Progress | - |
+| 30. Driver Tab on DIRECTION.md | 9/9 | Complete    | 2026-10-24 |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
