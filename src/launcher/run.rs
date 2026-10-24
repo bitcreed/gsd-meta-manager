@@ -68,6 +68,7 @@ use super::egress::{
     self, EgressHandle, EgressServer, EgressSpec, EgressStats, TokenProvider, INFERENCE_HOST,
 };
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
+use super::home::HomeSetup;
 use super::host::{decide, detect, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
@@ -408,6 +409,9 @@ struct LaunchContext {
     /// This binary: the sandbox runs it as `bridge` (D-08).
     binary: PathBuf,
     home: PathBuf,
+    /// The sandbox's `$HOME` allowlist and per-run gitconfig, derived once from the
+    /// host at launch (D-16, D-17).
+    home_setup: HomeSetup,
     /// The launcher's per-user data root (the push mirror lives under it).
     driver_root: PathBuf,
     /// Set by `SIGTERM`/`SIGINT` (`driver stop`): the user wants the run stopped.
@@ -599,7 +603,8 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
 
     // D-28: the host probes, after every refusal that needs no process and before
     // the lock, so a host that cannot sandbox writes nothing.
-    let posture = decide(&detect(), opts.unsandboxed)?;
+    let caps = detect();
+    let posture = decide(&caps, opts.unsandboxed)?;
     if matches!(posture, Posture::BwrapScope) && host_routes_https_through_a_proxy() {
         // RESEARCH Open Question 2 [inferred — audit]: warn, do not chain.
         eprintln!("{HOST_PROXY_WARNING}");
@@ -650,8 +655,28 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     let session = Session::start(&run_dir, &project, lock, &sock)?;
 
     let config_dir = state_dir.join("claude-config");
-    let binary = std::env::current_exe().map_err(|e| io_error("locate this binary", e))?;
+    let binary = match std::env::current_exe() {
+        Ok(binary) => binary,
+        Err(e) => {
+            session.close();
+            return Err(io_error("locate this binary", e));
+        }
+    };
     let egress_sock = egress::socket_path_for(&sock, &run_dir);
+    // D-16, D-17: the `$HOME` allowlist and the per-run gitconfig, derived from this
+    // host once per launch (every relaunch of the run reuses them).
+    let home_setup = match HomeSetup::for_host(&home, &binary, caps.overlay, &state_dir) {
+        Ok(setup) => setup,
+        Err(e) => {
+            session.close();
+            return Err(io_error("derive the sandbox's $HOME allowlist", e));
+        }
+    };
+    if matches!(posture, Posture::BwrapScope) {
+        if let Some(notice) = home_setup.dangling_notice(&home) {
+            eprintln!("{notice}");
+        }
+    }
     let seeded = seed(&SeedSpec {
         config_dir: config_dir.clone(),
         host_claude_dir: home.join(".claude"),
@@ -690,6 +715,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         egress_sock,
         binary,
         home,
+        home_setup,
         driver_root: root,
         user_stop,
         posture,
@@ -1437,7 +1463,7 @@ fn supervise(
     // but no bwrap and no scope, so none of the 28-03 isolation applies to it.
     let argv = match ctx.posture {
         Posture::BwrapScope => {
-            let spec = SandboxSpec::from_host(paths, &ctx.home);
+            let spec = SandboxSpec::from_host(paths, &ctx.home, &ctx.home_setup);
             // D-13: the backstop behind the monitor. A degraded launch has none (D-29).
             let runtime_max = budget.remaining.map(runtime_max_sec);
             let bridged = bridged_command(&ctx.binary, BRIDGE_PORT, &ctx.egress_sock, &driver_argv);

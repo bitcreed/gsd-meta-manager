@@ -15,9 +15,9 @@
 //!   re-bound read-only on top of that, and the two lock files inside it masked
 //!   with `/dev/null` (Phase 27 hand-off 2: a sandboxed process must not take
 //!   either `flock`);
-//! * the host's credential directories replaced by an empty tmpfs and the
-//!   credential files masked, each only when it exists (a mask over a missing
-//!   path aborts bwrap);
+//! * `$HOME` replaced by a size-capped tmpfs with only the derived allowlist re-bound
+//!   (28.1-08, D-16; see [`super::home`]), a per-run gitconfig at `~/.gitconfig`, and
+//!   the credential files inside an allowlisted bind masked as a second layer (D-20);
 //! * the per-run config directory read-write;
 //! * `--unshare-pid --new-session --die-with-parent` (28.1 adds the network, IPC and UTS
 //!   namespaces, see below).
@@ -60,6 +60,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL;
+
+use super::home::{HomeBind, HomeSetup, HOME_TMPFS_SIZE};
 
 /// The first word of every scope unit name (D-08).
 pub const SCOPE_PREFIX: &str = "gsdmm-driver";
@@ -214,7 +216,10 @@ pub fn common_env_sets() -> Vec<(&'static str, OsString)> {
     ]
 }
 
-/// Directories under `$HOME` the sandbox replaces with an empty tmpfs.
+/// Credential directories under `$HOME`. **No longer in the argv** (28.1-08, D-20): the
+/// `$HOME` tmpfs hides them with every other unlisted path. The list survives as a test
+/// invariant, `no_allowlist_entry_overlaps_a_mask_dir`: no allowlist entry may equal,
+/// contain or lie inside one of these.
 pub const TMPFS_MASK_DIRS: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -229,7 +234,8 @@ pub const TMPFS_MASK_DIRS: &[&str] = &[
     ".terraform.d",
 ];
 
-/// Files under `$HOME` the sandbox masks with `/dev/null`. The git entries close
+/// Files under `$HOME` the sandbox masks with `/dev/null` when they exist inside an
+/// allowlisted read-only bind, as a second layer (D-20). The git entries close
 /// git's own credential stores for D-27 (a push from inside must find no
 /// credential) `[inferred — audit]`; the package-registry and launcher-token files
 /// close WR-02 (the network is open, so anything readable is exfiltratable).
@@ -290,9 +296,12 @@ pub struct SandboxSpec {
     /// The user's home directory the masks are relative to.
     pub home: PathBuf,
     pub paths: LaunchPaths,
-    /// Directories replaced by an empty tmpfs (every one exists on the host).
-    pub tmpfs_masks: Vec<PathBuf>,
-    /// Files masked with `/dev/null` (every one exists on the host).
+    /// The `$HOME` entries re-bound over the tmpfs `$HOME` (D-16), parents first.
+    pub home_binds: Vec<HomeBind>,
+    /// The per-run gitconfig, bound read-only at `<home>/.gitconfig` (D-17).
+    pub gitconfig: Option<PathBuf>,
+    /// Files masked with `/dev/null` (every one exists on the host and lies inside
+    /// a read-only entry of [`home_binds`](Self::home_binds)).
     pub null_masks: Vec<PathBuf>,
     /// The host's `$XDG_RUNTIME_DIR`, replaced by an empty tmpfs inside with only
     /// [`LaunchPaths::socket`] re-bound. `None` leaves it unmasked (no such dir).
@@ -329,26 +338,31 @@ pub fn etc_entries_in(etc: &Path) -> Vec<EtcEntry> {
 }
 
 impl SandboxSpec {
-    /// The spec for this host: the mask candidates under `home`, kept only when
-    /// they exist, and `$XDG_RUNTIME_DIR` when it is an absolute path. **The one
-    /// function here that reads the file system and the environment.**
-    pub fn from_host(paths: LaunchPaths, home: &Path) -> Self {
-        let tmpfs_masks = TMPFS_MASK_DIRS
+    /// The spec for this host: the `$HOME` setup of this launch, the null-mask
+    /// candidates that exist inside one of its read-only entries, and
+    /// `$XDG_RUNTIME_DIR` when it is an absolute path. **The one function here that
+    /// reads the file system and the environment.**
+    pub fn from_host(paths: LaunchPaths, home: &Path, setup: &HomeSetup) -> Self {
+        let ro_entries: Vec<&Path> = setup
+            .binds
             .iter()
-            .map(|rel| home.join(rel))
-            .filter(|p| p.is_dir())
+            .filter_map(|bind| match bind {
+                HomeBind::Ro(path) => Some(path.as_path()),
+                _ => None,
+            })
             .collect();
+        let in_a_bind = |path: &Path| ro_entries.iter().any(|root| path.starts_with(root));
         #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
         let mut null_masks: Vec<PathBuf> = NULL_MASK_FILES
             .iter()
             .map(|rel| home.join(rel))
-            .filter(|p| p.exists())
+            .filter(|p| p.exists() && in_a_bind(p))
             .collect();
         // The stored run token lives under `dirs::config_dir()`, which an
         // `XDG_CONFIG_HOME` moves away from `~/.config` (WR-02).
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(token) = super::auth::token_path() {
-            if token.exists() && !null_masks.contains(&token) {
+            if token.exists() && in_a_bind(&token) && !null_masks.contains(&token) {
                 null_masks.push(token);
             }
         }
@@ -358,7 +372,8 @@ impl SandboxSpec {
         SandboxSpec {
             home: home.to_owned(),
             paths,
-            tmpfs_masks,
+            home_binds: setup.binds.clone(),
+            gitconfig: setup.gitconfig.clone(),
             null_masks,
             runtime_dir,
             etc_entries: etc_entries_in(Path::new("/etc")),
@@ -416,9 +431,41 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
     // only the mount point `user`.
     argv.push(os("--tmpfs"));
     argv.push(os("/run"));
-    for dir in &spec.tmpfs_masks {
-        argv.push(os("--tmpfs"));
-        argv.push(dir.as_os_str().to_owned());
+    // D-16: `$HOME` is a size-capped tmpfs and only the derived allowlist is re-bound
+    // over it. All of this precedes the project, run-dir, config-dir and socket binds:
+    // they live under `$HOME`.
+    argv.push(os("--size"));
+    argv.push(OsString::from(HOME_TMPFS_SIZE.to_string()));
+    argv.push(os("--tmpfs"));
+    argv.push(spec.home.as_os_str().to_owned());
+    for entry in &spec.home_binds {
+        match entry {
+            HomeBind::Ro(path) => {
+                argv.push(os("--ro-bind"));
+                argv.push(path.as_os_str().to_owned());
+                argv.push(path.as_os_str().to_owned());
+            }
+            // The upper layer lives in RAM and vanishes with the sandbox: a crate
+            // planted here is never seen by the host (D-15, T-28.1-34).
+            HomeBind::Overlay(path) => {
+                argv.push(os("--overlay-src"));
+                argv.push(path.as_os_str().to_owned());
+                argv.push(os("--tmp-overlay"));
+                argv.push(path.as_os_str().to_owned());
+            }
+            HomeBind::Tmpfs { path, size } => {
+                argv.push(os("--size"));
+                argv.push(OsString::from(size.to_string()));
+                argv.push(os("--tmpfs"));
+                argv.push(path.as_os_str().to_owned());
+            }
+        }
+    }
+    // D-17: the per-run gitconfig, never the host's.
+    if let Some(gitconfig) = &spec.gitconfig {
+        argv.push(os("--ro-bind"));
+        argv.push(gitconfig.as_os_str().to_owned());
+        argv.push(spec.home.join(".gitconfig").into_os_string());
     }
     for file in &spec.null_masks {
         argv.push(os("--ro-bind"));
@@ -651,8 +698,16 @@ mod tests {
         SandboxSpec {
             home: PathBuf::from("/home/u"),
             paths: paths(),
-            tmpfs_masks: vec![PathBuf::from("/home/u/.ssh")],
-            null_masks: vec![PathBuf::from("/home/u/.claude/.credentials.json")],
+            home_binds: vec![
+                HomeBind::Ro(PathBuf::from("/home/u/.claude/hooks")),
+                HomeBind::Overlay(PathBuf::from("/home/u/.cargo/registry")),
+                HomeBind::Tmpfs {
+                    path: PathBuf::from("/home/u/.cache"),
+                    size: 1_073_741_824,
+                },
+            ],
+            gitconfig: Some(PathBuf::from("/data/driver/ab12cd34/r1/gitconfig")),
+            null_masks: vec![PathBuf::from("/home/u/.claude/hooks/token")],
             runtime_dir: Some(PathBuf::from("/run/user/1000")),
             etc_entries: vec![
                 EtcEntry::Bind(PathBuf::from("/etc/hosts")),
@@ -813,11 +868,27 @@ mod tests {
             "/etc",
             "--tmpfs",
             "/run",
+            "--size",
+            "268435456",
             "--tmpfs",
-            "/home/u/.ssh",
+            "/home/u",
+            "--ro-bind",
+            "/home/u/.claude/hooks",
+            "/home/u/.claude/hooks",
+            "--overlay-src",
+            "/home/u/.cargo/registry",
+            "--tmp-overlay",
+            "/home/u/.cargo/registry",
+            "--size",
+            "1073741824",
+            "--tmpfs",
+            "/home/u/.cache",
+            "--ro-bind",
+            "/data/driver/ab12cd34/r1/gitconfig",
+            "/home/u/.gitconfig",
             "--ro-bind",
             "/dev/null",
-            "/home/u/.claude/.credentials.json",
+            "/home/u/.claude/hooks/token",
             "--bind",
             "/work/proj",
             "/work/proj",
@@ -1025,12 +1096,26 @@ mod tests {
     }
 
     #[test]
-    fn from_host_keeps_only_masks_that_exist() {
+    fn from_host_keeps_only_null_masks_that_exist_inside_a_read_only_bind() {
         let home = tempfile::TempDir::new().unwrap();
         std::fs::create_dir(home.path().join(".ssh")).unwrap();
         std::fs::write(home.path().join(".claude.json"), "{}").unwrap();
-        let spec = SandboxSpec::from_host(paths(), home.path());
-        assert_eq!(spec.tmpfs_masks, [home.path().join(".ssh")]);
-        assert_eq!(spec.null_masks, [home.path().join(".claude.json")]);
+        std::fs::create_dir_all(home.path().join(".cargo/bin")).unwrap();
+        std::fs::write(home.path().join(".cargo/bin/credentials"), "x").unwrap();
+        let setup = HomeSetup {
+            binds: vec![HomeBind::Ro(home.path().join(".cargo"))],
+            gitconfig: Some(PathBuf::from("/state/gitconfig")),
+            ..HomeSetup::default()
+        };
+        std::fs::write(home.path().join(".cargo/credentials.toml"), "x").unwrap();
+        let spec = SandboxSpec::from_host(paths(), home.path(), &setup);
+        // `.claude.json` exists but is in no bind (the tmpfs hides it); the cargo
+        // credentials file is inside the read-only `.cargo` entry.
+        assert_eq!(
+            spec.null_masks,
+            [home.path().join(".cargo/credentials.toml")]
+        );
+        assert_eq!(spec.home_binds, setup.binds);
+        assert_eq!(spec.gitconfig, setup.gitconfig);
     }
 }

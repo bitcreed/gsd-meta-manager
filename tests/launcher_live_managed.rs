@@ -43,6 +43,8 @@ use gsd_meta_manager::launcher::egress::upstream::Upstream;
 use gsd_meta_manager::launcher::egress::{
     socket_path_for, EgressServer, EgressSpec, TokenProvider,
 };
+use gsd_meta_manager::launcher::home::HomeSetup;
+use gsd_meta_manager::launcher::host::detect;
 use gsd_meta_manager::launcher::sandbox::{
     bridged_command, bwrap_argv, child_env, common_env_sets, egress_env_sets, LaunchPaths,
     SandboxSpec, BRIDGE_PORT, DUMMY_OAUTH_TOKEN,
@@ -224,6 +226,13 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
     let env = child_env(std::env::vars_os(), &sets);
 
     // ---- the managed run: nested claude inside the network-isolated sandbox ---
+    let home_setup = HomeSetup::for_host(
+        &home,
+        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
+        detect().overlay,
+        &root,
+    )
+    .expect("derive the $HOME setup");
     let spec = SandboxSpec::from_host(
         LaunchPaths {
             project: project.clone(),
@@ -233,6 +242,7 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
             egress_socket: egress_sock.clone(),
         },
         &home,
+        &home_setup,
     );
     let inner = vec!["sh".into(), "-c".into(), nested_script().into()];
     let command = bridged_command(

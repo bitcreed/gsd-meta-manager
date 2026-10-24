@@ -214,7 +214,7 @@ fn read_host_settings(host_claude_dir: &Path) -> Map<String, Value> {
 }
 
 /// Write `contents` to `path` through a temp file and a rename, with `mode`.
-fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
+pub(super) fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     io::Write::write_all(&mut tmp, contents)?;

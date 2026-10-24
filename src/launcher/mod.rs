@@ -70,6 +70,7 @@
 //!     decision is a pure function in `egress::policy`; the upstream is a
 //!     parameter so the whole path runs in CI against a plain-TCP stub.
 
+pub mod home;
 pub mod prompt;
 pub mod sandbox;
 

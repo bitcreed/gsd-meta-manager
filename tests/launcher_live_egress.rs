@@ -46,6 +46,8 @@ use gsd_meta_manager::launcher::egress::upstream::Upstream;
 use gsd_meta_manager::launcher::egress::{
     socket_path_for, EgressServer, EgressSpec, EgressStats, TokenProvider,
 };
+use gsd_meta_manager::launcher::home::HomeSetup;
+use gsd_meta_manager::launcher::host::detect;
 use gsd_meta_manager::launcher::sandbox::{
     bridged_command, bwrap_argv, child_env, egress_env_sets, LaunchPaths, SandboxSpec, BRIDGE_PORT,
     DUMMY_OAUTH_TOKEN,
@@ -343,6 +345,15 @@ impl Rig {
         )
         .expect("start the egress server");
 
+        // The fixture home is a scratch directory, so the allowlist is nearly empty; the
+        // gitconfig still comes from the host, as in a launch (D-17).
+        let home_setup = HomeSetup::for_host(
+            &home,
+            Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
+            detect().overlay,
+            &root,
+        )
+        .expect("derive the $HOME setup");
         let spec = SandboxSpec::from_host(
             LaunchPaths {
                 project: project.clone(),
@@ -352,6 +363,7 @@ impl Rig {
                 egress_socket: egress_sock.clone(),
             },
             &home,
+            &home_setup,
         );
         Some(Rig {
             _scratch: scratch,

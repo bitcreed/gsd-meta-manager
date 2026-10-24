@@ -6,6 +6,12 @@
 //
 //   cargo test --test launcher_live_isolation -- --ignored --nocapture
 //
+// 28.1-08 (D-16): `$HOME` is a size-capped tmpfs with a derived allowlist re-bound, so
+// the probe plants an unlisted file in the REAL home (`~/.gsdmm-probe-<pid>/env`, the
+// `~/.claudear/env` lookalike) and a home symlink to a project `.env`, and proves both
+// unreadable while the toolchain, GSD and git keep working. Both are removed on every
+// exit path.
+//
 // Run it OUTSIDE any tool sandbox. A test that cannot run prints a `SKIP:` line
 // and returns; a `SKIP:` line is no evidence, it means this host proved nothing.
 //
@@ -20,6 +26,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -27,16 +34,19 @@ use std::process::{Command, Stdio};
 use gsd_meta_manager::driverctl::serve::socket_path;
 use gsd_meta_manager::launcher::config_dir::{seed, SeedSpec, HOST_MANAGED_DIR};
 use gsd_meta_manager::launcher::egress::socket_path_for as egress_socket_path_for;
+use gsd_meta_manager::launcher::home::{HomeBind, HomeSetup};
+use gsd_meta_manager::launcher::host::detect;
 use gsd_meta_manager::launcher::sandbox::{
     bwrap_argv, child_env, systemd_run_argv, LaunchPaths, SandboxSpec,
 };
 use tempfile::TempDir;
 
 /// The in-sandbox probe. `$1` run dir, `$2` config dir, `$3` host home, `$4` a
-/// sibling run dir.
+/// sibling run dir, `$5` the planted directory under the host home, `$6` the planted
+/// symlink under the host home.
 /// Every line is `KEY=VALUE`; no host file content is printed.
 const PROBE: &str = r#"
-run_dir=$1; cfg=$2; home=$3; sib=$4
+run_dir=$1; cfg=$2; home=$3; sib=$4; planted_dir=$5; planted_link=$6
 touch_state() {
   out=$(touch "$1" 2>&1) && { echo WRITABLE; rm -f "$1"; return; }
   case "$out" in
@@ -99,6 +109,23 @@ mkdir -p "$sib" 2>/dev/null
 echo tampered >> "$sib/LOG.md" 2>/dev/null
 touch "$sib/sandbox-probe" 2>/dev/null
 echo "sibling_write_attempted=1"
+echo "planted_env_read=$(cat "$planted_dir/env" > /dev/null 2>&1; echo $?)"
+echo "planted_link_read=$(cat "$planted_link" > /dev/null 2>&1; echo $?)"
+if [ -e "$home/.cargo/credentials.toml" ]; then echo "cargo_credentials=present"; else echo "cargo_credentials=absent"; fi
+echo "claude_version_rc=$(claude --version > /dev/null 2>&1; echo $?)"
+echo "node_version_rc=$(node --version > /dev/null 2>&1; echo $?)"
+echo "cargo_version_rc=$(cargo --version > /dev/null 2>&1; echo $?)"
+if command -v rtk > /dev/null 2>&1; then
+  echo "rtk_version_rc=$(rtk --version > /dev/null 2>&1; echo $?)"
+else
+  echo "rtk_version_rc=absent"
+fi
+scratch=$(mktemp -d)
+( cd "$scratch" && git init -q && git commit -q --allow-empty -m probe ) > /dev/null 2>&1
+echo "git_commit_rc=$?"
+echo "gsd_tools_rc=$(node "$home/.claude/gsd-core/bin/gsd-tools.cjs" runtime-identity --raw > /dev/null 2>&1; echo $?)"
+echo "git_alias_count=$(git config --get-regexp '^alias\.' 2>/dev/null | wc -l | tr -d ' ')"
+echo "claude_agents_touch=$(touch_state "$home/.claude/agents/sandbox-probe")"
 "#;
 
 fn bwrap_runs_here() -> Result<(), String> {
@@ -176,6 +203,36 @@ fn last_lines(text: &str) -> String {
     lines[lines.len().saturating_sub(3)..].join(" / ")
 }
 
+/// The two files planted in the real home, removed when this drops (every exit
+/// path, a failed assertion included).
+struct Planted {
+    dir: PathBuf,
+    link: PathBuf,
+}
+
+impl Planted {
+    fn plant(home: &Path, project_env: &Path) -> Planted {
+        let pid = std::process::id();
+        let dir = home.join(format!(".gsdmm-probe-{pid}"));
+        let link = home.join(format!(".gsdmm-probe-{pid}-link"));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&link);
+        let planted = Planted { dir, link };
+        fs::create_dir_all(&planted.dir).expect("plant the probe directory");
+        fs::write(planted.dir.join("env"), "PLANTED-SECRET-ENV\n").expect("plant the probe file");
+        fs::write(project_env, "PLANTED-SECRET-PROJECT-ENV\n").expect("plant the project .env");
+        symlink(project_env, &planted.link).expect("plant the probe link");
+        planted
+    }
+}
+
+impl Drop for Planted {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+        let _ = fs::remove_file(&self.link);
+    }
+}
+
 #[test]
 #[ignore = "needs bwrap, a user systemd and network; run with -- --ignored --nocapture"]
 fn sandbox_isolates_host_credentials_and_services() {
@@ -239,6 +296,8 @@ fn sandbox_isolates_host_credentials_and_services() {
     fs::write(sibling.join("LOG.md"), "sibling-log-sentinel\n").unwrap();
     git_ok(&project, &["init", "-q"]);
     git_ok(&project, &["commit", "-q", "--allow-empty", "-m", "probe"]);
+    // D-16: an unlisted file in the real home and a home symlink to a project `.env`.
+    let planted = Planted::plant(&home, &project.join(".env"));
 
     let sock = socket_path("probe28", &run_dir).expect("the run's socket path");
     seed(&SeedSpec {
@@ -289,6 +348,28 @@ fn sandbox_isolates_host_credentials_and_services() {
         ],
     );
 
+    let home_setup = HomeSetup::for_host(
+        &home,
+        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
+        detect().overlay,
+        &root,
+    )
+    .expect("derive the $HOME setup");
+    for bind in &home_setup.binds {
+        let (tag, path) = match bind {
+            HomeBind::Ro(p) => ("ro", p),
+            HomeBind::Overlay(p) => ("overlay", p),
+            HomeBind::Tmpfs { path, .. } => ("tmpfs", path),
+        };
+        println!(
+            "LIVE allowlist {tag} ~/{}",
+            path.strip_prefix(&home).unwrap_or(path).display()
+        );
+    }
+    match home_setup.dangling_notice(&home) {
+        Some(line) => println!("LIVE {line}"),
+        None => println!("LIVE dangling: none"),
+    }
     let spec = SandboxSpec::from_host(
         LaunchPaths {
             project: project.clone(),
@@ -298,6 +379,7 @@ fn sandbox_isolates_host_credentials_and_services() {
             egress_socket: egress_sock.clone(),
         },
         &home,
+        &home_setup,
     );
 
     let pid = std::process::id();
@@ -329,7 +411,17 @@ fn sandbox_isolates_host_credentials_and_services() {
     };
 
     // ---- SC3 probe ---------------------------------------------------------
-    let probe = in_sandbox(PROBE, &[&run_dir, &config_dir, &home, &sibling]);
+    let probe = in_sandbox(
+        PROBE,
+        &[
+            &run_dir,
+            &config_dir,
+            &home,
+            &sibling,
+            &planted.dir,
+            &planted.link,
+        ],
+    );
     println!("LIVE host user manager: {state}");
     println!("LIVE host XDG_RUNTIME_DIR entries: {}", {
         let mut names: Vec<String> = fs::read_dir(&runtime)
@@ -458,7 +550,40 @@ fn sandbox_isolates_host_credentials_and_services() {
             .unwrap_or_else(|| panic!("no `{key}=` line in the probe output"))
     };
 
-    assert_eq!(get("claude_touch"), "EROFS");
+    // D-16: `~/.claude` is the sandbox's own tmpfs now, so the write lands there (and
+    // `leaked` above proved the host path stayed absent); only the re-bound
+    // subdirectories are read-only.
+    assert_eq!(get("claude_touch"), "WRITABLE");
+    if home.join(".claude/agents").is_dir() {
+        assert_eq!(get("claude_agents_touch"), "EROFS");
+    }
+    for key in ["planted_env_read", "planted_link_read"] {
+        let value = get(key);
+        assert!(
+            value.parse::<i32>().is_ok_and(|rc| rc != 0),
+            "{key}={value}: an unlisted file in the real home must be unreadable"
+        );
+    }
+    assert_eq!(get("cargo_credentials"), "absent");
+    for key in [
+        "claude_version_rc",
+        "node_version_rc",
+        "cargo_version_rc",
+        "git_commit_rc",
+        "gsd_tools_rc",
+        "git_alias_count",
+    ] {
+        assert_eq!(
+            get(key),
+            "0",
+            "{key}: the toolchain, GSD and git must work on the allowlist alone"
+        );
+    }
+    let host_has_rtk = std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("rtk").is_file()));
+    if host_has_rtk {
+        assert_eq!(get("rtk_version_rc"), "0");
+    }
     for key in [
         "creds_read",
         "claude_json_read",

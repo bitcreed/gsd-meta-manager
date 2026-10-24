@@ -20,6 +20,7 @@ use std::process::{Command, Stdio};
 
 use gsd_meta_manager::driverctl::serve::socket_path;
 use gsd_meta_manager::launcher::egress::socket_path_for;
+use gsd_meta_manager::launcher::home::{HomeBind, HomeSetup};
 use gsd_meta_manager::launcher::sandbox::{
     bridged_command, bwrap_argv, child_env, claude_argv, common_env_sets, egress_env_sets,
     etc_entries_in, EtcEntry, LaunchPaths, SandboxSpec, BRIDGE_PORT, DUMMY_OAUTH_TOKEN,
@@ -31,6 +32,7 @@ const RUN: &str = "/work/proj/.planning/meta-manager/drivers/r1";
 const CFG: &str = "/data/driver/ab12cd34/r1/claude-config";
 const SOCK: &str = "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock";
 const EGRESS: &str = "/run/user/1000/gsdmm-driverctl/egress-ab12cd34.sock";
+const GITCONFIG: &str = "/data/driver/ab12cd34/r1/gitconfig";
 
 fn paths() -> LaunchPaths {
     LaunchPaths {
@@ -53,20 +55,17 @@ fn golden_bwrap_argv() {
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
-        tmpfs_masks: [".ssh", ".gnupg", ".config/gh", ".aws", ".docker"]
-            .iter()
-            .map(|rel| PathBuf::from("/home/u").join(rel))
-            .collect(),
-        null_masks: [
-            ".claude/.credentials.json",
-            ".claude.json",
-            ".git-credentials",
-            ".config/git/credentials",
-            ".netrc",
-        ]
-        .iter()
-        .map(|rel| PathBuf::from("/home/u").join(rel))
-        .collect(),
+        home_binds: vec![
+            HomeBind::Ro(PathBuf::from("/home/u/.local/share/claude")),
+            HomeBind::Ro(PathBuf::from("/home/u/.claude/hooks")),
+            HomeBind::Overlay(PathBuf::from("/home/u/.cargo/registry")),
+            HomeBind::Tmpfs {
+                path: PathBuf::from("/home/u/.cache"),
+                size: 1_073_741_824,
+            },
+        ],
+        gitconfig: Some(PathBuf::from(GITCONFIG)),
+        null_masks: vec![PathBuf::from("/home/u/.claude/hooks/token")],
         runtime_dir: Some(PathBuf::from("/run/user/1000")),
         etc_entries: vec![
             EtcEntry::Bind(PathBuf::from("/etc/hosts")),
@@ -107,32 +106,32 @@ fn golden_bwrap_argv() {
         // D-03: no host filesystem socket under /run (docker, system bus, snapd, ...)
         "--tmpfs",
         "/run",
-        // home masks: directories, then files
+        // D-16: $HOME is a size-capped tmpfs, then the derived allowlist, then the
+        // per-run gitconfig (D-17), then the null masks (D-20)
+        "--size",
+        "268435456",
         "--tmpfs",
-        "/home/u/.ssh",
+        "/home/u",
+        "--ro-bind",
+        "/home/u/.local/share/claude",
+        "/home/u/.local/share/claude",
+        "--ro-bind",
+        "/home/u/.claude/hooks",
+        "/home/u/.claude/hooks",
+        "--overlay-src",
+        "/home/u/.cargo/registry",
+        "--tmp-overlay",
+        "/home/u/.cargo/registry",
+        "--size",
+        "1073741824",
         "--tmpfs",
-        "/home/u/.gnupg",
-        "--tmpfs",
-        "/home/u/.config/gh",
-        "--tmpfs",
-        "/home/u/.aws",
-        "--tmpfs",
-        "/home/u/.docker",
+        "/home/u/.cache",
+        "--ro-bind",
+        GITCONFIG,
+        "/home/u/.gitconfig",
         "--ro-bind",
         "/dev/null",
-        "/home/u/.claude/.credentials.json",
-        "--ro-bind",
-        "/dev/null",
-        "/home/u/.claude.json",
-        "--ro-bind",
-        "/dev/null",
-        "/home/u/.git-credentials",
-        "--ro-bind",
-        "/dev/null",
-        "/home/u/.config/git/credentials",
-        "--ro-bind",
-        "/dev/null",
-        "/home/u/.netrc",
+        "/home/u/.claude/hooks/token",
         // project rw
         "--bind",
         "/work/proj",
@@ -195,41 +194,80 @@ fn golden_bwrap_argv() {
 }
 
 #[test]
-fn masks_are_omitted_when_absent() {
+fn null_masks_are_a_second_layer_inside_binds_only() {
     let home = TempDir::new().unwrap();
-    let spec = SandboxSpec::from_host(paths(), home.path());
-    assert!(spec.tmpfs_masks.is_empty());
-    assert!(spec.null_masks.is_empty());
-    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
-    let home_str = home.path().display().to_string();
-    assert!(
-        !argv.iter().any(|a| a.starts_with(&home_str)),
-        "an empty home must add no mask flag: {argv:?}"
-    );
-    // The fixed prefix is exactly root, /dev, /proc, /tmp, then the /etc block.
-    assert_eq!(
-        argv[..10],
-        [
-            "bwrap",
-            "--ro-bind",
-            "/",
-            "/",
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "--tmpfs",
-            "/tmp"
-        ]
-    );
-    // Nothing between the /etc block and the project bind: no mask flag at all.
+    let home_path = home.path().to_owned();
+    fs::create_dir_all(home_path.join(".ssh")).unwrap();
+    fs::write(home_path.join(".claude.json"), "{}").unwrap();
+    fs::write(home_path.join(".netrc"), "x").unwrap();
+    fs::create_dir_all(home_path.join(".cargo/bin")).unwrap();
+    fs::write(home_path.join(".cargo/credentials.toml"), "x").unwrap();
+    fs::write(home_path.join(".cargo/credentials"), "x").unwrap();
+
+    // No bind: every credential file is hidden by the tmpfs alone, so no mask, and no
+    // flag at all names a path under the host home except the tmpfs itself.
+    let bare = SandboxSpec::from_host(paths(), &home_path, &HomeSetup::default());
+    assert!(bare.null_masks.is_empty());
+    assert!(bare.home_binds.is_empty());
+    let argv = strings(&bwrap_argv(&bare, &[OsString::from("true")]));
+    let home_str = home_path.display().to_string();
     let remount = argv
         .windows(2)
         .position(|w| w == ["--remount-ro", "/etc"])
         .expect("the /etc block ends with --remount-ro /etc");
     assert_eq!(argv[remount + 2..remount + 4], ["--tmpfs", "/run"]);
-    assert_eq!(argv[remount + 4], "--bind");
-    assert_eq!(argv[remount + 5], "/work/proj");
+    assert_eq!(
+        argv[remount + 4..remount + 7],
+        ["--size", "268435456", "--tmpfs"]
+    );
+    assert_eq!(argv[remount + 7], home_str);
+    assert_eq!(argv[remount + 8], "--bind");
+    assert_eq!(argv[remount + 9], "/work/proj");
+
+    // A read-only `.cargo` bind pulls the two cargo credential files in as masks;
+    // `.netrc` and `.claude.json` sit outside every bind and get none.
+    let setup = HomeSetup {
+        binds: vec![HomeBind::Ro(home_path.join(".cargo"))],
+        gitconfig: None,
+        ..HomeSetup::default()
+    };
+    let spec = SandboxSpec::from_host(paths(), &home_path, &setup);
+    assert_eq!(
+        spec.null_masks,
+        [
+            home_path.join(".cargo/credentials"),
+            home_path.join(".cargo/credentials.toml")
+        ]
+    );
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+    let bind = argv
+        .windows(3)
+        .position(|w| {
+            w == [
+                "--ro-bind",
+                &home_str_join(&home_path, ".cargo"),
+                &home_str_join(&home_path, ".cargo"),
+            ]
+        })
+        .expect("the .cargo bind");
+    let mask = argv
+        .windows(3)
+        .position(|w| {
+            w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2].ends_with(".cargo/credentials.toml")
+        })
+        .expect("the credentials mask");
+    assert!(bind < mask, "a mask follows the bind that holds the file");
+    // The credential directories are no longer emptied one by one (D-20).
+    assert!(
+        !argv
+            .windows(2)
+            .any(|w| w[0] == "--tmpfs" && w[1].ends_with("/.ssh")),
+        "{argv:?}"
+    );
+}
+
+fn home_str_join(home: &std::path::Path, rel: &str) -> String {
+    home.join(rel).display().to_string()
 }
 
 #[test]
@@ -263,7 +301,8 @@ fn the_etc_block_precedes_remount_and_skips_host_claude_code() {
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
-        tmpfs_masks: Vec::new(),
+        home_binds: Vec::new(),
+        gitconfig: None,
         null_masks: Vec::new(),
         runtime_dir: None,
         etc_entries: entries,
@@ -306,7 +345,8 @@ fn a_socket_outside_the_runtime_dir_is_not_re_bound() {
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: p,
-        tmpfs_masks: Vec::new(),
+        home_binds: Vec::new(),
+        gitconfig: None,
         null_masks: Vec::new(),
         runtime_dir: Some(PathBuf::from("/run/user/1000")),
         etc_entries: Vec::new(),
@@ -321,7 +361,8 @@ fn the_egress_socket_is_re_bound_after_the_driverctl_socket_and_only_inside_the_
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
-        tmpfs_masks: Vec::new(),
+        home_binds: Vec::new(),
+        gitconfig: None,
         null_masks: Vec::new(),
         runtime_dir: Some(PathBuf::from("/run/user/1000")),
         etc_entries: Vec::new(),
@@ -357,7 +398,8 @@ fn the_run_tmpfs_follows_the_etc_block_and_precedes_the_project_and_the_runtime_
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
-        tmpfs_masks: Vec::new(),
+        home_binds: Vec::new(),
+        gitconfig: None,
         null_masks: Vec::new(),
         runtime_dir: Some(PathBuf::from("/run/user/1000")),
         etc_entries: Vec::new(),
@@ -639,6 +681,7 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
             egress_socket: egress_sock.clone(),
         },
         &home,
+        &HomeSetup::default(),
     );
     let script = format!(
         "ls -A \"$XDG_RUNTIME_DIR\"; ls -A \"$(dirname '{sock}')\"; \
