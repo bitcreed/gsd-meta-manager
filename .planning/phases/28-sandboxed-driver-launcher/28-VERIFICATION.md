@@ -1,6 +1,6 @@
 ---
 phase: 28-sandboxed-driver-launcher
-verified: 2026-10-20T01:10:00Z
+verified: 2026-10-23T12:00:00Z
 status: human_needed
 score: 6/6 must-haves verified
 covered_files:
@@ -32,10 +32,13 @@ covered_files:
   - "src/launcher/mod.rs"
   - "src/launcher/outcome.rs"
   - "src/launcher/process.rs"
+  - "src/launcher/prompt.rs"
   - "src/launcher/push.rs"
   - "src/launcher/run.rs"
   - "src/launcher/sandbox.rs"
   - "src/launcher/stop.rs"
+  - "src/ui/screens/driver_launch.rs"
+  - "src/ui/screens/driver_run.rs"
   - "tests/launcher_acceptance.rs"
   - "tests/launcher_auth.rs"
   - "tests/launcher_caps.rs"
@@ -45,26 +48,30 @@ covered_files:
   - "tests/launcher_live_isolation.rs"
   - "tests/launcher_live_scope.rs"
   - "tests/launcher_push.rs"
+  - "tests/launcher_reconcile.rs"
   - "tests/launcher_sandbox.rs"
   - "tests/launcher_stop.rs"
-covered_digest: "v3:sha256:f45ad024a80d6a296a25b893c773a000832891df9d7e8f8c1dc9b8a7883dacb9"
+covered_digest: "v3:sha256:07d0bf1fdfb3970b35dca3fc0485227b7f89b19eb88eee9c20fb2e2df9079ed4"
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: human_needed
+  previous_score: 6/6
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
 human_verification:
-  - test: "Run `gsd-meta-manager driver auth setup` and complete the browser login (`claude setup-token`)"
-    expected: "A long-lived token is stored at ~/.config/gsd-meta-manager/driver-oauth-token (mode 0600); `driver auth status` then reports 'stored token' and the next launch uses it"
-    why_human: "Browser OAuth login cannot be driven here. Not-stored state and host-token fallback ARE observed (`driver auth status` printed 'stored token: none ... next launch uses: the host access token'); token validation/storage is unit-tested (tests/launcher_auth.rs)."
-  - test: "On a real macOS host (no bwrap, no systemd-run): `driver launch` without a flag, then with `--unsandboxed`"
-    expected: "Refuses by default naming the missing pieces; with the flag runs unsandboxed, records `sandbox: degraded` on the run, and the Driver tab shows the badge"
-    why_human: "No Mac available. The refuse/degrade logic is exercised on Linux with missing-tool shims (tests/launcher_degraded.rs, 16 pass) and the TUI badge is unit-tested (src/ui/screens/driver.rs:1181), but a real Darwin build and run is unobservable here."
+  - test: "On a real macOS host (no bwrap, no systemd-run): run `gsd-meta-manager driver launch` without a flag, then with `--unsandboxed`"
+    expected: "Refuses by default naming the missing pieces; with the flag it runs unsandboxed, records `sandbox: degraded` on the run, and the Driver tab shows the badge"
+    why_human: "Needs a physical Darwin host (28-UAT.md test 2, blocked: physical-device). Everything observable without one passes on Linux: tests/launcher_degraded.rs 16/16 with bwrap/systemd-run hidden by shims, TUI posture tests, and the cross-target check recorded in the UAT. Not observable: a real Darwin build linking and running (macOS process groups, no /proc, launchd environment)."
 ---
 
 # Phase 28: Sandboxed Driver Launcher Verification Report
 
 **Phase Goal:** `gsd-meta-manager driver launch` starts a headless master inside a sandbox it cannot write out of, enforces the hard caps from outside, and pushes on the driver's behalf. On Linux this is the default. Hosts without bwrap or systemd-run get an explicit degraded mode.
-**Verified:** 2026-10-20
-**Status:** human_needed (all automated checks pass; two items are unobservable on this host)
-**Re-verification:** No, initial verification
+**Verified:** 2026-10-23
+**Status:** human_needed (one item, a physical macOS host)
+**Re-verification:** Yes. The prior report was stale because covered sources changed after it ran. Every truth was re-checked against the current tree and live evidence was re-run, not carried over.
 
 ## Goal Achievement
 
@@ -72,65 +79,75 @@ human_verification:
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Launch runs master in bwrap under `systemd-run --user --scope`; stop kills whole scope; second launcher refused by flock; relaunch logs `crash-detected` | VERIFIED | `src/launcher/sandbox.rs` `bwrap_argv`/`systemd_run_argv`. Re-run live this session: `launcher_live_scope` (`stop_kills_every_process_of_the_scope`: 5 pids incl. bwrap/claude/sleep all dead, scope inactive; `runtime_max_sec_backstop_stops_a_scope`: scope ended 3.3 s). Acceptance `check l5` PASS (second launcher rc 3; after SIGKILL lock free, `crash-detected` precedes launch n=2). |
-| 2 | L1-L5 misbehaving-driver cases pass against the Rust launcher (dispatch cap, wall clock + RuntimeMaxSec, gap cap deny limit+1 / kill limit+2, rate-limit park) | VERIFIED (with caveat: l3 live FAIL carried, compensating evidence) | `check l1` PASS (deny at 3/3), `l2` PASS (cap-tripped wall_clock_min, scope gone), `l4` PASS (kill at count 4, 11 pids none survive), `l7` PASS (first deny after count 3, one cap-tripped gap_rounds used=4 limit=2, none before count 4 - this is exactly the limit+1 deny / limit+2 kill sequence, observed live). `check l3` re-derives **RESULT FAIL** (L3-2: no deny after count 3): `acceptance/l3/LOG.md` shows the Haiku driver exited rc=0 ("without RUN end") 1 s after count=3, so no dispatch was ever attempted - a driver-pacing fault in the harness, not a launcher fault. Gate logic itself: `src/launcher/gate.rs:56-87` `decide_dispatch` denies when `count > gap_limit` and the dispatch prompt mentions the phase; `run.rs:871-889` trips at `>= limit+2`; unit tests in both. Rate-limit park: `src/launcher/outcome.rs:213-235` + tests; not live-exercised (no live rate-limit case was in the campaign). [inferred - audit] |
-| 3 | Sandbox: host `~/.claude` RO; creds and `~/.claude.json` unreadable; `~/.ssh` empty; SSH_AUTH_SOCK/GH_TOKEN/ANTHROPIC_API_KEY absent; run dir RO; per-run CLAUDE_CONFIG_DIR keeps hooks, no global CLAUDE.md | VERIFIED | Ran `launcher_live_isolation -- --ignored` this session (real bwrap): `claude_touch=EROFS`, `creds_read=1`, `claude_json_read=1`, `ssh_entries=0`, `env_ssh_auth_sock=` `env_gh_token=` `env_anthropic_api_key=` empty, `run_dir_touch=EROFS`, `lock_bytes=0`, `settings_touch=EROFS`, `bin_touch=EROFS`; inside `push --dry-run` over ssh and https both fail while host control over ssh succeeds. `tests/launcher_config_dir.rs` passes. |
-| 4 | Auth: stored `claude setup-token` token as `CLAUDE_CODE_OAUTH_TOKEN`; guided onboarding; host-token fallback detects `OAuth token revoked` and relaunches; no refresh token in sandbox | VERIFIED (onboarding browser step human) | `src/launcher/auth.rs` (`resolve_launch_token`, `validate_pasted_token`, `store_token`), `outcome.rs:85,175-213` `AUTH_FAILURE_MARKERS`/`is_auth_failure`, `run.rs:728,761` `auth_relaunch`. `driver auth status` runs live (host-token fallback shown). `tests/launcher_auth.rs` 7 pass. |
-| 5 | Commits leave only via gsd-mm push step outside sandbox: fixed refspec into reserved namespace, secret scan, protected-branch refusal, PR cap; push inside sandbox fails for lack of credentials | VERIFIED | `src/launcher/push.rs` (`dest_ref`, `check_destination`, `scan_with_external`, `pr_cap_*`, `push_run`), `driver push` subcommand exists. `tests/launcher_push.rs` 9 pass. Live: inside-sandbox push over ssh/https fails (see 3); host control push to `refs/heads/gsd-auto/...` dry-run succeeds. |
-| 6 | Without bwrap/systemd-run (macOS) refuses by default; explicit opt-in degraded mode runs unsandboxed with process-supervision caps; posture recorded and shown in TUI; headless never needs tmux | VERIFIED on Linux (macOS run human) | `src/launcher/host.rs:152-190` `decide` (refuse unless `--unsandboxed`; no auto fallback). `tests/launcher_degraded.rs` 16 pass (refusal naming missing tools, degraded record, group kill, lock held, SIGTERM escalation). TUI badge `src/ui/screens/driver.rs:1181-1224`. No tmux argv anywhere (`launcher/mod.rs:36`, `process.rs:14`; stdin /dev/null). |
+| 1 | Launch runs master in bwrap under `systemd-run --user --scope`; stop kills the whole scope; a second launcher is refused by the flock; relaunch logs `crash-detected` | VERIFIED | `run.rs:1349` builds `systemd_run_argv(unit, runtime_max, &bwrap_argv(&spec, &driver_argv))`. `sandbox.rs:263` `bwrap_argv`, `:334` `systemd_run_argv` (`--collect`). Live this session, `launcher_live_scope -- --ignored`: `stop_kills_every_process_of_the_scope` listed 5 cgroup pids (bwrap x2, claude, sleep x2), ran `driver stop`, state `inactive`, none of the 5 pids alive. `runtime_max_sec_backstop_stops_a_scope`: `RuntimeMaxSec=3` ended the scope in 3.20 s. `acceptance check l5` PASS (`crash-detected` at line 39 precedes launch n=2 at line 40). `tests/launcher_stop.rs` 5 pass. |
+| 2 | L1-L5 misbehaving-driver cases pass against the Rust launcher: dispatch cap, wall clock + RuntimeMaxSec, gap cap deny limit+1 / kill limit+2, rate-limit park | VERIFIED | Re-derived from committed evidence with `scripts/launcher-acceptance.sh check`: l1, l2, l3, l4, l5, l7, l8, d33 all RESULT PASS. l3 now passes (deny after count 3 at line 41; none before count 3). l4: one `cap-tripped gap_rounds used=4 limit=2 kill-scope`, 11 pids none survive. l7: deny at count 3, trip at count 4. Gate logic: `gate.rs:71` `decide_dispatch`, unit test `the_gap_cap_allows_at_count_l_and_denies_at_l_plus_1`. `tests/launcher_caps.rs` 17 pass. Rate-limit park and auth-failure ordering are unit-tested in `outcome.rs` (`a_terminal_reason_naming_a_rate_limit_parks_with_an_unknown_window`, `an_auth_failure_is_decided_before_a_rate_limit`); no live rate-limit case was run in the campaign. A real rate-limit cannot be provoked on demand, and the verdict logic is a pure function exercised by tests. |
+| 3 | Inside the sandbox: host `~/.claude` RO; `.credentials.json` and `~/.claude.json` unreadable; `~/.ssh` empty; `SSH_AUTH_SOCK`/`GH_TOKEN`/`ANTHROPIC_API_KEY` absent; run dir RO; per-run `CLAUDE_CONFIG_DIR` keeps hooks, no global CLAUDE.md | VERIFIED | Re-ran `launcher_live_isolation -- --ignored` under real bwrap this session: `claude_touch=EROFS`, `creds_read=1`, `claude_json_read=1`, `ssh_entries=0`, `gh_entries=0`, `env_ssh_auth_sock=` / `env_gh_token=` / `env_anthropic_api_key=` / `env_anthropic_auth_token=` (empty), `run_dir_touch=EROFS`, `lock_bytes=0`, `settings_touch=EROFS`, `bin_touch=EROFS`, `sibling_visible=absent`. Also masked: `npmrc`, `cargo credentials`, `~/.aws`, `~/.config/gcloud`. Inside `push --dry-run` fails over ssh and https while the host control over ssh succeeds. `tests/launcher_config_dir.rs` 11 pass. |
+| 4 | Auth: stored `claude setup-token` token as `CLAUDE_CODE_OAUTH_TOKEN`; guided onboarding; host-token fallback detects `OAuth token revoked` and relaunches; no refresh token in sandbox | VERIFIED | `auth.rs` `resolve_launch_token` (called `run.rs:558`), `outcome.rs:175` `is_auth_failure`, `run.rs` `auth_relaunch`. `driver auth setup|status` wired at `driver_cli.rs:74-77`. `tests/launcher_auth.rs` 11 pass, including `stored_token_wins_over_the_host_token` (sandboxed fake driver records exactly one `CLAUDE_CODE_OAUTH_TOKEN` equal to the stored token; host access/refresh tokens appear nowhere) and `setup_refuses_an_unusable_paste_and_stores_nothing`. UAT test 1 PASSED on agent evidence (isolated HOME, `claude` shim, file mode 0600, dir 0700, value never echoed). Only the browser OAuth inside Anthropic's own `claude setup-token` was not driven; that is not gsd-mm behaviour. |
+| 5 | Commits leave only via gsd-mm's push step outside the sandbox: fixed refspec into the reserved namespace, secret scan, protected-branch refusal, PR cap; push inside the sandbox fails for lack of credentials | VERIFIED | `push.rs:168` `dest_ref` -> `refs/heads/gsd-auto/<alias>/<run-id>`, `:193` `check_destination` (rejects sibling alias and prefix-collision `p280`), `:591` `scan_with_external`, `pr_cap_*`; `driver push` wired at `driver_cli.rs:65` -> `push_finished_run`. `tests/launcher_push.rs` 10 pass. Live: inside-sandbox push fails over ssh and https; host control dry-run to `gsd-auto/probe` succeeds. |
+| 6 | Without bwrap/systemd-run (macOS) the launcher refuses by default; explicit opt-in degraded mode runs unsandboxed with process-supervision caps; posture recorded and shown in TUI; headless never needs tmux | VERIFIED on Linux (macOS run is the one human item) | `host.rs:185` `decide(caps, unsandboxed)`: refuses unless the flag is set, no auto fallback; called at `run.rs:579` and `:1261`. `tests/launcher_degraded.rs` 16/16 pass (refusal naming the missing tool, `the_flag_is_never_implied_by_a_failed_probe`, degraded posture recorded, group kill, lock held, TERM->KILL escalation). TUI: `driver_run::tests::the_posture_cell_marks_a_degraded_run_and_only_that` and `driver_launch::tests::launcher_launch_a_degraded_host_*` (3 tests) pass; `[U] launch UNSANDBOXED instead (asks again)` second confirmation at `driver_launch.rs:832`. No `tmux` argv on any control path (`launcher/mod.rs:36`, `process.rs:14`, `run.rs:542`; stdin `/dev/null`). |
 
-**Score:** 6/6 truths verified (0 behavior-unverified)
+**Score:** 6/6 truths verified (0 behavior-unverified). No behavior-dependent truth rests on presence alone: each cancellation/cleanup invariant (scope kill, cap trip, lock) has a passing live or named test above.
 
 ### Requirements Coverage
+
+All nine IDs in the ROADMAP (LNCH-01..08, DRIVE-01) are declared across the PLAN frontmatter (28-01..28-09) and appear in REQUIREMENTS.md. No orphaned Phase 28 IDs.
 
 | Requirement | Source Plan | Status | Evidence |
 |-------------|-------------|--------|----------|
 | LNCH-01 | 28-01, 28-02, 28-07 | SATISFIED | SC1; live scope tests |
-| LNCH-02 | 28-02, 28-09 | SATISFIED | l5 PASS (lock refusal rc 3, crash-detected) |
-| LNCH-03 | 28-05, 28-06, 28-09 | SATISFIED (l3 caveat) | l1/l2/l4/l7 PASS; gate unit tests; see SC2 |
-| LNCH-04 | 28-03, 28-09 | SATISFIED | live isolation probe; config_dir tests |
-| LNCH-05 | 28-03, 28-05, 28-06 | SATISFIED (browser setup human) | auth.rs, outcome.rs, run.rs auth_relaunch |
-| LNCH-06 | 28-03, 28-08 | SATISFIED | push.rs; launcher_push tests; live dry-run |
-| LNCH-07 | 28-04, 28-07 | SATISFIED on Linux (macOS human) | host.rs; launcher_degraded |
-| LNCH-08 | 28-01 | SATISFIED | no tmux on control path |
-| DRIVE-01 (re-mapped) | 28-02, 28-09 | Launcher half SATISFIED; requirement remains Pending for Phase 29 | d33 PASS: real Opus driver, organic dispatch-denied at LOG line 72, injected 2nd gaps_found, `cap-tripped gap_rounds kill-scope`, 32 pids none survive, $9.00. REQUIREMENTS.md line 321 correctly keeps it Pending (master-prompt half is Phase 29). |
+| LNCH-02 | 28-02, 28-09 | SATISFIED | l5 PASS; `launcher_stop`/`launcher_e2e` |
+| LNCH-03 | 28-05, 28-06, 28-09 | SATISFIED | l1/l2/l3/l4/l7 PASS; `launcher_caps` 17; gate/outcome unit tests |
+| LNCH-04 | 28-03, 28-09 | SATISFIED | live isolation probe; `launcher_config_dir` 11 |
+| LNCH-05 | 28-03, 28-05, 28-06 | SATISFIED | `launcher_auth` 11; UAT test 1 pass |
+| LNCH-06 | 28-03, 28-08 | SATISFIED | `launcher_push` 10; live dry-run |
+| LNCH-07 | 28-04, 28-07 | SATISFIED on Linux (macOS run human) | `launcher_degraded` 16; TUI posture tests |
+| LNCH-08 | 28-01 | SATISFIED | no tmux on control path; detached log-file launch |
+| DRIVE-01 (re-mapped) | 28-02, 28-09 | SATISFIED for the Phase 28 launcher half | d33 PASS: real Opus driver, injected second `gaps_found`, `cap-tripped gap_rounds kill-scope`, $9.00 (campaign total about $9.93 of $20). REQUIREMENTS.md already records the Phase 29 half as closed by operator sign-off. |
 
-All 9 IDs declared across plans 28-01..28-09 match REQUIREMENTS.md; no orphaned Phase 28 IDs.
-
-### Behavioral Spot-Checks (all read-only, no spend)
+### Behavioral Spot-Checks (this session)
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Acceptance verdicts re-derived | `bash scripts/launcher-acceptance.sh check <case>` for l1 l2 l3 l4 l5 l7 l8 d33 | l1 l2 l4 l5 l7 l8 d33 RESULT PASS; l3 RESULT FAIL | consistent with claims |
-| Full suite | `cargo test --no-fail-fast` | 2425 lib pass / 1 fail (expected git-version witness: installed 2.53.0 vs pinned 2.55.0); every `tests/launcher_*` binary ok; 0 flakes this run | PASS |
-| Live isolation / scope | `cargo test --test launcher_live_isolation --test launcher_live_scope -- --ignored` | 3/3 ok | PASS |
-| Clippy | `cargo clippy --all-targets -- -D warnings` | clean | PASS |
-| CLI wiring | `driver --help`, `driver launch --help`, `driver auth status` | launch/stop/push/auth present and functional | PASS |
+| Live isolation and scope | `cargo test --test launcher_live_isolation --test launcher_live_scope -- --ignored --nocapture` | 3/3 ok (1.27 s + 3.24 s) | PASS |
+| All launcher integration binaries | `cargo test --no-fail-fast --test launcher_{acceptance,auth,caps,config_dir,degraded,e2e,live_isolation,live_scope,push,reconcile,sandbox,stop}` | rc 0: 7 + 11 + 17 + 11 + 16 + 29 + 10 + 7 + 5 + 5 passed, 0 failed (live and one bwrap-gated test are `#[ignore]`d in a plain run and were run live above) | PASS |
+| Launcher unit tests | `cargo test --lib -- launcher::outcome launcher::gate launcher::host` | 52 passed, 0 failed | PASS |
+| TUI posture | `cargo test --lib -- the_posture_cell_marks_a_degraded_run_and_only_that launcher_launch_a_degraded_host` | 4 passed | PASS |
+| Acceptance verdicts re-derived | `bash scripts/launcher-acceptance.sh check <case>` for l1 l2 l3 l4 l5 l7 l8 d33 | all RESULT PASS | PASS |
+| Targeted regression gate (earlier this session, orchestrator) | 44 integration binaries | 496 passed, 0 failed, 17 ignored | PASS |
 
-Campaign: $9.9996 of $20 (`acceptance/campaign.txt`).
+The full `cargo test` was deliberately not run (another agent is running timing-sensitive stress tests). The known expected local failure is the git-version witness in `src/envelope/policy.rs` (installed git differs from the pinned 2.55.0); it is not a regression.
 
-### Anti-Patterns / Code Review
+### Probe Execution
 
-`28-REVIEW.md` records 12 findings, all `open` in the disposition (1 critical, 7 warning, 4 info). Judgment:
+No `scripts/*/tests/probe-*.sh` probes are declared by the plans. The acceptance harness (`scripts/launcher-acceptance.sh check`) is the phase's probe equivalent and was re-run above.
 
-- **CR-01 (critical) `src/driverctl/serve.rs:402-413` `bind_private` flips the process-wide umask:** a real defect (interleaved binders can leave umask 0o177) and the credible cause of the bursty `PermissionDenied` test flakes. It does NOT contradict a Phase 28 success criterion: the review itself reports production exposure as latent (no other file-creating thread exists at bind time in `serve()` / `Session::start`), the sandbox, caps and push paths are unaffected, and the full suite was green apart from the expected witness on this run. Classified **WARNING, not a goal gap**; should be fixed (staging-dir + rename fix is in the review) before Phase 30 embeds `bind_run_socket` in the multithreaded TUI runtime, and it is a test-reliability hazard until then. [inferred - audit]
-- **WR-02 (credential hiding is a denylist; network open)** and **WR-01 (no `--new-session`)** weaken the "cannot write out of" claim beyond what the measured probe covers (e.g. `~/.cargo/credentials.toml`, `AWS_*`, `~/.config/gsd-meta-manager/driver-oauth-token` are not masked). The success-criterion list is satisfied as written, but these are real hardening gaps worth triage; recommend a follow-up plan. WR-04 (`RERUN=1` deletes committed evidence before gates) is a harness hazard.
-- No TBD/FIXME/XXX debt markers were introduced as blockers (not exhaustively scanned beyond launcher sources).
+### Anti-Patterns / Code Review / Security
 
-### Gaps Summary
+- Debt-marker scan (`TBD|FIXME|XXX|todo!|unimplemented!`) over `src/launcher/*.rs`, `src/driver_cli.rs`, `scripts/launcher-acceptance.sh`, `tests/launcher_*.rs`: none.
+- `28-REVIEW.md` (re-run): 0 critical, 6 warning, 4 info, all advisory. The prior critical (CR-01 process-wide umask in `bind_private`) and WR-07 are `fixed` in the disposition. The remaining warnings are hardening and polish (credential hiding is still a denylist with the network open, an unbounded `DIRECTION.md` read, a symlinked-drivers-dir tmpfs skip, a `bind_private` replace race, half-applied macOS enablement in the TUI). None contradicts a success criterion as written; they are worth triage but are not goal gaps. WR-06 is the same reduced hardening note as before and the live probe measures the criterion list as satisfied.
+- `28-SECURITY.md`: `threats_open: 0`, status verified.
+- `28-UI-REVIEW.md`: 18/24, no blockers.
+- Working tree note: `src/driver/direction.rs` is modified and `tests/driverctl_race_probe.rs` is untracked. Both belong to another agent's in-flight quick task and are outside this phase's covered files.
 
-No blocking gaps. One caveat: l3's live assertion (deny after count 3) was never observed; SC2 is met through l7 (same assertion, observed live) plus l4 (kill at limit+2) and the gate's unit tests. If strict case-for-case parity is wanted, closure is cheap: fix the l3 harness pacing (driver exhausted its 8 scripted reps 1 s after count=3) and rerun on Haiku for about $0.02.
+### Deferred Items
+
+None.
 
 ### Human Verification Required
 
-1. **`driver auth setup` browser login** - complete it; `driver auth status` must then show a stored token. Why human: browser OAuth.
-2. **macOS degraded-mode run** - refuse by default, `--unsandboxed` degraded with badge. Why human: no Mac; Linux shim tests cover the logic only.
+#### 1. macOS degraded-mode run
+
+**Test:** On a real macOS host with neither bwrap nor systemd-run, run `gsd-meta-manager driver launch` without a flag, then with `--unsandboxed`.
+**Expected:** The first refuses and names the missing pieces. The second runs unsandboxed, records `sandbox: degraded` on the run, and the Driver tab shows the badge.
+**Why human:** Needs a physical Darwin host (28-UAT.md test 2, `blocked_by: physical-device`). The refuse/degrade logic, process-group supervision and TUI badge are all proven on Linux through shims and unit tests, but a real Darwin build and run is unobservable here.
+
+(The earlier `driver auth setup` item is settled: UAT test 1 passed on agent evidence, see truth 4.)
+
+### Gaps Summary
+
+No gaps. All six roadmap success criteria and all nine requirement IDs are backed by evidence from this session, including live bwrap isolation and live systemd scope kill. The single open item is a real macOS run, which cannot be done without a physical device.
 
 ---
 
-_Verified: 2026-10-20_
+_Verified: 2026-10-23_
 _Verifier: Claude (gsd-verifier)_
-
-## Addendum 2026-10-20 — l3 caveat closed
-
-Harness pacing fixed (`e087343`, `8e97eb1`: 3 gap writes at ~10/57/104 s, spacing above the 45 s `COALESCE_S` window) and l3 rerun on Haiku: `check l3` **RESULT PASS** — counts 1/2/3 then `dispatch-denied 'phase 1 has failed verification 3 times'` twice, none before count 3 (`63fed30`, $0.0174). An intermediate attempt at 25 s spacing failed because the writes coalesced (`8754c08`, $0.0203). The SC2 / LNCH-03 l3 caveat no longer applies.
