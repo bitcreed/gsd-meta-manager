@@ -1127,7 +1127,7 @@ degraded mode says which of these protections are missing.
 **Depends on**: Phase 28 (extends `src/launcher/sandbox.rs` `bwrap_argv` and the push step; Phase
 28 itself is executed but not yet verified and is left unchanged)
 
-**Requirements**: TBD (new LNCH-* ids to be minted in discuss/plan [inferred — audit])
+**Requirements**: LNCH-09, LNCH-10, LNCH-11, LNCH-12, LNCH-13, LNCH-14, LNCH-15 (minted in discuss, 28.1-CONTEXT.md D-01 [inferred — audit])
 
 **Canonical input**: `.planning/phases/28.1-sandbox-egress-agent-channel-isolation/28.1-AUDIT-FINDINGS.md`
 (the 2026-10-24 sandbox-reach audit). Discuss, research and plan MUST read it; every finding
