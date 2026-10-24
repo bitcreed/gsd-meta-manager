@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
 status: executing
-stopped_at: Completed 28.1-03-PLAN.md
-last_updated: "2026-10-24T21:54:53.875Z"
+stopped_at: Completed 28.1-04-PLAN.md
+last_updated: "2026-10-24T22:10:25.236Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 28.1 execution started
-state_head: 57bfbf98987989f9a8f2a9c5c41cee7051cd40e6
+state_head: abbff93b095fa9448d22dbee3bd799fb8a66792a
 progress:
   total_phases: 10
   completed_phases: 14
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 28.1 (Sandbox Egress & Agent-Channel Isolation (INSERTED)) — EXECUTING
-Plan: 4 of 10
+Plan: 5 of 10
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -547,6 +547,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P01 | 35 min | 3 tasks | 9 files |
 | Phase 28.1 P02 | 28min | 2 tasks | 10 files |
 | Phase 28.1 P03 | 50 min | 3 tasks | 6 files |
+| Phase 28.1 P04 | 35min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -761,6 +762,9 @@ Recent decisions affecting current work:
 - [Phase 28.1]: 28.1-02: bin/driverctl shim pins DRIVERCTL_SOCK; host managed policy merged (arrays appended, locks kept, other keys copied); unparseable host managed file refuses the launch [inferred — audit]
 - [Phase 28.1]: 28.1-03: planted-file gate sits before the checkout fetch; git-relevant findings park push-refused:planted_git_config; ack is a per-invocation --ack-planted flag [inferred - audit]
 - [Phase 28.1]: 28.1-03: every launcher git carries -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat via the single git() chokepoint [inferred - audit]
+- [Phase 28.1]: 28.1-04: LaunchSpec unchanged; launcher records posture via record_launch_posture right after begin_launch [inferred — audit]
+- [Phase 28.1]: 28.1-04: bwrap-scope lists only registry-overlay (when overlay unavailable); managed-settings never listed for bwrap (RESEARCH Q2)
+- [Phase 28.1]: 28.1-04: egress allowlist key is projects.<alias>.driver.egress in flattened extra map; default empty [inferred — audit]
 
 ### Roadmap Evolution
 
@@ -955,8 +959,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-24T21:54:52.716Z
-Stopped at: Completed 28.1-03-PLAN.md
+Last session: 2026-10-24T22:10:24.063Z
+Stopped at: Completed 28.1-04-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0

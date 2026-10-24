@@ -205,7 +205,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â€” audit]`.
 
-- [ ] **LNCH-09**: The sandbox runs with `--unshare-net --unshare-ipc --unshare-uts` and a tmpfs over
+- [x] **LNCH-09**: The sandbox runs with `--unshare-net --unshare-ipc --unshare-uts` and a tmpfs over
   `/run`. Its only egress is through launcher-owned proxies outside the sandbox, reached via unix
   sockets:
   - inference goes through a token-injecting reverse proxy that forwards only `/v1/messages`
@@ -222,7 +222,7 @@ Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â
   nested `.git`, `.claude/` settings/hooks/agents/commands/skills, `CLAUDE.md`, `.envrc`,
   `.vscode/tasks.json`, `.mcp.json` and attributes. Findings are flagged on the run, and the push step
   refuses on git-relevant findings.
-- [ ] **LNCH-12**: The run token never enters the sandbox. Auth posture (`setup-token` | `host-token`)
+- [x] **LNCH-12**: The run token never enters the sandbox. Auth posture (`setup-token` | `host-token`)
   is recorded, and the setup-token's reach is probed. A managed-settings policy denies agent-to-agent
   and cloud tools (`Cron*`, `RemoteTrigger`, `SendMessage`, `ListAgents`, `ScheduleWakeup`,
   `DesignSync`, `mcp__claude_ai_*`), and claude.ai connectors are disabled.
@@ -231,7 +231,7 @@ Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â
   `claude` with another config dir or `--settings` cannot skip them.
 - [ ] **LNCH-14**: Accepted residual risks are documented. The main one is planning docs read by an
   outside coordinator, which are untrusted input.
-- [ ] **LNCH-15**: Every run records `protections_absent: [...]`, and degraded, unsandboxed or
+- [x] **LNCH-15**: Every run records `protections_absent: [...]`, and degraded, unsandboxed or
   old-bwrap runs show it in the TUI (Driver tab, launch form, degraded confirm).
 
 ### Master Prompt & Templates (PRMT): Phase 29
@@ -390,13 +390,13 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-06 | Phase 28 | Complete |
 | LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |
-| LNCH-09 | Phase 28.1 | Pending |
+| LNCH-09 | Phase 28.1 | Complete |
 | LNCH-10 | Phase 28.1 | Pending |
 | LNCH-11 | Phase 28.1 | Pending |
-| LNCH-12 | Phase 28.1 | Pending |
+| LNCH-12 | Phase 28.1 | Complete |
 | LNCH-13 | Phase 28.1 | Pending |
 | LNCH-14 | Phase 28.1 | Pending |
-| LNCH-15 | Phase 28.1 | Pending |
+| LNCH-15 | Phase 28.1 | Complete |
 | PRMT-01 | Phase 29 | Complete |
 | PRMT-02 | Phase 29 | Complete |
 | PRMT-03 | Phase 29 | Complete |

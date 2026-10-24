@@ -1185,14 +1185,14 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 3/10 plans executed
+**Plans**: 4/10 plans executed
 
 Plans:
 **Wave 1**
 - [x] 28.1-01-PLAN.md — launcher-side egress server library: token-injecting inference proxy (path allowlist, body policy), deny-by-default CONNECT with resolved-address guard, header-free log, counters; rustls/httparse (LNCH-09, LNCH-12)
 - [x] 28.1-02-PLAN.md — gate hooks and agent-tool deny rules as managed settings bound at /etc/claude-code (tmpfs-/etc on every bwrap), host policy merged, pinned shim; live nested-claude proof (LNCH-12, LNCH-13)
 - [x] 28.1-03-PLAN.md — planted-file detection by file reads only, push gate before the checkout fetch, `driver push --ack-planted`, hardened launcher git (LNCH-11, LNCH-13)
-- [ ] 28.1-04-PLAN.md — posture data: `protections_absent`/`egress_allow`/`auth`/`planted`/`inference_requests` keys, overlay and namespace probes, per-project egress allowlist config (LNCH-15, LNCH-12, LNCH-09)
+- [x] 28.1-04-PLAN.md — posture data: `protections_absent`/`egress_allow`/`auth`/`planted`/`inference_requests` keys, overlay and namespace probes, per-project egress allowlist config (LNCH-15, LNCH-12, LNCH-09)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 28.1-05-PLAN.md — in-sandbox `bridge` subcommand: binds the port before starting the driver, relays TCP to the egress socket, returns the driver's exit code, fails closed; CI proof against a real EgressServer (LNCH-09)
