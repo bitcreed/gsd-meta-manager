@@ -252,4 +252,74 @@ root_cause: TWO causes behind one flaky test. (F1, 6/7 BEFORE failures, test tim
 
 product_verdict: yes — the newest-wins plain rename at src/driver/direction.rs:688-693 can revert a human rename-save (H7, deterministic red test M4); H2 (0 false mismatches) and H3 (0 lock timeouts) are falsified, and the starvation (F1) is designed GaveUp behaviour exposed by a test timing assumption, so it gets the test-side fix in addition.
 
+## Fix
+
+fix_rationale: Product branch first, then the test-side fix, because both causes are real. (F2, product, src/driver/direction.rs) The newest-wins branch keeps its meaning (the newest human save wins, fact 3) but puts the newer file in place by `renameat2(RENAME_EXCHANGE)` instead of a plain rename, and then checks what came back: if it is, unchanged (same inode AND same bytes), the older file it expected at DIRECTION.md, that file is superseded and dropped; anything else landed in the meantime, is newer still, and is exchanged into place the same way. A human file is therefore never renamed over anything and never unlinked unless a newer one is in place; after GIVE_BACK_ROUNDS=8 exchanges that do not settle, the splice returns an I/O error naming the file left at the temp name (never unlinks). D-23 is kept: fsync before the exchange, verify by body bytes, human-wins/GaveUp, SPLICE_TRIES=5, the 5 x attempt ms backoff, DIRECTION_LOCK_BUDGET=2 s, proceed-without-lock on timeout and `lock_timed_out` reporting are all untouched. The regression test is the M4 unit test, driven by a `#[cfg(test)]` hook that does not exist in non-test builds. (F1, test-side, tests/driverctl_race.rs) The product fix cannot cure the starvation (M3: it follows the fsync window, not the give-back), so the smoke replaces its timing hope with a count-based handshake, as qs8 did for the two-writers test: the tool counts `begun`/`done`/`ok` splices; while `ok == 0`, the human yields once whenever a splice has completed since its last yield, saving nothing until a splice that began after the yield has finished, so that splice sees no save at all; if its loop ends with `ok == 0` it makes one final yield, and the tool keeps splicing past its deadline until that is over. Every wait is `wait_until`-bounded (2 x DIRECTION_LOCK_BUDGET) and ends early when the tool exits (drop guards set the exit flags even on panic). After the first ok the human's cadence is exactly the old one, so the in-place Poisson accounting of `editor_race_full` is unchanged after the first ok. A new contention witness counts saves that start while a splice is in flight and asserts it is above 0 for both cases, so the race is still proven exercised. Every original assertion, message, run length (1.0 s / 15.0 s), the Poisson bound and the positive control are kept. Rejected: extending the case until ok > 0 (still P(no ok) = e^(-rate x T), margin-widening); retrying the case (rerun-until-green masks regressions such as F2 itself, which a retry would have hidden); slowing the human globally (changes the spike experiment the in-place bound is calibrated on, and is still a ratio-of-timings assumption).
+
+**Red-first, on the current tree.** Hook + regression tests applied without the fix:
+`cargo test --lib driver::direction::tests::linux` -> `a_save_landing_right_after_the_exchange_back_is_not_reverted ... FAILED`
+(12 passed, 1 failed; DIRECTION.md shows save 2, the newest was save 3). With the fix:
+`cargo test --lib driver::direction` -> 20 passed, 0 failed.
+
+**Product fix alone does not cure F1** (`[INFERRED — audit]` decision to add the test-side
+fix): M1 re-run with only the product change, profile B, binary, n=40:
+```
+probe profile=B mode=binary n=40 fail=0 other=0 timeout=0 tree=aad9f95+a1571cfa4b42 ... note=V1S-PROBE-M1-productfix-only
+```
+in-place ok min 1 / p10 1 / p50 4, rename ok min 1 / p10 1 / p50 4, gave-up share p50
+0.48 / 0.71: the same fsync-window starvation margin as before (0/40 ok==0 here, against
+~1/40 per style measured at BEFORE and in M1), as M3 predicts, so the test-side yield was
+applied too.
+
+## Verification (Task 2)
+
+Fix commit: **717d724** `fix(quick-261023-v1s): give newer saves back by exchange and grant
+the smoke one quiet splice` (src/driver/direction.rs + tests/driverctl_race.rs). The tree
+suffix `31d595e20190` was recomputed just before the commit as `git diff HEAD -- src tests
+Cargo.toml Cargo.lock | sha256sum` and equals the suffix on every after line (the HEAD
+prefixes differ only by the concurrent session's docs-only commits):
+
+```
+after profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=fcf5e9e+31d595e20190
+after profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190
+after profile=B mode=binary n=200 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190
+```
+
+| profile | mode   | n   | before target fails | after target fails | before/after other | timeouts |
+|---------|--------|-----|---------------------|--------------------|--------------------|----------|
+| 0       | binary | 200 | 1                   | 0                  | 0 / 0              | 0 / 0    |
+| A       | binary | 200 | 1                   | 0                  | 0 / 0              | 0 / 0    |
+| B       | binary | 200 | 5                   | 0                  | 0 / 0              | 0 / 0    |
+
+No `other` failure in any AFTER run, so nothing new for the scan from Task 2.
+
+**Mechanism in the container** (`probe B binary 20`, `V1S_KEEP_ALL=1`, fixed tree):
+```
+probe profile=B mode=binary n=20 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190 ... note=V1S-PROBE-after-mechanism
+```
+| style   | yields per case (min/p50/max) | contended saves per case (min/p50/max) | ok (min/p50) |
+|---------|-------------------------------|----------------------------------------|--------------|
+| inplace | 0 / 1 / 1                     | 582 / 694 / 742                        | 3 / 12       |
+| rename  | 0 / 1 / 1                     | 542 / 598 / 664                        | 3 / 10       |
+| naive   | 0 / 0 / 0                     | 25 / 47 / 72                           | 1033 / 1149  |
+
+The yield fires at most once per case (as soon as the first splice completes without an ok),
+the race stays exercised (hundreds of saves land while a splice is in flight), and the naive
+control never yields (I6). Load caveat `[INFERRED — audit]`: profiles A/B's load loops run
+the fixed smoke after the fix; at most one yield (one splice, ~5-50 ms of human pause) per
+1 s case, so the load differs by well under 5 %.
+
+Local (host) run of the fixed binary: `exchange rename ... yields=0 contended=901
+tool={"ok": 5034}`, `exchange inplace ... yields=0 contended=929`, naive `yields=0`,
+`two writers: splices=273 contended_writes=106/200`; 4 passed, 1 ignored.
+
+Mutants (marker `V1S-MUTANT`, local, on the fix, `cargo test --test driverctl_race
+editor_race_smoke`, each reverted from a saved copy; `grep -rn V1S-MUTANT src tests` empty):
+- M-B, `run_loop` returns GaveUp before writing any temp: failed 3/3 with
+  `rename: the tool must have spliced at least once: {"gave-up": 36835}` (36450, 37071).
+- M-C, the verify treats every displaced file as matching: failed 3/3 with
+  `a rename-save must never be lost: the exchange-verify gives the displaced inode back`.
+
+mutants: M-B 3/3 M-C 3/3
+
 <!-- v1s:continue -->

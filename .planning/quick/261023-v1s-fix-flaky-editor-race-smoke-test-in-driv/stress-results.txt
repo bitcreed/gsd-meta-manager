@@ -8,3 +8,8 @@ probe profile=B mode=binary n=40 fail=1 other=0 timeout=0 tree=5e952d0+fa9f6a5cb
 probe profile=B mode=binary n=40 fail=0 other=0 timeout=0 tree=5e952d0+fa9f6a5cbc1c date=2026-10-24T04:20:23Z target=driverctl_race_probe filter=editor_race_smoke tmpfs=1 note=V1S-PROBE-M2-tmpfs
 probe profile=B mode=binary n=40 fail=0 other=0 timeout=0 tree=b189c0d+66c47c678413 date=2026-10-24T04:23:41Z target=driverctl_race_probe filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-M3a-overlay-nosync
 probe profile=B mode=binary n=40 fail=4 other=0 timeout=0 tree=4784524+334f74febd3f date=2026-10-24T04:25:37Z target=driverctl_race_probe filter=editor_race_smoke tmpfs=1 note=V1S-PROBE-M3b-tmpfs-delay5000us
+probe profile=B mode=binary n=40 fail=0 other=0 timeout=0 tree=aad9f95+a1571cfa4b42 date=2026-10-24T04:33:00Z target=driverctl_race filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-M1-productfix-only
+after profile=0 mode=binary n=200 fail=0 other=0 timeout=0 tree=fcf5e9e+31d595e20190 date=2026-10-24T04:43:58Z
+after profile=A mode=binary n=200 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190 date=2026-10-24T04:55:33Z
+after profile=B mode=binary n=200 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190 date=2026-10-24T05:08:20Z
+probe profile=B mode=binary n=20 fail=0 other=0 timeout=0 tree=ee47494+31d595e20190 date=2026-10-24T05:09:34Z target=driverctl_race filter=editor_race_smoke tmpfs=0 note=V1S-PROBE-after-mechanism
