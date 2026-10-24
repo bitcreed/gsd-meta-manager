@@ -259,6 +259,25 @@ struct GitRun {
     last_error: String,
 }
 
+/// Config overrides every launcher `git` carries, placed before the subcommand: the
+/// config-exec keys git lets a command line override for the subcommands the push
+/// step runs, so a planted `core.fsmonitor`, `core.hooksPath` or `core.pager` in a
+/// repository the driver wrote cannot steer them (D-24 A4)
+/// `[inferred — audit]`.
+const GIT_HARDENING: &[&str] = &[
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.pager=cat",
+];
+
+/// `args` with [`GIT_HARDENING`] in front of them.
+fn hardened_git_args(args: Vec<OsString>) -> Vec<OsString> {
+    args
+}
+
 /// Run `git` with `args` (they name their repository), within `budget`.
 ///
 /// `GIT_TERMINAL_PROMPT=0` so a credential prompt cannot hang the launcher, and
@@ -903,6 +922,51 @@ mod tests {
     fn git_ok(dir: &Path, args: &[&str]) {
         let run = git_in(dir, args, GIT_QUICK);
         assert!(run.success, "git {args:?}: {}", run.last_error);
+    }
+
+    #[test]
+    fn every_launcher_git_call_is_hardened() {
+        assert_eq!(
+            hardened_git_args(os(&["fetch"])),
+            os(&[
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.pager=cat",
+                "fetch"
+            ])
+        );
+        // The prefix is what the constant says, and `git()` is the one place it is applied.
+        assert_eq!(GIT_HARDENING.len(), 6);
+        let source = include_str!("push.rs");
+        let needle = format!("{}(args)", "hardened_git_args");
+        assert_eq!(
+            source.matches(&needle).count(),
+            1,
+            "git() is the single caller path"
+        );
+    }
+
+    #[test]
+    fn the_hardened_prefix_reaches_the_process_a_launcher_git_starts() {
+        // A repository whose own config plants an fsmonitor: a hardened status
+        // never runs it.
+        let repo = tempfile::tempdir().expect("repo");
+        let marker = repo.path().join("marker");
+        git_ok(repo.path(), &["init", "--quiet"]);
+        fs::write(
+            repo.path().join(".git/config"),
+            format!(
+                "[core]\n\tbare = false\n\tfsmonitor = \"touch {}; false\"\n",
+                marker.display()
+            ),
+        )
+        .expect("config");
+        let run = git_in(repo.path(), &["status", "--porcelain"], GIT_QUICK);
+        assert!(run.success, "{}", run.last_error);
+        assert!(!marker.exists(), "the planted fsmonitor ran");
     }
 
     #[test]

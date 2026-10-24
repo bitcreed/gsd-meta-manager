@@ -695,3 +695,76 @@ fn strict_mode_without_a_baseline_still_refuses() {
     let again = run_push(&fx);
     assert_planted_refusal(&fx, &origin, &again);
 }
+
+/// A driver that commits once and leaves a `.claude/settings.json` change behind.
+const CHANGE_SETTINGS_SCENARIO: &str = r#"
+driverctl log start --mode headless --loop-mode loop
+echo "driver work" > feature.txt
+git add feature.txt
+git commit --quiet -m "driver work"
+echo '{"changed":true}' > .claude/settings.json
+driverctl log end --reason all-done
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#;
+
+#[test]
+fn ack_planted_pushes_and_logs_the_ack() {
+    let fx = Fixture::new();
+    let origin = Remote::new(&fx, "origin.git");
+    init_project(&fx, &origin.url());
+    write_baseline(&fx);
+    fx.write_scenario(&plant_fsmonitor_scenario(&fx));
+
+    let launched = fx.launch(&[]);
+    assert!(launched.status.success(), "{}", stderr(&launched));
+    let refused = run_push(&fx);
+    assert_planted_refusal(&fx, &origin, &refused);
+    let tip = git(fx.project(), &["rev-parse", "work"]);
+
+    let acked = push_command(&fx)
+        .arg("--ack-planted")
+        .output()
+        .expect("spawn driver push");
+    assert!(acked.status.success(), "{}", stderr(&acked));
+    assert_eq!(
+        origin.branch("gsd-auto/p28/r28").as_deref(),
+        Some(tip.as_str()),
+        "the acknowledged push went through"
+    );
+    let log = fx.log();
+    let acks = lines_of(&log, "push-ack-planted");
+    assert_eq!(acks.len(), 1, "{log}");
+    assert!(acks[0].contains("findings="), "{}", acks[0]);
+    assert!(
+        stderr(&acked).contains("core.fsmonitor"),
+        "the findings are shown: {}",
+        stderr(&acked)
+    );
+    assert!(!marker(&fx).exists(), "the planted command ran on the host");
+}
+
+#[test]
+fn non_git_findings_do_not_block_the_push() {
+    let fx = Fixture::new();
+    let origin = Remote::new(&fx, "origin.git");
+    init_project(&fx, &origin.url());
+    fs::create_dir_all(fx.project().join(".claude")).expect(".claude");
+    fs::write(fx.project().join(".claude/settings.json"), "{}\n").expect("settings");
+    write_baseline(&fx);
+    fx.write_scenario(CHANGE_SETTINGS_SCENARIO);
+
+    let launched = fx.launch(&[]);
+    assert!(launched.status.success(), "{}", stderr(&launched));
+    let tip = git(fx.project(), &["rev-parse", "work"]);
+    assert_eq!(
+        origin.branch("gsd-auto/p28/r28").as_deref(),
+        Some(tip.as_str()),
+        "a changed .claude/settings.json does not block the push"
+    );
+    assert!(
+        lines_of(&fx.log(), "push-refused").is_empty(),
+        "{}",
+        fx.log()
+    );
+    assert!(lines_of(&fx.log(), "push-ack-planted").is_empty());
+}

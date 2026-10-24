@@ -1341,6 +1341,13 @@ mod tests {
     }
 
     #[test]
+    fn driver_push_takes_an_ack_for_planted_files() {
+        let parsed = driver_action(&["push", "p28", "r28", "--ack-planted"]);
+        assert!(parsed.is_ok(), "--ack-planted is a flag of driver push");
+        assert!(driver_action(&["push", "p28", "r28"]).is_ok());
+    }
+
+    #[test]
     fn driver_new_takes_a_project_and_a_slug() {
         match driver_action(&["new", "p", "smoke"]).expect("parses") {
             DriverAction::New { project, slug } => {
