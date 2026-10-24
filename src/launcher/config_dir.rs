@@ -12,13 +12,22 @@
 //!   project's own `CLAUDE.md`, not the operator's personal rules;
 //! * [`settings_transform`] of the host `settings.json`: minus `statusLine`,
 //!   `enabledPlugins`, `remoteControlAtStartup`, `agentPushNotifEnabled` and
-//!   `apiKeyHelper`, minus any `env` entry the process scrub strips, with the
-//!   driverctl hooks added around the user's own. The PreToolUse `Agent|Task` entry goes FIRST and carries
-//!   `"onFailure": "block"` (hand-off 1), so a dead socket or a missing binary
-//!   fails closed;
+//!   `apiKeyHelper`, minus any `env` entry the process scrub strips. The PreToolUse
+//!   `Agent|Task` entry goes FIRST and carries `"onFailure": "block"` (hand-off 1),
+//!   so a dead socket or a missing binary fails closed;
+//! * **28.1 (D-12, D-13): the gate lives in the managed tier.** For a bwrap-scope
+//!   run the gate's hooks and the agent-tool deny list are written to
+//!   `<cfg>/managed/managed-settings.json` ([`managed_settings`]) and bound
+//!   read-only at `/etc/claude-code` inside the sandbox, so a nested `claude` with
+//!   another config dir, `--settings` or `--setting-sources` cannot shed them. The
+//!   per-run `settings.json` then carries no driverctl entry (no hook fires twice).
+//!   A degraded run has no `/etc` to bind, so it keeps the gate in `settings.json`
+//!   with the deny list and writes no managed file. The host administrator's own
+//!   `/etc/claude-code` policy is merged in, never hidden ([`read_host_managed`]);
 //! * a minimal `.claude.json` (`hasCompletedOnboarding`), only when absent;
-//! * a `bin/driverctl` shim that execs this binary (hand-off 8), so the master
-//!   prompt's `driverctl log ...` runs unchanged;
+//! * a `bin/driverctl` shim that sets `DRIVERCTL_SOCK` to the run's socket and execs
+//!   this binary (hand-off 8), so the master prompt's `driverctl log ...` runs
+//!   unchanged and unsetting the variable cannot detach a hook from the gate;
 //! * a `bin/gsd-meta-manager` shim that execs this binary with `next` and its
 //!   arguments, and refuses every other first argument (Phase 29, D-21), so the
 //!   prompt's citation `gsd-meta-manager next {PROJECT_ROOT} --json` resolves on
@@ -55,6 +64,43 @@ pub const LINK_FROM_HOST: &[&str] = &[
     "gsd-core",
     "get-shit-done",
     "hooks",
+    // D-16: the host's GSD hooks call helpers under `~/.claude/scripts`; without the
+    // link they fail inside the sandbox (a latent Phase 28 bug).
+    "scripts",
+];
+
+/// The per-run subdirectory that is bound at `/etc/claude-code` (D-12).
+pub const MANAGED_SUBDIR: &str = "managed";
+
+/// The managed settings file inside [`MANAGED_SUBDIR`].
+pub const MANAGED_FILE: &str = "managed-settings.json";
+
+/// Where Claude Code reads managed settings on Linux, on the host and inside the sandbox.
+pub const HOST_MANAGED_DIR: &str = "/etc/claude-code";
+
+/// The drop-in directory name under [`HOST_MANAGED_DIR`].
+const MANAGED_DROPIN_DIR: &str = "managed-settings.d";
+
+/// Tool names denied through `permissions.deny` (D-13): agent-to-agent and cloud
+/// channels a sandboxed driver must not use. Wildcards are Claude Code's own syntax.
+pub const DENY_TOOLS: &[&str] = &[
+    "Cron*",
+    "RemoteTrigger",
+    "SendMessage",
+    "ListAgents",
+    "ScheduleWakeup",
+    "DesignSync",
+    "mcp__claude_ai_*",
+];
+
+/// Managed-settings keys the launcher pins; a host value never replaces them. Each
+/// is a lock whose launcher value is already the strictest one.
+const LOCK_KEYS: &[&str] = &[
+    "skipWebFetchPreflight",
+    "disableClaudeAiConnectors",
+    "enableArtifact",
+    "disableRemoteControl",
+    "crossSessionInbound",
 ];
 
 /// Host settings keys that never reach the driver: UI and plugin keys, and
@@ -95,6 +141,24 @@ pub struct SeedSpec {
     pub binary: PathBuf,
     /// The run directory the Stop-guard entry (`driverctl stop-guard --run-dir`) names.
     pub run_dir: PathBuf,
+    /// The run's driverctl socket: baked into the `bin/driverctl` shim as
+    /// `DRIVERCTL_SOCK` (RESEARCH Pattern 6 `[inferred — audit]`).
+    pub socket: PathBuf,
+    /// True for a bwrap-scope run: the gate goes to `<cfg>/managed` (bound at
+    /// `/etc/claude-code`) instead of `settings.json`.
+    pub managed: bool,
+    /// The host's managed-settings directory ([`HOST_MANAGED_DIR`] in production),
+    /// merged into the per-run managed file.
+    pub host_managed_dir: PathBuf,
+}
+
+/// The two quoted shim command lines the gate's hooks run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateCommands {
+    /// `'<shim>' hook`: the dispatch gate, heartbeat and post-tool entries.
+    pub hook: String,
+    /// `'<shim>' stop-guard --run-dir '<rd>'`: the Stop guard (D-17).
+    pub stop_guard: String,
 }
 
 /// `text` as one single-quoted shell word.
@@ -167,21 +231,56 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
+/// Insert the gate's hook entries into `hooks`: the dispatch gate
+/// (`PreToolUse`, `Agent|Task`, `onFailure: block`) FIRST, so it runs before any
+/// other `PreToolUse` hook; the `SessionStart`, `SessionEnd`, `Stop` and
+/// `PostToolUse` entries go last, and the stop guard (D-17) is the very last `Stop`
+/// entry. Shared by the degraded `settings.json` and the managed file, so the two
+/// postures cannot drift apart.
+fn insert_gate_hooks(hooks: &mut Map<String, Value>, gate: &GateCommands) {
+    hook_list(hooks, "PreToolUse").insert(0, hook_entry(Some("Agent|Task"), &gate.hook, true));
+    for event in ["SessionStart", "SessionEnd", "Stop"] {
+        hook_list(hooks, event).push(hook_entry(None, &gate.hook, false));
+    }
+    // D-17: the Stop guard is the LAST Stop entry, after the heartbeat. It is
+    // not fail-closed: a broken guard must never wedge the driver.
+    hook_list(hooks, "Stop").push(hook_entry(None, &gate.stop_guard, false));
+    hook_list(hooks, "PostToolUse").push(hook_entry(Some("*"), &gate.hook, false));
+}
+
+/// Append `items` to the array at `map[key]` (created, or coerced from a non-array),
+/// skipping exact duplicates.
+fn append_unique(map: &mut Map<String, Value>, key: &str, items: &[Value]) {
+    let slot = map.entry(key.to_owned()).or_insert_with(|| json!([]));
+    if !slot.is_array() {
+        *slot = json!([]);
+    }
+    if let Value::Array(list) = slot {
+        for item in items {
+            if !list.contains(item) {
+                list.push(item.clone());
+            }
+        }
+    }
+}
+
 /// The per-run settings from the host's: a pure function of the host settings
-/// value and the quoted `<cfg>/bin/driverctl hook` and `stop-guard` command lines.
+/// value and, for the degraded posture, the gate's command lines.
 ///
 /// * a non-object input is an empty object;
 /// * [`DROPPED_SETTINGS_KEYS`] are removed, and so is every `env` entry named in
 ///   `sandbox::is_stripped_env` (the settings `env` block
 ///   would otherwise re-inject what the process environment scrub removed
 ///   `[inferred — audit]`);
-/// * the dispatch gate (`PreToolUse`, `Agent|Task`, `onFailure: block`) goes
-///   FIRST, so it runs before any host `PreToolUse` hook; the `SessionStart`,
-///   `SessionEnd`, `Stop` and `PostToolUse` entries go last, and
-///   `stop_guard_command` (`driverctl stop-guard --run-dir <rd>`, 28-06, D-17) is
-///   the very last `Stop` entry. User entries (GSD, rtk) keep their relative
-///   order.
-pub fn settings_transform(host: Value, hook_command: &str, stop_guard_command: &str) -> Value {
+/// * `skipWebFetchPreflight` and `disableClaudeAiConnectors` are always `true`
+///   (D-09a: the preflight and the connector fetch would otherwise reach hosts the
+///   egress proxy refuses);
+/// * `gate = None` is the bwrap posture: the gate lives in the managed file
+///   ([`managed_settings`]), so no hook is added here and the user's GSD/rtk hooks
+///   keep their order. `gate = Some(..)` is the degraded posture: the gate entries
+///   are added as in Phase 28 (see [`insert_gate_hooks`]) and [`DENY_TOOLS`] is
+///   appended to `permissions.deny`, because no managed tier exists to carry it.
+pub fn settings_transform(host: Value, gate: Option<&GateCommands>) -> Value {
     let mut settings = match host {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -192,30 +291,155 @@ pub fn settings_transform(host: Value, hook_command: &str, stop_guard_command: &
     if let Some(Value::Object(env)) = settings.get_mut("env") {
         env.retain(|name, _| !is_stripped_env(std::ffi::OsStr::new(name)));
     }
-    let hooks = settings
-        .entry("hooks".to_owned())
-        .or_insert_with(|| json!({}));
-    if !hooks.is_object() {
-        *hooks = json!({});
+    settings.insert("skipWebFetchPreflight".to_owned(), json!(true));
+    settings.insert("disableClaudeAiConnectors".to_owned(), json!(true));
+    if settings
+        .get("hooks")
+        .is_some_and(|hooks| !hooks.is_object())
+    {
+        settings.insert("hooks".to_owned(), json!({}));
     }
-    if let Value::Object(hooks) = hooks {
-        hook_list(hooks, "PreToolUse")
-            .insert(0, hook_entry(Some("Agent|Task"), hook_command, true));
-        for event in ["SessionStart", "SessionEnd", "Stop"] {
-            hook_list(hooks, event).push(hook_entry(None, hook_command, false));
+    if let Some(gate) = gate {
+        let hooks = settings
+            .entry("hooks".to_owned())
+            .or_insert_with(|| json!({}));
+        if let Value::Object(hooks) = hooks {
+            insert_gate_hooks(hooks, gate);
         }
-        // D-17: the Stop guard is the LAST Stop entry, after the heartbeat. It is
-        // not fail-closed: a broken guard must never wedge the driver.
-        hook_list(hooks, "Stop").push(hook_entry(None, stop_guard_command, false));
-        hook_list(hooks, "PostToolUse").push(hook_entry(Some("*"), hook_command, false));
+        let permissions = settings
+            .entry("permissions".to_owned())
+            .or_insert_with(|| json!({}));
+        if !permissions.is_object() {
+            *permissions = json!({});
+        }
+        if let Value::Object(permissions) = permissions {
+            let deny: Vec<Value> = DENY_TOOLS.iter().map(|t| json!(t)).collect();
+            append_unique(permissions, "deny", &deny);
+        }
     }
     Value::Object(settings)
+}
+
+/// The managed settings (D-12, D-13): the gate's hooks in the Phase 28 order, the
+/// agent-tool deny list and the five locks, then the host administrator's policy
+/// merged in (`host`, in precedence order: the file, then the drop-ins).
+///
+/// Merge rule `[inferred — audit]` (RESEARCH Pattern 6): `hooks.<event>` and
+/// `permissions.<list>` arrays are appended AFTER the launcher's entries, exact
+/// duplicates dropped; the five lock keys keep the launcher's value (already the
+/// strictest of each); every other host key is copied as written, so a host
+/// `allowManagedHooksOnly` stays in force. `allowManagedHooksOnly` is never set by
+/// the launcher: it would unload the GSD/rtk user hooks (D-16).
+pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
+    let mut hooks = Map::new();
+    insert_gate_hooks(&mut hooks, gate);
+    let mut settings = Map::new();
+    settings.insert("hooks".to_owned(), Value::Object(hooks));
+    settings.insert("permissions".to_owned(), json!({"deny": DENY_TOOLS}));
+    settings.insert("skipWebFetchPreflight".to_owned(), json!(true));
+    settings.insert("disableClaudeAiConnectors".to_owned(), json!(true));
+    settings.insert("enableArtifact".to_owned(), json!(false));
+    settings.insert("disableRemoteControl".to_owned(), json!(true));
+    settings.insert("crossSessionInbound".to_owned(), json!("refuse"));
+
+    for doc in host {
+        let Value::Object(doc) = doc else { continue };
+        for (key, value) in doc {
+            if LOCK_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            match (key.as_str(), value) {
+                ("hooks", Value::Object(events)) => {
+                    let Some(Value::Object(ours)) = settings.get_mut("hooks") else {
+                        continue;
+                    };
+                    for (event, entries) in events {
+                        match entries {
+                            Value::Array(entries) => append_unique(ours, event, entries),
+                            other => {
+                                ours.entry(event.clone()).or_insert_with(|| other.clone());
+                            }
+                        }
+                    }
+                }
+                ("permissions", Value::Object(lists)) => {
+                    let Some(Value::Object(ours)) = settings.get_mut("permissions") else {
+                        continue;
+                    };
+                    for (list, entries) in lists {
+                        match entries {
+                            Value::Array(entries) => append_unique(ours, list, entries),
+                            other => {
+                                ours.insert(list.clone(), other.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    settings.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+    Value::Object(settings)
+}
+
+/// The host administrator's managed settings under `dir`: `managed-settings.json`
+/// first, then `managed-settings.d/*.json` sorted by file name. An absent `dir` (or
+/// an absent file) is no policy, `Ok(vec![])`.
+///
+/// A file that is not a JSON object is `InvalidData` naming the file: Claude Code
+/// itself refuses to start on such a file, so the launch is refused here, before any
+/// process exists, instead of silently running without the administrator's policy
+/// `[inferred — audit]`.
+pub fn read_host_managed(dir: &Path) -> io::Result<Vec<Value>> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let main = dir.join(MANAGED_FILE);
+    if main.is_file() {
+        files.push(main);
+    }
+    if let Ok(entries) = fs::read_dir(dir.join(MANAGED_DROPIN_DIR)) {
+        let mut dropins: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension() == Some(OsStr::new("json")) && path.is_file())
+            .collect();
+        dropins.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        files.extend(dropins);
+    }
+    let mut docs = Vec::new();
+    for path in files {
+        let bytes = fs::read(&path)?;
+        let invalid = |why: &str| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "host managed settings {} is not a JSON object ({why}); Claude Code refuses to start on such a file, so the launch is refused",
+                    path.display()
+                ),
+            )
+        };
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(doc @ Value::Object(_)) => docs.push(doc),
+            Ok(_) => return Err(invalid("another JSON value")),
+            Err(e) => return Err(invalid(&e.to_string())),
+        }
+    }
+    Ok(docs)
 }
 
 /// Create and fill the per-run config directory. Idempotent: `settings.json` and
 /// the shim are rewritten on every launch, the links and `.claude.json` only when
 /// absent.
 pub fn seed(spec: &SeedSpec) -> io::Result<()> {
+    // The host policy is read first: an unparseable file refuses the launch before
+    // anything is created.
+    let host_managed = if spec.managed {
+        read_host_managed(&spec.host_managed_dir)?
+    } else {
+        Vec::new()
+    };
+
     let bin = spec.config_dir.join("bin");
     create_private_dir(&bin)?;
 
@@ -228,20 +452,29 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
     }
 
     let shim = bin.join("driverctl");
-    let command = hook_command(&shim, "hook");
-    let stop_guard = hook_command(
-        &shim,
-        &format!(
-            "stop-guard --run-dir {}",
-            shell_quote(spec.run_dir.as_os_str())
+    let gate = GateCommands {
+        hook: hook_command(&shim, "hook"),
+        stop_guard: hook_command(
+            &shim,
+            &format!(
+                "stop-guard --run-dir {}",
+                shell_quote(spec.run_dir.as_os_str())
+            ),
         ),
-    );
+    };
 
-    let settings = settings_transform(
-        Value::Object(read_host_settings(&spec.host_claude_dir)),
-        &command,
-        &stop_guard,
-    );
+    let host_settings = Value::Object(read_host_settings(&spec.host_claude_dir));
+    let settings = if spec.managed {
+        let managed_dir = spec.config_dir.join(MANAGED_SUBDIR);
+        create_private_dir(&managed_dir)?;
+        let managed = managed_settings(&gate, &host_managed);
+        let rendered = serde_json::to_vec_pretty(&managed)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        write_atomic(&managed_dir.join(MANAGED_FILE), &rendered, 0o600)?;
+        settings_transform(host_settings, None)
+    } else {
+        settings_transform(host_settings, Some(&gate))
+    };
     let rendered = serde_json::to_vec_pretty(&settings)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     write_atomic(&spec.config_dir.join("settings.json"), &rendered, 0o600)?;
@@ -251,8 +484,12 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
         write_atomic(&onboarding, br#"{"hasCompletedOnboarding": true}"#, 0o600)?;
     }
 
+    // The socket is pinned here, in the read-only shim: a driver that unsets or
+    // rewrites `DRIVERCTL_SOCK` cannot detach a hook or a `driverctl` call from the
+    // gate (T-28.1-13, RESEARCH Pattern 6 `[inferred — audit]`).
     let script = format!(
-        "#!/bin/sh\nexec {} driverctl \"$@\"\n",
+        "#!/bin/sh\nDRIVERCTL_SOCK={}; export DRIVERCTL_SOCK\nexec {} driverctl \"$@\"\n",
+        shell_quote(spec.socket.as_os_str()),
         shell_quote(spec.binary.as_os_str())
     );
     write_atomic(&shim, script.as_bytes(), 0o755)?;
@@ -287,6 +524,9 @@ mod tests {
             host_claude_dir: root.path().join("host"),
             binary: PathBuf::from("/opt/gsd mm/gsd-meta-manager"),
             run_dir: root.path().join("run"),
+            socket: PathBuf::from("/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock"),
+            managed: false,
+            host_managed_dir: root.path().join("no-host-managed"),
         }
     }
 
@@ -400,7 +640,7 @@ mod tests {
         let shim = spec.config_dir.join("bin/driverctl");
         assert_eq!(
             fs::read_to_string(&shim).unwrap(),
-            "#!/bin/sh\nexec '/opt/gsd mm/gsd-meta-manager' driverctl \"$@\"\n"
+            "#!/bin/sh\nDRIVERCTL_SOCK='/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock'; export DRIVERCTL_SOCK\nexec '/opt/gsd mm/gsd-meta-manager' driverctl \"$@\"\n"
         );
         let mode = fs::metadata(&shim).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);

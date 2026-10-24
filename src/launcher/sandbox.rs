@@ -31,6 +31,15 @@
 //! * git's other credential stores are masked as well as `~/.ssh` (D-27);
 //! * `claude` reads user settings only (`--setting-sources user`), and
 //!   `ANTHROPIC_AUTH_TOKEN`, which outranks the run token, is stripped.
+//!
+//! 28.1 (D-12) moves the gate into Claude Code's managed tier: `/etc` is replaced
+//! by a tmpfs, every host `/etc` entry is re-bound read-only (the host's own
+//! `/etc/claude-code` skipped), the per-run `<cfg>/managed` is bound read-only at
+//! `/etc/claude-code`, and `/etc` is remounted read-only. That works on every bwrap
+//! version (overlay mounts need 0.11; Ubuntu 24.04 ships 0.9), RESEARCH Q2
+//! `[inferred — audit]`. `<cfg>/managed` is also re-bound read-only at its own path
+//! after the writable config-dir bind, so the driver cannot rewrite the file
+//! through the config dir.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -198,6 +207,15 @@ pub struct LaunchPaths {
     pub socket: PathBuf,
 }
 
+/// One host `/etc` entry re-created inside the sandbox's tmpfs `/etc` (D-12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EtcEntry {
+    /// A file or directory: bound read-only at its own path.
+    Bind(PathBuf),
+    /// A symlink, re-created as a symlink with the same target.
+    Symlink { target: PathBuf, path: PathBuf },
+}
+
 /// What [`bwrap_argv`] builds the sandbox from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxSpec {
@@ -211,6 +229,35 @@ pub struct SandboxSpec {
     /// The host's `$XDG_RUNTIME_DIR`, replaced by an empty tmpfs inside with only
     /// [`LaunchPaths::socket`] re-bound. `None` leaves it unmasked (no such dir).
     pub runtime_dir: Option<PathBuf>,
+    /// The host's `/etc` entries (the host `claude-code` skipped), sorted by name.
+    /// Re-created read-only under the tmpfs `/etc` that carries the managed bind.
+    pub etc_entries: Vec<EtcEntry>,
+}
+
+/// The entries of `/etc` as [`EtcEntry`] values, sorted by file name, without
+/// `claude-code` (the per-run managed dir takes its place). An unreadable `/etc`
+/// yields an empty list.
+fn read_etc_entries(etc: &Path) -> Vec<EtcEntry> {
+    let Ok(entries) = std::fs::read_dir(etc) else {
+        return Vec::new();
+    };
+    let mut named: Vec<(OsString, EtcEntry)> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name() != "claude-code")
+        .map(|entry| {
+            let path = entry.path();
+            let kind = match std::fs::read_link(&path) {
+                Ok(target) => EtcEntry::Symlink {
+                    target,
+                    path: path.clone(),
+                },
+                Err(_) => EtcEntry::Bind(path),
+            };
+            (entry.file_name(), kind)
+        })
+        .collect();
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    named.into_iter().map(|(_, entry)| entry).collect()
 }
 
 impl SandboxSpec {
@@ -246,6 +293,7 @@ impl SandboxSpec {
             tmpfs_masks,
             null_masks,
             runtime_dir,
+            etc_entries: read_etc_entries(Path::new("/etc")),
         }
     }
 }
@@ -267,6 +315,33 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         .map(|s| os(s))
         .collect();
     argv.extend(["/proc", "--tmpfs", "/tmp"].iter().map(|s| os(s)));
+    // D-12: managed settings reach the driver at `/etc/claude-code`. A plain bind
+    // onto an absent path fails on a read-only root, so `/etc` becomes a tmpfs, the
+    // host entries are re-bound read-only, the managed dir takes the place of the
+    // host's `claude-code`, and the whole of `/etc` is remounted read-only.
+    argv.push(os("--tmpfs"));
+    argv.push(os("/etc"));
+    for entry in &spec.etc_entries {
+        match entry {
+            // `-try`: an entry removed between the listing and the exec must not
+            // abort the launch `[inferred — audit]`.
+            EtcEntry::Bind(path) => {
+                argv.push(os("--ro-bind-try"));
+                argv.push(path.as_os_str().to_owned());
+                argv.push(path.as_os_str().to_owned());
+            }
+            EtcEntry::Symlink { target, path } => {
+                argv.push(os("--symlink"));
+                argv.push(target.as_os_str().to_owned());
+                argv.push(path.as_os_str().to_owned());
+            }
+        }
+    }
+    argv.push(os("--ro-bind"));
+    argv.push(paths.config_dir.join("managed").into_os_string());
+    argv.push(os("/etc/claude-code"));
+    argv.push(os("--remount-ro"));
+    argv.push(os("/etc"));
     for dir in &spec.tmpfs_masks {
         argv.push(os("--tmpfs"));
         argv.push(dir.as_os_str().to_owned());
@@ -307,6 +382,10 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         &paths.config_dir.join("settings.json"),
     );
     bind(&mut argv, "--ro-bind", &paths.config_dir.join("bin"));
+    // D-12: the managed file is also reachable through the writable config dir; it
+    // is re-bound read-only here so the driver cannot rewrite what `/etc/claude-code`
+    // shows.
+    bind(&mut argv, "--ro-bind", &paths.config_dir.join("managed"));
     if let Some(runtime) = &spec.runtime_dir {
         argv.push(os("--tmpfs"));
         argv.push(runtime.as_os_str().to_owned());
@@ -448,6 +527,13 @@ mod tests {
             tmpfs_masks: vec![PathBuf::from("/home/u/.ssh")],
             null_masks: vec![PathBuf::from("/home/u/.claude/.credentials.json")],
             runtime_dir: Some(PathBuf::from("/run/user/1000")),
+            etc_entries: vec![
+                EtcEntry::Bind(PathBuf::from("/etc/hosts")),
+                EtcEntry::Symlink {
+                    target: PathBuf::from("../run/resolv.conf"),
+                    path: PathBuf::from("/etc/resolv.conf"),
+                },
+            ],
         }
     }
 
@@ -586,6 +672,19 @@ mod tests {
             "--tmpfs",
             "/tmp",
             "--tmpfs",
+            "/etc",
+            "--ro-bind-try",
+            "/etc/hosts",
+            "/etc/hosts",
+            "--symlink",
+            "../run/resolv.conf",
+            "/etc/resolv.conf",
+            "--ro-bind",
+            "/data/driver/ab12cd34/r1/claude-config/managed",
+            "/etc/claude-code",
+            "--remount-ro",
+            "/etc",
+            "--tmpfs",
             "/home/u/.ssh",
             "--ro-bind",
             "/dev/null",
@@ -613,6 +712,9 @@ mod tests {
             "--ro-bind",
             "/data/driver/ab12cd34/r1/claude-config/bin",
             "/data/driver/ab12cd34/r1/claude-config/bin",
+            "--ro-bind",
+            "/data/driver/ab12cd34/r1/claude-config/managed",
+            "/data/driver/ab12cd34/r1/claude-config/managed",
             "--tmpfs",
             "/run/user/1000",
             "--bind",

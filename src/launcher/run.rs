@@ -62,7 +62,7 @@ use rustix::process::Signal;
 use serde_json::Value;
 
 use super::auth::{host_access_token, resolve_launch_token, AuthError};
-use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec};
+use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec, HOST_MANAGED_DIR};
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::host::{decide, detect, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
@@ -629,6 +629,9 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         host_claude_dir: home.join(".claude"),
         binary,
         run_dir: run_dir.clone(),
+        socket: sock.clone(),
+        managed: matches!(posture, Posture::BwrapScope),
+        host_managed_dir: PathBuf::from(HOST_MANAGED_DIR),
     });
     if let Err(e) = seeded {
         session.close();

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use gsd_meta_manager::driverctl::serve::socket_path;
-use gsd_meta_manager::launcher::config_dir::{seed, SeedSpec};
+use gsd_meta_manager::launcher::config_dir::{seed, SeedSpec, HOST_MANAGED_DIR};
 use gsd_meta_manager::launcher::sandbox::{
     bwrap_argv, child_env, systemd_run_argv, LaunchPaths, SandboxSpec,
 };
@@ -239,15 +239,18 @@ fn sandbox_isolates_host_credentials_and_services() {
     git_ok(&project, &["init", "-q"]);
     git_ok(&project, &["commit", "-q", "--allow-empty", "-m", "probe"]);
 
+    let sock = socket_path("probe28", &run_dir).expect("the run's socket path");
     seed(&SeedSpec {
         config_dir: config_dir.clone(),
         host_claude_dir: home.join(".claude"),
         binary: std::env::current_exe().unwrap(),
         run_dir: run_dir.clone(),
+        socket: sock.clone(),
+        managed: true,
+        host_managed_dir: PathBuf::from(HOST_MANAGED_DIR),
     })
     .expect("seed the per-run config dir");
 
-    let sock = socket_path("probe28", &run_dir).expect("the run's socket path");
     let _ = fs::remove_file(&sock);
     let _listener = UnixListener::bind(&sock).expect("bind the probe socket");
 
