@@ -2,3 +2,13 @@ probe profile=0 mode=exact n=2 fail=0 other=0 timeout=0 tree=a84c7c0+e3b0c44298f
 before profile=0 mode=binary n=200 fail=22 other=1 timeout=0 tree=a84c7c0+e3b0c44298fc date=2026-10-24T00:35:31Z
 before profile=A mode=binary n=200 fail=19 other=11 timeout=0 tree=a84c7c0+e3b0c44298fc date=2026-10-24T00:45:56Z
 before profile=B mode=binary n=200 fail=8 other=5 timeout=0 tree=a84c7c0+e3b0c44298fc date=2026-10-24T00:53:12Z
+probe profile=0 mode=binary n=40 fail=6 other=0 timeout=0 tree=9e25c27+b2c34d6362ba date=2026-10-24T00:57:33Z target=driverctl_race_probe tmpfs=0
+probe profile=0 mode=binary n=40 fail=0 other=0 timeout=0 tree=9e25c27+b2c34d6362ba date=2026-10-24T00:59:13Z target=driverctl_race_probe tmpfs=1
+probe profile=0 mode=binary n=40 fail=5 other=1 timeout=0 tree=9e25c27+b2c34d6362ba date=2026-10-24T01:01:14Z target=driverctl_race_probe tmpfs=0
+probe profile=0 mode=binary n=40 fail=0 other=0 timeout=0 tree=9e25c27+b2c34d6362ba date=2026-10-24T01:02:35Z target=driverctl_race_probe tmpfs=1
+probe profile=0 mode=binary n=40 fail=0 other=1 timeout=0 tree=9e25c27+92be13895c13 date=2026-10-24T01:08:50Z
+probe profile=0 mode=binary n=40 fail=0 other=1 timeout=0 tree=9e25c27+c9b60b1add8a date=2026-10-24T01:12:21Z
+after profile=0 mode=binary n=200 fail=0 other=2 timeout=0 tree=9e25c27+e748692becb1 date=2026-10-24T01:21:59Z
+after profile=A mode=binary n=200 fail=0 other=4 timeout=0 tree=9e25c27+e748692becb1 date=2026-10-24T01:33:48Z
+after profile=B mode=binary n=200 fail=0 other=5 timeout=0 tree=9e25c27+e748692becb1 date=2026-10-24T01:47:02Z
+probe profile=0 mode=exact n=3 fail=0 other=0 timeout=0 tree=9e25c27+e748692becb1 date=2026-10-24T01:52:19Z

@@ -15,7 +15,9 @@
 #   QS8_TARGET    test target (default driverctl_race)
 #   QS8_FILTER    test name (default two_writers_under_direction_lock_lose_nothing)
 #   QS8_TMPFS=1   TMPDIR=/dev/shm inside the container (overlay-vs-tmpfs check)
-#   QS8_KEEP_ALL=1 keep every iteration's log, not only the failing ones
+#   QS8_KEEP_ALL=1 keep every iteration's log, not only the failing ones (in
+#                 binary mode this also passes --nocapture, so probe output of
+#                 passing iterations is kept; used only for probe runs)
 #
 # The container is started with the same flags as scripts/pre-tag-check.sh
 # section 5 (--rm, host uid:gid, --cpuset-cpus 0-3, the HOME / CARGO_* env, the
@@ -126,7 +128,10 @@ fail=0 other=0 tmo=0
 it=1
 while [ "$it" -le "$N" ]; do
 	log="$out/iter-$it.log"
-	if [ "$MODE" = binary ]; then
+	if [ "$MODE" = binary ] && [ "$KEEP_ALL" = 1 ]; then
+		# Keeping every log is for probes: show passing tests stdout too.
+		timeout 120 "$EXE" --nocapture >"$log" 2>&1
+	elif [ "$MODE" = binary ]; then
 		timeout 120 "$EXE" >"$log" 2>&1
 	else
 		timeout 120 "$EXE" "$FILTER" --exact --nocapture >"$log" 2>&1
