@@ -2356,6 +2356,8 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 control: Some(identity.to_string()),
                 lint_problems: vec![format!("DIRECTION.md:3: {identity}")],
                 lint_warnings: vec![format!("DIRECTION.md:4: warning: {identity}")],
+                protections_absent: vec![identity.to_string()],
+                unsandboxed_absent: vec![identity.to_string()],
             };
             let mut states = states_over_sub_views(identity, &|identity, ctx| {
                 seed(identity, ctx, degraded(identity));
@@ -2378,6 +2380,27 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             states.push(one_state(
                 "claude refusal",
                 refused_ctx,
+                Box::new(LaunchFormScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                    LaunchKind::Launch,
+                    hostile_form(identity),
+                )),
+            ));
+            // A host that can sandbox but lacks a protection (28.1-06, D-27): the form's
+            // `; absent: ..` suffix draws `protections_absent`.
+            let mut absent_ctx = probe_ctx(identity);
+            seed(
+                identity,
+                &mut absent_ctx,
+                LaunchPreflight {
+                    protections_absent: vec![identity.to_string()],
+                    ..LaunchPreflight::default()
+                },
+            );
+            states.push(one_state(
+                "sandbox with an absent protection",
+                absent_ctx,
                 Box::new(LaunchFormScreen::new(
                     identity.to_string(),
                     identity.to_string(),
@@ -2447,6 +2470,7 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     identity.to_string(),
                     identity.to_string(),
                     crate::cli::launch_defaults(),
+                    vec![identity.to_string()],
                     vec![identity.to_string()],
                 ))
             })

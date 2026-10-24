@@ -359,6 +359,13 @@ pub struct LaunchPreflight {
     pub lint_problems: Vec<String>,
     /// `driver check` warnings, numbered the same way; they do not block a launch.
     pub lint_warnings: Vec<String>,
+    /// The protections a sandboxed launch would lack on this host (D-27): empty on a
+    /// full host, `registry-overlay` on a bwrap host without overlay support, and empty
+    /// when the host cannot sandbox at all (see `unsandboxed_absent`).
+    pub protections_absent: Vec<String>,
+    /// The protections an `--unsandboxed` launch would lack: every word of the
+    /// vocabulary, in order (D-27). Filled whatever the probes found.
+    pub unsandboxed_absent: Vec<String>,
 }
 
 /// Run the host check's decision and the `driver check` lint for `run_dir`.
@@ -371,12 +378,24 @@ pub fn launch_preflight(run_dir: &Path, caps: &crate::launcher::host::HostCaps) 
     use crate::driver::direction::split_frontmatter;
     use crate::driver_templates::lint::{control_line, lint_direction};
 
+    use crate::launcher::host::{protections_absent, Posture};
+
+    let owned = |words: Vec<&'static str>| words.into_iter().map(str::to_owned).collect();
     let mut pre = LaunchPreflight {
         missing: caps.missing.clone(),
+        unsandboxed_absent: owned(protections_absent(
+            &Posture::Degraded {
+                missing: caps.missing.clone(),
+            },
+            caps.overlay,
+        )),
         ..LaunchPreflight::default()
     };
     match crate::launcher::host::decide(caps, false) {
-        Ok(_) => pre.missing.clear(),
+        Ok(posture) => {
+            pre.missing.clear();
+            pre.protections_absent = owned(protections_absent(&posture, caps.overlay));
+        }
         Err(LauncherError::SandboxUnavailable { missing }) => pre.missing = missing,
         Err(LauncherError::ClaudeVersion { detail }) => pre.claude_refusal = Some(detail),
         Err(other) => pre.claude_refusal = Some(other.to_string()),
@@ -696,6 +715,7 @@ impl LaunchFormScreen {
             self.run_id.clone(),
             args,
             preflight.missing,
+            preflight.unsandboxed_absent,
         )))
     }
 
@@ -828,12 +848,29 @@ impl LaunchFormScreen {
                         "A sandboxed launch is refused on this host.",
                         red,
                     )));
+                    if !preflight.unsandboxed_absent.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "Unsandboxed, the run would lack: {}",
+                                joined_shown(&preflight.unsandboxed_absent)
+                            ),
+                            yellow,
+                        )));
+                    }
                     lines.push(Line::from(Span::styled(
                         "[U] launch UNSANDBOXED instead (asks again)",
                         yellow,
                     )));
-                } else {
+                } else if preflight.protections_absent.is_empty() {
                     lines.push(Line::from(SANDBOX_OK));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw(SANDBOX_OK),
+                        Span::styled(
+                            format!("; absent: {}", joined_shown(&preflight.protections_absent)),
+                            yellow,
+                        ),
+                    ]));
                 }
                 if let Some(word) = control_blocking(preflight) {
                     lines.push(Line::from(Span::styled(control_copy(word), yellow)));
@@ -970,9 +1007,11 @@ crate::ui::screens::adjudicate_screen!(
      and draws the run id (a directory name a cloned repository or a sibling sandbox \
      chooses), the registry alias, the model (recorded in the run's frontmatter, or \
      typed), the host check's missing items and claude refusal (probe output) and the \
-     `driver check` findings of DIRECTION.md (quoting its text). Every one is drawn \
-     through `render_for_terminal`. Fixture states: the hostile identity as the run id, \
-     the alias, the model, a missing item and a lint finding.",
+     `driver check` findings of DIRECTION.md (quoting its text), and the absent \
+     protections the launch would have (`protections_absent`, `unsandboxed_absent`: \
+     vocabulary words the host module chose). Every one is drawn through \
+     `render_for_terminal`. Fixture states: the hostile identity as the run id, the \
+     alias, the model, a missing item, a lint finding and an absent protection.",
 );
 
 impl Screen for LaunchFormScreen {
@@ -1056,6 +1095,15 @@ impl Screen for LaunchFormScreen {
     }
 }
 
+/// `items` escaped one by one and joined with `, `.
+fn joined_shown(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| shown(item))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // ── The unsandboxed launch (D-20) ───────────────────────────────────────────
 
 /// `Launch UNSANDBOXED`: the one way to launch a driver without bwrap and a systemd
@@ -1068,11 +1116,19 @@ pub struct UnsandboxedConfirmScreen {
     run_id: String,
     args: LaunchArgs,
     missing: Vec<String>,
+    /// What the unsandboxed run would lack (D-27), shown in the prompt.
+    protections_absent: Vec<String>,
     popup: ConfirmPopup,
 }
 
 impl UnsandboxedConfirmScreen {
-    pub fn new(alias: String, run_id: String, mut args: LaunchArgs, missing: Vec<String>) -> Self {
+    pub fn new(
+        alias: String,
+        run_id: String,
+        mut args: LaunchArgs,
+        missing: Vec<String>,
+        protections_absent: Vec<String>,
+    ) -> Self {
         args.project = alias.clone();
         args.run_id = run_id.clone();
         Self {
@@ -1080,6 +1136,7 @@ impl UnsandboxedConfirmScreen {
             run_id,
             args,
             missing,
+            protections_absent,
             popup: ConfirmPopup::default(),
         }
     }
@@ -1087,14 +1144,11 @@ impl UnsandboxedConfirmScreen {
     /// The prompt the popup shows, every value escaped.
     fn prompt(&self) -> String {
         format!(
-            "Launch {} on \"{}\" WITHOUT a sandbox? The driver runs as an ordinary process group with your full user permissions: no bwrap, no systemd scope. Missing: {}. [y/n]",
+            "Launch {} on \"{}\" WITHOUT a sandbox? The driver runs as an ordinary process group with your full user permissions: no bwrap, no systemd scope. Missing: {}. Absent protections: {}. [y/n]",
             shown(&self.run_id),
             shown(&self.alias),
-            self.missing
-                .iter()
-                .map(|m| shown(m))
-                .collect::<Vec<_>>()
-                .join(", ")
+            joined_shown(&self.missing),
+            joined_shown(&self.protections_absent)
         )
     }
 }
@@ -1105,8 +1159,9 @@ crate::ui::screens::adjudicate_screen!(
     "Paints the Driver tab behind a dimmed popup (the registry alias and the run list) \
      and names the run id (a directory name a cloned repository or a sibling sandbox \
      chooses), the registry alias and the sandbox pieces the host probes found missing \
-     (probe output). Every one is drawn through `render_for_terminal`. Fixture states: \
-     the hostile identity as the run id, the alias and a missing item.",
+     (probe output) and the protections the unsandboxed run would lack. Every one is \
+     drawn through `render_for_terminal`. Fixture states: the hostile identity as the \
+     run id, the alias, a missing item and an absent protection.",
 );
 
 impl Screen for UnsandboxedConfirmScreen {
@@ -2281,6 +2336,140 @@ mod tests {
         assert!(text.contains("no systemd scope."), "{text}");
         assert!(text.contains("Missing: bwrap, user-systemd."), "{text}");
         assert!(text.contains("[ No ]"), "{text}");
+    }
+
+    /// The eight words of the vocabulary, as the preflight copies them.
+    #[cfg(target_os = "linux")]
+    fn all_eight() -> Vec<String> {
+        crate::launcher::host::PROTECTIONS
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_launch_preflight_lists_the_protections_the_launch_would_lack() {
+        use crate::launcher::host::HostCaps;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let caps = |missing: &[&str], overlay: bool| HostCaps {
+            missing: missing.iter().map(|m| (*m).to_owned()).collect(),
+            claude_version: Some((2, 1, 295)),
+            overlay,
+        };
+
+        let full = launch_preflight(dir.path(), &caps(&[], true));
+        assert!(full.protections_absent.is_empty(), "{full:?}");
+        assert_eq!(full.unsandboxed_absent, all_eight());
+
+        let no_overlay = launch_preflight(dir.path(), &caps(&[], false));
+        assert_eq!(no_overlay.protections_absent, ["registry-overlay"]);
+        assert_eq!(no_overlay.unsandboxed_absent, all_eight());
+
+        let no_bwrap = launch_preflight(dir.path(), &caps(&["bwrap"], false));
+        assert_eq!(no_bwrap.missing, ["bwrap"]);
+        assert!(no_bwrap.protections_absent.is_empty(), "{no_bwrap:?}");
+        assert_eq!(no_bwrap.unsandboxed_absent, all_eight());
+    }
+
+    #[test]
+    fn launcher_launch_the_sandbox_line_names_an_absent_protection_in_yellow() {
+        let (screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                protections_absent: vec!["registry-overlay".to_string()],
+                ..LaunchPreflight::default()
+            },
+        );
+        let lines = screen.body_lines(&ctx);
+        let line = lines
+            .iter()
+            .find(|line| text_of(std::slice::from_ref(line))[0].starts_with("Sandbox: bwrap"))
+            .expect("a sandbox line");
+        assert_eq!(
+            text_of(std::slice::from_ref(line))[0],
+            "Sandbox: bwrap + systemd scope (host check passed); absent: registry-overlay"
+        );
+        let absent = line.spans.last().expect("the absent span");
+        assert_eq!(absent.style.fg, Some(Color::Yellow));
+        assert!(absent.content.starts_with("; absent: "));
+
+        // A full host keeps the unchanged line.
+        let (screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(&mut ctx, LaunchPreflight::default());
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(rows.contains(&SANDBOX_OK.to_string()), "{rows:?}");
+    }
+
+    #[test]
+    fn launcher_launch_an_unavailable_sandbox_lists_what_an_unsandboxed_run_would_lack() {
+        let words = ["net-isolation", "egress-proxy", "token-injection"];
+        let (screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                missing: vec!["bwrap".to_string()],
+                unsandboxed_absent: words.iter().map(|w| (*w).to_owned()).collect(),
+                ..LaunchPreflight::default()
+            },
+        );
+        let rows = text_of(&screen.body_lines(&ctx));
+        assert!(
+            rows.contains(
+                &"Unsandboxed, the run would lack: net-isolation, egress-proxy, token-injection"
+                    .to_string()
+            ),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn launcher_launch_the_unsandboxed_confirmation_lists_every_absent_protection() {
+        let all = [
+            "net-isolation",
+            "egress-proxy",
+            "token-injection",
+            "home-allowlist",
+            "run-tmpfs",
+            "planted-file-ro",
+            "managed-settings",
+            "registry-overlay",
+        ];
+        let (mut screen, mut ctx, _rx) = form_screen(LaunchKind::Launch, LaunchForm::fresh());
+        arrive(
+            &mut ctx,
+            LaunchPreflight {
+                missing: vec!["bwrap".to_string()],
+                unsandboxed_absent: all.iter().map(|w| (*w).to_owned()).collect(),
+                ..LaunchPreflight::default()
+            },
+        );
+        let (_, confirm) = replaced_name(press(&mut screen, &mut ctx, 'U'));
+        let text = draw(confirm.as_ref(), &ctx, 120, 40);
+        // The popup wraps its prose inside a border, so each phrase is checked on its own.
+        assert!(text.contains("Absent protections:"), "{text}");
+        for word in all {
+            assert!(text.contains(word), "{word} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn launcher_launch_the_unsandboxed_prompt_ends_with_the_absent_protections() {
+        let confirm = UnsandboxedConfirmScreen::new(
+            ALIAS.to_string(),
+            RUN.to_string(),
+            crate::cli::launch_defaults(),
+            vec!["bwrap".to_string()],
+            vec!["net-isolation".to_string(), "run-tmpfs".to_string()],
+        );
+        assert!(
+            confirm
+                .prompt()
+                .ends_with("Missing: bwrap. Absent protections: net-isolation, run-tmpfs. [y/n]"),
+            "{}",
+            confirm.prompt()
+        );
     }
 
     #[test]
