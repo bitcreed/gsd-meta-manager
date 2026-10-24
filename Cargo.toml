@@ -119,6 +119,30 @@ sha2 = "0.11.0"
 # version-independent — they are judged by the finite alphabet (D-19-2), not by
 # this class.
 icu_properties = "2.2.0"
+# The launcher-side egress server (Phase 28.1, plan 01; D-04, D-05, D-09). The
+# sandbox loses its network, and the run token moves OUTSIDE it: a launcher
+# thread terminates the driver's inference requests on a unix socket and
+# re-originates them to api.anthropic.com with the real token injected. Four
+# crates, each for one job:
+#   rustls        TLS to api.anthropic.com. `default-features = false` drops
+#                 the aws-lc-rs provider; `ring` is named instead.
+#   tokio-rustls  the async TLS stream on the tokio this crate already runs.
+#   webpki-roots  the Mozilla root set compiled in, so the trust anchor does
+#                 not depend on the host's certificate store.
+#   httparse      zero-copy HTTP/1 head parsing for the driver's request.
+# Declined, with the reason: hyper (its keep-alive pooling and h2 buy nothing
+# here, because every request is buffered whole for inspection and re-sent with
+# `Connection: close`; about 8-10 more crates for no policy benefit);
+# rustls-native-certs (only worth it together with upstream-proxy chaining,
+# which is out of scope); aws-lc-rs (rustls' default, a heavier C build).
+# Graph cost, measured by RESEARCH in a scratch copy: +12 locked packages
+# (354 -> 366), the highest declared MSRV among them 1.85 (`zeroize`), under the
+# 1.89 floor above. NOTE: `ring` compiles a C/asm component with `cc`, so a C
+# compiler is now a build requirement.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "1"
+httparse = "1"
 
 [dev-dependencies]
 assert_fs = "1"

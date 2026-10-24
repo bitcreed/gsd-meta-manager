@@ -60,6 +60,15 @@
 //!     pinned before any sandbox existed, sends one refspec into
 //!     `refs/heads/gsd-auto/<alias>/<run-id>` after the SAFE-03 scan of the tip's
 //!     tree, and opens a pull request only when the user enabled `driver.open_pr`.
+//!
+//! 13. **The only network path out of the sandbox is a policy the driver cannot
+//!     touch (28.1-01, D-04..D-06).** [`egress`] serves one unix socket per run
+//!     from a launcher thread: an inference reverse proxy that holds the run
+//!     token and injects it per request (path allowlist, body check for
+//!     server-side fetch reach, bounded and re-framed), and a deny-by-default
+//!     `CONNECT` proxy with a host allowlist and a resolved-address guard. Every
+//!     decision is a pure function in `egress::policy`; the upstream is a
+//!     parameter so the whole path runs in CI against a plain-TCP stub.
 
 pub mod prompt;
 pub mod sandbox;
@@ -68,6 +77,8 @@ pub mod sandbox;
 pub mod auth;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod config_dir;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod egress;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod gate;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
