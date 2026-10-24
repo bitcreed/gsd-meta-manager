@@ -81,7 +81,13 @@ const SYSTEMD_RUN_SHIM: &str = r#"#!/bin/sh
 SHIMS=$(dirname "$0")
 {
   printf 'systemd-run'
-  for a in "$@"; do printf ' %s' "$(printf '%s' "$a" | tr '\n' ' ')"; done
+  for a in "$@"; do
+    case "$a" in
+      *'
+'*) a=$(printf '%s' "$a" | tr '\n' ' ');;
+    esac
+    printf ' %s' "$a"
+  done
   printf '\n'
 } >> "$FAKE_SHIM_LOG"
 unit=""
@@ -100,7 +106,13 @@ const BWRAP_SHIM: &str = r#"#!/bin/sh
 # Fake bwrap: log, drop the options, exec the command.
 {
   printf 'bwrap'
-  for a in "$@"; do printf ' %s' "$(printf '%s' "$a" | tr '\n' ' ')"; done
+  for a in "$@"; do
+    case "$a" in
+      *'
+'*) a=$(printf '%s' "$a" | tr '\n' ' ');;
+    esac
+    printf ' %s' "$a"
+  done
   printf '\n'
 } >> "$FAKE_SHIM_LOG"
 while [ $# -gt 0 ]; do

@@ -501,8 +501,12 @@ fn the_committed_campaign_ledger_stays_within_the_phase_ceiling() {
 fn write_rehearsal_fakes(dir: &Path, scenario: Option<&str>) -> PathBuf {
     let hits = dir.join("hits.log");
     let h = hits.display();
+    // One argument per `printf`, no process per argument: the bwrap argv carries the host's whole
+    // `/etc` (28.1-02, D-12), and a fork-and-exec pair per argument made each fake call take seconds,
+    // which the harness's 8 s dispatch waits then lost. Only an argument holding a newline (the
+    // master prompt) pays for a subshell.
     let log_argv = format!(
-        "{{ printf '%s' \"$TOOL\"; for a in \"$@\"; do printf ' %s' \"$(printf '%s' \"$a\" | head -c 120 | tr '\\n' ' ')\"; done; printf '\\n'; }} >> '{h}'\n"
+        "{{ printf '%s' \"$TOOL\"; for a in \"$@\"; do case \"$a\" in *\"\n\"*) a=$(printf '%s' \"$a\" | head -c 120 | tr '\\n' ' ');; esac; printf ' %.120s' \"$a\"; done; printf '\\n'; }} >> '{h}'\n"
     );
     let systemd_run = format!(
         "#!/bin/sh\nSHIMS=$(dirname \"$0\")\nTOOL=systemd-run\n{log_argv}unit=\"\"\nfor a in \"$@\"; do case \"$a\" in --unit=*) unit=${{a#--unit=}};; esac; done\n[ -n \"$unit\" ] && echo $$ > \"$SHIMS/$unit.pid\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"--\" ]; then shift; break; fi; shift; done\nexec \"$@\"\n"
