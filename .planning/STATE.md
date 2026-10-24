@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
 status: executing
-stopped_at: Completed 28.1-10-PLAN.md
-last_updated: "2026-10-24T22:59:33.422Z"
+stopped_at: Completed 28.1-07-PLAN.md
+last_updated: "2026-10-24T23:24:38.443Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 28.1 execution started
-state_head: 48335b65423c1c5c67c2a7969df15592255e3c6a
+state_head: 5fe06881fd8f42762d317119268672fe5613304f
 progress:
   total_phases: 10
   completed_phases: 14
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 28.1 (Sandbox Egress & Agent-Channel Isolation (INSERTED)) — EXECUTING
-Plan: 8 of 10
+Plan: 9 of 10
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -551,6 +551,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P05 | 20 min | 2 tasks | 6 files |
 | Phase 28.1 P06 | 40min | 3 tasks | 5 files |
 | Phase 28.1 P10 | 12 min | 3 tasks | 6 files |
+| Phase 28.1 P07 | 22 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -773,6 +774,8 @@ Recent decisions affecting current work:
 - [Phase 28.1]: 28.1-06: planted count treats a final '+N more' item as N [inferred — audit]; unsandboxed_absent is always the full eight words
 - [Phase 28.1]: 28.1-10: bridge port 3128 and hostname gsdmm-sandbox are fixed constants; routing strip list applies in both postures; host HTTP(S)_PROXY kept for degraded runs [inferred — audit]
 - [Phase 28.1]: 28.1-10: live netns probe reads interfaces from /proc/net/dev because /sys/class/net lists host interfaces inside a fresh netns [inferred — audit]
+- [Phase 28.1]: 28.1-07: live request names claude-haiku-4-5 (claude-haiku-5-5 answers 429 for the OAuth token even directly) [inferred — audit]
+- [Phase 28.1]: 28.1-07: live fixture project is git-init'ed with no remote so the run-end push cannot resolve this repo's public origin [inferred — audit]
 
 ### Roadmap Evolution
 
@@ -967,8 +970,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-24T22:59:32.214Z
-Stopped at: Completed 28.1-10-PLAN.md
+Last session: 2026-10-24T23:24:37.257Z
+Stopped at: Completed 28.1-07-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
