@@ -11,6 +11,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -161,6 +162,7 @@ struct Rig {
     /// Keeps the scratch directory (and so the socket path) alive.
     _dir: TempDir,
     sock: PathBuf,
+    log: PathBuf,
     handle: Option<EgressHandle>,
 }
 
@@ -171,6 +173,7 @@ impl Rig {
             .tempdir_in("/tmp")
             .expect("a short temp dir");
         let sock = dir.path().join("egress.sock");
+        let log = dir.path().join("egress.log");
         let listener = UnixListener::bind(&sock).expect("bind the egress socket");
         let handle = EgressServer::start(
             listener,
@@ -178,13 +181,14 @@ impl Rig {
                 allow_hosts: allow_hosts.iter().map(|h| (*h).to_owned()).collect(),
                 token,
                 upstream: Upstream::Plain(upstream),
-                log_path: dir.path().join("egress.log"),
+                log_path: log.clone(),
             },
         )
         .expect("start the egress server");
         Rig {
             _dir: dir,
             sock,
+            log,
             handle: Some(handle),
         }
     }
@@ -196,6 +200,11 @@ impl Rig {
     /// Stop the server and return its counters.
     fn stop(mut self) -> EgressStats {
         self.handle.take().expect("running").stop()
+    }
+
+    /// The whole `egress.log` as text.
+    fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
     /// A client connection with a bounded read.
@@ -558,4 +567,352 @@ fn expect_continue_is_answered_locally() {
     assert!(status_line(&rest).starts_with("HTTP/1.1 200"), "{rest}");
     assert_eq!(stub.seen().len(), 1);
     assert!(stub.seen()[0].header("expect").is_empty());
+}
+
+// --------------------------------------------- task 3: CONNECT, log, host token
+
+fn connect_request(authority: &str) -> Vec<u8> {
+    format!("CONNECT {authority} HTTP/1.1\r\nhost: {authority}\r\nproxy-authorization: Basic eDp5\r\n\r\n")
+        .into_bytes()
+}
+
+fn rig_with_allowlist(stub: &Stub, hosts: &[&str]) -> Rig {
+    Rig::start(
+        stub.addr,
+        TokenProvider::Static(REAL_TOKEN.to_owned()),
+        hosts,
+    )
+}
+
+#[test]
+fn connect_is_deny_by_default() {
+    let stub = Stub::start();
+    let rig = rig_with_allowlist(&stub, &[]);
+
+    let response = rig.exchange(&connect_request("static.crates.io:443"));
+
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 403"),
+        "{response}"
+    );
+    assert!(response.contains("allowlist"), "{response}");
+    assert_eq!(stub.connections(), 0);
+    let stats = rig.stop();
+    assert_eq!((stats.connect_denied, stats.connect_allowed), (1, 0));
+}
+
+#[test]
+fn connect_to_the_inference_host_is_refused_even_when_allowlisted() {
+    let stub = Stub::start();
+    let rig = rig_with_allowlist(&stub, &["api.anthropic.com"]);
+    for authority in [
+        "api.anthropic.com:443",
+        "API.ANTHROPIC.COM:443",
+        "api.anthropic.com.:443",
+    ] {
+        let response = rig.exchange(&connect_request(authority));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 403"),
+            "{authority}: {response}"
+        );
+        assert!(response.contains("inference"), "{authority}: {response}");
+    }
+    assert_eq!(stub.connections(), 0);
+    assert_eq!(rig.stop().connect_denied, 3);
+}
+
+#[test]
+fn an_allowlisted_name_resolving_to_loopback_is_refused() {
+    let stub = Stub::start();
+    let rig = rig_with_allowlist(&stub, &["localhost"]);
+
+    let response = rig.exchange(&connect_request("localhost:443"));
+
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 403"),
+        "{response}"
+    );
+    assert!(response.contains("loopback"), "{response}");
+    assert!(
+        !response.contains("127.0.0.1") && !response.contains("::1"),
+        "the refusal named an address: {response}"
+    );
+    let log = rig.log_text();
+    assert!(log.contains("loopback"), "{log}");
+    assert!(!log.contains("127.0.0.1") && !log.contains("::1"), "{log}");
+    assert_eq!(rig.stop().connect_denied, 1);
+}
+
+#[test]
+fn ip_literals_and_non_443_ports_are_refused() {
+    let stub = Stub::start();
+    let rig = rig_with_allowlist(&stub, &["static.crates.io", "127.0.0.1", "1.2.3.4"]);
+    for (authority, word) in [
+        ("127.0.0.1:443", "IP literal"),
+        ("1.2.3.4:443", "IP literal"),
+        ("[::1]:443", "IP literal"),
+        ("static.crates.io:80", "443"),
+        ("static.crates.io:22", "443"),
+        ("not-listed.example:443", "allowlist"),
+    ] {
+        let response = rig.exchange(&connect_request(authority));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 403"),
+            "{authority}: {response}"
+        );
+        assert!(response.contains(word), "{authority}: {response}");
+    }
+    assert_eq!(stub.connections(), 0);
+    assert_eq!(rig.stop().connect_denied, 6);
+}
+
+#[test]
+fn the_log_names_classes_never_headers_tokens_or_addresses() {
+    let stub = Stub::start();
+    let rig = rig_with_allowlist(&stub, &["localhost"]);
+    let secret_body =
+        r#"{"model":"m","messages":[{"role":"user","content":"BODY-FIELD-SECRET-9137"}]}"#;
+
+    let mut requests = 0usize;
+    for wire in [
+        inference_request("/v1/messages?beta=true&token=QUERY-SECRET-5521", secret_body).as_slice(),
+        b"GET /v1/code/sessions?x=QUERY-SECRET-5521 HTTP/1.1\r\nhost: x\r\nx-api-key: HEADER-SECRET-7788\r\n\r\n",
+        b"POST http://evil.example/x HTTP/1.1\r\nhost: evil.example\r\ncookie: HEADER-SECRET-7788\r\n\r\n",
+        &connect_request("localhost:443"),
+        &connect_request("example.org:443"),
+        &connect_request("127.0.0.1:443"),
+    ] {
+        let _ = rig.exchange(wire);
+        requests += 1;
+    }
+    let denied_body = with_length(
+        r#"{"messages":[],"tools":[{"type":"web_fetch_20260318","name":"BODY-FIELD-SECRET-9137"}]}"#,
+    );
+    let _ = rig.exchange(&denied_body);
+    requests += 1;
+
+    let log = rig.log_text();
+    let mode = std::fs::metadata(&rig.log)
+        .expect("the log exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "egress.log must be 0600");
+    assert_eq!(
+        log.lines().count(),
+        requests,
+        "one line per request:\n{log}"
+    );
+    for forbidden in [
+        REAL_TOKEN,
+        DUMMY_TOKEN,
+        "Bearer",
+        "bearer",
+        "x-api-key",
+        "X-Api-Key",
+        "cookie",
+        "HEADER-SECRET-7788",
+        "BODY-FIELD-SECRET-9137",
+        "QUERY-SECRET-5521",
+        "127.0.0.1",
+        "::1",
+    ] {
+        assert!(
+            !log.contains(forbidden),
+            "the log contains {forbidden:?}:\n{log}"
+        );
+    }
+    for line in log.lines() {
+        assert_eq!(line.split('|').count(), 6, "{line}");
+    }
+    assert!(log.contains("|inference|POST|/v1/messages|200|"), "{log}");
+    assert!(
+        log.contains("|connect|CONNECT localhost:443|-|403|"),
+        "{log}"
+    );
+    assert!(log.contains("loopback"), "{log}");
+    assert!(log.contains("|refused|"), "{log}");
+}
+
+#[test]
+fn stop_reports_the_forwarded_count() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    let body = r#"{"model":"m","messages":[]}"#;
+    for _ in 0..3 {
+        let response = rig.exchange(&inference_request("/v1/messages", body));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 200"),
+            "{response}"
+        );
+    }
+    let _ = rig.exchange(&with_length(r#"{"messages":[],"mcp_servers":[]}"#));
+
+    let stats = rig.stop();
+
+    assert_eq!(stats.inference_forwarded, 3);
+    assert_eq!(stats.inference_denied, 1);
+    assert_eq!((stats.connect_allowed, stats.connect_denied), (0, 0));
+}
+
+/// Write a host credentials file whose access token is good for an hour.
+fn write_credentials(dir: &std::path::Path, token: &str) {
+    let expires = chrono::Utc::now() + chrono::Duration::hours(1);
+    let doc = serde_json::json!({
+        "claudeAiOauth": {
+            "accessToken": token,
+            "refreshToken": "REFRESH-TOKEN-NEVER-FORWARDED",
+            "expiresAt": expires.timestamp_millis(),
+        }
+    });
+    std::fs::write(dir.join(".credentials.json"), doc.to_string()).expect("write credentials");
+}
+
+#[test]
+fn a_host_token_is_re_read_per_request_and_the_last_good_one_kept() {
+    let stub = Stub::start();
+    let claude_dir = tempfile::tempdir().expect("claude dir");
+    write_credentials(claude_dir.path(), "HOST-TOKEN-ONE");
+    let rig = Rig::start(
+        stub.addr,
+        TokenProvider::Host {
+            claude_dir: claude_dir.path().to_path_buf(),
+            initial: "HOST-TOKEN-INITIAL".to_owned(),
+        },
+        &[],
+    );
+    let body = r#"{"model":"m","messages":[]}"#;
+    let send = || {
+        let response = rig.exchange(&inference_request("/v1/messages", body));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 200"),
+            "{response}"
+        );
+        stub.seen()
+            .last()
+            .expect("a request")
+            .header("authorization")
+    };
+
+    assert_eq!(send(), ["Bearer HOST-TOKEN-ONE"]);
+    write_credentials(claude_dir.path(), "HOST-TOKEN-TWO");
+    assert_eq!(
+        send(),
+        ["Bearer HOST-TOKEN-TWO"],
+        "a rewritten token is picked up"
+    );
+    std::fs::write(claude_dir.path().join(".credentials.json"), "{ not json").expect("garble");
+    assert_eq!(
+        send(),
+        ["Bearer HOST-TOKEN-TWO"],
+        "a malformed file keeps the last good token"
+    );
+    std::fs::remove_file(claude_dir.path().join(".credentials.json")).expect("remove");
+    assert_eq!(
+        send(),
+        ["Bearer HOST-TOKEN-TWO"],
+        "a missing file keeps the last good token"
+    );
+    assert!(
+        stub.seen()
+            .iter()
+            .all(|s| !s.head.contains("REFRESH-TOKEN")),
+        "the refresh token must never reach the upstream"
+    );
+}
+
+#[test]
+fn a_host_token_falls_back_to_the_initial_one_when_the_file_never_parsed() {
+    let stub = Stub::start();
+    let claude_dir = tempfile::tempdir().expect("claude dir");
+    let rig = Rig::start(
+        stub.addr,
+        TokenProvider::Host {
+            claude_dir: claude_dir.path().to_path_buf(),
+            initial: "HOST-TOKEN-INITIAL".to_owned(),
+        },
+        &[],
+    );
+    let response = rig.exchange(&inference_request("/v1/messages", r#"{"messages":[]}"#));
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 200"),
+        "{response}"
+    );
+    assert_eq!(
+        stub.seen()[0].header("authorization"),
+        ["Bearer HOST-TOKEN-INITIAL"]
+    );
+}
+
+#[test]
+fn the_65th_connection_is_refused_while_64_are_open() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    let mut open: Vec<UnixStream> = (0..64).map(|_| rig.connect()).collect();
+
+    // The 65th is turned away at once, with a response and not a hang.
+    let mut sixty_fifth = rig.connect();
+    let mut refusal = Vec::new();
+    let _ = sixty_fifth.read_to_end(&mut refusal);
+    let refusal = String::from_utf8_lossy(&refusal);
+    assert!(
+        status_line(&refusal).starts_with("HTTP/1.1 503"),
+        "{refusal}"
+    );
+    assert!(
+        refusal.to_ascii_lowercase().contains("connection: close"),
+        "{refusal}"
+    );
+
+    // The 64 that are open keep working.
+    let body = r#"{"model":"m","messages":[]}"#;
+    let mut first = open.remove(0);
+    first
+        .write_all(&inference_request("/v1/messages", body))
+        .expect("write on an open connection");
+    let mut response = Vec::new();
+    let _ = first.read_to_end(&mut response);
+    assert!(
+        String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+
+    // stop() returns while 63 connections are still open: no request outlives it.
+    let started = std::time::Instant::now();
+    let _ = rig.stop();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "stop() waited on open connections"
+    );
+    drop(open);
+}
+
+#[test]
+fn a_client_that_disconnects_mid_body_ends_only_its_own_request() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+
+    // Mid-body: promises 100 bytes, sends 10, hangs up.
+    {
+        let mut quitter = rig.connect();
+        quitter
+            .write_all(&raw_request(&["content-length: 100"], b"0123456789"))
+            .expect("write");
+    }
+    // Mid-response: sends a full request and hangs up without reading the answer.
+    {
+        let mut quitter = rig.connect();
+        quitter
+            .write_all(&inference_request("/v1/messages", r#"{"messages":[]}"#))
+            .expect("write");
+    }
+
+    let body = r#"{"model":"m","messages":[]}"#;
+    for _ in 0..3 {
+        let response = rig.exchange(&inference_request("/v1/messages", body));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 200"),
+            "{response}"
+        );
+    }
 }

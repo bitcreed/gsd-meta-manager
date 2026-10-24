@@ -350,6 +350,16 @@ pub fn wants_continue(headers: &[Header]) -> bool {
         .any(|v| v.is_some_and(|v| v.trim().eq_ignore_ascii_case("100-continue")))
 }
 
+/// RED stub: judged in the GREEN commit.
+pub fn ip_denied(_ip: std::net::IpAddr) -> Option<&'static str> {
+    None
+}
+
+/// RED stub: judged in the GREEN commit.
+pub fn connect_verdict(_host: &str, _port: u16, _allow_hosts: &[String]) -> Result<(), Denial> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,5 +716,161 @@ mod tests {
         assert_eq!(framing_verdict(&headers), Ok(Framing::Length(2)));
         assert!(wants_continue(&headers));
         assert!(!wants_continue(&hdrs(&[("Content-Length", "2")])));
+    }
+
+    // ----------------------------------------------------------- ip_denied
+
+    fn class(ip: &str) -> Option<&'static str> {
+        ip_denied(ip.parse().expect("an IP literal"))
+    }
+
+    #[test]
+    fn denied_addresses_name_their_class() {
+        for (ip, expected) in [
+            ("127.0.0.1", "loopback"),
+            ("127.1.2.3", "loopback"),
+            ("0.0.0.0", "unspecified"),
+            ("0.1.2.3", "unspecified"),
+            ("10.1.2.3", "private"),
+            ("172.16.0.1", "private"),
+            ("172.31.255.255", "private"),
+            ("192.168.1.1", "private"),
+            ("169.254.169.254", "metadata"),
+            ("169.254.1.1", "link-local"),
+            ("100.64.0.1", "cgnat"),
+            ("100.127.255.255", "cgnat"),
+            ("100.100.100.200", "metadata"),
+            ("168.63.129.16", "metadata"),
+            ("192.0.0.192", "metadata"),
+            ("224.0.0.1", "multicast"),
+            ("239.255.255.255", "multicast"),
+            ("255.255.255.255", "broadcast"),
+            ("240.0.0.1", "reserved"),
+            ("::1", "loopback"),
+            ("::", "unspecified"),
+            ("fe80::1", "link-local"),
+            ("fc00::1", "ula"),
+            ("fd12:3456::1", "ula"),
+            ("fd00:ec2::254", "metadata"),
+            ("ff02::1", "multicast"),
+            // IPv6 forms that carry an IPv4 address are judged as that address.
+            ("::ffff:10.0.0.1", "private"),
+            ("::ffff:127.0.0.1", "loopback"),
+            ("::ffff:169.254.169.254", "metadata"),
+            ("64:ff9b::a00:1", "private"),
+            ("64:ff9b::7f00:1", "loopback"),
+            ("2002:a00:1::", "private"),
+            ("2002:7f00:1::1", "loopback"),
+            ("::10.0.0.1", "private"),
+        ] {
+            assert_eq!(class(ip), Some(expected), "{ip}");
+        }
+    }
+
+    #[test]
+    fn public_addresses_are_not_denied() {
+        for ip in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "140.82.112.3",
+            "100.63.255.255",
+            "100.128.0.1",
+            "172.15.255.255",
+            "172.32.0.1",
+            "::ffff:1.1.1.1",
+            "64:ff9b::101:101",
+            "2002:101:101::",
+            "2606:4700:4700::1111",
+            "2001:4860:4860::8888",
+        ] {
+            assert_eq!(class(ip), None, "{ip}");
+        }
+    }
+
+    // ------------------------------------------------------ connect_verdict
+
+    fn allow(hosts: &[&str]) -> Vec<String> {
+        hosts.iter().map(|h| (*h).to_owned()).collect()
+    }
+
+    fn connect_reason(host: &str, port: u16, hosts: &[&str]) -> Option<String> {
+        match connect_verdict(host, port, &allow(hosts)) {
+            Ok(()) => None,
+            Err(Denial::Forbidden(reason)) => Some(reason),
+            Err(other) => panic!("a CONNECT refusal is a 403, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_is_deny_by_default_and_allows_exact_names_on_443() {
+        assert!(connect_reason("example.org", 443, &[])
+            .expect("denied")
+            .contains("not on the egress allowlist"));
+        assert_eq!(
+            connect_reason("static.crates.io", 443, &["static.crates.io"]),
+            None
+        );
+        assert_eq!(
+            connect_reason("STATIC.Crates.IO", 443, &["static.crates.io"]),
+            None
+        );
+        assert_eq!(
+            connect_reason("static.crates.io", 443, &["Static.Crates.Io"]),
+            None
+        );
+        assert_eq!(
+            connect_reason("static.crates.io.", 443, &["static.crates.io"]),
+            None
+        );
+        // Exact membership: a suffix, a prefix or a parent domain is not a match.
+        for host in [
+            "crates.io",
+            "evil-static.crates.io",
+            "static.crates.io.evil.example",
+        ] {
+            assert!(
+                connect_reason(host, 443, &["static.crates.io"]).is_some(),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_never_tunnels_the_inference_host() {
+        for host in [
+            "api.anthropic.com",
+            "API.Anthropic.COM",
+            "api.anthropic.com.",
+        ] {
+            let reason = connect_reason(host, 443, &["api.anthropic.com"]).expect("denied");
+            assert!(reason.contains("inference"), "{host}: {reason}");
+        }
+    }
+
+    #[test]
+    fn connect_is_limited_to_port_443() {
+        for port in [0, 22, 80, 8443, 65535] {
+            let reason =
+                connect_reason("static.crates.io", port, &["static.crates.io"]).expect("denied");
+            assert!(reason.contains("443"), "{port}: {reason}");
+        }
+    }
+
+    #[test]
+    fn connect_refuses_ip_literals_even_when_allowlisted() {
+        for host in [
+            "1.2.3.4",
+            "127.0.0.1",
+            "[::1]",
+            "[2606:4700:4700::1111]",
+            "::1",
+            "2130706433",
+            "0x7f.0.0.1",
+            "127.1",
+            "010.0.0.1",
+        ] {
+            let reason = connect_reason(host, 443, &[host]).expect("denied");
+            assert!(reason.contains("IP literal"), "{host}: {reason}");
+        }
     }
 }

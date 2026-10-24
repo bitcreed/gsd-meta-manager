@@ -21,6 +21,7 @@
 //! holds a blocking call (`tests/async_blocking_guard.rs`).
 
 pub mod http1;
+pub mod log;
 pub mod policy;
 pub mod upstream;
 
@@ -449,4 +450,74 @@ async fn relay_response(up: &mut upstream::UpstreamStream, client: &mut UnixStre
         }
     }
     let _ = client.shutdown().await;
+}
+
+/// RED stub: the tunnel pump lands in the GREEN commit.
+pub async fn tunnel<C, U>(
+    _client: &mut C,
+    _upstream: &mut U,
+    _leftover: &[u8],
+) -> io::Result<(u64, u64)>
+where
+    C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    Err(io::Error::other("RED stub"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn the_tunnel_sends_the_leftover_first_then_pumps_both_directions() {
+        let (mut client_end, mut client_far) = duplex(1024);
+        let (mut up_end, mut up_far) = duplex(1024);
+        let pump =
+            tokio::spawn(async move { tunnel(&mut client_end, &mut up_end, b"HELLO").await });
+
+        let mut seen = [0u8; 5];
+        up_far
+            .read_exact(&mut seen)
+            .await
+            .expect("leftover reaches the upstream");
+        assert_eq!(&seen, b"HELLO");
+
+        client_far.write_all(b"ping").await.expect("client write");
+        let mut seen = [0u8; 4];
+        up_far
+            .read_exact(&mut seen)
+            .await
+            .expect("client bytes reach the upstream");
+        assert_eq!(&seen, b"ping");
+
+        up_far.write_all(b"pong").await.expect("upstream write");
+        client_far
+            .read_exact(&mut seen)
+            .await
+            .expect("upstream bytes reach the client");
+        assert_eq!(&seen, b"pong");
+
+        drop(client_far);
+        drop(up_far);
+        let (to_upstream, to_client) = pump.await.expect("join").expect("a clean tunnel");
+        assert_eq!((to_upstream, to_client), (4, 4));
+    }
+
+    #[tokio::test]
+    async fn the_tunnel_ends_when_either_side_closes() {
+        let (mut client_end, client_far) = duplex(64);
+        let (mut up_end, mut up_far) = duplex(64);
+        let pump = tokio::spawn(async move { tunnel(&mut client_end, &mut up_end, b"").await });
+        drop(client_far);
+        let mut rest = Vec::new();
+        up_far
+            .read_to_end(&mut rest)
+            .await
+            .expect("the upstream sees EOF");
+        assert!(rest.is_empty());
+        drop(up_far);
+        pump.await.expect("join").expect("a clean close");
+    }
 }
