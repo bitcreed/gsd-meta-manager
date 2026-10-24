@@ -14,6 +14,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -389,4 +390,140 @@ fn the_bridge_exits_with_its_childs_code() {
     let finished = bridge.finish();
 
     assert_eq!(finished.code, Some(7), "stderr: {}", finished.stderr);
+}
+
+/// The one-line stderr contract: exactly one `gsd-meta-manager bridge: ...` line.
+fn assert_one_bridge_line(stderr: &str) {
+    assert_eq!(stderr.lines().count(), 1, "stderr: {stderr:?}");
+    assert!(
+        stderr.starts_with("gsd-meta-manager bridge:"),
+        "stderr: {stderr:?}"
+    );
+}
+
+#[test]
+fn a_child_killed_by_a_signal_exits_128_plus_the_signal() {
+    let dir = scratch();
+    let bridge = Bridge::start(
+        free_port(),
+        &dir.path().join("no-socket"),
+        &["sh", "-c", "kill -TERM $$"],
+    );
+
+    let finished = bridge.finish();
+
+    assert_eq!(finished.code, Some(143), "stderr: {}", finished.stderr);
+    assert_eq!(finished.stdout, "");
+}
+
+#[test]
+fn a_missing_child_program_fails_without_hanging() {
+    let dir = scratch();
+    let bridge = Bridge::start(
+        free_port(),
+        &dir.path().join("no-socket"),
+        &["/nonexistent/gsdmm-driver"],
+    );
+
+    let finished = bridge.finish();
+
+    assert_eq!(finished.code, Some(127), "stderr: {}", finished.stderr);
+    assert_one_bridge_line(&finished.stderr);
+    assert_eq!(finished.stdout, "");
+}
+
+#[test]
+fn an_unrunnable_child_program_exits_126() {
+    let dir = scratch();
+    let not_executable = dir.path().join("driver");
+    std::fs::write(&not_executable, "#!/bin/sh\nexit 0\n").expect("write the file");
+    std::fs::set_permissions(&not_executable, std::fs::Permissions::from_mode(0o644))
+        .expect("chmod 0644");
+    let bridge = Bridge::start(
+        free_port(),
+        &dir.path().join("no-socket"),
+        &[not_executable.to_str().expect("utf-8 path")],
+    );
+
+    let finished = bridge.finish();
+
+    assert_eq!(finished.code, Some(126), "stderr: {}", finished.stderr);
+    assert_one_bridge_line(&finished.stderr);
+    assert_eq!(finished.stdout, "");
+}
+
+#[test]
+fn a_busy_port_fails_before_starting_the_child() {
+    let dir = scratch();
+    let held = TcpListener::bind("127.0.0.1:0").expect("hold a port");
+    let port = held.local_addr().expect("addr").port();
+    let marker = dir.path().join("child-ran");
+    let bridge = Bridge::start(
+        port,
+        &dir.path().join("no-socket"),
+        &["touch", marker.to_str().expect("utf-8 path")],
+    );
+
+    let finished = bridge.finish();
+
+    assert_eq!(finished.code, Some(70), "stderr: {}", finished.stderr);
+    assert_one_bridge_line(&finished.stderr);
+    assert_eq!(finished.stdout, "");
+    // Give a wrongly started child time to show itself before judging.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "the child ran although the port was busy");
+    drop(held);
+}
+
+#[test]
+fn a_dead_egress_socket_drops_only_that_client() {
+    let stub = Stub::start();
+    let dir = scratch();
+    let sock = dir.path().join("egress.sock");
+    let bridge = Bridge::start(free_port(), &sock, &["sh", "-c", "sleep 30"]);
+
+    // No server at the socket: the client is closed, not left hanging.
+    let mut client = bridge.connect();
+    let started = Instant::now();
+    let _ = client.write_all(&inference_request());
+    let mut buf = [0u8; 64];
+    match client.read(&mut buf) {
+        Ok(0) => {}
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+            ) => {}
+        other => panic!("expected EOF or a reset for a dead egress socket, got {other:?}"),
+    }
+    assert!(started.elapsed() < BOUND, "the dead client was held open");
+    assert_eq!(stub.connections(), 0, "nothing can have reached upstream");
+
+    // The bridge survived: once the server answers, the next client is served.
+    let handle = start_egress_at(&sock, &stub, dir.path().join("egress.log"));
+    let response = exchange(bridge.connect(), &inference_request());
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 200"),
+        "{response}"
+    );
+    assert_eq!(stub.heads().len(), 1);
+    let _ = handle.stop();
+    drop(bridge);
+}
+
+#[test]
+fn the_bridge_writes_nothing_to_stdout() {
+    let stub = Stub::start();
+    let egress = Egress::start(&stub);
+    let bridge = Bridge::start(free_port(), &egress.sock, &["sh", "-c", "sleep 30"]);
+
+    let response = exchange(bridge.connect(), &inference_request());
+    assert!(
+        status_line(&response).starts_with("HTTP/1.1 200"),
+        "{response}"
+    );
+
+    // Traffic has flowed; whatever the bridge printed would be on stdout by now.
+    let stdout = bridge.kill_and_stdout();
+    assert_eq!(stdout, "", "the bridge wrote to claude's stdout");
 }
