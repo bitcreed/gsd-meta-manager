@@ -1229,3 +1229,167 @@ fn two_runs_get_separate_egress_sockets() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 28.1-07 Task 2: the operator's egress allowlist, the recorded posture, the
+// API-request count and the host-proxy warning (D-07, D-10, D-14, Open Question 2).
+// ---------------------------------------------------------------------------
+
+/// Rewrite the fixture registry so the project carries `driver` (the egress config).
+fn registry_with_driver(fx: &Fixture, driver: serde_json::Value) {
+    fs::write(
+        fx.registry(),
+        serde_json::json!({
+            "version": 2,
+            "projects": {launcher_support::ALIAS: {
+                "path": fx.project(),
+                "added": "2026-01-01T00:00:00Z",
+                "driver": driver,
+            }}
+        })
+        .to_string(),
+    )
+    .expect("registry");
+}
+
+#[test]
+fn egress_allow_is_resolved_and_recorded() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    registry_with_driver(
+        &fx,
+        serde_json::json!({"egress": {"presets": ["rust"], "hosts": ["Example.org"]}}),
+    );
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        fx.state_json()["egress_allow"],
+        serde_json::json!([
+            "index.crates.io",
+            "static.crates.io",
+            "crates.io",
+            "example.org"
+        ]),
+        "the resolved list is recorded on the run"
+    );
+}
+
+#[test]
+fn an_unconfigured_project_records_an_empty_egress_allow() {
+    // D-07: the default is no CONNECT egress, recorded as `[]` (present), which is
+    // different from "not recorded".
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.state_json()["egress_allow"], serde_json::json!([]));
+}
+
+#[test]
+fn a_degraded_launch_records_no_egress_allow() {
+    // D-27: no proxy runs in the degraded posture, so there is no list to record.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    registry_with_driver(&fx, serde_json::json!({"egress": {"presets": ["rust"]}}));
+
+    let out = fx.launch(&["--unsandboxed"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        fx.state_json().get("egress_allow").is_none(),
+        "{}",
+        fx.state_json()
+    );
+    assert_eq!(fx.state_json()["auth"], "setup-token");
+}
+
+#[test]
+fn a_malformed_egress_config_refuses_before_writing() {
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    registry_with_driver(&fx, serde_json::json!({"egress": {"presets": ["nope"]}}));
+
+    let out = fx.launch(&[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("nope"), "{}", stderr(&out));
+    assert!(!fx.state_dir().exists(), "no state dir was created");
+    assert!(
+        !run_lock_path(&fx.run_dir).exists(),
+        "no lock file was created"
+    );
+    assert!(!fx.run_dir.join("LOG.md").exists(), "no log was created");
+    assert!(
+        !fx.run_dir.join("state.json").exists(),
+        "no state was created"
+    );
+    assert!(fx.shim_log().is_empty(), "nothing was started");
+}
+
+#[test]
+fn auth_posture_is_recorded() {
+    // D-10: `setup-token` for the stored token, `host-token` on the fallback.
+    let stored = Fixture::new();
+    stored.write_scenario(WELL_MANNERED_SCENARIO);
+    let out = stored.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stored.state_json()["auth"], "setup-token");
+
+    let host = Fixture::new();
+    host.write_scenario(WELL_MANNERED_SCENARIO);
+    host.write_token(None);
+    let claude_dir = host.home().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let expires = (chrono::Utc::now() + chrono::Duration::minutes(120)).timestamp_millis();
+    fs::write(
+        claude_dir.join(".credentials.json"),
+        serde_json::json!({"claudeAiOauth": {
+            "accessToken": "host-access-token-0123456789",
+            "refreshToken": "host-refresh-token-0123456789",
+            "expiresAt": expires,
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let out = host.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(host.state_json()["auth"], "host-token");
+}
+
+#[test]
+fn inference_requests_are_recorded_after_a_launch() {
+    // D-14: present (0 here: the fake driver makes no API request) after a launch.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fx.state_json()["inference_requests"], 0);
+}
+
+#[test]
+fn a_host_proxy_is_warned_about_once() {
+    // Open Question 2 [inferred — audit]: the egress proxy connects directly, so a
+    // host that routes HTTPS through a proxy gets one warning line.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+    let mut cmd = fx.launch_command(RUN_ID, &[]);
+    cmd.env("HTTPS_PROXY", "http://corp:3128");
+    let out = cmd.output().expect("the binary is spawnable");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let err = stderr(&out);
+    let warnings = err
+        .lines()
+        .filter(|l| l.contains("HTTPS_PROXY") && l.contains("docs/DRIVER-SANDBOX.md"))
+        .count();
+    assert_eq!(warnings, 1, "exactly one warning line:\n{err}");
+
+    let quiet = Fixture::new();
+    quiet.write_scenario(WELL_MANNERED_SCENARIO);
+    let out = quiet.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("HTTPS_PROXY"),
+        "no warning without a host proxy:\n{}",
+        stderr(&out)
+    );
+}
