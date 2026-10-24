@@ -101,6 +101,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02 (completed 2026-10-18)
 - [x] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md (completed 2026-10-19)
 - [ ] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode
+- [ ] **Phase 28.1: Sandbox Egress & Agent-Channel Isolation** (INSERTED) - `--unshare-net` + allowlisting egress proxy, `$HOME` allowlist, planted-file guard, agent-tool denies, nested-agent cap check, degraded-mode gap reporting
 - [x] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation (completed 2026-10-20)
 - [ ] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control`
 - [ ] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded
@@ -1115,6 +1116,80 @@ Opus run the driver self-parked at gap count 2, so launcher deny/kill were NOT-R
 driver. SC2's gap-cap case must therefore be exercised under the real (Opus) driver with the prompt
 divergence rule disabled, not only by a scripted stand-in.
 
+### Phase 28.1: Sandbox Egress & Agent-Channel Isolation (INSERTED)
+
+**Goal**: A driver confined by the Phase 28 sandbox cannot reach any agent, service or credential
+outside it, so it cannot bypass its restrictions by delegating forbidden work. Network egress is
+limited to an allowlist through an outside-sandbox proxy, `$HOME` is exposed by allowlist instead
+of denylist, files the operator's later unsandboxed tools execute cannot be planted silently, and
+degraded mode says which of these protections are missing.
+
+**Depends on**: Phase 28 (extends `src/launcher/sandbox.rs` `bwrap_argv` and the push step; Phase
+28 itself is executed but not yet verified and is left unchanged)
+
+**Requirements**: TBD (new LNCH-* ids to be minted in discuss/plan [inferred — audit])
+
+**Canonical input**: `.planning/phases/28.1-sandbox-egress-agent-channel-isolation/28.1-AUDIT-FINDINGS.md`
+(the 2026-10-24 sandbox-reach audit). Discuss, research and plan MUST read it; every finding
+there must end up closed, tested, or documented as accepted residual risk.
+
+**Success Criteria** (what must be TRUE):
+
+  1. The sandbox runs with `--unshare-net` (and `--unshare-ipc`/`--unshare-uts` unless research
+     shows a blocker). Its only egress is an egress proxy that runs outside the sandbox, is reached
+     through a bound-in unix socket, and allows only an explicit domain allowlist
+     (`api.anthropic.com` plus whatever Claude Code strictly needs, settled by evidence). Inside,
+     Claude Code uses `HTTPS_PROXY`. Prior art: Anthropic's sandbox-runtime (bwrap + net namespace
+     + unix-socket proxy + allowlist). A live probe proves from inside:
+     - localhost and LAN TCP services are unreachable (e.g. a test listener on 127.0.0.1 and on
+       the host's LAN address; the claudear-style bridge on :8787 is the motivating case);
+     - abstract unix sockets in the host netns are unreachable, including Xwayland
+       `@/tmp/.X11-unix/X0`;
+     - a non-allowlisted domain is refused by the proxy;
+     - API access, the driverctl socket and the legitimate cargo/git fetches still work. Whether
+       cargo/git fetches go through the allowlist or through offline vendoring is decided in
+       discuss/plan [inferred — audit].
+  2. `$HOME` is exposed by allowlist: a tmpfs covers `$HOME` and only what the run needs is re-bound
+     read-only (toolchains, the project, the per-run config dir). An unlisted credential file
+     planted in `$HOME` on the host (e.g. a `~/.claudear/env` lookalike, or a symlink to a
+     project `.env`) is unreadable inside. `TMPFS_MASK_DIRS`/`NULL_MASK_FILES` either go away or
+     remain only as a second layer.
+  3. Files the operator later runs outside the sandbox cannot be planted silently. Inside the
+     sandbox these project paths are read-only, or the launcher detects and flags any change to them
+     after the run, before the operator's next unsandboxed `claude`/`git`:
+     - `.claude/settings.json` (hooks), `.claude/` skills/agents/commands, `CLAUDE.md`;
+     - `.git/hooks`, `.git/config` (`core.fsmonitor`, `core.hooksPath`, …);
+     - `.envrc`, `.vscode/tasks.json`.
+
+     Legitimate GSD writes to `.planning/` keep working. The choice between ro-bind and post-run
+     detection, per path, is made in discuss/plan [inferred — audit].
+  4. Account-scoped cloud reach with the run token is settled by evidence, not belief: a probe shows
+     whether a `claude setup-token` token can use Remote Control, routines/RemoteTrigger and
+     claude.ai MCP connectors (e.g. Notion spawn-session), or only inference. The gate's read-only
+     `settings.json` denies agent-to-agent tools (`SendMessage`, `ListAgents`, `RemoteTrigger`,
+     `Cron*`, `mcp__claude_ai_*`), and the run sets `ENABLE_CLAUDEAI_MCP_SERVERS=false`. This is
+     defence in depth, meaningful only on top of SC1.
+  5. Already-closed channels gain regression tests where none exist:
+     - the runtime-dir tmpfs hides `$XDG_RUNTIME_DIR/cc-socks/<pid>.sock` (local Claude
+       sessions), the session D-Bus, Wayland and the ssh/gpg agents;
+     - `/` is read-only, so `~/.claude/daemon/dispatch` and similar are unwritable;
+     - the push mirror runs with `core.hooksPath=/dev/null` (`src/launcher/push.rs`);
+     - a nested agent inherits the cage.
+
+     The nested-`claude` hook gap is verified and closed or documented. A nested `claude` with a
+     different `CLAUDE_CONFIG_DIR` or `--settings` skips the gate's hooks, so hook-counted hard
+     caps may undercount it; the monitor's active-seconds cap and the scope's `RuntimeMaxSec`
+     still apply.
+  6. The planning-doc channel (DIRECTION.md, `.planning/` read by an outside coordinator) is
+     documented as accepted residual risk that cannot be closed: those files are untrusted input.
+  7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
+     the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
+
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 28.1 to break down)
+
 ### Phase 29: Master Prompt & Run Templates
 
 **Goal**: The driver's contract ships with gsd-mm as a versioned prompt and file templates. A new run
@@ -1244,6 +1319,12 @@ Plans:
 **Wave 7** *(blocked on 30-06, 30-07, 30-08)*
 - [x] 30-09-PLAN.md — launch form shows spend and sandbox first and fits findings, lint popup keeps its question, new-run copy/wrap/IN-02, preflight agrees with editor and launcher (WR-01/04, IN-03) (DTAB-03, DTAB-04)
 
+**Note (Phase 28.1, 2026-10-24)**: 28.1 SC7 adds a list of absent protections (egress proxy, `$HOME`
+allowlist, planted-file guard) to the degraded/unsandboxed posture. The launch form's sandbox line
+and the degraded-host second confirm should show that list once 28.1 lands; 28.1 owns the change.
+DIRECTION.md stays a driver-writable steering channel, so the tab treats its content as untrusted
+(already the case via the `Untrusted` display type).
+
 ### Phase 31: Retire Superseded Envelope & Goal-Layer Code
 
 **Goal**: Code from superseded Phases 19, 21 and 22 is either removed or rewired into the new path, so
@@ -1269,6 +1350,13 @@ the codebase carries no unfinished parallel safety model.
   3. Open threat ids are closed with a pointer to the superseding mechanism, each named in
      `deferred-items.md`: T-19-86, T-19-91, T-19-111, T-19-116, and the Phase 21 criterion 4.
   4. `./scripts/pre-tag-check.sh --container` passes on the reduced tree.
+
+**Note (Phase 28.1, 2026-10-24)**: the 2026-10-24 sandbox-reach audit found the Phase 28 sandbox
+leaves network, abstract-socket and unlisted-credential channels open. Before deleting the Phase 19
+guard, check which of its threats (exfiltration, credential use, network reach) rely on network or
+`$HOME` confinement. Those threat ids should point at Phase 28.1's egress proxy and `$HOME`
+allowlist as the superseding mechanism, and should be closed only once 28.1 lands
+[inferred — audit].
 
 **Plans**: 0 plans
 

@@ -5,10 +5,10 @@ current_phase: 30
 current_phase_name: Driver Tab on DIRECTION.md
 status: shipped
 stopped_at: v1.15.0 released (interim, mid v2.0); next is /gsd-verify-work 28, then /gsd-verify-work 30
-last_updated: "2026-10-24T08:23:22.129Z"
+last_updated: "2026-10-24T18:17:26.846Z"
 last_activity: 2026-10-24
 last_activity_desc: v1.15.0 released — Workstream Visibility
-state_head: 58acaa2bb12ea1d99599369bc5249bfae7c27b31
+state_head: 736e134e2f1d46521d17c3a6e5f0dc8e541a2003
 progress:
   total_phases: 10
   completed_phases: 12
@@ -741,6 +741,7 @@ Recent decisions affecting current work:
 - Phase 24 added (2026-09-23): Roadmap tab redesign and detail-tab consolidation — TUI-only, no dependency on Phases 15-23; Phase 21 left untouched (stopped by user decision)
 - Phase 19 changed: 2026-10-14 re-plan: Phases 19, 21, 22, 23 SUPERSEDED by spikes 001/002 (capability removal + launcher hard caps instead of bash parsing / open-ended audit); code kept in place until Phase 31 [inferred]. Phase 20 marked complete (20-VERIFICATION passed 5/5) [inferred]. Phases 26-31 added: 26 Driver Validation Spike 003, 27 driverctl & Driver Frontmatter, 28 Sandboxed Driver Launcher, 29 Master Prompt & Run Templates, 30 Driver Tab on DIRECTION.md, 31 Retire Superseded Envelope & Goal-Layer Code. v2.0 restructured in place, not closed (no tag, no Cargo bump) [inferred].
 - Phase 26.1 inserted after Phase 26: Driver Validation Spike 003 Re-run: fix gap-round counting, headless-driver liveness, T-26-11; re-run Opus to prove VALID-01/02; gates 27-31 (URGENT)
+- Phase 28.1 inserted after Phase 28: Sandbox Egress & Agent-Channel Isolation (2026-10-24 sandbox-reach audit; see 28.1-AUDIT-FINDINGS.md). Plan after /gsd-verify-work 28 and 30; current-phase pointer left on 30 [inferred — audit] (URGENT)
 
 ### Pending Todos
 
