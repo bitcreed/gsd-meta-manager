@@ -172,6 +172,14 @@ pub fn is_stripped_env(key: &std::ffi::OsStr) -> bool {
         || STRIP_ENV_SUFFIXES.iter().any(|x| upper.ends_with(x))
 }
 
+/// Routing variables stripped in both postures (stub).
+pub const ROUTING_STRIP_ENV: &[&str] = &[];
+
+/// Variables set in both postures (stub).
+pub fn common_env_sets() -> Vec<(&'static str, OsString)> {
+    Vec::new()
+}
+
 /// Directories under `$HOME` the sandbox replaces with an empty tmpfs.
 pub const TMPFS_MASK_DIRS: &[&str] = &[
     ".ssh",

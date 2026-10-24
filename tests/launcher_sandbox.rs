@@ -21,8 +21,9 @@ use std::process::{Command, Stdio};
 use gsd_meta_manager::driverctl::serve::socket_path;
 use gsd_meta_manager::launcher::egress::socket_path_for;
 use gsd_meta_manager::launcher::sandbox::{
-    bridged_command, bwrap_argv, child_env, claude_argv, egress_env_sets, etc_entries_in, EtcEntry,
-    LaunchPaths, SandboxSpec, BRIDGE_PORT, DUMMY_OAUTH_TOKEN, EXTRA_STRIP_ENV, STRIP_ENV,
+    bridged_command, bwrap_argv, child_env, claude_argv, common_env_sets, egress_env_sets,
+    etc_entries_in, EtcEntry, LaunchPaths, SandboxSpec, BRIDGE_PORT, DUMMY_OAUTH_TOKEN,
+    EXTRA_STRIP_ENV, ROUTING_STRIP_ENV, STRIP_ENV,
 };
 use tempfile::TempDir;
 
@@ -103,6 +104,9 @@ fn golden_bwrap_argv() {
         "/etc/claude-code",
         "--remount-ro",
         "/etc",
+        // D-03: no host filesystem socket under /run (docker, system bus, snapd, ...)
+        "--tmpfs",
+        "/run",
         // home masks: directories, then files
         "--tmpfs",
         "/home/u/.ssh",
@@ -223,8 +227,9 @@ fn masks_are_omitted_when_absent() {
         .windows(2)
         .position(|w| w == ["--remount-ro", "/etc"])
         .expect("the /etc block ends with --remount-ro /etc");
-    assert_eq!(argv[remount + 2], "--bind");
-    assert_eq!(argv[remount + 3], "/work/proj");
+    assert_eq!(argv[remount + 2..remount + 4], ["--tmpfs", "/run"]);
+    assert_eq!(argv[remount + 4], "--bind");
+    assert_eq!(argv[remount + 5], "/work/proj");
 }
 
 #[test]
@@ -348,6 +353,38 @@ fn the_egress_socket_is_re_bound_after_the_driverctl_socket_and_only_inside_the_
 }
 
 #[test]
+fn the_run_tmpfs_follows_the_etc_block_and_precedes_the_project_and_the_runtime_dir() {
+    let spec = SandboxSpec {
+        home: PathBuf::from("/home/u"),
+        paths: paths(),
+        tmpfs_masks: Vec::new(),
+        null_masks: Vec::new(),
+        runtime_dir: Some(PathBuf::from("/run/user/1000")),
+        etc_entries: Vec::new(),
+    };
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+    let at = |flag: &str, a: &str| {
+        argv.windows(2)
+            .position(|w| w[0] == flag && w[1] == a)
+            .unwrap_or_else(|| panic!("{flag} {a} missing: {argv:?}"))
+    };
+    let remount = at("--remount-ro", "/etc");
+    let run = at("--tmpfs", "/run");
+    let project = at("--bind", "/work/proj");
+    let runtime = at("--tmpfs", "/run/user/1000");
+    assert_eq!(run, remount + 2, "/run follows the /etc block");
+    assert!(
+        run < project && project < runtime,
+        "/run precedes the project and the runtime dir"
+    );
+    assert_eq!(
+        argv.iter().filter(|a| a.as_str() == "/run").count(),
+        1,
+        "/run is mounted exactly once"
+    );
+}
+
+#[test]
 fn golden_bridged_command() {
     let inner = [OsString::from("claude"), OsString::from("-p")];
     let command = bridged_command(
@@ -429,6 +466,92 @@ fn golden_child_env() {
     .collect();
     assert_eq!(env, expected);
     assert_eq!(EXTRA_STRIP_ENV, ["ANTHROPIC_AUTH_TOKEN"]);
+}
+
+const ROUTING_NAMES: [&str; 9] = [
+    "TMUX",
+    "TMUX_PANE",
+    "ALL_PROXY",
+    "all_proxy",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_BASE_URL",
+];
+
+#[test]
+fn routing_variables_are_stripped_but_host_proxies_are_kept() {
+    assert_eq!(ROUTING_STRIP_ENV, ROUTING_NAMES);
+    let mut host: Vec<(OsString, OsString)> = ROUTING_NAMES
+        .iter()
+        .map(|k| (OsString::from(k), OsString::from("host-routing")))
+        .collect();
+    host.push(("PATH".into(), "/usr/bin".into()));
+    host.push(("HTTPS_PROXY".into(), "http://host-proxy:8080".into()));
+    let env = child_env(host, &[]);
+    let keys: Vec<String> = env
+        .keys()
+        .map(|k| k.to_string_lossy().into_owned())
+        .collect();
+    // The degraded posture keeps the host's own proxies; nothing else survives.
+    assert_eq!(keys, ["GIT_TERMINAL_PROMPT", "HTTPS_PROXY", "PATH"]);
+    assert_eq!(
+        env[&OsString::from("HTTPS_PROXY")],
+        "http://host-proxy:8080"
+    );
+}
+
+#[test]
+fn golden_env_sets() {
+    let common: Vec<(String, String)> = common_env_sets()
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_string_lossy().into_owned()))
+        .collect();
+    let want = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+    assert_eq!(
+        common,
+        [
+            want("DISABLE_TELEMETRY", "1"),
+            want("DISABLE_ERROR_REPORTING", "1"),
+            want("DISABLE_AUTOUPDATER", "1"),
+            want("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+            want("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+        ]
+    );
+
+    // The bwrap posture: the host's routing values are gone and the launcher's win.
+    let mut host: Vec<(OsString, OsString)> = ROUTING_NAMES
+        .iter()
+        .map(|k| (OsString::from(k), OsString::from("host-routing")))
+        .collect();
+    host.push(("HTTPS_PROXY".into(), "http://host-proxy:8080".into()));
+    host.push(("NO_PROXY".into(), "internal.example".into()));
+    host.push(("DISABLE_TELEMETRY".into(), "0".into()));
+    let sets = [common_env_sets(), egress_env_sets(3128)].concat();
+    let env = child_env(host, &sets);
+    let url = "http://127.0.0.1:3128";
+    let expected: BTreeMap<OsString, OsString> = [
+        ("ANTHROPIC_BASE_URL", url),
+        ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+        ("CLAUDE_CODE_GZIP_REQUEST_BODIES", "0"),
+        ("CLAUDE_CODE_OAUTH_TOKEN", DUMMY_OAUTH_TOKEN),
+        ("DISABLE_AUTOUPDATER", "1"),
+        ("DISABLE_ERROR_REPORTING", "1"),
+        ("DISABLE_TELEMETRY", "1"),
+        ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("HTTPS_PROXY", url),
+        ("HTTP_PROXY", url),
+        ("NO_PROXY", "127.0.0.1,localhost"),
+        ("http_proxy", url),
+        ("https_proxy", url),
+        ("no_proxy", "127.0.0.1,localhost"),
+    ]
+    .iter()
+    .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+    .collect();
+    assert_eq!(env, expected);
 }
 
 #[test]
