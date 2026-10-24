@@ -621,4 +621,286 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(!found[0].is_git_relevant());
     }
+
+    // ------------------------------------------------ 28.1-03 task 2: full detection
+
+    fn kinds(found: &[Finding]) -> Vec<String> {
+        found.iter().map(Finding::render).collect()
+    }
+
+    #[test]
+    fn exec_keys_follow_the_d22_example_and_skip_the_rest() {
+        let text = "# a comment\n; another\n\n[core]\n\tfsmonitor = x\n[filter \"lfs\"]\n\tclean = y\n[alias]\n\tst = status\n[includeIf \"gitdir:/x/\"]\n\tpath = /tmp/c\n[user]\n\tname = a\n";
+        assert_eq!(
+            exec_keys_in(text),
+            [
+                "core.fsmonitor",
+                "filter.lfs.clean",
+                "alias.st",
+                "includeif.gitdir:/x/.path"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_key_in_the_extended_list_is_returned() {
+        // (section, subsection, key)
+        let table: &[(&str, Option<&str>, &str)] = &[
+            ("core", None, "hooksPath"),
+            ("core", None, "sshCommand"),
+            ("core", None, "pager"),
+            ("core", None, "editor"),
+            ("core", None, "worktree"),
+            ("core", None, "gitProxy"),
+            ("core", None, "askPass"),
+            ("core", None, "alternateRefsCommand"),
+            ("sequence", None, "editor"),
+            ("gpg", None, "program"),
+            ("gpg", Some("ssh"), "program"),
+            ("diff", None, "external"),
+            ("diff", Some("x"), "textconv"),
+            ("diff", Some("x"), "command"),
+            ("merge", Some("x"), "driver"),
+            ("credential", None, "helper"),
+            ("credential", Some("https://h"), "helper"),
+            ("include", None, "path"),
+            ("uploadpack", None, "packObjectsHook"),
+            ("remote", Some("origin"), "uploadpack"),
+            ("remote", Some("origin"), "receivepack"),
+            ("submodule", Some("x"), "update"),
+            ("init", None, "templateDir"),
+            ("http", None, "proxy"),
+            ("http", Some("https://h"), "proxy"),
+            ("extensions", None, "worktreeConfig"),
+            ("x", Some("y"), "command"),
+            ("x", None, "cmd"),
+        ];
+        for (section, sub, key) in table {
+            let header = match sub {
+                Some(sub) => format!("[{section} \"{sub}\"]"),
+                None => format!("[{section}]"),
+            };
+            let text = format!("{header}\n\t{key} = v\n");
+            assert_eq!(
+                exec_keys_in(&text).len(),
+                1,
+                "{section} {sub:?} {key} -> {text:?}"
+            );
+        }
+        for harmless in [
+            "[user]\n\tname = a\n",
+            "[core]\n\tbare = false\n",
+            "[remote \"o\"]\n\turl = u\n",
+        ] {
+            assert!(exec_keys_in(harmless).is_empty(), "{harmless:?}");
+        }
+    }
+
+    /// A checkout with a linked harness worktree, tracked dirs and git hooks.
+    fn fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("dir");
+        let p = dir.path();
+        write(p, ".git/config", "[core]\n\tbare = false\n");
+        write(p, ".git/hooks/pre-commit", "#!/bin/sh\n");
+        write(p, ".claude/agents/a.md", "agent a\n");
+        write(
+            p,
+            ".claude/worktrees/w/.git",
+            &format!("gitdir: {}/.git/worktrees/w\n", p.display()),
+        );
+        write(
+            p,
+            ".git/worktrees/w/gitdir",
+            &format!("{}/.claude/worktrees/w/.git\n", p.display()),
+        );
+        write(p, ".git/worktrees/w/commondir", "../..\n");
+        dir
+    }
+
+    #[test]
+    fn the_tracked_dirs_are_hashed_and_a_new_file_is_not_git_relevant() {
+        let dir = fixture();
+        let base = snapshot(dir.path());
+        assert!(
+            base.files.contains_key(".git/hooks/pre-commit"),
+            "{:?}",
+            base.files
+        );
+        assert!(base.files.contains_key(".claude/agents/a.md"));
+        write(dir.path(), ".claude/agents/b.md", "agent b\n");
+        let found = findings(Some(&base), &snapshot(dir.path()), dir.path());
+        assert_eq!(kinds(&found), ["created .claude/agents/b.md"]);
+        assert!(!found[0].is_git_relevant());
+        write(dir.path(), ".git/hooks/pre-push", "#!/bin/sh\n");
+        let found = findings(Some(&base), &snapshot(dir.path()), dir.path());
+        assert!(
+            found
+                .iter()
+                .any(|f| f.render() == "created .git/hooks/pre-push" && f.is_git_relevant()),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_rewritten_commondir_is_a_worktree_pointer() {
+        let dir = fixture();
+        let base = snapshot(dir.path());
+        assert!(
+            base.git_entries.contains_key(".git/worktrees/w/commondir"),
+            "{:?}",
+            base.git_entries
+        );
+        assert!(findings(Some(&base), &snapshot(dir.path()), dir.path()).is_empty());
+        write(dir.path(), ".git/worktrees/w/commondir", "/tmp/evil\n");
+        let found = findings(Some(&base), &snapshot(dir.path()), dir.path());
+        assert!(
+            kinds(&found).contains(&"worktree-pointer .git/worktrees/w/commondir".to_owned()),
+            "{found:?}"
+        );
+        assert!(found.iter().all(Finding::is_git_relevant));
+    }
+
+    #[test]
+    fn a_new_nested_git_is_found_with_its_config_keys() {
+        let dir = fixture();
+        let base = snapshot(dir.path());
+        write(dir.path(), "sub/.git/config", "[core]\n\tfsmonitor = x\n");
+        let found = findings(Some(&base), &snapshot(dir.path()), dir.path());
+        let lines = kinds(&found);
+        assert!(
+            lines.contains(&"nested-git sub/.git".to_owned()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"git-config-key:core.fsmonitor sub/.git/config".to_owned()),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_nested_git_under_a_skipped_directory_is_not_walked() {
+        let dir = fixture();
+        let base = snapshot(dir.path());
+        write(
+            dir.path(),
+            "target/x/.git/config",
+            "[core]\n\tfsmonitor = x\n",
+        );
+        write(
+            dir.path(),
+            "node_modules/y/.git/config",
+            "[core]\n\tfsmonitor = x\n",
+        );
+        assert!(findings(Some(&base), &snapshot(dir.path()), dir.path()).is_empty());
+    }
+
+    #[test]
+    fn strict_mode_flags_pointers_that_leave_the_checkout() {
+        let dir = fixture();
+        assert!(
+            findings(None, &snapshot(dir.path()), dir.path()).is_empty(),
+            "the harness worktree and its commondir are the checkout's own"
+        );
+        write(dir.path(), "sub/.git", "gitdir: /elsewhere/x\n");
+        write(dir.path(), ".git/worktrees/w/commondir", "/tmp/evil\n");
+        let lines = kinds(&findings(None, &snapshot(dir.path()), dir.path()));
+        assert!(
+            lines.contains(&"worktree-pointer sub/.git".to_owned()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"worktree-pointer .git/worktrees/w/commondir".to_owned()),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn an_included_config_is_scanned_and_its_change_is_found() {
+        let dir = fixture();
+        write(dir.path(), "extra.cfg", "[user]\n\tname = a\n");
+        write(
+            dir.path(),
+            ".git/config",
+            "[include]\n\tpath = ../extra.cfg\n",
+        );
+        let base = snapshot(dir.path());
+        write(dir.path(), "extra.cfg", "[core]\n\tfsmonitor = x\n");
+        let lines = kinds(&findings(Some(&base), &snapshot(dir.path()), dir.path()));
+        assert!(
+            lines.contains(&"git-config-key:core.fsmonitor extra.cfg".to_owned()),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_flood_of_files_is_a_truncation_finding_not_silence() {
+        let dir = fixture();
+        for i in 0..40 {
+            write(dir.path(), &format!("flood/f{i}"), "x");
+        }
+        let snap = snapshot_with_limit(dir.path(), 10);
+        assert!(snap.truncated);
+        let found = findings(None, &snap, dir.path());
+        assert!(
+            found
+                .iter()
+                .any(|f| f.render() == "scan-truncated ." && f.is_git_relevant()),
+            "{found:?}"
+        );
+        assert!(!snapshot(dir.path()).truncated);
+    }
+
+    #[test]
+    fn the_baseline_is_written_once_and_a_corrupt_one_is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fixture();
+        let state = tempfile::tempdir().expect("state");
+        let first = snapshot(dir.path());
+        assert!(save_baseline_if_absent(state.path(), &first).expect("save"));
+        let path = state.path().join(BASELINE_FILE);
+        assert_eq!(
+            fs::metadata(&path).expect("meta").permissions().mode() & 0o777,
+            0o600
+        );
+        let bytes = fs::read(&path).expect("read");
+        write(dir.path(), "CLAUDE.md", "changed\n");
+        assert!(!save_baseline_if_absent(state.path(), &snapshot(dir.path())).expect("again"));
+        assert_eq!(
+            fs::read(&path).expect("read"),
+            bytes,
+            "the first baseline is kept"
+        );
+        assert_eq!(load_baseline(state.path()).expect("load"), Some(first));
+        fs::write(&path, "{ not json").expect("corrupt");
+        assert_eq!(load_baseline(state.path()).expect("load"), None);
+        let empty = tempfile::tempdir().expect("empty");
+        assert_eq!(load_baseline(empty.path()).expect("load"), None);
+    }
+
+    #[test]
+    fn the_record_is_bounded() {
+        let many: Vec<Finding> = (0..25)
+            .map(|i| Finding {
+                path: format!("p{i:02}"),
+                kind: FindingKind::Changed,
+            })
+            .collect();
+        let lines = render_bounded(&many);
+        assert_eq!(lines.len(), MAX_RECORDED);
+        assert_eq!(lines.last().map(String::as_str), Some("+6 more"));
+        assert_eq!(render_bounded(&many[..3]).len(), 3);
+    }
+
+    #[test]
+    fn a_symlinked_tracked_file_is_recorded_as_a_link_and_never_read_through() {
+        let dir = fixture();
+        fs::create_dir_all(dir.path().join(".claude")).expect("dir");
+        std::os::unix::fs::symlink("/etc/passwd", dir.path().join(".claude/settings.json"))
+            .expect("symlink");
+        let snap = snapshot(dir.path());
+        assert_eq!(
+            snap.files.get(".claude/settings.json"),
+            Some(&Entry::Symlink("/etc/passwd".to_owned()))
+        );
+    }
 }
