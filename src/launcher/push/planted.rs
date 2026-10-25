@@ -1022,6 +1022,29 @@ mod tests {
     }
 
     #[test]
+    fn a_bom_prefixed_config_is_scanned_like_any_other() {
+        // git skips a leading UTF-8 BOM; so must the detector, or the BOM glues
+        // itself to `[core]` and hides every key from the scan.
+        assert_eq!(
+            exec_keys_in("\u{FEFF}[core]\n\tfsmonitor = x\n"),
+            ["core.fsmonitor"]
+        );
+        let dir = tempfile::tempdir().expect("dir");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"[core]\n\tfsmonitor = x\n");
+        fs::create_dir_all(dir.path().join(".git")).expect("dirs");
+        fs::write(dir.path().join(".git/config"), bytes).expect("write");
+        let found = findings(None, &snapshot(dir.path()), dir.path());
+        assert_eq!(
+            found,
+            [Finding {
+                path: ".git/config".to_owned(),
+                kind: FindingKind::GitConfigKey("core.fsmonitor".to_owned())
+            }]
+        );
+    }
+
+    #[test]
     fn a_clean_checkout_has_no_findings_either_way() {
         let dir = tempfile::tempdir().expect("dir");
         write(dir.path(), ".git/config", "[core]\n\tbare = false\n");

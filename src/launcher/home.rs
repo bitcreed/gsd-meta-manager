@@ -767,6 +767,25 @@ mod tests {
     }
 
     #[test]
+    fn an_exe_in_a_shared_bin_directory_binds_only_the_file() {
+        for dir in ["/home/u/.local/bin", "/home/u/bin"] {
+            let mut f = facts();
+            f.tools.clear();
+            f.exe = PathBuf::from(format!("{dir}/gsd-meta-manager"));
+            f.existing = candidates(&f, true)
+                .iter()
+                .map(|bind| bind.path().to_owned())
+                .collect();
+            let got = paths(&home_allowlist(&f, true));
+            assert!(
+                got.contains(&format!("ro {dir}/gsd-meta-manager")),
+                "{got:?}"
+            );
+            assert!(!got.contains(&format!("ro {dir}")), "{got:?}");
+        }
+    }
+
+    #[test]
     fn the_gitconfig_has_the_three_keys_and_escapes_values() {
         assert_eq!(
             render_gitconfig(Some("Ann \"A\" B\\C"), Some("a@b.c"), Some("main")),
