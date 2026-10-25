@@ -1506,7 +1506,7 @@ pub struct RunRecord {
     /// all.** In single-command mode this is the supplied `--command`, exactly
     /// as it was before Phase 20. In routed mode the run has no single command —
     /// that is the point of routing — so the field carries the marker
-    /// [`crate::driver::ROUTED_RECORD_MARKER`] and the run's identity moves to
+    /// `(routed: see the decided journal records)` and the run's identity moves to
     /// [`target_phase`](Self::target_phase).
     ///
     /// **A marker rather than the goal text or an empty string, and both
@@ -3458,97 +3458,6 @@ mod tests {
 
         let back: RunRecord = serde_json::from_value(value).expect("it loads");
         assert_eq!(back.bounds, record.bounds);
-    }
-
-    #[test]
-    fn a_routed_run_of_two_iterations_still_writes_the_record_exactly_twice() {
-        // The invariant the whole document depends on (D-06, D-07): the
-        // iteration loop lives strictly *inside* the two writes and adds neither
-        // a third nor a per-iteration one. Counted through the production
-        // journal's own counter rather than by watching the file, so a write
-        // that happened and was overwritten still counts.
-        let dir = tempfile::tempdir().expect("temp dir");
-        let planning = dir.path().join(".planning");
-
-        let mut record = run_record(RUN_ID);
-        record.gsd_command = crate::driver::ROUTED_RECORD_MARKER.to_string();
-        record.target_phase = Some("20".to_string());
-        record.bounds = Some(RecordedBounds {
-            max_steps: 5,
-            wall_clock_cap_secs: 4 * 60 * 60,
-        });
-
-        let mut run = JournalRun::start(&planning, record).expect("start the run");
-        assert_eq!(run.record_writes(), 1, "write one lands at run start");
-
-        // Two iterations' worth of the events a routed run emits per command.
-        for command in ["/gsd-plan-phase 20", "/gsd-plan-phase 20"] {
-            run.record(&JournalEvent::Decided {
-                by: "policy".to_string(),
-                command: command.to_string(),
-                rationale: "the target phase is Discussed".to_string(),
-            })
-            .expect("the decision is journalled");
-        }
-
-        run.finish("parked:bounds_command_repeat")
-            .expect("finish the run");
-
-        assert_eq!(
-            run.record_writes(),
-            2,
-            "exactly two for a routed run of two iterations — the loop adds no \
-             third write and no per-iteration write"
-        );
-    }
-
-    #[test]
-    fn the_routed_record_marker_cannot_be_misread_as_absent_or_as_an_argv_fragment() {
-        let marker = crate::driver::ROUTED_RECORD_MARKER;
-
-        // The point of option-a is that the VALUE cannot be misread, so the
-        // properties are asserted rather than only the literal.
-        assert!(
-            !marker.is_empty(),
-            "`\"\"` already means `the field was absent` on the tolerant read \
-             path (a_record_from_an_unknown_schema_still_produces_a_row, D-30); \
-             a routed run must not be indistinguishable from an unparseable one"
-        );
-        assert!(
-            !marker.contains("--"),
-            "an argv fragment like `--target-phase 3` reads as a pasteable \
-             command line and is not one — that is the shape this marker \
-             replaced"
-        );
-        assert!(
-            !marker.starts_with('/'),
-            "a leading slash is what a real GSD command looks like; the marker \
-             must not be mistakable for one"
-        );
-        assert!(!marker.starts_with('-'), "nor for a flag");
-        assert!(
-            marker.contains("decided"),
-            "the marker earns its place by pointing at where the real sequence \
-             lives; a bare `(routed)` would say what is missing without saying \
-             where to look"
-        );
-
-        // And a routed record is distinguishable from an absent-field one on the
-        // tolerant path the TUI actually reads through.
-        let summary = run_summary_from_value(
-            RUN_ID,
-            &serde_json::json!({
-                "started_at": "2026-08-19T00:00:00Z",
-                "goal": "g",
-                "gsd_command": marker,
-                "ended_at": serde_json::Value::Null,
-            }),
-        );
-        assert_eq!(summary.gsd_command, marker);
-        assert_ne!(
-            summary.gsd_command, "",
-            "which is exactly what an absent field would have produced"
-        );
     }
 
     #[test]

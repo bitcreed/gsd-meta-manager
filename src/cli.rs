@@ -1,7 +1,4 @@
 use clap::{Args, Parser, Subcommand};
-// Only the debug-only `claude_args` field names it, so the import carries the
-// same gate the field does; an ungated one would be an unused import in release.
-#[cfg(debug_assertions)]
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -61,10 +58,9 @@ pub struct Cli {
     // included (parser.rs:821), and once that is set `possible_subcommand`
     // stops matching subcommand names (parser.rs:592). With the attribute,
     // `--config X list` parses as target "list" and `--config X add p` is an
-    // error — and the TUI respawns itself as `current_exe() --config X drive …`
-    // (`driver::spawn::drive_argv`) with /dev/null stdio, so that respawn would
-    // break invisibly. clap's default already gives subcommands priority; the
-    // one gap (`<target> list`) is closed by `Cli::try_parse_checked_from`'s
+    // error — and a leading `--config X` before a subcommand is exactly how
+    // the binary re-enters itself, so that would break invisibly. clap's
+    // default already gives subcommands priority; the one gap (`<target> list`) is closed by `Cli::try_parse_checked_from`'s
     // post-parse conflict check instead.
     /// Alias or path of a registered project to open directly
     ///
@@ -123,276 +119,14 @@ pub enum Commands {
     },
     /// List all registered projects
     List,
-    // Every `///` below is rendered verbatim by clap as help text, so the
-    // rationale for each field lives in `//` comments like this one and only the
-    // one-line description a user needs is a doc comment.
-    //
-    // The variant carries no `#[cfg]` on purpose (D-05): driving is Unix-only,
-    // but the subcommand parses on every platform and the *handler* returns a
-    // typed unsupported-platform error. An accepted limitation that surfaces as
-    // "unknown subcommand" is indistinguishable from a bug.
-    //
-    // `hide = true` removes this entry from the rendered help and from nothing
-    // else. The parser is untouched, so anyone who types it still gets a run;
-    // the `Commands::Envelope` block below states that general rule at length.
-    //
-    // **Hidden, deliberately NOT gated.** Quick task 260917-fko put 28 driver
-    // surfaces behind `GSDMM_EXPERIMENTAL_FEATURES` and exempted this
-    // subcommand, because the TUI respawns itself as `current_exe() drive …`
-    // and propagation of that variable into the child is not guaranteed through
-    // the envelope's env scrub. A refusal here — or a `#[cfg]`, or a condition
-    // on the experimental flag — breaks the spawn path for precisely the users
-    // who DID set the flag, and breaks it invisibly, because the child's stdio
-    // is `/dev/null`. Hiding keeps `--help` honest about what a user is meant to
-    // type without touching the one caller that has to keep working.
-    //
-    // This is not the `--claude-program` case further down. That field needs its
-    // `#[cfg(debug_assertions)]` because the capability it confers is shaped
-    // like arbitrary code execution. The capability here is the driver, whose
-    // authorisation boundary is the per-project `driver_opt_in` record — never
-    // help visibility.
-    /// Run one GSD command against a project that has opted in to being driven
-    #[command(hide = true)]
-    Drive {
-        /// Alias of the project to drive; it must carry a driver opt-in record
-        alias: String,
-        // Exactly one of `--command` and `--target-phase`, and the refusal for
-        // both-or-neither lives in `driver::drive` rather than in a clap group.
-        // The pair arrives from three paths — a hand-typed invocation, the TUI's
-        // argv builder, and a re-read run record — and a parser-level constraint
-        // guards only the first (D-27, the `--run-id` precedent immediately
-        // below).
-        //
-        // `--command` is no longer required, and that is the visible half of
-        // Phase 20: a routed run derives its sequence per iteration from
-        // observed project state, so there is a second way to say what a run is
-        // for. There is still deliberately no way to pass a *list* — a supplied
-        // sequence would be a third execution model that neither the router nor
-        // the bounds know about.
-        /// A single GSD command to run, e.g. `/gsd-progress`; excludes --target-phase
-        #[arg(long)]
-        command: Option<String>,
-        // Used only as a map key into the parsed project state — the run body
-        // composes no path from it — but validated as a plain path component at
-        // the same seam as `--run-id` anyway, for the reason that flag's comment
-        // records at length (D-27, WR-02).
-        /// Phase number to drive toward, e.g. `20`; excludes --command
-        #[arg(long)]
-        target_phase: Option<String>,
-        // **The fields above are the RAW side of a parse boundary, and they stay
-        // raw on purpose** (21-15). Clap parses a command line; it does not
-        // judge payloads. Every string flag on this subcommand crosses into the
-        // driver through `driver::RawDriveArgs` and
-        // `driver::DriveArgs::from_argv`, which is the one place a value
-        // carrying nothing a reader could see is refused — with that position's
-        // own typed error, before `drive` is entered and therefore before any
-        // file, lock, journal or run directory can exist, identically for
-        // `--dry-run` and a real run. Adding a `value_parser` here would be a
-        // second judge of the same property on one of the several paths that
-        // build a `DriveArgs`.
-        //
-        // The two run bounds a caller may override. Both are refused at the
-        // seam rather than by a `value_parser`, so the refusal reaches every
-        // path that can build a `DriveArgs` and not only this one.
-        //
-        // There is deliberately **no** flag that switches a detector off, and no
-        // ceiling-free cap: CTRL-06 makes these four detectors the only stopping
-        // condition an unattended run has, and a value large enough to be a
-        // disablement in disguise is refused exactly like an explicit one would
-        // be.
-        /// How many GSD commands a routed run may issue before halting itself
-        #[arg(long)]
-        max_steps: Option<u32>,
-        /// How long the whole run may take, in seconds, before halting itself
-        #[arg(long)]
-        wall_clock_cap_secs: Option<u64>,
-        // The third bound a caller may override, and it is refused at the same
-        // seam and for the same reason as the two above: the value reaches
-        // `DriveArgs` from a hand-typed invocation, from the TUI's argv builder
-        // and from a re-read run record, so a `value_parser` wired to this one
-        // flag would guard the least interesting of the three (D-27).
-        //
-        // DRIVE-04's cap is only a control if it can be exceeded, so a value at
-        // or above the run's RESOLVED step cap is refused by
-        // `driver::escalate::resolve` — the run would halt on its step cap
-        // first, which makes such a cap a disablement wearing a cap's clothing.
-        /// How many times a run may consult the model before parking; default 3,
-        /// and a value at or above `--max-steps` is refused because it can never bind
-        #[arg(long)]
-        max_escalations: Option<u32>,
-        // **The explicit approval act, and its explicitness is the point.**
-        // DRIVE-01 requires an approved plan on the run record, and CONTEXT.md
-        // is unambiguous that approval is "an explicit recorded act — not an
-        // inferred consent, not a timeout-to-yes". A `--goal`-only run that
-        // simply started on whatever the model proposed would be inferred
-        // consent with extra steps, so the digest the reviewer saw is what
-        // authorises the run.
-        //
-        // **The value is ONE token carrying TWO halves**, joined by
-        // `journal::APPROVAL_TOKEN_SEPARATOR`: the plan that was approved, and
-        // the disclosed files that approval covered
-        // (`journal::approval_digest`). Both are re-checked at spawn — a plan
-        // approved an hour ago against a `CLAUDE.md` a `git pull` has since
-        // rewritten is not an approval of what would now run (research Q4).
-        //
-        // Two halves in one flag rather than two flags, because the refusal IS
-        // the review surface and a reviewer copies one value: two values are two
-        // things to transcribe and a new way to get it half right. A value that
-        // does not carry both halves is refused by name and is never treated as
-        // a partial approval — an approval that cannot be parsed is an absent
-        // approval.
-        //
-        // Carrying the plan half here is also what makes the plan-changed
-        // refusal REACHABLE. The digest the re-check compares against has to be
-        // the one the approval covered; re-deriving it from the plan under test
-        // compares a value against itself, and every real mismatch then reports
-        // itself as a file change.
-        //
-        // The token is obtained by running the invocation WITHOUT this flag:
-        // the refusal prints the decomposed plan as typed tokens together with
-        // the token that authorises exactly it. `--dry-run` deliberately
-        // decomposes nothing, because a preview spawns no process (D-23), so it
-        // is not and cannot be where the plan is shown.
-        /// The token printed for the plan you reviewed — `<plan>+<approval>` —
-        /// binding the approval to that plan AND to the disclosed files.
-        /// Validated on every invocation; consulted only for a `--goal` run
-        #[arg(long)]
-        approved_plan: Option<String>,
-        // The TUI supplies it so it knows what to look for afterwards (D-03).
-        //
-        // It is **not** generated when absent, and this comment used to say it
-        // was. A comment that describes a mode the code refuses is the next
-        // reader's bug: a driver-generated id appears on no caller's argv, which
-        // is exactly what made a run invisible to `driver::liveness::probe` —
-        // reported crashed by every scan, and un-stoppable because a stop
-        // answered already-gone without signalling (CR-04). `driver::drive`
-        // refuses a real run with no id before anything is created.
-        // It must also be a **single plain path component**, and that refusal
-        // likewise lives in `driver::drive` rather than in a `value_parser`
-        // here: the id reaches the run body from a hand-typed invocation, from
-        // the TUI's argv builder, and from `writer::read_active_run` — a
-        // validator wired to this one flag would guard the one path that is
-        // already the least interesting (D-27, WR-02).
-        //
-        // **Blankness specifically moved UP in 21-15, and this comment is
-        // corrected in the commit that moved it.** A supplied `--run-id`
-        // carrying nothing visible is now refused at
-        // `driver::DriveArgs::from_argv`, the parse boundary between this raw
-        // clap struct and the driver's own type, with `RunIdInvalid` — before
-        // `drive` is entered at all. `is_plain_path_component` still answers the
-        // STRUCTURAL half (traversal, separators, embedded control characters)
-        // at the seam, and it still governs values that never came from argv.
-        /// Run id to record this run under; required unless `--dry-run`
-        #[arg(long)]
-        run_id: Option<String>,
-        /// Report what the run would do without executing anything
-        #[arg(long)]
-        dry_run: bool,
-        // **This comment used to say interpreting a goal belonged to a later
-        // phase, and that stopped being true here.** Phase 21 is that phase:
-        // `driver::goal` turns this text into an ordered plan over
-        // `router::SAFE_COMMAND_ALPHABET` through the model seam, and a
-        // decomposition that is not machine-checkable is **refused rather than
-        // repaired** — every step's command must re-parse to a
-        // `router::RouterAction`, every target phase must survive
-        // `journal::is_plain_path_component` and appear in the roadmap, and every
-        // terminal state must reduce to `router::is_goal_met`. The correction
-        // rides the commit that falsified the line, per the
-        // `src/driver/dry_run.rs:78-83` precedent: a comment describing the
-        // PREVIOUS build is worse than no comment, because it is read as current.
-        //
-        // What bounds the interpreting is `--max-escalations` above: the
-        // decomposition is one model consultation and it is counted.
-        //
-        // `allow_hyphen_values` because this phase turned the goal into a
-        // free-text field a human types (WR-04). Without it, clap in the CHILD
-        // reports "a value is required for '--goal <GOAL>' but none was
-        // supplied" for anything beginning with `-` and exits non-zero — and the
-        // child's stdio is `/dev/null`, so nothing is visible: the TUI has
-        // already shown "Driving {alias} — run {id}" and inserted an optimistic
-        // `ObservedRun { liveness: Alive }`, which disappears at the next scan
-        // with no error anywhere. `-- do not touch main` and `-v2 migration
-        // notes` are entirely plausible free text.
-        //
-        // Safe here in a way it would not be on `--command`: the goal is the
-        // LAST operand the argv builder emits, so there is no following flag for
-        // a hyphen-led value to swallow.
-        /// Free-text goal, recorded into the run record and decomposed once
-        /// through the model seam into a plan over the router's own alphabet
-        #[arg(long, allow_hyphen_values = true)]
-        goal: Option<String>,
-        /// Test and development only: the program to spawn instead of `claude`
-        ///
-        /// It exists because the driver is a separate process that constructs
-        /// its own executor, so `ClaudeExecutor::with_program` does not reach
-        /// it. The TUI's own spawn argv never emits this flag. A hidden flag
-        /// rather than an environment variable is deliberate: an env var is
-        /// inherited by children, so a stray `GSD_*` in the user's shell would
-        /// silently reach a TUI-spawned driver — the same class of leak
-        /// `src/executor/claude.rs:333-352` already scrubs `CLAUDE*` for —
-        /// whereas a flag must be passed on purpose by a caller whose argv
-        /// builder is itself unit-tested.
-        ///
-        /// **`hide = true` removes a flag from `--help`, not from the parser,
-        /// and that is why the `#[cfg(debug_assertions)]` below is the part
-        /// that matters (D-30, WR-16).** Without it, any caller of the
-        /// *released* binary can make the "driver" exec an arbitrary program
-        /// with an opted-in project as its cwd, and the journal records the
-        /// result as an ordinary run. The env-var reasoning above is correct
-        /// and unchanged; it argues against an env var, and it never argued for
-        /// shipping the flag. The spawn seam is guarded against *emitting*
-        /// these flags — nothing guards against a human or a script passing
-        /// them, so the parser entry itself is what has to go.
-        ///
-        /// **The consequence, decided rather than discovered: `cargo test
-        /// --release` no longer builds the integration tests that pass these
-        /// flags, and that is the trade this project chose.** The gate is
-        /// `cargo build && cargo test && cargo clippy -- -D warnings` and it
-        /// does not run release tests; the nine `tests/fixtures/fake-claude*.sh`
-        /// stand-ins are debug-only test infrastructure by nature; and shipping
-        /// a flag shaped like remote code execution in the released binary to
-        /// keep a release-mode test path is the wrong trade. Nobody should
-        /// "fix" this by widening the cfg —
-        /// `tests/spawn_seam_guard.rs::the_agent_program_override_fields_are_debug_only`
-        /// fails if anybody does, because a `#[cfg]` a later refactor quietly
-        /// widens is indistinguishable from never having added it.
-        ///
-        /// A debug build keeps the flag, so the cfg alone would leave one gap:
-        /// there, a stand-in run still reads as a real one on disk. That gap is
-        /// closed by the other half of D-30 — `src/driver/run.rs` journals
-        /// `Diagnostic { code: "agent_program_overridden" }` before the run's
-        /// first exec record whenever this flag is used.
-        #[cfg(debug_assertions)]
-        #[arg(long, hide = true)]
-        claude_program: Option<PathBuf>,
-        /// Test and development only: leading arguments for `--claude-program`
-        ///
-        /// Repeatable. Placed before the executor's own generated argv, which is
-        /// how the checked-in shell stand-ins receive their transcript and exit
-        /// code. Hidden for the same inheritance reason as `--claude-program`,
-        /// and absent from a release build's parser for the same D-30 reason:
-        /// it is the payload half of the same override, so leaving it parseable
-        /// while gating its program would be a gate with a hole in it. The
-        /// accepted `cargo test --release` consequence recorded above covers
-        /// both fields; it is one decision, not two.
-        #[cfg(debug_assertions)]
-        #[arg(long, hide = true)]
-        claude_args: Vec<OsString>,
-    },
     // The envelope's enforcement points re-enter this same binary rather than
     // living in a generated shell script (D-04), so they need a parser entry.
     //
     // **`hide = true` alone is the right treatment here, and
-    // `#[cfg(debug_assertions)]` would be wrong.** That is the opposite of the
-    // lesson `--claude-program` above teaches, so the difference has to be
-    // stated rather than inferred: a git hook stub generated by a *release*
-    // build re-enters a *release* binary, so a subcommand that exists only in a
-    // debug build is a hook that exits 2 with "unrecognized subcommand" in every
-    // shipped configuration — which git reports as a hook failure and which
-    // therefore blocks every push, including the ones inside the namespace. The
-    // cfg on `--claude-program` removes a capability shaped like arbitrary code
-    // execution; hiding this one only keeps `--help` honest about what a user is
-    // meant to type.
+    // `#[cfg(debug_assertions)]` would be wrong.** A subcommand that exists only
+    // in a debug build is an entry point that exits 2 with "unrecognized
+    // subcommand" in every shipped configuration; hiding it only keeps `--help`
+    // honest about what a user is meant to type.
     /// Internal: envelope enforcement re-entered by a generated git hook
     #[command(hide = true)]
     Envelope {
@@ -453,8 +187,6 @@ pub enum Commands {
     // and the sandbox. Unlike `driverctl`, users type this one, so it is NOT
     // hidden. It is not `#[cfg]`-gated either: on a platform without the launcher
     // the handler returns a typed `UnsupportedPlatform`, not "unknown subcommand".
-    //
-    // Distinct from `Drive` (Phase 17), which stays untouched until Phase 31.
     /// Launch and control sandboxed driver runs
     Driver {
         #[command(subcommand)]
@@ -831,82 +563,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_drive_subcommand_is_absent_from_rendered_help() {
-        let mut cmd = Cli::command();
-        // `hide` covers the short and the long form; asserting only one would
-        // leave a regression in the other undetected.
-        let renderings = [
-            ("render_help", cmd.render_help().to_string()),
-            ("render_long_help", cmd.render_long_help().to_string()),
-        ];
-
-        for (form, rendered) in renderings.iter() {
-            // POSITIVE CONTROL first: without it, the absence assertion below
-            // cannot tell "the entry is gone" from "nothing was rendered".
-            assert!(
-                rendered
-                    .lines()
-                    .any(|line| is_subcommand_entry(line, "list")),
-                "{form} rendered no subcommand entry for the visible `list` command, so the \
-                 absence assertion below would certify nothing. Rendered help was:\n{rendered}"
-            );
-
-            let offending: Vec<&str> = rendered
-                .lines()
-                .filter(|line| is_subcommand_entry(line, "drive"))
-                .collect();
-            assert!(
-                offending.is_empty(),
-                "{form} carries a subcommand entry for `drive`: {offending:?}. An entry back in \
-                 `--help` re-advertises a surface that spawns a real agent against a real \
-                 repository as a thing a user is meant to type."
-            );
-        }
-    }
-
-    #[test]
-    fn the_drive_subcommand_still_parses_and_resolves() {
-        let parsed = Cli::try_parse_from([
-            "gsd-meta-manager",
-            "drive",
-            "demo",
-            "--command",
-            "/gsd-progress",
-            "--run-id",
-            "2026-09-17T12-00-00Z-aaaa",
-        ])
-        .unwrap_or_else(|e| {
-            panic!(
-                "`drive` no longer parses from argv: {e}\nHiding it from help must not remove it \
-                 from the parser — the TUI respawns itself as `current_exe() drive …` and that \
-                 child's stdio is /dev/null, so a subcommand that stopped parsing breaks the \
-                 respawn where nothing is visible."
-            )
-        });
-
-        // Struct shorthand, never a typed field line: `tests/spawn_seam_guard.rs`
-        // censuses `src/` WITHOUT stripping test modules and asserts this file
-        // declares exactly 8 `alias:` argv-to-identity declarations.
-        match parsed.command {
-            Some(Commands::Drive { alias, command, .. }) => {
-                assert_eq!(
-                    alias, "demo",
-                    "the hidden subcommand parsed but did not carry its positional alias"
-                );
-                assert_eq!(
-                    command.as_deref(),
-                    Some("/gsd-progress"),
-                    "the hidden subcommand parsed but did not carry its --command operand"
-                );
-            }
-            other => panic!(
-                "argv `drive demo --command …` resolved to {:?} instead of Commands::Drive",
-                other.is_some()
-            ),
-        }
-    }
-
     // ── The positional project target (quick 260930-vvk) ───────────────
 
     fn checked(args: &[&str]) -> Result<Cli, clap::Error> {
@@ -935,37 +591,6 @@ mod tests {
         );
         assert!(cli.config.is_some());
         assert_eq!(cli.target, None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_project_target_leaves_the_drive_respawn_argv_parsing() {
-        let argv = crate::driver::spawn::drive_argv(
-            std::path::Path::new("/cfg/config.json"),
-            "demo",
-            "/gsd-progress",
-            "run1",
-            None,
-        );
-        let cli = Cli::try_parse_checked_from(
-            std::iter::once(OsStringArg::from("gsd-meta-manager")).chain(argv),
-        )
-        .unwrap_or_else(|e| {
-            panic!(
-                "the TUI's own `--config X drive …` respawn argv no longer parses: {e}\nThat \
-                 child's stdio is /dev/null, so a parser regression here is invisible"
-            )
-        });
-        assert!(cli.config.is_some(), "the respawn's --config was dropped");
-        assert_eq!(cli.target, None, "the respawn argv grew a launch target");
-        match cli.command {
-            Some(Commands::Drive { alias, .. }) => assert_eq!(alias, "demo"),
-            other => panic!(
-                "the respawn argv resolved to {:?} instead of Commands::Drive; the TUI can no \
-                 longer launch its driver",
-                other.is_some()
-            ),
-        }
     }
 
     #[test]
@@ -1481,7 +1106,4 @@ mod tests {
             );
         }
     }
-
-    #[cfg(unix)]
-    type OsStringArg = std::ffi::OsString;
 }

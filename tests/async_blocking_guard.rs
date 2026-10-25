@@ -3,11 +3,12 @@
 //
 // One rule governs every assertion below: **a comment is not a guard; the test
 // is.** Until this file existed, the boundary between "a blocking syscall" and
-// "an `async fn` body" was held by prose — `src/driver/mod.rs` says *"No
-// blocking syscall inside an `async fn`"*, `src/driver/run.rs` says it three
-// more times, and `src/executor/claude.rs`'s module doc says why its one spawn
-// is exempt. Every one of those sentences is true today and none of them can
-// stop the next edit. This file can.
+// "an `async fn` body" was held by prose — the legacy driver's module docs said
+// *"No blocking syscall inside an `async fn`"* several times, and
+// `src/executor/claude.rs`'s module doc says why its one spawn is exempt. Every
+// one of those sentences was true and none of them could stop the next edit.
+// This file can. (The legacy `drive` run body those docs described was retired
+// in Phase 31; the rule and the guard outlive it.)
 //
 // **It is a lint, not a proof, and that is not a hedge — it is the accurate
 // description of what a lexical scanner can do.** It reads source text. It
@@ -22,7 +23,7 @@
 //
 // **Why it is worth having anyway, stated from an observation rather than a
 // theory.** The deadlock this discipline prevents was REPRODUCED, not
-// speculated about: `tests/driver_lock.rs:201-215` records the scenario in
+// speculated about: a retired driver-lock test recorded the scenario in
 // which a blocking advisory `flock` inside an `async fn` defeated
 // `tokio::time::timeout` outright on a current-thread runtime, because
 // `Timeout::poll` polls its inner future inline and a parked thread polls
@@ -97,54 +98,33 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// find them any other way.
 ///
 /// **This list is the direct consequence of the "lint, not a proof" limit, not
-/// a refutation of it.** Every blocking call this phase and Phase 17 actually
-/// added on a driver path sits behind a helper: `dry_run::build_report` makes
-/// two synchronous `git` calls, `establish_envelope` writes four envelope
-/// layers, `terminal_label` reads a whole journal, `lock::acquire` calls
-/// `flock`. A scanner that looked only for the syscalls in
-/// [`BLOCKING_MARKERS`] would walk every `async fn` in the driver and find
-/// nothing at all, then report green — which is precisely the vacuous gate this
-/// phase argues is worse than no gate.
+/// a refutation of it.** Every blocking call a driver path once added sat behind
+/// a helper, and a scanner that looked only for the syscalls in
+/// [`BLOCKING_MARKERS`] would walk every `async fn` and find nothing at all,
+/// then report green, which is precisely the vacuous gate this guard argues is
+/// worse than no gate.
 ///
 /// Naming them does not make the scanner able to see through a helper; it makes
 /// it able to see through *these* helpers. A new synchronous seam that nobody
 /// adds here is still invisible, and that residue is the honest ceiling.
 ///
-/// Seven of the thirteen are Phase 19's own: `hooks::install`, `write_settings`,
-/// `cred::build_env`, `record_and_check`, `scan_worktree`, `probe_protection`
-/// and `git_read_raw` all live under `src/envelope/` (`git_read_raw` in
-/// `src/state_reader/git_ops.rs`, reached from three envelope modules), and
-/// every one of them shells out to `git` or walks a worktree synchronously.
-/// They are named here so `grep -r envelope tests/async_blocking_guard.rs`
-/// finds this end of the link and not just the definitions.
+/// **Phase 31 re-measured this list.** Ten markers named helpers whose only
+/// `async fn` callers were in the retired `drive` path (`build_report(`,
+/// `preview_text(`, `build_routed_report(`, `build_goal_report(`,
+/// `establish_envelope(`, `terminal_label(`, `lock::acquire(`, `inbox::tail(`,
+/// `cred::build_env(`, `hooks::install(`); each stopped appearing anywhere
+/// under `src/` with its caller, so
+/// `every_named_blocking_helper_still_exists_in_the_tree` correctly refused the
+/// stale names and they were deleted. The seven that remain are Phase 19/20's
+/// envelope and snapshot seams that the executor and the launcher still reach.
 ///
 /// `every_named_blocking_helper_still_exists_in_the_tree` keeps this list from
 /// going stale: a rename that emptied a marker would otherwise look exactly
 /// like a clean run.
 const BLOCKING_HELPERS: &[&str] = &[
-    "build_report(",
-    // The driver's own preview entry point, added in Phase 20 when the dry-run
-    // grew a second mode. It wraps `build_report` / `build_routed_report`, so
-    // the two synchronous `git` calls are still there — only the name at the
-    // call site changed, and a marker that named only the old one would have
-    // silently stopped seeing the join-failure fallback it was written for.
-    "preview_text(",
-    "build_routed_report(",
-    // Phase 21's third report builder, and it makes the same two synchronous
-    // `git` calls its two siblings above do — `working_tree_stat` and
-    // `push_refspecs`, on the same foreground preview path. Named here in the
-    // commit that introduced it, because this list's own doc is explicit that a
-    // new synchronous seam nobody adds here stays invisible to the scanner.
-    "build_goal_report(",
-    "establish_envelope(",
-    "terminal_label(",
-    "lock::acquire(",
     "JournalRun::start(",
-    "inbox::tail(",
     "probe_protection(",
     "scan_worktree(",
-    "cred::build_env(",
-    "hooks::install(",
     "write_settings(",
     "record_and_check(",
     "git_read_raw(",
@@ -152,21 +132,15 @@ const BLOCKING_HELPERS: &[&str] = &[
     // opened: `RunSnapshot::capture` does full-tree file I/O and shells out to
     // git twice — its own doc says so in as many words — and it has been
     // reachable from an `async fn` since Phase 15 without appearing here at all.
-    // Phase 20 is what made naming it urgent: the iteration loop captures a
-    // snapshot before **every** command rather than twice per run, and the
-    // thread it must not park is the one polling the terminate arm. A driver
-    // that stops answering the kill switch during a long observe is a driver the
-    // user experiences as ignoring the stop.
     "RunSnapshot::capture(",
 ];
 
 /// The hand-off shapes that move blocking work off the runtime thread.
 ///
 /// Once one of these appears, the scanner stops reporting until the block it
-/// opened closes. That is deliberately generous: the canonical wrapper in
-/// `src/driver/mod.rs`'s dry-run arm — `spawn_blocking(move || { … })` — must
-/// read as compliant rather than as a violation, and so must every one of the
-/// nine in `src/driver/run.rs`.
+/// opened closes. That is deliberately generous: the canonical wrapper,
+/// `spawn_blocking(move || { … })`, must read as compliant rather than as a
+/// violation.
 const HANDOFF_MARKERS: &[&str] = &["spawn_blocking", "block_in_place"];
 
 /// Why in-source `#[cfg(test)]` modules are outside the walk.
@@ -181,9 +155,8 @@ const HANDOFF_MARKERS: &[&str] = &["spawn_blocking", "block_in_place"];
 ///
 /// The alternative — following `tests/spawn_seam_guard.rs` and allowlisting at
 /// whole-file granularity — was rejected after being measured: it would have
-/// put `src/app.rs`, `src/driver/kill.rs` and `src/driver/mod.rs` on the
-/// allowlist for their test bodies alone, and `src/driver/mod.rs` is where
-/// `drive` lives. An allowlist that blinds the guard to the function D-29 was
+/// put `src/app.rs` and `src/driver/kill.rs` on the allowlist for their test
+/// bodies alone. An allowlist that blinds the guard to the functions D-29 was
 /// written about is not an allowlist, it is an off switch.
 const TEST_MODULE_EXCLUSION: &str = "in-source #[cfg(test)] modules are not walked";
 
@@ -195,11 +168,10 @@ const TEST_MODULE_EXCLUSION: &str = "in-source #[cfg(test)] modules are not walk
 /// multi-hour run comes to freeze a frame the user cannot escape.
 ///
 /// Entries are `(path, marker)` pairs rather than bare paths, and the extra
-/// column is doing real work: `src/driver/run.rs` is the run body, the most
-/// safety-relevant `async` code in this tree, and allowlisting the whole file
-/// for its two join-failure fallbacks would leave every future blocking call in
-/// it unreported. Scoping the exemption to the marker that is actually
-/// deliberate keeps the rest of the file guarded.
+/// column is doing real work: allowlisting a whole file for one join-failure
+/// fallback would leave every future blocking call in it unreported. Scoping
+/// the exemption to the marker that is actually deliberate keeps the rest of
+/// the file guarded.
 ///
 /// The constant lives in this file rather than in a separate data file, matching
 /// the `SPAWN_ALLOWLIST` convention exactly — one guard shape in this tree, not
@@ -224,34 +196,6 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
     // `codex exec` is long-lived, `spawn`ed and then read asynchronously.
     // `Command::spawn` forks and execs; it does not wait.
     ("src/executor/codex.rs", ".spawn()"),
-    // The dry-run preview's join-failure fallback. The report is built inside
-    // `spawn_blocking` on every healthy path; this inline re-run is reachable
-    // only if that task panicked or the runtime is shutting down, and it exists
-    // so a preview stays honest on a path no healthy run reaches.
-    //
-    // **The marker moved from `build_report(` to `preview_text(` in Phase 20**,
-    // in the same commit as the code that moved it. The dry-run gained a second
-    // mode, so the two builders sit behind one entry point and the async fn no
-    // longer names `build_report` at all. `no_allowlist_entry_is_stale` is what
-    // caught the drift: the old entry stopped suppressing anything, which is
-    // precisely the "wider than the truth it describes" state it refuses — and
-    // the blocking work had not gone anywhere, only its name had.
-    ("src/driver/mod.rs", "preview_text("),
-    // The terminal record's two join-failure fallbacks, the same shape and the
-    // same reason: the label is read inside `spawn_blocking`, and the inline
-    // re-run keeps a park reason on `run.json` rather than losing it merely
-    // because a task failed to join. A run that ends with no record at all is
-    // the one failure OBS-01 cannot tolerate.
-    ("src/driver/run.rs", "terminal_label("),
-    // The per-iteration snapshot capture's join-failure fallback, the same shape
-    // and the same reason as the two above it: every healthy iteration captures
-    // inside `spawn_blocking`, and this inline re-run is reachable only if that
-    // task panicked or the runtime is shutting down. It re-runs rather than
-    // yielding a default snapshot on purpose — a default compares unequal to
-    // everything and would silently reset the no-progress evidence, which is
-    // CTRL-06's stall detector switched off on the one path no healthy run
-    // reaches.
-    ("src/driver/run.rs", "RunSnapshot::capture("),
     // The executor's own capture fallback, which is the hole this marker was
     // added to close. It has been unreported since Phase 15 — not because it was
     // judged acceptable, but because nothing named the helper — and the entry is
@@ -266,14 +210,25 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
 /// Non-vacuity in the register `tests/spawn_seam_guard.rs` already uses: an
 /// audit that walked nothing passes for the wrong reason, and a brace-tracking
 /// bug that quietly stopped entering `async fn` bodies would look exactly like
-/// a clean tree. Roughly 1700 production `async` body lines exist at the time of
-/// writing; the floor is set well below that so ordinary churn does not trip it,
-/// and well above zero so a broken walk does.
+/// a clean tree. Roughly 2400 production `async` body lines exist at the time of
+/// writing (Phase 31 re-measure after retiring `drive`: 2380; the earlier
+/// "roughly 1700" figure was already stale); the floor is set well below that so
+/// ordinary churn does not trip it, and well above zero so a broken walk does.
+/// It was 800 before Phase 31 and is unchanged: the measured value stayed far
+/// above it, so there was nothing to lower.
 const MIN_ASYNC_BODY_LINES: usize = 800;
 
-/// The two files D-29 is actually about. If neither has an `async fn` body the
-/// walk found, the audit is not auditing the thing it was written for.
-const REQUIRED_ASYNC_FILES: &[&str] = &["src/driver/mod.rs", "src/driver/run.rs"];
+/// The files D-29 is actually about: the TUI's event loop and the launcher's
+/// egress proxy, which are the long-lived `async` surfaces that must never park
+/// a runtime thread. (It named `src/driver/mod.rs` and `src/driver/run.rs`,
+/// the legacy `drive` entry and run body, until Phase 31 retired them.) If none
+/// of them has an `async fn` body the walk found, the audit is not auditing the
+/// thing it was written for.
+const REQUIRED_ASYNC_FILES: &[&str] = &[
+    "src/main.rs",
+    "src/main_loop.rs",
+    "src/launcher/egress/mod.rs",
+];
 
 /// One reported violation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,8 +294,7 @@ fn calls_marker(line: &str, marker: &str) -> bool {
 /// assertion message must not be reported as a call.
 ///
 /// A raw string that spans lines is not handled; there is none in production
-/// code today, and the two in `src/driver/run.rs` sit inside the test module
-/// this walk skips.
+/// code today (the only ones sit inside test modules this walk skips).
 fn strip_literals(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
@@ -473,7 +427,7 @@ enum Position {
     /// Treating the declaration line as the body's start makes `depth <= base`
     /// true immediately and the body is left on the line it was entered — a bug
     /// that silently exempts every function whose parameters do not fit on one
-    /// line, which is most of the ones in `src/driver/run.rs`.
+    /// line, which was most of the ones in the retired `drive` run body.
     Signature(i32),
     /// Inside the body, which started at this brace depth.
     Body(i32),
@@ -661,12 +615,12 @@ fn every_blocking_call_inside_an_async_fn_is_handed_off_or_allowlisted() {
         offenders.is_empty(),
         "a known-blocking call appears lexically inside an `async fn` body with no \
          intervening hand-off. There are exactly two correct responses and neither is \
-         weakening the marker set: wrap the call in `tokio::task::spawn_blocking` — \
-         `src/driver/mod.rs`'s dry-run arm is the canonical shape, clone-not-move and all \
-         — or, if the block is deliberate, add a `(file, marker)` entry to \
+         weakening the marker set: wrap the call in `tokio::task::spawn_blocking` \
+         (clone, do not move, what the closure borrows) \
+         or, if the block is deliberate, add a `(file, marker)` entry to \
          `ASYNC_BLOCKING_ALLOWLIST` in this file with a one-line reason, in the SAME \
          commit as the code it covers. The deadlock this prevents was observed rather \
-         than theorised (`tests/driver_lock.rs:201-215`, D-29). Offending lines:{}",
+         than theorised (see this file's header, D-29). Offending lines:{}",
         render(&offenders)
     );
 
@@ -685,9 +639,9 @@ fn every_blocking_call_inside_an_async_fn_is_handed_off_or_allowlisted() {
         assert!(
             with_async.iter().any(|path| path == required),
             "the audit found no `async fn` body in {required}, which is one of the two \
-             files D-29 was written about. A guard that does not reach `drive` and the run \
-             body is not guarding the boundary it claims to. Files with async bodies: \
-             {with_async:?}"
+             files D-29 is about. A guard that does not reach the TUI event loop and the \
+             launcher's egress proxy is not guarding the boundary it claims to. Files \
+             with async bodies: {with_async:?}"
         );
     }
 }
@@ -819,7 +773,7 @@ fn the_non_vacuity_floor_counts_real_async_bodies_rather_than_reporting_a_consta
 }
 
 #[test]
-fn the_snapshot_capture_marker_covers_both_of_the_trees_inline_captures() {
+fn the_snapshot_capture_marker_covers_the_trees_inline_capture() {
     // Phase 20's plan expected to ADD the snapshot-capture coverage here. It was
     // already added — by plan 20-01, in the same commit as the loop that made it
     // urgent — so this test pins the coverage rather than re-adding it, and
@@ -832,11 +786,10 @@ fn the_snapshot_capture_marker_covers_both_of_the_trees_inline_captures() {
     );
 
     // **`capture_snapshot(` is deliberately NOT a marker**, and that is the
-    // whole finding. Both spellings of it — `src/executor/claude.rs:747` and
-    // `src/driver/run.rs:1401` — are `async fn`s that hand the work to
-    // `spawn_blocking` internally. Naming them would report three call sites
+    // whole finding. It is an `async fn` (`src/executor/claude.rs`) that hands
+    // the work to `spawn_blocking` internally. Naming it would report call sites
     // that are already correct, and the only way to make the suite green again
-    // would be three allowlist entries suppressing non-problems. An allowlist
+    // would be allowlist entries suppressing non-problems. An allowlist
     // that grows for calls that were never violations is exactly the silent
     // widening CTRL-06 forbids.
     assert!(
@@ -845,16 +798,15 @@ fn the_snapshot_capture_marker_covers_both_of_the_trees_inline_captures() {
          would force allowlist entries for compliant code"
     );
 
-    // Both inline re-runs are the join-failure fallbacks, one per capture site,
-    // and each is allowlisted at marker granularity rather than by file.
-    for file in ["src/driver/run.rs", "src/executor/claude.rs"] {
-        assert!(
-            ASYNC_BLOCKING_ALLOWLIST
-                .iter()
-                .any(|(path, marker)| *path == file && *marker == "RunSnapshot::capture("),
-            "{file}'s inline join-failure capture must carry a declared entry"
-        );
-    }
+    // The inline re-run is the join-failure fallback of the capture site that
+    // remains, allowlisted at marker granularity rather than by file.
+    let file = "src/executor/claude.rs";
+    assert!(
+        ASYNC_BLOCKING_ALLOWLIST
+            .iter()
+            .any(|(path, marker)| *path == file && *marker == "RunSnapshot::capture("),
+        "{file}'s inline join-failure capture must carry a declared entry"
+    );
 }
 
 #[test]
@@ -882,8 +834,7 @@ fn the_scanner_reports_a_planted_blocking_call_and_spares_a_handed_off_one() {
     assert_eq!(hits[0].marker, "fs::read_to_string(");
     assert!(examined > 0, "the body must have been examined at all");
 
-    // The same call, handed off. This is the shape `src/driver/run.rs` uses
-    // nine times over; reporting it would make the guard unusable and it would
+    // The same call, handed off. This is the compliant shape; reporting it would make the guard unusable and it would
     // be switched off, which is the failure mode this file exists inside a
     // phase that argues about.
     let handed_off = lines(&[
@@ -902,7 +853,7 @@ fn the_scanner_reports_a_planted_blocking_call_and_spares_a_handed_off_one() {
     );
 
     // And the hand-off must not extend past the block it opened: the
-    // join-failure fallback in `src/driver/mod.rs` sits in a `match` arm on the
+    // join-failure fallback in `src/executor/claude.rs` sits in a `match` arm on the
     // task's RESULT, outside the closure, and it is reported (and then
     // allowlisted) rather than swallowed.
     let fallback = lines(&[

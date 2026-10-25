@@ -121,67 +121,6 @@ pub(super) fn muted_style() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
-// ── The terminal-state label vocabulary (OBS-05, D-13) ─────────────────────
-
-/// The outcome states a run record's `outcome` label can name, as a **typed** value.
-///
-/// **What is left of it (Phase 31, D-03).** The Driver tab no longer renders legacy
-/// journal runs, so the glyph/word table and the live-verdict arms that fed it are
-/// gone. What stays is the label parser, because `driver::run`'s label-vocabulary
-/// test still asserts that every word `spawn_failure_label` writes is one this
-/// parser recognises. It goes with that test when `driver::run` is retired
-/// (`[inferred — audit]`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalState {
-    /// `RunOutcome::SucceededWithChanges`.
-    Succeeded,
-    /// `RunOutcome::SucceededNoChanges`. **Its own state, not a flavour of
-    /// success**: the envelope said success while nothing moved on disk.
-    SucceededNoChanges,
-    /// `RunOutcome::Failed`.
-    Failed,
-    /// `RunOutcome::PermissionDenied`.
-    PermissionDenied,
-    /// `RunOutcome::TimedOut` — the wall-clock cap.
-    TimedOut,
-    /// `RunOutcome::Stalled` — the idle cap; the stuck detector proper.
-    Stalled,
-    /// `RunOutcome::CapabilityRefused` — the CLI failed the capability gate.
-    CapabilityRefused,
-    /// `RunOutcome::SpawnFailed`.
-    SpawnFailed,
-    /// `RunOutcome::Killed` — the user stopped it.
-    Killed,
-    /// Neither an observation nor a recognised outcome label is on disk.
-    ///
-    /// **Not a crash and not a success.** Manufacturing either out of an absence
-    /// of evidence is the CR-05 defect in a new place.
-    Unrecorded,
-}
-
-impl TerminalState {
-    /// The state an outcome **label** names.
-    ///
-    /// The label is what `run.json` and `JournalEvent::RunEnded` actually carry,
-    /// written by `driver::run::outcome_label` from the derived outcome. A label
-    /// this build has never seen is [`Unrecorded`](Self::Unrecorded) rather than
-    /// a guess.
-    pub fn from_label(label: Option<&str>) -> Self {
-        match label {
-            Some("succeeded_with_changes") => Self::Succeeded,
-            Some("succeeded_no_changes") => Self::SucceededNoChanges,
-            Some("failed") => Self::Failed,
-            Some("permission_denied") => Self::PermissionDenied,
-            Some("timed_out") => Self::TimedOut,
-            Some("stalled") => Self::Stalled,
-            Some("capability_refused") => Self::CapabilityRefused,
-            Some("spawn_failed") => Self::SpawnFailed,
-            Some("killed") => Self::Killed,
-            _ => Self::Unrecorded,
-        }
-    }
-}
-
 fn parse_rfc3339(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
@@ -1234,62 +1173,6 @@ mod tests {
             assert!(
                 rendered.starts_with("\u{2500}\u{2500} output"),
                 "{rendered:?}"
-            );
-        }
-    }
-
-    // ── The terminal-state label vocabulary (OBS-05, D-13) ─────────────────
-
-    /// The vocabulary written by the driver and the vocabulary read by the
-    /// renderer are a **string protocol across a process boundary**. Spelling
-    /// the labels out a second time here would produce a test that agrees with
-    /// itself while disagreeing with disk, so this maps every `RunOutcome`
-    /// through the driver's own labeller.
-    #[cfg(unix)]
-    #[test]
-    fn the_render_vocabulary_is_the_one_the_driver_actually_writes() {
-        use crate::executor::RunOutcome;
-        use std::time::Duration;
-
-        let outcomes = [
-            RunOutcome::SucceededWithChanges {
-                turns: Vec::new(),
-                total_cost_usd: None,
-            },
-            RunOutcome::SucceededNoChanges {
-                turns: Vec::new(),
-                total_cost_usd: None,
-            },
-            RunOutcome::Failed {
-                reason: "the agent exited non-zero".to_string(),
-                subtype: None,
-                terminal_reason: None,
-                exit_code: Some(1),
-            },
-            RunOutcome::PermissionDenied {
-                denials: Vec::new(),
-            },
-            RunOutcome::Killed { turns: Vec::new() },
-            RunOutcome::TimedOut {
-                after: Duration::from_secs(60),
-            },
-            RunOutcome::Stalled {
-                idle_for: Duration::from_secs(60),
-            },
-            RunOutcome::CapabilityRefused {
-                missing: vec!["stream-json".to_string()],
-            },
-            RunOutcome::SpawnFailed {
-                reason: "no such file".to_string(),
-            },
-        ];
-
-        for outcome in &outcomes {
-            let label = crate::driver::run::outcome_label(outcome);
-            assert_ne!(
-                TerminalState::from_label(Some(label)),
-                TerminalState::Unrecorded,
-                "the renderer has never been taught the label {label:?}"
             );
         }
     }

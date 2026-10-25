@@ -24,10 +24,8 @@ categories = ["command-line-utilities"]
 # entry to the package root. The entries MUST be anchored: the unanchored
 # `assets/` also matched src/driver_templates/assets/ and src/launcher/assets/,
 # which hold `include_str!` targets, and the v1.15.0 publish died at
-# `failed to verify package tarball`. Anchoring also starts shipping the
-# tests/fixtures/injection-corpus/.planning/ files and that directory's
-# CLAUDE.md: synthetic test fixtures, already public in the GitHub repo, which
-# the crate's own tests read.
+# `failed to verify package tarball`. The anchored `/CLAUDE.md` excludes only
+# the root one; any fixture CLAUDE.md under tests/ ships with the crate.
 exclude = ["/.planning/", "/CLAUDE.md", "/assets/"]
 
 [dependencies]

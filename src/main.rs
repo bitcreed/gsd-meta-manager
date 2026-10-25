@@ -8,7 +8,6 @@ use event::EventBus;
 use gsd_meta_manager::app::App;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
 use gsd_meta_manager::config::{load_config, save_config, Config};
-use gsd_meta_manager::driver::{drive, DriveArgs, RawDriveArgs};
 use gsd_meta_manager::main_loop::{
     pump, ExecEvent, PumpOutcome, EXEC_BATCH, EXEC_CHANNEL_CAPACITY,
 };
@@ -368,79 +367,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        // The two `#[cfg(debug_assertions)]` fields below are D-30/WR-16: the
-        // agent-override flags have no parser entry in a release build, so this
-        // arm must not name them there either. The attribute rides the pattern
-        // field and the struct-expression field rather than forking this arm in
-        // two — one arm that goes out of sync with the other is exactly the bug
-        // a cfg is supposed to prevent.
-        Some(Commands::Drive {
-            alias,
-            command,
-            target_phase,
-            max_steps,
-            wall_clock_cap_secs,
-            max_escalations,
-            approved_plan,
-            run_id,
-            dry_run,
-            goal,
-            #[cfg(debug_assertions)]
-            claude_program,
-            #[cfg(debug_assertions)]
-            claude_args,
-        }) => {
-            // This arm is by construction BEFORE `tui::init()` in the `None`
-            // arm below, which is the whole of "the driver never touches
-            // ratatui" — no new mechanism, just the position in this match.
-            let config = load_config(&config_path)?;
-            // **The parse boundary, and it is the ONLY route from argv into a
-            // `DriveArgs`.** Clap's fields are raw `String`s — clap parses a
-            // command line, it does not judge payloads — so `RawDriveArgs` is
-            // what crosses, and `DriveArgs::from_argv` is what judges. A value
-            // carrying nothing visible is refused HERE, before `drive` is
-            // entered and therefore before any file, lock, journal or run
-            // directory can exist, identically for `--dry-run` and a real run
-            // because the refusal fires before a `DriveArgs` exists for
-            // `dry_run` to be read off.
-            let raw = RawDriveArgs {
-                alias,
-                command,
-                target_phase,
-                max_steps,
-                wall_clock_cap_secs,
-                max_escalations,
-                approved_plan,
-                run_id,
-                dry_run,
-                goal,
-                #[cfg(debug_assertions)]
-                claude_program,
-                #[cfg(debug_assertions)]
-                claude_args,
-            };
-            let args = match DriveArgs::from_argv(raw) {
-                Ok(args) => args,
-                Err(err) => {
-                    // The same house shape the `drive` refusal below uses:
-                    // user-facing refusals in this binary print and exit, they
-                    // do not bubble as an anyhow chain.
-                    eprintln!("Error: {}", err);
-                    std::process::exit(1);
-                }
-            };
-            if let Err(err) = drive(args, &config).await {
-                // The `Add` arm's house shape: user-facing refusals in this
-                // binary print and exit, they do not bubble as an anyhow chain.
-                eprintln!("Error: {}", err);
-                std::process::exit(1);
-            }
-        }
-        // Like the `Drive` arm above, this one is BEFORE `tui::init()` by
-        // construction — and here the position is doing more work than there. A
-        // git hook's stdout and stderr belong to the pushing git process; a
-        // terminal put into raw mode by ratatui on the way past would corrupt
-        // the very output that carries the refusal.
+        // This arm is BEFORE `tui::init()` by construction, and the position is
+        // doing real work. A git hook's stdout and stderr belong to the pushing
+        // git process; a terminal put into raw mode by ratatui on the way past
+        // would corrupt the very output that carries the refusal.
         //
         // **The envelope re-entry arms judge their alias and FAIL CLOSED**
         // (D-17-2, T-21-17-07). The generated hook stubs pass the alias they

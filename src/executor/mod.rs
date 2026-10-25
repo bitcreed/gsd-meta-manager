@@ -278,6 +278,10 @@ impl DrivableProject {
     /// signature, so each spawn site reads it from the one value it already
     /// must hold to spawn at all. Consuming `self` keeps this from being a
     /// constructor: it can only re-label a token that passed the gate.
+    // Callerless since Phase 31 retired `drive` (its only caller). The executor
+    // is kept in the tree for held plan 31-07 (D-04) to delete or keep, so the
+    // lint is silenced here rather than the method removed.
+    #[allow(dead_code)]
     pub(crate) fn with_runtime(self, runtime: runtime::AgentRuntime) -> Self {
         Self { runtime, ..self }
     }

@@ -926,4 +926,113 @@ mod tests {
             ),
         }
     }
+
+    // ── The synthesised fixture, and the label that keeps it honest ─────────
+    //
+    // Moved here from the retired `tests/driver_rate_limit.rs` (Phase 31): those
+    // three tests never entered through `drive`; they pin the transcript
+    // directory this module's own fixtures come from, so they outlive the file
+    // that used to hold them.
+
+    const TRANSCRIPT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/transcripts");
+    const REJECTED_FIXTURE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/transcripts/09-rate-limit-rejected.ndjson"
+    );
+    const TRANSCRIPT_README: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/transcripts/README.md"
+    );
+
+    #[test]
+    fn every_line_of_the_synthesised_fixture_parses_through_the_shipped_parser() {
+        let lines: Vec<&str> = T09.lines().collect();
+        assert!(
+            lines.len() >= 4,
+            "the fixture must carry the whole envelope sequence a real capture does \
+             — init, the quota event, the replay and the terminal result — or it \
+             proves nothing about how the driver reads one. Got {} lines",
+            lines.len()
+        );
+
+        for (index, line) in lines.iter().enumerate() {
+            match parse_line(line) {
+                Envelope::Parsed { .. } => {}
+                other => panic!(
+                    "line {} of the synthesised fixture did not parse, so the fixture \
+                     does not match the wire it claims to: {other:?}",
+                    index + 1
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_synthesised_fixture_matches_the_stated_ndjson_format() {
+        let raw = std::fs::read_to_string(REJECTED_FIXTURE_PATH).expect("the fixture is readable");
+
+        assert!(
+            raw.ends_with('\n') && !raw.ends_with("\n\n"),
+            "the directory's README states the format: one JSON object per line, ONE \
+             trailing newline, no blank lines. A missing newline makes the last line \
+             invisible to a line-oriented reader and a second one makes an empty \
+             line the parser is then asked to explain"
+        );
+        for (index, line) in raw.lines().enumerate() {
+            assert!(
+                !line.trim().is_empty(),
+                "line {} is blank, and the stated format has none",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn the_transcript_readme_labels_the_synthesised_file_and_its_inventory_agrees_with_disk() {
+        let readme = std::fs::read_to_string(TRANSCRIPT_README).expect("the README is readable");
+
+        assert!(
+            !readme.contains("Every `.ndjson` file in this directory is a **real capture**"),
+            "the opening contract used to assert that every file here is a capture. \
+             That became FALSE the moment a synthesised one landed, and a contract \
+             left to be discovered by a reader is the quiet lie this directory's own \
+             redaction record exists to prevent"
+        );
+        assert!(
+            readme.contains("09-rate-limit-rejected.ndjson"),
+            "the README must name the synthesised file"
+        );
+        assert!(
+            readme.contains("synthesised") || readme.contains("SYNTHESISED"),
+            "and must say plainly that it is synthesised, so no later reader mistakes \
+             it for a capture"
+        );
+
+        // The inventory, enforced in BOTH directions: a file the README does not
+        // describe is an undocumented fixture, and a file the README describes that
+        // is not on disk is a description of something that no longer exists.
+        let mut on_disk: Vec<String> = std::fs::read_dir(TRANSCRIPT_DIR)
+            .expect("the transcript directory is readable")
+            .map(|entry| entry.expect("a readable dir entry").file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".ndjson"))
+            .collect();
+        on_disk.sort();
+
+        let mut described: Vec<String> = readme
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .filter_map(|line| line.split('`').nth(1).map(str::to_string))
+            .filter(|name| name.ends_with(".ndjson"))
+            .collect();
+        described.sort();
+
+        assert_eq!(
+            described, on_disk,
+            "the README's per-file table and the directory's contents must agree. A \
+             fixture nobody described is one a later reader cannot tell a capture \
+             from a construction, and a described file that is gone is a claim about \
+             evidence that is not there"
+        );
+    }
 }

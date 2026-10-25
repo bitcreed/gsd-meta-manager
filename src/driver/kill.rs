@@ -464,6 +464,39 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
+    /// The positive half of `signal_group`, retargeted from the retired
+    /// `tests/driver_kill*.rs` (Phase 31, D-10 lock/kill exception): those drove
+    /// a real `drive` process and proved a stop reaches a process GROUP. Only the
+    /// refusal half survived in the unit tests above, so this pins the behaviour
+    /// the launcher's teardown relies on: a signal aimed at a leader's pgid
+    /// reaches a member of that group, not just the leader.
+    #[test]
+    fn a_signal_to_a_process_group_reaches_a_member_of_it() {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+        // `sh` leads a fresh group of its own and forks `sleep` into it; the
+        // trailing `; :` stops dash replacing the shell image with the sleep.
+        let mut leader = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("sleep 30 & wait; :")
+            .process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("`sh` is on PATH");
+        let pgid = leader.id();
+
+        signal_group(pgid, Signal::TERM).expect("a live group accepts the signal");
+
+        let status = leader.wait().expect("the group leader is reaped");
+        assert_eq!(
+            status.signal(),
+            Some(Signal::TERM.as_raw()),
+            "the leader must have died of the SIGTERM sent to its group, got {status:?}"
+        );
+    }
+
     #[test]
     fn an_undeterminable_liveness_never_answers_already_gone() {
         assert_eq!(stop_decision(Liveness::Alive), StopDecision::Signal);
