@@ -1388,12 +1388,12 @@ guard, check which of its threats (exfiltration, credential use, network reach) 
 allowlist as the superseding mechanism, and should be closed only once 28.1 lands
 [inferred — audit].
 
-**Plans**: 7 plans
+**Plans**: 1/7 plans executed
 
 Plans:
 
 **Wave 1** *(31-01 and 31-02 touch disjoint files; run them concurrently only under worktree isolation)*
-- [ ] 31-01-PLAN.md — survivors rewired first: push-step child stderr through SAFE-04 redaction, the PR ledger and its bound pins off the guard, `next` and rate-limit off the drive layer (RETIRE-01)
+- [x] 31-01-PLAN.md — survivors rewired first: push-step child stderr through SAFE-04 redaction, the PR ledger and its bound pins off the guard, `next` and rate-limit off the drive layer (RETIRE-01)
 - [ ] 31-02-PLAN.md — injection UI and the dashboard's legacy start/stop/opt-in keys retired; confirm screen trimmed to launcher actions; truthful opt-in prompts (RETIRE-01, RETIRE-02)
 
 **Wave 2** *(blocked on 31-02)*
@@ -1496,7 +1496,7 @@ Plans:
 | 28. Sandboxed Driver Launcher | 9/9 | Complete    | 2026-10-24 |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
 | 30. Driver Tab on DIRECTION.md | 9/9 | Complete    | 2026-10-24 |
-| 31. Retire Superseded Envelope & Goal-Layer Code | 0/0 | Not started | - |
+| 31. Retire Superseded Envelope & Goal-Layer Code | 1/7 | In Progress | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
 ## Backlog

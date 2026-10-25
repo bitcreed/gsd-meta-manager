@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
-stopped_at: Phase 31 context gathered
-last_updated: "2026-10-25T04:30:38.989Z"
+stopped_at: Completed 31-01-PLAN.md
+last_updated: "2026-10-25T04:49:58.096Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 31 execution started
-state_head: c3153081ce657a6fe5c62426cb5f8b43715042e8
+state_head: a18071579e468f8ec79ce4021ce6555efe108b7c
 progress:
   total_phases: 10
   completed_phases: 14
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 
 ## Current Position
 
-Status: Executing Phase 31
+Status: Ready to execute
   Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
   261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
   regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — EXECUTING
-Plan: 1 of 7
+Plan: 2 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -558,6 +558,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P12 | 16 min | 2 tasks | 4 files |
 | Phase 28.1 P13 | 15 min | 2 tasks | 3 files |
 | Phase 28.1 P14 | 20 min | 3 tasks | 1 files |
+| Phase 31 P01 | 17 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -791,6 +792,7 @@ Recent decisions affecting current work:
 - [Phase 28.1]: [inferred - audit] 28.1-12: home.rs host_tests module placed above mod tests (spawn_seam_guard forbids column-zero items after the marker)
 - [Phase 28.1]: [28.1-13] Driver row 4 ordered PLANTED, absent, auth; absent collapses to 'all 8' only on exact vocabulary equality; vocabulary moved to ungated launcher/mod.rs with host.rs re-export [inferred - audit]
 - [Phase 28.1]: 28.1-14: aarch64-apple-darwin run for real (rustup target add); merged tree green on all six cross-target commands [inferred — audit]
+- [Phase 31]: Plan 31-01: redact_captured wraps both persisted push-step stderr sites (SAFE-04); ledger.rs owns COUNT_DEADLINE_SECS=5 and its bound pins live in kept tests; ledger FIFO fixtures use rustix mknodat because tests/spawn_seam_guard.rs censuses spawn sites in src/ test modules — Keeps the push step's persisted output safe without a guard, and lets 31-05 delete hooks.rs without stranding a live control or its test; a sparse 202 MB file is used for the stat-only size-bound row [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -985,9 +987,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T03:08:16.749Z
-Stopped at: Phase 31 context gathered
-Resume file: .planning/phases/31-retire-superseded-envelope-goal-layer-code/31-CONTEXT.md
+Last session: 2026-10-25T04:49:56.565Z
+Stopped at: Completed 31-01-PLAN.md
+Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
 milestone stays open.
