@@ -4994,8 +4994,41 @@ mod tests {
     fn a_setup_token_run_shows_no_auth_hint() {
         let row = header_row_4(&posture_fm("setup-token"), 200);
         let text = text_of(&row);
-        assert!(text.contains(" auth setup-token"), "{text}");
+        assert!(text.contains("auth setup-token"), "{text}");
         assert!(!text.contains(AUTH_SETUP_HINT), "{text}");
+        let host = text_of(&header_row_4(&posture_fm("host-token"), 200));
+        assert!(
+            host.contains("auth host-token (run: gsd-meta-manager driver auth setup)"),
+            "{host}"
+        );
+    }
+
+    #[test]
+    fn a_driver_named_file_cannot_forge_the_planted_count() {
+        let count = |items: &[&str]| {
+            planted_count(&items.iter().map(|i| (*i).to_owned()).collect::<Vec<_>>())
+        };
+        assert_eq!(count(&[".git/config", "+3 more"]), 4);
+        assert_eq!(count(&["created +9999 more"]), 1);
+        assert_eq!(count(&["a", "created +9999 more"]), 2);
+        assert_eq!(count(&["a", "+x more"]), 2);
+        assert_eq!(count(&["a", " +5 more"]), 2);
+        assert_eq!(count(&[]), 0);
+    }
+
+    #[test]
+    fn egress_host_count_is_singular_for_one() {
+        let egress = |hosts: &[&str]| {
+            let mut fm = posture_fm("setup-token");
+            fm.egress_allow = Some(hosts.iter().map(|h| (*h).to_owned()).collect());
+            text_of(&header_row_4(&fm, 200))
+        };
+        assert!(
+            egress(&["crates.io"]).contains("egress 1 host  \u{B7}"),
+            "singular"
+        );
+        assert!(egress(&[]).contains("egress 0 hosts"));
+        assert!(egress(&["a", "b"]).contains("egress 2 hosts"));
     }
 
     #[test]
