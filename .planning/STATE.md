@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
-stopped_at: Completed 31-01-PLAN.md
-last_updated: "2026-10-25T04:49:58.096Z"
+stopped_at: Completed 31-02-PLAN.md
+last_updated: "2026-10-25T05:09:23.866Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 31 execution started
-state_head: a18071579e468f8ec79ce4021ce6555efe108b7c
+state_head: 6d976e47a9f3425cc9613ac43b6ef962bf041d7b
 progress:
   total_phases: 10
   completed_phases: 14
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — EXECUTING
-Plan: 2 of 7
+Plan: 3 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -559,6 +559,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P13 | 15 min | 2 tasks | 3 files |
 | Phase 28.1 P14 | 20 min | 3 tasks | 1 files |
 | Phase 31 P01 | 17 min | 3 tasks | 7 files |
+| Phase 31 P02 | 20min | 2 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -793,6 +794,9 @@ Recent decisions affecting current work:
 - [Phase 28.1]: [28.1-13] Driver row 4 ordered PLANTED, absent, auth; absent collapses to 'all 8' only on exact vocabulary equality; vocabulary moved to ungated launcher/mod.rs with host.rs re-export [inferred - audit]
 - [Phase 28.1]: 28.1-14: aarch64-apple-darwin run for real (rustup target add); merged tree green on all six cross-target commands [inferred — audit]
 - [Phase 31]: Plan 31-01: redact_captured wraps both persisted push-step stderr sites (SAFE-04); ledger.rs owns COUNT_DEADLINE_SECS=5 and its bound pins live in kept tests; ledger FIFO fixtures use rustix mknodat because tests/spawn_seam_guard.rs censuses spawn sites in src/ test modules — Keeps the push step's persisted output safe without a guard, and lets 31-05 delete hooks.rs without stranding a live control or its test; a sparse 202 MB file is used for the stat-only size-bound row [inferred - audit]
+- [Phase 31]: 31-02: dashboard o deleted with r and x; the Driver-tab o keeps the opt-in toggle reachable [inferred - audit] — D-03 names the dashboard o for deletion; research Open Question 1 suggested keeping it
+- [Phase 31]: 31-02: opt-in prompts state only what launcher::push::policy_for reads (PR caps, branch namespace, defaults without a record); no gate or run-start claim [inferred - audit] — C12/D-13: drive is being retired, so the spawn-gate and no-new-run sentences became false
+- [Phase 31]: 31-02: opt-in disclosure kept (read by the grant prompt); only its two gate sentences reworded; seam/executor paragraphs need a pass in 31-04/31-07 [inferred - audit] — the plan deletes it only if solely the Start prompt read it
 
 ### Roadmap Evolution
 
@@ -987,8 +991,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T04:49:56.565Z
-Stopped at: Completed 31-01-PLAN.md
+Last session: 2026-10-25T05:09:22.463Z
+Stopped at: Completed 31-02-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
