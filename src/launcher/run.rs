@@ -69,7 +69,7 @@ use super::egress::{
 };
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::home::HomeSetup;
-use super::host::{decide, detect, Posture};
+use super::host::{decide, detect, protections_absent, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::prompt::{self, ResolvedPrompt};
@@ -419,6 +419,9 @@ struct LaunchContext {
     user_stop: Arc<AtomicBool>,
     /// How the driver is contained, decided once from the host probes (D-28).
     posture: Posture,
+    /// Whether the host's `bwrap` supports the registry overlay (`protections_absent`,
+    /// D-27).
+    overlay: bool,
     /// The cap the monitor has tripped, shared with the store's gate (D-12, T-28-15).
     tripped: Tripped,
 }
@@ -727,6 +730,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         driver_root: root,
         user_stop,
         posture,
+        overlay: caps.overlay,
         tripped,
     };
     let mut session = session;
@@ -903,7 +907,8 @@ fn run_one_launch(
 ///
 /// `auth` names the token the launch holds; `egress_allow` is the CONNECT allowlist of
 /// a bwrap launch (possibly empty) and absent for a degraded one, which runs no proxy.
-/// 28.1-09 adds `protections_absent`.
+/// `protections_absent` lists what this launch lacks, from the posture and the host's
+/// measured overlay support (D-26, D-27).
 fn launch_posture(ctx: &LaunchContext) -> LaunchPosture {
     LaunchPosture {
         auth: Some(ctx.token.source.posture().to_owned()),
@@ -911,7 +916,12 @@ fn launch_posture(ctx: &LaunchContext) -> LaunchPosture {
             Posture::BwrapScope => Some(ctx.opts.egress_allow.clone()),
             Posture::Degraded { .. } => None,
         },
-        protections_absent: None,
+        protections_absent: Some(
+            protections_absent(&ctx.posture, ctx.overlay)
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect(),
+        ),
     }
 }
 
