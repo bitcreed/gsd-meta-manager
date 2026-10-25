@@ -3921,7 +3921,9 @@ mod tests {
             "\u{2500}\u{2500} connected ",
             // Header rows 3-6, each by its label.
             "control ",
-            "UNSANDBOXED missing: ",
+            // WR-09: the list follows the security groups when the run has any.
+            "UNSANDBOXED",
+            "missing: ",
             "prompt ",
             "  at ",
             "  last ",
