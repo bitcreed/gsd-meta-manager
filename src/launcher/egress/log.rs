@@ -87,6 +87,11 @@ impl EgressLog {
         })
     }
 
+    /// RED stub: the cap is not enforced yet.
+    pub fn open_capped(path: &Path, _cap: u64) -> io::Result<EgressLog> {
+        EgressLog::open(path)
+    }
+
     /// Append one line. A write failure is dropped: the log never stops traffic.
     pub async fn record(&self, kind: Kind, subject: &str, path: &str, status: u16, verdict: &str) {
         use tokio::io::AsyncWriteExt;
@@ -135,5 +140,92 @@ mod tests {
         assert_eq!(hostile.matches('\n').count(), 1, "{hostile:?}");
         assert!(hostile.ends_with('\n'));
         assert_eq!(hostile.trim_end().split('|').count(), 6, "{hostile:?}");
+    }
+
+    // -------------------------------------------------------------- the cap
+
+    const MARKER: &str = "log truncated: egress.log reached its size cap";
+
+    async fn record_n(log: &EgressLog, n: usize) {
+        for _ in 0..n {
+            log.record(Kind::Inference, "POST", "/v1/messages", 200, "forwarded")
+                .await;
+        }
+    }
+
+    /// A marker line is at most this long: six fields, the longest being the verdict.
+    fn marker_line_len() -> u64 {
+        line(
+            "2026-10-24T20:00:00.000Z",
+            Kind::Refused,
+            "-",
+            "-",
+            0,
+            MARKER,
+        )
+        .len() as u64
+    }
+
+    fn assert_whole_lines(text: &str) {
+        assert!(
+            text.is_empty() || text.ends_with('\n'),
+            "partial line: {text:?}"
+        );
+        for l in text.lines() {
+            assert_eq!(l.split('|').count(), 6, "not a whole record: {l:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_log_stops_at_its_cap_with_one_marker_line() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("egress.log");
+        let log = EgressLog::open_capped(&path, 300).expect("open");
+        record_n(&log, 20).await;
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            text.len() as u64 <= 300 + marker_line_len(),
+            "{} bytes",
+            text.len()
+        );
+        assert_eq!(text.matches("log truncated").count(), 1, "{text}");
+        assert!(text.lines().last().unwrap().ends_with(MARKER), "{text}");
+        assert_whole_lines(&text);
+    }
+
+    #[tokio::test]
+    async fn a_full_log_reopened_by_a_later_launch_stays_full() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("egress.log");
+        let first = EgressLog::open_capped(&path, 300).expect("open");
+        record_n(&first, 20).await;
+        drop(first);
+        let before = std::fs::metadata(&path).expect("stat").len();
+        let second = EgressLog::open_capped(&path, 300).expect("reopen");
+        record_n(&second, 5).await;
+        assert_eq!(std::fs::metadata(&path).expect("stat").len(), before);
+    }
+
+    #[tokio::test]
+    async fn concurrent_records_never_pass_the_cap() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("egress.log");
+        let log = std::sync::Arc::new(EgressLog::open_capped(&path, 2000).expect("open"));
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let log = std::sync::Arc::clone(&log);
+            tasks.push(tokio::spawn(async move { record_n(&log, 20).await }));
+        }
+        for task in tasks {
+            task.await.expect("task");
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            text.len() as u64 <= 2000 + marker_line_len(),
+            "{} bytes",
+            text.len()
+        );
+        assert_eq!(text.matches("log truncated").count(), 1, "{text}");
+        assert_whole_lines(&text);
     }
 }
