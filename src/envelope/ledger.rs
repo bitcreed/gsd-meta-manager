@@ -50,14 +50,18 @@ const LEDGER_FILE: &str = "pr-ledger.ndjson";
 /// module doc.
 const WINDOW_SECS: i64 = 24 * 60 * 60;
 
+/// The seconds the push step may spend establishing the count before the size bound
+/// refuses (`T-19-117`); carried over from the retired guard's registered timeout.
+const COUNT_DEADLINE_SECS: u64 = 5;
+
 /// The largest ledger [`record_and_check_in`] will read before refusing
 /// (`T-19-117`).
 ///
 /// # WHY A BOUND AT ALL, AND WHY IT REFUSES RATHER THAN READS LESS
 ///
 /// [`record_and_check_in`] reads this file WHOLE and [`tally`] walks every line,
-/// on the guard's registered critical path against
-/// [`super::hooks::GUARD_TIMEOUT_SECS`]. **The file is append-only and a command
+/// on the push step's critical path against a [`COUNT_DEADLINE_SECS`]-second budget
+/// (the budget the retired guard registered). **The file is append-only and a command
 /// the guard PERMITS can inflate it** — an append whose target arrives after a
 /// redirection operator was exit 0 before plan 19-29, and is exit 0 still at
 /// every spelling that rule gets no rule for. Measured on this machine:
@@ -168,8 +172,7 @@ pub fn ledger_path(alias: &str) -> Option<PathBuf> {
 
 /// [`ledger_path`] against an explicit envelope root.
 ///
-/// Split out for the same reason [`super::hooks::install_in`] is: a test may not
-/// write into the developer's real `~/.local/share`.
+/// Split out so a test may not write into the developer's real `~/.local/share`.
 pub fn ledger_path_in(root: &Path, alias: &str) -> Option<PathBuf> {
     super::envelope_dir_in(root, alias).map(|dir| dir.join(LEDGER_FILE))
 }
@@ -439,7 +442,7 @@ pub fn record_and_check_in(
                  archive or remove that file — it is the envelope's own record and no other \
                  command is affected by this refusal",
                 path.display(),
-                super::hooks::GUARD_TIMEOUT_SECS
+                COUNT_DEADLINE_SECS
             ));
         }
     }
@@ -982,6 +985,297 @@ mod tests {
             record_and_check_in(root.path(), "alpha", &bad, &policy(3, 1)).is_err(),
             "no window can be computed from an unparseable origin, and the guard turns \
              this error into a deny"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The size bound (T-19-117) and the kind bound (T-19-120), pinned over
+    // `record_and_check_in` itself. They were first written against the retired
+    // PreToolUse guard; the bounds live here, so the pins do too.
+    // -----------------------------------------------------------------------
+
+    /// One ledger line dated outside the 24 h window, so the cap is unaffected and a
+    /// measurement is about size and kind alone.
+    const OLD_LEDGER_LINE: &str = "{\"at\":\"2020-01-01T00:00:00Z\",\"run_id\":\"old-run\",\
+\"command\":\"gh pr create\",\"platform\":\"github\"}\n";
+
+    /// The ledger path under `root` for alias `alpha`, with its directory made.
+    fn ledger_file(root: &Path) -> PathBuf {
+        let path = ledger_path_in(root, "alpha").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        path
+    }
+
+    /// A REGULAR ledger of whole old lines totalling about `target_bytes`, returning
+    /// `(lines, bytes)`.
+    fn build_ledger(root: &Path, target_bytes: usize) -> (usize, u64) {
+        use std::io::Write as _;
+        let path = ledger_file(root);
+        let lines = target_bytes / OLD_LEDGER_LINE.len();
+        let chunk = OLD_LEDGER_LINE.repeat(1000);
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        let mut written = 0usize;
+        while written + 1000 <= lines {
+            out.write_all(chunk.as_bytes()).unwrap();
+            written += 1000;
+        }
+        for _ in written..lines {
+            out.write_all(OLD_LEDGER_LINE.as_bytes()).unwrap();
+        }
+        out.flush().unwrap();
+        (lines, std::fs::metadata(&path).unwrap().len())
+    }
+
+    fn line_count(path: &Path) -> usize {
+        std::fs::read_to_string(path).unwrap().lines().count()
+    }
+
+    /// Record one attempt of a run that is not `old-run`, under caps that leave room.
+    fn attempt(root: &Path) -> anyhow::Result<CapVerdict> {
+        record_and_check_in(
+            root,
+            "alpha",
+            &entry(&now_stamp(), "new-run"),
+            &policy(3, 1),
+        )
+    }
+
+    /// [`attempt`] on a spawned thread, waiting at most 12 s for it.
+    ///
+    /// A FIFO at the ledger path blocks the open or the read forever, so a regressed
+    /// kind bound would hang an in-process call and with it the whole test binary.
+    /// On a thread, the regression fails the test instead of hanging it.
+    #[cfg(unix)]
+    fn attempt_within_twelve_seconds(root: &Path) -> anyhow::Result<CapVerdict> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(attempt(&root));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(12)).expect(
+            "the call did not return within 12 s: the kind bound regressed and the \
+             ledger read is blocking",
+        )
+    }
+
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) {
+        let made = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .expect("mkfifo is on PATH");
+        assert!(
+            made.success(),
+            "the fixture creates a FIFO at the ledger path"
+        );
+    }
+
+    #[cfg(unix)]
+    fn assert_not_a_regular_file(refusal: &anyhow::Error, what: &str) {
+        let text = refusal.to_string();
+        assert!(
+            text.contains("not a regular file"),
+            "{what} must be refused as not a regular file: {text}"
+        );
+    }
+
+    #[test]
+    fn t_19_117_unbounded_work_is_bounded() {
+        // A 202,000,000-byte ledger took `gh pr create` 7.9 s to count, against a
+        // 5 s deadline, before the bound existed. Past the bound it is refused from
+        // the `stat` alone, before the append and before the read, so the length is
+        // all the check sees; a sparse file of that length is the same input to it.
+        let root = tempfile::tempdir().unwrap();
+        let path = ledger_file(root.path());
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(202_000_000)
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let refusal = attempt(root.path()).expect_err("a ledger past the bound is refused");
+        let millis = started.elapsed().as_millis();
+
+        let text = refusal.to_string();
+        assert!(text.contains("bytes, past the"), "{text}");
+        assert!(
+            text.contains(&format!("{COUNT_DEADLINE_SECS}-second deadline")),
+            "the refusal names the ledger's own deadline constant: {text}"
+        );
+        assert!(
+            millis * 4 < u128::from(COUNT_DEADLINE_SECS) * 1000,
+            "the refusal must be fast, which is the point of a stat before the read: \
+             {millis} ms against a {COUNT_DEADLINE_SECS} s deadline"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            202_000_000,
+            "a refused oversized ledger is neither read nor appended to"
+        );
+    }
+
+    #[test]
+    fn a_ledger_past_the_size_bound_refuses_while_one_just_under_it_still_counts() {
+        const UNDER_BYTES: usize = 1 << 20;
+        const OVER_BYTES: usize = 24 << 20;
+
+        // The control, driven first: a ledger just under the bound still permits AND
+        // still counts. Without it the row proves only that a large number refuses,
+        // which a bound of zero would also do.
+        let under = tempfile::tempdir().unwrap();
+        let (built, under_bytes) = build_ledger(under.path(), UNDER_BYTES);
+        let verdict = attempt(under.path())
+            .unwrap_or_else(|e| panic!("{under_bytes} bytes is under the bound: {e}"));
+        assert!(matches!(verdict, CapVerdict::Permit { .. }), "{verdict:?}");
+        assert_eq!(
+            line_count(&ledger_path_in(under.path(), "alpha").unwrap()),
+            built + 1,
+            "a permitted attempt must have been APPENDED, or the bound disarmed the cap"
+        );
+
+        // The row: a ledger past the bound is an `Err` (D-24), never a `Refuse`
+        // carrying `PrCapExceeded`, because the ledger was never tallied.
+        let over = tempfile::tempdir().unwrap();
+        let (_, over_bytes) = build_ledger(over.path(), OVER_BYTES);
+        assert!(over_bytes > MAX_LEDGER_BYTES);
+        let refusal = attempt(over.path()).expect_err("a ledger past the size bound is refused");
+        assert!(refusal.to_string().contains("bytes, past the"), "{refusal}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ledger_that_is_not_a_regular_file_is_refused_rather_than_read() {
+        let root = tempfile::tempdir().unwrap();
+        let path = ledger_file(root.path());
+        make_fifo(&path);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            0,
+            "the mechanism, pinned before the verdict: a FIFO stats at length 0, which is \
+             why it passes a bound written over size"
+        );
+
+        let refusal = attempt_within_twelve_seconds(root.path())
+            .expect_err("the ledger bound must bound KIND and not only size");
+        assert_not_a_regular_file(&refusal, "a FIFO");
+        assert!(
+            refusal.to_string().contains("named pipe (FIFO)"),
+            "the refusal names the kind it found: {refusal}"
+        );
+    }
+
+    #[test]
+    fn a_regular_ledger_just_under_the_bound_still_permits_and_still_counts() {
+        // Control 1: the half that keeps this a KIND bound rather than a disarmed cap.
+        let root = tempfile::tempdir().unwrap();
+        let (built, bytes) = build_ledger(root.path(), 8 * 1024 * 1024 - 8192);
+        assert!(
+            bytes < MAX_LEDGER_BYTES,
+            "the control ledger must be UNDER the bound, got {bytes} bytes, or this row \
+             measures the size refusal rather than the kind one"
+        );
+        let path = ledger_path_in(root.path(), "alpha").unwrap();
+        let before = line_count(&path);
+        assert_eq!(before, built);
+
+        let verdict = attempt(root.path()).unwrap();
+        assert!(matches!(verdict, CapVerdict::Permit { .. }), "{verdict:?}");
+        assert_eq!(
+            line_count(&path),
+            before + 1,
+            "and it must still COUNT: a kind check that refused a regular file, or a bound \
+             that stopped appending, would turn this red"
+        );
+    }
+
+    #[test]
+    fn a_fresh_envelope_root_with_no_ledger_at_all_still_permits() {
+        // Control 2, the one the suite depends on: a fresh root has no ledger file, so
+        // `metadata` returns `Err` and the check falls through to the append. A kind
+        // check placed OUTSIDE the `Ok` arm would refuse every first forge call.
+        let root = tempfile::tempdir().unwrap();
+        let path = ledger_path_in(root.path(), "alpha").unwrap();
+        assert!(
+            std::fs::metadata(&path).is_err(),
+            "there must be NO ledger file at all, so the `Err` arm is the one exercised"
+        );
+
+        let verdict = attempt(root.path()).unwrap();
+        assert_eq!(
+            verdict,
+            CapVerdict::Permit {
+                used_24h: 1,
+                used_run: 1
+            }
+        );
+        assert_eq!(
+            line_count(&path),
+            1,
+            "and it leaves exactly one ledger line"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_to_regular_ledger_is_permitted_and_counted() {
+        // `std::fs::metadata` FOLLOWS symlinks, which keeps a ledger that is a link to a
+        // regular file countable. The link-non-following variant would answer about
+        // the link, never a regular file, and turn the kind bound into a link ban.
+        let root = tempfile::tempdir().unwrap();
+        let path = ledger_file(root.path());
+        let real = root.path().join("real-ledger");
+        std::fs::write(&real, "").unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the ledger path must really be a SYMLINK, or this row measures an ordinary \
+             regular file and says nothing"
+        );
+
+        let verdict = attempt(root.path()).unwrap();
+        assert!(matches!(verdict, CapVerdict::Permit { .. }), "{verdict:?}");
+        assert_eq!(
+            line_count(&real),
+            1,
+            "and the attempt must have been counted THROUGH the link"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_ledger_kind_bound_is_non_vacuous_at_four_kinds_and_the_fresh_root_still_permits() {
+        // The non-vacuity half: without these, the symlink row passes against a check
+        // that was deleted entirely.
+        let fifo = tempfile::tempdir().unwrap();
+        make_fifo(&ledger_file(fifo.path()));
+        let refusal = attempt_within_twelve_seconds(fifo.path())
+            .expect_err("a FIFO at the ledger path is refused");
+        assert_not_a_regular_file(&refusal, "a FIFO");
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ledger_file(directory.path())).unwrap();
+        let refusal = attempt(directory.path()).expect_err("a directory is not a regular file");
+        assert_not_a_regular_file(&refusal, "a directory");
+
+        // A symlink to a character device: the link is FOLLOWED, and what it points at
+        // is not a regular file. That is the row proving the check is a KIND bound and
+        // not a link ban, from the other side.
+        let chardev = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/dev/null", ledger_file(chardev.path())).unwrap();
+        let refusal = attempt(chardev.path()).expect_err("a character device is refused");
+        assert_not_a_regular_file(&refusal, "a symlink to a character device");
+
+        // The control the whole suite depends on: a fresh root permits.
+        let fresh = tempfile::tempdir().unwrap();
+        let verdict = attempt(fresh.path()).unwrap();
+        assert!(matches!(verdict, CapVerdict::Permit { .. }), "{verdict:?}");
+        assert_eq!(
+            line_count(&ledger_path_in(fresh.path(), "alpha").unwrap()),
+            1,
+            "and it leaves exactly one ledger line"
         );
     }
 }
