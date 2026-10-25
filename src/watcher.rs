@@ -41,9 +41,10 @@ fn extract_project_root(path: &Path) -> Option<&Path> {
 /// **The dedup key is `(project_root, classification)`, not `project_root`,
 /// and that is a correctness fix rather than a tidy-up (D-10).** With a
 /// per-root key the *first* path for a project in a batch wins and every later
-/// path for that root is silently dropped. Once driver journal appends start
-/// arriving, a single 200 ms batch routinely carries a journal append **and** a
-/// `STATE.md` write — and if the journal append comes first, the state write is
+/// path for that root is silently dropped. Once driver writes start arriving
+/// (a launcher run's `DIRECTION.md` and `LOG.md`), a single 200 ms batch routinely
+/// carries a driver write **and** a `STATE.md` write — and if the driver write
+/// comes first, the state write is
 /// swallowed and the project never re-parses. Dedup on the pair and each root
 /// emits at most one driver-path event and one planning-path event per batch.
 /// Do not simplify this back to a set of roots.
@@ -162,7 +163,7 @@ mod tests {
     }
 
     const ROOT: &str = "/home/user/projects/myapp";
-    const RUN: &str = "2026-07-29T09-00-00Z-a3f9";
+    const RUN: &str = "20261020-a";
 
     fn fold(paths: &[PathBuf]) -> Vec<Action> {
         batch_actions(paths.iter().map(PathBuf::as_path))
@@ -179,15 +180,15 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_with_the_journal_first_still_emits_the_planning_event() {
+    fn a_batch_with_a_driver_run_path_first_still_emits_the_planning_event() {
         // The ordering is the whole point. Under the old per-root dedup the
         // FIRST path for a root won and every later path was dropped, so a
-        // batch shaped like this one — journal append at index 0, state write
+        // batch shaped like this one — a driver write at index 0, state write
         // at index 1 — silently lost the state write and the project never
         // re-parsed (D-10, RESEARCH Pitfall 6). Reordering this assertion to
         // accept a single action would re-admit that bug.
         let root = PathBuf::from(ROOT);
-        let journal = root.join(format!(".planning/meta-manager/runs/{RUN}/journal.jsonl"));
+        let journal = root.join(format!(".planning/meta-manager/drivers/{RUN}/DIRECTION.md"));
         let state_md = root.join(".planning/STATE.md");
 
         let actions = fold(&[journal.clone(), state_md.clone()]);
@@ -195,7 +196,7 @@ mod tests {
         assert_eq!(
             actions.len(),
             2,
-            "a journal append must not swallow the STATE.md write that follows it \
+            "a driver write must not swallow the STATE.md write that follows it \
              in the same batch; got {:?}",
             changed_paths(&actions)
         );
@@ -206,17 +207,38 @@ mod tests {
     }
 
     #[test]
-    fn two_journal_paths_in_one_batch_emit_one_driver_event() {
+    fn two_paths_of_one_driver_run_in_one_batch_emit_one_driver_event() {
         let root = PathBuf::from(ROOT);
         let actions = fold(&[
-            root.join(format!(".planning/meta-manager/runs/{RUN}/journal.jsonl")),
-            root.join(format!(".planning/meta-manager/runs/{RUN}/run.json")),
+            root.join(format!(".planning/meta-manager/drivers/{RUN}/DIRECTION.md")),
+            root.join(format!(".planning/meta-manager/drivers/{RUN}/LOG.md")),
         ]);
 
         assert_eq!(
             actions.len(),
             1,
-            "two writes under the same run collapse to one tail; got {:?}",
+            "two writes under the same run collapse to one refresh; got {:?}",
+            changed_paths(&actions)
+        );
+    }
+
+    /// Phase 31 (D-03): a write under the legacy `meta-manager/runs/` directory emits
+    /// nothing, at any depth, so a run a previous version left on disk cannot cause a
+    /// tail or a re-parse.
+    #[test]
+    fn a_legacy_runs_path_emits_no_event() {
+        let root = PathBuf::from(ROOT);
+        let run = format!(".planning/meta-manager/runs/{RUN}");
+        let actions = fold(&[
+            root.join(".planning/meta-manager/runs/.gitignore"),
+            root.join(".planning/meta-manager/runs/active"),
+            root.join(&run),
+            root.join(format!("{run}/journal.jsonl")),
+            root.join(format!("{run}/run.json")),
+        ]);
+        assert!(
+            actions.is_empty(),
+            "legacy run paths are inert; got {:?}",
             changed_paths(&actions)
         );
     }
@@ -225,7 +247,7 @@ mod tests {
     fn a_driver_path_and_a_planning_path_emit_two_events_for_one_root() {
         let root = PathBuf::from(ROOT);
         let state_md = root.join(".planning/STATE.md");
-        let journal = root.join(format!(".planning/meta-manager/runs/{RUN}/journal.jsonl"));
+        let journal = root.join(format!(".planning/meta-manager/drivers/{RUN}/DIRECTION.md"));
 
         // Planning first — the ordering the old shape happened to survive.
         let actions = fold(&[state_md.clone(), journal.clone()]);

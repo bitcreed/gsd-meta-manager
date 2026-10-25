@@ -81,8 +81,8 @@ pub struct TailCursor {
 /// when a lost event matters. Carrying `last_seq` beside the offset is what lets
 /// the next batch's check be seeded with [`seq_gaps_from`] (D-28).
 ///
-/// **`Copy` is load-bearing, not incidental.** `App::schedule_journal_tail`
-/// calls `.copied()` on its map lookup (PATTERNS note 4); a field that made this
+/// **`Copy` is load-bearing, not incidental.** Its callers `.copied()` it out of
+/// a map lookup (PATTERNS note 4); a field that made this
 /// type non-`Copy` — a `String`, a `Vec`, a path — would break that call site
 /// rather than merely widening the struct. `the_journal_cursor_is_copy` exists
 /// to fail loudly if that ever happens.
@@ -715,7 +715,7 @@ mod tests {
         assert!(seq_gaps(&[]).is_empty());
     }
 
-    /// Parse a batch of lines exactly as `App::schedule_journal_tail` does.
+    /// Parse a batch of lines exactly as the TUI's (since retired) journal tail did.
     fn records_of(read: &TailRead) -> Vec<JournalRecord> {
         read.lines
             .iter()
@@ -825,9 +825,8 @@ mod tests {
 
     /// `JournalCursor` must stay `Copy`.
     ///
-    /// `App::schedule_journal_tail` calls `.copied()` on its map lookup; a field
-    /// that made this type non-`Copy` would break that call site rather than
-    /// merely widening the struct. Binding the value twice is a compile-time
+    /// A caller that `.copied()`s it out of a map lookup breaks if a field makes
+    /// this type non-`Copy`, rather than merely widening the struct. Binding the value twice is a compile-time
     /// assertion — under a move-only type the second binding does not compile.
     #[test]
     fn the_journal_cursor_is_copy() {

@@ -103,186 +103,6 @@ pub fn parse_filter(input: &str) -> (String, FilterColumn) {
     }
 }
 
-/// Project one journal record into a live-output line, or `None` if it belongs
-/// somewhere other than the output pane (D-20, OBS-04).
-///
-/// The five classes are the UI-SPEC's event-kind rendering table, and the
-/// mapping is on `record.kind` — a plain `String`, because the reader
-/// deliberately does not go through the typed `JournalEvent`, so a kind this
-/// build has never seen still arrives with its payload intact (D-30).
-///
-/// **What is deliberately not buffered, and why that is not "losing lines".**
-/// `run_started`, `exec_started` and `cost` return `None`: they are the run
-/// header's data — the goal, the command, the started time, the cumulative cost
-/// — and they are rendered there rather than in the scrolling pane. Putting them
-/// in both would make the pane's first rows a duplicate of the header above it.
-/// The reserved kinds (`observed`, `decided`, `parked`) return `None` too, for a
-/// different reason: nothing emits them before Phase 20, and their surface is
-/// that phase's step timeline rather than this buffer.
-///
-/// **Every kind that can carry a diagnostic IS buffered**, because a pane that
-/// silently loses a `journal_truncated` or an `events_dropped` is exactly the
-/// "looks done but isn't" failure this phase enumerates by name.
-///
-/// **The text is composed, never `Debug`-rendered**, and it is not sanitised
-/// here: `DriverOutput::push_record` is the one append-time gate every string
-/// from disk passes through, and stripping twice would be two places to keep in
-/// agreement.
-///
-/// Pure, which is what makes the whole table assertable without a terminal (S6).
-pub fn driver_line_for_record(
-    record: &crate::journal::reader::JournalRecord,
-) -> Option<(crate::ui::screens::DriverLineKind, String)> {
-    use crate::ui::screens::DriverLineKind;
-
-    let text = |key: &str| -> String {
-        record
-            .rest
-            .get(key)
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
-    let number = |key: &str| -> u64 {
-        record
-            .rest
-            .get(key)
-            .and_then(|value| value.as_u64())
-            .unwrap_or_default()
-    };
-
-    match record.kind.as_str() {
-        "exec_event" => {
-            // `stderr` is present but secondary; every other stream — assistant,
-            // user, turn_completed, unknown, unparseable — is the common case
-            // and gets no marker, so injections and diagnostics stand out.
-            let kind = if text("stream") == "stderr" {
-                DriverLineKind::Stderr
-            } else {
-                DriverLineKind::Output
-            };
-            Some((kind, text("text")))
-        }
-        // The human's own words, echoed back into the stream they were steering.
-        "interjected" => Some((DriverLineKind::Injection, text("text"))),
-        // These two carry an id rather than the text — the driver correlates,
-        // the TUI does not (D-08) — so the line names the transition and the
-        // renderer pairs it with the message body it already holds.
-        "interjection_acted_on" => Some((
-            DriverLineKind::Injection,
-            format!("interjection acted on: {}", text("id")),
-        )),
-        "interjection_missed" => Some((
-            DriverLineKind::Injection,
-            format!("interjection missed: {} ({})", text("id"), text("reason")),
-        )),
-        "diagnostic" => Some((
-            DriverLineKind::Diagnostic,
-            format!("{}: {}", text("code"), text("detail")),
-        )),
-        "events_dropped" => Some((
-            DriverLineKind::Diagnostic,
-            format!("{} stream events were dropped", number("count")),
-        )),
-        "journal_truncated" => Some((
-            DriverLineKind::Diagnostic,
-            format!(
-                "journal truncated at {} bytes (cap {})",
-                number("bytes_written"),
-                number("cap")
-            ),
-        )),
-        // The visual full stop. `RunEnded.outcome` is the four-source
-        // derivation's answer and never the agent's prose (D-13).
-        "run_ended" => Some((
-            DriverLineKind::Terminal,
-            format!("run ended: {}", text("outcome")),
-        )),
-        "exec_finished" => {
-            let exit = record
-                .rest
-                .get("exit")
-                .and_then(|value| value.as_i64())
-                .map_or_else(
-                    || "no exit status".to_string(),
-                    |code| format!("exit {code}"),
-                );
-            Some((
-                DriverLineKind::Terminal,
-                format!("agent finished: {exit} after {}s", number("duration_s")),
-            ))
-        }
-        _ => None,
-    }
-}
-
-/// Fold one batch of journal records into the Driver tab's running tally.
-///
-/// The two facts here are the ones the run header and the step timeline need
-/// that the committed `run.json` does not carry — the cumulative cost and the
-/// number of turn boundaries — so they are read from the records as they arrive
-/// rather than by re-parsing a journal at render time.
-///
-/// **The tally is reset when the run id changes**, which is what stops one run's
-/// cost being displayed against another's. Both facts are evidence: `cost`
-/// records carry `cumulative_usd`, and a turn boundary is an `exec_event` whose
-/// stream is `turn_completed`. Neither is inferred from the agent's prose (D-13).
-///
-/// Pure, so the whole fold is assertable without a terminal (S6).
-pub fn update_driver_tally(
-    cache: &mut crate::ui::screens::ProjectViewCache,
-    run_id: &str,
-    records: &[crate::journal::reader::JournalRecord],
-) {
-    use crate::ui::screens::DriverRunTally;
-
-    let tally = match cache.driver_tally.as_mut() {
-        Some(tally) if tally.run_id == run_id => tally,
-        _ => {
-            cache.driver_tally = Some(DriverRunTally {
-                run_id: run_id.to_string(),
-                ..DriverRunTally::default()
-            });
-            cache.driver_tally.as_mut().expect("just assigned")
-        }
-    };
-
-    for record in records {
-        match record.kind.as_str() {
-            "cost" => {
-                if let Some(usd) = record
-                    .rest
-                    .get("cumulative_usd")
-                    .and_then(|value| value.as_f64())
-                {
-                    tally.cumulative_cost_usd = Some(usd);
-                }
-            }
-            "exec_event" => {
-                let is_boundary = record
-                    .rest
-                    .get("stream")
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|stream| stream == "turn_completed");
-                if is_boundary {
-                    tally.turn_boundaries = tally.turn_boundaries.saturating_add(1);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// The exact copy for an observed journal sequence gap (Copywriting Contract).
-///
-/// A gap means records the writer emitted were never read — the pane is missing
-/// lines and cannot recover them. **Surfacing it is the point.** Before this it
-/// reached a `tracing::warn!` and nothing else, i.e. a log file the user of a
-/// TUI never opens, while the pane presented itself as complete.
-pub fn journal_gap_line(gaps: usize) -> String {
-    format!("journal gap: {gaps} record(s) not read")
-}
-
 /// Whether the selected launcher run's heartbeat age needs a frame this tick (D-08).
 ///
 /// The age is `now − heartbeat`, recomputed at render time, so it changes every
@@ -981,8 +801,6 @@ impl App {
             exec_tx: None,
             run_states: HashMap::new(),
             reparse_dispatches: 0,
-            journal_cursors: HashMap::new(),
-            driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -1101,144 +919,6 @@ impl App {
             .insert(alias.to_string(), std::time::Instant::now());
     }
 
-    /// Schedule a byte-offset tail of one run's journal (D-12, D-16).
-    ///
-    /// Note the three things this deliberately does **not** do, because they
-    /// are the literal content of OBS-06:
-    ///
-    /// * It does **not** call `parse_project_state`. A tail costs
-    ///   bytes-appended-since-the-last-read, so its cost is proportional to
-    ///   actual new data rather than to project size — that proportionality is
-    ///   the whole difference (D-15).
-    /// * It does **not** touch `last_refresh`. Sharing the 500 ms dedup map
-    ///   would let a journal append suppress a genuine `STATE.md` re-parse for
-    ///   half a second, trading a performance bug for a correctness bug (D-14).
-    /// * It does **not** increment `reparse_dispatches`.
-    ///
-    /// The read runs on `spawn_blocking` with its result returned as an
-    /// `Action` on a cloned sender, following the idiom this file already uses
-    /// for the re-parse and for session detection. No file I/O on the render
-    /// thread (D-16).
-    fn schedule_journal_tail(&mut self, alias: &str, project_path: &Path, run_id: &str) {
-        let Some(tx) = &self.ctx.event_tx else {
-            return;
-        };
-        let tx = tx.clone();
-
-        // `.copied()` — and `JournalCursor` staying `Copy` is what keeps this
-        // line unchanged now that the value carries a `seq` as well as an offset
-        // (D-28, PATTERNS note 4).
-        let key = (alias.to_string(), run_id.to_string());
-        let stored = self
-            .ctx
-            .journal_cursors
-            .get(&key)
-            .copied()
-            .unwrap_or_default();
-        let (alias_for_task, run_id_for_task) = key;
-
-        let planning_dir = project_path.join(".planning");
-        // No tail is scheduled for a run id that is not a plain path component
-        // (D-27, WR-02). The id reaches here from the driven project's own
-        // `active` file, so it is attacker-controlled for threat-modelling
-        // purposes, and without this guard a traversing id would have the TUI
-        // tailing an arbitrary file on the user's disk into a render surface.
-        // The refusal is logged by kind only — never the path, which is the
-        // untrusted value itself (D-28, PATTERNS §S3).
-        let Some(paths) = crate::journal::run_paths(&planning_dir, run_id) else {
-            tracing::warn!(
-                alias = %alias,
-                kind = "run_id_not_a_plain_component",
-                "journal tail refused: the run id does not name a single directory component",
-            );
-            return;
-        };
-        let journal = paths.journal;
-
-        tokio::task::spawn_blocking(move || {
-            let read = match crate::journal::reader::tail_lines(&journal, stored.cursor) {
-                Ok(read) => read,
-                Err(e) => {
-                    // The error KIND only. Neither the path nor the message
-                    // body is logged (D-28).
-                    tracing::warn!(
-                        alias = %alias_for_task,
-                        run_id = %run_id_for_task,
-                        kind = ?e.kind(),
-                        "journal tail failed",
-                    );
-                    return;
-                }
-            };
-
-            if read.restarted {
-                tracing::warn!(
-                    alias = %alias_for_task,
-                    run_id = %run_id_for_task,
-                    restarted = true,
-                    "journal tail: the file shrank and the cursor was reset",
-                );
-            }
-            if read.skipped_oversize {
-                tracing::warn!(
-                    alias = %alias_for_task,
-                    run_id = %run_id_for_task,
-                    skipped_oversize = true,
-                    "journal tail: stepped over a line that exceeded the read bound",
-                );
-            }
-
-            let mut records = Vec::with_capacity(read.lines.len());
-            let mut unparseable: u64 = 0;
-            for line in &read.lines {
-                match crate::journal::reader::parse_line(line) {
-                    crate::journal::reader::ParsedLine::Record(record) => records.push(record),
-                    // A count, never the line (D-28).
-                    crate::journal::reader::ParsedLine::Unparseable { .. } => unparseable += 1,
-                }
-            }
-            if unparseable > 0 {
-                tracing::warn!(
-                    alias = %alias_for_task,
-                    run_id = %run_id_for_task,
-                    count = unparseable,
-                    "journal tail: lines did not parse",
-                );
-            }
-
-            // An EMPTY batch retains the previous `last_seq` rather than
-            // resetting it. A tail that finds nothing new is the common case —
-            // the watcher fires on a directory before the first append, and a
-            // torn trailing line yields no complete record — and resetting to
-            // zero on any of those would silently disarm the boundary check for
-            // the next batch that does carry records (D-28).
-            let last_seq = records.last().map_or(stored.last_seq, |record| record.seq);
-
-            let _ = tx.send(Action::DriverJournalAppended {
-                alias: alias_for_task,
-                run_id: run_id_for_task,
-                records,
-                cursor: crate::journal::reader::JournalCursor {
-                    cursor: read.cursor,
-                    last_seq,
-                },
-            });
-        });
-    }
-
-    // ── The Driver surface's three schedulers (D-28) ──────────────────
-    //
-    // All three are `pub` because they are the seams the UI layer reaches, and a
-    // `Screen` only ever receives `&mut AppContext`, so the route from a key to
-    // one of these is an `Action` this file dispatches. Two of them — the run
-    // list and the dry-run preview — have no in-file caller yet because their
-    // callers are the Driver tab's own key handling, which is a later plan's.
-    //
-    // All three follow the shipped `spawn_blocking` → `Action` shape: a
-    // `let … else` guard on `event_tx`, a cloned sender, owned data moved in.
-    // **No file I/O on the render thread** — that phrase is the searchable
-    // marker this file already uses for the boundary (S1).
-
     /// Gather the facts [`launcher_heartbeat_redraw_wanted`] decides on (30-02, D-08).
     fn launcher_heartbeat_redraw_due(&self) -> bool {
         let Some(top) = self.screen_stack.last() else {
@@ -1254,33 +934,17 @@ impl App {
         )
     }
 
-    /// Rescan the selected project's run list, inbox and journal **if the
-    /// Driver tab is the surface on screen** (CR-04).
+    /// Re-list the selected project's launcher runs **if the Driver tab is the
+    /// surface on screen** (CR-04).
     ///
-    /// `schedule_run_list_scan` used to be reachable from exactly two places —
-    /// `switch_to_tab`'s Driver arm and `move_driver_selection` — so
-    /// `driver_runs`, `driver_inbox` and `driver_journal` were frozen at the
-    /// instant the tab was entered and nothing thawed them. A watcher event
-    /// under `runs/<id>/` classifies as `ChangeKind::DriverJournal` and routes
-    /// to `schedule_journal_tail`, which reads `journal.jsonl` and nothing else.
-    /// Three ordinary-use failures followed:
+    /// The launcher rows are refreshed by watcher events under a run's directory, but a
+    /// lock released by `SIGKILL` emits no file event, so without this the tab is
+    /// frozen at the moment it was entered: a run that crashed while you watch would
+    /// keep its `running` glyph until the next write.
     ///
-    /// 1. **A run started from the tab was invisible.** The wizard hands off
-    ///    without re-entering the tab, so `driver_runs` was still empty and the
-    ///    pane painted *"No runs yet … Press [s] to start one"* over a live run
-    ///    whose ring buffer was filling behind it.
-    /// 2. **A queued message never rendered.** The inbox read happened on tab
-    ///    entry only, so a message queued afterwards stayed invisible until a
-    ///    rescan (the injection path itself is retired; the rescan remains for
-    ///    the other two).
-    /// 3. **A run that ended while you watched lost its output.** The pane
-    ///    kept `cache.driver_journal` — the snapshot taken on tab entry — and
-    ///    every line since then vanished, at the exact moment an after-the-fact
-    ///    review is wanted.
-    ///
-    /// **Gated on visibility, and deliberately so.** The scan is three blocking
-    /// reads; running it for every registered project on every tick would pay a
-    /// fleet-sized cost for one pane's freshness.
+    /// **Gated on visibility, and deliberately so.** The listing is a `read_dir` plus
+    /// a bounded read and a lock probe per run; running it for every registered project
+    /// on every tick would pay a fleet-sized cost for one pane's freshness.
     fn rescan_driver_tab_if_open(&mut self) {
         let Some(top) = self.screen_stack.last() else {
             return;
@@ -1294,7 +958,6 @@ impl App {
         let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) else {
             return;
         };
-        self.ctx.schedule_run_list_scan(&alias, &path);
         // The launcher rows ride the same slow tick (D-13): a lock released by
         // SIGKILL emits no file event, so this is what turns that run into
         // `crashed` within one tick while the tab is open.
@@ -1597,7 +1260,6 @@ impl App {
                     .insert((alias.to_string(), run_id.clone()));
                 let cache = self.ctx.view_cache.entry(alias.to_string()).or_default();
                 cache.new_run_status = None;
-                cache.legacy_row_selected = false;
                 cache.launcher_selected_id = Some(run_id.clone());
                 if let Some(path) = self.ctx.config.projects.get(alias).map(|p| p.path.clone()) {
                     self.ctx.schedule_launcher_refresh(alias, &path);
@@ -2014,10 +1676,10 @@ impl App {
         self.needs_redraw = true;
     }
 
-    // The two one-line `App::schedule_run_list_scan` / `App::schedule_dry_run_report`
-    // wrappers that stood here are gone (WR-09). Both delegated to the identically
-    // named `AppContext` methods and neither had a caller anywhere in `src/` or
-    // `tests/`: every real call goes to `ctx.schedule_*` directly, because a
+    // The one-line `App::schedule_*` wrappers that stood here are gone (WR-09). They
+    // delegated to the identically named `AppContext` methods and neither had a
+    // caller anywhere in `src/` or `tests/`: every real call goes to `ctx.schedule_*`
+    // directly, because a
     // `Screen` is handed an `&mut AppContext` and never an `&mut App`. They were
     // `pub`, so no `dead_code` warning fired and the duplication was invisible to
     // the compiler. `App`'s own callers, such as the tick rescan, go through
@@ -2292,15 +1954,6 @@ impl App {
                     // half a second — a performance bug traded for a
                     // correctness bug.
                     match crate::journal::classify_change(&project_path, &changed_path) {
-                        crate::journal::ChangeKind::DriverJournal { run_id } => {
-                            // No extra throttle here, deliberately (D-15). A
-                            // tail read costs bytes-appended-since-the-last-
-                            // read, so its cost tracks actual new data rather
-                            // than project size — which is the whole
-                            // difference from `parse_project_state`, and the
-                            // 200ms watcher debounce already floors the rate.
-                            self.schedule_journal_tail(&alias, &project_path, &run_id);
-                        }
                         // A launcher run's own files (30-01, D-24). Refreshes the
                         // launcher list for the alias whose Driver tab is open and
                         // does NOTHING ELSE: no re-parse (OBS-06), no `last_refresh`
@@ -2566,116 +2219,6 @@ impl App {
                 self.ctx.archive_cache.insert(alias, milestone, data);
                 self.needs_redraw = true;
             }
-            // One tail read landed. **This is the seam Phase 16 left open, and
-            // this handler is what closes it** (D-20).
-            //
-            // Until now it stored its cursor, counted `seq` gaps into a
-            // `tracing::warn!`, and dropped `records` on the floor — deliberately,
-            // because there was no surface to render them onto and a redraw would
-            // have scheduled a frame that could not differ from the one on
-            // screen. The comment here said so, and named Phase 18 as what adds
-            // the surface and the flag together. It does, so that comment is
-            // gone rather than left standing above code it no longer describes.
-            //
-            // What it does now:
-            //
-            // * projects each record into a `DriverLineKind` and pushes it into
-            //   the alias's bounded ring buffer, where `push_record` sanitises
-            //   it and enforces the cap;
-            // * turns an observed sequence gap into a **visible** diagnostic
-            //   line as well as a log line, because a pane that silently loses
-            //   records is the named "looks done but isn't" failure; and
-            // * sets `needs_redraw`, because the frame genuinely can differ now.
-            //
-            // What it still deliberately does **not** do, and the omissions are
-            // as load-bearing as they were before:
-            //
-            // * It does not touch `ProjectState` (D-18). That type derives
-            //   `PartialEq` and `app.rs` uses the derived equality to suppress
-            //   "Updated: {alias}" status spam; live output arrives every few
-            //   seconds, so a field there would flood the status bar for an
-            //   entire multi-hour run.
-            // * It does not touch `last_refresh` (D-14). Sharing the 500 ms
-            //   dedup map would let a journal append suppress a genuine
-            //   `STATE.md` re-parse, trading a performance bug for a correctness
-            //   one.
-            // * It does not schedule a re-parse (OBS-06).
-            Action::DriverJournalAppended {
-                alias,
-                run_id,
-                records,
-                cursor,
-            } => {
-                // `seq` is monotonic from 1 and exists so a tailing reader can
-                // detect gaps (D-03). A gap is reported as a COUNT and never as
-                // a parse failure, and never with a record body (D-28, D-30).
-                //
-                // This calls the shared reader function rather than
-                // re-implementing its `windows(2)` filter, which is what it used
-                // to do. Two copies of a comparison are two things to keep in
-                // agreement, and they had already diverged in the way that
-                // matters: the inline copy could not be seeded, so it could only
-                // ever see a gap that fell inside one batch.
-                let key = (alias, run_id);
-                let previous_last_seq = self
-                    .ctx
-                    .journal_cursors
-                    .get(&key)
-                    .map_or(0, |stored| stored.last_seq);
-                let gaps = crate::journal::reader::seq_gaps_from(previous_last_seq, &records).len();
-                if gaps > 0 {
-                    tracing::warn!(
-                        alias = %key.0,
-                        run_id = %key.1,
-                        count = gaps,
-                        "journal tail: sequence gaps observed",
-                    );
-                }
-
-                // The buffer for this alias, created on first append. The map is
-                // pruned in `prune_driver_maps` — see the negative
-                // carry-forward the phase discharges there.
-                //
-                // **Retargeted before the first push** (CR-02). The map is keyed
-                // by alias, so without this the ring outlives the run that
-                // filled it and run B's pane paints run A's output — including
-                // A's terminal record, which renders last and in B's colour, so
-                // a live run shows a previous run's success as its own visual
-                // full stop. This is the same guard `update_driver_tally`
-                // applies to the tally, at the same point in the same handler.
-                let output = self.ctx.driver_output.entry(key.0.clone()).or_default();
-                output.retarget(&key.1);
-
-                // The gap goes in FIRST and as a line the user can see. The
-                // records that follow are the ones that arrived; the gap is what
-                // came before them and never will, so it belongs above them.
-                if gaps > 0 {
-                    output.push_record(
-                        crate::ui::screens::DriverLineKind::Diagnostic,
-                        &journal_gap_line(gaps),
-                    );
-                }
-
-                for record in &records {
-                    if let Some((line_kind, text)) = driver_line_for_record(record) {
-                        output.push_record(line_kind, &text);
-                    }
-                }
-
-                // The two header facts that live in journal records rather than
-                // in the committed `run.json`: the cumulative cost and the turn
-                // count. `driver_line_for_record` deliberately returns `None`
-                // for `cost` because it is header data and not a pane line —
-                // this is the header reading it (D-12).
-                let cache = self.ctx.view_cache.entry(key.0.clone()).or_default();
-                update_driver_tally(cache, &key.1, &records);
-
-                self.ctx.journal_cursors.insert(key, cursor);
-                // The pane can now show a frame that differs from the one on
-                // screen, which is precisely the condition that was absent
-                // before (D-20).
-                self.needs_redraw = true;
-            }
             // The launcher-run markers (30-03, D-13), replaced wholesale: the scan is
             // authoritative, so a project absent from it has no marker, and one never
             // scanned has none either (no guessed class). A merge would keep a badge
@@ -2779,7 +2322,6 @@ impl App {
                     crate::text::render_for_terminal(&format!("{alias}: {report}")).to_string();
                 self.ctx.status_message = Some((line, std::time::Instant::now()));
                 if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
-                    self.ctx.schedule_run_list_scan(&alias, &path);
                     self.ctx.schedule_launcher_refresh(&alias, &path);
                 }
                 self.needs_redraw = true;
@@ -2986,40 +2528,6 @@ impl App {
                 ));
                 self.needs_redraw = true;
             }
-            // ── The Driver surface's four messages ────────────────────
-            //
-            // Four explicit arms rather than a catch-all: a `_ =>` would let a
-            // later variant be added and silently ignored, which is the
-            // opposite of what this match's exhaustiveness is for.
-            //
-            // Nothing is logged from `text`, `report` or any other message
-            // body: log lines in this subsystem carry the error **kind** and
-            // counts only, because a body can carry agent output (S3).
-
-            // Both payloads replace rather than merge, for the reason
-            // `LauncherMarkersRescanned` does: each read is authoritative, and a run
-            // directory or a message no longer on disk is expressed by its
-            // absence and by nothing else.
-            Action::DriverRunsListed {
-                alias,
-                runs,
-                inbox,
-                journal,
-            } => {
-                let cache = self.ctx.view_cache.entry(alias).or_default();
-                // Clamped rather than reset: a scan that lands while the user is
-                // on a run must not move the selection off it, and a selection
-                // past the end of a shortened list must not dangle.
-                if !runs.is_empty() {
-                    cache.driver_selected_run = cache.driver_selected_run.min(runs.len() - 1);
-                }
-                cache.driver_runs = runs;
-                cache.driver_inbox = inbox;
-                // The journal carries its own run id, so the renderer can refuse
-                // to show it under a run it is not about.
-                cache.driver_journal = journal;
-                self.needs_redraw = true;
-            }
             // The launcher rows have exactly one producer
             // (`AppContext::schedule_launcher_refresh`) and are replaced, never
             // merged: a run directory no longer on disk is expressed by its absence.
@@ -3119,117 +2627,38 @@ impl App {
                     }
                 }
             }
-            // The report was built off the render thread and arrived (D-26).
-            //
-            // The load-bearing half of D-26 is the *scheduling*:
-            // `build_report` shells out to `git` twice and is one of the WR-10
-            // call sites the Phase 17 review named, so it must never run on the
-            // render thread. `AppContext::schedule_dry_run_report` discharges
-            // that in full, and it is the half with a threat-register row
-            // (T-18-25, T-18-62).
-            //
-            // This arm is the other half, landed by plan 18-11: the string is
-            // parked in `ProjectViewCache::driver_dry_run`, which the start
-            // screen created when it reached Step B.
-            //
-            // **Guarded twice, and neither guard is belt-and-braces.** A report
-            // is stored only when a preview is actually open — a report that
-            // arrives after the user pressed Esc has nowhere to go, and
-            // recreating the preview for it would repaint a pane the user has
-            // left — and only when the command it was built for is still the
-            // command the preview is about. Without the second guard, a user who
-            // went back to Step A and retyped would see the previous command's
-            // blast radius under the new command's name, which is the display
-            // disagreeing with the disk in the direction that flatters the run.
-            //
-            // Logged by count, never by body: the report interpolates a working
-            // tree's file names (S3).
-            Action::DriverDryRunLoaded {
-                alias,
-                command,
-                report,
-            } => {
-                tracing::debug!(
-                    %alias,
-                    %command,
-                    bytes = report.len(),
-                    "dry-run report built off the render thread",
-                );
-                if let Some(preview) = self
-                    .ctx
-                    .view_cache
-                    .get_mut(&alias)
-                    .and_then(|cache| cache.driver_dry_run.as_mut())
-                    .filter(|preview| preview.command == command)
-                {
-                    preview.report = Some(report);
-                    self.needs_redraw = true;
-                }
-            }
         }
     }
 
-    /// Drop driver state the registry no longer justifies, and bound what stays
-    /// (D-27).
+    /// Drop driver state the registry no longer justifies (D-27).
     ///
-    /// **The leak this closes.** `journal_cursors` is keyed `(alias, run_id)`,
-    /// inserted in exactly one place — `Action::DriverJournalAppended` — and
-    /// removed in none, so it grew for the whole life of the process: one entry
-    /// per run of every project ever tailed, forever. `run_states` had the same
-    /// shape for an unregistered alias, because `registry::remove_project`
-    /// touches neither (it has no access to `AppContext`; see its doc, which
-    /// names the cleanup sites).
+    /// **The leak this closes.** `run_states` is keyed by alias and
+    /// `registry::remove_project` does not touch it (it has no access to
+    /// `AppContext`; see its doc, which names the cleanup sites), so an unregistered
+    /// alias would otherwise keep its entry for the whole life of the process. The
+    /// same holds for every other alias-keyed map below. A project that is no longer
+    /// a key in `config.projects` cannot produce another run state or another view,
+    /// so every entry it owns is dead weight.
     ///
-    /// Two passes:
-    ///
-    /// 1. **Unregistered aliases go.** A project that is no longer a key in
-    ///    `config.projects` cannot produce another journal append, another run
-    ///    state, or another observation, so every entry it owns is dead weight.
-    /// 2. **At most [`RETAIN_RUNS`](crate::journal::RETAIN_RUNS) run ids survive
-    ///    per alias**, newest kept. Aligning to that constant rather than
-    ///    picking a second number is deliberate: it is the on-disk retention
-    ///    bound, so the in-memory bound and the disk bound move together instead
-    ///    of drifting into two unrelated budgets.
-    ///
-    /// **"Newest" is a sort on the run-id string and needs no file read.** Run
-    /// ids sort lexicographically in chronological order by construction — that
-    /// is `new_run_id`'s documented load-bearing property, and the same one
-    /// on-disk pruning relies on. A reader might otherwise reach for `run.json`
-    /// timestamps, which would turn a map operation into O(runs) file reads.
+    /// (Phase 31 removed the journal-cursor and live-output maps, and with them the
+    /// second pass that kept the newest `RETAIN_RUNS` run ids per alias: nothing in
+    /// the TUI tails a journal any more.)
     ///
     /// Called from the **existing** 20-tick block, never from a timer of its own
     /// (D-13, D-27).
     fn prune_driver_maps(&mut self) {
         let registered = &self.ctx.config.projects;
         self.ctx
-            .journal_cursors
-            .retain(|(alias, _), _| registered.contains_key(alias));
-        self.ctx
             .run_states
-            .retain(|alias, _| registered.contains_key(alias));
-        // The ring buffer joins the pass, and this line is the phase's only
-        // remaining Phase 16 carry-forward — a negative one. `driver_output` is
-        // keyed by alias and inserted on every journal append; without this it
-        // would grow for the life of the process, holding up to
-        // `DRIVER_OUTPUT_RING_LINES` lines for every project ever driven and
-        // then unregistered. That is the Phase 16 leak reintroduced under a new
-        // name, which is exactly what the carry-forward exists to prevent.
-        //
-        // No per-run second pass, because the map has no run dimension: one
-        // alias holds one buffer, already bounded by its own cap.
-        self.ctx
-            .driver_output
             .retain(|alias, _| registered.contains_key(alias));
         // `view_cache` joins the pass too, and plan 18-09 is what makes that
         // necessary rather than tidy. It is keyed by alias and was never pruned,
         // which cost little while it held browse listings and git logs for
-        // projects the user had merely visited — but this phase moved three
-        // driver payloads into it: `driver_runs` (a `RunSummary` per run on
-        // disk), `driver_inbox` (every queued message for the selected run) and
-        // `driver_tally`. Those are exactly the per-alias driver state the
-        // phase's carry-forward is about, so leaving them in an unpruned map
-        // would satisfy the obligation for the maps it names while breaking it
-        // for the one it does not.
+        // projects the user had merely visited — but the driver payloads it holds
+        // (the launcher rows, their detail and LOG tail) are exactly the per-alias
+        // driver state the phase's carry-forward is about, so leaving them in an
+        // unpruned map would satisfy the obligation for the maps it names while
+        // breaking it for the one it does not.
         //
         // Dropping the whole entry for an unregistered alias is correct rather
         // than merely convenient: the project is gone, so every view state it
@@ -3260,29 +2689,6 @@ impl App {
         self.ctx
             .archive_cache
             .retain_aliases(|alias| registered.contains_key(alias));
-
-        let mut runs_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
-        for (alias, run_id) in self.ctx.journal_cursors.keys() {
-            runs_by_alias
-                .entry(alias.as_str())
-                .or_default()
-                .push(run_id.as_str());
-        }
-
-        let mut evict: Vec<(String, String)> = Vec::new();
-        for (alias, mut run_ids) in runs_by_alias {
-            if run_ids.len() <= crate::journal::RETAIN_RUNS {
-                continue;
-            }
-            run_ids.sort_unstable();
-            let excess = run_ids.len() - crate::journal::RETAIN_RUNS;
-            for run_id in run_ids.into_iter().take(excess) {
-                evict.push((alias.to_string(), run_id.to_string()));
-            }
-        }
-        for key in evict {
-            self.ctx.journal_cursors.remove(&key);
-        }
     }
 
     /// One mouse event from the reader (quick 260926-dyf).
@@ -4288,6 +3694,9 @@ mod tests {
         }
     }
 
+    /// A write under the legacy `meta-manager/runs/<id>/` directory: inert since
+    /// Phase 31 (`classify_change` maps it to `Ignored`), so it must neither tail nor
+    /// re-parse nor touch the dedup map.
     fn journal_change(root: &std::path::Path) -> Action {
         Action::FileChanged {
             project_path: root.to_path_buf(),
@@ -4365,27 +3774,6 @@ mod tests {
         assert!(app.ctx.last_refresh.contains_key(OBS_ALIAS));
     }
 
-    /// A `JournalCursor` with both of its fields varied, so an assertion cannot
-    /// pass by comparing only the byte offset.
-    fn cursor_at(offset: u64, last_seq: u64) -> crate::journal::reader::JournalCursor {
-        crate::journal::reader::JournalCursor {
-            cursor: crate::journal::reader::TailCursor { offset },
-            last_seq,
-        }
-    }
-
-    /// A `RunSummary` with only the field these assertions read varied.
-    fn run_summary(run_id: &str) -> crate::journal::RunSummary {
-        crate::journal::RunSummary {
-            run_id: run_id.to_string(),
-            started_at: "2026-07-29T12:02:00Z".to_string(),
-            ended_at: None,
-            goal: "ship it".to_string(),
-            gsd_command: "/gsd-progress".to_string(),
-            outcome: None,
-        }
-    }
-
     #[tokio::test]
     async fn a_marker_rescan_replaces_the_marker_rather_than_merging_it() {
         use crate::ui::screens::driver_run::MarkerClass;
@@ -4439,368 +3827,6 @@ mod tests {
             "a run going from driven to crashed must request a redraw, or the guard \
              above is suppressing genuine updates too"
         );
-    }
-
-    // ── D-20: the seam, the gap diagnostic, the tick gate, the prune ─────
-
-    /// One journal record of `kind`, carrying `fields` as its payload.
-    fn journal_record(
-        seq: u64,
-        kind: &str,
-        fields: &[(&str, serde_json::Value)],
-    ) -> crate::journal::reader::JournalRecord {
-        let mut rest = serde_json::Map::new();
-        for (key, value) in fields {
-            rest.insert((*key).to_string(), value.clone());
-        }
-        crate::journal::reader::JournalRecord {
-            ts: "2026-07-29T12:00:00Z".to_string(),
-            seq,
-            kind: kind.to_string(),
-            rest,
-        }
-    }
-
-    /// An `exec_event` on `stream` carrying `text`.
-    fn exec_event(seq: u64, stream: &str, text: &str) -> crate::journal::reader::JournalRecord {
-        journal_record(
-            seq,
-            "exec_event",
-            &[("stream", stream.into()), ("text", text.into())],
-        )
-    }
-
-    /// Every buffered line for `alias`, as `(kind, text)` pairs.
-    fn buffered(app: &App, alias: &str) -> Vec<(crate::ui::screens::DriverLineKind, String)> {
-        app.ctx
-            .driver_output
-            .get(alias)
-            .map(|output| {
-                output
-                    .lines()
-                    // `as_raw_for_logic_only`: these assertions ask what the
-                    // buffer STORED, which is the append-time question. `shown()`
-                    // would answer the render-time one and make every expected
-                    // string in this module a post-escape spelling.
-                    .map(|line| (line.kind, line.text.as_raw_for_logic_only().to_string()))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// The header's two record-borne facts — the cumulative cost and the turn
-    /// count — are read from the tail as it arrives, and both are evidence:
-    /// `cost.cumulative_usd` and an `exec_event` on the `turn_completed` stream.
-    #[tokio::test]
-    async fn a_journal_batch_tallies_the_cumulative_cost_and_the_turn_boundaries() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            records: vec![
-                exec_event(1, "assistant", "working"),
-                exec_event(2, "turn_completed", "turn ended: success"),
-                journal_record(3, "cost", &[("cumulative_usd", 0.42.into())]),
-                exec_event(4, "turn_completed", "turn ended: success"),
-                journal_record(5, "cost", &[("cumulative_usd", 1.83.into())]),
-            ],
-            cursor: cursor_at(120, 5),
-        });
-
-        let tally = app
-            .ctx
-            .view_cache
-            .get(OBS_ALIAS)
-            .and_then(|cache| cache.driver_tally.clone())
-            .expect("a tally after a batch");
-        assert_eq!(tally.run_id, OBS_RUN);
-        // The LAST cumulative value wins; it is a running total, not a delta.
-        assert_eq!(tally.cumulative_cost_usd, Some(1.83));
-        assert_eq!(tally.turn_boundaries, 2);
-
-        // A batch from a DIFFERENT run resets the tally rather than adding to
-        // it — one run's cost shown against another's is a figure the evidence
-        // does not support.
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: "2026-07-29T22-00-00Z-beef".to_string(),
-            records: vec![exec_event(1, "assistant", "a different run")],
-            cursor: cursor_at(20, 1),
-        });
-        let tally = app
-            .ctx
-            .view_cache
-            .get(OBS_ALIAS)
-            .and_then(|cache| cache.driver_tally.clone())
-            .expect("a tally after the second batch");
-        assert_eq!(tally.run_id, "2026-07-29T22-00-00Z-beef");
-        assert_eq!(
-            tally.cumulative_cost_usd, None,
-            "the previous run's cost must not carry over"
-        );
-        assert_eq!(tally.turn_boundaries, 0);
-    }
-
-    /// CR-02, at the handler that fills the ring.
-    ///
-    /// `driver_output` is keyed by **alias**, so one buffer serves every run a
-    /// project ever has. Without a retarget before the first push of each batch,
-    /// run A's lines — its `run ended:` terminal record above all, which the
-    /// pane deliberately renders LAST and in the *currently selected* run's
-    /// terminal colour — appear under run B's header as run B's own visual full
-    /// stop. That is the display disagreeing with the disk in the direction that
-    /// flatters the run.
-    #[tokio::test]
-    async fn a_batch_from_a_new_run_clears_the_previous_runs_lines_from_the_ring() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            records: vec![
-                exec_event(1, "assistant", "run A was working"),
-                journal_record(2, "run_ended", &[("outcome", "succeeded".into())]),
-            ],
-            cursor: cursor_at(120, 2),
-        });
-        assert_eq!(buffered(&app, OBS_ALIAS).len(), 2);
-
-        const NEXT: &str = "2026-07-29T22-00-00Z-beef";
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: NEXT.to_string(),
-            records: vec![exec_event(1, "assistant", "run B is working")],
-            cursor: cursor_at(20, 1),
-        });
-
-        let lines = buffered(&app, OBS_ALIAS);
-        assert_eq!(
-            lines,
-            vec![(
-                crate::ui::screens::DriverLineKind::Output,
-                "run B is working".to_string()
-            )],
-            "run B's ring holds run B's lines and nothing else; a surviving \
-             `run ended: succeeded` would render as run B's own ending"
-        );
-        assert_eq!(
-            app.ctx
-                .driver_output
-                .get(OBS_ALIAS)
-                .map(|output| output.run_id()),
-            Some(NEXT),
-            "and the buffer says which run it now speaks for"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_journal_batch_reaches_the_ring_buffer_and_requests_a_redraw() {
-        use crate::ui::screens::DriverLineKind;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        app.needs_redraw = false;
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            records: vec![
-                exec_event(1, "assistant", "reading src/driver/run.rs"),
-                exec_event(2, "stderr", "a warning from the tool"),
-                journal_record(3, "run_ended", &[("outcome", "succeeded".into())]),
-            ],
-            cursor: cursor_at(120, 3),
-        });
-
-        let lines = buffered(&app, OBS_ALIAS);
-        assert_eq!(
-            lines.len(),
-            3,
-            "every record with an output-pane class must be buffered, got: {lines:?}"
-        );
-        assert_eq!(
-            lines[0],
-            (
-                DriverLineKind::Output,
-                "reading src/driver/run.rs".to_string()
-            )
-        );
-        assert_eq!(
-            lines[1].0,
-            DriverLineKind::Stderr,
-            "stderr is its own class"
-        );
-        assert_eq!(
-            lines[2].0,
-            DriverLineKind::Terminal,
-            "the ending is the visual full stop"
-        );
-        assert!(
-            lines[2].1.contains("succeeded"),
-            "the terminal line carries the derived outcome, got: {}",
-            lines[2].1
-        );
-
-        assert!(
-            app.needs_redraw,
-            "D-20: the handler that adds the surface adds the flag with it — \
-             without this the Driver tab renders a frame that can never change"
-        );
-
-        // And the omissions the rewritten comment claims are still real.
-        assert!(
-            app.ctx.last_refresh.is_empty(),
-            "the driver route must still not touch the 500ms dedup map (D-14)"
-        );
-        assert_eq!(
-            app.ctx.reparse_dispatches, 0,
-            "a journal append must still schedule no full re-parse (OBS-06)"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_sequence_gap_becomes_a_line_the_user_can_see() {
-        use crate::ui::screens::DriverLineKind;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        // Seed a cursor at seq 4, then deliver a batch starting at 9. Five
-        // records the writer emitted were never read, and the pane cannot
-        // recover them — so it has to say so.
-        let key = (OBS_ALIAS.to_string(), OBS_RUN.to_string());
-        app.ctx.journal_cursors.insert(key, cursor_at(10, 4));
-
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            records: vec![exec_event(9, "assistant", "still working")],
-            cursor: cursor_at(80, 9),
-        });
-
-        let lines = buffered(&app, OBS_ALIAS);
-        assert_eq!(lines.len(), 2, "the gap line plus the record: {lines:?}");
-        assert_eq!(
-            lines[0].0,
-            DriverLineKind::Diagnostic,
-            "a gap is a diagnostic, never silently swallowed"
-        );
-        assert!(
-            lines[0].1.contains("journal gap") && lines[0].1.contains('1'),
-            "the diagnostic must name the count, got: {}",
-            lines[0].1
-        );
-        assert_eq!(
-            lines[1].0,
-            DriverLineKind::Output,
-            "the gap goes ABOVE the records that did arrive, because it is what \
-             came before them"
-        );
-
-        // The control arm: a contiguous batch adds no diagnostic, so the
-        // assertion above is not passing because every batch gets one.
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            records: vec![exec_event(10, "assistant", "carrying on")],
-            cursor: cursor_at(120, 10),
-        });
-        let lines = buffered(&app, OBS_ALIAS);
-        assert_eq!(lines.len(), 3, "no second gap line: {lines:?}");
-    }
-
-    /// The record → line projection, across every class the pane renders.
-    #[test]
-    fn every_diagnostic_bearing_record_kind_reaches_the_pane() {
-        use crate::ui::screens::DriverLineKind;
-
-        let cases: Vec<(crate::journal::reader::JournalRecord, DriverLineKind, &str)> = vec![
-            (
-                journal_record(1, "events_dropped", &[("count", 40.into())]),
-                DriverLineKind::Diagnostic,
-                "40 stream events were dropped",
-            ),
-            (
-                journal_record(
-                    2,
-                    "journal_truncated",
-                    &[("bytes_written", 1024.into()), ("cap", 2048.into())],
-                ),
-                DriverLineKind::Diagnostic,
-                "2048",
-            ),
-            (
-                journal_record(
-                    3,
-                    "diagnostic",
-                    &[("code", "seq_gap".into()), ("detail", "one record".into())],
-                ),
-                DriverLineKind::Diagnostic,
-                "seq_gap",
-            ),
-            (
-                journal_record(
-                    4,
-                    "interjected",
-                    &[("id", "3f2a".into()), ("text", "skip the UI review".into())],
-                ),
-                DriverLineKind::Injection,
-                "skip the UI review",
-            ),
-            (
-                journal_record(5, "interjection_acted_on", &[("id", "3f2a".into())]),
-                DriverLineKind::Injection,
-                "3f2a",
-            ),
-            (
-                journal_record(
-                    6,
-                    "interjection_missed",
-                    &[("id", "3f2a".into()), ("reason", "stdin closed".into())],
-                ),
-                DriverLineKind::Injection,
-                "stdin closed",
-            ),
-            (
-                journal_record(
-                    7,
-                    "exec_finished",
-                    &[("exit", 0.into()), ("duration_s", 12.into())],
-                ),
-                DriverLineKind::Terminal,
-                "exit 0",
-            ),
-        ];
-
-        for (record, expected_kind, expected_substring) in cases {
-            let (kind, text) = driver_line_for_record(&record)
-                .unwrap_or_else(|| panic!("`{}` must reach the pane", record.kind));
-            assert_eq!(kind, expected_kind, "wrong class for `{}`", record.kind);
-            assert!(
-                text.contains(expected_substring),
-                "`{}` rendered as {text:?}, which does not name {expected_substring:?}",
-                record.kind
-            );
-            assert!(
-                !text.contains('{'),
-                "`{}` must compose a real string, never a Debug rendering: {text:?}",
-                record.kind
-            );
-        }
-
-        // The header's own data is deliberately NOT buffered — it renders above
-        // the pane, and duplicating it would make the first rows a copy of the
-        // header. This is not "losing lines"; the assertions above are what
-        // guarantee that every diagnostic-bearing kind does arrive.
-        for kind in ["run_started", "exec_started", "cost", "parked"] {
-            assert!(
-                driver_line_for_record(&journal_record(1, kind, &[])).is_none(),
-                "`{kind}` belongs to the header or to a later phase's timeline"
-            );
-        }
     }
 
     /// The heartbeat gate wired through a real `Action::Tick`, not just the predicate.
@@ -4872,24 +3898,6 @@ mod tests {
             .detail_sub_view_per_project
             .insert(OBS_ALIAS.to_string(), DetailSubView::Driver);
         (app, rx)
-    }
-
-    /// Drain `rx` and report whether the run-list scan reported back.
-    ///
-    /// The scan runs on `spawn_blocking` and answers with
-    /// `Action::DriverRunsListed`, so its arrival on the channel is the only
-    /// observation that says the scan actually happened — as opposed to a
-    /// counter this file incremented itself.
-    async fn scan_reported(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) -> bool {
-        for _ in 0..200 {
-            while let Ok(action) = rx.try_recv() {
-                if matches!(action, Action::DriverRunsListed { .. }) {
-                    return true;
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        false
     }
 
     /// The rescan gate is **visibility, not liveness**, and the difference is
@@ -5046,10 +4054,9 @@ mod tests {
 
     /// CR-04's first failure: the tab froze at the moment it was entered.
     ///
-    /// `schedule_run_list_scan` had exactly two call sites — tab entry and
-    /// selection move — so `driver_runs`, `driver_inbox` and `driver_journal`
-    /// never changed while the user watched. A run that ended lost its output to
-    /// a stale snapshot; a run that started stayed invisible.
+    /// The launcher listing had only two call sites — tab entry and a file event
+    /// under a run directory — so a lock released by `SIGKILL`, which emits no
+    /// file event, never moved a run off `running` while the user watched.
     #[tokio::test]
     async fn the_driver_tab_rescans_on_the_existing_twenty_tick_block() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5061,7 +4068,7 @@ mod tests {
         }
         while let Ok(action) = rx.try_recv() {
             assert!(
-                !matches!(action, Action::DriverRunsListed { .. }),
+                !matches!(action, Action::LauncherRunsRefreshed { .. }),
                 "the rescan must ride the EXISTING counter — a scan before the \
                  twentieth tick means it got a timer of its own"
             );
@@ -5069,9 +4076,9 @@ mod tests {
 
         app.update(Action::Tick);
         assert!(
-            scan_reported(&mut rx).await,
-            "the twentieth tick must rescan the run list, inbox and journal \
-             while the Driver tab is open"
+            launcher_listing_reported(&mut rx).await.is_some(),
+            "the twentieth tick must re-list the launcher runs while the Driver \
+             tab is open"
         );
     }
 
@@ -5468,8 +4475,8 @@ mod tests {
     }
 
     /// The gate really refuses: a dashboard with no Driver tab open pays nothing
-    /// for it. The scan is three blocking reads, so an ungated rescan would cost
-    /// the whole fleet for one pane's freshness.
+    /// for it. The listing is a `read_dir` and a lock probe per run, so an ungated
+    /// rescan would cost the whole fleet for one pane's freshness.
     #[tokio::test]
     async fn a_tick_with_no_driver_tab_open_schedules_no_scan() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5483,76 +4490,25 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         while let Ok(action) = rx.try_recv() {
             assert!(
-                !matches!(action, Action::DriverRunsListed { .. }),
+                !matches!(action, Action::LauncherRunsRefreshed { .. }),
                 "the dashboard is on top; nothing is looking at a run list"
             );
         }
     }
 
-    /// D-27's negative carry-forward, discharged for `driver_output`.
-    #[tokio::test]
-    async fn pruning_drops_the_output_buffer_for_an_unregistered_alias() {
-        use crate::ui::screens::DriverLineKind;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        // OBS_ALIAS is registered by the fixture; "gone" never was.
-        app.ctx
-            .driver_output
-            .entry("gone".to_string())
-            .or_default()
-            .push_record(DriverLineKind::Output, "output from a project that left");
-        app.ctx
-            .driver_output
-            .entry(OBS_ALIAS.to_string())
-            .or_default()
-            .push_record(DriverLineKind::Output, "output from a project that stayed");
-
-        app.prune_driver_maps();
-
-        assert!(
-            !app.ctx.driver_output.contains_key("gone"),
-            "a buffer for an unregistered alias holds up to the full ring cap and \
-             nothing can ever append to it again — leaving it reintroduces the \
-             Phase 16 leak under a new name"
-        );
-
-        // The control arm: a registered alias keeps its buffer AND its
-        // contents, so the assertion above is not passing because the prune
-        // emptied the map.
-        let kept = app
-            .ctx
-            .driver_output
-            .get(OBS_ALIAS)
-            .expect("a registered alias keeps its buffer");
-        assert_eq!(
-            kept.len(),
-            1,
-            "the prune must not clear a live buffer's contents"
-        );
-    }
-
-    /// Plan 18-09 moved three driver payloads onto `ProjectViewCache`, so the
-    /// map that holds it joins the prune pass. Without this, `driver_runs`,
-    /// `driver_inbox` and `driver_tally` for a project the user unregistered
-    /// would sit in memory for the life of the process — the same leak
-    /// `driver_output` was added to the pass to prevent, under a third name.
+    /// The driver payloads live on `ProjectViewCache` (the launcher rows, their detail
+    /// and the LOG tail), so the map that holds it joins the prune pass. Without
+    /// this, the cache of a project the user unregistered would sit in memory for
+    /// the life of the process.
     #[tokio::test]
     async fn pruning_drops_the_view_cache_for_an_unregistered_alias() {
-        use crate::ui::screens::DriverRunTally;
-
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
 
         for alias in ["gone", OBS_ALIAS] {
             let cache = app.ctx.view_cache.entry(alias.to_string()).or_default();
-            cache.driver_selected_run = 2;
-            cache.driver_tally = Some(DriverRunTally {
-                run_id: OBS_RUN.to_string(),
-                cumulative_cost_usd: Some(1.83),
-                turn_boundaries: 3,
-            });
+            cache.launcher_selected = 2;
+            cache.launcher_selected_id = Some("20261019-a".to_string());
         }
 
         app.prune_driver_maps();
@@ -5571,49 +4527,15 @@ mod tests {
             .view_cache
             .get(OBS_ALIAS)
             .expect("a registered alias keeps its view cache");
-        assert_eq!(kept.driver_selected_run, 2);
+        assert_eq!(kept.launcher_selected, 2);
         assert_eq!(
-            kept.driver_tally
-                .as_ref()
-                .and_then(|t| t.cumulative_cost_usd),
-            Some(1.83),
+            kept.launcher_selected_id.as_deref(),
+            Some("20261019-a"),
             "the prune must not clear a live cache's contents"
         );
     }
 
-    // ── The three schedulers, the goal, and the sub-view ─────────────────
-
-    /// `DriverRunsListed` populates the view cache and requests a redraw.
-    #[tokio::test]
-    async fn a_run_list_result_populates_the_cache_and_requests_a_redraw() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        app.needs_redraw = false;
-        app.update(Action::DriverRunsListed {
-            alias: OBS_ALIAS.to_string(),
-            runs: vec![run_summary("2026-07-29T12-02-00Z-a1b2")],
-            inbox: vec![crate::journal::inbox::InboxMessage {
-                id: "3f2a".to_string(),
-                ts: "2026-07-29T21:40:02Z".to_string(),
-                text: "steer".to_string(),
-            }],
-            journal: None,
-        });
-
-        let cache = app
-            .ctx
-            .view_cache
-            .get(OBS_ALIAS)
-            .expect("the handler must create the cache entry");
-        assert_eq!(cache.driver_runs.len(), 1);
-        assert_eq!(cache.driver_runs[0].run_id, "2026-07-29T12-02-00Z-a1b2");
-        assert_eq!(cache.driver_inbox.len(), 1);
-        assert!(
-            app.needs_redraw,
-            "a run list that changed under the pane must be painted"
-        );
-    }
+    // ── The launcher rows and the sub-view ────────────────────────────────
 
     /// An unreadable launcher run row: enough to be listed, no file needed.
     fn launcher_entry(id: &str) -> crate::state_reader::driver_frontmatter::DriverRunEntry {
@@ -5805,7 +4727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launcher_stop_stopped_sets_the_status_line_and_relists_the_driver_runs() {
+    async fn launcher_stop_stopped_sets_the_status_line_and_relists_the_launcher_runs() {
         let dir = tempfile::tempdir().expect("temp dir");
         launcher_project(dir.path());
         let (mut app, mut rx) = obs_app(dir.path());
@@ -5824,20 +4746,18 @@ mod tests {
         );
         assert!(app.needs_redraw);
 
-        // Both listings follow: the journal runs, and the launcher rows whose
-        // derived status is what the stop just changed.
+        // The launcher listing follows: its rows' derived status is what the stop
+        // just changed.
         let mut launcher = None;
-        let mut journal_listed = false;
-        while launcher.is_none() || !journal_listed {
+        while launcher.is_none() {
             match next_action(&mut rx).await {
                 Some(Action::LauncherRunsRefreshed {
                     alias,
                     launcher_runs,
                     ..
                 }) => launcher = Some((alias, launcher_runs)),
-                Some(Action::DriverRunsListed { .. }) => journal_listed = true,
                 Some(_) => {}
-                None => panic!("a re-list of the Driver runs must follow"),
+                None => panic!("a re-list of the launcher runs must follow"),
             }
         }
         let (alias, launcher_runs) = launcher.unwrap();
@@ -5875,32 +4795,6 @@ mod tests {
         assert_eq!(app.ctx.view_cache[OBS_ALIAS].launcher_selected, 0);
     }
 
-    /// A shortened list clamps the selection rather than leaving it dangling.
-    #[tokio::test]
-    async fn a_shorter_run_list_clamps_the_selection_instead_of_dangling() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        app.ctx
-            .view_cache
-            .entry(OBS_ALIAS.to_string())
-            .or_default()
-            .driver_selected_run = 4;
-
-        app.update(Action::DriverRunsListed {
-            alias: OBS_ALIAS.to_string(),
-            runs: vec![run_summary("2026-07-29T12-02-00Z-a1b2")],
-            inbox: Vec::new(),
-            journal: None,
-        });
-
-        assert_eq!(
-            app.ctx.view_cache[OBS_ALIAS].driver_selected_run, 0,
-            "a selection past the end of a shortened list must be clamped, or the \
-             detail pane indexes a run that is not there"
-        );
-    }
-
     /// The Driver sub-view round-trips through both `detail.rs` mappings.
     #[test]
     fn the_driver_sub_view_is_the_last_tab_index_in_both_directions() {
@@ -5918,146 +4812,6 @@ mod tests {
         assert_eq!(sub_view_from_index(9, true), DetailSubView::RoadmapViz);
     }
 
-    #[tokio::test]
-    async fn a_tail_result_advances_only_its_own_cursor() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        let mine = (OBS_ALIAS.to_string(), "run-a".to_string());
-        let theirs = (OBS_ALIAS.to_string(), "run-b".to_string());
-        app.ctx
-            .journal_cursors
-            .insert(mine.clone(), cursor_at(10, 1));
-        app.ctx
-            .journal_cursors
-            .insert(theirs.clone(), cursor_at(20, 7));
-
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: "run-a".to_string(),
-            records: Vec::new(),
-            cursor: cursor_at(99, 4),
-        });
-
-        assert_eq!(
-            app.ctx.journal_cursors.get(&mine),
-            Some(&cursor_at(99, 4)),
-            "the tail's own cursor must advance, seq and all"
-        );
-        assert_eq!(
-            app.ctx.journal_cursors.get(&theirs),
-            Some(&cursor_at(20, 7)),
-            "a sibling run's cursor must not move"
-        );
-    }
-
-    /// A run id whose lexicographic order equals its chronological order, which
-    /// is `new_run_id`'s documented property and what the retention sort relies
-    /// on. Built by hand rather than through `new_run_id` so the ordering under
-    /// test is visible in the test itself.
-    fn run_id_at(minute: u32) -> String {
-        format!("2026-07-29T12-{minute:02}-00Z-a1b2")
-    }
-
-    /// D-27, first pass: an alias the registry no longer knows about.
-    #[tokio::test]
-    async fn pruning_drops_cursors_for_an_unregistered_alias() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        // OBS_ALIAS is registered by the fixture; "gone" never was.
-        app.ctx
-            .journal_cursors
-            .insert((OBS_ALIAS.to_string(), run_id_at(1)), cursor_at(5, 1));
-        app.ctx
-            .journal_cursors
-            .insert(("gone".to_string(), run_id_at(2)), cursor_at(6, 2));
-        app.ctx
-            .run_states
-            .insert("gone".to_string(), crate::executor::RunState::Running);
-        app.ctx
-            .run_states
-            .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
-
-        app.prune_driver_maps();
-
-        assert!(
-            !app.ctx
-                .journal_cursors
-                .contains_key(&("gone".to_string(), run_id_at(2))),
-            "a cursor for an unregistered alias is dead weight for the whole \
-             life of the process — nothing can ever append to it again"
-        );
-        assert!(!app.ctx.run_states.contains_key("gone"));
-
-        // The control arm: a registered alias keeps everything, so the
-        // assertions above are not passing because the prune emptied the maps.
-        assert!(app
-            .ctx
-            .journal_cursors
-            .contains_key(&(OBS_ALIAS.to_string(), run_id_at(1))));
-        assert!(app.ctx.run_states.contains_key(OBS_ALIAS));
-    }
-
-    /// D-27, second pass: the per-alias retention bound.
-    ///
-    /// Asserts the count **and** which ids survived. A prune that kept the right
-    /// number of the wrong runs — the oldest — would satisfy a count-only
-    /// assertion while discarding exactly the cursors a live run needs.
-    #[tokio::test]
-    async fn pruning_retains_at_most_the_newest_runs_per_alias() {
-        use crate::journal::RETAIN_RUNS;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        let total = RETAIN_RUNS + 5;
-        for minute in 0..total {
-            app.ctx.journal_cursors.insert(
-                (OBS_ALIAS.to_string(), run_id_at(minute as u32)),
-                cursor_at(minute as u64, minute as u64),
-            );
-        }
-        assert_eq!(app.ctx.journal_cursors.len(), total);
-
-        app.prune_driver_maps();
-
-        assert_eq!(
-            app.ctx.journal_cursors.len(),
-            RETAIN_RUNS,
-            "the in-memory bound must match the on-disk one rather than being a \
-             second unrelated number"
-        );
-
-        let mut survivors: Vec<String> = app
-            .ctx
-            .journal_cursors
-            .keys()
-            .map(|(_, run_id)| run_id.clone())
-            .collect();
-        survivors.sort();
-        let expected: Vec<String> = (total - RETAIN_RUNS..total)
-            .map(|minute| run_id_at(minute as u32))
-            .collect();
-        assert_eq!(
-            survivors, expected,
-            "the NEWEST ids must survive; run ids sort lexicographically in \
-             chronological order by construction, so this is a string sort and \
-             needs no file read"
-        );
-
-        // Under the bound, nothing is evicted.
-        app.ctx.journal_cursors.clear();
-        for minute in 0..RETAIN_RUNS {
-            app.ctx.journal_cursors.insert(
-                (OBS_ALIAS.to_string(), run_id_at(minute as u32)),
-                cursor_at(0, 0),
-            );
-        }
-        app.prune_driver_maps();
-        assert_eq!(app.ctx.journal_cursors.len(), RETAIN_RUNS);
-    }
-
     /// The interactive removal path cleans the driver maps immediately, rather
     /// than leaving them to the periodic backstop.
     #[tokio::test]
@@ -6072,12 +4826,6 @@ mod tests {
         // failure and returns before it reaches the cleanup block.
         app.ctx.config_path = dir.path().join("config.json");
 
-        app.ctx
-            .journal_cursors
-            .insert((OBS_ALIAS.to_string(), run_id_at(1)), cursor_at(5, 1));
-        app.ctx
-            .journal_cursors
-            .insert((OBS_ALIAS.to_string(), run_id_at(2)), cursor_at(9, 3));
         app.ctx
             .run_states
             .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
@@ -6098,14 +4846,6 @@ mod tests {
             !app.ctx.run_states.contains_key(OBS_ALIAS),
             "run_states leaked past an interactive removal"
         );
-        assert!(
-            app.ctx
-                .journal_cursors
-                .keys()
-                .all(|(alias, _)| alias != OBS_ALIAS),
-            "every cursor for the removed alias must go, not just one — the map \
-             is keyed (alias, run_id) and a project may have several"
-        );
     }
 
     // ── The phase's negative carry-forward, discharged mechanically ────────
@@ -6124,8 +4864,6 @@ mod tests {
     #[tokio::test]
     async fn every_per_alias_driver_map_is_pruned() {
         use crate::executor::RunState;
-        use crate::journal::reader::JournalCursor;
-        use crate::ui::screens::{DriverLineKind, DryRunPreview};
 
         const GONE: &str = "gone";
 
@@ -6136,27 +4874,14 @@ mod tests {
         // alias the registry has never heard of, so each assertion below has a
         // control arm and none of them can pass by emptying the map.
         for alias in [GONE, OBS_ALIAS] {
-            app.ctx.journal_cursors.insert(
-                (alias.to_string(), OBS_RUN.to_string()),
-                JournalCursor::default(),
-            );
             app.ctx
                 .run_states
                 .insert(alias.to_string(), RunState::Running);
-            app.ctx
-                .driver_output
-                .entry(alias.to_string())
-                .or_default()
-                .push_record(DriverLineKind::Output, "a line");
+            // The launcher payloads live inside `view_cache`, so they inherit that
+            // map's prune rather than needing their own — and this test is where
+            // that inheritance is checked rather than assumed.
             let cache = app.ctx.view_cache.entry(alias.to_string()).or_default();
-            cache.driver_selected_run = 1;
-            // The field plan 18-11 added. It is inside `view_cache`, so it
-            // inherits that map's prune rather than needing its own — and this
-            // test is where that inheritance is checked rather than assumed.
-            cache.driver_dry_run = Some(DryRunPreview {
-                command: "/gsd:progress".to_string(),
-                report: None,
-            });
+            cache.launcher_selected = 1;
             app.ctx
                 .last_refresh
                 .insert(alias.to_string(), std::time::Instant::now());
@@ -6179,11 +4904,9 @@ mod tests {
         // ── The enumeration. Destructured exhaustively so a new `AppContext`
         // field is a compile error here until it has been classified.
         let crate::ui::screens::AppContext {
-            // Alias-keyed or (alias, run_id)-keyed: every one of these must be
-            // pruned, and each is asserted below.
-            journal_cursors,
+            // Alias-keyed: every one of these must be pruned, and each is asserted
+            // below.
             run_states,
-            driver_output,
             view_cache,
             last_refresh,
             archive_cache,
@@ -6228,13 +4951,7 @@ mod tests {
             active_sessions: _,
         } = &app.ctx;
 
-        assert!(
-            journal_cursors.keys().all(|(alias, _)| alias != GONE),
-            "journal_cursors is keyed (alias, run_id) and must lose every entry \
-             for an unregistered alias"
-        );
         assert!(!run_states.contains_key(GONE), "run_states leaked");
-        assert!(!driver_output.contains_key(GONE), "driver_output leaked");
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
         assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
@@ -6242,90 +4959,13 @@ mod tests {
         // The control arm for all of them at once: the registered alias kept
         // everything, so none of the assertions above passed because the prune
         // cleared the map.
-        assert!(journal_cursors.keys().any(|(alias, _)| alias == OBS_ALIAS));
         assert!(run_states.contains_key(OBS_ALIAS));
-        assert!(driver_output.contains_key(OBS_ALIAS));
         assert!(last_refresh.contains_key(OBS_ALIAS));
         assert!(archive_cache.get(OBS_ALIAS, "v1.0").is_some());
         let kept = view_cache
             .get(OBS_ALIAS)
             .expect("a registered alias keeps its view cache");
-        assert_eq!(kept.driver_selected_run, 1);
-        assert!(
-            kept.driver_dry_run.is_some(),
-            "and keeps the preview it had open"
-        );
-    }
-
-    /// A dry-run report is parked only under the preview it was built for
-    /// (D-26).
-    #[tokio::test]
-    async fn a_dry_run_report_is_stored_only_under_the_preview_it_was_built_for() {
-        use crate::ui::screens::DryRunPreview;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        // Nothing open: a report that arrives after the user pressed Esc has
-        // nowhere to go, and recreating the preview for it would repaint a pane
-        // the user has left.
-        app.update(Action::DriverDryRunLoaded {
-            alias: OBS_ALIAS.to_string(),
-            command: "/gsd:progress".to_string(),
-            report: "orphaned".to_string(),
-        });
-        assert!(
-            app.ctx
-                .view_cache
-                .get(OBS_ALIAS)
-                .and_then(|cache| cache.driver_dry_run.as_ref())
-                .is_none(),
-            "a report with no open preview must not create one"
-        );
-
-        app.ctx
-            .view_cache
-            .entry(OBS_ALIAS.to_string())
-            .or_default()
-            .driver_dry_run = Some(DryRunPreview {
-            command: "/gsd:progress".to_string(),
-            report: None,
-        });
-
-        // Stale: built for a command the user has since retyped. Storing it
-        // would show one command's blast radius under another command's name —
-        // the display disagreeing with the disk in the direction that flatters
-        // the run.
-        app.needs_redraw = false;
-        app.update(Action::DriverDryRunLoaded {
-            alias: OBS_ALIAS.to_string(),
-            command: "/gsd:execute-phase 99".to_string(),
-            report: "the wrong report".to_string(),
-        });
-        assert_eq!(
-            app.ctx.view_cache[OBS_ALIAS]
-                .driver_dry_run
-                .as_ref()
-                .and_then(|p| p.report.as_deref()),
-            None,
-            "a report for a different command must be discarded"
-        );
-        assert!(!app.needs_redraw, "and must not repaint the frame");
-
-        // Matching: stored, and the pane is repainted.
-        app.update(Action::DriverDryRunLoaded {
-            alias: OBS_ALIAS.to_string(),
-            command: "/gsd:progress".to_string(),
-            report: "== Push refspecs this state would produce ==".to_string(),
-        });
-        assert_eq!(
-            app.ctx.view_cache[OBS_ALIAS]
-                .driver_dry_run
-                .as_ref()
-                .and_then(|p| p.report.as_deref()),
-            Some("== Push refspecs this state would produce =="),
-        );
-        assert!(app.needs_redraw);
+        assert_eq!(kept.launcher_selected, 1);
     }
 
     // ── The Archive tab's drill-in view across refreshes ───────────────────

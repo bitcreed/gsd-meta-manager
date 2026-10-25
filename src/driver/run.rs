@@ -1495,7 +1495,7 @@ async fn read_inbox(inbox_path: &Path, cursor: &mut TailCursor) -> Vec<InboxMess
     *cursor = read.cursor;
 
     // Both diagnostic flags are surfaced rather than swallowed, following
-    // `App::schedule_journal_tail`. Under this design's own invariants an inbox
+    // the TUI's (since retired) journal tail. Under this design's own invariants an inbox
     // is never truncated in place, so `restarted` can only mean an invariant
     // broke — and its consequence is re-delivery of messages already sent.
     if read.restarted {

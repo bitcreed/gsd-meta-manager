@@ -471,7 +471,7 @@ pub fn clear_active_pointer(runs_root: &Path) -> anyhow::Result<()> {
 /// or a hostile script; this side needs only the agent the user already asked to
 /// run. `is_dir()` was the sole guard and a traversing path satisfies it
 /// happily, after which `reconcile_one` read `run.json` from anywhere on the
-/// filesystem and `App::schedule_journal_tail` tailed anything into a render
+/// filesystem and the (since retired) journal tail read anything into a render
 /// surface. Ordering the checks the other way would ask the filesystem about the
 /// hostile path before refusing it, which is a smaller hole rather than none.
 ///

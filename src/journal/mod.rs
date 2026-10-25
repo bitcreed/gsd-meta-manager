@@ -1090,12 +1090,6 @@ pub fn recheck_approval(
 /// that key (D-10).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChangeKind {
-    /// A write under `.planning/meta-manager/runs/<run-id>/` — the driver's own
-    /// journal. Routes to a byte-offset tail, never to a full re-parse.
-    DriverJournal {
-        /// The run directory's name, which is the run id.
-        run_id: String,
-    },
     /// A change to a launcher run's own files under
     /// `.planning/meta-manager/drivers/<run-id>/` (30-01, D-24): the run directory
     /// itself appearing or disappearing, its `DIRECTION.md`, or its `LOG.md`.
@@ -1113,12 +1107,18 @@ pub enum ChangeKind {
     /// (T-30-03): the splice alone rewrites its temp and `state.json` on every
     /// heartbeat, and a re-parse per heartbeat is the denial of service this
     /// variant exists to stop.
+    ///
+    /// **Also every path at or below `.planning/meta-manager/runs/`** (Phase 31, D-03):
+    /// the legacy `drive` journal-run directory, which nothing in the TUI reads any
+    /// more. Runs a previous version left on disk stay there (they are not migrated or
+    /// deleted) and are inert: they trigger neither a journal tail nor a re-parse.
     Ignored,
     /// Everything else. Keeps today's re-parse behaviour.
     Planning,
 }
 
-/// Classify a changed path as a driver-journal write or a planning write.
+/// Classify a changed path as a launcher-run write, an ignorable write or a planning
+/// write.
 ///
 /// **A pure function with no filesystem access (D-11).** It must not stat,
 /// canonicalise or read anything, because it runs on the `notify` debouncer's
@@ -1133,13 +1133,16 @@ pub enum ChangeKind {
 /// - **It anchors on the full three-component `.planning/meta-manager/runs/`
 ///   prefix, never on a bare `runs` component.** A project that happens to keep
 ///   `.planning/runs/` for its own purposes must not have its writes
-///   misclassified as driver writes, because a misclassified planning write is a
+///   misclassified as ignorable, because a misclassified planning write is a
 ///   dashboard that silently stops updating (RESEARCH Security Domain, tampering
 ///   row; T-16-07).
 ///
-/// A path *directly* under `runs/` — the shared `.gitignore`, the `active`
-/// pointer, or the run directory itself — is `Planning`: it names no run, so
-/// there is no `run_id` to carry, and there is no journal to tail.
+/// **`.planning/meta-manager/runs/` is inert (Phase 31, D-03).** It held the legacy
+/// `drive` journal runs, which nothing in the TUI reads any more, and previous
+/// versions' runs stay on disk. Every path at or below it is [`ChangeKind::Ignored`]:
+/// the shared `.gitignore`, the `active` pointer, `run.lock`, the run directory
+/// itself and everything deeper. Before this, writes under it routed to a journal
+/// tail, and the shallower ones to a full re-parse.
 ///
 /// **`.planning/meta-manager/drivers/` is an ALLOWLIST (30-01, D-24).** The
 /// run directory (`drivers/<id>`), `drivers/<id>/DIRECTION.md` and
@@ -1168,14 +1171,12 @@ pub fn classify_change(project_root: &Path, changed_path: &Path) -> ChangeKind {
         }
     }
 
-    if parts.len() >= 5
+    if parts.len() >= 3
         && parts[0] == ".planning"
         && parts[1] == "meta-manager"
         && parts[2] == "runs"
     {
-        return ChangeKind::DriverJournal {
-            run_id: parts[3].to_string(),
-        };
+        return ChangeKind::Ignored;
     }
 
     if parts.len() >= 3
@@ -2267,22 +2268,26 @@ mod tests {
     }
 
     #[test]
-    fn classify_change_names_a_journal_path_as_driver() {
+    fn classify_change_ignores_every_legacy_runs_path() {
         let root = Path::new("/home/user/projects/myapp");
-        let run_id = "2026-07-28T14-03-11Z-a3f9";
+        let run = ".planning/meta-manager/runs/2026-07-28T14-03-11Z-a3f9";
         let cases = [
-            ".planning/meta-manager/runs/2026-07-28T14-03-11Z-a3f9/journal.jsonl",
-            ".planning/meta-manager/runs/2026-07-28T14-03-11Z-a3f9/run.json",
-            ".planning/meta-manager/runs/2026-07-28T14-03-11Z-a3f9/inbox.jsonl",
-            ".planning/meta-manager/runs/2026-07-28T14-03-11Z-a3f9/nested/run.json",
+            ".planning/meta-manager/runs".to_string(),
+            ".planning/meta-manager/runs/.gitignore".to_string(),
+            ".planning/meta-manager/runs/active".to_string(),
+            ".planning/meta-manager/runs/run.lock".to_string(),
+            run.to_string(),
+            format!("{run}/journal.jsonl"),
+            format!("{run}/run.json"),
+            format!("{run}/inbox/x"),
+            format!("{run}/inbox.jsonl"),
+            format!("{run}/nested/run.json"),
         ];
         for case in cases {
             assert_eq!(
-                classify_change(root, &root.join(case)),
-                ChangeKind::DriverJournal {
-                    run_id: run_id.to_string()
-                },
-                "{case} must classify as a driver journal write"
+                classify_change(root, &root.join(&case)),
+                ChangeKind::Ignored,
+                "{case} is a legacy run path and must be ignored"
             );
         }
     }
@@ -2307,25 +2312,21 @@ mod tests {
     }
 
     #[test]
-    fn classify_change_does_not_treat_a_bare_runs_directory_as_driver() {
+    fn classify_change_does_not_treat_a_bare_runs_directory_as_inert() {
         let root = Path::new("/home/user/projects/myapp");
         let cases = [
-            // A project that keeps its own `runs/` under `.planning/`. The
-            // driver prefix is `meta-manager/runs/`, never a bare `runs`.
+            // A project that keeps its own `runs/` under `.planning/`. The inert
+            // prefix is `meta-manager/runs/`, never a bare `runs`.
             ".planning/runs/2026-07-28T14-03-11Z-a3f9/journal.jsonl",
             ".planning/runs/anything",
+            ".planning/runs/x",
             "meta-manager/runs/2026-07-28T14-03-11Z-a3f9/journal.jsonl",
-            // Directly under `runs/`: names no run, so it carries no run id.
-            ".planning/meta-manager/runs/.gitignore",
-            ".planning/meta-manager/runs/active",
-            ".planning/meta-manager/runs/2026-07-28T14-03-11Z-a3f9",
-            ".planning/meta-manager/runs",
         ];
         for case in cases {
             assert_eq!(
                 classify_change(root, &root.join(case)),
                 ChangeKind::Planning,
-                "{case} must not classify as a driver journal write"
+                "{case} must keep re-parsing the project"
             );
         }
     }
@@ -2386,6 +2387,7 @@ mod tests {
         for case in [
             ".planning/drivers/x/DIRECTION.md",
             ".planning/drivers/x",
+            ".planning/runs/x",
             "drivers/x/DIRECTION.md",
             ".planning/meta-manager/QUEUE.md",
         ] {

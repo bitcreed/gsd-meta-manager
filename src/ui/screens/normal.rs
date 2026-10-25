@@ -1680,8 +1680,6 @@ mod tests {
             exec_tx: None,
             run_states: HashMap::new(),
             reparse_dispatches: 0,
-            journal_cursors: HashMap::new(),
-            driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),

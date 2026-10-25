@@ -452,8 +452,6 @@ pub enum DriverLineKind {
     Output,
     /// `ExecEvent` on the `stderr` stream: present but secondary.
     Stderr,
-    /// An interjection record: queued, delivered, acted-on or missed.
-    Injection,
     /// `Diagnostic`, `EventsDropped`, `JournalTruncated` — never silently swallowed.
     Diagnostic,
     /// The terminal record (`RunEnded` / `ExecFinished`): the visual full stop.
@@ -503,8 +501,8 @@ pub struct DriverOutputLine {
 
 /// One alias's bounded live-output ring (D-18).
 ///
-/// * A **sibling map value** on [`AppContext`], shaped like `run_states` and
-///   `journal_cursors`. It deliberately does NOT live on `ProjectState`: that
+/// * A **sibling map value** on [`AppContext`], shaped like `run_states`.
+///   It deliberately does NOT live on `ProjectState`: that
 ///   type derives `PartialEq`, and `app.rs` uses the derived equality to
 ///   suppress the "Updated: {alias}" status message. Live output changes every
 ///   few seconds, so a field there would flood the status bar for an entire
@@ -1156,8 +1154,6 @@ pub struct ProjectViewCache {
     // `AppContext` because `ProjectViewCache` is `#[derive(Default)]`: these
     // five fields are additive with zero constructor churn, while a field on
     // `AppContext` costs an edit at all four construction sites.
-    /// Index into the run list of the run whose detail is shown.
-    pub driver_selected_run: usize,
     /// Scroll offset of the live-output pane, in lines.
     ///
     /// Clamped in the key handler against the viewport metrics the render pass
@@ -1170,28 +1166,6 @@ pub struct ProjectViewCache {
     /// (D-19). `false` by default, which is correct: an unselected Driver tab
     /// has nothing to follow, and the tab sets it when a run is selected.
     pub driver_follow: bool,
-    /// The inbox messages queued for the selected run, newest last.
-    ///
-    /// The TUI's state for a message is a pure function of the ids in
-    /// `inbox.jsonl` and the ids present in each journal kind, which is what
-    /// makes STEER-03 hold across a restart with no extra persisted state.
-    pub driver_inbox: Vec<crate::journal::inbox::InboxMessage>,
-    /// This project's runs on disk, **newest first** (OBS-05).
-    ///
-    /// Populated by `App::schedule_run_list_scan` from
-    /// [`crate::journal::list_runs`], which reads each run's small committed
-    /// `run.json` and never the journal beside it — so a project holding the
-    /// full retention history costs the same to list as one with a single run.
-    /// The order is [`crate::journal::sort_run_summaries_newest_first`]'s:
-    /// lexicographic-descending on the run id, which is chronological because
-    /// `new_run_id`'s format makes byte order time order.
-    ///
-    /// Plain data, and it lives here rather than in a sibling map on
-    /// `AppContext` for the reason the four fields above do: this struct is
-    /// `#[derive(Default)]`, so the field is additive with zero constructor
-    /// churn, while an `AppContext` field costs an edit at five construction
-    /// sites.
-    pub driver_runs: Vec<crate::journal::RunSummary>,
     /// The project's **launcher** runs (`.planning/meta-manager/drivers/<run-id>/`),
     /// newest first, at most 20 (28-07, D-30).
     ///
@@ -1252,61 +1226,6 @@ pub struct ProjectViewCache {
     /// that the run it asked for already exists. Cleared when the input opens and on
     /// every edit of the slug.
     pub new_run_status: Option<driver_launch::NewRunStatus>,
-    /// Whether the collapsed `legacy runs` section is expanded (`L`, 30-01, D-01).
-    /// The section exists only while `driver_runs` is non-empty.
-    pub legacy_expanded: bool,
-    /// Whether the highlight is on a legacy run (`driver_selected_run` is then the
-    /// legacy index) rather than on a launcher run. Honoured only while the legacy
-    /// rows are shown; see `driver_run::selection`.
-    pub legacy_row_selected: bool,
-    /// The running tally for the run whose journal is currently being tailed.
-    ///
-    /// Two facts the Driver tab's header and step timeline need are carried by
-    /// journal **records** rather than by the committed `run.json`, so neither is
-    /// reachable from [`crate::journal::RunSummary`]: the cumulative cost, which
-    /// arrives on `cost` records, and the number of turn boundaries observed,
-    /// which arrive as `exec_event` records on the `turn_completed` stream.
-    ///
-    /// It is keyed by run id **inside** the value rather than by being a map,
-    /// because only one run per project is ever tailed at a time and the id is
-    /// what makes the reader able to say "this tally is not about the run you
-    /// are looking at" — which is the honest answer for every other row in the
-    /// list. Without the id, a cost from the live run would be shown against a
-    /// historical one, which is a figure the evidence does not support.
-    pub driver_tally: Option<DriverRunTally>,
-    /// The **selected** run's journal, as the scan read it off disk (OBS-05).
-    ///
-    /// The live ring buffer on `AppContext` holds the run this session is
-    /// *tailing*. A user reviewing a run that finished last week is looking at a
-    /// different journal, and rendering the tailed run's buffer under it would
-    /// attribute one run's output to another — the same error the run id inside
-    /// [`DriverRunTally`] exists to prevent, which is why this value carries its
-    /// own run id too.
-    ///
-    /// It is what makes the four injection states a **pure function of disk**:
-    /// the ids in `inbox.jsonl` and the ids in each journal kind. Nothing about
-    /// a message's state is held in memory that a restart would lose, which is
-    /// what makes STEER-03 hold with no extra persistence.
-    pub driver_journal: Option<Box<DriverRunJournal>>,
-    /// The dry-run preview for the command being started, while and only while
-    /// the start flow is at Step B (D-26).
-    ///
-    /// **Presence is the mode.** `Some` means "the start screen is asking for a
-    /// goal and the body's run-detail pane is showing what the run would touch";
-    /// `None` means the pane shows the normal run detail. There is no separate
-    /// active flag, because two fields that must agree are two fields that can
-    /// disagree.
-    ///
-    /// It is the field `app.rs`'s `Action::DriverDryRunLoaded` handler was
-    /// waiting for: plan 18-05 landed the scheduling — the load-bearing half,
-    /// since `build_report` shells out to `git` twice — and deliberately left
-    /// the store to the plan that owns this screen's state shape.
-    ///
-    /// It lives here rather than in a sibling map on `AppContext` for the reason
-    /// the driver fields above do: this struct is `#[derive(Default)]`, so the
-    /// field is additive with zero constructor churn, and `view_cache` is
-    /// already pruned by `App::prune_driver_maps`, so it inherits that.
-    pub driver_dry_run: Option<DryRunPreview>,
 }
 
 impl ProjectViewCache {
@@ -1390,68 +1309,6 @@ impl ProjectViewCache {
     }
 }
 
-/// One dry-run preview, in the two states the pane can render it in (D-26).
-///
-/// The report is the **already-rendered** text from `dry_run::render`, not the
-/// structured report: the pane shows it verbatim and the three section headers
-/// are a pinned contract, so re-deriving the layout here would create a second
-/// answer that drifts from the CLI's.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DryRunPreview {
-    /// The command the preview is about. The `Action` carries it back so a
-    /// report built for a command the user has since retyped is discarded
-    /// instead of being shown under the new one.
-    pub command: String,
-    /// `None` until the `spawn_blocking` build returns — the loading state.
-    ///
-    /// Unknown is not "nothing would happen": the pane renders the shipped
-    /// `Loading...` idiom rather than an empty report, because an empty preview
-    /// of a run that is about to touch the user's repository is the single most
-    /// dangerous thing this surface could imply.
-    pub report: Option<String>,
-}
-
-/// One run's journal, read whole from disk for after-the-fact review.
-///
-/// Boxed at its `Action` call site because it is the largest driver payload and
-/// `clippy::large_enum_variant` fires on a ~200-byte difference between the
-/// largest and second-largest variants (RESEARCH §8.3).
-#[derive(Debug, Clone, Default)]
-pub struct DriverRunJournal {
-    /// Which run this journal is. A journal whose id does not match the run
-    /// being rendered is not shown at all.
-    pub run_id: String,
-    /// The journal's records projected into pane lines, through the same
-    /// bounded ring the live tail uses — so a 64 MB journal costs the same as a
-    /// live run's buffer and the drop count is reported the same way.
-    pub output: DriverOutput,
-}
-
-/// What one run's journal tail has reported so far.
-///
-/// Facts only, and each from a named record kind. Nothing here is derived from
-/// the agent's prose (D-13).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct DriverRunTally {
-    /// Which run this tally is about. A tally whose id does not match the run
-    /// being rendered is not shown at all.
-    pub run_id: String,
-    /// `JournalEvent::Cost.cumulative_usd`, the most recent value seen.
-    ///
-    /// **Cumulative across the run's turns** — `total_cost_usd` accumulates
-    /// while `num_turns` and `duration_ms` reset per turn (D-12) — which is why
-    /// every rendering of it is labelled. `None` until a `cost` record arrives:
-    /// unknown is not zero.
-    pub cumulative_cost_usd: Option<f64>,
-    /// How many turn boundaries the journal has reported.
-    ///
-    /// **Turns are turns, not commands.** A steered run emits several
-    /// `system/init` and `result` pairs inside one process (Phase 15 D-29); this
-    /// counts the boundaries, and the timeline still shows one *decided* row. A
-    /// later `system/init` is informational and is never a restart.
-    pub turn_boundaries: u32,
-}
-
 pub struct AppContext {
     pub config: Config,
     pub config_path: PathBuf,
@@ -1497,50 +1354,6 @@ pub struct AppContext {
     ///   production, and the count is a legitimate diagnostic in its own right
     ///   that Phase 18's driver surface may want to render.
     pub reparse_dispatches: u64,
-    /// Byte offset **and last observed `seq`** into each run journal, keyed by
-    /// `(alias, run_id)` (D-13, D-28).
-    ///
-    /// * A **sibling map**, shaped exactly like `run_states` above and
-    ///   `last_refresh` / `archive_cache` below. Phase 16 extends that
-    ///   neighbourhood rather than recreating it (D-19).
-    /// * It must not live on `ProjectState`: that type derives `PartialEq` and
-    ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
-    ///   status message. A journal offset moves every few seconds, so a field
-    ///   there would flood the status bar for an entire multi-hour run (D-18).
-    /// * It holds offsets, sequence numbers, run ids and counts — **never a file
-    ///   handle or a join handle**. `Action` derives `Clone` and a handle is not
-    ///   `Clone` (D-20).
-    /// * The value carries `last_seq` beside the byte offset because a byte
-    ///   offset alone cannot detect a lost event: the gap check compared records
-    ///   only *within one batch*, so a discontinuity falling between two tail
-    ///   reads was invisible — the shape a multi-hour run produces. The stored
-    ///   seq seeds the next batch's check through
-    ///   [`seq_gaps_from`](crate::journal::reader::seq_gaps_from) (D-28).
-    /// * **The map is pruned**, on the same 20-tick block as the reconciliation
-    ///   probe: entries for unregistered aliases are dropped and at most
-    ///   [`RETAIN_RUNS`](crate::journal::RETAIN_RUNS) run ids per alias are kept.
-    ///   Before that it was inserted in exactly one place, removed in none, and
-    ///   grew for the process lifetime. See `App::prune_driver_maps` (D-27).
-    pub journal_cursors: HashMap<(String, String), crate::journal::reader::JournalCursor>,
-    /// Per-alias bounded live driver output (D-18).
-    ///
-    /// * A **sibling map**, shaped exactly like `run_states`, `journal_cursors`
-    ///   above. Phase 18 extends that neighbourhood rather than recreating it.
-    /// * It must not live on `ProjectState`: that type derives `PartialEq` and
-    ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
-    ///   status message. Live output arrives every few seconds for the whole
-    ///   length of a run, so a field there would flood the status bar for an
-    ///   entire multi-hour run — defeating a deliberate v1.4 feature for the
-    ///   whole duration of the thing it is meant to report (ARCHITECTURE AP1).
-    /// * It holds owned strings, an enum and two counters — **never a file
-    ///   handle and never a join handle**. `Action` derives `Clone` and a handle
-    ///   is not `Clone` (D-20).
-    /// * **The map is pruned**, on the same 20-tick block as the reconciliation
-    ///   probe, in `App::prune_driver_maps`. A new per-alias map that is not
-    ///   pruned reintroduces the Phase 16 leak under a new name; that is this
-    ///   phase's only remaining carry-forward obligation and it is a negative
-    ///   one.
-    pub driver_output: HashMap<String, DriverOutput>,
     /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
     ///
     /// * A **sibling map**, shaped like `driver_output` above, for the same
@@ -1852,129 +1665,6 @@ impl AppContext {
         changed
     }
 
-    /// Schedule the run-list directory scan and the selected run's inbox read
-    /// (OBS-05, STEER-02).
-    ///
-    /// Both halves are blocking filesystem work — a `read_dir` plus one small
-    /// `run.json` per run, then a byte-offset tail — and this follows the
-    /// `spawn_blocking` → `Action` idiom the whole phase uses. **No file I/O on
-    /// the render thread** (D-28).
-    ///
-    /// The two reads share one task rather than taking one each, because the
-    /// second depends on the first: which run's inbox to read is decided by
-    /// indexing the freshly-listed runs. Splitting them would mean either a
-    /// round trip through the event loop between them or a stale index.
-    ///
-    /// The inbox is read from offset zero every time, and that is deliberate:
-    /// the payload is the whole inbox rather than a delta, so a message removed
-    /// from the file is expressed by its absence — the same reason
-    /// `Action::LauncherMarkersRescanned` carries the whole scan.
-    ///
-    /// **It lives here rather than on `App` (plan 18-09) because the Driver
-    /// tab's `switch_to_tab` arm has to call it**, and a `Screen` is handed an
-    /// `&mut AppContext` and never an `&mut App`. `App::schedule_run_list_scan`
-    /// delegates here, so there is exactly one implementation and the two call
-    /// paths cannot drift.
-    pub fn schedule_run_list_scan(&mut self, alias: &str, project_path: &std::path::Path) {
-        let Some(tx) = &self.event_tx else {
-            // Refuse visibly, never silently (S4).
-            self.error_message = Some(format!(
-                "Could not list the runs for '{alias}': no event channel."
-            ));
-            self.needs_redraw = true;
-            return;
-        };
-        let tx = tx.clone();
-        let planning_dir = project_path.join(".planning");
-        let alias_for_task = alias.to_string();
-        let selected = self
-            .view_cache
-            .get(alias)
-            .map_or(0, |cache| cache.driver_selected_run);
-
-        tokio::task::spawn_blocking(move || {
-            // Already sorted newest first by `list_runs` itself; the ordering is
-            // lexicographic-descending on the run id, which is chronological
-            // because `new_run_id`'s format makes byte order time order.
-            let runs = crate::journal::list_runs(&planning_dir);
-
-            // The fallible join again, on an id that came off disk (D-27).
-            let paths = runs
-                .get(selected)
-                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id));
-
-            let inbox = paths
-                .as_ref()
-                .and_then(|paths| {
-                    match crate::journal::inbox::tail(
-                        &paths.inbox,
-                        crate::journal::reader::TailCursor::default(),
-                    ) {
-                        Ok(read) => Some(read.messages),
-                        Err(e) => {
-                            // Kind only (S3).
-                            tracing::warn!(
-                                alias = %alias_for_task,
-                                kind = ?e.kind(),
-                                "inbox read failed",
-                            );
-                            None
-                        }
-                    }
-                })
-                .unwrap_or_default();
-
-            // The selected run's journal, whole (OBS-05). This is what makes a
-            // finished run reviewable after the fact and what makes the four
-            // injection states derivable from disk after a restart. It is the
-            // third and last blocking read in this task, and it is bounded twice
-            // over: `read_all` inherits the tail's per-read cap, and the
-            // projection goes through the same ring the live buffer uses.
-            let journal = paths.as_ref().map(|paths| {
-                let run_id = runs
-                    .get(selected)
-                    .map(|run| run.run_id.clone())
-                    .unwrap_or_default();
-                let (records, diagnostics) = crate::journal::reader::read_all(&paths.journal)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(
-                            alias = %alias_for_task,
-                            kind = ?e.kind(),
-                            "run journal read failed",
-                        );
-                        (
-                            Vec::new(),
-                            crate::journal::reader::ReadDiagnostics::default(),
-                        )
-                    });
-
-                let mut output = DriverOutput::for_run(&run_id);
-                // A gap goes in FIRST and as a line the user can see: it is what
-                // came before the records that follow and never will.
-                if !diagnostics.gaps.is_empty() {
-                    output.push_record(
-                        DriverLineKind::Diagnostic,
-                        &crate::app::journal_gap_line(diagnostics.gaps.len()),
-                    );
-                }
-                for record in &records {
-                    if let Some((kind, text)) = crate::app::driver_line_for_record(record) {
-                        output.push_record(kind, &text);
-                    }
-                }
-
-                Box::new(DriverRunJournal { run_id, output })
-            });
-
-            let _ = tx.send(crate::action::Action::DriverRunsListed {
-                alias: alias_for_task,
-                runs,
-                inbox,
-                journal,
-            });
-        });
-    }
-
     /// Schedule the off-thread listing of `alias`'s launcher runs (30-01, D-13, D-25).
     ///
     /// The listing, every `DIRECTION.md` read inside it and every run-lock probe are
@@ -2150,70 +1840,6 @@ impl AppContext {
             return;
         };
         self.schedule_selected_run_refresh(alias, &path, &run_id);
-    }
-
-    /// Schedule the dry-run preview for `alias` and `command` (D-26, D-28).
-    ///
-    /// **`dry_run::build_report` shells out to `git` twice, synchronously, and
-    /// this is one of the WR-10 call sites the Phase 17 review named by hand** —
-    /// a `git` invocation on a cold repository is unbounded from the render
-    /// loop's point of view. So it runs on `spawn_blocking` and returns through
-    /// [`crate::action::Action::DriverDryRunLoaded`]. Calling the builder inline
-    /// from a screen is the failure mode whose symptom is a frozen frame rather
-    /// than an error, which is why no screen may reach `build_report` directly.
-    ///
-    /// The token comes from [`crate::executor::DrivableProject::from_registry`],
-    /// the only production constructor, so a project the user never opted in
-    /// cannot have a preview built for it — which is right, because the preview
-    /// would describe a drive that is itself refused. **This is not a second
-    /// spawn gate**: nothing here spawns an agent, and the gate
-    /// `tests/spawn_seam_guard.rs` pins is still the child's (D-16).
-    ///
-    /// **It lives here rather than on `App` for the reason
-    /// [`Self::schedule_run_list_scan`] does**: `DriverStartScreen` has to call
-    /// it, and a `Screen` is handed an `&mut AppContext` and never an
-    /// `&mut App`. `App::schedule_dry_run_report` delegates here, so there is
-    /// exactly one implementation and the two call paths cannot drift.
-    pub fn schedule_dry_run_report(&mut self, alias: &str, command: &str) {
-        use crate::executor::DrivableProject;
-
-        let Some(entry) = self.config.projects.get(alias).cloned() else {
-            self.error_message = Some(format!("No registered project named '{alias}'"));
-            self.needs_redraw = true;
-            return;
-        };
-        let project = match DrivableProject::from_registry(alias, &entry) {
-            Ok(project) => project,
-            Err(refusal) => {
-                self.error_message = Some(refusal.to_string());
-                self.needs_redraw = true;
-                return;
-            }
-        };
-
-        let Some(tx) = &self.event_tx else {
-            // Refuse visibly, never silently (S4).
-            self.error_message = Some(format!(
-                "Could not build a dry-run preview for '{alias}': no event channel."
-            ));
-            self.needs_redraw = true;
-            return;
-        };
-        let tx = tx.clone();
-        let alias_for_task = alias.to_string();
-        let command_for_task = command.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let report = crate::driver::dry_run::render(&crate::driver::dry_run::build_report(
-                &project,
-                &command_for_task,
-            ));
-            let _ = tx.send(crate::action::Action::DriverDryRunLoaded {
-                alias: alias_for_task,
-                command: command_for_task,
-                report,
-            });
-        });
     }
 
     /// This alias's [`attention_rank`], from the state this context holds.
@@ -2789,8 +2415,6 @@ mod tests {
             exec_tx: None,
             run_states: HashMap::new(),
             reparse_dispatches: 0,
-            journal_cursors: HashMap::new(),
-            driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: SortMode::default(),

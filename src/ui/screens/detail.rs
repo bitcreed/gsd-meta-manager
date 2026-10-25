@@ -3690,24 +3690,17 @@ fn switch_to_sub_view(alias: &str, new_view: DetailSubView, ctx: &mut AppContext
         }
     }
 
-    // Load this project's run list for the Driver tab, off the render thread.
-    //
-    // Modelled on the git arm above — the file's async-load shape — but through
-    // `AppContext::schedule_run_list_scan` rather than a second inline closure,
-    // because the scan is `read_dir` plus one `run.json` per run plus the
-    // selected run's inbox tail and there must be exactly one copy of it (D-28).
+    // Load this project's launcher runs for the Driver tab, off the render thread.
     //
     // Unconditional on each visit rather than "only when empty": unlike the
     // backlog or the git log, this list changes while the user is looking away —
     // a run they started from the dashboard finishes, a new one begins — and a
-    // cached-once run list would show a stale set of runs indefinitely. The scan
-    // is bounded by the retention cap and runs on `spawn_blocking`.
+    // cached-once run list would show a stale set of runs indefinitely. The
+    // listing is bounded by `LAUNCHER_RUNS_LISTED` and runs on `spawn_blocking`
+    // (30-01, D-13): the selected run's status comes from the frontmatter plus the
+    // run-lock probe, so it is re-read on every visit.
     if new_view == DetailSubView::Driver {
         if let Some(path) = ctx.config.projects.get(alias).map(|p| p.path.clone()) {
-            ctx.schedule_run_list_scan(alias, &path);
-            // The launcher runs are listed by their own off-thread task (30-01,
-            // D-13): the selected run's status comes from the frontmatter plus the
-            // run-lock probe, so it too is re-read on every visit.
             ctx.schedule_launcher_refresh(alias, &path);
         }
     }
@@ -19585,8 +19578,6 @@ mod tests {
             exec_tx: None,
             run_states: HashMap::new(),
             reparse_dispatches: 0,
-            journal_cursors: HashMap::new(),
-            driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),

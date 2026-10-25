@@ -150,15 +150,12 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             ctx.detail_sub_view_per_project.remove(alias);
             ctx.last_refresh.remove(alias);
 
-            // The driver maps join the three above (D-27). `registry::remove_project`
+            // The driver map joins the three above (D-27). `registry::remove_project`
             // cleans none of them — it takes a `&mut Config` and has no access to
             // `AppContext` at all — so this is the **immediate** path, and
             // `App::prune_driver_maps` is the backstop for every removal that
-            // does not come through this screen. `journal_cursors` is keyed
-            // `(alias, run_id)`, so it is filtered rather than removed by key.
+            // does not come through this screen.
             ctx.run_states.remove(alias);
-            ctx.journal_cursors
-                .retain(|(cursor_alias, _), _| cursor_alias != alias);
 
             // Read, not looked up: every map removal above keys off the RAW
             // `alias`; only this toast is escaped, because only this toast is
@@ -238,8 +235,6 @@ mod tests {
             exec_tx: None,
             run_states: HashMap::new(),
             reparse_dispatches: 0,
-            journal_cursors: HashMap::new(),
-            driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),

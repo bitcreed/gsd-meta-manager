@@ -79,34 +79,6 @@ pub enum Action {
         milestone: String,
         data: crate::archive::MilestoneArchive,
     },
-    /// One byte-offset tail of a run journal completed (D-12).
-    ///
-    /// The records travel in a `Vec` rather than by value, and that is a
-    /// deliberate sizing choice rather than a habit: a `Vec` is a fixed 24
-    /// bytes regardless of what it holds, so this variant is 24 + 24 + 24 + 8
-    /// = 80 bytes. RESEARCH §8.3 measured `Action` at 120 bytes and measured
-    /// `clippy::large_enum_variant` as firing on a 200-byte *difference*
-    /// between the largest and second-largest variants — so **nothing here
-    /// needs boxing** and nothing should be boxed reflexively. (The one
-    /// `Box` in this file, on `ProjectStateLoaded`, is there because
-    /// `ProjectState` really is 360 bytes.)
-    ///
-    /// Every field is plain data — `String`, `Vec`, and a `Copy` cursor of two
-    /// `u64`s — so `Action` stays `Clone` and no file handle or join handle
-    /// leaks into a message type (D-20). The cursor gained its second `u64` in
-    /// plan 17-07 and the variant is 88 bytes rather than 80; the sizing
-    /// reasoning above is unchanged by eight bytes.
-    ///
-    /// The cursor carries the last observed `seq` alongside the byte offset
-    /// because a gap that straddles two tail reads is invisible to a check that
-    /// only compares within one batch — see
-    /// [`JournalCursor`](crate::journal::reader::JournalCursor) (D-28).
-    DriverJournalAppended {
-        alias: String,
-        run_id: String,
-        records: Vec<crate::journal::reader::JournalRecord>,
-        cursor: crate::journal::reader::JournalCursor,
-    },
     /// One launcher-marker scan completed (30-03, D-12, D-13; renamed in Phase 31).
     ///
     /// The payload is the **whole** result, not a delta, because the scan is
@@ -145,49 +117,10 @@ pub enum Action {
     /// there is no handle to leak in the first place.
     ///
     /// No `Box`: a `Vec` is a fixed 24 bytes whatever it holds, so this variant
-    /// is far below the `clippy::large_enum_variant` threshold the sizing note
-    /// on [`Action::DriverJournalAppended`] records.
+    /// is far below the `clippy::large_enum_variant` threshold (RESEARCH §8.3
+    /// measured it firing on a ~200-byte difference between variants).
     AgentsScanned {
         per_project: Vec<(String, crate::agents::ProjectAgents)>,
-    },
-    /// One alias's runs on disk, and the inbox for its selected run (OBS-05,
-    /// STEER-02).
-    ///
-    /// Both payloads are **whole** rather than deltas, for the same reason
-    /// [`Action::LauncherMarkersRescanned`] carries the whole scan: each read is
-    /// authoritative, and a run directory or a message that is no longer on
-    /// disk is expressed by its absence and by nothing else.
-    ///
-    /// `runs` comes from [`crate::journal::list_runs`], already sorted newest
-    /// first. Each [`RunSummary`](crate::journal::RunSummary) is read from that
-    /// run's small committed `run.json` and **never from the journal beside
-    /// it**, so listing a project holding the full retention history costs the
-    /// same as listing one with a single run.
-    ///
-    /// A `Vec` is a fixed 24 bytes regardless of what it holds, so this variant
-    /// is 72 bytes and needs no boxing (RESEARCH §8.3 measured
-    /// `clippy::large_enum_variant` firing on a ~200-byte *difference*). Every
-    /// field is plain data, so `Action` stays `Clone` and **no file handle or
-    /// join handle leaks into a message type** (D-20) — which matters
-    /// especially here, because the producer is a `spawn_blocking` task that
-    /// really does hold an open file (D-28) and must drop it before sending.
-    /// `journal` is the selected run's whole journal, projected into pane lines
-    /// through the same bounded ring the live tail uses, plus its interjection
-    /// records kept **as records**. It is what makes a finished run reviewable
-    /// after the fact (OBS-05) and what makes an injected message's state a pure
-    /// function of disk across a TUI restart (STEER-03).
-    ///
-    /// It is `Box`ed for the sizing reason the whole enum is documented by: it
-    /// is the largest driver payload, and boxing keeps this variant from
-    /// becoming the `clippy::large_enum_variant` outlier the file's other
-    /// variants were sized to avoid. `None` when the selected run's directory
-    /// could not be resolved — the fallible join on an id that came off disk
-    /// (D-27).
-    DriverRunsListed {
-        alias: String,
-        runs: Vec<crate::journal::RunSummary>,
-        inbox: Vec<crate::journal::inbox::InboxMessage>,
-        journal: Option<Box<crate::ui::screens::DriverRunJournal>>,
     },
     /// The project's launcher runs were listed off the render thread (30-01, D-13).
     ///
@@ -197,7 +130,7 @@ pub enum Action {
     /// derived from the run lock, so a lock released by `SIGKILL` (which emits no
     /// file event) reads as crashed on the next listing. Produced only by
     /// `AppContext::schedule_launcher_refresh`, the single producer of launcher
-    /// rows: `DriverRunsListed` no longer carries them.
+    /// rows.
     LauncherRunsRefreshed {
         alias: String,
         launcher_runs: Vec<crate::state_reader::driver_frontmatter::DriverRunEntry>,
@@ -237,26 +170,6 @@ pub enum Action {
     LauncherMarkerScanned {
         alias: String,
         marker: crate::ui::screens::driver_run::LauncherMarker,
-    },
-    /// A dry-run report was built for `alias` and is ready to show (D-26).
-    ///
-    /// `report` is the already-rendered text from `dry_run::render`, not the
-    /// structured report, because the pane shows it verbatim and the section
-    /// headers are pinned by test. Building it shells out to `git` twice, which
-    /// is why it happens on `spawn_blocking` and returns through a message
-    /// rather than on the render thread — **this is one of the WR-10 call
-    /// sites** the Phase 17 review named (D-28).
-    ///
-    /// Surfacing the report is TRANS-05-adjacent rather than required: Phase 18
-    /// *surfaces* it and does not police it, and git blast-radius enforcement is
-    /// Phase 19's.
-    ///
-    /// Three `String`s, 72 bytes, plain data — `Action` stays `Clone` and no
-    /// handle enters the message (D-20).
-    DriverDryRunLoaded {
-        alias: String,
-        command: String,
-        report: String,
     },
     /// The user confirmed stopping launcher run `run_id` of `alias` from the Driver
     /// tab (28-07, D-11).
@@ -433,14 +346,6 @@ mod tests {
     fn every_new_variant_is_plain_data_so_action_stays_clone() {
         // The compiler proves the claim; the test names it so a later field
         // addition that breaks `Clone` fails here with the reason attached.
-        let listed = Action::DriverRunsListed {
-            alias: "proj".to_string(),
-            runs: Vec::new(),
-            inbox: Vec::new(),
-            journal: None,
-        };
-        assert!(matches!(listed.clone(), Action::DriverRunsListed { .. }));
-
         let refreshed = Action::LauncherRunsRefreshed {
             alias: "proj".to_string(),
             launcher_runs: Vec::new(),

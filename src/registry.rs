@@ -955,9 +955,8 @@ pub fn is_opted_in(config: &Config, alias: &str) -> bool {
 /// **It deliberately touches no UI-side map, and the omission is structural
 /// rather than an oversight** (D-27): this module is free functions over a
 /// `&mut Config` and has no access to `AppContext`, where the driver state lives
-/// — `run_states` and `journal_cursors`. Those are cleaned in
-/// exactly two places, and this sentence exists so the next reader finds them
-/// instead of concluding the leak is still open:
+/// — `run_states`. It is cleaned in exactly two places, and this sentence exists so
+/// the next reader finds them instead of concluding the leak is still open:
 ///
 /// * `ui::screens::delete_confirm::do_remove_project` — the interactive path,
 ///   which drops them in the same block as `project_states` and `last_refresh`.
