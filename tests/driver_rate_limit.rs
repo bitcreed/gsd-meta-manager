@@ -788,49 +788,6 @@ fn the_synthesised_fixture_matches_the_stated_ndjson_format() {
 }
 
 #[test]
-fn the_synthesised_fixtures_quota_event_classifies_as_a_rejection() {
-    let payload = REJECTED_FIXTURE
-        .lines()
-        .filter(|line| is_rate_limit_line(line))
-        .map(|line| serde_json::from_str::<Value>(line).expect("the quota line parses"))
-        .next()
-        .expect("the fixture carries a rate_limit_event");
-
-    // Judged against a `now` one hour before the fixture's own reset value, so
-    // this assertion is as true in ten years as it is today. A `now` read from
-    // the wall clock would make it pass this month and fail the next.
-    let resets_at = payload[rate_limit::RATE_LIMIT_INFO_FIELD][rate_limit::RESETS_AT_FIELD]
-        .as_i64()
-        .expect("the fixture's resetsAt is an integer");
-    let now = chrono::DateTime::from_timestamp(resets_at - 3_600, 0).expect("representable");
-
-    match rate_limit::classify(Some(&payload), now) {
-        rate_limit::QuotaVerdict::Rejected {
-            window,
-            resets_at: at,
-        } => {
-            assert_eq!(
-                window,
-                rate_limit::QuotaWindow::SevenDay,
-                "the fixture names a seven_day window, and the whole value of a \
-                 synthesised file is that its enum values are the wire's rather \
-                 than plausible ones"
-            );
-            assert_eq!(
-                at.map(|at| at.timestamp()),
-                Some(resets_at),
-                "and its reset time is inside the sanity bound and round-trips to \
-                 the epoch second on the wire"
-            );
-        }
-        other => panic!(
-            "the one status no capture exists for must classify as a rejection, \
-             or nothing in this tree exercises the park at all: {other:?}"
-        ),
-    }
-}
-
-#[test]
 fn the_transcript_readme_labels_the_synthesised_file_and_its_inventory_agrees_with_disk() {
     let readme = std::fs::read_to_string(TRANSCRIPT_README).expect("the README is readable");
 

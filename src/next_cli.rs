@@ -29,10 +29,9 @@ use std::path::{Path, PathBuf};
 
 use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::driver::router::{self, Decision};
-use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::launch_target::resolve_launch_target;
 use gsd_meta_manager::state_reader::{parse_project_state, ProjectState};
-use gsd_meta_manager::text::{render_for_terminal, Untrusted};
+use gsd_meta_manager::text::render_for_terminal;
 use serde_json::{json, Value};
 
 /// The `source` field: which component produced the hint.
@@ -148,10 +147,15 @@ fn hint_json(root: &Path, target: Option<&str>, decision: Option<&Decision>) -> 
 pub fn run(project: &str, target_phase: Option<&str>, config: Option<PathBuf>) -> i32 {
     if let Some(target) = target_phase {
         if !gsd_meta_manager::journal::is_plain_path_component(target) {
-            let refusal = DriveError::TargetPhaseInvalid {
-                target_phase: Untrusted::from_untrusted_source(target.to_string()),
-            };
-            err_line(&format!("next: {refusal}"));
+            // The untrusted value is escaped here, once, before it is quoted: it
+            // reaches a terminal (T-29-10, T-29-13).
+            let shown = render_for_terminal(target).to_string();
+            err_line(&format!(
+                "next: the target phase {shown:?} is not a single plain path \
+                 component, so it is refused before anything is created. A target \
+                 phase is a phase number such as `20`; it may not contain a path \
+                 separator, `..`, or a leading `/`"
+            ));
             return 1;
         }
     }

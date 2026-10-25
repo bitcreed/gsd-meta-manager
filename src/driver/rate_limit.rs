@@ -1,7 +1,7 @@
 //! The subscription quota signal: classifying one retained `rate_limit_event`.
 //!
 //! **This module performs no I/O of its own and reads no clock**, in the same
-//! register and for the same reason as [`super::bounds`] and [`super::router`]:
+//! register and for the same reason as [`super::router`]:
 //! the caller retains the payload off the stream and hands in the instant to
 //! judge a reset time against (D-11). That is what makes the sanity bound below
 //! testable one second either side without waiting thirty days, and what lets a
@@ -23,12 +23,12 @@
 //!
 //! **The reason vocabulary is closed and greppable**, one `pub const REASON_*`
 //! per [`QuotaReason`] arm through [`QuotaReason::as_str`], mirroring
-//! `src/envelope/policy.rs`'s `ParkReason` shape. It is a **fourth sibling
-//! taxonomy** beside the envelope's `ParkReason`, the router's `RouterReason`
-//! and the bounds' `BoundsReason` — never an extension of any of them, and in
-//! particular not a fifth `BoundsReason` arm: CTRL-06's four detectors are facts
-//! about *this* run's budget, while a quota rejection is a fact about a resource
-//! shared with every other Claude surface the user has. All four reach a reader
+//! `src/envelope/policy.rs`'s `ParkReason` shape. It is a **sibling
+//! taxonomy** beside the envelope's `ParkReason` and the router's `RouterReason`
+//! (and, until Phase 31 retired it, the run-bounds detectors' reason) — never an
+//! extension of any of them: a bounds detector was a fact about *this* run's
+//! budget, while a quota rejection is a fact about a resource
+//! shared with every other Claude surface the user has. They all reach a reader
 //! through the one `JournalEvent::Parked` record and the one `parked:` terminal
 //! label.
 //!
@@ -395,6 +395,16 @@ mod tests {
     /// utilization on a `seven_day` window.
     const T08: &str =
         include_str!("../../tests/fixtures/transcripts/08-tooluse-queued-two-turns.ndjson");
+    /// The synthesised capture carrying a `status: "rejected"` event on a
+    /// `seven_day` window — the one status no real capture exists for, because
+    /// capturing it would burn the quota it describes.
+    const T09: &str =
+        include_str!("../../tests/fixtures/transcripts/09-rate-limit-rejected.ndjson");
+
+    /// Whether `line` is the transcript's rate-limit event.
+    fn is_rate_limit_line(line: &str) -> bool {
+        line.contains(r#""type":"rate_limit_event""#)
+    }
 
     /// Every `rate_limit_event` payload in `transcript`, through the shipped
     /// parser rather than through a second reader written for the test.
@@ -855,25 +865,65 @@ mod tests {
         assert_eq!(QuotaReason::Rejected.as_str(), REASON_QUOTA_REJECTED);
         assert!(
             REASON_QUOTA_REJECTED.starts_with("quota_"),
-            "a quota reason must be greppable as one, the way `bounds_` and \
-             `router_` are: {REASON_QUOTA_REJECTED}"
+            "a quota reason must be greppable as one, the way `router_` is: \
+              {REASON_QUOTA_REJECTED}"
         );
 
         for sibling in [
-            crate::driver::bounds::REASON_NO_PROGRESS,
-            crate::driver::bounds::REASON_COMMAND_REPEAT,
-            crate::driver::bounds::REASON_STEP_CAP,
-            crate::driver::bounds::REASON_WALL_CLOCK,
             crate::driver::router::REASON_NO_RULE,
             crate::driver::router::REASON_STATE_UNVERIFIED,
             crate::driver::router::REASON_DEPENDENCY_UNSATISFIED,
         ] {
             assert_ne!(
                 REASON_QUOTA_REJECTED, sibling,
-                "four taxonomies ride the one `JournalEvent::Parked.reason` \
-                 field. Two of them sharing an identifier makes 'why did this run \
-                 end' unanswerable from the terminal record"
+                "the quota taxonomy and the router's share one parked-reason \
+                 field in the terminal record (the journal's parked event, which is \
+                 retired in 31-05). Two of them sharing an identifier makes 'why \
+                 did this run end' unanswerable from that record"
             );
+        }
+    }
+
+    #[test]
+    fn the_synthesised_fixtures_quota_event_classifies_as_a_rejection() {
+        let payload = T09
+            .lines()
+            .filter(|line| is_rate_limit_line(line))
+            .map(|line| serde_json::from_str::<Value>(line).expect("the quota line parses"))
+            .next()
+            .expect("the fixture carries a rate_limit_event");
+
+        // Judged against a `now` one hour before the fixture's own reset value, so
+        // this assertion is as true in ten years as it is today. A `now` read from
+        // the wall clock would make it pass this month and fail the next.
+        let resets_at = payload[RATE_LIMIT_INFO_FIELD][RESETS_AT_FIELD]
+            .as_i64()
+            .expect("the fixture's resetsAt is an integer");
+        let now = chrono::DateTime::from_timestamp(resets_at - 3_600, 0).expect("representable");
+
+        match classify(Some(&payload), now) {
+            QuotaVerdict::Rejected {
+                window,
+                resets_at: at,
+            } => {
+                assert_eq!(
+                    window,
+                    QuotaWindow::SevenDay,
+                    "the fixture names a seven_day window, and the whole value of a \
+                     synthesised file is that its enum values are the wire's rather \
+                     than plausible ones"
+                );
+                assert_eq!(
+                    at.map(|at| at.timestamp()),
+                    Some(resets_at),
+                    "and its reset time is inside the sanity bound and round-trips to \
+                     the epoch second on the wire"
+                );
+            }
+            other => panic!(
+                "the one status no capture exists for must classify as a rejection, \
+                 or nothing in this tree exercises the park at all: {other:?}"
+            ),
         }
     }
 }
