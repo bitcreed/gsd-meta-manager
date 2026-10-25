@@ -547,6 +547,139 @@ mod imp {
     }
 }
 
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod host_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn dangling_symlinks_reports_links_leaving_the_binds() {
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let skills = root.join(".claude/skills");
+        let inside = root.join(".claude/agents");
+        let outside = root.join("projects/skill");
+        fs::create_dir_all(skills.join("alpha")).unwrap();
+        fs::create_dir_all(&inside).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(inside.join("a.md"), "x").unwrap();
+        symlink(&outside, skills.join("away")).unwrap();
+        symlink(&inside, skills.join("home-link")).unwrap();
+        symlink(&outside, skills.join("alpha/nested-away")).unwrap();
+        symlink("/nowhere/at/all", skills.join("broken")).unwrap();
+        let binds = vec![HomeBind::Ro(skills.clone()), HomeBind::Ro(inside)];
+        assert_eq!(
+            dangling_symlinks(&binds),
+            [skills.join("alpha/nested-away"), skills.join("away")]
+        );
+        // The same links, with the home set to a directory that holds no target.
+        assert!(dangling_within(&binds, Some(Path::new("/elsewhere"))).is_empty());
+    }
+
+    #[test]
+    fn for_host_writes_a_private_gitconfig_and_names_only_host_entries_as_roots() {
+        let root = tempfile::TempDir::new().unwrap();
+        let home = root.path().join("home");
+        let state = root.path().join("state");
+        fs::create_dir_all(home.join(".gsd")).unwrap();
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        let setup = HomeSetup::for_host(
+            &home,
+            Path::new("/nonexistent/gsd-meta-manager"),
+            true,
+            &state,
+        )
+        .unwrap();
+        let gitconfig = setup.gitconfig.clone().unwrap();
+        assert_eq!(gitconfig, state.join(GITCONFIG_FILE));
+        let mode = fs::metadata(&gitconfig).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Only the three keys, whatever the host's own git configuration holds.
+        let text = fs::read_to_string(&gitconfig).unwrap();
+        for line in text.lines() {
+            let line = line.trim();
+            assert!(
+                line.is_empty()
+                    || ["[user]", "[init]"].contains(&line)
+                    || ["name = ", "email = ", "defaultBranch = "]
+                        .iter()
+                        .any(|key| line.starts_with(key)),
+                "unexpected gitconfig line {line:?}"
+            );
+        }
+        assert!(setup.keep_roots.contains(&home.join(".gsd")));
+        assert!(setup
+            .keep_roots
+            .iter()
+            .all(|root| !root.starts_with(home.join(".ssh"))));
+        assert!(setup.binds.iter().any(
+            |bind| matches!(bind, HomeBind::Tmpfs { path, .. } if path == &home.join(".cache"))
+        ));
+        assert!(!setup
+            .keep_roots
+            .iter()
+            .any(|root| root == &home.join(".cache")));
+    }
+
+    #[test]
+    fn two_launches_write_separate_gitconfigs_and_leave_no_temp_file() {
+        let root = tempfile::TempDir::new().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let states: Vec<PathBuf> = ["a", "b"]
+            .iter()
+            .map(|name| {
+                let dir = root.path().join(name);
+                fs::create_dir_all(&dir).unwrap();
+                dir
+            })
+            .collect();
+        let handles: Vec<_> = states
+            .iter()
+            .flat_map(|state| std::iter::repeat_n(state.clone(), 3))
+            .map(|state| {
+                let home = home.clone();
+                std::thread::spawn(move || {
+                    HomeSetup::for_host(&home, Path::new("/nonexistent/x"), false, &state).unwrap()
+                })
+            })
+            .collect();
+        let setups: Vec<HomeSetup> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(setups[0].gitconfig, Some(states[0].join(GITCONFIG_FILE)));
+        assert_eq!(setups[3].gitconfig, Some(states[1].join(GITCONFIG_FILE)));
+        for state in &states {
+            let names: Vec<String> = fs::read_dir(state)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, [GITCONFIG_FILE], "{state:?}");
+        }
+        // Whatever the interleaving, a reader sees the whole file.
+        assert_eq!(
+            fs::read(states[0].join(GITCONFIG_FILE)).unwrap(),
+            fs::read(states[1].join(GITCONFIG_FILE)).unwrap()
+        );
+    }
+
+    #[test]
+    fn host_facts_resolve_a_home_symlink_back_to_the_known_name() {
+        let root = tempfile::TempDir::new().unwrap();
+        let real = root.path().canonicalize().unwrap().join("real-home");
+        fs::create_dir_all(real.join(".gsd")).unwrap();
+        fs::create_dir_all(real.join("bin")).unwrap();
+        fs::write(real.join("bin/gsd-meta-manager"), "x").unwrap();
+        let link = root.path().canonicalize().unwrap().join("home-link");
+        symlink(&real, &link).unwrap();
+        let facts = HostFacts::from_host(&link, &link.join("bin/gsd-meta-manager"));
+        assert_eq!(facts.exe, link.join("bin/gsd-meta-manager"));
+        assert!(facts.existing.contains(&link.join(".gsd")));
+        let got = home_allowlist(&facts, false);
+        assert!(got.contains(&HomeBind::Ro(link.join(".gsd"))), "{got:?}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,138 +967,5 @@ mod tests {
         assert!(!line.contains("s10"));
         assert!(line.ends_with(", and 2 more"));
         assert_eq!(HomeSetup::default().dangling_notice(home), None);
-    }
-}
-
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-mod host_tests {
-    use super::*;
-    use std::fs;
-    use std::os::unix::fs::{symlink, PermissionsExt};
-
-    #[test]
-    fn dangling_symlinks_reports_links_leaving_the_binds() {
-        let root = tempfile::TempDir::new().unwrap();
-        let root = root.path().canonicalize().unwrap();
-        let skills = root.join(".claude/skills");
-        let inside = root.join(".claude/agents");
-        let outside = root.join("projects/skill");
-        fs::create_dir_all(skills.join("alpha")).unwrap();
-        fs::create_dir_all(&inside).unwrap();
-        fs::create_dir_all(&outside).unwrap();
-        fs::write(inside.join("a.md"), "x").unwrap();
-        symlink(&outside, skills.join("away")).unwrap();
-        symlink(&inside, skills.join("home-link")).unwrap();
-        symlink(&outside, skills.join("alpha/nested-away")).unwrap();
-        symlink("/nowhere/at/all", skills.join("broken")).unwrap();
-        let binds = vec![HomeBind::Ro(skills.clone()), HomeBind::Ro(inside)];
-        assert_eq!(
-            dangling_symlinks(&binds),
-            [skills.join("alpha/nested-away"), skills.join("away")]
-        );
-        // The same links, with the home set to a directory that holds no target.
-        assert!(dangling_within(&binds, Some(Path::new("/elsewhere"))).is_empty());
-    }
-
-    #[test]
-    fn for_host_writes_a_private_gitconfig_and_names_only_host_entries_as_roots() {
-        let root = tempfile::TempDir::new().unwrap();
-        let home = root.path().join("home");
-        let state = root.path().join("state");
-        fs::create_dir_all(home.join(".gsd")).unwrap();
-        fs::create_dir_all(home.join(".ssh")).unwrap();
-        fs::create_dir_all(&state).unwrap();
-        let setup = HomeSetup::for_host(
-            &home,
-            Path::new("/nonexistent/gsd-meta-manager"),
-            true,
-            &state,
-        )
-        .unwrap();
-        let gitconfig = setup.gitconfig.clone().unwrap();
-        assert_eq!(gitconfig, state.join(GITCONFIG_FILE));
-        let mode = fs::metadata(&gitconfig).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        // Only the three keys, whatever the host's own git configuration holds.
-        let text = fs::read_to_string(&gitconfig).unwrap();
-        for line in text.lines() {
-            let line = line.trim();
-            assert!(
-                line.is_empty()
-                    || ["[user]", "[init]"].contains(&line)
-                    || ["name = ", "email = ", "defaultBranch = "]
-                        .iter()
-                        .any(|key| line.starts_with(key)),
-                "unexpected gitconfig line {line:?}"
-            );
-        }
-        assert!(setup.keep_roots.contains(&home.join(".gsd")));
-        assert!(setup
-            .keep_roots
-            .iter()
-            .all(|root| !root.starts_with(home.join(".ssh"))));
-        assert!(setup.binds.iter().any(
-            |bind| matches!(bind, HomeBind::Tmpfs { path, .. } if path == &home.join(".cache"))
-        ));
-        assert!(!setup
-            .keep_roots
-            .iter()
-            .any(|root| root == &home.join(".cache")));
-    }
-
-    #[test]
-    fn two_launches_write_separate_gitconfigs_and_leave_no_temp_file() {
-        let root = tempfile::TempDir::new().unwrap();
-        let home = root.path().join("home");
-        fs::create_dir_all(&home).unwrap();
-        let states: Vec<PathBuf> = ["a", "b"]
-            .iter()
-            .map(|name| {
-                let dir = root.path().join(name);
-                fs::create_dir_all(&dir).unwrap();
-                dir
-            })
-            .collect();
-        let handles: Vec<_> = states
-            .iter()
-            .flat_map(|state| std::iter::repeat_n(state.clone(), 3))
-            .map(|state| {
-                let home = home.clone();
-                std::thread::spawn(move || {
-                    HomeSetup::for_host(&home, Path::new("/nonexistent/x"), false, &state).unwrap()
-                })
-            })
-            .collect();
-        let setups: Vec<HomeSetup> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        assert_eq!(setups[0].gitconfig, Some(states[0].join(GITCONFIG_FILE)));
-        assert_eq!(setups[3].gitconfig, Some(states[1].join(GITCONFIG_FILE)));
-        for state in &states {
-            let names: Vec<String> = fs::read_dir(state)
-                .unwrap()
-                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(names, [GITCONFIG_FILE], "{state:?}");
-        }
-        // Whatever the interleaving, a reader sees the whole file.
-        assert_eq!(
-            fs::read(states[0].join(GITCONFIG_FILE)).unwrap(),
-            fs::read(states[1].join(GITCONFIG_FILE)).unwrap()
-        );
-    }
-
-    #[test]
-    fn host_facts_resolve_a_home_symlink_back_to_the_known_name() {
-        let root = tempfile::TempDir::new().unwrap();
-        let real = root.path().canonicalize().unwrap().join("real-home");
-        fs::create_dir_all(real.join(".gsd")).unwrap();
-        fs::create_dir_all(real.join("bin")).unwrap();
-        fs::write(real.join("bin/gsd-meta-manager"), "x").unwrap();
-        let link = root.path().canonicalize().unwrap().join("home-link");
-        symlink(&real, &link).unwrap();
-        let facts = HostFacts::from_host(&link, &link.join("bin/gsd-meta-manager"));
-        assert_eq!(facts.exe, link.join("bin/gsd-meta-manager"));
-        assert!(facts.existing.contains(&link.join(".gsd")));
-        let got = home_allowlist(&facts, false);
-        assert!(got.contains(&HomeBind::Ro(link.join(".gsd"))), "{got:?}");
     }
 }
