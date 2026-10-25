@@ -339,10 +339,11 @@ against `upstream/release-1.15.0`:
   (v1.7.0); step 5's earliest-commit rule wins (INFERRED I-7). `brave_search`,
   `firecrawl` and `exa_search` predate this record and keep an empty `since`.
 - `runtime` is gsd-core's own selector. This manager does not read it (ID-2):
-  its per-project agent runtime lives in its own registry (`src/config.rs`
-  `RUNTIME_KEY`), and `tests/driver_codex_runtime.rs` pins that a project whose
-  GSD config says `codex` still spawns the unchanged Claude argv. gsd-core's
-  loader also fills it from `GSD_RUNTIME` / the install marker (#4717), so the
+  the manager's own per-project `runtime` key (`src/config.rs` `RUNTIME_KEY`) is
+  still parsed so an old config loads, but since Phase 31 retired the legacy
+  `drive` subcommand it no longer selects a driven agent (the launcher runs
+  Claude only), and a project whose GSD config says `codex` is not driven
+  differently. gsd-core's loader also fills it from `GSD_RUNTIME` / the install marker (#4717), so the
   file value is not the whole story.
 - `context_profile` has no upstream default. From unset, the first toggle writes
   `dev` (the first option) rather than stepping through `cycle`, which would

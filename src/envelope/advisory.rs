@@ -142,8 +142,8 @@ impl ProtectionState {
 
 /// The state a preview reports when nothing probed the remote.
 ///
-/// A dry run contacts no network — `dry_run::SECTION_REFSPECS` says so in the
-/// same output — so the honest answer there is `Unknown` **with that as the
+/// A dry run contacts no network (the dry-run preview that called this was
+/// retired in Phase 31), so the honest answer there is `Unknown` **with that as the
 /// reason**, not a silently omitted section and certainly not an optimistic
 /// default. The run-start probe is what fills this in for a real run.
 pub fn not_probed() -> ProtectionState {
@@ -156,8 +156,8 @@ pub fn not_probed() -> ProtectionState {
 /// The envelope's honesty statement (**pinned contract** — see the rule below).
 ///
 /// **This constant is a contract, not decoration.** It gets the same treatment
-/// `src/driver/dry_run.rs`'s three section constants carry, and for the same
-/// reason their doc records: text that only *happens* to say something true is
+/// the retired dry-run preview's three section constants carried, and for the
+/// same reason their doc recorded: text that only *happens* to say something true is
 /// text a later refactor tidies into something softer without anybody
 /// noticing.
 ///

@@ -66,9 +66,8 @@ pub const LIVENESS_SUPPORTED: bool = cfg!(target_os = "linux");
 /// value that lets each consumer decide for itself, and every consumer in this
 /// codebase decides the same way — refuse, and say why (CR-05, D-05).
 ///
-/// Derives match [`crate::driver::reconcile::RunVerdict`]'s because this value
-/// travels inside `ObservedRun`, which travels as an
-/// [`Action`](crate::action::Action) payload and must stay `Clone`.
+/// Derives allow it to travel as an [`Action`](crate::action::Action) payload,
+/// which must stay `Clone`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Liveness {
     /// The pid exists **and** its cmdline still names this run. The double-check
@@ -349,8 +348,8 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            // The same call `driver::spawn::spawn_detached` makes, so the child
-            // this test measures has exactly the shape a real driver has.
+            // A fresh process group of its own, so the child this test measures
+            // has the shape a real driver has.
             .process_group(0)
             .spawn()
             .expect("`sleep` is on PATH");

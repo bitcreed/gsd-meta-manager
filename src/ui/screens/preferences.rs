@@ -1,106 +1,46 @@
-//! The manager-preferences screen, reached from the project overview with `G`
+//! The global-settings screen, reached from the project overview with `G`
 //! (todo 2026-09-23, global settings editor).
 //!
 //! Two kinds of "global" exist and they are kept visibly apart:
 //!
-//! * **Manager preferences** (this screen): `default_runtime` and
-//!   `driver_max_concurrent` in the manager's own `config.json`. They apply
-//!   to the manager across every project.
+//! * **Manager preferences** (`config.json`, shown here): **none are editable.**
+//!   The screen used to edit `default_runtime` and the run-concurrency cap, but
+//!   both configured the legacy `drive` subcommand (which agent it ran, how many
+//!   runs it allowed at once), and Phase 31 retired that subcommand. Offering a
+//!   stepper for a setting that selects or caps nothing would be a control that
+//!   lies. `[inferred — audit]`. The fields still parse (`config::Preferences`),
+//!   so an old `config.json` that carries them loads and is rewritten with them
+//!   intact; only the editing surface went.
 //! * **GSD global template** (`$GSD_HOME/.gsd/defaults.json`; `GSD_HOME`
 //!   defaults to the home directory): reached with `g` from
 //!   here; it only seeds NEW projects, because gsd-core ignores it once a
 //!   project has its own `.planning/config.json`.
 //!
-//! Every change is written immediately; there is no unsaved state.
+//! The screen holds no unsaved state and writes nothing itself.
 
 use super::{AppContext, Screen, ScreenAction};
-use crate::config::{save_config, Preferences, DEFAULT_RUNTIME_KEY};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use serde_json::Value;
-
-/// Upper bound for the concurrency stepper: the shared 5h/7d quota makes
-/// anything higher a footgun ([INFERRED] bound; the file may hold more).
-pub(crate) const MAX_CONCURRENT_STEP: usize = 16;
-
-const ROW_RUNTIME: usize = 0;
-const ROW_CONCURRENT: usize = 1;
-const ROWS: usize = 2;
 
 #[derive(Default)]
-pub struct PreferencesScreen {
-    selected: usize,
-}
+pub struct PreferencesScreen;
 
 impl PreferencesScreen {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 
 crate::ui::screens::adjudicate_screen!(
     PreferencesScreen,
     crate::ui::screens::RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY,
-    "Draws authored labels, the validated runtime name (`claude`/`codex`) or \
-     a fixed 'invalid in file' marker, a number, and the config file path \
-     through `render_for_terminal`. No project identity or project state.",
+    "Draws authored labels and the config file path through \
+     `render_for_terminal`. No project identity or project state.",
 );
-
-/// The runtime choices in cycle order; `None` is "unset" (falls back to Claude).
-const RUNTIME_CYCLE: [Option<&str>; 3] = [None, Some("claude"), Some("codex")];
-
-/// Step `default_runtime` through unset -> claude -> codex (or backwards).
-/// An unrecognized value in the file is treated as "unset" for stepping, so a
-/// keypress always lands on something valid.
-pub(crate) fn step_runtime(prefs: &mut Preferences, forward: bool) {
-    let current = prefs
-        .extra
-        .get(DEFAULT_RUNTIME_KEY)
-        .and_then(Value::as_str)
-        .and_then(|s| RUNTIME_CYCLE.iter().position(|c| *c == Some(s)))
-        .unwrap_or(0);
-    let n = RUNTIME_CYCLE.len();
-    let next = if forward {
-        (current + 1) % n
-    } else {
-        (current + n - 1) % n
-    };
-    match RUNTIME_CYCLE[next] {
-        Some(name) => {
-            prefs
-                .extra
-                .insert(DEFAULT_RUNTIME_KEY.to_string(), Value::from(name));
-        }
-        None => {
-            prefs.extra.remove(DEFAULT_RUNTIME_KEY);
-        }
-    }
-}
-
-/// Step `driver_max_concurrent`, clamped to `1..=MAX_CONCURRENT_STEP`
-/// (0 would deny every run — see the note on [`Preferences`]).
-pub(crate) fn step_concurrency(prefs: &mut Preferences, up: bool) {
-    let cur = prefs.driver_max_concurrent.max(1);
-    prefs.driver_max_concurrent = if up {
-        (cur + 1).min(MAX_CONCURRENT_STEP)
-    } else {
-        cur.saturating_sub(1).max(1)
-    };
-}
-
-fn runtime_label(prefs: &Preferences) -> String {
-    match prefs.extra.get(DEFAULT_RUNTIME_KEY) {
-        None => "(unset: claude)".to_string(),
-        Some(_) => match prefs.default_runtime() {
-            Ok(Some(rt)) => format!("{rt:?}").to_lowercase(),
-            _ => "(invalid in file; press an arrow to reset)".to_string(),
-        },
-    }
-}
 
 impl Screen for PreferencesScreen {
     fn handle_key(
@@ -112,33 +52,6 @@ impl Screen for PreferencesScreen {
         ctx.needs_redraw = true;
         match code {
             KeyCode::Esc | KeyCode::Char('q') => ScreenAction::Pop,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.selected = (self.selected + 1).min(ROWS - 1);
-                ScreenAction::None
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.selected = self.selected.saturating_sub(1);
-                ScreenAction::None
-            }
-            KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Char('h')
-            | KeyCode::Char('l')
-            | KeyCode::Char(' ')
-            | KeyCode::Enter => {
-                let forward = !matches!(code, KeyCode::Left | KeyCode::Char('h'));
-                match self.selected {
-                    ROW_RUNTIME => step_runtime(&mut ctx.config.preferences, forward),
-                    ROW_CONCURRENT => step_concurrency(&mut ctx.config.preferences, forward),
-                    _ => {}
-                }
-                let msg = match save_config(&ctx.config, &ctx.config_path) {
-                    Ok(()) => "Manager preference saved".to_string(),
-                    Err(e) => format!("Failed to save preferences: {e}"),
-                };
-                ctx.status_message = Some((msg, std::time::Instant::now()));
-                ScreenAction::None
-            }
             KeyCode::Char('g') => match ctx.selected_alias() {
                 Some(alias) => ScreenAction::Replace(Box::new(
                     super::detail::DetailScreen::opened_on_global_template(alias, ctx),
@@ -159,14 +72,6 @@ impl Screen for PreferencesScreen {
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let path =
             crate::text::render_for_terminal(&ctx.config_path.display().to_string()).to_string();
-        let prefs = &ctx.config.preferences;
-        let sel = |row: usize| {
-            if self.selected == row {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            }
-        };
         let dim = Style::default().fg(Color::DarkGray);
         let lines = vec![
             Line::from(Span::styled(
@@ -178,16 +83,10 @@ impl Screen for PreferencesScreen {
             Line::from(Span::styled(format!(" File: {path}"), dim)),
             Line::from(""),
             Line::from(Span::styled(
-                format!("  default_runtime         < {} >", runtime_label(prefs)),
-                sel(ROW_RUNTIME),
+                "  (none: the runtime and concurrency settings configured the",
+                dim,
             )),
-            Line::from(Span::styled(
-                format!(
-                    "  driver_max_concurrent   < {} >",
-                    prefs.driver_max_concurrent
-                ),
-                sel(ROW_CONCURRENT),
-            )),
+            Line::from(Span::styled("   legacy driver, removed in Phase 31)", dim)),
             Line::from(""),
             Line::from(Span::styled(
                 " GSD GLOBAL TEMPLATE ($GSD_HOME/.gsd/defaults.json; GSD_HOME defaults to ~)",
@@ -204,10 +103,7 @@ impl Screen for PreferencesScreen {
                 dim,
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                " j/k select   </> or Enter change (saved at once)   g template   Esc back",
-                dim,
-            )),
+            Line::from(Span::styled(" g template   Esc back", dim)),
         ];
         let block = Block::default()
             .borders(Borders::ALL)
@@ -224,62 +120,19 @@ impl Screen for PreferencesScreen {
 mod tests {
     use super::*;
 
-    #[test]
-    fn runtime_cycles_through_unset_claude_codex_and_wraps() {
-        let mut p = Preferences::default();
-        step_runtime(&mut p, true);
-        assert_eq!(p.extra[DEFAULT_RUNTIME_KEY], "claude");
-        step_runtime(&mut p, true);
-        assert_eq!(p.extra[DEFAULT_RUNTIME_KEY], "codex");
-        step_runtime(&mut p, true);
-        assert!(!p.extra.contains_key(DEFAULT_RUNTIME_KEY));
-        step_runtime(&mut p, false);
-        assert_eq!(p.extra[DEFAULT_RUNTIME_KEY], "codex");
-    }
-
-    #[test]
-    fn invalid_runtime_in_file_is_reset_by_stepping() {
-        let mut p = Preferences::default();
-        p.extra
-            .insert(DEFAULT_RUNTIME_KEY.into(), Value::from("gemini"));
-        assert!(runtime_label(&p).contains("invalid"));
-        step_runtime(&mut p, true);
-        assert_eq!(
-            p.default_runtime().unwrap().map(|r| format!("{r:?}")),
-            Some("Claude".into())
-        );
-    }
-
-    #[test]
-    fn concurrency_never_leaves_one_to_cap() {
-        let mut p = Preferences::default();
-        step_concurrency(&mut p, false);
-        assert_eq!(p.driver_max_concurrent, 1);
-        p.driver_max_concurrent = 0;
-        step_concurrency(&mut p, false);
-        assert_eq!(p.driver_max_concurrent, 1);
-        for _ in 0..40 {
-            step_concurrency(&mut p, true);
-        }
-        assert_eq!(p.driver_max_concurrent, MAX_CONCURRENT_STEP);
-    }
-
-    #[test]
-    fn keys_edit_and_persist_to_the_config_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let mut ctx = super::super::tests::ctx_with_aliases(&["a"]);
-        ctx.config_path = dir.path().join("config.json");
-        let mut s = PreferencesScreen::new();
-        s.handle_key(KeyCode::Right, KeyModifiers::NONE, &mut ctx);
-        s.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
-        s.handle_key(KeyCode::Right, KeyModifiers::NONE, &mut ctx);
-        let saved = crate::config::load_config(&ctx.config_path).unwrap();
-        assert_eq!(saved.preferences.extra[DEFAULT_RUNTIME_KEY], "claude");
-        assert_eq!(saved.preferences.driver_max_concurrent, 2);
-        assert!(matches!(
-            s.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx),
-            ScreenAction::Pop
-        ));
+    /// Render the screen into a 100x14 buffer and return its text.
+    fn rendered() -> String {
+        let ctx = super::super::tests::ctx_with_aliases(&["a"]);
+        let backend = ratatui::backend::TestBackend::new(100, 14);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| PreferencesScreen::new().render(f, f.area(), &ctx))
+            .unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
     }
 
     #[test]
@@ -292,22 +145,99 @@ mod tests {
     }
 
     #[test]
-    fn render_labels_both_scopes() {
-        let ctx = super::super::tests::ctx_with_aliases(&["a"]);
-        let backend = ratatui::backend::TestBackend::new(100, 14);
-        let mut term = ratatui::Terminal::new(backend).unwrap();
-        term.draw(|f| PreferencesScreen::new().render(f, f.area(), &ctx))
-            .unwrap();
-        let text: String = term
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
+    fn esc_and_q_leave_the_screen() {
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut ctx = super::super::tests::ctx_with_aliases(&["a"]);
+            let mut s = PreferencesScreen::new();
+            assert!(matches!(
+                s.handle_key(code, KeyModifiers::NONE, &mut ctx),
+                ScreenAction::Pop
+            ));
+        }
+    }
+
+    #[test]
+    fn no_key_edits_or_writes_a_preference() {
+        // The steppers are gone. Every key the old screen used to act on is now
+        // inert: no state changes, nothing is written, no "saved" status appears.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut ctx = super::super::tests::ctx_with_aliases(&["a"]);
+        ctx.config_path = dir.path().join("config.json");
+        let before = serde_json::to_value(&ctx.config.preferences).unwrap();
+        let mut s = PreferencesScreen::new();
+        for code in [
+            KeyCode::Right,
+            KeyCode::Left,
+            KeyCode::Char('l'),
+            KeyCode::Char('h'),
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char(' '),
+            KeyCode::Enter,
+        ] {
+            assert!(matches!(
+                s.handle_key(code, KeyModifiers::NONE, &mut ctx),
+                ScreenAction::None
+            ));
+        }
+        assert_eq!(
+            serde_json::to_value(&ctx.config.preferences).unwrap(),
+            before,
+            "no key may change a preference"
+        );
+        assert!(
+            !ctx.config_path.exists(),
+            "an inert screen must not create the config file"
+        );
+        assert!(ctx.status_message.is_none());
+    }
+
+    #[test]
+    fn render_labels_both_scopes_and_offers_no_dead_rows() {
+        let text = rendered();
         assert!(text.contains("MANAGER PREFERENCES"));
         assert!(text.contains("NEW projects only"));
-        assert!(text.contains("driver_max_concurrent"));
+        assert!(text.contains("GSD GLOBAL TEMPLATE"));
         assert!(text.contains("$GSD_HOME/.gsd/defaults.json"));
+        assert!(
+            text.contains("(none:"),
+            "the manager section must say plainly that nothing is editable: {text}"
+        );
+        // The second name is assembled so this file's own text does not name the
+        // retired knob (the plan's acceptance grep counts it at zero).
+        let retired_cap = ["driver_max", "_concurrent"].concat();
+        for dead in ["default_runtime", retired_cap.as_str(), "j/k select"] {
+            assert!(
+                !text.contains(dead),
+                "{dead:?} names a control that no longer exists: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn old_preference_keys_still_load_from_a_config_file() {
+        // Only the editing surface went. A config.json written by an older build
+        // keeps parsing, and the keys survive a load/save round trip.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let cap_key = ["driver_max", "_concurrent"].concat();
+        let body = serde_json::json!({
+            "version": 1,
+            "projects": {},
+            "preferences": {
+                crate::config::DEFAULT_RUNTIME_KEY: "codex",
+                cap_key.as_str(): 3,
+            },
+        });
+        std::fs::write(&path, body.to_string()).unwrap();
+        let config = crate::config::load_config(&path).unwrap();
+        let loaded = serde_json::to_value(&config.preferences).unwrap();
+        assert_eq!(loaded[crate::config::DEFAULT_RUNTIME_KEY], "codex");
+        assert_eq!(loaded[cap_key.as_str()], 3);
+        crate::config::save_config(&config, &path).unwrap();
+        let again = crate::config::load_config(&path).unwrap();
+        let reloaded = serde_json::to_value(&again.preferences).unwrap();
+        assert_eq!(reloaded[crate::config::DEFAULT_RUNTIME_KEY], "codex");
+        assert_eq!(reloaded[cap_key.as_str()], 3);
     }
 }

@@ -64,7 +64,7 @@ pub const SECTION_MODEL_SEAM: &str = "== What the two model seams see ==\n\
 /// The residual-exposure statement, and the pinned-contract rule for all three.
 ///
 /// **These three constants are a contract, not decoration**, in exactly the
-/// register `crate::driver::dry_run::SECTION_REFSPECS` establishes:
+/// register the retired dry-run preview's section constants established:
 /// `the_disclosure_names_the_file_set_the_seams_and_what_is_not_closed` asserts
 /// all three appear in this order by comparing byte offsets, so there is exactly
 /// **one** place pinning the order rather than two that can disagree.

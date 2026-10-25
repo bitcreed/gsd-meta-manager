@@ -92,9 +92,9 @@ pub struct ProjectState {
     /// Roadmap's detail pane. Display-only.
     ///
     /// **`Untrusted` values in a map keyed by a reader-generated phase key**,
-    /// so no free-string field joins `THIRD_PARTY_STRINGS`: a goal reaches a
-    /// cell only through `shown()`, and it is deliberately kept out of the
-    /// driver's model seam (widening the prose set would be a decision of its
+    /// so no free-string field joins `ProjectState`: a goal reaches a cell
+    /// only through `shown()`, and it is deliberately kept out of any
+    /// model-facing prompt (widening the prose set would be a decision of its
     /// own).
     pub phase_goals: HashMap<String, crate::text::Untrusted>,
     /// STATE.md's `milestone_name`, e.g. `Actuation Routines`; `None` when the
@@ -103,7 +103,7 @@ pub struct ProjectState {
     ///
     /// `Untrusted`, not `String`, for the same reason as
     /// [`Self::milestones`]' labels: third-party text reaches a cell only
-    /// through `shown()`, and the free-string census stays unchanged.
+    /// through `shown()`, and `ProjectState` gains no free-string field.
     pub milestone_name: Option<crate::text::Untrusted>,
     pub queued_actions: Vec<queue_md::QueuedAction>,
     /// Per-phase disk inference keyed by phase number (e.g., "01", "05")
@@ -160,7 +160,7 @@ pub struct ProjectState {
     /// dropped rather than kept.
     ///
     /// Holds no `String` — phase numbers, a timestamp and an enum — so the
-    /// free-string census in `tests/spawn_seam_guard.rs` stays unchanged.
+    /// struct gains no free-string field.
     pub stale_handoff: Option<StaleHandoff>,
     /// True when `.planning/async-jobs/` holds at least one `*.json` manifest —
     /// the phase is legitimately waiting on an external job (not stuck).
@@ -199,8 +199,9 @@ pub struct ProjectState {
     ///
     /// A classification this crate authored, never the parser's message — see
     /// [`state_md::FrontmatterFault`]. Every `String` on this struct is
-    /// third-party text by construction (`src/driver/untrusted.rs` is the
-    /// census); a parser error quoting a foreign STATE.md would have been one
+    /// third-party text by construction (the Phase 21 untrusted-field census was
+    /// retired in Phase 31 with the goal layer; the rule it enforced still
+    /// holds); a parser error quoting a foreign STATE.md would have been one
     /// more, held for the sake of a line number.
     pub state_md_fault: Option<state_md::FrontmatterFault>,
     /// WHERE the frontmatter broke, when the parser could say — as FILE-relative
@@ -214,12 +215,11 @@ pub struct ProjectState {
     /// wrote.
     ///
     /// Deliberately **not** a `String`, for two independent reasons that
-    /// converge: `src/driver/untrusted.rs` forbids unclassified third-party
-    /// text crossing into the UI, and `tests/spawn_seam_guard.rs` censuses every
-    /// `String`/`Option<String>`/`Vec<String>` field on this struct against
-    /// `THIRD_PARTY_STRINGS` in both directions — so a stringly position would
-    /// force the census wider, which is the property this field exists to keep
-    /// intact.
+    /// converge: unclassified third-party text must not cross into the UI (the
+    /// Phase 21 census that enforced it was retired in Phase 31, the rule
+    /// stands), and every `String`/`Option<String>`/`Vec<String>` field on this
+    /// struct is third-party text by construction — so a stringly position
+    /// would add exactly the kind of field this one exists to avoid.
     pub state_md_fault_position: Option<state_md::FrontmatterFaultPosition>,
     /// `STATE.md`'s frontmatter was read only after an **in-memory** repair
     /// pass ([`state_md::FrontmatterOutcome::Recovered`]).
@@ -229,8 +229,8 @@ pub struct ProjectState {
     /// rewrote before believing; a strict reader would still refuse the file. A
     /// reader who cannot tell the two apart has been told something slightly
     /// false about the repository — the same argument
-    /// [`crate::driver::untrusted`]'s truncation marker makes about a string,
-    /// applied to a document.
+    /// the marker that truncates a string makes about it, applied to a
+    /// document.
     ///
     /// A `bool`, not a message: nothing the parser wrote may cross this
     /// boundary, and `tests/spawn_seam_guard.rs`'s census of every free

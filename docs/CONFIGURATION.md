@@ -81,6 +81,8 @@ The default for `driver.egress` is **empty, which means no CONNECT egress at all
 | `gsd_integration` | boolean | `false` | When true, the detail view renders extra verified/inferred badges for GSD-integrated projects (see `src/ui/screens/detail.rs`). |
 | `mouse` | boolean | `true` | Whether the TUI starts with terminal mouse capture on (click tabs, sub-tabs and rows, double-click to open, wheel to scroll). An absent key means `true`. `M` toggles capture at runtime on the dashboard and in the detail view; the toggle is not saved back here. While capture is on, most terminals select text with Shift+drag. |
 
+Older configs may also carry `preferences.default_runtime`, `preferences.driver_max_concurrent` and a per-project `runtime` key. They are still parsed and written back unchanged, so an old `config.json` loads, but since Phase 31 they select no agent and cap nothing: the Preferences screen (`G`) no longer offers them.
+
 Hook commands are non-fatal in the sense that the surrounding logic only proceeds when they exit `0` — see `execute_hook` in `src/project_creator.rs`.
 
 ## CLI flags
@@ -120,37 +122,34 @@ Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
 
 ### `GSDMM_EXPERIMENTAL_FEATURES` in detail
 
-The driver runs a real agent against a real repository, so its surface is hidden
-rather than merely disabled: with the variable unset the TUI has **eight** tabs,
-no `Shift+D`, no `D` in the detail-view tab hint, no driver rows or Driver
-section in the help screen, no driven badge on the dashboard, and no driver
-keys. A user who never asked for a driver cannot discover one by pressing
-a key.
+The driver launcher runs a real agent against a real repository (inside a
+sandbox), so its surface is hidden rather than merely disabled: with the variable
+unset the TUI has **eight** tabs, no `Shift+D`, no `D` in the detail-view tab
+hint, no Driver section in the help screen, and none of the launcher's dashboard
+markers (the driven badge, the attention ranking and the `h` filter that read
+them). A user who never asked for a driver cannot discover one by pressing a
+key.
 
 With the variable set, the full surface returns and is labelled: the Driver
 pane's title and the help screen's Driver section heading both read
 `— EXPERIMENTAL`.
 
-Three things are deliberately **not** affected by it:
+Two things are deliberately **not** affected by it:
 
-- **`driver_opt_in` is still required.** The flag is a *discovery* gate, not an
-  authorisation boundary — anyone able to set an environment variable for this
-  process can also invoke the binary directly. Per-project opt-in remains the
-  consent gate, and `preferences.driver_max_concurrent` still caps concurrent
-  runs, in both flag states.
-- **The `drive` subcommand is not gated.** The TUI launches a run by
-  re-executing *this same binary* as `<current_exe> drive …`, and environment
-  propagation into that child is not guaranteed; gating the subcommand would
-  break the spawn path for the users who did set the flag. It *is* marked
-  `hide = true`, so it no longer appears in `--help` — hidden rather than gated
-  for exactly that reason: the TUI's own `<current_exe> drive` respawn is the
-  caller that has to keep working. That is help visibility only. The subcommand
-  parses, dispatches and runs identically in both flag states, `hide` removes
-  nothing from the parser, and both flag states render the same help — this
-  variable is not what hides it.
-- **Startup reconciliation still runs**, so a session that toggles the flag on
-  sees coherent state immediately. Only the surfaces that *display* its result
-  are gated.
+- **The flag is a discovery gate, not an authorisation boundary.** Anyone able
+  to set an environment variable for this process can also run
+  `gsd-meta-manager driver …` directly: that command line is not gated, and
+  neither is the sandbox the launcher runs a run in.
+- **`driver_opt_in` is not a launch gate.** The record, written from the Driver
+  tab's `o` key, carries the per-project PR caps and branch
+  namespace the push step reads (`launcher::push::policy_for`). A project
+  without one pushes under the defaults; nothing refuses a launch for lacking
+  it. There is no manager-wide concurrency cap either.
+
+The legacy `drive` subcommand and the dashboard's `r` / `x` / `o` keys that
+started and stopped it were removed in Phase 31, together with the startup
+reconciliation of its run records. Run directories it left under
+`.planning/meta-manager/runs/` are still on disk but are never read.
 
 It is read exactly once, at startup. Changing it requires restarting the TUI.
 

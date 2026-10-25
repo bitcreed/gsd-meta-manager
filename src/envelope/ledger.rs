@@ -1045,7 +1045,8 @@ mod tests {
     /// A FIFO at the ledger path blocks the open or the read forever, so a regressed
     /// kind bound would hang an in-process call and with it the whole test binary.
     /// On a thread, the regression fails the test instead of hanging it.
-    #[cfg(unix)]
+    /// Only the FIFO rows call it, so it is Linux-only like `make_fifo`.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     fn attempt_within_twelve_seconds(root: &Path) -> anyhow::Result<CapVerdict> {
         let (tx, rx) = std::sync::mpsc::channel();
         let root = root.to_path_buf();
@@ -1060,7 +1061,12 @@ mod tests {
 
     /// A FIFO at `path`, made without spawning a process: the spawn-seam census
     /// (`tests/spawn_seam_guard.rs`) admits no new spawn site in `src/`.
-    #[cfg(unix)]
+    ///
+    /// Not built on Apple targets: `rustix` exposes neither `mknodat` nor
+    /// `mkfifoat` there, so the FIFO rows below are Linux-only and the Apple
+    /// cross-target clippy (CI's `cross-target-check`) still compiles. The
+    /// directory, symlink-to-device and fresh-root rows run everywhere on Unix.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     fn make_fifo(path: &Path) {
         rustix::fs::mknodat(
             rustix::fs::CWD,
@@ -1144,7 +1150,7 @@ mod tests {
         assert!(refusal.to_string().contains("bytes, past the"), "{refusal}");
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     #[test]
     fn a_ledger_that_is_not_a_regular_file_is_refused_rather_than_read() {
         let root = tempfile::tempdir().unwrap();
@@ -1251,11 +1257,14 @@ mod tests {
     fn the_ledger_kind_bound_is_non_vacuous_at_four_kinds_and_the_fresh_root_still_permits() {
         // The non-vacuity half: without these, the symlink row passes against a check
         // that was deleted entirely.
-        let fifo = tempfile::tempdir().unwrap();
-        make_fifo(&ledger_file(fifo.path()));
-        let refusal = attempt_within_twelve_seconds(fifo.path())
-            .expect_err("a FIFO at the ledger path is refused");
-        assert_not_a_regular_file(&refusal, "a FIFO");
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let fifo = tempfile::tempdir().unwrap();
+            make_fifo(&ledger_file(fifo.path()));
+            let refusal = attempt_within_twelve_seconds(fifo.path())
+                .expect_err("a FIFO at the ledger path is refused");
+            assert_not_a_regular_file(&refusal, "a FIFO");
+        }
 
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(ledger_file(directory.path())).unwrap();

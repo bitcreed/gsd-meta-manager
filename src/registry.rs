@@ -781,7 +781,7 @@ pub enum PromptProfile {
 /// either (`HANDOFF.json` first, then `HANDOFF.md`), and a list naming only one
 /// would be under-broad by exactly one file. `ProjectState` is parsed from
 /// `STATE.md` *and* the `HANDOFF` file; `RoadmapPhase` from `ROADMAP.md` — see
-/// `crate::driver::untrusted`'s census, which is authoritative for that.
+/// the state reader's `Untrusted` fields, which are authoritative for that.
 ///
 /// Absent files are still listed. A file that does not exist at opt-in is
 /// recorded with a `None` digest rather than omitted, so that its later

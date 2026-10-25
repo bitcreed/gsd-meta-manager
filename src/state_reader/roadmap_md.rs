@@ -1377,7 +1377,7 @@ pub struct RoadmapMilestone {
     ///
     /// **`Untrusted`, not `String`**: it is third-party text out of the
     /// project's ROADMAP.md, so it reaches a cell only through `shown()`, and
-    /// `ProjectState` gains no free-string field (`THIRD_PARTY_STRINGS`).
+    /// `ProjectState` gains no free-string field.
     pub label: crate::text::Untrusted,
     /// Inclusive declared range (`Phases A-B`), when numeric.
     pub first: Option<PhaseNum>,

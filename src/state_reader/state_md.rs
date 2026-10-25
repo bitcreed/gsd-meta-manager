@@ -403,8 +403,8 @@ pub struct FrontmatterFaultPosition {
 ///
 /// **A classification rather than the parser's message, deliberately.** A
 /// serde error quotes the document that produced it, and that document is
-/// third-party text (`src/driver/untrusted.rs` is the census of every such
-/// string this tool holds). Carrying it as a `String` on `ProjectState` would
+/// third-party text (every such string this tool holds is `Untrusted` or a
+/// fixed phrase this crate wrote). Carrying it as a `String` on `ProjectState` would
 /// put unclassified third-party prose one field-access away from a model seam
 /// to buy a line number. The full parser message still goes to the log; what
 /// the UI carries is a fixed phrase this crate wrote.
@@ -538,7 +538,7 @@ fn yaml_fault_position(
 ///
 /// All of it is done over `char`s. The value is third-party text and a
 /// multi-byte character is exactly what arrives without warning — the defect
-/// class `crate::driver::untrusted::bounded` documents.
+/// class the retired Phase 21 `untrusted::bounded` helper documented.
 fn repair_frontmatter_block(yaml: &str) -> Option<(String, u32)> {
     let mut repaired_lines = 0u32;
     let mut out = String::with_capacity(yaml.len() + 16);
@@ -644,7 +644,8 @@ fn repair_line(line: &str) -> Option<String> {
 ///
 /// Char-wise, never byte-wise: a naive byte scan for `"` or `\` over a value
 /// carrying em-dashes and 4-byte characters is the panic class this crate has
-/// already paid for twice (`untrusted::bounded`, the since-deleted Roadmap boxes widget).
+/// already paid for twice (the retired Phase 21 bounded-truncation helper, the
+/// since-deleted Roadmap boxes widget).
 fn yaml_double_quoted(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -1328,8 +1329,8 @@ mod tests {
     /// The fixture puts a 4-byte character and two em-dashes in the value and
     /// then asserts the PRECONDITION that the classic byte-index-equals-
     /// character-count confusion lands INSIDE a character — following
-    /// `untrusted::truncation_inside_a_multibyte_character_lands_on_a_character_boundary`,
-    /// because without it the test would pass against a byte-indexing
+    /// the retired `truncation_inside_a_multibyte_character_lands_on_a_character_boundary`
+    /// test, because without it the test would pass against a byte-indexing
     /// implementation and prove nothing.
     #[test]
     fn a_multibyte_value_survives_the_repair_without_a_byte_index_panic() {

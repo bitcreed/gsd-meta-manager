@@ -35,14 +35,12 @@ all of them:
   projects from active sessions (Linux only -- see
   [Platform support](#platform-support)).
 - **Initial Codex support** -- interactive `codex` sessions are detected and
-  shown alongside Claude sessions (reachable with `Tab` under tmux), and the
-  experimental driver can run a project whose manager-config entry sets
-  `"runtime": "codex"` (or `preferences.default_runtime`) through `codex exec`. Resume stays Claude-only -- see
-  [Platform support](#platform-support). Next-command suggestions also use a
-  Codex-only GSD install (`~/.codex/gsd-core`, or `$CODEX_HOME/gsd-core`; a
-  Claude install under `$CLAUDE_CONFIG_DIR/gsd-core` is found too), and a
-  driven `codex exec` child does not inherit the launching shell's `GSD_RUNTIME`,
-  so GSD inside it takes its runtime from the project's config and its own install.
+  shown alongside Claude sessions (reachable with `Tab` under tmux). Resume stays
+  Claude-only -- see [Platform support](#platform-support). Next-command
+  suggestions also use a Codex-only GSD install (`~/.codex/gsd-core`, or
+  `$CODEX_HOME/gsd-core`; a Claude install under `$CLAUDE_CONFIG_DIR/gsd-core`
+  is found too). The app does not drive Codex: the experimental driver launcher
+  runs Claude only.
 - **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
   session without hunting through terminal tabs.
 - **Milestone archive browsing** -- read shipped-milestone artifacts with inline
@@ -59,7 +57,7 @@ leaves on disk and writes only the few files listed below.
 | gsd-core (`.planning/`) | What the app manages: each project's `.planning/` state, read straight from disk. Regularly synced to gsd-core releases -- see [Compatibility](#compatibility) |
 | `/gsd-progress`, `/gsd-manager` | One project, from inside a Claude session. This app covers every registered project from outside any session |
 | `claude-orchestration` backend | Runs one project's phase waves in parallel inside a single Claude session, leaving the same commits and `SUMMARY.md` files as normal execution -- complementary, and read like any other run |
-| Runtimes | Claude Code and Codex: live sessions are detected (Linux), and the experimental driver runs either (`claude -p` or `codex exec`). Resume is Claude-only |
+| Runtimes | Claude Code and Codex: live sessions are detected (Linux). The experimental driver launcher runs Claude in a sandbox ([docs/DRIVER-SANDBOX.md](docs/DRIVER-SANDBOX.md)); Codex is detected, never driven. Resume is Claude-only |
 | gsd-tools | Called read-only, as `gsd-tools smart-entry --json`, for next-command suggestions |
 | Capabilities | Their `capabilities.*` config keys are on the Config tab; keys this build does not model round-trip losslessly as read-only rows. Installed packs are not read |
 | gsd-pi | Not supported: it keeps project state in its own `.gsd/` directory and database, not `.planning/` |
@@ -70,9 +68,9 @@ What it writes:
   save -- under GSD's own lock, replaced atomically.
 - `.planning/meta-manager/QUEUE.md` (Queue tab), its own config and log, and a
   new project's directory with `git init` (`c`).
-- The experimental driver: run records under `.planning/meta-manager/`, a block
-  in `.git/info/exclude`, files in its data directory -- plus whatever the GSD
-  commands it launches write.
+- The experimental driver launcher: run directories under
+  `.planning/meta-manager/drivers/`, files in its data directory -- plus whatever
+  the GSD commands it launches write.
 
 What it never touches:
 

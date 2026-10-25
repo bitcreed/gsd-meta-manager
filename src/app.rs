@@ -253,9 +253,8 @@ pub const UNREADABLE_STATE_LABEL: &str = "! STATE.md unreadable";
 /// derived from a document this tool rewrote before believing; a strict reader
 /// would still refuse the file, and the value shown may not be the value a
 /// fixed file would show. A reader who cannot tell has been told something
-/// slightly false about the repository — exactly the argument
-/// [`crate::driver::untrusted`]'s truncation marker makes about a string, here
-/// applied to a document.
+/// slightly false about the repository — the same argument a string's
+/// truncation marker makes, here applied to a document.
 pub const RECOVERED_STATE_MARKER: &str = "~ ";
 
 /// The phase cell of a registered project whose folder no longer exists

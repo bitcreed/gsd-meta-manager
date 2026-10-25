@@ -200,7 +200,7 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
 /// thread. A token check has none of those properties.
 ///
 /// **Two shapes it used to accept, and the correction rides the commit that
-/// falsified the old text** (per the `src/driver/dry_run.rs:78-83` precedent):
+/// falsified the old text** (a precedent the retired dry-run preview set):
 ///
 /// * **Whitespace-only.** Only the *empty* string was short-circuited, so
 ///   `"   "` yielded exactly one [`Component::Normal`] whose text was the whole
