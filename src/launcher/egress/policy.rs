@@ -198,6 +198,17 @@ pub fn inference_body_verdict(body: &serde_json::Value) -> BodyVerdict {
     if object.get("container").is_some_and(|c| !c.is_null()) {
         return BodyVerdict::Deny("container".to_owned());
     }
+    // IN-07 / T-28.1-41: a field the policy reads, spelled in another case at the one
+    // place the Anthropic API defines it, is refused: a decoder that matches field names
+    // case-insensitively (Go's `encoding/json` does) would read `Tools` as `tools`.
+    // Only these fixed positions are checked, so PascalCase keys inside user data (a
+    // tool's input schema, `tool_use.input`) still pass.
+    if object
+        .keys()
+        .any(|key| is_case_variant(key, &["tools", "mcp_servers", "container"]))
+    {
+        return BodyVerdict::Deny(CASE_VARIANT_REASON.to_owned());
+    }
     match object.get("tools") {
         None | Some(Value::Null) => {}
         Some(Value::Array(tools)) => {
@@ -205,6 +216,9 @@ pub fn inference_body_verdict(body: &serde_json::Value) -> BodyVerdict {
                 let Value::Object(tool) = tool else {
                     return BodyVerdict::Deny("a tools entry is not an object".to_owned());
                 };
+                if tool.keys().any(|key| is_case_variant(key, &["type"])) {
+                    return BodyVerdict::Deny(CASE_VARIANT_REASON.to_owned());
+                }
                 match tool.get("type") {
                     None => {}
                     Some(Value::String(kind))
@@ -223,6 +237,27 @@ pub fn inference_body_verdict(body: &serde_json::Value) -> BodyVerdict {
     match remote_source(body) {
         Some(why) => BodyVerdict::Deny(why),
         None => BodyVerdict::Forward,
+    }
+}
+
+/// The refusal text for a policy field spelled in another case. Fixed policy text.
+const CASE_VARIANT_REASON: &str = "body spells a policy field in another case";
+
+/// `key` folded to simple lowercase the way a case-insensitive decoder compares names:
+/// each character upper-cased and lower-cased again, so `S` and the long s `\u{17f}`, `K`
+/// and the Kelvin sign `\u{212a}` all meet.
+fn fold_name(key: &str) -> String {
+    key.chars()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// True when `key` is not one of `names` exactly but folds to one of them.
+fn is_case_variant(key: &str, names: &[&str]) -> bool {
+    !names.contains(&key) && {
+        let folded = fold_name(key);
+        names.contains(&folded.as_str())
     }
 }
 
@@ -360,7 +395,10 @@ impl<'de> serde::Deserialize<'de> for UniqueKeys {
 /// key could carry a refused field past the policy (WR-01 / T-28.1-02). Every
 /// other ambiguity (trailing commas, comments, a BOM, invalid UTF-8, lone
 /// surrogates, trailing data) is already a parse error, so a body with unique
-/// names means the same thing to every conforming parser.
+/// names means the same thing to every conforming parser. A decoder that also
+/// folds case is covered at the positions the policy reads (the top-level `tools`,
+/// `mcp_servers`, `container` and a tool's `type`): a case variant there is refused
+/// ([`inference_body_verdict`]); elsewhere a name's case is data.
 pub fn judge_body(bytes: &[u8]) -> BodyVerdict {
     use serde::Deserialize;
     let mut de = serde_json::Deserializer::from_slice(bytes);
@@ -898,6 +936,34 @@ mod tests {
             !reason.contains("model") && !reason.contains("web_fetch"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn a_case_variant_of_a_policy_field_is_denied_where_the_api_defines_it() {
+        // IN-07 / T-28.1-41
+        let reason = CASE_VARIANT_REASON.to_owned();
+        for body in [
+            r#"{"tools":[],"Tools":[{"type":"web_fetch_20250910"}]}"#,
+            r#"{"Tools":[{"type":"web_fetch_20250910"}]}"#,
+            r#"{"MCP_SERVERS":[{"url":"https://x"}]}"#,
+            r#"{"Container":{"id":"c"}}"#,
+            r#"{"tools":[{"Type":"web_fetch_20250910","name":"x"}]}"#,
+            // The long s and the Kelvin sign fold into ASCII letters.
+            "{\"tool\u{17f}\":[]}",
+            r#"{"tool\u017f":[]}"#,
+        ] {
+            assert_eq!(
+                judge_body(body.as_bytes()),
+                BodyVerdict::Deny(reason.clone()),
+                "{body}"
+            );
+        }
+        // Case in user data is data: a PascalCase schema or tool input still passes.
+        let pascal = r#"{"model":"m","messages":[{"role":"assistant","content":[
+            {"type":"tool_use","id":"1","name":"Cfn","input":{"Type":"AWS::S3::Bucket","type":"x"}}]}],
+            "tools":[{"name":"Cfn","input_schema":{"type":"object","properties":{"Type":{},"Name":{}}}}]}"#;
+        assert_eq!(judge_body(pascal.as_bytes()), BodyVerdict::Forward);
+        assert!(!reason.contains("tools"));
     }
 
     #[test]
