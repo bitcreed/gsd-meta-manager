@@ -90,7 +90,10 @@ How the CONNECT proxy decides:
 - A name that resolves to a loopback, link-local or private address is refused (DNS rebinding).
 - `api.anthropic.com` is **never** reachable through CONNECT, whatever the list says. All inference
   goes through the inference proxy, which is the one place the token is added.
-- Every request is logged; headers are not.
+- Every request is logged; headers are not. The log (`egress.log`) is capped at 8 MiB and rotated
+  once to `egress.log.1`, so it holds at least the most recent 8 MiB. Refused requests take at most
+  a quarter of each file; later ones are counted in a line before the next carried-out request, so a
+  flood of junk requests cannot hide an allowed `CONNECT` or an inference call.
 
 ## Auth posture
 
