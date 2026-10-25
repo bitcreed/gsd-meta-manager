@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
-stopped_at: Completed 31-04-PLAN.md
-last_updated: "2026-10-25T06:16:12.829Z"
+stopped_at: Completed 31-05-PLAN.md (SC4 container gate open)
+last_updated: "2026-10-25T06:45:46.980Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 31 execution started
-state_head: 957131f83a20fbc77967460e71d27b214b6a7908
+state_head: e9dd14932cbbb97ad9cce5109cb8bbf25955720f
 progress:
   total_phases: 10
   completed_phases: 14
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — EXECUTING
-Plan: 5 of 7
+Plan: 6 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -562,6 +562,7 @@ verify-phase if the gate is fixed.
 | Phase 31 P02 | 20min | 2 tasks | 17 files |
 | Phase 31 P03 | 32 min | 3 tasks | 20 files |
 | Phase 31 P04 | 30 min | 3 tasks | 77 files |
+| Phase 31 P05 | 30min | 3 tasks | 51 files |
 
 ## Accumulated Context
 
@@ -804,6 +805,7 @@ Recent decisions affecting current work:
 - [Phase 31]: 31-04: Preferences keeps its header, file path and GSD-template route, drops default_runtime and the concurrency stepper, and says nothing manager-wide is editable [inferred — audit] — Both rows configured the retired drive subcommand; a stepper for a setting that selects or caps nothing is a control that lies. Config fields still parse and round-trip.
 - [Phase 31]: 31-04: RunRecord loses bounds, approved_plan, escalation_cap, escalations_used; old run.json keeps them in the flattened extra [inferred — audit] — Their types or goals were deleted with the goal layer; the rest of RunRecord/JournalRun/JournalWriter stay for 31-05 because envelope::park and its tests still use them.
 - [Phase 31]: 31-04: ledger FIFO test rows are Linux-only (cfg not apple) because rustix has no mknodat/mkfifoat on Apple targets [inferred — audit] — 31-01's helper broke the macOS cross-target clippy; fixed with a cfg, no new dependency, no Linux coverage lost.
+- [Phase 31]: 31-05: ParkReason pruned to {PushOutsideNamespace, SecretDetected, PrCapExceeded}; journal trimmed to is_plain_path_component, classify_change, digests, redact, tail reader; RedactedLine kept under allow(dead_code) [inferred — audit]
 
 ### Roadmap Evolution
 
@@ -875,6 +877,7 @@ Recent decisions affecting current work:
   - WR-06: Finished orphan fixers still count in `N fixers`, outvote the running fixer's phase and inflate `fixed` — the CR-01 pattern left in `src/agents/fixers.rs:137-285`
   - Info IN-01..IN-07 also open (redraw every scan for aged-out rows, tests reading real `~/.claude`, relative `gitdir:` ignored, `lock_released` premise, children not counted as running, `plan_state` re-spells `is_running`, gate-ordering test) — see 25-REVIEW.md
 - [Phase 25] deferred-items.md: `.planning/WINDOWS.md` ledger table disagrees with its fenced JSON (row 19), so `gsd-tools windows append` refuses to write; `cargo clippy --all-targets` has pre-existing warnings (browser.rs, project_creator.rs, several `tests/envelope_*`); repo is not `cargo fmt --check` clean
+- 31-05 SC4: container dry run exit 1, gate 4 red on two pre-existing 28.1 launcher tests (planted.rs a_truncation_the_baseline_had_too..., launcher_sandbox no_flag_names_a_credential_directory...); identical on pre-plan 235a912; needs a 28.1 follow-up then a container re-run
 
 ### Quick Tasks Completed
 
@@ -998,8 +1001,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T06:16:11.334Z
-Stopped at: Completed 31-04-PLAN.md
+Last session: 2026-10-25T06:45:45.504Z
+Stopped at: Completed 31-05-PLAN.md (SC4 container gate open)
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0

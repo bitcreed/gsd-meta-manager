@@ -1388,7 +1388,7 @@ guard, check which of its threats (exfiltration, credential use, network reach) 
 allowlist as the superseding mechanism, and should be closed only once 28.1 lands
 [inferred — audit].
 
-**Plans**: 4/7 plans executed
+**Plans**: 5/7 plans executed
 
 Plans:
 
@@ -1403,7 +1403,7 @@ Plans:
 - [x] 31-04-PLAN.md — `drive`, the goal layer, the inbox core, `DriveError` and the legacy kill/lock entry points deleted; dead Preferences knobs and user docs corrected (RETIRE-01, RETIRE-02)
 
 **Wave 4** *(blocked on 31-01, 31-04)*
-- [ ] 31-05-PLAN.md — the Phase 19 guard, classifier and 16 corpora deleted, `envelope scan` kept; git-version witness retired atomically with pre-tag-check; journal trimmed; container gate (RETIRE-01, RETIRE-03)
+- [x] 31-05-PLAN.md — the Phase 19 guard, classifier and 16 corpora deleted, `envelope scan` kept; git-version witness retired atomically with pre-tag-check; journal trimmed; container gate (RETIRE-01, RETIRE-03)
 
 **Wave 5** *(blocked on 31-05; 31-06 and 31-07 touch disjoint files)*
 - [ ] 31-06-PLAN.md — Phase 19 threat closure table, Phase 21 criterion 4 closure and CR-01 owner, SAFE rows, Phase 22 archived as superseded (RETIRE-02, RETIRE-03)
@@ -1496,7 +1496,7 @@ Plans:
 | 28. Sandboxed Driver Launcher | 9/9 | Complete    | 2026-10-24 |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
 | 30. Driver Tab on DIRECTION.md | 9/9 | Complete    | 2026-10-24 |
-| 31. Retire Superseded Envelope & Goal-Layer Code | 4/7 | In Progress | - |
+| 31. Retire Superseded Envelope & Goal-Layer Code | 5/7 | In Progress | - |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
 ## Backlog
