@@ -47,8 +47,10 @@ pub const TRACKED_DIRS: &[&str] = &[
 pub const SKIP_DIR_NAMES: &[&str] = &["target", "node_modules", ".venv", "venv", "__pycache__"];
 
 /// The most directory entries one walk visits before it gives up and reports a
-/// truncation (a flood of files must not hide a plant silently).
-pub const MAX_WALK_ENTRIES: usize = 200_000;
+/// truncation (a flood of files must not hide a plant silently). One million
+/// `[inferred — audit]`: large monorepos (`vendor`, `dist`, data directories) stay
+/// under it, and the walk costs a few seconds at that size (WR-08).
+pub const MAX_WALK_ENTRIES: usize = 1_000_000;
 
 /// The largest git config file that is parsed.
 pub const MAX_CONFIG_BYTES: u64 = 1_048_576;
@@ -116,6 +118,10 @@ pub enum FindingKind {
     /// A git config key that runs a program (`core.fsmonitor`, `alias.x`, ...).
     GitConfigKey(String),
     ScanTruncated,
+    /// The walk hit its entry limit now and had already hit it for the run's baseline
+    /// (WR-08): the checkout is simply larger than the walk, as it was at launch. Listed
+    /// so the incomplete coverage stays visible, but it does not block the push.
+    ScanIncomplete,
 }
 
 /// One thing the guard found. There is nowhere to put file content.
@@ -142,6 +148,7 @@ impl Finding {
             | FindingKind::WorktreePointer
             | FindingKind::GitConfigKey(_)
             | FindingKind::ScanTruncated => true,
+            FindingKind::ScanIncomplete => false,
             FindingKind::Changed | FindingKind::Created | FindingKind::Removed => {
                 self.path.starts_with(".git/")
                     || self.path.contains("/.git/")
@@ -161,6 +168,7 @@ impl Finding {
             FindingKind::WorktreePointer => format!("worktree-pointer {path}"),
             FindingKind::GitConfigKey(key) => format!("git-config-key:{} {path}", sanitize(key)),
             FindingKind::ScanTruncated => "scan-truncated .".to_owned(),
+            FindingKind::ScanIncomplete => "scan-incomplete .".to_owned(),
         }
     }
 }
@@ -871,9 +879,17 @@ fn strict_pointers(project: &Path, now: &Snapshot, out: &mut Vec<Finding>) {
 pub fn findings(baseline: Option<&Snapshot>, now: &Snapshot, project: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
     if now.truncated {
+        // WR-08: a checkout too large for the walk was too large at launch too. That is
+        // not a change the driver made, so it does not park every push of the project
+        // behind `--ack-planted`; with no baseline (strict mode) it still does.
+        let as_at_launch = baseline.is_some_and(|base| base.truncated);
         out.push(Finding {
             path: ".".to_owned(),
-            kind: FindingKind::ScanTruncated,
+            kind: if as_at_launch {
+                FindingKind::ScanIncomplete
+            } else {
+                FindingKind::ScanTruncated
+            },
         });
     }
     let mut trees: Vec<String> = Vec::new();
@@ -1305,6 +1321,30 @@ mod tests {
             "{found:?}"
         );
         assert!(!snapshot(dir.path()).truncated);
+    }
+
+    #[test]
+    fn a_truncation_the_baseline_had_too_is_listed_but_does_not_block_the_push() {
+        // WR-08: a repository larger than the walk is truncated on every snapshot.
+        let dir = fixture();
+        for i in 0..40 {
+            write(dir.path(), &format!("flood/f{i}"), "x");
+        }
+        let base = snapshot_with_limit(dir.path(), 10);
+        let now = snapshot_with_limit(dir.path(), 10);
+        assert!(base.truncated && now.truncated);
+        let found = findings(Some(&base), &now, dir.path());
+        assert_eq!(kinds(&found), ["scan-incomplete ."]);
+        assert!(found.iter().all(|f| !f.is_git_relevant()), "{found:?}");
+        // A truncation that is new (the baseline was complete) still blocks ...
+        let complete = snapshot(dir.path());
+        assert!(!complete.truncated);
+        let found = findings(Some(&complete), &now, dir.path());
+        assert_eq!(kinds(&found), ["scan-truncated ."]);
+        assert!(found.iter().all(Finding::is_git_relevant));
+        // ... and so does one with no baseline at all (strict mode).
+        let found = findings(None, &now, dir.path());
+        assert!(found.iter().any(|f| f.render() == "scan-truncated ."));
     }
 
     #[test]

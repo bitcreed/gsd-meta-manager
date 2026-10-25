@@ -140,6 +140,16 @@ gsd-meta-manager driver push <project> <run-id> --ack-planted
 ```
 
 Push also runs its own git commands with `core.hooksPath=/dev/null` and `core.fsmonitor=false`.
+The steps that check out the agent's commits (the credential-scan worktree) additionally run with
+your global and system git configuration switched off, so a committed `.gitattributes` cannot
+activate a filter driver you defined there (git-lfs, for example).
+
+**Large checkouts.** The nested-repository walk visits at most 1,000,000 directory entries. A
+checkout that exceeds it is scanned only in part. That is reported as `scan-truncated` and parks
+the push when the walk was complete at launch (the agent made the checkout that large). When the
+launch-time walk was already incomplete, the finding is `scan-incomplete`: it is listed, but it does
+not block the push, because every push of such a project would otherwise need `--ack-planted` and
+the flag would become routine. A plant in the unvisited part of such a checkout is not detected.
 
 ## Driver sandbox: residual risks
 
