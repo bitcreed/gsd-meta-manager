@@ -224,10 +224,9 @@ impl RouterReason {
 /// What the router decided to do next.
 ///
 /// Four arms and **no wildcard anywhere it is matched**, following the
-/// compile-time-gate discipline `DriveError::source` and
-/// `driver::reconcile::RunVerdict` already use: an arm added later is a compile
-/// error at every site that has to classify it, rather than a state that quietly
-/// takes somebody else's branch.
+/// compile-time-gate discipline the wildcard-free classifiers elsewhere in the
+/// tree use: an arm added later is a compile error at every site that has to
+/// classify it, rather than a state that quietly takes somebody else's branch.
 ///
 /// **Every payload is one token derived from typed state** — a phase number, a
 /// status name — and never free text read out of an artifact. That is the same
@@ -385,8 +384,8 @@ impl RouterAction {
     ///
     /// **`pub(crate)` since Phase 21, and the widening is the point rather than
     /// a concession.** The ambiguity seam at [`Decision::NoRule`] produces a
-    /// [`RouterAction`] that survived `driver::goal::parse_action` — the SAFE-08
-    /// re-parse — and has to turn it into the iteration's command. Keeping this
+    /// [`RouterAction`] that survived the (since retired) goal layer's SAFE-08
+    /// re-parse and has to turn it into the iteration's command. Keeping this
     /// private would have meant a second `format!("{verb} {phase}")` written at
     /// that call site, and a second composition site is exactly how "there is one
     /// path from an action to a string" stops being true.

@@ -33,17 +33,13 @@ pub mod steer;
 // (D-11) — so there is nothing platform-specific in it to gate, and gating it
 // would put the module whose determinism is the router's central claim out of
 // reach of a non-Unix build's type checker.
-pub mod bounds;
 pub mod router;
 // Also pure, for the identical reason: [`rate_limit`] reads no clock and opens no
 // file — the caller retains the payload off the stream and hands in the instant
 // to judge a reset time against — so gating it would put the classification that
 // decides whether a run parks on a shared quota out of reach of a non-Unix
 // build's type checker.
-pub mod escalate;
-pub mod goal;
 pub mod rate_limit;
-pub mod untrusted;
 // [`liveness`] is a `/proc` **read**, and D-10 is explicit that it should carry
 // `src/session_detector.rs`'s honest-failure posture — that module has no
 // platform attributes at all and its reads simply yield nothing off Linux —

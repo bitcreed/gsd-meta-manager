@@ -539,9 +539,6 @@ mod tests {
             // Phase 21's three Run-scoped fields, absent on a fixture that
             // predates them — which is precisely the shape the tolerant read
             // path has to keep loading.
-            approved_plan: None,
-            escalation_cap: None,
-            escalations_used: None,
             gsd_command: "/gsd-progress".to_string(),
             target: "host".to_string(),
             opt_in: None,
@@ -554,7 +551,6 @@ mod tests {
             ended_at: None,
             outcome: None,
             target_phase: None,
-            bounds: None,
             extra: serde_json::Map::new(),
         };
         let run = crate::journal::JournalRun::start(&planning, record).expect("the run starts");

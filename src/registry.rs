@@ -2112,38 +2112,6 @@ mod tests {
         }
     }
 
-    /// The sibling of [`opt_in_untrusted_fields`] for [`crate::error::DriveError`],
-    /// and the same rule applies: **no `_ =>` arm may be added.** A variant that
-    /// carries an untrusted value must return 1 AND be added to the subject list
-    /// in the control below; a variant that carries none returns 0 and the
-    /// compiler stops complaining. Nineteen arms is the cost of the guarantee.
-    fn drive_untrusted_fields(err: &crate::error::DriveError) -> usize {
-        use crate::error::DriveError as E;
-        match err {
-            E::RunIdInvalid { .. } => 1,
-            E::AliasNotVisible { .. } => 1,
-            E::TargetPhaseInvalid { .. } => 1,
-            // The config value it echoes is user-authored text (260922-hdj).
-            E::RuntimeUnrecognized(_) => 1,
-            E::UnsupportedPlatform { .. }
-            | E::RunIdRequired
-            | E::NoCommandSource
-            | E::AmbiguousCommandSource
-            | E::BoundsRefused(_)
-            | E::EscalationRefused(_)
-            | E::GoalRefused(_)
-            | E::GoalSeamUnusable { .. }
-            | E::PlanApprovalRequired { .. }
-            | E::PlanApprovalMalformed(_)
-            | E::PlanApprovalStale(_)
-            | E::OptIn(_)
-            | E::Lock(_)
-            | E::Spawn(_)
-            | E::Journal { .. }
-            | E::EnvelopeAssertionFailed { .. } => 0,
-        }
-    }
-
     /// A registry holding exactly `key`, built without going through
     /// [`Alias::new`] — which is the point, because every value this control
     /// cares about is one this build's alphabet refuses.
@@ -2164,7 +2132,7 @@ mod tests {
     /// Every message this plan's two error types and the `remove` path produce
     /// for one value, as `(subject name, message)`.
     fn messages_for(value: &str) -> Vec<(String, String)> {
-        use crate::error::{DriveError, OptInError};
+        use crate::error::OptInError;
         use crate::text::Untrusted;
 
         let carrier = || Untrusted::from_untrusted_source(value.to_string());
@@ -2204,38 +2172,19 @@ mod tests {
             out.push((name.to_string(), err.to_string()));
         }
 
-        for (name, err) in [
-            (
-                "DriveError::AliasNotVisible",
-                DriveError::AliasNotVisible { alias: carrier() },
-            ),
-            (
-                "DriveError::RunIdInvalid",
-                DriveError::RunIdInvalid { run_id: carrier() },
-            ),
-            (
-                "DriveError::TargetPhaseInvalid",
-                DriveError::TargetPhaseInvalid {
-                    target_phase: carrier(),
-                },
-            ),
-            (
-                "DriveError::RuntimeUnrecognized",
-                DriveError::RuntimeUnrecognized(crate::executor::runtime::UnrecognizedRuntime {
-                    key: "runtime",
-                    value: carrier(),
-                }),
-            ),
-        ] {
-            assert_eq!(
-                drive_untrusted_fields(&err),
-                1,
-                "{name} is in this control's subject list but the wildcard-free \
-                 classifier says it carries no untrusted field — the list and \
-                 the classifier have drifted"
-            );
-            out.push((name.to_string(), err.to_string()));
-        }
+        // The config value `UnrecognizedRuntime` echoes is user-authored text
+        // (260922-hdj). It is a struct, not an enum, so no wildcard-free
+        // classifier gates it; it is a subject here by name. It used to ride
+        // inside the legacy drive error enum, whose other variants (alias, run
+        // id, target phase) went with the `drive` subcommand (Phase 31).
+        out.push((
+            "UnrecognizedRuntime".to_string(),
+            crate::executor::runtime::UnrecognizedRuntime {
+                key: "runtime",
+                value: carrier(),
+            }
+            .to_string(),
+        ));
 
         // The real `Remove` path, BOTH halves. The MISS is CR-01's own path —
         // the one with no config prerequisite at all, reachable by any operator
@@ -2463,12 +2412,13 @@ mod tests {
         }
 
         assert!(
-            // Twelve since 260922-hdj: `DriveError::RuntimeUnrecognized`
-            // echoes a user-authored config value, so it joined the list.
-            subjects_seen == corpus.len() * 12,
+            // Nine since Phase 31 (twelve before): the four legacy drive-error
+            // variants collapse to the one that survives as a bare
+            // `UnrecognizedRuntime`, because that enum went with `drive`.
+            subjects_seen == corpus.len() * 9,
             "only {subjects_seen} subject/value pairs were checked across \
-             {} corpus members. Each member must reach all TWELVE subjects — \
-             four `OptInError` variants, four `DriveError` variants, both \
+             {} corpus members. Each member must reach all NINE subjects — \
+             four `OptInError` variants, `UnrecognizedRuntime`, both \
              halves of `remove`, and the two opt-in functions — or a subject \
              has silently dropped out of the list the wildcard-free classifiers \
              gate",

@@ -21,7 +21,7 @@
 //!    the TUI. The TUI can exit; the lock must not.
 //! 3. **The descriptor is held for the run's duration (D-20.2).** `flock` is per
 //!    *open file description*, so dropping the [`std::fs::File`] releases the
-//!    lock — which is why [`acquire`] returns a guard that owns the file rather
+//!    lock — which is why [`acquire_at`] returns a guard that owns the file rather
 //!    than a `()` that would release before it returned, and why [`RunLock`]
 //!    must be stored in the driver's run state and not in a local that falls out
 //!    of scope. Rust opens files `O_CLOEXEC`, so the descriptor is **not**
@@ -60,15 +60,13 @@ use rustix::fs::{flock, FlockOperation};
 use serde::{Deserialize, Serialize};
 
 use crate::error::LockError;
-use crate::journal::{runs_root, writer};
-
-/// The lock file's name inside the runs root.
-const LOCK_FILE_NAME: &str = "run.lock";
 
 /// The per-RUN lock file's name inside a run directory (D-20).
 ///
-/// Distinct from the per-project [`lock_path`] (`run.lock`): a run directory's
-/// `launcher.lock` guards one launcher, the project lock guards one `drive`.
+/// A run directory's `launcher.lock` guards one launcher. (Until Phase 31 a
+/// per-project `run.lock` under `.planning/meta-manager/runs/` guarded the legacy
+/// `drive`; that file is no longer written or read, and an old one is left on
+/// disk untouched.)
 pub const RUN_LOCK_FILE: &str = "launcher.lock";
 
 /// How long [`acquire_at_with_retry`] keeps trying before it reports the refusal.
@@ -83,27 +81,6 @@ pub fn run_lock_path(run_dir: &Path) -> PathBuf {
     run_dir.join(RUN_LOCK_FILE)
 }
 
-/// Where a project's run lock lives.
-///
-/// `<project>/.planning/meta-manager/runs/run.lock`, and **not**
-/// `.planning/meta-manager/run.lock`, which is the literal placement PITFALLS
-/// suggested. The rationale lives here rather than at the call sites, following
-/// the `queue_md.rs:170-176` precedent of putting the *why* of a layout on the
-/// path helper. Two reasons, both about this repository rather than about locks
-/// in general:
-///
-/// * [`writer::RUNS_GITIGNORE_BODY`] already excludes everything directly under
-///   `runs/` except `.gitignore` and `*/run.json`. The lock file is therefore
-///   kept out of a driven repository's index by a rule that **already exists**,
-///   rather than by a new rule someone would have to remember to add — and it is
-///   excluded from the moment the directory exists, because
-///   [`writer::ensure_runs_root`] writes the ignore file first.
-/// * It sits next to `active`, which is the other run-scoped pointer file, so
-///   the run neighbourhood stays one directory rather than two.
-pub fn lock_path(planning_dir: &Path) -> PathBuf {
-    runs_root(planning_dir).join(LOCK_FILE_NAME)
-}
-
 /// Who holds the lock, as the holder itself recorded it.
 ///
 /// **Advisory metadata only, and it must never be promoted to an authority.**
@@ -114,7 +91,7 @@ pub fn lock_path(planning_dir: &Path) -> PathBuf {
 /// tampering is a misleading string (T-17-08).
 ///
 /// Serialised as pretty JSON, by the same argument
-/// [`writer::write_run_record`] makes for `run.json`: it is a document read by a
+/// `journal::writer::write_run_record` makes for `run.json`: it is a document read by a
 /// human at least as often as by the program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockHolder {
@@ -134,7 +111,7 @@ pub struct LockHolder {
 /// description closes. A function that locked and returned `()` would release
 /// the lock before it returned, and a guard bound to a local that falls out of
 /// scope is the same bug one line later. The guard must be stored in the
-/// driver's run state, which is what `src/driver/run.rs` does.
+/// launcher's run state (`launcher::run`).
 ///
 /// There is deliberately **no `impl Drop`**. Closing the descriptor is what
 /// releases the lock and the kernel does that when the [`File`] is dropped; an
@@ -160,42 +137,25 @@ impl RunLock {
     }
 }
 
-/// Take the project's run lock, or say who has it.
+/// Take the lock at `path`, or say who has it: one non-blocking attempt, no retry.
 ///
 /// The order of the body is the decision:
 ///
-/// 1. [`writer::ensure_runs_root`] — the ignore file lands **before** the lock
-///    file can exist, so there is never a moment at which a file inside a driven
-///    repository is unprotected (T-17-12).
-/// 2. Open the lock path read-write, creating it if absent, and **never** with
+/// 1. Open the lock path read-write, creating it if absent, and **never** with
 ///    truncate. Truncating on open would destroy the holder's record the moment
 ///    a second process merely *tried*; forbidding truncate-on-open on both the
 ///    winning and the losing path is cheaper than remembering which is which.
-/// 3. `flock` with the **non-blocking** exclusive operation. A blocking acquire
+/// 2. `flock` with the **non-blocking** exclusive operation. A blocking acquire
 ///    is explicitly wrong here: it would turn a duplicate start into a hang
 ///    (D-20.4). On `EWOULDBLOCK` the losing path reads the holder's record and
 ///    reports it; any other errno is a real I/O fault and is reported as such.
-/// 4. Only **after** winning, write the holder record.
-/// 5. Return the guard holding the descriptor.
+/// 3. Only **after** winning, write the holder record.
+/// 4. Return the guard holding the descriptor.
 ///
-/// `pgid` is the caller's own [`std::process::id`], because `setpgid(0, 0)` ran
-/// at run entry and the driver is therefore its own group leader (D-04).
-pub fn acquire(planning_dir: &Path, run_id: &str, pgid: u32) -> Result<RunLock, LockError> {
-    let root = writer::ensure_runs_root(planning_dir).map_err(|err| LockError::Unavailable {
-        detail: format!("{err:#}"),
-    })?;
-    acquire_at(&root.join(LOCK_FILE_NAME), run_id, pgid)
-}
-
-/// [`acquire`] for an explicit lock path: one non-blocking attempt, no retry.
-///
-/// The body is `acquire`'s steps 2-5 unchanged — create-never-truncate open,
-/// `NonBlockingLockExclusive`, losing path reads the holder, winning path writes
-/// the record in place. The caller owns making sure the directory exists (and,
-/// for the per-project lock, that its ignore file landed first).
+/// The caller owns making sure the directory exists.
 pub fn acquire_at(path: &Path, run_id: &str, pgid: u32) -> Result<RunLock, LockError> {
     // `.truncate(false)` is written out rather than omitted: it is the explicit
-    // form of "never `.truncate(true)` here" (step 2 above), and clippy's
+    // form of "never `.truncate(true)` here" (step 1 above), and clippy's
     // `suspicious_open_options` asks for a truncate decision beside `create`
     // anyway — so the one place the answer matters states it.
     let mut file = OpenOptions::new()
@@ -286,18 +246,12 @@ fn write_holder(file: &mut File, holder: &LockHolder) -> std::io::Result<()> {
 /// **This function never opens for writing and never truncates.** It is the
 /// losing path, and an `O_TRUNC` here would destroy the very information it came
 /// to read (D-20.3) — after which every subsequent loser would be told the
-/// holder is unknown, and the byte-identity assertion in `tests/driver_lock.rs`
-/// exists to catch exactly that.
+/// holder is unknown.
 ///
 /// Every failure — an absent file, an empty file, a short read, invalid JSON —
 /// answers `None`. The **caller** turns `None` into
 /// [`LockError::HeldByUnknownRun`], never into "not held": this function
 /// answers "who", and the kernel has already answered "whether".
-pub fn read_holder(planning_dir: &Path) -> Option<LockHolder> {
-    read_holder_at(&lock_path(planning_dir))
-}
-
-/// [`read_holder`] for an explicit lock path. Read-only, never truncates.
 pub fn read_holder_at(path: &Path) -> Option<LockHolder> {
     let mut file = File::open(path).ok()?;
     let mut raw = String::new();
@@ -385,86 +339,38 @@ pub fn probe_at(path: &Path) -> LockProbe {
 mod tests {
     use super::*;
 
-    /// A planning dir under a fresh temp root.
-    fn planning() -> tempfile::TempDir {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        std::fs::create_dir_all(dir.path().join(".planning")).expect("scratch .planning");
-        dir
-    }
-
-    #[test]
-    fn the_lock_path_sits_under_the_gitignored_runs_root() {
-        let root = Path::new("/nonexistent/project/.planning");
-        let path = lock_path(root);
-
-        assert_eq!(
-            path,
-            runs_root(root).join("run.lock"),
-            "the lock lives beside `active` in the runs root, not at the meta-manager root"
-        );
-
-        // It is excluded by a rule that already exists: the body's catch-all
-        // `*`, with nothing re-including it. The two re-inclusions are
-        // `.gitignore` and `*/run.json` — one level deeper, and a different
-        // name. If a future edit to the body re-includes it, this fails.
-        let body = writer::RUNS_GITIGNORE_BODY;
-        assert!(
-            body.lines().any(|line| line == "*"),
-            "the catch-all is what excludes the lock file; the body is now: {body}"
-        );
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .expect("the lock path has a file name");
-        for negation in body.lines().filter(|line| line.starts_with('!')) {
-            assert_ne!(
-                negation,
-                format!("!{name}"),
-                "nothing may re-include the lock file into a driven repository's index"
-            );
-        }
-    }
-
     #[test]
     fn a_holder_record_round_trips_through_the_lock_file() {
-        let dir = planning();
-        let planning_dir = dir.path().join(".planning");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
 
-        let lock = acquire(&planning_dir, "2026-07-29T12-00-00Z-a3f9", 4242)
+        let lock = acquire_at(&path, "2026-07-29T12-00-00Z-a3f9", 4242)
             .expect("an uncontended acquire succeeds");
 
         assert_eq!(lock.holder().run_id, "2026-07-29T12-00-00Z-a3f9");
         assert_eq!(lock.holder().pgid, 4242);
 
-        let read_back =
-            read_holder(&planning_dir).expect("the record the winner wrote is readable");
+        let read_back = read_holder_at(&path).expect("the record the winner wrote is readable");
         assert_eq!(
             &read_back,
             lock.holder(),
             "a loser must read back exactly what the winner recorded — that record IS \
              the answer to \"which run holds the lock\""
         );
-
-        // The ignore file landed before the lock file could exist (T-17-12).
-        assert!(
-            runs_root(&planning_dir).join(".gitignore").is_file(),
-            "the runs root's ignore file must exist by the time the lock file does"
-        );
     }
 
     #[test]
     fn an_empty_lock_file_reads_as_an_unknown_holder_not_as_unheld() {
-        let dir = planning();
-        let planning_dir = dir.path().join(".planning");
-        let root = writer::ensure_runs_root(&planning_dir).expect("runs root");
-        std::fs::write(root.join("run.lock"), b"").expect("an empty lock file");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
+        std::fs::write(&path, b"").expect("an empty lock file");
 
         // There is a real window in which the lock is held and the file is still
         // empty: the holder writes its record in a second step after winning.
         // `None` here becomes `HeldByUnknownRun` at the call site, never "not
         // held" — that mapping is what stops a lost race becoming a second run.
         assert_eq!(
-            read_holder(&planning_dir),
+            read_holder_at(&path),
             None,
             "an empty record yields no holder identity"
         );
@@ -472,19 +378,18 @@ mod tests {
 
     #[test]
     fn a_truncated_holder_record_reads_as_an_unknown_holder_not_as_unheld() {
-        let dir = planning();
-        let planning_dir = dir.path().join(".planning");
-        let root = writer::ensure_runs_root(&planning_dir).expect("runs root");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
         // A deliberately truncated prefix of a real record — the shape a
         // half-completed write leaves behind.
         std::fs::write(
-            root.join("run.lock"),
+            &path,
             b"{\n  \"run_id\": \"2026-07-29T12-00-00Z-a3f9\",\n  \"pg",
         )
         .expect("a truncated lock file");
 
         assert_eq!(
-            read_holder(&planning_dir),
+            read_holder_at(&path),
             None,
             "a partial record parses as no holder, and the caller reports it as held \
              by an unknown run (D-20.3)"
@@ -518,34 +423,6 @@ mod tests {
             LockProbe::Free,
             "dropping the guard releases the lock"
         );
-    }
-
-    #[test]
-    fn acquire_still_writes_the_per_project_run_lock() {
-        let dir = planning();
-        let planning_dir = dir.path().join(".planning");
-
-        let lock = acquire(&planning_dir, "r-proj", 77).expect("acquire");
-        assert!(
-            lock_path(&planning_dir).is_file(),
-            "the per-project lock still lives at {}",
-            lock_path(&planning_dir).display()
-        );
-        assert_eq!(
-            lock_path(&planning_dir)
-                .file_name()
-                .and_then(|n| n.to_str()),
-            Some("run.lock"),
-            "the per-project lock keeps its name"
-        );
-        assert!(
-            matches!(
-                acquire(&planning_dir, "r-2", 78),
-                Err(LockError::HeldBy { .. })
-            ),
-            "a second acquire is refused naming the first"
-        );
-        drop(lock);
     }
 
     #[test]

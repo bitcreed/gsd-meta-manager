@@ -319,8 +319,8 @@ pub fn ensure_runs_root(planning_dir: &Path) -> anyhow::Result<PathBuf> {
 /// anything is created** (D-27, WR-02). This is the write side of the traversal
 /// hole, and the refusal is placed ahead of [`ensure_runs_root`] on purpose: a
 /// hostile id must not so much as create the runs root, let alone a run
-/// directory outside the project. The failure is loud — it propagates through
-/// `JournalRun::start` into `DriveError::Journal` — rather than a silent skip,
+/// directory outside the project. The failure is loud — it propagates out of
+/// `JournalRun::start` as an `Err` — rather than a silent skip,
 /// because a run that quietly wrote nothing would look identical to a run that
 /// worked.
 pub fn create_run_dir(planning_dir: &Path, run_id: &str) -> anyhow::Result<RunPaths> {
@@ -893,9 +893,6 @@ mod tests {
             // Phase 21's three Run-scoped fields, absent on a fixture that
             // predates them — which is precisely the shape the tolerant read
             // path has to keep loading.
-            approved_plan: None,
-            escalation_cap: None,
-            escalations_used: None,
             gsd_command: "/gsd:execute-phase".to_string(),
             target: "claude".to_string(),
             opt_in: None,
@@ -908,7 +905,6 @@ mod tests {
             ended_at: None,
             outcome: None,
             target_phase: None,
-            bounds: None,
             extra: serde_json::Map::new(),
         }
     }

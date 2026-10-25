@@ -24,7 +24,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use gsd_meta_manager::journal::inbox::{self, InboxMessage};
 use gsd_meta_manager::journal::writer::{
     create_run_dir, parent_excludes_run_record, write_active_pointer, write_run_record,
 };
@@ -115,11 +114,6 @@ fn rel(root: &Path, absolute: &Path) -> String {
 
 fn record(run_id: &str) -> RunRecord {
     RunRecord {
-        // Phase 21's three Run-scoped fields, absent on a fixture whose
-        // assertions predate them.
-        approved_plan: None,
-        escalation_cap: None,
-        escalations_used: None,
         run_id: run_id.to_string(),
         goal: "prove the ignore posture".to_string(),
         gsd_command: "/gsd:execute-phase".to_string(),
@@ -134,7 +128,6 @@ fn record(run_id: &str) -> RunRecord {
         ended_at: None,
         outcome: None,
         target_phase: None,
-        bounds: None,
         extra: serde_json::Map::new(),
     }
 }
@@ -143,25 +136,13 @@ fn record(run_id: &str) -> RunRecord {
 /// the library's ignore body is caught here rather than drifting away from an
 /// inline copy of it.
 ///
-/// The inbox is written through `inbox::append` at `RunPaths::inbox` rather than
-/// with a raw write at a hand-typed `dir.join("inbox.jsonl")`. That was the
-/// vacuity: a test that invents the path it then asserts is ignored proves that
-/// *a path shaped like that* would be ignored, not that the file the TUI
-/// actually writes is. Since plan 18-06 the inbox is a real file the injection
-/// flow appends to, so both halves now come from the library.
+/// (Phase 31 removed the stdin inbox, so there is no inbox file in this footprint
+/// any more; the journal and the record are the two files a run writes.)
 fn populate_run(planning: &Path, run_id: &str) -> RunPaths {
     let paths = create_run_dir(planning, run_id).expect("create the run directory");
     write_run_record(&paths, &record(run_id)).expect("write the run record");
     std::fs::write(&paths.journal, "{\"kind\":\"exec_event\",\"seq\":1}\n")
         .expect("write the journal");
-    inbox::append(&paths.inbox, &InboxMessage::new("steer the run"))
-        .expect("append a message to the inbox, through the production writer");
-    assert!(
-        paths.inbox.is_file(),
-        "the inbox must actually exist on disk, or every assertion about it \
-         below is about a file that was never written: {}",
-        paths.inbox.display()
-    );
     paths
 }
 
@@ -204,36 +185,12 @@ fn staging_a_real_repo_tracks_run_json_and_ignores_the_journal() {
         );
     }
 
-    // The inbox files are real files on disk, written through the production
-    // appender by `populate_run`. **That is what makes the two assertions below
-    // non-vacuous**: "this path is not in the index" is trivially true of a path
-    // nothing ever created, so the existence check is the half that turns the
-    // absence into evidence.
-    for inbox_path in [&p1.inbox, &p2.inbox] {
-        assert!(
-            inbox_path.is_file(),
-            "the inbox must exist before its absence from the index means \
-             anything: {}",
-            inbox_path.display()
-        );
-        assert!(
-            std::fs::metadata(inbox_path)
-                .expect("the inbox is readable")
-                .len()
-                > 0,
-            "and must hold the message that was appended to it: {}",
-            inbox_path.display()
-        );
-    }
-
-    // Absent: every transcript, the inbox files, the pointer, and the deeper
+    // Absent: every transcript, the pointer, and the deeper
     // record. Asserting only the first direction would pass against an ignore
     // file that ignores nothing at all.
     for forbidden in [
         rel(root, &p1.journal),
         rel(root, &p2.journal),
-        rel(root, &p1.inbox),
-        rel(root, &p2.inbox),
         rel(root, &p1.active),
         rel(root, &deeper.join("run.json")),
     ] {
