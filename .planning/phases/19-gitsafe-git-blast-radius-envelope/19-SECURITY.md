@@ -1,13 +1,14 @@
 ---
 phase: 19
 slug: gitsafe-git-blast-radius-envelope
-status: blocked
+status: superseded
+superseded_by: phase-31
 # threats_open = count of OPEN threats at or above workflow.security_block_on severity (high)
-threats_open: 6
+threats_open: 0
 asvs_level: 1
 block_on: high
 created: 2026-08-29
-updated: 2026-09-04
+updated: 2026-10-25
 register_authored_at_plan_time: true
 audited_against: HEAD (4055b81) — the THIRTEENTH audit judges the tree after plans
   19-32 (the round-13 corpus, RED) and 19-33 (the third word class, the ancestor
@@ -23,6 +24,12 @@ register_totals: 139 total / 112 closed / 27 open / 6 at or above `high`
 # the six blocking: T-19-86, T-19-91, T-19-111, T-19-112, T-19-116, T-19-121
 # audit 13 finds NO new blocking threat and judges the open set TERMINAL — the
 # human-decision items plus the deliberately-unruled residues, and nothing else
+register_totals_after_phase_31: 139 total / 137 closed / 2 open / 0 at or above `high`
+# Phase 31 (2026-10-25) closed 25 of the 27 open ids as superseded; the two left open are
+# T-19-72 and T-19-73 (low, surviving scan.rs / config.rs, owned by a backlog todo). The
+# six blocking ids close as superseded by the Phase 28.1 sandbox, and the N-class ones
+# (T-19-86, T-19-112, T-19-116, T-19-121) reopen against Phase 28.1 if the D-11 live probe fails.
+# The closure table is in deferred-items.md "## Phase 31 closure (2026-10-25)" and below.
 ---
 
 # Phase 19 — Security
@@ -16195,3 +16202,37 @@ a fourth comparison beside the three, a front-run, a mask, a nested payload, an
 operator the sweep might have missed — **and every permit it found already had a
 row, an axis and a stated reason.** What is left is not a gap an audit can close.
 It is six decisions, two of which only the user can make.
+
+---
+
+## Phase 31 closure
+
+**Phase 31 (2026-10-25) superseded this phase.** The argv/bash-classifying PreToolUse guard that
+Phases 19 audited was deleted in `13ba5ac` (31-05), and the Phase 28 and 28.1 sandbox replaces what it
+protected: no push credentials inside the sandbox (LNCH-04), commits leave only through gsd-mm's
+fixed-refspec push step outside it (LNCH-06), no network except launcher-owned proxies (LNCH-09), an
+allowlisted `$HOME` (LNCH-10), the run token kept outside (LNCH-12). Nothing above this heading was
+changed; the audit trail stands as written. The full 27-row table, one row per open id sorted by
+numeric id, is in `deferred-items.md` under `## Phase 31 closure (2026-10-25)`.
+
+`threats_open` moves from 6 to 0, and `register_totals_after_phase_31` is
+`139 total / 137 closed / 2 open / 0 at or above high`. The two ids left open, `T-19-72` and
+`T-19-73`, are `low` gaps in test coverage of code that survives (`src/envelope/scan.rs`,
+`src/config.rs`) and have a backlog owner.
+
+The six ids that blocked this phase, as they stand after Phase 31:
+
+| Id | Class | Superseded by | Status |
+|---|---|---|---|
+| `T-19-86` | G (+N) | LNCH-04, LNCH-06, LNCH-09; reopens against Phase 28.1 if the D-11 live probe fails | closed (superseded) |
+| `T-19-91` | G | LNCH-04, LNCH-06 | closed (superseded) |
+| `T-19-111` | G | LNCH-11, LNCH-04 | closed (superseded) |
+| `T-19-112` | N | LNCH-10, LNCH-09; reopens against Phase 28.1 if the D-11 live probe fails | closed (superseded) |
+| `T-19-116` | N (+G) | LNCH-10, LNCH-06; reopens against Phase 28.1 if the D-11 live probe fails | closed (superseded) |
+| `T-19-121` | N | LNCH-10, LNCH-12, LNCH-04; reopens against Phase 28.1 if the D-11 live probe fails | closed (superseded) |
+
+**What this closure does not say.** It is a statement that the attack surface no longer exists in
+this tree or is held by a different mechanism, not that any of the six was ever remediated; the
+audit 13 verdict ("blocked, 2026-09-04") is left untouched above. The N-class rows lean on Phase 28.1,
+whose setup-token reach probe (28.1-UAT.md test 1) is still pending, so they reopen if it fails.
+Sign-off boxes in `## Audit 13 Sign-Off` are history and are not re-ticked.
