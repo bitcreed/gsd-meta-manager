@@ -150,8 +150,8 @@
 //!    the output pane, the journal nor the inbox as unescaped SITES — which is
 //!    why round 9 read as green over the Driver tab's largest render surface.
 //!    `driver_dry_run` is now a probed state (`Driver tab, dry-run preview`),
-//!    and `probe_ctx` populates `ctx.driver_output`, `cache.driver_journal` and
-//!    `cache.driver_inbox`. So the Defaults string-EDIT overlay remains the
+//!    and `probe_ctx` populates `ctx.driver_output` and `cache.driver_journal`
+//!    (the inbox fixture went with the injection screen in Phase 31). So the Defaults string-EDIT overlay remains the
 //!    residual STATE, and the sentence below replaces the rest of it.
 //!
 //!    **What REMAINS after 21-28, and it is a different kind of residual.** The
@@ -162,11 +162,10 @@
 //!    | Site | Value | Held by |
 //!    |---|---|---|
 //!    | output pane | `DriverOutputLine::text` | **the TYPE** — `crate::text::Untrusted`; a new render is a compile error |
-//!    | injection rows | `journal::inbox::InboxMessage::text` | a CALL + this probe |
 //!    | dry-run preview | `ui::screens::DryRunPreview::report` | a CALL + this probe |
 //!    | opt-in disclosure | `PromptInput::path`, `digest` | a CALL + this probe |
 //!
-//!    The last three carriers are still bare `String`s, because they reach
+//!    The last two carriers are still bare `String`s, because they reach
 //!    `src/journal/inbox.rs` and `src/app.rs`, which no plan in this wave owns —
 //!    retyping them would have been a wave conflict, not a closure (D-21-39).
 //!    **The failure direction is under-protection, and it is SILENT**: a NEW
@@ -372,7 +371,6 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("DeleteConfirmScreen", "src/ui/screens/delete_confirm.rs"),
     ("DetailScreen", "src/ui/screens/detail.rs"),
     ("DriverConfirmScreen", "src/ui/screens/driver_confirm.rs"),
-    ("DriverInjectScreen", "src/ui/screens/driver_inject.rs"),
     ("DriverStartScreen", "src/ui/screens/driver_start.rs"),
     ("EditChooserScreen", "src/ui/screens/driver_steer.rs"),
     ("EditLintConfirmScreen", "src/ui/screens/driver_steer.rs"),
@@ -1330,25 +1328,6 @@ fn probe_ctx(identity: &str) -> AppContext {
 
     let cache = ctx.view_cache.entry(identity.to_string()).or_default();
 
-    // The INJECTION ROWS (21-28 T2). `derive_injection_states` maps over the
-    // inbox, so one message here is one rendered injection block, and
-    // `injection_rows` draws `message.text` at `INJECTION_INDENT`.
-    //
-    // `InboxMessage::text` is stored VERBATIM and deliberately un-redacted (its
-    // own field doc says so), the file is `inbox.jsonl` on disk, and this build
-    // does not exclusively own that file.
-    //
-    // The message is left in its `Queued` state: `derive_injection_states`
-    // returns `Queued` when no journal record carries the id, and the
-    // `message.text` row is drawn in EVERY state, so the site under test is
-    // reached without inventing a transition. The Delivered and Missed
-    // transitions are NOT probed here — see LIMIT 1.
-    cache.driver_inbox = vec![crate::journal::inbox::InboxMessage {
-        id: identity.to_string(),
-        ts: "2026-08-27T00:00:00Z".to_string(),
-        text: identity.to_string(),
-    }];
-
     // The journal the scan read off disk, with the run id the selected run
     // carries — `render_output_section` only consults `driver_journal` when the
     // ids match, so a mismatched id would make this populated and unread.
@@ -1359,7 +1338,6 @@ fn probe_ctx(identity: &str) -> AppContext {
             journal.push_record(super::DriverLineKind::Output, identity);
             journal
         },
-        injections: Vec::new(),
     }));
 
     // The Sessions tab's Agents sub-view (25-05, D-C13). Every agent-authored
@@ -1720,7 +1698,7 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          `protections_absent` (` absent: ..`) and `planted` (a count), each `auth` and \
          `protections_absent` value through `shown_capped`; `egress_allow` and \
          `inference_requests` reach the row only as counts. \
-         The legacy surface (`driver_runs`, the live output pane, the injection rows) is \
+         The legacy surface (`driver_runs`, the live output pane) is \
          the next state's.",
     ),
     (
@@ -1735,8 +1713,7 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          a run's journal holds on disk — the agent's own prose, written by the model and \
          read back by `crate::app::driver_line_for_record`. Four lines are pushed through \
          `DriverOutput::push_record`, one per `DriverLineKind` the pane styles \
-         differently, so the marker arms are drawn rather than assumed. And the \
-         INJECTION ROWS from `driver_inbox`.",
+         differently, so the marker arms are drawn rather than assumed.",
     ),
     (
         "Backlog tab, expanded",
@@ -1872,7 +1849,7 @@ fn sub_view_label(view: &crate::app::DetailSubView) -> &'static str {
 
 /// One state per detail sub-view, for every screen whose body is a detail view.
 ///
-/// `EnqueueScreen`, `DriverInjectScreen`, `DriverStartScreen` and
+/// `EnqueueScreen`, `DriverStartScreen` and
 /// `QueueDeleteConfirmScreen` all paint their body with
 /// `DetailScreen::render_main_only`, so each of them renders whatever the active
 /// tab renders. Sharing this helper is what stops the probe covering the detail
@@ -2258,16 +2235,6 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 Box::new(super::queue_delete_confirm::QueueDeleteConfirmScreen::new(
                     identity.to_string(),
                     0,
-                    identity.to_string(),
-                ))
-            })
-        }),
-
-        "DriverInjectScreen" => Some(|identity| {
-            states_over_sub_views(identity, &|identity, ctx| {
-                ctx.input_buffer = identity.to_string();
-                Box::new(super::driver_inject::DriverInjectScreen::new(
-                    identity.to_string(),
                     identity.to_string(),
                 ))
             })
@@ -3796,29 +3763,24 @@ mod tests {
         );
     }
 
-    /// **The two new Driver states REACH their branches** (21-28 T2 step (c)).
+    /// **The Driver dry-run preview state REACHES its branch** (21-28 T2 step (c)).
     ///
     /// Same discipline as [`the_status_footer_state_reaches_the_status_branch`],
-    /// applied to the two sites this task escaped. A state that sets a field the
+    /// applied to the site this task escaped. A state that sets a field the
     /// render never dispatches on proves nothing, and this module already
-    /// records one such near-miss — so each branch is asserted with a token only
-    /// it can produce, and each token is checked in BOTH directions.
+    /// records one such near-miss.
     ///
-    /// * **Injection rows** — `\u{25E6} queued`, the glyph-and-label pair
-    ///   `InjectionState::Queued.cell()` returns. It is drawn only by
-    ///   `injection_rows`; the run detail's other panes draw no such pair. The
-    ///   `false` direction empties `driver_inbox`, which makes
-    ///   `derive_injection_states` return no entries and the block disappear.
     /// * **Dry-run preview** — the run detail's `steps` section rule, asserted
     ///   ABSENT. That is the stronger form of the token: the preview REPLACES
     ///   the run detail, so its rule vanishing is evidence the dispatch actually
     ///   swapped, not merely that a string appeared somewhere. The `true`
     ///   direction is the same rule present in the ordinary Driver tab state.
+    ///
+    /// (The second state this test once covered, the injection rows, went with
+    /// the injection screen in Phase 31.)
     #[test]
     fn the_two_new_driver_states_reach_their_branches() {
         let clean = clean_identity();
-        use crate::ui::screens::driver::{GLYPH_QUEUED, LABEL_QUEUED};
-        let queued_cell = format!("{GLYPH_QUEUED} {LABEL_QUEUED}");
 
         let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
             Box::new(crate::ui::screens::detail::DetailScreen::new(
@@ -3832,38 +3794,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no probe state labelled {label:?}"));
             render_to_text(state.screen.as_ref(), &state.ctx)
         };
-
-        // --- Injection rows -------------------------------------------------
         let driver_tab = rendered("Driver tab, legacy runs");
-        assert!(
-            driver_tab.contains(&queued_cell),
-            "the `Driver tab, legacy runs` state did not reach `injection_rows`: {queued_cell:?} \
-             is absent, so `derive_injection_states` returned no entries and the \
-             assertion that the injection row's `message.text` is composed is \
-             passing by silence. Check that `probe_ctx` populates \
-             `cache.driver_inbox`. Rendered:\n{driver_tab}"
-        );
-
-        let mut no_inbox = probe_ctx(&clean);
-        no_inbox
-            .detail_sub_view_per_project
-            .insert(clean.clone(), crate::app::DetailSubView::Driver);
-        {
-            let cache = no_inbox.view_cache.entry(clean.clone()).or_default();
-            cache.driver_inbox.clear();
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
-        }
-        let no_inbox_text = render_to_text(
-            &crate::ui::screens::detail::DetailScreen::new(clean.clone()),
-            &no_inbox,
-        );
-        assert!(
-            !no_inbox_text.contains(&queued_cell),
-            "with `driver_inbox` emptied the same state still drew \
-             {queued_cell:?}, so the token is not specific to the injection-row \
-             branch and the assertion above proves nothing about which branch ran."
-        );
 
         // --- Dry-run preview ------------------------------------------------
         // `section_rule("steps", ..)` renders as `\u{2500}\u{2500} steps `.
@@ -4181,7 +4112,7 @@ mod tests {
     ///
     /// **One screen and one fixture pair.** `EnqueueScreen` was chosen because
     /// S1 named the input-echo CLASS, not because one screen stands for five:
-    /// `AddProjectScreen`, `CreateProjectScreen`, `DriverInjectScreen` and
+    /// `AddProjectScreen`, `CreateProjectScreen` and
     /// `DriverStartScreen` are covered only by this module's per-screen
     /// behavioural probes, which assert arrival and escaping but not this
     /// test's clean-value no-over-escaping direction. **Direction:

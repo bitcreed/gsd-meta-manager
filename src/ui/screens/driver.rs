@@ -61,8 +61,6 @@ use super::{
     DryRunPreview, ProjectViewCache, DRIVER_OUTPUT_RING_LINES,
 };
 use crate::driver::reconcile::RunVerdict;
-use crate::journal::inbox::InboxMessage;
-use crate::journal::reader::JournalRecord;
 use crate::journal::RunSummary;
 
 // ── Measured layout constants (the `STATUS_COLUMN_MIN_CELLS` discipline) ────
@@ -153,70 +151,6 @@ const MARKER_DIAGNOSTIC: &str = "! ";
 /// visual full stop, and it renders last.
 const MARKER_TERMINAL: &str = "= ";
 
-// ── Injection state: glyphs, labels and the kinds that carry them ──────────
-
-/// The three journal kinds that carry an injected message's state (D-07, D-09).
-///
-/// Named here, beside the derivation that reads them, and referenced by the
-/// scan that collects them — so the set of kinds that matter exists once.
-pub const INJECTION_KINDS: [&str; 3] = [
-    "interjected",
-    "interjection_acted_on",
-    "interjection_missed",
-];
-
-/// `◦` — durably on disk in `inbox.jsonl`; **nothing has read it**.
-pub(super) const GLYPH_QUEUED: &str = crate::ui::glyphs::CIRCLE_OPEN;
-/// `◒` — written to the agent's stdin without error. Half-filled, because half
-/// of what matters has happened: the write landed and the agent has not yet
-/// picked it up.
-pub(super) const GLYPH_DELIVERED: &str = crate::ui::glyphs::CIRCLE_HALF;
-/// `◍` — the agent **dequeued** it and is running it as its own turn. Full,
-/// because this is as far as the protocol can see. The same codepoint the run
-/// glyphs use for "succeeded": both mean *this reached its end*, and the two
-/// live in different columns of different widgets, so no row shows both.
-pub(super) const GLYPH_ACTED_ON: &str = crate::ui::glyphs::CIRCLE_FILLED;
-/// `✗` — appended after the agent's input was closed. Undeliverable, named,
-/// and **never retried**.
-pub(super) const GLYPH_MISSED: &str = crate::ui::glyphs::BALLOT_X;
-
-/// The exact label for a message durably queued and unread.
-pub(super) const LABEL_QUEUED: &str = "queued";
-/// The exact label for a write to the agent's stdin that returned without
-/// error. **This word belongs to the stdin write and to nothing else.**
-pub(super) const LABEL_DELIVERED: &str = "delivered";
-/// The exact label for the dequeue echo. Deliberately not "received", "read" or
-/// "acknowledged": the echo says the agent *started processing*, roughly a
-/// minute after the write, and every one of those three words would claim an
-/// earlier and stronger observation than the protocol supports.
-pub(super) const LABEL_ACTED_ON: &str = "acted-on";
-/// The exact label for the honest fourth state (D-10).
-pub(super) const LABEL_MISSED: &str = "missed";
-
-/// Why a missed message is missed, in one line: it arrived after the close.
-///
-/// **Leaving it in `queued` forever would be the undelivered-injection failure
-/// dressed up as a spinner.** It is named instead.
-const MISSED_GLOSS: &str = "(the run closed its input before this was delivered)";
-
-/// Why a missed message is missed, in one line: the write itself failed (CR-03).
-///
-/// The second reason, and the one that had no gloss because it had no state.
-/// It says what happened and, by saying "never reached", refuses to imply the
-/// agent might still pick the message up.
-const MISSED_GLOSS_SEND_FAILED: &str = "(the write to the agent failed; it never reached the run)";
-
-/// Why a missed message is missed when the journal names a reason this build
-/// does not recognise.
-///
-/// A journal written by a newer build can carry a reason string this one has no
-/// gloss for. The honest answer is to say the message is undeliverable and that
-/// the recorded reason is not one this build knows — **never** to fall back to
-/// one of the two glosses above, which would attribute a cause the evidence
-/// does not support.
-const MISSED_GLOSS_UNRECOGNISED: &str =
-    "(undeliverable; the journal gives a reason this build does not recognise)";
-
 // ── Copy (Copywriting Contract, exact strings) ─────────────────────────────
 
 /// The goal field for a run that was started without one.
@@ -269,13 +203,6 @@ const RECORD_TRUNCATED_NOTICE: &str = "    \u{2026} record truncated";
 /// place.
 const ADOPTED_RUN_NOTICE: &str = "This run started before the current TUI session. \
      Its live output is gone \u{2014} showing the journal on disk.";
-
-/// The four-cell indent every injection body row carries.
-///
-/// A constant rather than a literal at three call sites: the state column's
-/// alignment is the whole reason the rendering is always two rows, and three
-/// copies of an indent is three chances for one of them to drift.
-const INJECTION_INDENT: &str = "    ";
 
 /// The mandatory honest note under the one-row step timeline.
 ///
@@ -1121,7 +1048,7 @@ pub(super) fn render_run_detail(
             chunks[0],
         );
         render_output_section(
-            frame, chunks[1], ctx, alias, cache, summary, verdict, now, viewport,
+            frame, chunks[1], ctx, alias, cache, summary, verdict, viewport,
         );
         return;
     }
@@ -1136,7 +1063,7 @@ pub(super) fn render_run_detail(
     if area.height < 14 {
         // 8..=13 rows: header (2) + output only (WR-05).
         render_output_section(
-            frame, chunks[1], ctx, alias, cache, summary, verdict, now, viewport,
+            frame, chunks[1], ctx, alias, cache, summary, verdict, viewport,
         );
         return;
     }
@@ -1144,7 +1071,7 @@ pub(super) fn render_run_detail(
     render_pipeline_row(frame, chunks[1], inference);
     render_steps(frame, chunks[2], summary, verdict, turns);
     render_output_section(
-        frame, chunks[3], ctx, alias, cache, summary, verdict, now, viewport,
+        frame, chunks[3], ctx, alias, cache, summary, verdict, viewport,
     );
 }
 
@@ -1356,315 +1283,6 @@ pub(super) fn pane_header_line(
     ])
 }
 
-// ── The four-state injection display (STEER-02, D-07, D-10) ────────────────
-
-/// What the evidence on disk supports about one injected message.
-///
-/// Four states, one authoritative observer each, and **the vocabulary is a
-/// safety property rather than a style choice**: the word for a write to the
-/// agent's stdin is *delivered* and nothing else, the word for the dequeue echo
-/// is *acted-on*, and "sent", "received", "read" and "acknowledged" are all
-/// forbidden — the echo arrives roughly fifty-five seconds after the write, so
-/// each of those four would claim an observation the protocol cannot make. The
-/// filling shape `◦ → ◒ → ◍` is the whole design: it reads correctly across a
-/// minute-long gap with **no spinner, no animation and no implied imminence**.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InjectionState {
-    /// Durably in `inbox.jsonl` and nothing has read it.
-    Queued,
-    /// The write to the agent's stdin returned without error.
-    Delivered,
-    /// The agent dequeued it and is running it as its own turn.
-    ActedOn,
-    /// Undeliverable, and never retried (D-10). The payload is **why**, which
-    /// selects the pinned gloss on the message's third row.
-    Missed(MissedReason),
-}
-
-/// Why a message is undeliverable, as a value rather than as a string to parse.
-///
-/// The state and its explanation travel together for the same reason the glyph,
-/// the label and the colour do in [`InjectionState::cell`]: a reader must never
-/// have to pair two independently-derived facts to learn one thing. There are
-/// exactly two reasons a driver can record, and a third for a journal that names
-/// a reason this build does not know — which is a case the render layer answers
-/// honestly rather than by guessing one of the other two.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MissedReason {
-    /// The message reached the driver after the agent's stdin was closed. Stdin
-    /// cannot be reopened, so there was nowhere to write it.
-    AfterClose,
-    /// The write to the agent's stdin returned an error — the writer task was
-    /// gone, or the agent was no longer running. The driver **did** read the
-    /// message; the write is what failed (CR-03).
-    SendFailed,
-    /// The journal named a reason this build has no gloss for.
-    Unrecognised,
-}
-
-impl MissedReason {
-    /// The reason a journal record's `reason` field names.
-    ///
-    /// Matching on the exact pinned string, never on a substring: the two
-    /// reasons are constants in [`crate::journal`] precisely so this is an
-    /// equality test rather than prose parsing (D-01's rule in another guise).
-    fn from_reason(reason: &str) -> Self {
-        match reason {
-            crate::journal::MISSED_AFTER_CLOSE => Self::AfterClose,
-            crate::journal::MISSED_SEND_FAILED => Self::SendFailed,
-            _ => Self::Unrecognised,
-        }
-    }
-
-    /// The pinned one-line gloss for this reason.
-    pub fn gloss(self) -> &'static str {
-        match self {
-            Self::AfterClose => MISSED_GLOSS,
-            Self::SendFailed => MISSED_GLOSS_SEND_FAILED,
-            Self::Unrecognised => MISSED_GLOSS_UNRECOGNISED,
-        }
-    }
-}
-
-impl InjectionState {
-    /// How far along the progression a state sits, so **a later state wins**.
-    ///
-    /// `Missed` outranks `Delivered` and is outranked by `ActedOn`. The driver
-    /// cannot produce that contradiction — it writes `missed` only once stdin is
-    /// closed and `acted_on` only from the agent's own echo — but if a journal
-    /// ever carried both, the record naming the agent's own dequeue is the
-    /// stronger evidence and an undeliverability claim must not overrule it.
-    fn rank(self) -> u8 {
-        match self {
-            Self::Queued => 0,
-            Self::Delivered => 1,
-            Self::Missed(_) => 2,
-            Self::ActedOn => 3,
-        }
-    }
-
-    /// The glyph, the **exact** label and the colour, travelling together so no
-    /// meaning is ever carried by colour alone.
-    pub fn cell(self) -> (&'static str, &'static str, Color) {
-        match self {
-            Self::Queued => (GLYPH_QUEUED, LABEL_QUEUED, Color::DarkGray),
-            Self::Delivered => (GLYPH_DELIVERED, LABEL_DELIVERED, Color::Yellow),
-            Self::ActedOn => (GLYPH_ACTED_ON, LABEL_ACTED_ON, Color::Green),
-            // One glyph and one word for both reasons: the *state* is the same
-            // — undeliverable, terminal, never retried — and only the
-            // explanation on the row below differs. A second label would be a
-            // fifth state in the four-state vocabulary.
-            Self::Missed(_) => (GLYPH_MISSED, LABEL_MISSED, Color::Red),
-        }
-    }
-}
-
-/// One injected message, the state disk supports for it, and when that state was
-/// last observed.
-///
-/// A tuple rather than a struct because every one of the three is read at the
-/// one call site that renders it, and the timestamp is `None` exactly when the
-/// transition's own `ts` did not parse — which is the case the elapsed counter
-/// must omit rather than fill with a zero.
-pub type InjectionEntry = (InboxMessage, InjectionState, Option<DateTime<Utc>>);
-
-/// The state of every injected message, as a **pure function of disk**.
-///
-/// The rule is a set intersection and nothing more: an id present in
-/// `inbox.jsonl` and in no journal record is [`InjectionState::Queued`]; present
-/// in an `interjected` record is [`InjectionState::Delivered`]; present in an
-/// `interjection_acted_on` record is [`InjectionState::ActedOn`]; present in an
-/// `interjection_missed` record is [`InjectionState::Missed`]. Later states win
-/// over earlier ones ([`InjectionState::rank`]).
-///
-/// **The one qualification is a refusal to overstate — in BOTH directions**
-/// (CR-03). `interjected` carries a `delivered` flag which is exactly *"did
-/// `Executor::send` return `Ok`"*, and the driver writes the record either way —
-/// so a record with `delivered: false` is the journal saying the write
-/// **failed**. Promoting it to `delivered` would assert a state the evidence
-/// contradicts, which is the one thing this surface must never do. But leaving
-/// it in `queued` — glossed *"durably on disk; nothing has read it yet"* — is
-/// the same error pointing the other way, and it is the worse of the two: the
-/// driver **did** read the message, the write **did** fail, and the cursor has
-/// already moved past it so nothing will ever read it again. A user shown
-/// "waiting to be picked up" about a message that will never be picked up is
-/// PITFALLS' undelivered-injection failure exactly. `delivered: false` is
-/// therefore positive evidence of a failed write and resolves to
-/// [`InjectionState::Missed`] with [`MissedReason::SendFailed`].
-///
-/// The driver writes a matching `interjection_missed { reason }` record for the
-/// same id, so this is normally the second of two independent witnesses. It is
-/// kept as its own rule rather than delegated to that record because the
-/// driver's own journal write can fail — it warns and continues — and a message
-/// must not fall back into `queued` when it does.
-///
-/// **Nothing is held in memory that a restart would lose.** That is precisely
-/// what makes STEER-03 hold across a TUI restart with no extra persistence: the
-/// answer is recomputed from the two files every time, so there is no cache to
-/// go stale and none to rebuild.
-///
-/// Pure, so the whole table is testable without a terminal or a process — the
-/// register of `driver/mod.rs:129-135`.
-pub fn derive_injection_states(
-    inbox: &[InboxMessage],
-    records: &[JournalRecord],
-) -> Vec<InjectionEntry> {
-    inbox
-        .iter()
-        .map(|message| {
-            let mut state = InjectionState::Queued;
-            let mut at: Option<DateTime<Utc>> = None;
-            for record in records {
-                // The correlation id lives in a **typed field**. Reconstructing
-                // a protocol state by parsing a rendered string is the
-                // screen-scraping D-01 forbids in another guise (D-08).
-                let id = record.rest.get("id").and_then(|value| value.as_str());
-                if id != Some(message.id.as_str()) {
-                    continue;
-                }
-                let observed = match record.kind.as_str() {
-                    "interjected" => {
-                        let written = record
-                            .rest
-                            .get("delivered")
-                            .and_then(|value| value.as_bool())
-                            .unwrap_or(false);
-                        if written {
-                            InjectionState::Delivered
-                        } else {
-                            InjectionState::Missed(MissedReason::SendFailed)
-                        }
-                    }
-                    "interjection_acted_on" => InjectionState::ActedOn,
-                    "interjection_missed" => InjectionState::Missed(MissedReason::from_reason(
-                        record
-                            .rest
-                            .get("reason")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or_default(),
-                    )),
-                    _ => continue,
-                };
-                if observed.rank() >= state.rank() {
-                    state = observed;
-                    at = parse_rfc3339(&record.ts);
-                }
-            }
-            (message.clone(), state, at)
-        })
-        .collect()
-}
-
-/// `HH:MM:SS` in the reader's local zone, or a placeholder.
-fn local_time_of_day(ts: &str) -> String {
-    match parse_rfc3339(ts) {
-        Some(dt) => dt.with_timezone(&Local).format("%H:%M:%S").to_string(),
-        None => "??:??:??".to_string(),
-    }
-}
-
-/// `M:SS`, widening to `H:MM:SS` past an hour.
-///
-/// The elapsed counter's own form rather than [`hms`]'s, because this figure is
-/// read as a *duration since* rather than as a clock time and a leading `00:`
-/// on a forty-seven-second gap reads as a stopped counter.
-fn injection_elapsed(seconds: i64) -> String {
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    let secs = seconds % 60;
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{secs:02}")
-    } else {
-        format!("{minutes}:{secs:02}")
-    }
-}
-
-/// One injected message: **always two rows, three when missed, at every width**.
-///
-/// ```text
-/// » ◒ delivered  21:40:02  (+0:47)
-///     skip the UI review
-/// ```
-///
-/// Row one is the Cyan+BOLD injection marker, the state glyph, the exact state
-/// label and the queue timestamp; row two is a four-cell-indented, sanitised,
-/// verbatim copy of the message text. The delivered state adds an elapsed
-/// counter to row one and the missed state adds a third row carrying the pinned
-/// gloss.
-///
-/// **There is no width parameter and that is the design**: always two rows means
-/// no width branch, a perfectly aligned state column, and no right-alignment
-/// arithmetic that could clip in the narrowest pane this tab can reach.
-///
-/// The elapsed counter is the honest answer to the fifty-five-second gap — it
-/// shows time passing **without predicting an arrival**, which a spinner cannot
-/// do. It is omitted rather than shown as a zero when the transition's own
-/// timestamp did not parse: a duration the code cannot compute is not a duration
-/// of nothing.
-pub fn injection_rows(entry: &InjectionEntry, now: DateTime<Utc>) -> Vec<Line<'static>> {
-    let (message, state, at) = entry;
-    let (glyph, label, color) = state.cell();
-
-    let mut head = vec![
-        Span::styled(
-            MARKER_INJECTION,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("{glyph} {label}"), Style::default().fg(color)),
-        Span::styled(
-            format!("  {}", local_time_of_day(&message.ts)),
-            label_style(),
-        ),
-    ];
-    if *state == InjectionState::Delivered {
-        if let Some(at) = at {
-            let seconds = (now - *at).num_seconds().max(0);
-            head.push(Span::styled(
-                format!("  (+{})", injection_elapsed(seconds)),
-                label_style(),
-            ));
-        }
-    }
-
-    let mut rows = vec![
-        Line::from(head),
-        // `message.text` is `InboxMessage::text`: the user's text stored
-        // VERBATIM and deliberately un-redacted, read back from `inbox.jsonl`
-        // on disk — a file this build does not exclusively own. Both classes,
-        // composed through `shown_capped`.
-        //
-        // **This site is held by a CALL, not by the type.** `InboxMessage`
-        // lives in `src/journal/inbox.rs`, outside this wave's fence, so its
-        // `text` field is still a bare `String` and a NEW render of it would
-        // not fail to compile. What bounds that is the probe fixture, not the
-        // compiler — see LIMIT 1's residual and its failure direction (D-21-39).
-        Line::from(Span::raw(format!(
-            "{INJECTION_INDENT}{}",
-            shown_capped(&message.text)
-        ))),
-    ];
-    if let InjectionState::Missed(reason) = state {
-        rows.push(Line::from(Span::styled(
-            format!("{INJECTION_INDENT}{}", reason.gloss()),
-            muted_style(),
-        )));
-    }
-    rows
-}
-
-/// Every injected message's rows, in queue order.
-///
-/// **A run with no injected messages produces nothing at all** — not an empty
-/// queued placeholder, which would invent a message the user never typed.
-fn injection_block(entries: &[InjectionEntry], now: DateTime<Utc>) -> Vec<Line<'static>> {
-    entries
-        .iter()
-        .flat_map(|entry| injection_rows(entry, now))
-        .collect()
-}
-
 /// One buffered line, with its two-cell marker in its own style.
 ///
 /// The four visual classes are the UI-SPEC's event-kind table. `terminal_color`
@@ -1708,27 +1326,19 @@ fn output_line(line: &DriverOutputLine, terminal_color: Color) -> Line<'static> 
 /// 2. The **ring-overflow notice**, when the buffer has dropped lines. It
 ///    describes what is missing from everything below it.
 /// 3. The buffered lines, in order, each with its marker — with the terminal
-///    record held back, and with the injection records **superseded** by the
-///    four-state widget at the position of the first of them.
+///    record held back.
 /// 4. The **record-truncation notice**, when one record was cut at the
 ///    per-record cap.
 /// 5. The terminal record, which renders **last**: the visual full stop.
 ///
-/// The injection substitution is why the widget is spliced rather than appended:
-/// an `interjected` record's own line carries the text and the two that follow
-/// it carry a bare correlation id, so leaving them in beside the widget would
-/// print the same message twice and the id twice more. When there are **no**
-/// entries to render — an unreadable inbox, or a journal from a build that
-/// recorded no ids — the raw lines stay exactly where they are, because a
-/// transition that cannot be paired with a message is still evidence and this
-/// pane never silently swallows one.
+/// A journal record of an injection kind is an ordinary buffered line here: the
+/// four-state widget that used to supersede those lines is gone with the
+/// injection path (Phase 31, D-08), so nothing is spliced or swallowed.
 ///
-/// A run whose journal has no records **and** no queued messages renders the
-/// pinned no-entries copy and nothing else.
+/// A run whose journal has no records renders the pinned no-entries copy and
+/// nothing else.
 fn output_body_lines(
     output: Option<&DriverOutput>,
-    entries: &[InjectionEntry],
-    now: DateTime<Utc>,
     adopted: bool,
     terminal_color: Color,
 ) -> Vec<Line<'static>> {
@@ -1739,18 +1349,10 @@ fn output_body_lines(
     }
 
     let Some(output) = output.filter(|output| !output.is_empty()) else {
-        if entries.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("  {NO_JOURNAL_ENTRIES}"),
-                label_style(),
-            )));
-        } else {
-            // A run whose journal has not been written yet but whose inbox
-            // already holds a message: the message is real and durably on disk,
-            // so it renders. Saying "no journal entries" over it would hide the
-            // one thing that is there.
-            lines.extend(injection_block(entries, now));
-        }
+        lines.push(Line::from(Span::styled(
+            format!("  {NO_JOURNAL_ENTRIES}"),
+            label_style(),
+        )));
         return lines;
     };
 
@@ -1762,24 +1364,11 @@ fn output_body_lines(
     }
 
     let mut terminal: Vec<Line<'static>> = Vec::new();
-    let mut injections_placed = entries.is_empty();
     for line in output.lines() {
         match line.kind {
             DriverLineKind::Terminal => terminal.push(output_line(line, terminal_color)),
-            DriverLineKind::Injection if !entries.is_empty() => {
-                if !injections_placed {
-                    lines.extend(injection_block(entries, now));
-                    injections_placed = true;
-                }
-            }
             _ => lines.push(output_line(line, terminal_color)),
         }
-    }
-    // Every message is still queued, so the journal carries no transition for
-    // the widget to land beside. The tail is where it belongs: a queued message
-    // is the newest thing that has happened.
-    if !injections_placed {
-        lines.extend(injection_block(entries, now));
     }
 
     if output.record_truncated() {
@@ -1865,7 +1454,6 @@ fn render_output_section(
     cache: Option<&ProjectViewCache>,
     summary: &RunSummary,
     verdict: Option<RunVerdict>,
-    now: DateTime<Utc>,
     viewport: &Cell<ViewportMetrics>,
 ) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
@@ -1874,23 +1462,8 @@ fn render_output_section(
     let (_, _, terminal_color) = run_state_glyph(verdict, summary.outcome.as_deref());
     let adopted = !ctx.session_spawned_runs.contains(&summary.run_id);
 
-    // **One derivation, read from disk, never a second copy.** The inbox and the
-    // journal both came off disk in the same scan, and the state is recomputed
-    // from them here rather than cached anywhere — which is what makes the
-    // display survive a TUI restart with no persisted state (STEER-03).
-    let entries = cache.map_or_else(Vec::new, |cache| {
-        let records = cache
-            .driver_journal
-            .as_deref()
-            .filter(|journal| journal.run_id == summary.run_id)
-            .map_or(&[][..], |journal| journal.injections.as_slice());
-        derive_injection_states(&cache.driver_inbox, records)
-    });
-
     let body = output_body_lines(
         output_for_run(ctx, alias, cache, &summary.run_id),
-        &entries,
-        now,
         adopted,
         terminal_color,
     );
@@ -2901,15 +2474,9 @@ mod tests {
 
     // ── The live output pane (OBS-04, D-19) ────────────────────────────────
 
-    /// A fixed `now`, so an elapsed counter is a value rather than a race.
-    fn fixed_now() -> DateTime<Utc> {
-        parse_rfc3339("2026-07-29T21:40:49Z").expect("fixture parses")
-    }
-
-    /// The body of a run this session spawned, with nothing injected — the
-    /// shape every pre-injection pane test asserts against.
+    /// The body of a run this session spawned.
     fn body(output: Option<&DriverOutput>) -> Vec<Line<'static>> {
-        output_body_lines(output, &[], fixed_now(), false, Color::Green)
+        output_body_lines(output, false, Color::Green)
     }
 
     #[test]
@@ -3091,7 +2658,6 @@ mod tests {
             driver_journal: Some(Box::new(super::super::DriverRunJournal {
                 run_id: "run-a".to_string(),
                 output: ring_for("run-a", &["what the journal on disk holds"]),
-                injections: Vec::new(),
             })),
             ..ProjectViewCache::default()
         };
@@ -3338,7 +2904,7 @@ mod tests {
         let mut output = DriverOutput::default();
         output.push_record(DriverLineKind::Output, "ordinary output");
 
-        let adopted = output_body_lines(Some(&output), &[], fixed_now(), true, Color::Green);
+        let adopted = output_body_lines(Some(&output), true, Color::Green);
         assert!(
             text(&adopted[0]).contains(ADOPTED_RUN_NOTICE),
             "the notice must be the FIRST row: {:?}",
@@ -3360,441 +2926,6 @@ mod tests {
         // The indicator agrees with the notice rather than contradicting it.
         let (indicator, _) = follow_indicator(false, false, 0, None, true);
         assert_eq!(indicator, INDICATOR_JOURNAL_ONLY);
-    }
-
-    // ── The four-state injection display (STEER-02, D-07, D-10) ────────────
-
-    fn message(id: &str, text: &str) -> InboxMessage {
-        InboxMessage {
-            id: id.to_string(),
-            ts: "2026-07-29T21:40:02Z".to_string(),
-            text: text.to_string(),
-        }
-    }
-
-    /// One journal record, built the way the reader hands it over: a `kind` and
-    /// a flattened payload map.
-    fn record(kind: &str, payload: serde_json::Value) -> JournalRecord {
-        let map = match payload {
-            serde_json::Value::Object(map) => map,
-            other => panic!("a record payload must be an object, got {other:?}"),
-        };
-        JournalRecord {
-            ts: "2026-07-29T21:40:02Z".to_string(),
-            seq: 1,
-            kind: kind.to_string(),
-            rest: map,
-        }
-    }
-
-    fn interjected(id: &str, delivered: bool) -> JournalRecord {
-        record(
-            "interjected",
-            serde_json::json!({ "id": id, "text": "skip the UI review", "delivered": delivered }),
-        )
-    }
-
-    fn acted_on(id: &str) -> JournalRecord {
-        record("interjection_acted_on", serde_json::json!({ "id": id }))
-    }
-
-    /// The after-close terminal record, carrying the **pinned** reason string.
-    ///
-    /// Deliberately the constant and not a paraphrase: the render layer selects
-    /// its gloss by exact match, so a hand-written reason here would assert the
-    /// unrecognised branch while claiming to assert the after-close one.
-    fn missed(id: &str) -> JournalRecord {
-        missed_with(id, crate::journal::MISSED_AFTER_CLOSE)
-    }
-
-    /// The same, for a named `reason`.
-    fn missed_with(id: &str, reason: &str) -> JournalRecord {
-        record(
-            "interjection_missed",
-            serde_json::json!({ "id": id, "reason": reason }),
-        )
-    }
-
-    fn state_of(inbox: &[InboxMessage], records: &[JournalRecord]) -> Vec<InjectionState> {
-        derive_injection_states(inbox, records)
-            .into_iter()
-            .map(|(_, state, _)| state)
-            .collect()
-    }
-
-    /// The whole table, in one place: each state derives from its own record
-    /// set and from nothing else.
-    #[test]
-    fn each_of_the_four_states_derives_from_the_record_set_that_supports_it() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-
-        assert_eq!(state_of(&inbox, &[]), vec![InjectionState::Queued]);
-        assert_eq!(
-            state_of(&inbox, &[interjected("aaa", true)]),
-            vec![InjectionState::Delivered]
-        );
-        assert_eq!(
-            state_of(&inbox, &[interjected("aaa", true), acted_on("aaa")]),
-            vec![InjectionState::ActedOn]
-        );
-        assert_eq!(
-            state_of(&inbox, &[missed("aaa")]),
-            vec![InjectionState::Missed(MissedReason::AfterClose)]
-        );
-
-        // A record about a DIFFERENT message moves nothing: the correlation is
-        // by id and never by proximity.
-        assert_eq!(
-            state_of(&inbox, &[interjected("bbb", true), acted_on("bbb")]),
-            vec![InjectionState::Queued]
-        );
-    }
-
-    /// CR-03: `interjected { delivered: false }` must never leave a message in
-    /// `queued`, and must never be promoted to `delivered` either.
-    ///
-    /// Both errors are the display disagreeing with the disk; they differ only
-    /// in direction. `delivered: false` is the journal saying the write FAILED,
-    /// which is positive evidence and not an absence of it — the driver read the
-    /// message, the write failed, and the inbox cursor has already moved past it
-    /// so nothing will ever read it again. Rendering `◦ queued` — glossed
-    /// *"durably on disk; nothing has read it yet"* — is false twice over and is
-    /// PITFALLS' undelivered-injection failure in the code written to prevent it.
-    #[test]
-    fn a_failed_stdin_write_is_missed_and_never_queued_or_delivered() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-
-        let states = state_of(&inbox, &[interjected("aaa", false)]);
-        assert_eq!(
-            states,
-            vec![InjectionState::Missed(MissedReason::SendFailed)],
-            "a failed stdin write is terminal, and its reason is the write"
-        );
-        assert_ne!(
-            states[0],
-            InjectionState::Queued,
-            "`queued` says nothing has read it; the driver HAS read it"
-        );
-        assert_ne!(
-            states[0],
-            InjectionState::Delivered,
-            "and `delivered` says the write returned Ok, which it did not"
-        );
-
-        // The driver writes a matching terminal record for the same id. The two
-        // witnesses must agree rather than fight over the rank.
-        assert_eq!(
-            state_of(
-                &inbox,
-                &[
-                    interjected("aaa", false),
-                    missed_with("aaa", crate::journal::MISSED_SEND_FAILED),
-                ]
-            ),
-            vec![InjectionState::Missed(MissedReason::SendFailed)],
-        );
-
-        // The gloss names the write, not the close: a user told "the run closed
-        // its input" about a run that is still live and still listening would
-        // draw exactly the wrong conclusion.
-        let rendered: String = injection_rows(
-            &derive_injection_states(&inbox, &[interjected("aaa", false)])[0],
-            fixed_now(),
-        )
-        .iter()
-        .map(text)
-        .collect::<Vec<_>>()
-        .join("\n");
-        assert!(rendered.contains(MISSED_GLOSS_SEND_FAILED), "{rendered}");
-        assert!(!rendered.contains(MISSED_GLOSS), "{rendered}");
-        assert!(!rendered.contains(LABEL_QUEUED), "{rendered}");
-    }
-
-    /// A reason string this build has no gloss for is answered honestly rather
-    /// than by borrowing one of the two it knows.
-    #[test]
-    fn an_unrecognised_missed_reason_gets_its_own_gloss_and_still_reads_missed() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-        let records = [missed_with("aaa", "some future reason")];
-
-        assert_eq!(
-            state_of(&inbox, &records),
-            vec![InjectionState::Missed(MissedReason::Unrecognised)]
-        );
-
-        let rendered: String =
-            injection_rows(&derive_injection_states(&inbox, &records)[0], fixed_now())
-                .iter()
-                .map(text)
-                .collect::<Vec<_>>()
-                .join("\n");
-        assert!(rendered.contains(LABEL_MISSED), "{rendered}");
-        assert!(rendered.contains(MISSED_GLOSS_UNRECOGNISED), "{rendered}");
-        assert!(
-            !rendered.contains(MISSED_GLOSS) && !rendered.contains(MISSED_GLOSS_SEND_FAILED),
-            "an unknown reason must not be attributed to a known cause: {rendered}"
-        );
-    }
-
-    /// D-07's whole point: delivered and acted-on are **two** states set by two
-    /// different records, not one state with two labels. The tell that they were
-    /// collapsed is that nothing reads the second record.
-    #[test]
-    fn a_message_with_both_records_derives_acted_on_rather_than_delivered() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-        let both = [interjected("aaa", true), acted_on("aaa")];
-        assert_eq!(state_of(&inbox, &both), vec![InjectionState::ActedOn]);
-
-        // And the order the records arrive in does not decide it — the later
-        // state wins on its rank, not on its position.
-        let reversed = [acted_on("aaa"), interjected("aaa", true)];
-        assert_eq!(state_of(&inbox, &reversed), vec![InjectionState::ActedOn]);
-    }
-
-    #[test]
-    fn a_message_present_only_in_the_inbox_derives_queued() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-        // A journal full of other kinds must not disturb it.
-        let noise = [
-            record(
-                "exec_event",
-                serde_json::json!({ "stream": "assistant", "text": "hi" }),
-            ),
-            record("cost", serde_json::json!({ "cumulative_usd": 1.83 })),
-        ];
-        assert_eq!(state_of(&inbox, &noise), vec![InjectionState::Queued]);
-    }
-
-    /// The honest fourth state (D-10). Leaving it in `queued` forever is the
-    /// undelivered-injection failure dressed up as a spinner.
-    #[test]
-    fn a_message_present_only_in_interjection_missed_derives_missed() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-        assert_eq!(
-            state_of(&inbox, &[missed("aaa")]),
-            vec![InjectionState::Missed(MissedReason::AfterClose)]
-        );
-
-        let rendered: String = injection_rows(
-            &derive_injection_states(&inbox, &[missed("aaa")])[0],
-            fixed_now(),
-        )
-        .iter()
-        .map(text)
-        .collect::<Vec<_>>()
-        .join("\n");
-        assert!(rendered.contains(MISSED_GLOSS), "{rendered}");
-    }
-
-    /// D-05: text alone is not a correlation key. A user may legitimately send
-    /// the same sentence twice, and STEER-02's states are per message.
-    #[test]
-    fn two_messages_with_identical_text_but_different_ids_derive_independently() {
-        let inbox = vec![
-            message("aaa", "skip the UI review"),
-            message("bbb", "skip the UI review"),
-        ];
-        assert_eq!(
-            state_of(&inbox, &[interjected("aaa", true), acted_on("aaa")]),
-            vec![InjectionState::ActedOn, InjectionState::Queued],
-            "the second message must not inherit the first's state"
-        );
-    }
-
-    /// Always two rows, three when missed — **at every width**, which this
-    /// function guarantees structurally by taking no width at all. The strongest
-    /// available statement of it is that the count does not move for a message
-    /// text of any length.
-    #[test]
-    fn the_rendered_rows_are_exactly_two_and_three_when_missed_at_every_width() {
-        for length in [0usize, 1, 40, 200, 4_000] {
-            let text_of_length = "x".repeat(length);
-            let inbox = vec![message("aaa", &text_of_length)];
-
-            for (records, expected) in [
-                (Vec::new(), 2usize),
-                (vec![interjected("aaa", true)], 2),
-                (vec![interjected("aaa", true), acted_on("aaa")], 2),
-                (vec![missed("aaa")], 3),
-            ] {
-                let entries = derive_injection_states(&inbox, &records);
-                let rows = injection_rows(&entries[0], fixed_now());
-                assert_eq!(
-                    rows.len(),
-                    expected,
-                    "a {length}-character message in {:?} rendered {} rows",
-                    entries[0].1,
-                    rows.len()
-                );
-            }
-        }
-
-        // And a run with NO injected messages renders no injection rows at all
-        // — not an empty queued placeholder.
-        assert!(injection_block(&[], fixed_now()).is_empty());
-    }
-
-    /// The elapsed counter is the honest answer to the fifty-five-second gap: it
-    /// shows time passing **without predicting an arrival**, which is why it is
-    /// on the delivered row and on no other. A queued message has nothing to
-    /// count from, and a terminal state has stopped counting.
-    #[test]
-    fn only_the_delivered_row_carries_an_elapsed_counter() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-
-        let delivered = derive_injection_states(&inbox, &[interjected("aaa", true)]);
-        let head = text(&injection_rows(&delivered[0], fixed_now())[0]);
-        assert!(
-            head.contains("(+0:47)"),
-            "the delivered row must count the gap: {head:?}"
-        );
-
-        for records in [
-            Vec::new(),
-            vec![interjected("aaa", true), acted_on("aaa")],
-            vec![missed("aaa")],
-        ] {
-            let entries = derive_injection_states(&inbox, &records);
-            let head = text(&injection_rows(&entries[0], fixed_now())[0]);
-            assert!(
-                !head.contains("(+"),
-                "{:?} must not count: {head:?}",
-                entries[0].1
-            );
-        }
-
-        // A transition whose own timestamp did not parse omits the counter
-        // rather than fabricating a zero.
-        let mut broken = interjected("aaa", true);
-        broken.ts = "not a timestamp".to_string();
-        let entries = derive_injection_states(&inbox, &[broken]);
-        assert_eq!(entries[0].1, InjectionState::Delivered);
-        let head = text(&injection_rows(&entries[0], fixed_now())[0]);
-        assert!(!head.contains("(+"), "{head:?}");
-    }
-
-    /// **The vocabulary is a safety property** (D-07, D-10). The dequeue echo
-    /// arrives roughly fifty-five seconds after the stdin write, so every one of
-    /// these four words would promise an observation the protocol cannot make.
-    ///
-    /// The list is held **here, in the test module**, and never in the render
-    /// module — the same discipline `tests/spawn_seam_guard.rs` uses by walking
-    /// `src/` only. A list the rendering module owned could be softened in the
-    /// same edit that softened the copy, and the assertion would go quiet
-    /// instead of failing.
-    #[test]
-    fn no_rendered_injection_string_uses_a_word_that_implies_receipt() {
-        const FORBIDDEN: [&str; 4] = ["sent", "received", "read", "acknowledged"];
-
-        // The message text is the user's own words and is echoed verbatim; the
-        // rule governs the tool's copy, so the fixture says nothing that would
-        // make the assertion about the wrong string.
-        let inbox = vec![message("aaa", "skip the UI review")];
-        let mut rendered: Vec<String> = Vec::new();
-        for records in [
-            Vec::new(),
-            vec![interjected("aaa", true)],
-            vec![interjected("aaa", true), acted_on("aaa")],
-            vec![missed("aaa")],
-            // Every missed reason, so a gloss added with a new reason cannot
-            // slip past the rule.
-            vec![interjected("aaa", false)],
-            vec![missed_with("aaa", "a reason this build does not know")],
-        ] {
-            for entry in derive_injection_states(&inbox, &records) {
-                rendered.extend(injection_rows(&entry, fixed_now()).iter().map(text));
-            }
-        }
-        // The labels themselves, in case a state ever stops being rendered.
-        rendered.extend(
-            [
-                InjectionState::Queued,
-                InjectionState::Delivered,
-                InjectionState::ActedOn,
-                InjectionState::Missed(MissedReason::AfterClose),
-                InjectionState::Missed(MissedReason::SendFailed),
-                InjectionState::Missed(MissedReason::Unrecognised),
-            ]
-            .into_iter()
-            .map(|state| state.cell().1.to_string()),
-        );
-        rendered.extend(
-            [
-                MissedReason::AfterClose,
-                MissedReason::SendFailed,
-                MissedReason::Unrecognised,
-            ]
-            .into_iter()
-            .map(|reason| reason.gloss().to_string()),
-        );
-
-        for line in &rendered {
-            // Tokenised rather than substring-matched, so `already` and
-            // `threads` do not count as `read` — a substring test would be so
-            // noisy it would have to be weakened, and a weakened test is how the
-            // real word gets back in.
-            for token in line
-                .to_lowercase()
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|token| !token.is_empty())
-            {
-                assert!(
-                    !FORBIDDEN.contains(&token),
-                    "an injection string used {token:?}, which implies an \
-                     observation the protocol cannot make: {line:?}"
-                );
-            }
-        }
-
-        // The list must actually be able to fail, or the loop above proves
-        // nothing about it.
-        assert!(FORBIDDEN.contains(&"sent"));
-    }
-
-    /// The widget is spliced **into** the pane in place of the raw injection
-    /// records, which is what makes the derivation feed the render path rather
-    /// than sit beside it as a second, duplicated one.
-    #[test]
-    fn the_injection_widget_supersedes_the_raw_records_in_the_pane() {
-        let inbox = vec![message("aaa", "skip the UI review")];
-        let entries = derive_injection_states(&inbox, &[interjected("aaa", true), acted_on("aaa")]);
-
-        let mut output = DriverOutput::default();
-        output.push_record(DriverLineKind::Output, "ordinary output");
-        output.push_record(DriverLineKind::Injection, "skip the UI review");
-        output.push_record(DriverLineKind::Injection, "interjection acted on: aaa");
-        output.push_record(
-            DriverLineKind::Terminal,
-            "run ended: succeeded_with_changes",
-        );
-
-        let lines = output_body_lines(Some(&output), &entries, fixed_now(), false, Color::Green);
-        let rendered: Vec<String> = lines.iter().map(text).collect();
-        let joined = rendered.join("\n");
-
-        assert!(
-            joined.contains(LABEL_ACTED_ON),
-            "the widget must render in the pane: {joined}"
-        );
-        assert!(
-            !joined.contains("interjection acted on: aaa"),
-            "the bare correlation id is superseded by the widget: {joined}"
-        );
-        assert_eq!(
-            joined.matches("skip the UI review").count(),
-            1,
-            "the message text must appear exactly once: {joined}"
-        );
-        // The ordinary output above it and the terminal full stop below it are
-        // untouched.
-        assert!(rendered[0].contains("ordinary output"), "{joined}");
-        assert!(
-            rendered
-                .last()
-                .expect("a terminal row")
-                .contains("run ended"),
-            "{joined}"
-        );
     }
 
     // ── The reused pipeline row and the one-row step timeline (D-17, D-12) ──

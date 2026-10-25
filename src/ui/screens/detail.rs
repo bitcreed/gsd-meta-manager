@@ -5713,8 +5713,8 @@ impl Screen for DetailScreen {
             }
             // `i`: **retired** (30-04, D-02, UI-SPEC "What Phase 30 repeals"). It opens
             // nothing and dispatches nothing; it points at the DIRECTION.md keys that
-            // steer a run now. `DriverInjectScreen` and the journal's injection kinds
-            // stay compiled for Phase 31, but no key reaches them from this tab.
+            // steer a run now. The injection screen is gone (Phase 31, D-08); this key
+            // survives only as the pointer to the replacement.
             KeyCode::Char('i') if current_view == DetailSubView::Driver => {
                 ctx.status_message = Some((
                     super::driver_run::INJECTION_RETIRED.to_string(),
@@ -8617,8 +8617,8 @@ impl DetailScreen {
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
-            // The duplicate of the dispatch above, used by `EnqueueScreen` and
-            // `DriverInjectScreen` to paint the body behind their footers. The
+            // The duplicate of the dispatch above, used by `EnqueueScreen` to paint
+            // the body behind its footer. The
             // same delegation: a Driver tab that renders on one path and not the
             // other is the classic half-landing D-15 names.
             DetailSubView::Driver => self.render_driver(frame, content_area, ctx),

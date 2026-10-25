@@ -771,10 +771,7 @@ mod tests {
     /// `Injected Message States` legend, with the experimental features on or off.
     #[test]
     fn launcher_steer_the_help_has_no_injection_row_and_no_injected_message_legend() {
-        use super::super::driver::{
-            GLYPH_ACTED_ON, GLYPH_DELIVERED, GLYPH_MISSED, GLYPH_QUEUED, LABEL_ACTED_ON,
-            LABEL_DELIVERED, LABEL_MISSED, LABEL_QUEUED,
-        };
+        use crate::ui::glyphs::{BALLOT_X, CIRCLE_FILLED, CIRCLE_HALF, CIRCLE_OPEN};
         for experimental in [true, false] {
             let text = body_with(experimental);
             assert!(
@@ -790,10 +787,10 @@ mod tests {
             );
             assert!(!text.contains("Inject a message"), "{text}");
             for (glyph, label) in [
-                (GLYPH_QUEUED, LABEL_QUEUED),
-                (GLYPH_DELIVERED, LABEL_DELIVERED),
-                (GLYPH_ACTED_ON, LABEL_ACTED_ON),
-                (GLYPH_MISSED, LABEL_MISSED),
+                (CIRCLE_OPEN, "queued"),
+                (CIRCLE_HALF, "delivered"),
+                (CIRCLE_FILLED, "acted-on"),
+                (BALLOT_X, "missed"),
             ] {
                 let legend_form = format!("{glyph} {label}");
                 assert!(

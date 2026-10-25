@@ -5,7 +5,6 @@ pub mod delete_confirm;
 pub mod detail;
 pub mod driver;
 pub mod driver_confirm;
-pub mod driver_inject;
 pub mod driver_launch;
 pub mod driver_run;
 pub mod driver_start;
@@ -1428,17 +1427,6 @@ pub struct DriverRunJournal {
     /// bounded ring the live tail uses — so a 64 MB journal costs the same as a
     /// live run's buffer and the drop count is reported the same way.
     pub output: DriverOutput,
-    /// The `interjected` / `interjection_acted_on` / `interjection_missed`
-    /// records, kept **as records** rather than as rendered lines.
-    ///
-    /// Reconstructing a message's state by parsing a rendered string is the
-    /// screen-scraping D-01 forbids in another guise (D-08): the driver is the
-    /// only party that has parsed envelopes, and what it wrote is a correlation
-    /// id in a typed field. The renderer reads that field.
-    ///
-    /// Naturally bounded: one record per state transition of one message a
-    /// human typed.
-    pub injections: Vec<crate::journal::reader::JournalRecord>,
 }
 
 /// What one run's journal tail has reported so far.
@@ -2087,21 +2075,13 @@ impl AppContext {
                         &crate::app::journal_gap_line(diagnostics.gaps.len()),
                     );
                 }
-                let mut injections = Vec::new();
                 for record in &records {
                     if let Some((kind, text)) = crate::app::driver_line_for_record(record) {
                         output.push_record(kind, &text);
                     }
-                    if driver::INJECTION_KINDS.contains(&record.kind.as_str()) {
-                        injections.push(record.clone());
-                    }
                 }
 
-                Box::new(DriverRunJournal {
-                    run_id,
-                    output,
-                    injections,
-                })
+                Box::new(DriverRunJournal { run_id, output })
             });
 
             let _ = tx.send(crate::action::Action::DriverRunsListed {

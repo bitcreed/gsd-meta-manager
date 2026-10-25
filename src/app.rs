@@ -1349,9 +1349,10 @@ impl App {
     ///    without re-entering the tab, so `driver_runs` was still empty and the
     ///    pane painted *"No runs yet … Press [s] to start one"* over a live run
     ///    whose ring buffer was filling behind it.
-    /// 2. **The `queued` state never rendered.** `derive_injection_states`
-    ///    iterates `cache.driver_inbox`; a message queued through `i` was not in
-    ///    it until a rescan, so the four-state widget did not render at all.
+    /// 2. **A queued message never rendered.** The inbox read happened on tab
+    ///    entry only, so a message queued afterwards stayed invisible until a
+    ///    rescan (the injection path itself is retired; the rescan remains for
+    ///    the other two).
     /// 3. **A run that ended while you watched lost its output.** The alias
     ///    drops out of `observed_runs`, the pane switches to
     ///    `cache.driver_journal` — the snapshot taken on tab entry — and every
@@ -1381,19 +1382,9 @@ impl App {
         self.ctx.schedule_launcher_refresh(&alias, &path);
     }
 
-    /// Resolve one alias's `.planning/` directory, or refuse visibly (S4).
-    ///
-    /// The schedulers below begin with this lookup, and they all refuse the
-    /// same way: a message in `ctx.error_message` and a redraw, never a bare
-    /// `return`. Sharing it is what stops the refusals drifting into several
-    /// different wordings for one condition.
-    fn planning_dir_for(&mut self, alias: &str) -> Option<PathBuf> {
-        self.project_path_for(alias)
-            .map(|path| path.join(".planning"))
-    }
-
-    /// Resolve one alias's project root, or refuse visibly (S4). The lookup
-    /// [`Self::planning_dir_for`] is built on, shared so the refusal has one wording.
+    /// Resolve one alias's project root, or refuse visibly (S4): a message in
+    /// `ctx.error_message` and a redraw, never a bare `return`, so the refusal has
+    /// one wording.
     fn project_path_for(&mut self, alias: &str) -> Option<PathBuf> {
         match self.ctx.config.projects.get(alias) {
             Some(project) => Some(project.path.clone()),
@@ -2105,112 +2096,14 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Schedule the durable append of one injected message (STEER-01, STEER-03).
-    ///
-    /// **The key handler never touches the filesystem, and that is the whole
-    /// shape of this function.** `journal::inbox::append` pays a `sync_data()`
-    /// — deliberately, because STEER-03's criterion is that the bytes were on
-    /// disk before any reader existed — and a `sync_data()` on the render thread
-    /// is the WR-10 failure mode whose symptom is a frozen frame rather than an
-    /// error (D-06, D-28). So the write runs on `spawn_blocking` with its result
-    /// returned as an `Action` on a cloned sender, following the idiom this file
-    /// already uses for the re-parse, for session detection and for the journal
-    /// tail. **No file I/O on the render thread.**
-    ///
-    /// `id` is the caller's, minted at queue time before any other process saw
-    /// the line, which is what makes the `queued` state addressable at all
-    /// (D-05). It is **not** re-minted here: `InboxMessage::new` would generate
-    /// a fresh one, and the message the UI is tracking would then have an id no
-    /// journal record ever references.
-    ///
-    /// The status the UI shows is set by the `DriverInjectWritten` handler and
-    /// never here — nothing may read `queued` before the write returns `Ok`.
-    pub fn schedule_inbox_append(&mut self, alias: &str, run_id: &str, id: String, text: String) {
-        let Some(planning_dir) = self.planning_dir_for(alias) else {
-            return;
-        };
-
-        // The same fallible join `schedule_journal_tail` uses, and for the same
-        // reason: the run id reaches the TUI from the driven project's own
-        // `active` file, so it is attacker-controlled for threat-modelling
-        // purposes (D-27, WR-02). Without this a traversing id would have the
-        // TUI appending an agent-authored line to an arbitrary file on the
-        // user's disk. Logged by kind only — never the path, which IS the
-        // untrusted value (S3).
-        let Some(paths) = crate::journal::run_paths(&planning_dir, run_id) else {
-            tracing::warn!(
-                alias = %alias,
-                kind = "run_id_not_a_plain_component",
-                "inbox append refused: the run id does not name a single directory component",
-            );
-            self.ctx.error_message = Some(
-                "Could not queue message: that run id does not name a single directory \
-                 component. Nothing was written — try again."
-                    .to_string(),
-            );
-            self.needs_redraw = true;
-            return;
-        };
-
-        let Some(tx) = &self.ctx.event_tx else {
-            self.ctx.error_message = Some(
-                "Could not queue message: this session has no event channel. Nothing was \
-                 written — try again."
-                    .to_string(),
-            );
-            self.needs_redraw = true;
-            return;
-        };
-        let tx = tx.clone();
-        let inbox = paths.inbox;
-        let alias_for_task = alias.to_string();
-        let run_id_for_task = run_id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            // Built by hand rather than through `InboxMessage::new` so the
-            // caller's id survives; `cap_chars` is applied explicitly because
-            // that is the half of `new` this path still needs.
-            let message = crate::journal::inbox::InboxMessage {
-                id: id.clone(),
-                ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                text: crate::journal::inbox::cap_chars(
-                    &text,
-                    crate::journal::inbox::MAX_INBOX_TEXT_CHARS,
-                ),
-            };
-
-            // The error **kind** and nothing else. An `io::Error`'s `Display`
-            // can carry an OS path, and this path's operand is a run directory
-            // under a project the agent writes to (S3, D-28).
-            let error = crate::journal::inbox::append(&inbox, &message)
-                .err()
-                .map(|e| format!("{:?}", e.kind()));
-            if let Some(kind) = &error {
-                tracing::warn!(
-                    alias = %alias_for_task,
-                    run_id = %run_id_for_task,
-                    kind = %kind,
-                    "inbox append failed",
-                );
-            }
-
-            let _ = tx.send(Action::DriverInjectWritten {
-                alias: alias_for_task,
-                run_id: run_id_for_task,
-                id,
-                error,
-            });
-        });
-    }
-
     // The two one-line `App::schedule_run_list_scan` / `App::schedule_dry_run_report`
     // wrappers that stood here are gone (WR-09). Both delegated to the identically
     // named `AppContext` methods and neither had a caller anywhere in `src/` or
     // `tests/`: every real call goes to `ctx.schedule_*` directly, because a
     // `Screen` is handed an `&mut AppContext` and never an `&mut App`. They were
     // `pub`, so no `dead_code` warning fired and the duplication was invisible to
-    // the compiler. `App`'s own callers — the tick rescan, the injection handler
-    // and `start_driver_run` — go through `self.ctx` for the same reason.
+    // the compiler. `App`'s own callers, such as the tick rescan, go through
+    // `self.ctx` for the same reason.
 
     /// Load project states for all registered projects.
     /// Uses spawn_blocking for async-safe file I/O when event_tx is available,
@@ -2883,52 +2776,6 @@ impl App {
                 let cache = self.ctx.view_cache.entry(key.0.clone()).or_default();
                 update_driver_tally(cache, &key.1, &records);
 
-                // An injected message's state is a set intersection over disk
-                // records, and the newest of those records arrive here. They are
-                // kept **as records** rather than as rendered lines because the
-                // correlation id lives in a typed field, and reconstructing a
-                // protocol state by parsing a rendered string is the
-                // screen-scraping D-01 forbids in another guise (D-08).
-                //
-                // Guarded by run id for the reason the tally is: appending the
-                // tailed run's transitions to a journal the user is reviewing
-                // from last week would report one run's steering as another's.
-                if let Some(journal) = cache
-                    .driver_journal
-                    .as_mut()
-                    .filter(|journal| journal.run_id == key.1)
-                {
-                    // **Deduped on `seq`** (WR-08). The scan reads the journal
-                    // whole from offset zero and replaces `driver_journal`,
-                    // while the tail keeps its own independent cursor in
-                    // `journal_cursors`. When a scan lands after a tail has
-                    // already consumed records, the scan's snapshot contains
-                    // them and the next tail batch re-appends everything the
-                    // scan read past — with nothing to stop it, the vector grew
-                    // with duplicates for the life of the selection. The state
-                    // derivation is idempotent under duplication, so this was
-                    // growth and clarity rather than a wrong render; but the
-                    // field's own doc claims it is "naturally bounded: one
-                    // record per state transition of one message a human typed",
-                    // and that has to stay true.
-                    //
-                    // `seq` is the key because the journal already guarantees it
-                    // is monotonic within a run, which an id does not: one id
-                    // legitimately carries several records.
-                    let known: std::collections::HashSet<u64> =
-                        journal.injections.iter().map(|record| record.seq).collect();
-                    journal.injections.extend(
-                        records
-                            .iter()
-                            .filter(|record| {
-                                crate::ui::screens::driver::INJECTION_KINDS
-                                    .contains(&record.kind.as_str())
-                                    && !known.contains(&record.seq)
-                            })
-                            .cloned(),
-                    );
-                }
-
                 self.ctx.journal_cursors.insert(key, cursor);
                 // The pane can now show a frame that differs from the one on
                 // screen, which is precisely the condition that was absent
@@ -3369,71 +3216,6 @@ impl App {
             // body: log lines in this subsystem carry the error **kind** and
             // counts only, because a body can carry agent output (S3).
 
-            // The request arrives from a key handler that touched no file, and
-            // it leaves this arm still having touched none (D-22, D-28).
-            Action::DriverInjectRequested {
-                alias,
-                run_id,
-                id,
-                text,
-            } => {
-                self.schedule_inbox_append(&alias, &run_id, id, text);
-            }
-            // The durable append reported. **`queued` is set here and nowhere
-            // earlier**, because STEER-03's criterion is survival of the
-            // writing process: a buffered write that dies with the TUI
-            // satisfies the UI and fails the criterion, so nothing may claim
-            // the message is queued before the `sync_data()`-backed write
-            // returned `Ok` (D-06).
-            //
-            // On failure the error copy states that **nothing was written** —
-            // the honest thing to say, and the thing that tells the user
-            // retrying is safe rather than a way to send the same steer twice.
-            Action::DriverInjectWritten {
-                alias,
-                run_id,
-                id,
-                error,
-            } => {
-                match error {
-                    Some(kind) => {
-                        tracing::warn!(
-                            %alias,
-                            %run_id,
-                            %id,
-                            kind = %kind,
-                            "injection append failed",
-                        );
-                        self.ctx.error_message = Some(format!(
-                            "Could not queue message: {kind}. Nothing was written — try again."
-                        ));
-                    }
-                    None => {
-                        // Deliberately promises nothing about timing. The
-                        // dequeue ack was measured at 55 seconds, so any word
-                        // implying imminence would be a lie about the protocol
-                        // (D-07).
-                        self.ctx.status_message = Some((
-                            "Queued — waiting for the driver to pick it up.".to_string(),
-                            std::time::Instant::now(),
-                        ));
-                        // **The `queued` state is not observable until the inbox
-                        // is re-read** (CR-04). `derive_injection_states`
-                        // iterates `cache.driver_inbox`, which the run-list scan
-                        // fills; without this the status line above was the only
-                        // trace of the message until the driver's `interjected`
-                        // record arrived through the journal tail — at which
-                        // point the pane showed the message with no state label
-                        // at all, because `entries` was still empty. STEER-02's
-                        // entire deliverable did not render.
-                        //
-                        // On the success arm only: a failed append wrote
-                        // nothing, so there is nothing new to read.
-                        self.rescan_driver_tab_if_open();
-                    }
-                }
-                self.needs_redraw = true;
-            }
             // Both payloads replace rather than merge, for the reason
             // `RunsReconciled` does: each read is authoritative, and a run
             // directory or a message no longer on disk is expressed by its
@@ -6570,52 +6352,6 @@ mod tests {
         }
     }
 
-    /// CR-04's second failure: STEER-02's whole deliverable did not render.
-    ///
-    /// `derive_injection_states` iterates `cache.driver_inbox`, which only the
-    /// run-list scan fills. Without a rescan on the append's success arm the
-    /// message existed on disk and nowhere on screen — the four-state widget did
-    /// not render at all until the driver's own `interjected` record arrived
-    /// through the journal tail, at which point the pane showed the message with
-    /// no state label beside it.
-    #[tokio::test]
-    async fn a_successful_injection_rescans_so_the_queued_state_can_render() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
-
-        app.update(Action::DriverInjectWritten {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            id: "abc".to_string(),
-            error: None,
-        });
-        assert!(
-            scan_reported(&mut rx).await,
-            "a queued message is not observable until the inbox is re-read"
-        );
-    }
-
-    /// A failed append wrote nothing, so there is nothing new to read.
-    #[tokio::test]
-    async fn a_failed_injection_schedules_no_scan() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
-
-        app.update(Action::DriverInjectWritten {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            id: "abc".to_string(),
-            error: Some("PermissionDenied".to_string()),
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        while let Ok(action) = rx.try_recv() {
-            assert!(
-                !matches!(action, Action::DriverRunsListed { .. }),
-                "nothing was written, so nothing changed on disk"
-            );
-        }
-    }
-
     /// WR-03: confirming a start must not leave the wizard under the user's
     /// fingers, because a screen they land back on is a screen they can
     /// re-submit.
@@ -6681,73 +6417,6 @@ mod tests {
             "exactly one start request. Two means the wizard was still on the \
              stack and the user paid for one confirmation twice"
         );
-    }
-
-    /// WR-08: a scan landing after a tail must not double the injection
-    /// records.
-    ///
-    /// The scan reads the journal whole from offset zero and replaces
-    /// `driver_journal`; the tail keeps its own independent cursor in
-    /// `journal_cursors`. When a scan lands after a tail has already consumed
-    /// records, the scan's snapshot contains them and the next tail batch
-    /// re-appends everything the scan read past. The state derivation is
-    /// idempotent under duplication — same id, same rank, same timestamp — so
-    /// this was growth and clarity rather than a wrong render; but the field's
-    /// own doc claims it is "naturally bounded: one record per state transition
-    /// of one message a human typed", and a vector that grows for the life of
-    /// the selection is not that.
-    #[tokio::test]
-    async fn a_scan_and_tail_overlap_does_not_duplicate_the_injection_records() {
-        use crate::ui::screens::DriverRunJournal;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        let interjected = journal_record(
-            7,
-            "interjected",
-            &[
-                ("id", "abc".into()),
-                ("text", "steer".into()),
-                ("delivered", true.into()),
-            ],
-        );
-        let acted_on = journal_record(8, "interjection_acted_on", &[("id", "abc".into())]);
-
-        // The scan's snapshot, which already read past seq 7.
-        let cache = app.ctx.view_cache.entry(OBS_ALIAS.to_string()).or_default();
-        cache.driver_journal = Some(Box::new(DriverRunJournal {
-            run_id: OBS_RUN.to_string(),
-            output: Default::default(),
-            injections: vec![interjected.clone()],
-        }));
-
-        // The tail's own cursor is behind the scan's, so its batch repeats seq 7.
-        app.update(Action::DriverJournalAppended {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            records: vec![interjected, acted_on],
-            cursor: cursor_at(200, 8),
-        });
-
-        let injections = &app
-            .ctx
-            .view_cache
-            .get(OBS_ALIAS)
-            .and_then(|cache| cache.driver_journal.as_deref())
-            .expect("the journal survives the batch")
-            .injections;
-        let seqs: Vec<u64> = injections.iter().map(|record| record.seq).collect();
-        assert_eq!(
-            seqs,
-            vec![7, 8],
-            "one record per transition, deduped on the seq the journal already \
-             guarantees is monotonic"
-        );
-
-        // An id is NOT the key: one message legitimately carries several
-        // records, and deduping on it would swallow the acted-on transition.
-        assert_eq!(injections.len(), 2);
     }
 
     /// D-27's negative carry-forward, discharged for `driver_output`.
@@ -6843,174 +6512,6 @@ mod tests {
     }
 
     // ── The three schedulers, the goal, and the sub-view ─────────────────
-
-    /// A dispatch with no `event_tx` refuses visibly and sends nothing.
-    ///
-    /// **The second assertion is the load-bearing one.** A scheduler that set
-    /// the message and dispatched anyway would pass a test that only checked
-    /// `error_message`, and the write would happen regardless of what the user
-    /// was told — the `driver_confirm.rs:367-372` discipline, applied here.
-    #[tokio::test]
-    async fn an_injection_with_no_event_channel_refuses_visibly_and_writes_nothing() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, mut rx) = obs_app(dir.path());
-        app.ctx.event_tx = None;
-
-        app.schedule_inbox_append(
-            OBS_ALIAS,
-            OBS_RUN,
-            "3f2a".to_string(),
-            "skip the UI review".to_string(),
-        );
-
-        let refusal = app
-            .ctx
-            .error_message
-            .as_deref()
-            .expect("a queue that cannot report its result must say so, not fail silently");
-        assert!(
-            refusal.contains("Nothing was written"),
-            "the copy must state that nothing reached disk, so the user knows a \
-             retry is safe rather than a way to steer twice, got: {refusal}"
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "a refused injection must dispatch NOTHING"
-        );
-
-        // And the file was never created, which is the claim the copy makes.
-        let inbox = crate::journal::run_paths(&dir.path().join(".planning"), OBS_RUN)
-            .expect("a plain run id resolves")
-            .inbox;
-        assert!(
-            !inbox.exists(),
-            "nothing was written must mean nothing was written"
-        );
-    }
-
-    /// A traversing run id is refused before any path is joined (T-18-27).
-    #[tokio::test]
-    async fn a_traversing_run_id_never_reaches_the_inbox_append() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, mut rx) = obs_app(dir.path());
-
-        app.schedule_inbox_append(
-            OBS_ALIAS,
-            "../../../../escaped",
-            "3f2a".to_string(),
-            "steer".to_string(),
-        );
-
-        assert!(
-            app.ctx.error_message.is_some(),
-            "the refusal must be visible, not a silent no-op"
-        );
-        assert!(rx.try_recv().is_err(), "nothing may be dispatched");
-
-        // The positive control: a plain id does reach the scheduler, so the
-        // assertion above is not passing because the function refuses
-        // everything.
-        app.ctx.error_message = None;
-        app.schedule_inbox_append(OBS_ALIAS, OBS_RUN, "b1".to_string(), "steer".to_string());
-        assert!(
-            app.ctx.error_message.is_none(),
-            "a plain run id must not be refused: {:?}",
-            app.ctx.error_message
-        );
-    }
-
-    /// The whole injection round trip, off the render thread (STEER-01/03).
-    #[tokio::test]
-    async fn an_injection_is_written_off_the_render_thread_and_reports_back() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, mut rx) = obs_app(dir.path());
-
-        let paths = crate::journal::run_paths(&dir.path().join(".planning"), OBS_RUN)
-            .expect("a plain run id resolves");
-        std::fs::create_dir_all(&paths.dir).expect("the run dir must exist for an append");
-
-        app.schedule_inbox_append(
-            OBS_ALIAS,
-            OBS_RUN,
-            "3f2a".to_string(),
-            "skip the UI review".to_string(),
-        );
-
-        let action = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("the append must report back promptly, not block the loop")
-            .expect("the channel is open");
-        let Action::DriverInjectWritten {
-            alias, id, error, ..
-        } = action
-        else {
-            panic!("the append must report through DriverInjectWritten, got {action:?}");
-        };
-        assert_eq!(alias, OBS_ALIAS);
-        assert_eq!(id, "3f2a", "the caller's id must survive, not be re-minted");
-        assert!(error.is_none(), "unexpected append failure: {error:?}");
-
-        // The bytes are on disk with the caller's id, which is what makes the
-        // `queued` state addressable and STEER-03 hold across a restart.
-        let written = std::fs::read_to_string(&paths.inbox).expect("the inbox must exist");
-        assert!(written.contains("\"id\":\"3f2a\""), "got: {written}");
-        assert!(written.contains("skip the UI review"), "got: {written}");
-    }
-
-    /// A failed append sets `error_message` and **not** `status_message`.
-    ///
-    /// The load-bearing half is the second assertion: showing `queued` beside an
-    /// error is the exact failure D-06 exists to prevent — the UI satisfied, the
-    /// criterion failed.
-    #[tokio::test]
-    async fn a_failed_injection_write_never_reports_the_message_as_queued() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut app, _rx) = obs_app(dir.path());
-
-        app.update(Action::DriverInjectWritten {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            id: "3f2a".to_string(),
-            error: Some("PermissionDenied".to_string()),
-        });
-
-        let failure = app
-            .ctx
-            .error_message
-            .as_deref()
-            .expect("a failed append must be visible");
-        assert!(failure.contains("PermissionDenied"), "got: {failure}");
-        assert!(
-            failure.contains("Nothing was written"),
-            "the copy must state that nothing reached disk, got: {failure}"
-        );
-        assert!(
-            app.ctx.status_message.is_none(),
-            "a message that was never written must never be shown as queued"
-        );
-
-        // The control arm: a successful write does set the queued status, and
-        // it promises nothing about timing — the dequeue ack was measured at 55
-        // seconds, so a word implying imminence would lie about the protocol.
-        app.ctx.error_message = None;
-        app.update(Action::DriverInjectWritten {
-            alias: OBS_ALIAS.to_string(),
-            run_id: OBS_RUN.to_string(),
-            id: "3f2a".to_string(),
-            error: None,
-        });
-        let queued = app
-            .ctx
-            .status_message
-            .as_ref()
-            .map(|(text, _)| text.clone())
-            .expect("a successful write must confirm");
-        assert!(queued.contains("Queued"), "got: {queued}");
-        assert!(
-            !queued.to_lowercase().contains("sent"),
-            "the word 'sent' is forbidden for an injected message, got: {queued}"
-        );
-    }
 
     /// `DriverRunsListed` populates the view cache and requests a redraw.
     #[tokio::test]
