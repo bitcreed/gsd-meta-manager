@@ -230,7 +230,7 @@ impl RouterReason {
 ///
 /// **Every payload is one token derived from typed state** — a phase number, a
 /// status name — and never free text read out of an artifact. That is the same
-/// constraint `envelope::policy::GitVerdict::Refuse` documents for its `detail`,
+/// constraint the Phase 19 guard's refusal `detail` carried (that guard is deleted),
 /// and here it is what keeps agent-authored content out of a command choice
 /// (D-10, T-20-01). Phase 21 owns prompt-injection hardening; this phase's
 /// contribution is that no prose reaches a routing arm at all.

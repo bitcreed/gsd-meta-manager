@@ -119,15 +119,14 @@ pub enum Commands {
     },
     /// List all registered projects
     List,
-    // The envelope's enforcement points re-enter this same binary rather than
-    // living in a generated shell script (D-04), so they need a parser entry.
+    // The envelope's evidence-gate scan (Phase 31 kept only `envelope scan`).
     //
     // **`hide = true` alone is the right treatment here, and
     // `#[cfg(debug_assertions)]` would be wrong.** A subcommand that exists only
     // in a debug build is an entry point that exits 2 with "unrecognized
     // subcommand" in every shipped configuration; hiding it only keeps `--help`
     // honest about what a user is meant to type.
-    /// Internal: envelope enforcement re-entered by a generated git hook
+    /// Internal: scan a tree for credential shapes (the acceptance scripts' evidence gate)
     #[command(hide = true)]
     Envelope {
         #[command(subcommand)]
@@ -135,8 +134,7 @@ pub enum Commands {
     },
     // The sandbox-side half of the driver's control channel (Phase 27, D-01,
     // D-02). The driver's unchanged prompt calls `driverctl log|show` and the
-    // Claude hooks call `driverctl hook`, so the binary re-enters itself the same
-    // way the envelope's git hooks do.
+    // Claude hooks call `driverctl hook`, so the binary re-enters itself.
     //
     // **Hidden, because users never type it** (D-02): `hide = true` removes the
     // entry from `--help` and from nothing else, the general rule the
@@ -461,79 +459,21 @@ pub struct DriverctlLog {
     pub session: Option<String>,
 }
 
-/// The enforcement points a generated hook stub re-enters this binary through.
+/// The one `envelope` subcommand that survives Phase 31.
 ///
-/// One variant per hook; later plans in this phase add their own. Each returns a
-/// process exit code, because for a git hook the exit code **is** the control
-/// (D-25) — never a message a reader has to interpret.
+/// The hook, askpass and `PreToolUse` re-entry arms went with the argv-classifying
+/// guard they served; what remains is the credential-shape scan, which the
+/// acceptance scripts use as their evidence gate. Its exit code **is** the
+/// verdict: non-zero on any finding.
 #[derive(Subcommand)]
 pub enum EnvelopeAction {
-    /// Classify the refs git supplies on stdin against the reserved namespace
-    PrePush {
-        /// Registry alias whose reserved push namespace applies to this push
-        alias: String,
-        // The generated stub passes `"$0"` here, never a path baked in at
-        // generation time (D-10). A baked path travels with a copy of the file,
-        // so a relocated stub would hand back the original's path and certify
-        // itself; `$0` is the path the shell was actually invoked as, which a
-        // copy cannot forge by being copied.
-        /// Path this hook was invoked from, checked against the envelope's own
-        #[arg(long)]
-        hook_path: PathBuf,
-    },
-    /// Refuse a commit whose staged paths include a directory the envelope reserves
-    PreCommit {
-        /// Registry alias whose envelope sanctions this hook
-        alias: String,
-        /// Path this hook was invoked from, checked against the envelope's own
-        #[arg(long)]
-        hook_path: PathBuf,
-    },
-    // Not a hook either: git invokes this through `GIT_ASKPASS`, via the stub
-    // the envelope generates at `<envelope>/<alias>/askpass` (D-17).
-    //
-    // `--host` is carried rather than resolved here, and that is the security
-    // property of this variant rather than a convenience. The envelope resolves
-    // the configured remote's host ONCE, at run start, and bakes it into the
-    // generated stub. A responder that re-derived the host from the repository
-    // would be reading a value the driven agent can change — so an agent that
-    // adds a second remote would move the host the responder answers for, and be
-    // handed the token for it. That is exactly the attack D-17 names.
-    /// Internal: answer git's credential prompt for the configured remote only
-    Askpass {
-        /// Registry alias whose configured credential applies to this prompt
-        alias: String,
-        /// Host of the remote this run was configured against
-        #[arg(long)]
-        host: String,
-        // git passes exactly one argument, its human-readable prompt, and the
-        // stub places it after `--` so a prompt beginning with `-` cannot be
-        // read as a flag.
-        /// The prompt git supplied, naming the host it is authenticating to
-        #[arg(default_value = "", allow_hyphen_values = true)]
-        prompt: String,
-    },
-    // Not a git hook: the agent CLI invokes this through the `PreToolUse` hook
-    // registration in the generated settings file (D-06 layer 2). It reads one
-    // JSON request on stdin and writes one decision to stdout.
-    //
-    // It carries only the alias, and everything else it needs comes from the
-    // request or from the environment the driver built — because this process is
-    // spawned once per tool call, on the agent's critical path. Every argument
-    // that would have to be *resolved* here is latency paid on every tool call,
-    // and `src/executor/mod.rs:225-239` records what that bill looks like when
-    // it is not paid attention to.
-    /// Internal: classify one tool call before it runs
-    Guard {
-        /// Registry alias whose envelope policy applies to this tool call
-        alias: String,
-    },
     /// Scan a worktree for credential shapes and exit non-zero on any finding
     ///
-    /// Not a hook: this is the same scan the `pre-push` hook runs, reachable on
-    /// its own so a human can see what the hook would say **before** a push
-    /// fails, and so the report — including the list of files the scan declined
-    /// to read (D-14) — can be inspected without a remote in the picture.
+    /// The same scan the launcher's push step runs before it publishes a branch,
+    /// reachable on its own so a human (or an acceptance script's evidence gate)
+    /// can see what the push step would say **before** anything is pushed, and so
+    /// the report - including the list of files the scan declined to read (D-14) -
+    /// can be inspected without a remote in the picture.
     Scan {
         /// Registry alias the scan is reported against
         alias: String,

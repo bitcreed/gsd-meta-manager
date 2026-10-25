@@ -14,55 +14,6 @@ use gsd_meta_manager::main_loop::{
 use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
 use gsd_meta_manager::watcher::FileWatcher;
 
-/// Judge an alias arriving on an envelope re-entry, or fail closed with
-/// `refusal_code` after naming the way out.
-///
-/// **T-21-17-07, the consequence D-17-1/D-17-2 create and this function is the
-/// route out of.** Pass 6 measured that an older build DID register invisible
-/// and look-alike aliases. Those entries are still in `config.json`, `list`
-/// still renders them, and the hook stubs installed for them still pass their
-/// alias on re-entry — but this build no longer admits the value. The refusal is
-/// correct (the tool genuinely cannot tell which project the value names), and
-/// on its own it is a dead end: the user meets it as a bare `exit 1` on
-/// `git push` for a project that worked yesterday. So the message names the
-/// recovery route, which is `remove` — deliberately left raw for exactly this
-/// (D-17-3) — followed by a re-add under a visible alias.
-///
-/// It emits no credential and echoes no payload beyond the alias itself, so the
-/// askpass arm's redaction contract holds through it.
-fn judged_alias_or_exit(raw: &str, refusal_code: i32) -> gsd_meta_manager::registry::Alias {
-    match gsd_meta_manager::registry::Alias::new(raw) {
-        Ok(alias) => alias,
-        Err(refusal) => {
-            // The refused value is UNTRUSTED and the refusal message quotes it,
-            // so it is escaped before it reaches a terminal (D-19-5). A refusal
-            // that reported a bidi override by rendering one would let the
-            // rejected value reorder the sentence explaining why it was
-            // rejected.
-            //
-            // **The escaping is no longer done HERE** (D-21-3, 21-21). It is
-            // done once, in `Display for AliasRefusal`, which is the one
-            // producer every echo of this type goes through. This site used to
-            // wrap `refusal.to_string()` in a second `display_identity` call — a
-            // second spelling of one judgment, which is precisely the defect
-            // D-19-2 removed from `Alias::new`, and which left the OTHER two
-            // echo sites (`:91` and `:359` before this edit) depending on
-            // whoever remembered to copy it. Removing it is behaviour-preserving
-            // and that is not assumed: `display_identity` is pinned idempotent
-            // over its own output by
-            // `registry::tests::escaping_an_already_escaped_identity_changes_nothing`.
-            eprintln!("Error: {refusal}");
-            eprintln!(
-                "This alias was accepted by an older build and no longer names a valid \
-                 identity, so this hook refuses rather than guessing which project it \
-                 means. To recover: `gsd-meta-manager remove <alias>` (removal still \
-                 accepts it), then re-add the project under a visible alias."
-            );
-            std::process::exit(refusal_code);
-        }
-    }
-}
-
 /// Install the file-logging subscriber, or install nothing.
 ///
 /// **Fallible on purpose (D-25, T-27-11).** This used to be
@@ -410,117 +361,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             ));
         }
         Some(Commands::Envelope { action }) => match action {
-            EnvelopeAction::PrePush { alias, hook_path } => {
-                let alias = judged_alias_or_exit(&alias, 1);
-                let stdin = std::io::stdin();
-                // git runs a hook with the working directory at the top of the
-                // worktree, which is what makes the scan's root and the path
-                // checks' root the same root without a flag to get wrong.
-                let repo_root = match std::env::current_dir() {
-                    Ok(dir) => dir,
-                    Err(err) => {
-                        eprintln!("Error: cannot resolve the repository root: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                match gsd_meta_manager::envelope::hooks::pre_push(
-                    &alias,
-                    stdin.lock(),
-                    &hook_path,
-                    &repo_root,
-                ) {
-                    // The exit code IS the control (D-25): git blocks the push
-                    // on any non-zero exit, and nothing downstream has to parse
-                    // a message to learn that it was blocked.
-                    Ok(code) => std::process::exit(code),
-                    Err(err) => {
-                        // The `Add` arm's house shape, and fail-closed: a hook
-                        // that could not do its job must not let the push
-                        // through.
-                        eprintln!("Error: {}", err);
-                        std::process::exit(1);
-                    }
-                }
-            }
-            EnvelopeAction::PreCommit { alias, hook_path } => {
-                let alias = judged_alias_or_exit(&alias, 1);
-                let repo_root = match std::env::current_dir() {
-                    Ok(dir) => dir,
-                    Err(err) => {
-                        eprintln!("Error: cannot resolve the repository root: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                match gsd_meta_manager::envelope::hooks::pre_commit(&alias, &hook_path, &repo_root)
-                {
-                    Ok(code) => std::process::exit(code),
-                    Err(err) => {
-                        // Fail-closed, exactly as the push hook does: a hook
-                        // that could not do its job must not let the commit
-                        // through.
-                        eprintln!("Error: {}", err);
-                        std::process::exit(1);
-                    }
-                }
-            }
-            EnvelopeAction::Askpass {
-                alias,
-                host,
-                prompt,
-            } => {
-                // Fail-closed emits NO credential, which is the redaction
-                // contract: the hint may name the recovery command, and names
-                // nothing else.
-                let alias = judged_alias_or_exit(&alias, 1);
-                // The credential goes to stdout and the refusal goes to stderr,
-                // both inside the handler — nothing is printed here, because a
-                // second print site is a second place a secret could be echoed.
-                match gsd_meta_manager::envelope::cred::askpass_with_config(
-                    &config_path,
-                    &alias,
-                    &prompt,
-                    &host,
-                ) {
-                    Ok(code) => std::process::exit(code),
-                    Err(err) => {
-                        // Fail-closed, and redacted: an askpass that cannot do
-                        // its job emits no credential, and its diagnostic passes
-                        // through the already-shipped redaction path rather than
-                        // a forked one.
-                        eprintln!(
-                            "Error: {}",
-                            gsd_meta_manager::journal::redact::redact(&err.to_string())
-                        );
-                        std::process::exit(1);
-                    }
-                }
-            }
-            EnvelopeAction::Guard { alias } => {
-                // Exit 2 is this arm's deny, so its fail-closed code is 2.
-                let alias = judged_alias_or_exit(&alias, 2);
-                // Before `tui::init()` for the same reason the hook arms are:
-                // this process's stdout carries the permission decision the
-                // agent CLI reads, and a terminal put into raw mode on the way
-                // past would corrupt the very answer that does the blocking.
-                let stdin = std::io::stdin();
-                match gsd_meta_manager::envelope::hooks::guard(&alias, stdin.lock()) {
-                    // The exit code is the second carrier (2 blocks); the JSON
-                    // on stdout is the first. Neither depends on the other.
-                    Ok(code) => std::process::exit(code),
-                    Err(err) => {
-                        // Fail-closed and redacted: a guard that cannot do its
-                        // job denies, and its diagnostic passes through the
-                        // already-shipped redaction path rather than a forked
-                        // one — the request it could not judge is a command
-                        // line, which is a thing that can carry a token.
-                        eprintln!(
-                            "Error: {}",
-                            gsd_meta_manager::journal::redact::redact(&err.to_string())
-                        );
-                        std::process::exit(2);
-                    }
-                }
-            }
             EnvelopeAction::Scan { alias, root } => {
                 // Was a manual `is_plain_path_component` check — a fifth site
                 // spelling the alias judgment for itself. `Alias::new` is that
@@ -553,8 +393,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     root.display()
                 );
                 print!("{}", report.render());
-                // The exit code IS the control (D-25), here as much as in the
-                // hook: a finding exits non-zero.
+                // The exit code IS the control (D-25): a finding exits non-zero.
                 std::process::exit(if report.is_clean() { 0 } else { 1 });
             }
         },

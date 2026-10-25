@@ -10,9 +10,8 @@
 //!
 //! **This module never constructs a command** — the caller builds it, from a
 //! file that is on the spawn allowlist (`tests/spawn_seam_guard.rs`), and hands
-//! it here to be run. The pattern is the one
-//! `crate::envelope::advisory::run_client` established (spawn, `try_wait`
-//! polling, kill at the deadline), with one addition: **stdout is drained on a
+//! it here to be run. The pattern is the one the Phase 19 remote-protection probe
+//! established (spawn, `try_wait` polling, kill at the deadline), with one addition: **stdout is drained on a
 //! reader thread while the child runs.** A pipe holds about 64 KiB; a child that
 //! writes more than that into an undrained pipe blocks on the write, never
 //! exits, and would be killed at the deadline for no fault of its own — a large

@@ -53,28 +53,9 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // probe can be pointed at a REAL live pid whose cmdline lacks the run id.
     // No agent, and nothing in the module's production surface spawns anything.
     "src/driver/liveness.rs",
-    // The real-git DRIFT PIN inside this module's own in-source tests: the
-    // two-sided probe that classifies every entry of the leading-option grammar
-    // constants against the installed `git`. No agent.
-    //
-    // **The guard's own path shells out to NOTHING and must not**, because it
-    // runs synchronously on the agent's `PreToolUse` critical path — a reproduced
-    // 180-240 second hang is why `push_needs_resolved_dests` exists — and because
-    // a guard that asks the program it guards to describe its own grammar can be
-    // lied to by a `git` earlier on `PATH`. This file-level entry gives that
-    // property up, so it is replaced by a STRICTER one local to the module:
-    // `the_guards_own_path_shells_out_to_nothing` in `policy.rs`'s own test
-    // module asserts no spawn marker appears in the file's text ABOVE its
-    // `#[cfg(test)]`, which is the production half this entry stops covering.
+    // `git --version` inside the git-version witness test, which retires with its
+    // release tooling in the same plan (D-12). No agent.
     "src/envelope/policy.rs",
-    // The read-only remote-protection probe: the external GitHub client, asked
-    // three questions and never told anything. Bounded by its own budget and run
-    // once at run start, never on the guard's per-tool-call path. No agent.
-    "src/envelope/advisory.rs",
-    // The configured credential command (`gh auth token`, `pass show …`), run
-    // as argv with no shell so a value carrying a `;` cannot become a second
-    // command. It reads a secret to stdout and never to a file. No agent.
-    "src/envelope/cred.rs",
     // `gitleaks` when a binary happens to be on PATH, as an ADDITIVE second
     // opinion on the built-in credential rules (D-11). Its absence is never a
     // reason to allow, and its output is discarded rather than reproduced. No
@@ -555,7 +536,7 @@ fn no_executable_line_in_src_passes_the_hook_disabling_flag() {
         "no executable line under src/ may pass the CLI's hook-disabling flag on \
          any profile. It suppresses CLAUDE.md, which the model seam wants — and \
          it ALSO disables hooks, and Phase 19's git envelope is enforced by a \
-         PreToolUse hook (src/envelope/hooks.rs). A seam spawned with it runs \
+         PreToolUse hook (the Phase 19 guard, since deleted in Phase 31). A seam spawned with it runs \
          with the git boundary off and NOTHING on the wire says so. Set \
          CLAUDE_CODE_DISABLE_CLAUDE_MDS in the spawn closure instead. \
          Offending lines:{}",
@@ -966,8 +947,10 @@ fn synthetic_file(path: &str, lines: &[&str]) -> SourceFile {
 // **What this guard measures, and what it cannot.** Eight subcommand variants
 // of `Commands`/`EnvelopeAction` once carried an `alias` field, each one an
 // argv-to-identity conversion, and a NINTH could be added unnoticed. Phase 31
-// deleted `Commands::Drive` (the hidden Phase 17 subcommand) and with it one
-// row, so the census now counts SEVEN; the count was re-measured, not relaxed.
+// deleted `Commands::Drive` (the hidden Phase 17 subcommand) and then the four
+// envelope re-entry arms (`PrePush`, `PreCommit`, `Askpass`, `Guard`) with the
+// guard they served, so the census now counts THREE (`Add`, `Remove` and the
+// `envelope scan` evidence gate); the count was re-measured, not relaxed.
 // This census makes growth break a count, so a human has to classify the new
 // arm before the suite goes green again.
 //
@@ -978,7 +961,7 @@ fn synthetic_file(path: &str, lines: &[&str]) -> SourceFile {
 //    carry no `pub`). A field RENAMED (`project: String,`) or given an aliased
 //    type is invisible to it: **under-detection, silent**. It is bounded only
 //    in the other direction — a removed or respelled EXISTING field breaks the
-//    exact-count assertion **loudly**, so the seven rows below cannot rot
+//    exact-count assertion **loudly**, so the three rows below cannot rot
 //    unnoticed even though an extra one under a new name could hide.
 // 2. **The JUDGE column is hand-maintained prose.** The census forces a human
 //    to write a row; it cannot verify that the named judge does what the row
@@ -992,7 +975,7 @@ fn synthetic_file(path: &str, lines: &[&str]) -> SourceFile {
 // 3. **The row-existence check matches variant NAMES** (round 7). Pass 7 warned
 //    that this census bounded a COUNT and nothing else: rename `Scan` to
 //    `Sweep`, or delete one variant and add a different one, and the count stays
-//    at seven while every row goes on naming a judge for an entry point nobody
+//    at three while every row goes on naming a judge for an entry point nobody
 //    can invoke. `census_row_offence` now asserts each row's variant token is
 //    still declared in `src/cli.rs`, with
 //    `every_census_row_names_a_variant_that_still_exists` as the live assertion
@@ -1014,7 +997,7 @@ const ARGV_ALIAS_HOME: &str = "src/cli.rs";
 ///
 /// A row per variant. `BY DECISION` marks the one deliberately-raw consumer;
 /// every other row names a constructor.
-const ARGV_ALIAS_ENTRY_POINTS: [(&str, &str); 7] = [
+const ARGV_ALIAS_ENTRY_POINTS: [(&str, &str); 3] = [
     (
         "Commands::Add",
         "registry::Alias::new in the Add arm (registration refusal)",
@@ -1023,22 +1006,6 @@ const ARGV_ALIAS_ENTRY_POINTS: [(&str, &str); 7] = [
         "Commands::Remove",
         "raw lookup key BY DECISION D-17-3 — recovery path for entries an older \
          build registered; creates nothing; membership-checked",
-    ),
-    (
-        "EnvelopeAction::PrePush",
-        "registry::Alias::new in the arm; fail-closed exit 1",
-    ),
-    (
-        "EnvelopeAction::PreCommit",
-        "registry::Alias::new in the arm; fail-closed exit 1",
-    ),
-    (
-        "EnvelopeAction::Askpass",
-        "registry::Alias::new in the arm; fail-closed, no credential emitted",
-    ),
-    (
-        "EnvelopeAction::Guard",
-        "registry::Alias::new in the arm; fail-closed exit 2 denies",
     ),
     (
         "EnvelopeAction::Scan",
@@ -1069,7 +1036,7 @@ fn census_row_offence(row: (&str, &str), lines: &[(usize, String)]) -> Option<St
     }
     // **Round 7: the row must name a variant that still exists.** Pass 7's
     // warning was that the census bounds a COUNT and nothing else, so a variant
-    // renamed or swapped for a different one leaves the count at seven while the
+    // renamed or swapped for a different one leaves the count at three while the
     // table describes a tree that no longer exists.
     let token = variant.rsplit("::").next().unwrap_or(variant).trim();
     if !variant_is_declared(token, lines) {
@@ -1122,8 +1089,8 @@ fn argv_alias_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
 
 /// **The control arm, first in reading order.** A census whose scanner could
 /// never see growth is the tautology this repository has paid for repeatedly.
-/// A synthetic body carrying the seven real spellings plus one planted eighth
-/// must report eight, through the same extracted fn the live assertion uses.
+/// A synthetic body carrying the three real spellings plus one planted fourth
+/// must report four, through the same extracted fn the live assertion uses.
 #[test]
 fn the_alias_census_reports_a_planted_extra_field() {
     let planted = synthetic_file(
@@ -1139,18 +1106,6 @@ fn the_alias_census_reports_a_planted_extra_field() {
             "    },",
             "}",
             "pub enum EnvelopeAction {",
-            "    PrePush {",
-            "        alias: String,",
-            "    },",
-            "    PreCommit {",
-            "        alias: String,",
-            "    },",
-            "    Askpass {",
-            "        alias: String,",
-            "    },",
-            "    Guard {",
-            "        alias: String,",
-            "    },",
             "    Scan {",
             "        alias: String,",
             "    },",
@@ -1264,7 +1219,7 @@ fn every_census_row_names_a_variant_that_still_exists() {
         "a census row naming a variant `{ARGV_ALIAS_HOME}` does not declare must \
          be REPORTED. Pass 7's warning was that the census bounds a COUNT and \
          nothing else: rename `Scan` to `Sweep`, or delete one variant and add a \
-         different one, and the count stays at seven while the table describes a \
+         different one, and the count stays at three while the table describes a \
          tree that no longer exists. The rows would go on naming judges for \
          variants nobody can invoke. Got: {offence:?}"
     );

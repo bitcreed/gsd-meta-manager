@@ -1927,8 +1927,9 @@ mod tests {
 
     /// `display_identity` applied twice equals `display_identity` applied once.
     ///
-    /// **This is what licenses removing the outer escape at `src/main.rs`'s
-    /// `judged_alias_or_exit`** (D-21-3, 21-21). That site used to wrap
+    /// **This is what licensed removing the outer escape at `src/main.rs`'s
+    /// former `judged_alias_or_exit`** (D-21-3, 21-21; the function itself went
+    /// with the envelope re-entry arms in Phase 31). That site used to wrap
     /// `refusal.to_string()` in a second `display_identity` call while
     /// `Display for AliasRefusal` now escapes at the producer. Deleting the
     /// outer call is only behaviour-preserving if the function is idempotent
@@ -1974,7 +1975,7 @@ mod tests {
                 once, twice,
                 "display_identity is not idempotent over {raw:?}: one pass gives \
                  {once:?} and a second gives {twice:?}. Removing the duplicate \
-                 outer escape at main.rs's judged_alias_or_exit would then be a \
+                 outer escape at main.rs's former judged_alias_or_exit would then be a \
                  behaviour CHANGE rather than a de-duplication."
             );
         }

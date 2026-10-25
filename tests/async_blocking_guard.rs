@@ -115,17 +115,18 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// `cred::build_env(`, `hooks::install(`); each stopped appearing anywhere
 /// under `src/` with its caller, so
 /// `every_named_blocking_helper_still_exists_in_the_tree` correctly refused the
-/// stale names and they were deleted. The seven that remain are Phase 19/20's
-/// envelope and snapshot seams that the executor and the launcher still reach.
+/// stale names and they were deleted. Phase 31's guard retirement then removed
+/// `probe_protection(` and `write_settings(` the same way (their modules,
+/// `envelope::advisory` and `envelope::hooks`, are gone). The markers that remain
+/// are the envelope and snapshot seams that the executor and the launcher still
+/// reach.
 ///
 /// `every_named_blocking_helper_still_exists_in_the_tree` keeps this list from
 /// going stale: a rename that emptied a marker would otherwise look exactly
 /// like a clean run.
 const BLOCKING_HELPERS: &[&str] = &[
     "JournalRun::start(",
-    "probe_protection(",
     "scan_worktree(",
-    "write_settings(",
     "record_and_check(",
     "git_read_raw(",
     // Phase 20's, and it was a **pre-existing hole** rather than one that phase

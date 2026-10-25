@@ -478,9 +478,6 @@ impl ClaudeExecutor {
         let program = self.program.clone();
         let cwd = root.clone();
         let bg_ceiling = options.bg_wait_ceiling_ms.to_string();
-        // Cloned out before the closure for the same reason `bg_ceiling` is:
-        // the closure is `move` and `options` is still needed below.
-        let envelope_env = options.envelope_env.clone();
         let profile = options.profile.clone();
 
         let mut wrap = CommandWrap::with_new(&program, |cmd| {
@@ -550,26 +547,6 @@ impl ClaudeExecutor {
                     // codebase's honesty conventions exist to prevent.
                     cmd.env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1");
                     cmd.env("MAX_STRUCTURED_OUTPUT_RETRIES", "1");
-                }
-            }
-
-            // The `EnvelopeEnv` value `envelope::cred::build_env` produced, applied
-            // one entry at a time. Removal and assignment are distinct
-            // instructions and the `Option` in `EnvelopeVar` is what keeps them
-            // distinct: `SSH_AUTH_SOCK=""`
-            // is a variable an agent can notice and work around, while an absent
-            // one is absent. Matching here rather than collapsing to `env` is
-            // the whole reason that type carries an `Option` (D-16).
-            if let Some(envelope) = &envelope_env {
-                for (key, value) in envelope.entries() {
-                    match value {
-                        Some(value) => {
-                            cmd.env(key, value);
-                        }
-                        None => {
-                            cmd.env_remove(key);
-                        }
-                    }
                 }
             }
         });

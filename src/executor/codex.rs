@@ -200,7 +200,6 @@ impl CodexExecutor {
 
         let program = self.program.clone();
         let cwd = root.clone();
-        let envelope_env = options.envelope_env.clone();
 
         let mut wrap = CommandWrap::with_new(&program, |cmd| {
             cmd.args(&argv)
@@ -212,22 +211,10 @@ impl CodexExecutor {
 
             // This closure is the ONE place the Codex child's environment is
             // built, as `claude.rs`'s is for Claude. Inherited agent variables
-            // are scrubbed first, then the envelope is applied.
+            // are scrubbed.
             for (key, _) in std::env::vars_os() {
                 if scrubbed_from_codex_child(&key) {
                     cmd.env_remove(&key);
-                }
-            }
-            if let Some(envelope) = &envelope_env {
-                for (key, value) in envelope.entries() {
-                    match value {
-                        Some(value) => {
-                            cmd.env(key, value);
-                        }
-                        None => {
-                            cmd.env_remove(key);
-                        }
-                    }
                 }
             }
         });

@@ -1210,7 +1210,7 @@ mod tests {
     /// power depend on the ORDER the author happened to type the arms in and on
     /// the spaces they happened to leave: `matches!(c, '-' | '_' | '.')` is the
     /// same character set and was invisible. The defect the census exists to
-    /// catch — `envelope::advisory::is_plain_component`, which respelled the
+    /// catch — the since-deleted (Phase 31) `envelope::advisory::is_plain_component`, which respelled the
     /// identity alphabet and used it to gate GitHub `owner`/`repo` segments
     /// interpolated into a request path — would have been invisible too, had its
     /// author typed the arms in any other order. A guard whose power depends on
@@ -1347,7 +1347,7 @@ mod tests {
     /// alphabet. This makes that claim checkable rather than believed.
     ///
     /// **Why an EQUALITY on a count and not a containment.** WR-03 measured the
-    /// claim false: `envelope::advisory::is_plain_component` respelled the same
+    /// claim false: the since-deleted (Phase 31) `envelope::advisory::is_plain_component` respelled the same
     /// character set byte-for-byte and used it to gate the GitHub `owner`/`repo`
     /// segments that are then interpolated into a request path. A containment
     /// check ("at least one spelling exists") could never have seen that; only an
@@ -1424,7 +1424,8 @@ mod tests {
     /// that exclusion is ASSERTED and not assumed:**
     /// [`the_normalized_needle_still_excludes_the_branch_name_set`](the_normalized_needle_still_excludes_the_branch_name_set)
     /// pins it in both directions and additionally runs the live census and
-    /// requires that no line of `envelope/advisory.rs` is counted.
+    /// requires that no line of `envelope/advisory.rs` is counted (a file Phase 31 deleted, so that
+    /// clause now holds vacuously and is kept as a tripwire against a respelling reappearing there).
     #[test]
     fn exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src() {
         let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1507,7 +1508,7 @@ mod tests {
              executable lines under src/, and `is_identity_char`'s doc claims to \
              be THE one spelling. Sites: {sites:?}. A second spelling is a \
              boundary that can stop agreeing with the boundary: WR-03 measured \
-             exactly that, in `envelope::advisory::is_plain_component`, gating \
+             exactly that, in the since-deleted (Phase 31) `envelope::advisory::is_plain_component`, gating \
              the GitHub owner/repo segments that are interpolated into a request \
              path. The repair is DELEGATION to `crate::text::is_identity_char`, \
              not a softening of the claim.",
@@ -1603,7 +1604,7 @@ mod tests {
     ///
     /// Normalising the needle loosens it, so over-matching is the new failure
     /// direction and the nearby set this census must NOT count is the one to
-    /// pin. `envelope::advisory::default_branch_of` admits `'/'` in addition to
+    /// pin. The since-deleted (Phase 31) `envelope::advisory::default_branch_of` admits `'/'` in addition to
     /// the identity alphabet's three punctuation arms, because a branch name
     /// legitimately carries a path separator and is not an identity —
     /// `is_plain_component`'s doc says so and collapsing the two would be the
@@ -1660,9 +1661,10 @@ mod tests {
         }
         assert!(
             !counted.iter().any(|site| site.contains("advisory.rs")),
-            "the census counted a line in `envelope/advisory.rs`, and the only \
-             character-set clause left in that file is `default_branch_of`'s — \
-             which must stay excluded. Counted: {counted:?}"
+            "the census counted a line in `envelope/advisory.rs`. Phase 31 deleted that \
+             file, so this holds vacuously today; it stays as a tripwire against the \
+             file (and its branch-name set, which must stay excluded) reappearing. \
+             Counted: {counted:?}"
         );
     }
 

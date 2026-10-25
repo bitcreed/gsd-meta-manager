@@ -152,7 +152,7 @@ pub struct LedgerEntry {
     /// The **classified shape** of the attempt — `gh pr create`, `gh api POST
     /// …/pulls`, `glab mr create` — and deliberately never the command line.
     ///
-    /// The same rule [`super::policy::GitVerdict::Refuse`]'s `detail` records: a
+    /// The same rule the Phase 19 guard's refusal `detail` followed: a
     /// field that quotes the command back is a field that can carry a token into
     /// a file on disk (SAFE-04). This ledger is not a transcript.
     pub command: String,
