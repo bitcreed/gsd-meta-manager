@@ -233,12 +233,8 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("?", "Toggle this help"),
     ];
 
-    // The three dashboard driver keys, documented only while they are bound.
-    if experimental {
-        lines.push(row("r", "Start a driver run (dashboard)"));
-        lines.push(row("x", "Stop the live driver run (dashboard)"));
-        lines.push(row("o", "Toggle driver opt-in (dashboard)"));
-    }
+    // The dashboard's `r`, `x` and `o` driver keys were retired in Phase 31 (D-03): the
+    // Driver tab below documents the `x` kill and `o` opt-in keys that remain.
 
     lines.extend([
         row("e", "Enqueue next action (detail view)"),
@@ -370,13 +366,8 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             ),
             row("x", "Kill this run's sandbox now (asks first)"),
             row("L", "Show or hide legacy runs (read-only)"),
-            // Both surfaces bind `o` for the same action and the help lists
-            // both, which is what makes the consistency visible instead of
-            // coincidental. The two descriptions must not be byte-identical,
-            // or the whole-row assertion below cannot tell which section it
-            // matched — the dashboard row at the top is disambiguated by its
-            // trailing parenthetical, and this one's wording differs
-            // throughout.
+            // The Driver tab's `o` is the only opt-in key (the dashboard's was retired
+            // in Phase 31, D-03).
             row("o", "Toggle driver opt-in for this project"),
             Line::from(""),
             // ── The run-state legend (30-01, D-04): glyph, word and gloss for every
@@ -944,9 +935,6 @@ mod tests {
     /// vacuous in exactly the way this repo already refuses.
     fn driver_rows() -> Vec<String> {
         [
-            ("r", "Start a driver run (dashboard)"),
-            ("x", "Stop the live driver run (dashboard)"),
-            ("o", "Toggle driver opt-in (dashboard)"),
             ("Shift+D", "Jump to the Driver tab from any detail tab"),
             ("j / k", "Move the run selection"),
             ("[ / ]", "Move the item cursor in the selected run"),

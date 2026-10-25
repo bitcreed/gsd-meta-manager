@@ -123,8 +123,8 @@ Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
 The driver runs a real agent against a real repository, so its surface is hidden
 rather than merely disabled: with the variable unset the TUI has **eight** tabs,
 no `Shift+D`, no `D` in the detail-view tab hint, no driver rows or Driver
-section in the help screen, no driven badge on the dashboard, and no `r`/`x`/`o`
-driver keys. A user who never asked for a driver cannot discover one by pressing
+section in the help screen, no driven badge on the dashboard, and no driver
+keys. A user who never asked for a driver cannot discover one by pressing
 a key.
 
 With the variable set, the full surface returns and is labelled: the Driver

@@ -2,7 +2,6 @@ use super::add_project::AddProjectScreen;
 use super::create_project::CreateProjectScreen;
 use super::delete_confirm::DeleteConfirmScreen;
 use super::detail::DetailScreen;
-use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::driver_run::MarkerClass;
 use super::help::HelpScreen;
 use super::{AppContext, Screen, ScreenAction, SortMode};
@@ -744,74 +743,15 @@ impl Screen for NormalScreen {
                     ScreenAction::None
                 }
             }
-            // ── The three driver keys (D-25) ──────────────────────────────
-            //
-            // This is Phase 17's ENTIRE UI surface: three keys pushing one
-            // confirmation. The Driver tab, the live stream, the dashboard
-            // badges and the rich opt-in disclosure flow are Phase 18's — see
-            // the module doc on `super::driver_confirm` for the full fence.
-            //
-            // Collision check, performed before these were written: this match
-            // already claims `q`, `j`, `k`, `a`, `c`, `d`, `b`, `M`, `/`, `?`,
-            // `Tab`, `Enter`, `Up` and `Down`, and the search sub-mode is
-            // entered by `/` and handled separately. None of `r`, `x`, `o` is
-            // among them. (`b` is later in the file than these three but is
-            // listed here anyway: this list's only job is to let the next
-            // person check that a key is free, and a list that silently goes
-            // stale is worse than no list at all.)
-            // (`r` is bound in `detail.rs` for the roadmap toggle. That is a
-            // different screen with its own `handle_key` match, so it is not a
-            // collision — the help screen annotates both with their scope.)
-            // The match guard is what makes the key fall through UNHANDLED
-            // with the experimental surfaces off, rather than being consumed by
-            // an arm that quietly does nothing (260917-fko D2).
-            KeyCode::Char('r') if ctx.experimental => {
-                if let Some(alias) = ctx.selected_alias() {
-                    ctx.needs_redraw = true;
-                    ScreenAction::Push(Box::new(DriverConfirmScreen::new(
-                        alias,
-                        DriverAction::Start,
-                    )))
-                } else {
-                    ScreenAction::None
-                }
-            }
-            // The match guard is what makes the key fall through UNHANDLED
-            // with the experimental surfaces off, rather than being consumed by
-            // an arm that quietly does nothing (260917-fko D2).
-            KeyCode::Char('x') if ctx.experimental => {
-                if let Some(alias) = ctx.selected_alias() {
-                    ctx.needs_redraw = true;
-                    ScreenAction::Push(Box::new(DriverConfirmScreen::new(
-                        alias,
-                        DriverAction::Stop,
-                    )))
-                } else {
-                    ScreenAction::None
-                }
-            }
-            // The match guard is what makes the key fall through UNHANDLED
-            // with the experimental surfaces off, rather than being consumed by
-            // an arm that quietly does nothing (260917-fko D2).
-            KeyCode::Char('o') if ctx.experimental => {
-                if let Some(alias) = ctx.selected_alias() {
-                    ctx.needs_redraw = true;
-                    ScreenAction::Push(Box::new(DriverConfirmScreen::new(
-                        alias,
-                        DriverAction::ToggleOptIn,
-                    )))
-                } else {
-                    ScreenAction::None
-                }
-            }
             // ── The dashboard sort toggle (D-25, OBS-07) ──────────────────
             //
             // One key, one indicator, no new screen. `s` is free on this
             // screen: the match above claims `q`, `j`, `k`, `a`, `c`, `d`,
-            // `r`, `x`, `o`, `b`, `M`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`,
-            // and the search sub-mode is entered by `/` and handled
-            // separately. (`b` is bound below, beside `Enter`; see the note in
-            // the driver-keys block above about keeping these lists current.)
+            // `b`, `M`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`, and the
+            // search sub-mode is entered by `/` and handled separately. (`b`
+            // is bound below, beside `Enter`.) The dashboard's `r`, `x` and `o`
+            // were the legacy driver start, stop and opt-in keys; Phase 31
+            // (D-03) retired them, and the Driver tab keeps `o` and `x`.
             //
             // **Alphabetical stays the default and that is load-bearing.** A
             // dashboard whose row order changes under the cursor while a run
@@ -2380,45 +2320,28 @@ mod tests {
         );
     }
 
-    /// The three dashboard driver keys, driven through the real `handle_key`.
+    /// The retired dashboard driver keys (`r`, `x`, `o`), driven through the real
+    /// `handle_key`.
     ///
-    /// A test that called `DriverConfirmScreen::new` directly could not catch
-    /// a key that is still bound, which is the only thing worth checking here.
+    /// Phase 31 (D-03) removed the legacy start, stop and opt-in arms. A key that
+    /// is still bound would push a screen for a selected project, so the check
+    /// selects one and asserts nothing happens, with the experimental surfaces on
+    /// and off: the Driver tab, not the dashboard, owns `o` and `x` now.
     #[test]
-    fn the_dashboard_driver_keys_push_nothing_when_experimental_is_off() {
-        for key in ['r', 'x', 'o'] {
-            let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(false);
-            ctx.table_state.select(Some(0));
-            let mut screen = NormalScreen::new();
+    fn the_retired_dashboard_driver_keys_push_nothing_with_the_flag_on_or_off() {
+        for experimental in [true, false] {
+            for key in ['r', 'x', 'o'] {
+                let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(experimental);
+                ctx.table_state.select(Some(0));
+                let mut screen = NormalScreen::new();
 
-            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+                let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
 
-            assert!(
-                matches!(action, ScreenAction::None),
-                "`{key}` must fall through unhandled with the flag off, and a \
-                 project IS selected so a bound key would have pushed"
-            );
-        }
-    }
-
-    #[test]
-    fn the_dashboard_driver_keys_still_push_the_confirmation_when_experimental_is_on() {
-        for key in ['r', 'x', 'o'] {
-            let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(true);
-            ctx.table_state.select(Some(0));
-            let mut screen = NormalScreen::new();
-
-            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
-
-            match action {
-                ScreenAction::Push(pushed) => {
-                    assert_eq!(
-                        pushed.name(),
-                        "driver_confirm",
-                        "`{key}` pushed the wrong screen"
-                    )
-                }
-                _ => panic!("`{key}` must push the driver confirmation with the flag on"),
+                assert!(
+                    matches!(action, ScreenAction::None),
+                    "`{key}` must fall through unhandled (experimental={experimental}), and a \
+                     project IS selected so a bound key would have pushed"
+                );
             }
         }
     }

@@ -371,7 +371,6 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("DeleteConfirmScreen", "src/ui/screens/delete_confirm.rs"),
     ("DetailScreen", "src/ui/screens/detail.rs"),
     ("DriverConfirmScreen", "src/ui/screens/driver_confirm.rs"),
-    ("DriverStartScreen", "src/ui/screens/driver_start.rs"),
     ("EditChooserScreen", "src/ui/screens/driver_steer.rs"),
     ("EditLintConfirmScreen", "src/ui/screens/driver_steer.rs"),
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
@@ -848,7 +847,7 @@ fn zero_width_only_identity() -> String {
 ///
 /// A screen is not one picture. `DetailScreen` has nine tabs, one of which
 /// (Docs) has two sub-views, so ten sub-view renders;
-/// `DriverStartScreen` has two steps; `DriverConfirmScreen` has five prompts.
+/// `DriverConfirmScreen` has three prompts.
 /// The probe renders EACH, and the `label` is what a failure names — so a
 /// failure says which state leaked rather than only which screen.
 struct ProbeState {
@@ -1411,7 +1410,8 @@ fn hostile_agent_view(
 }
 
 /// The authored half of the status footer's message, spelled exactly as
-/// `App::start_driver_run` builds it at `src/app.rs:1870`.
+/// the legacy `App::start_driver_run` built it (Phase 31 removed that builder; the
+/// token stays as a fixed fixture string).
 ///
 /// **A token only the status branch can produce.** `render_footer` dispatches
 /// on `searching` first and `status_message` second; the alternative branch,
@@ -1849,8 +1849,7 @@ fn sub_view_label(view: &crate::app::DetailSubView) -> &'static str {
 
 /// One state per detail sub-view, for every screen whose body is a detail view.
 ///
-/// `EnqueueScreen`, `DriverStartScreen` and
-/// `QueueDeleteConfirmScreen` all paint their body with
+/// `EnqueueScreen` and `QueueDeleteConfirmScreen` both paint their body with
 /// `DetailScreen::render_main_only`, so each of them renders whatever the active
 /// tab renders. Sharing this helper is what stops the probe covering the detail
 /// body for one of them and not the others.
@@ -2491,37 +2490,8 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             states
         }),
 
-        // Both wizard steps. Step B is reached by driving the real state
-        // machine — `Enter` on a slash-prefixed command — rather than by
-        // constructing the field directly, so what the probe renders is a state
-        // the key handler can actually produce.
-        "DriverStartScreen" => Some(|identity| {
-            let mut states = states_over_sub_views(identity, &|identity, ctx| {
-                ctx.input_buffer = identity.to_string();
-                Box::new(super::driver_start::DriverStartScreen::new(
-                    identity.to_string(),
-                ))
-            });
-            let mut goal_ctx = probe_ctx(identity);
-            let mut goal_screen = super::driver_start::DriverStartScreen::new(identity.to_string());
-            goal_ctx.input_buffer = format!("/{identity}");
-            goal_screen.handle_key(
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-                &mut goal_ctx,
-            );
-            goal_ctx.input_buffer = identity.to_string();
-            states.push(one_state(
-                "goal step, showing the committed command",
-                goal_ctx,
-                Box::new(goal_screen),
-            ));
-            states
-        }),
-
-        // All five prompts: start (with a goal), stop, the launcher stop (which
-        // also names a run id), and both directions of the opt-in toggle. Each
-        // names the alias.
+        // All three prompts: the launcher stop (which also names a run id), and
+        // both directions of the opt-in toggle. Each names the alias.
         "DriverConfirmScreen" => Some(|identity| {
             use super::driver_confirm::{DriverAction, DriverConfirmScreen};
             let opted_in = {
@@ -2530,23 +2500,6 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 ctx
             };
             vec![
-                one_state(
-                    "start prompt with a goal",
-                    probe_ctx(identity),
-                    Box::new(DriverConfirmScreen::new_start(
-                        identity.to_string(),
-                        format!("/{identity}"),
-                        Some(identity.to_string()),
-                    )),
-                ),
-                one_state(
-                    "stop prompt",
-                    probe_ctx(identity),
-                    Box::new(DriverConfirmScreen::new(
-                        identity.to_string(),
-                        DriverAction::Stop,
-                    )),
-                ),
                 one_state(
                     "launcher stop prompt",
                     probe_ctx(identity),
@@ -4111,9 +4064,9 @@ mod tests {
     /// # What this does NOT cover, with its direction
     ///
     /// **One screen and one fixture pair.** `EnqueueScreen` was chosen because
-    /// S1 named the input-echo CLASS, not because one screen stands for five:
-    /// `AddProjectScreen`, `CreateProjectScreen` and
-    /// `DriverStartScreen` are covered only by this module's per-screen
+    /// S1 named the input-echo CLASS, not because one screen stands for several:
+    /// `AddProjectScreen` and `CreateProjectScreen`
+    /// are covered only by this module's per-screen
     /// behavioural probes, which assert arrival and escaping but not this
     /// test's clean-value no-over-escaping direction. **Direction:
     /// under-detection, silent, bounded by those probes and not by this test.**

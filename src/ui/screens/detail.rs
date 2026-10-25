@@ -6025,13 +6025,10 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
-            // `o`: opt in, **through the same confirmation the dashboard's `o`
-            // opens** and never by writing the registry from here.
-            //
-            // `o` is already what the dashboard binds for exactly this action
-            // (`normal.rs:444-454`), so the verb/key mapping stays consistent
-            // across the two surfaces — the same argument the `x` comment above
-            // makes for reusing `x`.
+            // `o`: opt in, **through the shared driver confirmation** and never by
+            // writing the registry from here. (The dashboard's `o` that once opened
+            // the same confirmation was retired in Phase 31, D-03; this is now the
+            // only way in.)
             //
             // Unlike `i`/`s`/`x` there was no collision to resolve: a grep for
             // `Char('o')` and `Char('O')` across this file found zero existing
@@ -6043,8 +6040,7 @@ impl Screen for DetailScreen {
             //
             // `DriverConfirmScreen`'s `do_toggle_opt_in` stays the ONE opt-in
             // write path (CTRL-03). A second one here would be a second thing
-            // that has to stay in agreement with the spawn seam in
-            // `executor::DrivableProject::from_registry`.
+            // that has to stay in agreement with the readers of the record.
             KeyCode::Char('o') if current_view == DetailSubView::Driver => {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(DriverConfirmScreen::new(

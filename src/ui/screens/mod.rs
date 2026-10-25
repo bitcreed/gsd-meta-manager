@@ -7,7 +7,6 @@ pub mod driver;
 pub mod driver_confirm;
 pub mod driver_launch;
 pub mod driver_run;
-pub mod driver_start;
 pub mod driver_steer;
 pub mod enqueue;
 pub mod help;
@@ -342,8 +341,8 @@ pub enum ScreenAction {
     /// pushed a second confirmation for the same command and a second `y`
     /// started a **second run**. `admit` counts live runs across all projects
     /// and does not stop a second run of the same project; the child's `flock`
-    /// refusal is invisible because its stdio is `/dev/null`; and
-    /// `start_driver_run` has already overwritten `observed_runs` with the
+    /// refusal is invisible because its stdio is `/dev/null`; and the start handler
+    /// (since retired, Phase 31) had already overwritten `observed_runs` with the
     /// second driver's pid, so for up to five seconds `x` would signal the
     /// wrong, already-dead pid while the real run kept going.
     Replace(Box<dyn Screen>),

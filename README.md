@@ -243,9 +243,8 @@ Options:
 | `q`              | Quit (dashboard); back to the dashboard (detail view) |
 | `Ctrl+C`         | Force quit from any screen |
 
-With `GSDMM_EXPERIMENTAL_FEATURES` set, the dashboard's `r` / `x` / `o` start a
-driver run, stop it and toggle driver opt-in, and `Shift+D` in the detail view
-opens the experimental Driver tab; see [Configuration](docs/CONFIGURATION.md).
+With `GSDMM_EXPERIMENTAL_FEATURES` set, `Shift+D` in the detail view opens the
+experimental Driver tab; see [Configuration](docs/CONFIGURATION.md).
 
 The detail view has two focus levels: the **tab bar** at the top and the
 **content** of the active tab below it. It opens on the content of the tab you

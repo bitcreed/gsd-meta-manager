@@ -426,7 +426,10 @@ mod tests {
                 }
             }
         }
-        assert!(files.len() >= 25, "only {} files read", files.len());
+        // A floor, not a target: 26 files at the Phase 30 close, 24 after Phase 31 plan 02
+        // deleted `driver_inject.rs` and `driver_start.rs` (each a screen with no production
+        // caller left). It exists so a walk that read nothing cannot pass vacuously.
+        assert!(files.len() >= 24, "only {} files read", files.len());
         assert!(
             escape_seen,
             "no escape-form codepoint seen: the scan is vacuous"

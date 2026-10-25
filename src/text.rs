@@ -18,7 +18,7 @@
 //! * [`carries_visible_content`] — *emptiness*: is anything visible at all?
 //!   Consumed by [`crate::driver::payload::NonBlank::new`],
 //!   [`crate::journal::is_plain_path_component`]'s blank half,
-//!   [`crate::app::goal_or_none`] and `crate::ui::screens::driver::goal_lines`.
+//!   and `crate::ui::screens::driver::goal_lines`.
 //! * [`carries_invisible_formatting`] — *identity*: does it carry bytes that
 //!   render as nothing? Consumed by
 //!   [`crate::journal::is_plain_path_component`]'s identity half (and so,

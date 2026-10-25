@@ -356,7 +356,7 @@ mod tests {
     /// and a disclosed property that cannot go red when it happens is prose.
     const MEASURED_REACH: [(&str, usize); 3] = [
         ("src/ui/screens/driver.rs", 1),
-        ("src/ui/screens/driver_confirm.rs", 4),
+        ("src/ui/screens/driver_confirm.rs", 2),
         ("src/ui/screens/render_escape_guard.rs", 3),
     ];
 
@@ -389,16 +389,19 @@ mod tests {
     ///
     /// # The MEASURED reach — what actually drives this assertion
     ///
-    /// Over all **seventeen** `.rs` files under `src/ui/` (30-01 added `driver_run.rs`
-    /// and removed one composed call from `driver.rs`: its `no_runs_lines`):
+    /// Over all **twenty-two** `.rs` files under `src/ui/` (30-01 added `driver_run.rs`
+    /// and removed one composed call from `driver.rs`: its `no_runs_lines`; 31-02
+    /// deleted `driver_inject.rs` and `driver_start.rs`, two screens with no needle,
+    /// and removed two composed calls from `driver_confirm.rs` with the start prompt's
+    /// command and the goal row, taking it from 4 to 2):
     ///
     /// | File | Executable needle occurrences |
     /// |---|---|
-    /// | `src/ui/screens/driver_confirm.rs` | 4 |
+    /// | `src/ui/screens/driver_confirm.rs` | 2 |
     /// | `src/ui/screens/driver.rs` | 1 |
     /// | `src/ui/screens/render_escape_guard.rs` | 3 (the exempt probe module — all three are oracles, not render sites; 30-03 added the third, the escaped form its SUMMARY-row and MEDIUM-token-row test expects) |
-    /// | the other **14** files, incl. `detail.rs`, `normal.rs` and `driver_run.rs` | 0 |
-    /// | **total** | **8** — five non-exempt, in **two of seventeen files** |
+    /// | the other **19** files, incl. `detail.rs`, `normal.rs` and `driver_run.rs` | 0 |
+    /// | **total** | **6** — three non-exempt, in **two of twenty-two files** |
     ///
     /// **These numbers are PINNED, not asserted here.** [`MEASURED_REACH`] and
     /// [`UI_SOURCE_FLOOR`] are checked by this test below, as a `Vec` equality

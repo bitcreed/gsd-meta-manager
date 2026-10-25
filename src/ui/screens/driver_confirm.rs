@@ -1,34 +1,19 @@
-//! **The one driver confirmation** — Phase 17's only driver surface, now the
-//! last step of Phase 18's start flow (D-25, D-26, D-23).
+//! **The driver confirmation** — the one `[y/n]` popup behind the Driver tab's
+//! two confirmed actions: toggling a project's driver opt-in record (`o`) and
+//! killing a launcher run (`x`).
 //!
-//! Phase 17 shipped this as a deliberate fence rather than an oversight:
-//! everything a driver *looks* like belonged to **Phase 18**. That map is kept
-//! accurate here rather than left to go stale, so the entries below are the
-//! ones that are still someone else's:
+//! Phase 31 (D-03) retired the legacy `drive` start and stop actions and the
+//! dashboard keys that pushed this screen, so [`DriverAction`] is exactly
+//! `ToggleOptIn` and `StopLauncher`. The shape is the one Phase 17 set: modelled
+//! file for file on [`super::delete_confirm`] — the same `[y/n]` footer, the same
+//! `Color::Red` for a direction that takes something away, the same free
+//! functions doing the work and reporting through `ctx.error_message` /
+//! `ctx.status_message`, and the same `ScreenAction::Pop` on both arms.
 //!
-//! | Still future work | Owner |
-//! |---|---|
-//! | The Driver tab and its live, ring-buffered output stream | 18-09 |
-//! | The dashboard driver badges | 18-06 |
-//! | The four-state injection **display** | 18-09 |
-//! | The rich opt-in disclosure flow that lists every file entering the prompt and makes the user type the project name | a later milestone (D-26) |
-//!
-//! **Discharged by plan 18-07, which is why this file changed:** the command
-//! picker and the goal field. [`DEFAULT_DRIVE_COMMAND`] is no longer the only
-//! command a run can be started with — it is the default *selection* offered by
-//! [`super::driver_start::DriverStartScreen`], and this confirmation names the
-//! command the user actually chose. The injection **input** is
-//! [`super::driver_inject`].
-//!
-//! What Phase 17 needed was only enough surface for a human to reach its own
-//! success criteria: start a run, stop a live one, toggle the opt-in. That is
-//! three keys on the dashboard and this one confirmation, modelled file for
-//! file on [`super::delete_confirm`] — the same `[y/n]` one-line footer, the
-//! same `Color::Red` for a destructive direction, the same free functions doing
-//! the work and reporting through `ctx.error_message` / `ctx.status_message`,
-//! and the same `ScreenAction::Pop` on both arms. No new widget, no new tab, no
-//! second screen. Phase 18 adds one row above the prompt and changes no part of
-//! that shape.
+//! **What the opt-in record does now.** The launcher's push step reads its PR caps
+//! and branch namespace from it (`launcher::push::policy_for`) and falls back to
+//! the defaults when there is none. The prompts say that and nothing more: no
+//! safety claim the code does not back (T-17-48).
 //!
 //! Driver state is read from the **sibling maps on `AppContext`** — never from
 //! `ProjectState`, whose derived `PartialEq` drives the v1.4 unchanged-state
@@ -47,21 +32,6 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-/// The GSD command a start is **pre-selected** with.
-///
-/// **No longer the only value a run can carry.** The command picker landed in
-/// plan 18-07 ([`super::driver_start::DriverStartScreen`], Step A), and this
-/// constant is now what an empty command field commits — the default
-/// *selection*, exactly as D-23 specifies. A read-only progress command is the
-/// right thing to default to: it is the one command that is safe to start
-/// without reading the field.
-///
-/// There is still no computed **sequence**, because the D-R-P-E-V decision
-/// router is **Phase 20's**; a Phase 18 run executes exactly one GSD command per
-/// `drive` invocation, so the picker chooses one command and the driver's own
-/// dry-run output says the same.
-pub const DEFAULT_DRIVE_COMMAND: &str = "/gsd-progress";
-
 /// The disclosed-file-set heading (**pinned contract** — see
 /// [`SECTION_RESIDUAL_EXPOSURE`]).
 ///
@@ -72,8 +42,7 @@ pub const DEFAULT_DRIVE_COMMAND: &str = "/gsd-progress";
 /// would be the under-broad disclosure this text exists to avoid.
 pub const SECTION_PROMPT_INPUTS: &str = "== Files whose bytes can reach a model prompt ==\n\
     These are the files this build reads from the project, and the digest each\n\
-    had when the opt-in was recorded. If any of them changes, the opt-in is\n\
-    re-confirmed at the spawn gate before a run starts.";
+    had when the opt-in was recorded. The digest is a snapshot of that moment.";
 
 /// What the two model seams actually see (**pinned contract** — see
 /// [`SECTION_RESIDUAL_EXPOSURE`]).
@@ -136,10 +105,7 @@ pub fn render_disclosure(prompt_inputs: &[crate::config::PromptInput]) -> String
     out.push('\n');
 
     if prompt_inputs.is_empty() {
-        out.push_str(
-            "  (this opt-in recorded no file list, so it will be re-confirmed\n   \
-             before any run starts)\n",
-        );
+        out.push_str("  (this opt-in recorded no file list)\n");
     } else {
         for input in prompt_inputs {
             // The profile label comes from the code that does the reading, not
@@ -161,7 +127,7 @@ pub fn render_disclosure(prompt_inputs: &[crate::config::PromptInput]) -> String
                 .unwrap_or("(absent at opt-in — appearing later re-confirms)");
 
             // Two classes, two predicates, composed (WR-06) — the same shape
-            // `prompt_text` and `goal_row` use 100 lines below, and for the same
+            // `prompt_text` uses 100 lines below, and for the same
             // reason: `sanitize_render_line` answers the CONTROL class, and the
             // invisible-formatting class (`Cf` union `Default_Ignorable`) is a
             // different question that neither predicate subsumes. This screen is
@@ -190,13 +156,9 @@ pub fn render_disclosure(prompt_inputs: &[crate::config::PromptInput]) -> String
     out
 }
 
-/// Which of the three driver actions this confirmation is for.
+/// Which of the two driver actions this confirmation is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverAction {
-    /// Start a run on the selected project.
-    Start,
-    /// Stop the live run on the selected project.
-    Stop,
     /// Toggle the driver opt-in record for the selected project.
     ToggleOptIn,
     /// Stop a launcher run (28-07, D-11). The run id lives on the screen so this
@@ -204,50 +166,24 @@ pub enum DriverAction {
     StopLauncher,
 }
 
-/// One confirmation screen serving all three driver actions.
-///
-/// `command` and `goal` are meaningful only for [`DriverAction::Start`], and
-/// they live on the screen rather than inside the enum variant on purpose: the
-/// enum stays `Copy` and keeps working as a plain discriminator in
-/// [`prompt_text`] and [`prompt_color`], and the dashboard's existing `r`
-/// binding keeps compiling against the two-argument [`Self::new`].
-///
-/// **One field feeds both the prompt and the dispatch** (T-18-41). The command
-/// rendered in the confirmation and the command sent in
-/// [`Action::DriverStartRequested`] are the *same* `String`, so a confirmation
-/// that named one command while starting another is not expressible here.
+/// One confirmation screen serving both driver actions.
 pub struct DriverConfirmScreen {
     alias: String,
     action: DriverAction,
-    /// The command a `Start` will run. [`DEFAULT_DRIVE_COMMAND`] unless the
-    /// start flow chose otherwise.
-    command: String,
-    /// The human's goal, **verbatim**, or `None` when none was given.
-    ///
-    /// Never `Some("")`: the empty string is a different and worse thing than
-    /// no goal — `drive_argv` omits the flag entirely for `None`, and an empty
-    /// goal would be recorded verbatim in `RunRecord.goal` and rendered as if
-    /// the user had said something. [`super::driver_start`] is what enforces
-    /// that mapping.
-    goal: Option<String>,
-    /// The launcher run a [`DriverAction::StopLauncher`] will stop; empty for every
-    /// other action. One field feeds both the prompt and the dispatch, as `command`
-    /// does for `Start` (T-18-41, T-28-18).
+    /// The launcher run a [`DriverAction::StopLauncher`] will stop; empty for the
+    /// opt-in toggle. One field feeds both the prompt and the dispatch, so a
+    /// confirmation that named one run while stopping another is not expressible
+    /// (T-18-41, T-28-18).
     run_id: String,
     popup: ConfirmPopup,
 }
 
 impl DriverConfirmScreen {
-    /// A confirmation with the default command selection and no goal.
-    ///
-    /// This is the dashboard's `r` / `x` / `o` path. For a `Start` that came
-    /// through the command picker, use [`Self::new_start`].
+    /// A confirmation for `action` on `alias`, with no run attached.
     pub fn new(alias: String, action: DriverAction) -> Self {
         Self {
             alias,
             action,
-            command: DEFAULT_DRIVE_COMMAND.to_string(),
-            goal: None,
             run_id: String::new(),
             popup: ConfirmPopup::default(),
         }
@@ -260,22 +196,6 @@ impl DriverConfirmScreen {
             ..Self::new(alias, DriverAction::StopLauncher)
         }
     }
-
-    /// A `Start` confirmation for the command and goal the user chose.
-    ///
-    /// `goal` is stored and dispatched **verbatim, never paraphrased** — goal
-    /// decomposition and prompt-injection hardening are Phase 21's, and this
-    /// phase interprets nothing. Only the *rendering* is sanitised.
-    pub fn new_start(alias: String, command: String, goal: Option<String>) -> Self {
-        Self {
-            alias,
-            action: DriverAction::Start,
-            command,
-            goal,
-            run_id: String::new(),
-            popup: ConfirmPopup::default(),
-        }
-    }
 }
 
 /// The prompt for one action, stating the **consequence** rather than the
@@ -285,34 +205,21 @@ impl DriverConfirmScreen {
 /// the direction of a toggle. Free function rather than a method so the whole
 /// prompt matrix is testable without constructing a screen.
 ///
-/// The disabling direction deliberately says no **new** run can start. It does
-/// not claim to stop a live one, because the code does not stop one — and a
-/// safety claim the implementation does not back is worse than no claim at all
-/// (T-17-48).
+/// **Both opt-in directions say only what the record feeds** (C12, T-17-48): the
+/// push step reads its PR caps and branch namespace from it
+/// (`launcher::push::policy_for`) and uses the defaults without one. Neither
+/// claims a gate or says that a run can or cannot start, because nothing
+/// here gates a run — and a safety claim the implementation does not back is
+/// worse than no claim at all.
 ///
-/// `command` is the one the run will actually be started with, **not**
-/// [`DEFAULT_DRIVE_COMMAND`] — the last thing a user sees before an autonomous
-/// agent starts on their repo has to name the real thing. It is sanitised
-/// before it is interpolated: the picker's suggestion list can come from a
-/// `gsd-tools smart-entry` subprocess, so a command string is not necessarily
-/// something the user typed, and an escape sequence reaching a rendered prompt
-/// can repaint the screen or forge a line (T-18-38).
-///
-/// The alias is escaped through [`crate::text::display_identity`] for the same
-/// reason and at the same seam: this prompt is the last thing a human reads
-/// before an irreversible act, and `sanitize_render_line` answers a DIFFERENT
-/// question — it strips `ESC` and C0/DEL, the *control* class, and says nothing
-/// about the invisible-formatting class (`General_Category=Cf` union
-/// `Default_Ignorable_Code_Point`). The two compose; neither replaces the other.
-/// Nothing dispatched changes: `do_start_run`, `do_stop_run` and
-/// `do_toggle_opt_in` all receive `&self.alias` raw.
-fn prompt_text(
-    alias: &str,
-    action: DriverAction,
-    opted_in: bool,
-    command: &str,
-    run_id: &str,
-) -> String {
+/// The alias is escaped through [`crate::text::render_for_terminal`]: this prompt
+/// is the last thing a human reads before an irreversible act, and
+/// `sanitize_render_line` answers a DIFFERENT question — it strips `ESC` and
+/// C0/DEL, the *control* class, and says nothing about the invisible-formatting
+/// class (`General_Category=Cf` union `Default_Ignorable_Code_Point`). The two
+/// compose; neither replaces the other. Nothing dispatched changes:
+/// `do_stop_launcher` and `do_toggle_opt_in` receive `&self.alias` raw.
+fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, run_id: &str) -> String {
     // `render_for_terminal`, not a bare `display_identity` (21-28 T3, WR-05).
     // This was the one BARE invisible-class call left in either of this plan's
     // render files: it answered `Cf`/`Default_Ignorable` and said nothing about
@@ -326,20 +233,9 @@ fn prompt_text(
     // conversion has to happen here.
     let alias = &crate::text::render_for_terminal(alias);
     match action {
-        DriverAction::Start => {
-            let command = crate::text::display_identity(&super::sanitize_render_line(command));
-            format!(
-                "Drive \"{alias}\" with {command}? An autonomous agent will run it in that \
-                 project with full autonomy, including git operations. [y/n]"
-            )
-        }
-        DriverAction::Stop => format!(
-            "Stop the run on \"{alias}\"? The whole process tree is terminated, including the \
-             agent's own grandchildren. [y/n]"
-        ),
         DriverAction::ToggleOptIn if opted_in => format!(
-            "Withdraw the driver opt-in for \"{alias}\"? No NEW run can start afterwards; a run \
-             already live keeps going. [y/n]"
+            "Withdraw the driver opt-in for \"{alias}\"? Its PR caps and branch namespace stop \
+             applying; the push step falls back to the defaults. [y/n]"
         ),
         DriverAction::StopLauncher => {
             // The run id is a directory name and so third-party text: both classes
@@ -352,56 +248,31 @@ fn prompt_text(
             )
         }
         DriverAction::ToggleOptIn => format!(
-            "Allow \"{alias}\" to be driven? This is the record the spawn gate checks before any \
-             agent is started against it. [y/n]"
+            "Record a driver opt-in for \"{alias}\"? The push step reads its PR caps and \
+             branch namespace from it; without one it uses the defaults. [y/n]"
         ),
     }
 }
 
-/// The `Goal: {goal}` row that precedes a `Start` prompt when a goal was given.
-///
-/// `None` when there is none — the row is **absent** rather than empty, because
-/// an empty `Goal:` label reads as a goal the user failed to give rather than as
-/// a goal they chose not to give (the "(none given)" copy belongs to the run
-/// detail, not to a confirmation).
-///
-/// Sanitised, single line, ellipsis-truncated: [`super::sanitize_render_line`]
-/// strips `ESC` unconditionally, replaces every other C0 control and `DEL`, and
-/// caps by `char`. Without it a goal is a straight path from free text to a
-/// rendered terminal line (T-18-38).
-fn goal_row(goal: Option<&str>) -> Option<String> {
-    // Two classes, two predicates, composed: `sanitize_render_line` for ESC and
-    // the C0/DEL control class, `display_identity` for the invisible-formatting
-    // class. The goal recorded in `RunRecord.goal` and passed to the child is
-    // the raw string; only this row is escaped.
-    goal.map(|g| {
-        format!(
-            "Goal: {}",
-            crate::text::display_identity(&super::sanitize_render_line(g))
-        )
-    })
-}
-
-/// `Color::Red` for the two directions that take something away — stopping a
-/// run terminates a process tree, and withdrawing an opt-in removes a
-/// capability. The default foreground for starting a run and for granting one,
-/// following `delete_confirm.rs`'s use of red for a destructive action.
+/// `Color::Red` for the two directions that take something away — killing a
+/// launcher run stops its whole sandbox scope, and withdrawing an opt-in removes
+/// a record. The default foreground for granting one, following
+/// `delete_confirm.rs`'s use of red for a destructive action.
 fn prompt_color(action: DriverAction, opted_in: bool) -> Color {
     match action {
-        DriverAction::Stop | DriverAction::StopLauncher => Color::Red,
+        DriverAction::StopLauncher => Color::Red,
         DriverAction::ToggleOptIn if opted_in => Color::Red,
-        _ => Color::Reset,
+        DriverAction::ToggleOptIn => Color::Reset,
     }
 }
 
 crate::ui::screens::adjudicate_screen!(
     DriverConfirmScreen,
     crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
-    "Draws the registry key into four prompts — start, stop, grant opt-in, \
-     withdraw opt-in — each of which precedes an irreversible act, and draws \
-     the command and the goal (already `sanitize_render_line`d for C0/ESC, \
-     which is a different class from the invisible one). Fixture states: all \
-     four prompts.",
+    "Draws the registry key into three prompts — kill launcher run, grant opt-in, \
+     withdraw opt-in — each of which precedes an irreversible act, and draws the \
+     launcher run id and the recorded prompt-input paths and digests of the \
+     opt-in disclosure. Fixture states: all three prompts.",
 );
 
 impl Screen for DriverConfirmScreen {
@@ -414,10 +285,6 @@ impl Screen for DriverConfirmScreen {
         match self.popup.on_key(code) {
             ConfirmOutcome::Confirm => {
                 match self.action {
-                    DriverAction::Start => {
-                        do_start_run(ctx, &self.alias, &self.command, self.goal.as_deref())
-                    }
-                    DriverAction::Stop => do_stop_run(ctx, &self.alias),
                     DriverAction::StopLauncher => do_stop_launcher(ctx, &self.alias, &self.run_id),
                     DriverAction::ToggleOptIn => do_toggle_opt_in(ctx, &self.alias),
                 }
@@ -435,16 +302,10 @@ impl Screen for DriverConfirmScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        // The goal, when there is one, takes a row of its own above the prompt.
-        // A `Start` with no goal — and every `Stop` and every toggle — renders
-        // the same single-row footer this screen has always had.
-        let is_start = matches!(self.action, DriverAction::Start);
-        let goal = goal_row(self.goal.as_deref().filter(|_| is_start));
-
         // The screen it was opened from stays rendered, dimmed, behind the popup. The
         // kill confirmation (`x`) is opened from the Driver tab, so it keeps that tab in
-        // view (UI D6 `[inferred — audit]`); every other action is also opened from the
-        // dashboard and keeps the dashboard.
+        // view (UI D6 `[inferred — audit]`); the opt-in toggle keeps the dashboard, as
+        // it did when the dashboard also opened it.
         if matches!(self.action, DriverAction::StopLauncher) {
             super::detail::DetailScreen::new(self.alias.clone()).render_main_only(frame, area, ctx);
         } else {
@@ -472,24 +333,11 @@ impl Screen for DriverConfirmScreen {
             disclosure = Some(render_disclosure(&prompt_inputs));
         }
 
-        if let Some(goal) = goal {
-            body.push(Line::from(Span::styled(
-                goal,
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-
         // The opt-in state comes from the registry, which is the same read the
         // toggle itself performs — so the prompt cannot describe a direction
         // other than the one `y` will take.
         let opted_in = registry::is_opted_in(&ctx.config, &self.alias);
-        let prompt = prompt_text(
-            &self.alias,
-            self.action,
-            opted_in,
-            &self.command,
-            &self.run_id,
-        );
+        let prompt = prompt_text(&self.alias, self.action, opted_in, &self.run_id);
         let color = prompt_color(self.action, opted_in);
         body.push(Line::from(Span::styled(
             super::confirm_popup::strip_key_hint(&prompt).to_string(),
@@ -505,8 +353,6 @@ impl Screen for DriverConfirmScreen {
             }));
         }
         let (title, accent) = match self.action {
-            DriverAction::Start => ("Start driver run", Color::Yellow),
-            DriverAction::Stop => ("Stop driver run", Color::Red),
             DriverAction::StopLauncher => ("Kill driver run", Color::Red),
             DriverAction::ToggleOptIn if opted_in => ("Withdraw driver opt-in", Color::Red),
             DriverAction::ToggleOptIn => ("Allow driver", Color::Yellow),
@@ -533,92 +379,11 @@ impl Screen for DriverConfirmScreen {
     }
 }
 
-/// Ask the app to start a run, or refuse **visibly**.
-///
-/// **Two layers, and both are deliberate.** This screen checks
-/// `registry::is_opted_in` and sets `ctx.error_message` naming the alias and the
-/// `o` key, so a user who presses `r` on a project that has not opted in gets an
-/// immediate answer instead of a run that silently never appears. And if this
-/// check were ever deleted, the child process would still refuse, because the
-/// real gate lives in the driver: `DrivableProject::from_registry` is the only
-/// production constructor and `driver::drive` is its only caller, which is what
-/// makes CTRL-03's "never" literally true for a hand-typed
-/// `gsd-meta-manager drive foo` as well (D-16).
-///
-/// So: **the check here is an affordance, not the enforcement.** Nobody should
-/// later "simplify" by treating it as one, in either direction — deleting it
-/// costs the user the message, and treating it as the gate would put the gate
-/// somewhere a `tests/spawn_seam_guard.rs`-style audit cannot see it.
-///
-/// The work itself is routed as an [`Action`] on `ctx.event_tx` rather than
-/// called directly, because the seam lives on `App` and a `Screen` only ever
-/// receives `&mut AppContext`. That is the route plan 17-06 already built for
-/// [`Action::DriverStopRequested`], and this adds its sibling rather than a
-/// second mechanism.
-fn do_start_run(ctx: &mut AppContext, alias: &str, command: &str, goal: Option<&str>) {
-    if !registry::is_opted_in(&ctx.config, alias) {
-        // **Delegated, not re-spelled** (`21-24`, D-21-18, T-21-24-05). This
-        // used to hand-write `format!("\"{alias}\" has not opted in to being
-        // driven — press `o` …")`, which put the RAW registry key into a
-        // rendered error line and gave one judgment two sentences that could
-        // drift. `OptInError::NotOptedIn` owns this refusal; its field is
-        // `crate::text::Untrusted` and its `Display` escapes, so the escape is
-        // INHERITED from the producer rather than remembered here. The `o`-key
-        // affordance the hand-written sentence carried moved into the variant's
-        // own message — one judgment, one spelling — and is pinned by
-        // `the_delegated_opt_in_refusal_still_names_the_key_to_press`.
-        ctx.error_message = Some(
-            crate::error::OptInError::NotOptedIn {
-                alias: crate::text::Untrusted::from_untrusted_source(alias.to_string()),
-            }
-            .to_string(),
-        );
-        ctx.needs_redraw = true;
-        return;
-    }
-
-    dispatch(
-        ctx,
-        Action::DriverStartRequested {
-            alias: alias.to_string(),
-            // The command the prompt just named, not the constant. Verbatim:
-            // this is an argv value, and the sanitising in `prompt_text` is a
-            // rendering concern that must not reach what gets executed.
-            command: command.to_string(),
-            // Verbatim or absent — never a fabricated placeholder. OBS-03
-            // renders an absent goal as `(none given)`, and inventing a summary
-            // here is exactly what D-13 forbids.
-            goal: goal.map(str::to_string),
-        },
-        alias,
-    );
-}
-
-/// Ask the app to stop the observed run on `alias`.
-///
-/// The message carries **only the alias**: the pid and the process group are
-/// read from the reconciliation scan at the moment the stop is dispatched, never
-/// captured at key-press time, because a pgid that has gone stale is a pgid that
-/// may already name a stranger's process group (see [`Action::DriverStopRequested`]).
-///
-/// A refusal for an alias with nothing to stop belongs to `App::stop_driver_run`
-/// and is deliberately not duplicated here — it reports through
-/// `ctx.error_message` from there.
-fn do_stop_run(ctx: &mut AppContext, alias: &str) {
-    dispatch(
-        ctx,
-        Action::DriverStopRequested {
-            alias: alias.to_string(),
-        },
-        alias,
-    );
-}
-
 /// Ask the app to stop launcher run `run_id` of `alias` (28-07, D-11).
 ///
-/// Unlike [`do_stop_run`] the message carries the run id: a launcher project can
-/// hold many runs, and the id sent is the same `String` the prompt named
-/// (T-28-18). `launcher::stop::stop_run` re-validates it against the project.
+/// The message carries the run id: a launcher project can hold many runs, and
+/// the id sent is the same `String` the prompt named (T-28-18).
+/// `launcher::stop::stop_run` re-validates it against the project.
 fn do_stop_launcher(ctx: &mut AppContext, alias: &str, run_id: &str) {
     dispatch(
         ctx,
@@ -632,8 +397,7 @@ fn do_stop_launcher(ctx: &mut AppContext, alias: &str, run_id: &str) {
 
 /// Send one action, reporting visibly if there is nowhere to send it.
 ///
-/// The same guard `App::stop_driver_run` and `App::schedule_journal_tail` use:
-/// without a channel there is no way to reach the seam, and an action the user
+/// Without a channel there is no way to reach the app, and an action the user
 /// asked for that quietly went nowhere is indistinguishable from a hang.
 pub(super) fn dispatch(ctx: &mut AppContext, action: Action, alias: &str) {
     match &ctx.event_tx {
@@ -656,11 +420,11 @@ pub(super) fn dispatch(ctx: &mut AppContext, action: Action, alias: &str) {
 /// calls `save_config` itself, exactly as `delete_confirm.rs` does.
 ///
 /// **A failed save is rolled back in memory**, which `delete_confirm.rs` does
-/// not need to do and this does. The gate that matters reads `config.json` *from
-/// disk*, in a different process; an in-memory opt-in that never reached the
-/// file would make the TUI report a project as drivable while every run against
-/// it is refused by the driver. Reverting keeps the two in agreement, so the
-/// error message is the only thing the user has to act on.
+/// not need to do and this does. The launcher's push step reads `config.json`
+/// *from disk*, in a different process; an in-memory opt-in that never reached
+/// the file would make the TUI show a record the push step never sees. Reverting
+/// keeps the two in agreement, so the error message is the only thing the user
+/// has to act on.
 ///
 /// **A revert restores; it never approves (WR-04).** The withdrawal direction
 /// puts back a *clone of the record the user already granted*, captured before
@@ -703,7 +467,7 @@ fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
         // snapshot. That approves whatever the disclosed files contain *right
         // now*, with no disclosure shown and no user act: a project whose
         // `CLAUDE.md` was rewritten under a `git pull` since the opt-in, and
-        // which the spawn gate would have refused with `PromptInputsDrifted`,
+        // whose recorded digest therefore no longer matches (`PromptInputsDrifted`),
         // comes back already approved and the next successful save persists it.
         // That is exactly the drift plan 21-03's SHA-256 digests were added to
         // catch (WR-04, T-21-10-02).
@@ -740,9 +504,9 @@ fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
     }
 
     let message = if was_opted_in {
-        format!("\"{alias}\" can no longer be driven — no NEW run can start")
+        format!("\"{alias}\": driver opt-in withdrawn")
     } else {
-        format!("\"{alias}\" can now be driven")
+        format!("\"{alias}\": driver opt-in recorded")
     };
     ctx.status_message = Some((message, std::time::Instant::now()));
     ctx.needs_redraw = true;
@@ -760,9 +524,9 @@ pub(crate) mod tests {
     /// An `AppContext` with one registered project, a live event channel, and a
     /// config path inside `root` so `save_config` is a real write.
     ///
-    /// `pub(crate)` so the sibling driver screens — `driver_inject` and
-    /// `driver_start` — assert against the **same** `Action` receiver rather
-    /// than each standing up a fifth and sixth full-field `AppContext` fixture.
+    /// `pub(crate)` so the sibling driver screens assert against the **same**
+    /// `Action` receiver rather than each standing up its own full-field
+    /// `AppContext` fixture.
     /// Every field of `AppContext` is named here, so this is one of the sites
     /// that breaks on any addition to it; concentrating that cost is the point.
     pub(crate) fn ctx_with_project(root: &Path) -> (AppContext, UnboundedReceiver<Action>) {
@@ -821,128 +585,6 @@ pub(crate) mod tests {
             experimental: true,
         };
         (ctx, rx)
-    }
-
-    /// **Delegation must not cost the user the actionable half** (`21-24`,
-    /// D-21-18).
-    ///
-    /// `do_start_run` used to hand-write its own opt-in refusal, and that
-    /// sentence carried the `o`-key affordance. It now renders
-    /// [`crate::error::OptInError::NotOptedIn`]'s own `Display`, so the
-    /// affordance had to move INTO the variant — one judgment, one spelling.
-    /// This pins both halves of that trade at once:
-    ///
-    /// 1. The screen's message IS the variant's message, byte for byte. If a
-    ///    future edit re-introduces a hand-written sentence here, this fails —
-    ///    which is the whole point of a one-producer fix.
-    /// 2. That message names the key as a PHRASE. `contains('o')` would have
-    ///    been satisfied by the alias `"proj"` alone, which is exactly how the
-    ///    pre-existing assertion in the test below was vacuous.
-    ///
-    /// The escape itself is NOT re-asserted here: it is the producer's property
-    /// now, pinned by `error::tests::every_alias_carrying_variant_escapes_the_value_it_names`
-    /// and by `registry::tests::a_refusal_never_carries_a_raw_control_or_invisible_character`.
-    /// A third spelling of it here is the defect this change removes.
-    #[test]
-    fn the_delegated_opt_in_refusal_still_names_the_key_to_press() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut ctx, _rx) = ctx_with_project(dir.path());
-        assert!(
-            !registry::is_opted_in(&ctx.config, ALIAS),
-            "the fixture must start NOT opted in, or this test is vacuous"
-        );
-
-        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
-        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
-        let refusal = ctx
-            .error_message
-            .as_deref()
-            .expect("the refusal must be visible, not silent")
-            .to_string();
-
-        let from_the_producer = crate::error::OptInError::NotOptedIn {
-            alias: crate::text::Untrusted::from_untrusted_source(ALIAS.to_string()),
-        }
-        .to_string();
-        assert_eq!(
-            refusal, from_the_producer,
-            "the screen must RENDER the error type's own message rather than \
-             re-spell it. Two sentences for one judgment is how the escape \
-             landed on one of them in round 8, and how a `format!` here put a \
-             raw registry key into a rendered error line"
-        );
-
-        assert!(
-            refusal.contains("`o` on the dashboard"),
-            "delegating cost the user the actionable half: the variant's own \
-             message must carry the `o`-key affordance the hand-written \
-             sentence carried, named as a phrase rather than as a character \
-             that any alias containing an `o` would satisfy. Got: {refusal}"
-        );
-    }
-
-    /// CTRL-03 at the affordance layer.
-    ///
-    /// The load-bearing half is the **second** assertion. A screen that set the
-    /// message and dispatched anyway would pass a test that only checked
-    /// `error_message` — and the run would start regardless of the message the
-    /// user was shown. So the absence of a sent `Action` is asserted directly.
-    #[test]
-    fn starting_a_run_on_a_project_that_has_not_opted_in_sets_an_error_and_spawns_nothing() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut ctx, mut rx) = ctx_with_project(dir.path());
-        assert!(
-            !registry::is_opted_in(&ctx.config, ALIAS),
-            "the fixture must start NOT opted in, or this test is vacuous"
-        );
-
-        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
-        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::Pop));
-
-        let refusal = ctx
-            .error_message
-            .as_deref()
-            .expect("the refusal must be visible, not silent");
-        assert!(refusal.contains(ALIAS), "got: {refusal}");
-        // STRENGTHENED, not weakened, by `21-24`. This read `refusal.contains('o')`,
-        // which is vacuous against this very fixture: `ALIAS` is `"proj"` and
-        // that carries an `o`, so the assertion passed on the alias echo alone
-        // and would have kept passing if the key affordance had been deleted
-        // outright. The affordance is a PHRASE now, so it can actually fail.
-        assert!(
-            refusal.contains("`o` on the dashboard"),
-            "the refusal must name the key that fixes it as a phrase a user can \
-             act on, got: {refusal}"
-        );
-
-        assert!(
-            rx.try_recv().is_err(),
-            "a refused start must dispatch NOTHING — a message plus a dispatch is a \
-             run that starts anyway while telling the user it did not"
-        );
-
-        // The control arm: once opted in, the same keypress DOES dispatch, so
-        // the assertion above is not passing because nothing ever dispatches.
-        registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
-        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
-        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
-        let sent = rx.try_recv().expect("an opted-in start must dispatch");
-        let Action::DriverStartRequested {
-            alias,
-            command,
-            goal,
-        } = sent
-        else {
-            panic!("expected DriverStartRequested, got {sent:?}");
-        };
-        assert_eq!(alias, ALIAS);
-        assert_eq!(command, DEFAULT_DRIVE_COMMAND);
-        assert_eq!(
-            goal, None,
-            "the dashboard's `r` path gives no goal, and an absent goal must \
-             travel as absent rather than as an invented summary"
-        );
     }
 
     /// Two entries, one present and one absent, so both digest renderings are
@@ -1128,10 +770,6 @@ pub(crate) mod tests {
             "an empty section reads as 'nothing enters a prompt', which is the \
              opposite of what an empty list means. Got:\n{rendered}"
         );
-        assert!(
-            rendered.contains("re-confirmed"),
-            "an empty list must say what happens next: it re-confirms"
-        );
         // The other two blocks are still present — an empty file list does not
         // excuse dropping the residual-exposure statement.
         assert!(rendered.contains(SECTION_RESIDUAL_EXPOSURE));
@@ -1177,11 +815,11 @@ pub(crate) mod tests {
         );
         assert!(ctx.error_message.is_none());
 
-        // It persisted, which is what the gate in the child process reads.
+        // It persisted, which is what a different process (the push step) reads.
         let saved = crate::config::load_config(&ctx.config_path).expect("the toggle must save");
         assert!(
             saved.projects[ALIAS].driver_opt_in.is_some(),
-            "an opt-in that never reached disk is invisible to the driver, which is \
+            "an opt-in that never reached disk is invisible to the push step, which is \
              a different process and reads config.json"
         );
 
@@ -1204,7 +842,7 @@ pub(crate) mod tests {
     // Calling it on the withdrawal-direction revert broke exactly that: it
     // stamps a fresh `opted_in_at` and takes a fresh `current_prompt_inputs`
     // snapshot, so a project whose `CLAUDE.md` was rewritten under a `git pull`
-    // — one the spawn gate would have refused with `PromptInputsDrifted` —
+    // — whose recorded digest would then no longer match (`PromptInputsDrifted`) —
     // came back with the NEW bytes already approved, with no disclosure shown
     // and no user act, and the next successful save persisted it.
     //
@@ -1327,8 +965,8 @@ pub(crate) mod tests {
             .expect("the withdrawal is rolled back");
         assert_eq!(
             after.prompt_inputs, granted.prompt_inputs,
-            "the restored record must still carry the OLD digests, so the spawn \
-             gate still refuses this project with PromptInputsDrifted. A revert \
+            "the restored record must still carry the OLD digests, so a drift check \
+             still refuses this project with PromptInputsDrifted. A revert \
              that re-snapshots the files launders exactly the drift the digests \
              exist to catch — and the next successful save persists the laundered \
              approval (T-21-10-02)"
@@ -1357,8 +995,8 @@ pub(crate) mod tests {
             "`clear_opt_in` is the correct revert in this direction and is \
              unchanged: withdrawing a record that never reached disk needs no \
              prior value, and leaving one in memory would make the TUI report a \
-             project as drivable while the gate — which reads config.json in a \
-             different process — refuses every run against it"
+             project as opted in while the push step — which reads config.json in a \
+             different process — never sees the record"
         );
     }
 
@@ -1405,10 +1043,6 @@ pub(crate) mod tests {
     #[test]
     fn every_prompt_names_the_alias_and_offers_the_same_two_keys() {
         let cases = [
-            (DriverAction::Start, false),
-            (DriverAction::Start, true),
-            (DriverAction::Stop, false),
-            (DriverAction::Stop, true),
             (DriverAction::ToggleOptIn, false),
             (DriverAction::ToggleOptIn, true),
             (DriverAction::StopLauncher, false),
@@ -1416,7 +1050,7 @@ pub(crate) mod tests {
         ];
 
         for (action, opted_in) in cases {
-            let prompt = prompt_text(ALIAS, action, opted_in, DEFAULT_DRIVE_COMMAND, RUN);
+            let prompt = prompt_text(ALIAS, action, opted_in, RUN);
             assert!(
                 prompt.contains(ALIAS),
                 "{action:?}/{opted_in} must name the alias, got: {prompt}"
@@ -1428,41 +1062,69 @@ pub(crate) mod tests {
             );
         }
 
-        // The two directions that take something away are red; the two that
-        // grant something are not. A prompt that warned in the wrong direction
+        // The two directions that take something away are red; the one that
+        // grants something is not. A prompt that warned in the wrong direction
         // would be worse than an unstyled one.
-        assert_eq!(prompt_color(DriverAction::Stop, false), Color::Red);
         assert_eq!(prompt_color(DriverAction::StopLauncher, false), Color::Red);
         assert_eq!(prompt_color(DriverAction::ToggleOptIn, true), Color::Red);
         assert_eq!(prompt_color(DriverAction::ToggleOptIn, false), Color::Reset);
-        assert_eq!(prompt_color(DriverAction::Start, true), Color::Reset);
+    }
 
-        // The withdraw prompt says NEW, because disabling does not stop a live
-        // run and the code does not pretend it does (T-17-48).
-        let withdraw = prompt_text(
-            ALIAS,
-            DriverAction::ToggleOptIn,
-            true,
-            DEFAULT_DRIVE_COMMAND,
-            "",
+    /// C12 / D-13 (T-31-04): neither opt-in prompt claims a gate or says a
+    /// run can or cannot start. Each states what the record feeds now, which is
+    /// what `launcher::push::policy_for` reads, and each still names the alias
+    /// (through `render_for_terminal`).
+    #[test]
+    fn the_opt_in_prompts_say_what_the_record_feeds_and_claim_no_gate() {
+        let withdraw = prompt_text(ALIAS, DriverAction::ToggleOptIn, true, "");
+        assert_eq!(
+            withdraw,
+            format!(
+                "Withdraw the driver opt-in for \"{ALIAS}\"? Its PR caps and branch namespace \
+                 stop applying; the push step falls back to the defaults. [y/n]"
+            )
         );
-        assert!(
-            withdraw.contains("NEW"),
-            "the withdraw prompt must not claim to stop a live run, got: {withdraw}"
+        let allow = prompt_text(ALIAS, DriverAction::ToggleOptIn, false, "");
+        assert_eq!(
+            allow,
+            format!(
+                "Record a driver opt-in for \"{ALIAS}\"? The push step reads its PR caps and \
+                 branch namespace from it; without one it uses the defaults. [y/n]"
+            )
         );
+        for prompt in [&withdraw, &allow] {
+            for claim in ["gate", "new run", "be driven"] {
+                assert!(
+                    !prompt.to_lowercase().contains(&claim.to_lowercase()),
+                    "an opt-in prompt claims {claim:?}, which nothing backs any more: {prompt}"
+                );
+            }
+        }
+    }
+
+    /// The prompt escapes a hostile alias through the one composition, in both
+    /// opt-in directions.
+    #[test]
+    fn the_opt_in_prompts_escape_a_hostile_alias() {
+        let hostile = "x\u{1b}[2J\u{202e}y\u{200b}z";
+        for opted_in in [true, false] {
+            let prompt = prompt_text(hostile, DriverAction::ToggleOptIn, opted_in, "");
+            assert!(
+                !prompt.chars().any(|c| c.is_control() && c != '\n'),
+                "a control character reached the prompt: {prompt:?}"
+            );
+            assert!(
+                !prompt.contains('\u{202e}') && !prompt.contains('\u{200b}'),
+                "an invisible formatting character reached the prompt: {prompt:?}"
+            );
+        }
     }
 
     // ── 28-07: the launcher stop confirmation ────────────────────────────
 
     #[test]
     fn launcher_stop_prompt_names_the_run_the_alias_and_the_whole_scope() {
-        let prompt = prompt_text(
-            ALIAS,
-            DriverAction::StopLauncher,
-            false,
-            DEFAULT_DRIVE_COMMAND,
-            RUN,
-        );
+        let prompt = prompt_text(ALIAS, DriverAction::StopLauncher, false, RUN);
         assert_eq!(
             prompt,
             format!(
@@ -1476,13 +1138,7 @@ pub(crate) mod tests {
     #[test]
     fn launcher_stop_prompt_escapes_a_hostile_alias_and_run_id() {
         let hostile = "x\u{1b}[2J\u{202e}y\u{200b}z";
-        let prompt = prompt_text(
-            hostile,
-            DriverAction::StopLauncher,
-            false,
-            DEFAULT_DRIVE_COMMAND,
-            hostile,
-        );
+        let prompt = prompt_text(hostile, DriverAction::StopLauncher, false, hostile);
         assert!(
             prompt.starts_with("Kill launcher run "),
             "the prompt was not built at all: {prompt:?}"
@@ -1538,7 +1194,7 @@ pub(crate) mod tests {
         registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
 
         for key in [KeyCode::Char('n'), KeyCode::Esc] {
-            let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
+            let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::ToggleOptIn);
             let action = screen.handle_key(key, KeyModifiers::NONE, &mut ctx);
             assert!(matches!(action, ScreenAction::Pop), "{key:?} must pop");
             assert!(
@@ -1549,133 +1205,10 @@ pub(crate) mod tests {
         }
 
         // Any other key is consumed and does nothing at all.
-        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
+        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::ToggleOptIn);
         let action = screen.handle_key(KeyCode::Char('z'), KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
         assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn a_stop_dispatches_the_alias_and_nothing_else() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut ctx, mut rx) = ctx_with_project(dir.path());
-
-        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Stop);
-        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
-
-        let sent = rx.try_recv().expect("a stop must dispatch");
-        let Action::DriverStopRequested { alias } = sent else {
-            panic!("expected DriverStopRequested, got {sent:?}");
-        };
-        assert_eq!(alias, ALIAS);
-
-        // A stop is NOT gated on the opt-in record: withdrawing an opt-in stops
-        // no live run (T-17-48), so a run started before a withdrawal must
-        // still be stoppable afterwards.
-        assert!(!registry::is_opted_in(&ctx.config, ALIAS));
-    }
-
-    const CHOSEN: &str = "/gsd:execute-phase 18";
-
-    /// The last thing a user sees before an autonomous agent starts on their
-    /// repo has to name the exact command (T-18-41).
-    #[test]
-    fn the_start_prompt_names_the_chosen_command_and_not_the_default() {
-        let prompt = prompt_text(ALIAS, DriverAction::Start, true, CHOSEN, "");
-        assert!(prompt.contains(CHOSEN), "got: {prompt}");
-        assert!(
-            !prompt.contains(DEFAULT_DRIVE_COMMAND),
-            "the constant is a default selection, not the prompt's content — a \
-             confirmation naming a command other than the one that will run is \
-             worse than no confirmation. Got: {prompt}"
-        );
-        assert!(
-            prompt.contains(ALIAS) && prompt.ends_with("[y/n]"),
-            "got: {prompt}"
-        );
-
-        // And the default path still says the default, so the assertion above
-        // is not passing because the prompt named nothing at all.
-        let defaulted = prompt_text(ALIAS, DriverAction::Start, true, DEFAULT_DRIVE_COMMAND, "");
-        assert!(
-            defaulted.contains(DEFAULT_DRIVE_COMMAND),
-            "got: {defaulted}"
-        );
-    }
-
-    #[test]
-    fn the_goal_row_renders_only_when_a_goal_was_given() {
-        assert_eq!(goal_row(None), None, "an absent goal takes no row at all");
-        assert_eq!(
-            goal_row(Some("ship the driver tab")).as_deref(),
-            Some("Goal: ship the driver tab"),
-            "the goal is shown verbatim — this phase paraphrases nothing"
-        );
-    }
-
-    /// T-18-38: a goal is free text on a straight path to a rendered terminal
-    /// line, and the picker's commands can come from a subprocess.
-    #[test]
-    fn an_escape_bearing_goal_and_command_are_sanitised_before_they_reach_the_prompt() {
-        let nasty = "finish\u{1b}[2Jthe\u{1b}]0;pwned\u{7}phase";
-
-        let row = goal_row(Some(nasty)).expect("a goal was given");
-        assert!(
-            !row.contains('\u{1b}'),
-            "no ESC may survive into a rendered row, got: {row:?}"
-        );
-        assert!(
-            row.contains("finish") && row.contains("phase"),
-            "the prose itself must still be shown — a sanitiser that passes by \
-             deleting everything is not a sanitiser. Got: {row:?}"
-        );
-
-        let prompt = prompt_text(ALIAS, DriverAction::Start, true, nasty, "");
-        assert!(
-            !prompt.contains('\u{1b}'),
-            "the command is interpolated into the prompt too, got: {prompt:?}"
-        );
-    }
-
-    /// The prompt and the dispatched action must agree, and the goal must reach
-    /// `run.json` byte-identically, including multi-byte input (OBS-03).
-    #[test]
-    fn a_start_from_the_picker_dispatches_the_chosen_command_and_the_verbatim_goal() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut ctx, mut rx) = ctx_with_project(dir.path());
-        registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
-
-        let typed = "livrer l'onglet 🚀 — 日本語";
-        let mut screen = DriverConfirmScreen::new_start(
-            ALIAS.to_string(),
-            CHOSEN.to_string(),
-            Some(typed.to_string()),
-        );
-        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::Pop));
-
-        let sent = rx.try_recv().expect("an opted-in start must dispatch");
-        let Action::DriverStartRequested {
-            alias,
-            command,
-            goal,
-        } = sent
-        else {
-            panic!("expected DriverStartRequested, got {sent:?}");
-        };
-        assert_eq!(alias, ALIAS);
-        assert_eq!(
-            command, CHOSEN,
-            "the dispatched command must be the one the prompt named — and \
-             verbatim, because it is an argv value and the sanitising is a \
-             rendering concern"
-        );
-        assert_eq!(
-            goal.as_deref().map(str::as_bytes),
-            Some(typed.as_bytes()),
-            "the goal reaches RunRecord.goal exactly as typed; interpretation is \
-             Phase 21's and this phase interprets nothing"
-        );
     }
 
     #[test]
@@ -1710,8 +1243,6 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (ctx, _rx) = ctx_with_project(dir.path());
         for (action, title) in [
-            (DriverAction::Start, "Start driver run"),
-            (DriverAction::Stop, "Stop driver run"),
             (DriverAction::ToggleOptIn, "Allow driver"),
             (DriverAction::StopLauncher, "Kill driver run"),
         ] {
@@ -1747,10 +1278,13 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut ctx, mut rx) = ctx_with_project(dir.path());
         registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
-        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
+        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::ToggleOptIn);
         let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::Pop));
-        assert!(rx.try_recv().is_err(), "a stray Enter must not start a run");
+        assert!(
+            rx.try_recv().is_err(),
+            "a stray Enter must dispatch nothing"
+        );
     }
 
     #[test]
@@ -1760,7 +1294,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut ctx, mut rx) = ctx_with_project(dir.path());
         registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
-        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
+        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::ToggleOptIn);
         let mut t = Terminal::new(TestBackend::new(110, 40)).unwrap();
         t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
         let buf = t.backend().buffer();
@@ -1794,6 +1328,6 @@ pub(crate) mod tests {
             screen.handle_mouse(at("[ No ]"), &mut ctx),
             ScreenAction::Pop
         ));
-        assert!(rx.try_recv().is_err(), "clicking No must not start a run");
+        assert!(rx.try_recv().is_err(), "clicking No must dispatch nothing");
     }
 }

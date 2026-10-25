@@ -2051,19 +2051,25 @@ mod tests {
         // production call vanished, the zero below would mean "nothing to find"
         // rather than "all composed".
         //
-        // Measured over the slice at the time of writing: 4 needle-bearing
-        // logical units carrying 5 occurrences — `driver.rs` 1 unit / 1
-        // occurrence, `driver_confirm.rs` 3 units / 4 occurrences (its first
-        // unit carries two). All 5 are judged composed by the innermost
-        // verdict, which is what makes the zero below non-vacuous.
+        // Measured over the slice at the time of writing: 2 needle-bearing
+        // logical units carrying 3 occurrences — `driver.rs` 1 unit / 1
+        // occurrence, `driver_confirm.rs` 1 unit / 2 occurrences (the opt-in
+        // disclosure's path-and-digest line carries two). All 3 are judged
+        // composed by the innermost verdict, which is what makes the zero below
+        // non-vacuous.
         //
         // Moved from (5, 6, 7) by 30-01: the empty-state copy `no_runs_lines`,
         // which carried one composed call, was replaced by `driver_run`'s empty
         // state, and that draws the registry key through `shown_capped` (which
         // is itself defined here and is the one remaining call).
-        const PRODUCTION_NEEDLE_UNITS: usize = 4;
-        const PRODUCTION_NEEDLE_OCCURRENCES: usize = 5;
-        const WHOLE_FILE_NEEDLE_LINES: usize = 6;
+        //
+        // Moved from (4, 5, 6) to (2, 3, 4) by 31-02: the start prompt's command
+        // call and the goal row's call were removed with `DriverAction::Start`
+        // and `goal_row`, so `driver_confirm.rs` lost 2 units / 2 occurrences, and
+        // the whole-file count lost the same 2 lines. Two sites removed, none moved.
+        const PRODUCTION_NEEDLE_UNITS: usize = 2;
+        const PRODUCTION_NEEDLE_OCCURRENCES: usize = 3;
+        const WHOLE_FILE_NEEDLE_LINES: usize = 4;
 
         let mut units = 0usize;
         let mut occurrences = 0usize;
