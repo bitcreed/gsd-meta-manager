@@ -1048,8 +1048,14 @@ fn header_row_3(
 /// Header row 4: the sandbox posture and the prompt version. `UNSANDBOXED` (Yellow,
 /// BOLD) with the `missing:` list (DarkGray) for a degraded run; a `custom:` prompt is
 /// Yellow. Absent values are `(not recorded)` muted.
+///
+/// `clip_line` cuts from the right, so the order is the importance order: the posture
+/// word, `PLANTED`, `absent:`, then the `missing:` list. With no 28.1 security group the
+/// list follows the word directly (the pre-28.1 row); with one it comes after the groups,
+/// so three missing pieces (every macOS run) cannot push them off a narrow header (WR-09).
 fn header_row_4(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
     let mut spans = vec![label_span("sandbox")];
+    let mut missing_list: Option<String> = None;
     match fm.sandbox.as_deref() {
         Some("degraded") => {
             spans.push(Span::styled(
@@ -1058,19 +1064,31 @@ fn header_row_4(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ));
-            if let Some(missing) = fm.sandbox_missing.as_ref().filter(|m| !m.is_empty()) {
-                let list = missing
-                    .iter()
-                    .map(|item| shown_capped(item))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                spans.push(Span::styled(format!(" missing: {list}"), label_style()));
-            }
+            missing_list = fm
+                .sandbox_missing
+                .as_ref()
+                .filter(|m| !m.is_empty())
+                .map(|missing| {
+                    missing
+                        .iter()
+                        .map(|item| shown_capped(item))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                });
         }
         Some(other) => spans.push(Span::raw(shown_capped(other))),
         None => spans.push(Span::styled("(not recorded)", muted_style())),
     }
-    push_posture_28_1(&mut spans, fm);
+    let has_groups = has_security_groups(fm);
+    if let Some(list) = missing_list.as_ref().filter(|_| !has_groups) {
+        spans.push(Span::styled(format!(" missing: {list}"), label_style()));
+    }
+    push_security_groups(&mut spans, fm);
+    if let Some(list) = missing_list.as_ref().filter(|_| has_groups) {
+        spans.push(Span::styled(HEADER_SEP, label_style()));
+        spans.push(Span::styled(format!("missing: {list}"), label_style()));
+    }
+    push_auth(&mut spans, fm);
     spans.push(Span::styled(HEADER_SEP, label_style()));
     match fm.prompt_version.as_deref() {
         Some(version) => {
@@ -1132,13 +1150,21 @@ fn is_whole_vocabulary(absent: &[String]) -> bool {
             .all(|word| absent.iter().filter(|item| item.as_str() == *word).count() == 1)
 }
 
-/// The 28.1 posture groups of header row 4, in importance order so that `clip_line`
+/// Whether [`push_security_groups`] adds anything for `fm`.
+fn has_security_groups(fm: &DriverFrontmatter) -> bool {
+    fm.planted.as_ref().is_some_and(|p| !p.is_empty())
+        || fm
+            .protections_absent
+            .as_ref()
+            .is_some_and(|a| !a.is_empty())
+}
+
+/// The security groups of header row 4, in importance order so that `clip_line`
 /// removes the least important text first (SC7, T-28.1-48): `PLANTED <n>` (Yellow,
-/// BOLD), `absent: <a, b>` or `absent: all <n>` (Yellow), then `auth <word>` with the
-/// [`AUTH_SETUP_HINT`] for `host-token` (D-10, D-22, D-27). Each group present starts
-/// with a [`HEADER_SEP`]; a missing or empty one adds neither text nor separator.
-/// Every value goes through `shown_capped`.
-fn push_posture_28_1(spans: &mut Vec<Span<'static>>, fm: &DriverFrontmatter) {
+/// BOLD), then `absent: <a, b>` or `absent: all <n>` (Yellow) (D-22, D-27). Each group
+/// present starts with a [`HEADER_SEP`]; a missing or empty one adds neither text nor
+/// separator. Every value goes through `shown_capped`.
+fn push_security_groups(spans: &mut Vec<Span<'static>>, fm: &DriverFrontmatter) {
     let warn = Style::default().fg(Color::Yellow);
     if let Some(planted) = fm.planted.as_ref().filter(|p| !p.is_empty()) {
         spans.push(Span::styled(HEADER_SEP, label_style()));
@@ -1160,6 +1186,12 @@ fn push_posture_28_1(spans: &mut Vec<Span<'static>>, fm: &DriverFrontmatter) {
         spans.push(Span::styled(HEADER_SEP, label_style()));
         spans.push(Span::styled(format!("absent: {list}"), warn));
     }
+}
+
+/// `auth <word>` of header row 4, with the [`AUTH_SETUP_HINT`] for `host-token`
+/// (D-10): after the security groups and the `missing:` list.
+fn push_auth(spans: &mut Vec<Span<'static>>, fm: &DriverFrontmatter) {
+    let warn = Style::default().fg(Color::Yellow);
     if let Some(auth) = fm.auth.as_deref() {
         spans.push(Span::styled(HEADER_SEP, label_style()));
         spans.push(Span::raw(format!("auth {}", shown_capped(auth))));
@@ -5080,6 +5112,37 @@ mod tests {
         let text = text_of(&header_row_4(&fm, 100));
         assert!(text.contains("PLANTED"), "{text}");
         assert!(text.contains("absent: all 8"), "{text}");
+    }
+
+    #[test]
+    fn three_missing_pieces_do_not_push_the_security_groups_off_a_narrow_row() {
+        // WR-09: `off_platform_missing()` reports three pieces on every macOS run.
+        let three = || {
+            let mut fm = degraded_fm(&crate::launcher::PROTECTIONS, None);
+            fm.sandbox_missing = Some(vec![
+                "bwrap".into(),
+                "systemd-run".into(),
+                "user-systemd".into(),
+            ]);
+            fm
+        };
+        for width in [72, 80, 100] {
+            let text = text_of(&header_row_4(&three(), width));
+            assert!(text.contains("UNSANDBOXED"), "{width}: {text}");
+            assert!(text.contains("absent: all 8"), "{width}: {text}");
+            let mut fm = three();
+            fm.planted = Some(vec![".git/config".into()]);
+            let text = text_of(&header_row_4(&fm, width));
+            assert!(text.contains("PLANTED 1"), "{width}: {text}");
+            assert!(text.contains("absent: all 8"), "{width}: {text}");
+        }
+        // Wide enough, the list is still there, after the groups.
+        let text = text_of(&header_row_4(&three(), 200));
+        assert!(
+            text.contains("missing: bwrap, systemd-run, user-systemd"),
+            "{text}"
+        );
+        assert!(text.find("absent:") < text.find("missing:"), "{text}");
     }
 
     #[test]
