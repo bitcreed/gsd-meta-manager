@@ -149,10 +149,12 @@
 //!    That wording named `driver_dry_run` as an unprobed STATE and named NEITHER
 //!    the output pane, the journal nor the inbox as unescaped SITES — which is
 //!    why round 9 read as green over the Driver tab's largest render surface.
-//!    `driver_dry_run` is now a probed state (`Driver tab, dry-run preview`),
-//!    and `probe_ctx` populates `ctx.driver_output` and `cache.driver_journal`
-//!    (the inbox fixture went with the injection screen in Phase 31). So the Defaults string-EDIT overlay remains the
-//!    residual STATE, and the sentence below replaces the rest of it.
+//!    `driver_dry_run` became a probed state (`Driver tab, dry-run preview`), and
+//!    `probe_ctx` populated `ctx.driver_output` and `cache.driver_journal` (**all of
+//!    those fixtures, and the legacy-run states, went with the legacy Driver
+//!    renderer in Phase 31, D-03; the inbox fixture went with the injection screen**).
+//!    So the Defaults string-EDIT overlay remains the residual STATE, and the
+//!    sentence below replaces the rest of it.
 //!
 //!    **What REMAINS after 21-28, and it is a different kind of residual.** The
 //!    four Driver-tab sites are now all composed, but they are NOT all held the
@@ -162,7 +164,6 @@
 //!    | Site | Value | Held by |
 //!    |---|---|---|
 //!    | output pane | `DriverOutputLine::text` | **the TYPE** — `crate::text::Untrusted`; a new render is a compile error |
-//!    | dry-run preview | `ui::screens::DryRunPreview::report` | a CALL + this probe |
 //!    | opt-in disclosure | `PromptInput::path`, `digest` | a CALL + this probe |
 //!
 //!    The last two carriers are still bare `String`s, because they reach
@@ -1195,20 +1196,6 @@ fn probe_ctx(identity: &str) -> AppContext {
         cache.defaults_selected = idx;
     }
 
-    // The Driver tab's run list. A `RunSummary` is read back out of a run's
-    // committed `run.json`, so its `run_id`, `goal` and `gsd_command` are all
-    // third-party text. Reaching the list does NOT require a live run — the
-    // render only asks whether `driver_runs` is empty.
-    cache.driver_runs = vec![crate::journal::RunSummary {
-        run_id: identity.to_string(),
-        started_at: "2026-08-27T00:00:00Z".to_string(),
-        ended_at: None,
-        goal: identity.to_string(),
-        gsd_command: format!("/{identity}"),
-        outcome: None,
-    }];
-    cache.driver_selected_run = 0;
-
     // The Driver tab's LAUNCHER RUNS section (28-07). The row key is a directory
     // name and the status word comes out of a `DIRECTION.md` the driver's own
     // tooling wrote, so both are third-party text; `sandbox: degraded` takes the
@@ -1304,40 +1291,6 @@ fn probe_ctx(identity: &str) -> AppContext {
     // Without this the detail pane reads `Loading...` and the list and header rows
     // that draw the hostile identity are never reached (30-01).
     cache.launcher_listed = true;
-
-    // The Driver tab's LIVE OUTPUT PANE — the pane that displays the agent's own
-    // prose, and the one this whole phase is named for (21-28 T1).
-    //
-    // `output_for_run` takes the live ring only when its run id equals the
-    // selected run's AND it is non-empty, so both of those are properties of
-    // this fixture rather than accidents of it. Without this the pane fell
-    // through to `NO_JOURNAL_ENTRIES` — an authored `&'static str` — and every
-    // assertion about the pane passed by drawing a string this build wrote.
-    //
-    // The text goes in through `push_record`, not by constructing a
-    // `DriverOutputLine` literal: `push_record` is the one place the buffer's
-    // sanitisation and its ring accounting happen, and a fixture that bypassed
-    // it would probe a value the production path cannot produce.
-    let mut live = super::DriverOutput::for_run(identity);
-    live.push_record(super::DriverLineKind::Output, identity);
-    live.push_record(super::DriverLineKind::Stderr, identity);
-    live.push_record(super::DriverLineKind::Diagnostic, identity);
-    live.push_record(super::DriverLineKind::Terminal, identity);
-    ctx.driver_output.insert(identity.to_string(), live);
-
-    let cache = ctx.view_cache.entry(identity.to_string()).or_default();
-
-    // The journal the scan read off disk, with the run id the selected run
-    // carries — `render_output_section` only consults `driver_journal` when the
-    // ids match, so a mismatched id would make this populated and unread.
-    cache.driver_journal = Some(Box::new(super::DriverRunJournal {
-        run_id: identity.to_string(),
-        output: {
-            let mut journal = super::DriverOutput::for_run(identity);
-            journal.push_record(super::DriverLineKind::Output, identity);
-            journal
-        },
-    }));
 
     // The Sessions tab's Agents sub-view (25-05, D-C13). Every agent-authored
     // field the sub-view draws carries the identity; see `hostile_agent_view`.
@@ -1697,23 +1650,9 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          Since 28.1-06 header row 4 also draws the posture words `auth`, \
          `protections_absent` (` absent: ..`) and `planted` (a count), each `auth` and \
          `protections_absent` value through `shown_capped`; `egress_allow` and \
-         `inference_requests` reach the row only as counts. \
-         The legacy surface (`driver_runs`, the live output pane) is \
-         the next state's.",
-    ),
-    (
-        "Driver tab, legacy runs",
-        true,
-        "The shipped Phase 17/18 surface, reached by expanding the collapsed `legacy runs` \
-         row (`legacy_expanded`) and putting the highlight on the legacy run \
-         (`legacy_row_selected`): the run list row and run header built from \
-         `driver_runs[0]`'s `run_id`, `goal` and `gsd_command` — populated by 21-25 T2. \
-         ALSO draws, since 21-28 T1, the LIVE OUTPUT PANE: `DriverOutputLine::text` for \
-         each line of `ctx.driver_output[alias]`, whose bytes are the `exec_event` text \
-         a run's journal holds on disk — the agent's own prose, written by the model and \
-         read back by `crate::app::driver_line_for_record`. Four lines are pushed through \
-         `DriverOutput::push_record`, one per `DriverLineKind` the pane styles \
-         differently, so the marker arms are drawn rather than assumed.",
+         `inference_requests` reach the row only as counts. The Phase 17/18 legacy \
+         surface (run list, run detail, live output pane, dry-run preview) is gone \
+         (Phase 31, D-03), and so are its probe states.",
     ),
     (
         "Backlog tab, expanded",
@@ -1757,17 +1696,6 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         true,
         "Draws `browser_file_name` in the breadcrumb and `browser_file_content` through \
          `archive::render_markdown_lines`.",
-    ),
-    (
-        "Driver tab, dry-run preview",
-        true,
-        "Draws `DryRunPreview::report` line by line through `render_dry_run_preview`. \
-         The report is the already-rendered text of `dry_run::render`, whose own doc \
-         says it interpolates paths and branch names read from the project — a \
-         repository the operator cloned. `report` is `Some` here deliberately: `None` \
-         is the loading state and paints the authored `DRY_RUN_LOADING` idiom, which \
-         draws no identity at all. The preview REPLACES the run detail, which is why \
-         this is a state of its own rather than a field set in `probe_ctx`.",
     ),
     (
         "Defaults tab, string edit",
@@ -2009,55 +1937,6 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
             milestone: identity.to_string(),
             phase_idx: 0,
         };
-    }),
-    // The legacy Driver surface (30-01). The default `Driver tab` state draws the
-    // launcher-first composition, so the Phase 17/18 sites (run list, run detail,
-    // live output pane, injection rows) need their own state: the collapsed
-    // `legacy runs` row expanded, with the highlight on the legacy run.
-    ("Driver tab, legacy runs", |identity, ctx| {
-        ctx.detail_sub_view_per_project
-            .insert(identity.to_string(), crate::app::DetailSubView::Driver);
-        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
-        cache.legacy_expanded = true;
-        cache.legacy_row_selected = true;
-    }),
-    // The DRY-RUN PREVIEW (21-28 T2). It is a separate state and not part of
-    // `probe_ctx` for a load-bearing reason: `render_driver_tab` dispatches on
-    // `driver_dry_run` being `Some` and the preview REPLACES the run detail, so
-    // setting it in `probe_ctx` would have hidden the output pane and the
-    // injection rows that Task 1 and this task's first half just made visible.
-    //
-    // `report` is the already-rendered text of `dry_run::render`, whose own doc
-    // says it interpolates paths and branch names read from the project — a
-    // repository the operator cloned. `Some`, not `None`: `None` is the loading
-    // state and paints the authored `DRY_RUN_LOADING` idiom, which is the empty
-    // branch this fixture exists to leave.
-    // **The report is DERIVED from the run the fixture populated, never spelled
-    // from `identity` directly, and that is load-bearing.** Every arrange here
-    // runs against `chrome_ctx` too, to measure the baseline arrival is
-    // compared against. An arrange that spells the untrusted value itself puts
-    // that value in BOTH sides, the difference is zero, and the state reports
-    // "did not arrive" — which is exactly what happened when this was written
-    // the obvious way, and is why it is written this way instead.
-    //
-    // `chrome_ctx` has no runs, so the `else` below leaves `driver_dry_run`
-    // unset there and the baseline draws chrome only. It also mirrors the real
-    // report, which interpolates values read from the project rather than
-    // authored ones.
-    ("Driver tab, dry-run preview", |identity, ctx| {
-        ctx.detail_sub_view_per_project
-            .insert(identity.to_string(), crate::app::DetailSubView::Driver);
-        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
-        let Some(run) = cache.driver_runs.first() else {
-            return;
-        };
-        let (goal, command) = (run.goal.clone(), run.gsd_command.clone());
-        cache.driver_dry_run = Some(super::DryRunPreview {
-            command: command.clone(),
-            report: Some(format!(
-                "Would run: {command}\nWorktree: {goal}\nPush: refs/heads/{goal}\n"
-            )),
-        });
     }),
     ("Browse tab, file view", |identity, ctx| {
         ctx.detail_sub_view_per_project
@@ -3713,68 +3592,6 @@ mod tests {
         assert!(
             !without.contains(STATUS_BRANCH_TOKEN),
             "the token is drawn without a status message, so it proves nothing"
-        );
-    }
-
-    /// **The Driver dry-run preview state REACHES its branch** (21-28 T2 step (c)).
-    ///
-    /// Same discipline as [`the_status_footer_state_reaches_the_status_branch`],
-    /// applied to the site this task escaped. A state that sets a field the
-    /// render never dispatches on proves nothing, and this module already
-    /// records one such near-miss.
-    ///
-    /// * **Dry-run preview** — the run detail's `steps` section rule, asserted
-    ///   ABSENT. That is the stronger form of the token: the preview REPLACES
-    ///   the run detail, so its rule vanishing is evidence the dispatch actually
-    ///   swapped, not merely that a string appeared somewhere. The `true`
-    ///   direction is the same rule present in the ordinary Driver tab state.
-    ///
-    /// (The second state this test once covered, the injection rows, went with
-    /// the injection screen in Phase 31.)
-    #[test]
-    fn the_two_new_driver_states_reach_their_branches() {
-        let clean = clean_identity();
-
-        let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
-            Box::new(crate::ui::screens::detail::DetailScreen::new(
-                identity.to_string(),
-            ))
-        };
-        let rendered = |label: &str| -> String {
-            let state = states_over_sub_views(&clean, &build)
-                .into_iter()
-                .find(|s| s.label == label)
-                .unwrap_or_else(|| panic!("no probe state labelled {label:?}"));
-            render_to_text(state.screen.as_ref(), &state.ctx)
-        };
-        let driver_tab = rendered("Driver tab, legacy runs");
-
-        // --- Dry-run preview ------------------------------------------------
-        // `section_rule("steps", ..)` renders as `\u{2500}\u{2500} steps `.
-        let steps_rule = "\u{2500}\u{2500} steps ";
-        assert!(
-            driver_tab.contains(steps_rule),
-            "the ordinary `Driver tab, legacy runs` state does not draw the run detail's \
-             `steps` section rule, so its ABSENCE below cannot be evidence that \
-             the dry-run preview replaced it. Rendered:\n{driver_tab}"
-        );
-
-        let preview = rendered("Driver tab, dry-run preview");
-        assert!(
-            !preview.contains(steps_rule),
-            "the `Driver tab, dry-run preview` state still drew the run detail's \
-             `steps` section rule, so `render_driver_tab` did NOT dispatch into \
-             `render_dry_run_preview` and every assertion about the preview is \
-             passing by silence. Check that the state leaves `driver_dry_run` \
-             `Some` — and note the arrange returns early when `driver_runs` is \
-             empty. Rendered:\n{preview}"
-        );
-        assert!(
-            preview.contains("Would run:"),
-            "the `Driver tab, dry-run preview` state drew no report body. \
-             `DryRunPreview::report` is drawn by `render_dry_run_preview` and by \
-             nothing else, so its absence means the preview rendered its \
-             `None` loading branch instead. Rendered:\n{preview}"
         );
     }
 

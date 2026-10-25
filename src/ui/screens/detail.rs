@@ -1556,25 +1556,15 @@ impl DetailScreen {
     /// only in the sign, and two copies of a clamp are two things to keep in
     /// agreement.
     fn move_driver_selection(&self, ctx: &mut AppContext, delta: isize) {
-        // One selection across launcher rows then (when shown) legacy rows (30-01,
-        // D-01). A launcher run's detail is a pure function of the cache, so moving
-        // among them reschedules nothing; landing on a legacy row reschedules the
-        // run-list scan, because the inbox and the journal that scan reads are the
-        // *selected* legacy run's, and leaving the previous run's messages under a
-        // new selection would attribute one run's steering history to another.
-        let on_legacy = super::driver_run::move_selection(
+        // One selection across the launcher rows (30-01, D-01). A launcher run's
+        // detail is a pure function of the cache, so moving among them reschedules
+        // no list scan; its items come from one read of its own DIRECTION.md
+        // (30-02), made now if the cache holds no detail for the new selection.
+        super::driver_run::move_selection(
             ctx.view_cache.entry(self.alias.clone()).or_default(),
             delta,
         );
-        if on_legacy {
-            if let Some(path) = ctx.config.projects.get(&self.alias).map(|p| p.path.clone()) {
-                ctx.schedule_run_list_scan(&self.alias, &path);
-            }
-        } else {
-            // A launcher run: its items come from one read of its own DIRECTION.md
-            // (30-02), made now if the cache holds no detail for the new selection.
-            ctx.refresh_selected_run_if_missing(&self.alias);
-        }
+        ctx.refresh_selected_run_if_missing(&self.alias);
         ctx.needs_redraw = true;
     }
 
@@ -2239,8 +2229,8 @@ impl DetailScreen {
                     .first()
                     .is_none_or(|&first| c.defaults_selected <= first)
             }),
-            // Launcher rows come first, then the legacy rows when shown (30-01,
-            // D-01): the top is the first position of that one order.
+            // The launcher rows, newest first (30-01, D-01): the top is the first
+            // position of that order.
             DetailSubView::Driver => super::driver_run::selection_position(cache) == 0,
         }
     }
@@ -5837,8 +5827,8 @@ impl Screen for DetailScreen {
                 }
             }
             // `[` / `]`: move the item cursor of the SELECTED launcher run (30-02,
-            // D-06). Driver-tab only and only on a launcher row: a legacy row has no
-            // items and the Driver tab has no sub-tab pair for these keys to mean.
+            // D-06). Driver-tab only and only on a launcher row: the Driver tab has no
+            // sub-tab pair for these keys to mean.
             // Inert (but harmless) when the run has no items; the move is by item id,
             // clamped at both ends, and touches only the cache.
             KeyCode::Char(key @ ('[' | ']')) if current_view == DetailSubView::Driver => {
@@ -5878,9 +5868,9 @@ impl Screen for DetailScreen {
             // `R`: launch or relaunch the SELECTED launcher run through the launch form
             // (30-05, D-19, D-21). Capital `R` only: lower-case `r` is the dashboard's
             // key and means nothing here. A run that is running, whose liveness is
-            // unknown, or that is done opens no form and says why; a legacy row is
-            // read-only. The handler opens a screen and dispatches the host check; it
-            // starts nothing (D-25) and a build that cannot launch (not Linux) is inert.
+            // unknown, or that is done opens no form and says why. The handler opens a
+            // screen and dispatches the host check; it starts nothing (D-25) and a
+            // build that cannot launch (not Linux) is inert.
             KeyCode::Char('R') if current_view == DetailSubView::Driver => {
                 use super::driver_launch::{
                     launch_kind_for, refusal_copy, relaunch_prefill, LaunchForm, LaunchFormScreen,
@@ -5915,9 +5905,6 @@ impl Screen for DetailScreen {
                                 Err(refusal) => Err(refusal_copy(run_id, &refusal)),
                             },
                         }
-                    }
-                    (Selection::Legacy(_), _) => {
-                        Err(super::driver_run::LEGACY_READ_ONLY.to_string())
                     }
                     _ => return ScreenAction::None,
                 };
@@ -5960,9 +5947,8 @@ impl Screen for DetailScreen {
             // reachable from the tab (UI-SPEC "What Phase 30 repeals").
             //
             // The id the prompt names is the id the key was pressed on
-            // (T-28-18). A run that is positively not running has nothing to kill,
-            // and a legacy row is read-only here: both set a message and open
-            // nothing, and the message-only half is asserted by test.
+            // (T-28-18). A run that is positively not running has nothing to kill: it
+            // sets a message and opens nothing, and that half is asserted by test.
             KeyCode::Char('x') if current_view == DetailSubView::Driver => {
                 use super::driver_run::{entry_killable, selection, Selection};
                 ctx.needs_redraw = true;
@@ -5986,38 +5972,8 @@ impl Screen for DetailScreen {
                         ctx.status_message = Some((message, std::time::Instant::now()));
                         ScreenAction::None
                     }
-                    Selection::Legacy(_) => {
-                        ctx.status_message = Some((
-                            super::driver_run::LEGACY_READ_ONLY.to_string(),
-                            std::time::Instant::now(),
-                        ));
-                        ScreenAction::None
-                    }
                     Selection::Nothing => ScreenAction::None,
                 }
-            }
-            // `L`: show or hide the read-only legacy runs (30-01, D-01). Inert while
-            // the project has none. Landing the highlight on a legacy row (the only
-            // thing in the list) reschedules the scan its detail reads from.
-            KeyCode::Char('L') if current_view == DetailSubView::Driver => {
-                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                if super::driver_run::toggle_legacy(cache) {
-                    let on_legacy = matches!(
-                        super::driver_run::selection(Some(cache)),
-                        super::driver_run::Selection::Legacy(_)
-                    );
-                    if on_legacy {
-                        if let Some(path) =
-                            ctx.config.projects.get(&self.alias).map(|p| p.path.clone())
-                        {
-                            ctx.schedule_run_list_scan(&self.alias, &path);
-                        }
-                    } else {
-                        ctx.refresh_selected_run_if_missing(&self.alias);
-                    }
-                }
-                ctx.needs_redraw = true;
-                ScreenAction::None
             }
             // `o`: opt in, **through the shared driver confirmation** and never by
             // writing the registry from here. (The dashboard's `o` that once opened
@@ -6046,8 +6002,7 @@ impl Screen for DetailScreen {
             // `$VISUAL`/`$EDITOR` (30-04, D-17). Tab-scoped, so `e` keeps its Docs,
             // Queue, Backlog and Archive meanings. The handler writes nothing: it asks
             // the App to make the body-only temp, and the shipped editor hand-off opens
-            // it. A legacy row, an unreadable run and a build that cannot steer refuse
-            // with their copy.
+            // it. An unreadable run and a build that cannot steer refuse with their copy.
             KeyCode::Char('e') if current_view == DetailSubView::Driver => {
                 use super::driver_run::{steer_refusal, steer_target, SteerTarget};
                 ctx.needs_redraw = true;
@@ -6698,11 +6653,10 @@ impl DetailScreen {
                 None => MouseArm::None,
             },
             // The Driver runs: the j/k path, which also resets the output
-            // pane and reschedules the scan; the tab has no Enter
-            // ([inferred I-11]).
+            // pane; the tab has no Enter ([inferred I-11]).
             DetailSubView::Driver => {
-                // The row index is the list as drawn (header included); map it
-                // into the one linear selection order.
+                // The row index is the list as drawn; map it into the selection
+                // order.
                 let moves = ctx.view_cache.get(&self.alias).and_then(|cache| {
                     let target = super::driver_run::position_for_row(cache, index)?;
                     let current = super::driver_run::selection_position(Some(cache));
@@ -6929,12 +6883,10 @@ impl DetailScreen {
     /// [inferred I-11]). One method for both render paths, so neither can
     /// record less than the other.
     fn render_driver(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        // The launcher-first composition (30-01, D-01): launcher runs, then one
-        // collapsed row of read-only legacy runs.
+        // The launcher-first composition (30-01, D-01): the launcher runs.
         let drawn = super::driver_run::render_launcher_tab(
             frame,
             area,
-            ctx,
             &self.alias,
             ctx.view_cache.get(&self.alias),
             &self.driver_viewport,
@@ -11223,11 +11175,6 @@ impl FooterToken {
 /// priority) and a token is never split. The lead and `[?]help` are never dropped,
 /// so `[?]help` ends the line at every width. `[i]nject`, `[X]` and `[{/}]` are
 /// retired and appear at no width.
-///
-/// The legacy-row suffix sits just before `[?]help` rather than after it
-/// (`[inferred — audit]`): the plan's rule that the footer always ends with
-/// `[?]help` and the UI-SPEC's token table disagree about where that suffix goes,
-/// and the key a user is looking for when lost is the help key.
 fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<Span<'static>> {
     let mut tokens: Vec<FooterToken> = vec![FooterToken::hint("[Esc]", "back  ", 2)];
     tokens.push(FooterToken::hint("[1-8/D]", "tabs  ", 3));
@@ -11265,12 +11212,6 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
     if keys.scroll {
         tokens.push(FooterToken::hint("[PgUp/PgDn]", "log  ", 3));
         tokens.push(FooterToken::hint("[f]", "ollow  ", 3));
-    }
-    if keys.legacy {
-        tokens.push(FooterToken::hint("[L]", "egacy  ", 3));
-    }
-    if keys.legacy_row {
-        tokens.push(FooterToken::muted("legacy run: read-only  ", 1));
     }
     if keys.read_only_platform {
         tokens.push(FooterToken::muted("read-only: steering needs Linux  ", 1));
@@ -17932,12 +17873,10 @@ mod tests {
             .collect()
     }
 
-    /// The keys for a live launcher run selected, legacy runs present.
+    /// The keys for a live launcher run selected.
     fn live_run_keys() -> DriverKeys {
         DriverKeys {
             kill: true,
-            legacy: true,
-            legacy_row: false,
             start: true,
             scroll: false,
             item: false,
@@ -17954,7 +17893,7 @@ mod tests {
     fn the_driver_footer_names_only_the_keys_the_selection_can_use() {
         assert_eq!(
             driver_footer_text(160, &live_run_keys()),
-            "  [Esc]back  [1-8/D]tabs  [j/k]runs  [s]tart  [x]kill  [L]egacy  [?]help"
+            "  [Esc]back  [1-8/D]tabs  [j/k]runs  [s]tart  [x]kill  [?]help"
         );
         // A run that is not running has nothing to kill: no `[x]kill`.
         let stopped = DriverKeys {
@@ -17962,12 +17901,8 @@ mod tests {
             ..live_run_keys()
         };
         assert!(!driver_footer_text(160, &stopped).contains("[x]kill"));
-        // No legacy runs: no `[L]egacy`.
-        let no_legacy = DriverKeys {
-            legacy: false,
-            ..live_run_keys()
-        };
-        assert!(!driver_footer_text(160, &no_legacy).contains("[L]egacy"));
+        // The legacy section and its key are gone (Phase 31): no `[L]egacy` ever.
+        assert!(!driver_footer_text(160, &live_run_keys()).contains("[L]egacy"));
         // The scroll tokens come with an output pane to scroll.
         let scrolling = DriverKeys {
             scroll: true,
@@ -18038,46 +17973,22 @@ mod tests {
         assert_eq!(state(&ctx), (true, tail));
     }
 
-    #[test]
-    fn the_driver_footer_says_legacy_runs_are_read_only_only_on_a_legacy_row() {
-        let on_legacy = DriverKeys {
-            kill: false,
-            legacy: true,
-            legacy_row: true,
-            start: true,
-            scroll: true,
-            item: false,
-            control: false,
-            answer: false,
-            unhold: false,
-            edit: false,
-            read_only_platform: false,
-            launch: None,
-        };
-        let text = driver_footer_text(200, &on_legacy);
-        assert!(text.contains("legacy run: read-only"), "{text}");
-        assert!(!text.contains("[x]kill"), "{text}");
-        assert!(!driver_footer_text(200, &live_run_keys()).contains("legacy run: read-only"));
-    }
-
     /// The footer never exceeds its width and always ends with `[?]help`, at the
     /// five widths the UI-SPEC names, for every combination of available keys.
     #[test]
     fn the_driver_footer_fits_its_width_and_always_ends_with_help() {
-        for bits in 0u16..8192 {
+        for bits in 0u16..2048 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
-                legacy: bits & 2 != 0,
-                legacy_row: bits & 4 != 0,
-                start: bits & 8 != 0,
-                scroll: bits & 16 != 0,
-                item: bits & 32 != 0,
-                control: bits & 64 != 0,
-                read_only_platform: bits & 128 != 0,
-                answer: bits & 256 != 0,
-                unhold: bits & 512 != 0,
-                edit: bits & 1024 != 0,
-                launch: match (bits >> 11) & 3 {
+                start: bits & 2 != 0,
+                scroll: bits & 4 != 0,
+                item: bits & 8 != 0,
+                control: bits & 16 != 0,
+                read_only_platform: bits & 32 != 0,
+                answer: bits & 64 != 0,
+                unhold: bits & 128 != 0,
+                edit: bits & 256 != 0,
+                launch: match (bits >> 9) & 3 {
                     1 => Some(super::super::driver_launch::LaunchKind::Launch),
                     2 => Some(super::super::driver_launch::LaunchKind::Relaunch),
                     _ => None,
@@ -18102,8 +18013,6 @@ mod tests {
     fn the_driver_footer_drops_whole_tokens_by_priority_and_never_splits_one() {
         let keys = DriverKeys {
             kill: true,
-            legacy: true,
-            legacy_row: false,
             start: true,
             scroll: true,
             item: false,
@@ -18114,8 +18023,8 @@ mod tests {
             read_only_platform: false,
             launch: None,
         };
-        // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 10 + 7 = 98 cells.
-        let full = driver_footer_text(98, &keys);
+        // Everything fits: 2 + 11 + 13 + 11 + 9 + 9 + 16 + 10 + 7 = 88 cells.
+        let full = driver_footer_text(88, &keys);
         for token in [
             "[Esc]back",
             "[1-8/D]tabs",
@@ -18124,16 +18033,15 @@ mod tests {
             "[x]kill",
             "[PgUp/PgDn]log",
             "[f]ollow",
-            "[L]egacy",
         ] {
-            assert!(full.contains(token), "{token} missing at 98: {full:?}");
+            assert!(full.contains(token), "{token} missing at 88: {full:?}");
         }
-        assert_eq!(full.chars().count(), 98, "{full:?}");
+        assert_eq!(full.chars().count(), 88, "{full:?}");
 
         // One cell short: a priority-3 token goes, the rightmost first.
-        let short = driver_footer_text(97, &keys);
-        assert!(!short.contains("[L]egacy"), "{short:?}");
-        assert!(short.contains("[f]ollow"), "{short:?}");
+        let short = driver_footer_text(87, &keys);
+        assert!(!short.contains("[f]ollow"), "{short:?}");
+        assert!(short.contains("[PgUp/PgDn]log"), "{short:?}");
 
         // The priority-1 keys outlive every priority-2 and -3 token.
         let narrow = driver_footer_text(35, &keys);
@@ -18147,20 +18055,18 @@ mod tests {
 
     #[test]
     fn the_driver_footer_names_no_retired_key_at_any_width() {
-        for bits in 0u16..8192 {
+        for bits in 0u16..2048 {
             let keys = DriverKeys {
                 kill: bits & 1 != 0,
-                legacy: bits & 2 != 0,
-                legacy_row: bits & 4 != 0,
-                start: bits & 8 != 0,
-                scroll: bits & 16 != 0,
-                item: bits & 32 != 0,
-                control: bits & 64 != 0,
-                read_only_platform: bits & 128 != 0,
-                answer: bits & 256 != 0,
-                unhold: bits & 512 != 0,
-                edit: bits & 1024 != 0,
-                launch: match (bits >> 11) & 3 {
+                start: bits & 2 != 0,
+                scroll: bits & 4 != 0,
+                item: bits & 8 != 0,
+                control: bits & 16 != 0,
+                read_only_platform: bits & 32 != 0,
+                answer: bits & 64 != 0,
+                unhold: bits & 128 != 0,
+                edit: bits & 256 != 0,
+                launch: match (bits >> 9) & 3 {
                     1 => Some(super::super::driver_launch::LaunchKind::Launch),
                     2 => Some(super::super::driver_launch::LaunchKind::Relaunch),
                     _ => None,
@@ -19680,7 +19586,6 @@ mod tests {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -20181,17 +20086,6 @@ mod tests {
         );
     }
 
-    fn test_run(run_id: &str) -> crate::journal::RunSummary {
-        crate::journal::RunSummary {
-            run_id: run_id.to_string(),
-            started_at: "2026-07-29T21:40:00Z".to_string(),
-            ended_at: None,
-            goal: String::new(),
-            gsd_command: "/gsd:progress".to_string(),
-            outcome: None,
-        }
-    }
-
     #[test]
     fn driver_page_down_from_the_tail_clamps_and_does_not_overshoot() {
         // 100 lines in a 30-row body → max_scroll = 70.
@@ -20288,29 +20182,27 @@ mod tests {
         let (mut screen, mut ctx) = driver_fixture(100, 30, 45, false);
         {
             let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.driver_runs = vec![
-                test_run("2026-07-29T21-40-00Z-3f2a"),
-                test_run("2026-07-28T09-00-00Z-aa11"),
+            cache.launcher_runs = vec![
+                launcher_row("20261020-a", DerivedStatus::AsWritten(RunStatus::Done)),
+                launcher_row("20261019-b", DerivedStatus::AsWritten(RunStatus::Done)),
             ];
-            // Legacy rows are selectable once the section is expanded (30-01).
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
+            cache.launcher_listed = true;
         }
 
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_selected, 1);
         assert_eq!(driver_offset(&ctx), 0);
         assert!(
             driver_following(&ctx),
-            "a different run is a different journal: the pane goes back to its tail"
+            "a different run is a different LOG: the pane goes back to its tail"
         );
 
         // And the selection clamps at both ends of the list.
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_selected, 1);
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_selected, 0);
     }
 
     #[test]
@@ -20377,7 +20269,7 @@ mod tests {
     // that matters most: its refusal has to be visible **and** silent on the
     // wire, and only an assertion on the receiver can see the second half.
 
-    /// The Driver tab with a run list, an event channel and no observed run.
+    /// The Driver tab with an event channel and no launcher run.
     fn driver_action_fixture() -> (
         DetailScreen,
         AppContext,
@@ -20387,8 +20279,6 @@ mod tests {
         let _ = &mut screen;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         ctx.event_tx = Some(tx);
-        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-        cache.driver_runs = vec![test_run("2026-07-29T21-40-00Z-3f2a")];
         (screen, ctx, rx)
     }
 
@@ -20437,8 +20327,6 @@ mod tests {
     ) {
         let (screen, mut ctx, rx) = driver_action_fixture();
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-        // The fixture's one legacy run is not under test here.
-        cache.driver_runs.clear();
         cache.launcher_listed = true;
         cache.launcher_runs = (0..n)
             .map(|i| {
@@ -20453,14 +20341,6 @@ mod tests {
 
     fn launcher_selected(ctx: &AppContext) -> usize {
         ctx.view_cache[TEST_ALIAS].launcher_selected
-    }
-
-    /// Give the Driver tab one legacy run and leave the section collapsed.
-    fn add_legacy_run(ctx: &mut AppContext) {
-        ctx.view_cache
-            .entry(TEST_ALIAS.to_string())
-            .or_default()
-            .driver_runs = vec![test_run("2026-07-29T21-40-00Z-3f2a")];
     }
 
     #[test]
@@ -20525,21 +20405,9 @@ mod tests {
     }
 
     #[test]
-    fn launcher_view_brackets_are_inert_without_items_on_a_legacy_row_or_off_the_tab() {
+    fn launcher_view_brackets_are_inert_without_items_or_off_the_tab() {
         // No detail for the selected run: nothing moves.
         let (mut screen, mut ctx, _rx) = launcher_fixture(1);
-        press(&mut screen, &mut ctx, KeyCode::Char(']'));
-        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_item_cursor, None);
-
-        // A legacy row selected: the cursor of the launcher run does not move.
-        let (mut screen, mut ctx, _rx) = launcher_fixture(1);
-        give_items(&mut ctx, 0);
-        add_legacy_run(&mut ctx);
-        {
-            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
-        }
         press(&mut screen, &mut ctx, KeyCode::Char(']'));
         assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_item_cursor, None);
 
@@ -20590,20 +20458,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn launcher_steer_c_on_a_legacy_row_or_an_unreadable_run_opens_nothing() {
+    fn launcher_steer_c_on_an_unreadable_run_opens_nothing() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
-        add_legacy_run(&mut ctx);
-        {
-            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
-        }
-        let action = screen.handle_key(KeyCode::Char('c'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None));
-        let message = ctx.status_message.clone().expect("a refusal").0;
-        assert_eq!(message, "Legacy runs are read-only here.");
-
-        let (mut screen, mut ctx, mut rx2) = launcher_fixture(1);
         {
             let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
             cache.launcher_runs[0].1 =
@@ -20613,7 +20469,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         let message = ctx.status_message.clone().expect("a refusal").0;
         assert!(message.contains("could not be read"), "{message}");
-        assert!(rx.try_recv().is_err() && rx2.try_recv().is_err());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -20746,27 +20602,7 @@ mod tests {
     }
 
     #[test]
-    fn launcher_steer_a_and_u_refuse_on_a_legacy_row_and_off_the_driver_tab() {
-        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
-        give_steering_items(&mut ctx, &["I-01"], &["I-01"]);
-        add_legacy_run(&mut ctx);
-        {
-            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
-        }
-        for key in ['a', 'u'] {
-            ctx.status_message = None;
-            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
-            assert!(matches!(action, ScreenAction::None), "{key}");
-            assert_eq!(
-                ctx.status_message.clone().expect("a refusal").0,
-                "Legacy runs are read-only here.",
-                "{key}"
-            );
-        }
-        assert!(rx.try_recv().is_err());
-
+    fn launcher_steer_a_and_u_do_nothing_off_the_driver_tab() {
         // On the Queue tab `a` keeps its shipped meaning: the answer input never opens.
         let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
         give_steering_items(&mut ctx, &["I-01"], &["I-01"]);
@@ -20851,22 +20687,8 @@ mod tests {
     }
 
     #[test]
-    fn launcher_edit_e_refuses_on_a_legacy_row_an_unreadable_run_and_off_the_driver_tab() {
+    fn launcher_edit_e_refuses_on_an_unreadable_run_and_off_the_driver_tab() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
-        add_legacy_run(&mut ctx);
-        {
-            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
-        }
-        let action = screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None));
-        assert_eq!(
-            ctx.status_message.clone().expect("a refusal").0,
-            "Legacy runs are read-only here."
-        );
-
-        let (mut screen, mut ctx, mut rx2) = launcher_fixture(1);
         ctx.view_cache
             .entry(TEST_ALIAS.to_string())
             .or_default()
@@ -20885,7 +20707,7 @@ mod tests {
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::Pipeline);
         screen.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, &mut ctx);
-        assert!(rx.try_recv().is_err() && rx2.try_recv().is_err());
+        assert!(rx.try_recv().is_err());
         while let Ok(action) = rx3.try_recv() {
             assert!(!matches!(
                 action,
@@ -20960,18 +20782,10 @@ mod tests {
 
     #[test]
     fn launcher_steer_driver_keys_follow_the_selection() {
-        let (_screen, mut ctx, _rx) = launcher_fixture(1);
+        let (_screen, ctx, _rx) = launcher_fixture(1);
         let keys = super::super::driver_run::driver_keys(&ctx, TEST_ALIAS);
         assert_eq!(keys.control, cfg!(target_os = "linux"));
         assert_eq!(keys.read_only_platform, !cfg!(target_os = "linux"));
-        add_legacy_run(&mut ctx);
-        {
-            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
-        }
-        let keys = super::super::driver_run::driver_keys(&ctx, TEST_ALIAS);
-        assert!(!keys.control, "a legacy row cannot be steered");
         let mut ctx2 = launcher_fixture(1).1;
         ctx2.view_cache
             .entry(TEST_ALIAS.to_string())
@@ -20992,73 +20806,42 @@ mod tests {
         assert_eq!(screen.focus, DetailFocus::TabBar);
     }
 
+    /// Phase 31 (D-03): the read-only legacy section and its `L` toggle are gone. The
+    /// key is unbound on the Driver tab: it moves nothing, says nothing, dispatches
+    /// nothing.
     #[test]
-    fn launcher_view_l_toggles_the_legacy_section() {
-        let (mut screen, mut ctx, _rx) = launcher_fixture(2);
-        // Inert while there are no legacy runs.
-        press(&mut screen, &mut ctx, KeyCode::Char('L'));
-        assert!(!ctx.view_cache[TEST_ALIAS].legacy_expanded);
-
-        add_legacy_run(&mut ctx);
-        press(&mut screen, &mut ctx, KeyCode::Char('L'));
-        assert!(ctx.view_cache[TEST_ALIAS].legacy_expanded);
-        // The highlight stays on the launcher run it was on.
-        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
-        press(&mut screen, &mut ctx, KeyCode::Char('L'));
-        assert!(!ctx.view_cache[TEST_ALIAS].legacy_expanded);
+    fn launcher_view_l_is_retired_and_does_nothing() {
+        let (mut screen, mut ctx, mut rx) = launcher_fixture(2);
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        ctx.status_message = None;
+        let action = screen.handle_key(KeyCode::Char('L'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(launcher_selected(&ctx), 1, "the highlight did not move");
+        assert!(ctx.status_message.is_none(), "and nothing was said");
+        assert!(rx.try_recv().is_err(), "and nothing was dispatched");
     }
 
     #[test]
-    fn launcher_view_j_walks_into_legacy_rows_only_when_the_section_is_expanded() {
+    fn launcher_view_j_stops_at_the_last_launcher_row() {
         let (mut screen, mut ctx, _rx) = launcher_fixture(2);
-        add_legacy_run(&mut ctx);
-
-        // Collapsed: the walk stops at the last launcher row.
         for _ in 0..4 {
             press(&mut screen, &mut ctx, KeyCode::Char('j'));
         }
         assert_eq!(launcher_selected(&ctx), 1);
-        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
-
-        // Expanded: one more `j` crosses onto the legacy run, and `k` returns.
-        press(&mut screen, &mut ctx, KeyCode::Char('L'));
-        press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert!(ctx.view_cache[TEST_ALIAS].legacy_row_selected);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
-        press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert_eq!(
-            ctx.view_cache[TEST_ALIAS].driver_selected_run, 0,
-            "clamped at the last legacy row"
-        );
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
-        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
-        assert_eq!(launcher_selected(&ctx), 1);
-
-        // Collapsing while on a legacy row hands the highlight back.
-        press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert!(ctx.view_cache[TEST_ALIAS].legacy_row_selected);
-        press(&mut screen, &mut ctx, KeyCode::Char('L'));
-        assert!(!ctx.view_cache[TEST_ALIAS].legacy_row_selected);
+        assert_eq!(launcher_selected(&ctx), 0);
     }
 
     #[test]
-    fn launcher_view_a_collapsed_row_renders_below_the_launcher_rows() {
-        let (screen, mut ctx, _rx) = launcher_fixture(2);
-        add_legacy_run(&mut ctx);
+    fn launcher_view_renders_the_launcher_rows_and_no_legacy_section() {
+        let (screen, ctx, _rx) = launcher_fixture(2);
         let text = render_detail_to_text_at(&screen, &ctx, 140, 40);
-        let launcher_at = text.find("20261019-run1").expect("the last launcher row");
-        let legacy_at = text
-            .find("legacy runs (1), read-only")
-            .expect("the collapsed legacy row");
-        assert!(legacy_at > launcher_at, "{text}");
-        assert!(text.contains('\u{25B8}'), "collapsed glyph: {text}");
-
-        ctx.view_cache
-            .get_mut(TEST_ALIAS)
-            .expect("cache")
-            .legacy_expanded = true;
-        let text = render_detail_to_text_at(&screen, &ctx, 140, 40);
-        assert!(text.contains('\u{25BE}'), "expanded glyph: {text}");
+        assert!(
+            text.contains("20261019-run1"),
+            "the last launcher row: {text}"
+        );
+        assert!(!text.contains("legacy runs"), "no legacy section: {text}");
+        assert!(!text.contains("Legacy runs are"), "{text}");
     }
 
     /// Run `x` and report the pushed screen's name plus the status line it left.
@@ -21157,19 +20940,6 @@ mod tests {
     }
 
     #[test]
-    fn launcher_view_x_on_a_legacy_row_pushes_nothing_and_says_read_only() {
-        let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
-        add_legacy_run(&mut ctx);
-        press(&mut screen, &mut ctx, KeyCode::Char('L'));
-        press(&mut screen, &mut ctx, KeyCode::Char('j'));
-        assert!(ctx.view_cache[TEST_ALIAS].legacy_row_selected);
-        let (action, status) = press_x(&mut screen, &mut ctx);
-        assert!(matches!(action, ScreenAction::None));
-        assert_eq!(status.as_deref(), Some("Legacy runs are read-only here."));
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
     fn launcher_view_x_on_an_unreadable_run_may_still_kill_it() {
         // Nothing establishes that a run whose DIRECTION.md cannot be read is not
         // running, so the key is not taken away from it (`[inferred — audit]`).
@@ -21208,17 +20978,15 @@ mod tests {
 
     #[test]
     fn launcher_view_the_driver_keys_exist_only_on_the_driver_tab() {
-        // The Queue tab binds `x` (delete); off the Driver tab neither it nor `L`
+        // The Queue tab binds `x` (delete); off the Driver tab neither it nor `X`
         // may reach the launcher rows, whatever the cache holds.
         let (mut screen, mut ctx, mut rx) = launcher_fixture(3);
-        add_legacy_run(&mut ctx);
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
         for key in ['L', 'X'] {
             let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
             assert!(pushed_screen_name(&action).is_none(), "{key}");
         }
-        assert!(!ctx.view_cache[TEST_ALIAS].legacy_expanded);
         assert_eq!(launcher_selected(&ctx), 0);
         assert!(rx.try_recv().is_err());
     }
@@ -21227,7 +20995,7 @@ mod tests {
     /// keys that steer a run now. The **second** assertion is the load-bearing one
     /// (CTRL-03's shape): a binding that set the message and opened the screen anyway
     /// would pass a test that checked only the message. It holds whatever the tab
-    /// holds: the bare tab, a launcher run, a legacy row, nothing at all.
+    /// holds: the bare tab or a launcher run.
     #[test]
     fn launcher_steer_i_is_retired_opens_nothing_and_names_the_steering_keys() {
         const MESSAGE: &str = "Injection is retired: use [c]ontrol, [a]nswer, [e]dit.";
@@ -21235,23 +21003,12 @@ mod tests {
 
         // The bare Driver tab, as the Phase 18 key required.
         let (mut screen, mut ctx, mut rx) = driver_action_fixture();
-        // A launcher run selected, and a legacy row selected.
+        // A launcher run selected.
         let (mut launcher, mut launcher_ctx, mut launcher_rx) = launcher_fixture(2);
-        let (mut legacy, mut legacy_ctx, mut legacy_rx) = launcher_fixture(1);
-        add_legacy_run(&mut legacy_ctx);
-        {
-            let cache = legacy_ctx
-                .view_cache
-                .entry(TEST_ALIAS.to_string())
-                .or_default();
-            cache.legacy_expanded = true;
-            cache.legacy_row_selected = true;
-        }
 
         let mut cases = [
             (&mut screen, &mut ctx, &mut rx),
             (&mut launcher, &mut launcher_ctx, &mut launcher_rx),
-            (&mut legacy, &mut legacy_ctx, &mut legacy_rx),
         ];
         for (screen, ctx, rx) in cases.iter_mut() {
             ctx.status_message = None;
@@ -32048,31 +31805,38 @@ mod tests {
         assert_eq!(queued(&ctx).len(), 1);
     }
 
-    /// The Driver tab (flag on) with `n` runs, run 0 selected, and a 100-line
-    /// output ring attributed to run 0.
+    /// The Driver tab (flag on) with `n` launcher runs, run 0 selected, and a 100-line
+    /// LOG tail attributed to run 0.
     fn mouse_driver_ctx(n: usize) -> (DetailScreen, AppContext) {
         let mut ctx = test_ctx();
         assert!(ctx.experimental);
         ctx.detail_sub_view_per_project
             .insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
-        cache.driver_runs = (0..n).map(|i| test_run(&format!("run-{i:02}"))).collect();
-        // The legacy rows, expanded and selected, are what carries the output pane
-        // and the run list this test drives (30-01): the list is the section's
-        // header row followed by one row per run.
-        cache.legacy_expanded = true;
-        cache.legacy_row_selected = true;
+        cache.launcher_runs = (0..n)
+            .map(|i| {
+                launcher_row(
+                    &format!("20261019-run{i:02}"),
+                    DerivedStatus::AsWritten(RunStatus::Running),
+                )
+            })
+            .collect();
         cache.launcher_listed = true;
-        cache.driver_selected_run = 0;
+        cache.launcher_selected = 0;
+        cache.launcher_selected_id = cache.launcher_runs.first().map(|(id, _)| id.clone());
         cache.driver_follow = true;
-        let mut ring = super::super::DriverOutput::for_run("run-00");
+        let mut ring = super::super::DriverOutput::for_run("20261019-run00");
         for i in 0..100 {
             ring.push_record(
                 super::super::DriverLineKind::Output,
                 &format!("output line {i}"),
             );
         }
-        ctx.driver_output.insert(TEST_ALIAS.to_string(), ring);
+        cache.launcher_log = super::super::LauncherLogTail {
+            run_id: "20261019-run00".to_string(),
+            ring,
+            ..Default::default()
+        };
         (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
     }
 
@@ -32102,18 +31866,18 @@ mod tests {
         mouse_wheel(&mut screen, &mut ctx, output.x + 5, output.y + 5, true);
         assert_eq!(driver_offset(&ctx), tail);
         assert!(driver_following(&ctx), "reaching the tail re-arms follow");
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_selected, 0);
 
         // A click on run row 1: the j/k path, which resets the pane.
         render_detail_to_text_at(&screen, &ctx, 140, 40);
         mouse_wheel(&mut screen, &mut ctx, output.x + 5, output.y + 5, false);
         let list = mouse_list(&screen);
-        assert_eq!(list.len, 3, "the section header and the two runs");
-        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 2);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+        assert_eq!(list.len, 2, "the two runs");
+        mouse_click(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_selected, 1);
         assert!(driver_following(&ctx), "a new run re-arms follow");
         // A double arms nothing: the tab has no Enter.
-        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 2);
+        let action = mouse_click_twice(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y + 1);
         assert!(matches!(action, ScreenAction::None));
 
         // The wheel over the run list moves the selection.
@@ -32121,7 +31885,7 @@ mod tests {
         render_detail_to_text_at(&screen, &ctx, 140, 40);
         let list = mouse_list(&screen);
         mouse_wheel(&mut screen, &mut ctx, list.rect.x + 4, list.rect.y, true);
-        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].launcher_selected, 1);
     }
 
     #[test]
@@ -32180,9 +31944,9 @@ mod tests {
             ctx,
             KeyCode::Char('j'),
             30,
-            // The list is the legacy section's header row and then the runs, so the
-            // first visible row at offset N is run N - 1.
-            |c| c.view_cache[TEST_ALIAS].driver_selected_run + 1,
+            // The list is the launcher runs, so the first visible row at offset N is
+            // run N.
+            |c| c.view_cache[TEST_ALIAS].launcher_selected,
             "Driver",
         );
     }

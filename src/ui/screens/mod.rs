@@ -1522,31 +1522,10 @@ pub struct AppContext {
     ///   Before that it was inserted in exactly one place, removed in none, and
     ///   grew for the process lifetime. See `App::prune_driver_maps` (D-27).
     pub journal_cursors: HashMap<(String, String), crate::journal::reader::JournalCursor>,
-    /// The run ids **this TUI session spawned**, which decides D-07's reaping
-    /// arm at stop time.
-    ///
-    /// * It is a **separate set rather than a flag on `ObservedRun`**, and that
-    ///   is the whole reason it exists. The observed-run map was *replaced wholesale*
-    ///   by every reconciliation scan, because the scan is authoritative and a
-    ///   merge would keep entries the disk no longer justifies — so any flag
-    ///   stored there survives at most five seconds and then silently reverts to
-    ///   whatever the disk implies. The disk cannot imply this: `run.json`
-    ///   records the driver's own pid, never who its parent was.
-    /// * A run id in this set means the driver is **our child**, so the reaping
-    ///   task `spawn_detached` created owns its `wait()`. A run id absent from it
-    ///   was adopted after a restart, was reparented to init, and can only be
-    ///   confirmed dead by re-probing `/proc` (D-07).
-    /// * It holds run ids and nothing else — no handles — so `Action` stays
-    ///   `Clone` for the same reason the sibling maps above do.
-    /// * It is never pruned, and it does not need to be: it grows by one entry
-    ///   per run this session starts, and `driver_max_concurrent` defaults to
-    ///   one. A session that starts a thousand runs has a thousand short strings.
-    pub session_spawned_runs: std::collections::HashSet<String>,
     /// Per-alias bounded live driver output (D-18).
     ///
     /// * A **sibling map**, shaped exactly like `run_states`, `journal_cursors`
-    ///   and `session_spawned_runs` above. Phase 18 extends that neighbourhood rather
-    ///   than recreating it.
+    ///   above. Phase 18 extends that neighbourhood rather than recreating it.
     /// * It must not live on `ProjectState`: that type derives `PartialEq` and
     ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
     ///   status message. Live output arrives every few seconds for the whole
@@ -2811,7 +2790,6 @@ mod tests {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

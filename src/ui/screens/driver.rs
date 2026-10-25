@@ -1,67 +1,35 @@
-//! The Driver tab: the run list, the run header, the reused D-R-P-E-V row and
-//! the step timeline.
+//! The Driver tab's shared pane helpers: the two-pane split, the follow indicator,
+//! the scrolling pane's header rule, the styles and the capped identity composition.
 //!
 //! **Module-layout decision, recorded here because this is where a reader will
 //! ask the question** (the register of `src/driver/liveness.rs:35-41`). Every
-//! other detail sub-tab renders inline in `detail.rs`; this one renders from its
-//! own module and `detail.rs` delegates. The reason is size and shape rather
-//! than taste: every other sub-tab is about forty lines of layout, while this
-//! one is eight width and height tiers, a bounded ring-buffer renderer and a
-//! four-state injection widget — and `detail.rs` is already the largest file in
-//! the repository at over five thousand lines.
+//! other detail sub-tab renders inline in `detail.rs`; the Driver tab renders from
+//! `driver_run.rs` and `detail.rs` delegates. What lives HERE is what the launcher
+//! view (`driver_run.rs`), the steering screens and the launch form share.
 //!
-//! **The declined alternative was to render inline like every sibling.** It was
-//! declined only for that reason; the cost of the split is that a reader looking
-//! for "where does the Driver tab render" finds a delegation rather than a body,
-//! which this doc and the two `DetailSubView::Driver` dispatch arms answer.
+//! **What this module used to hold, and where it went (Phase 31, D-03).** The
+//! legacy run list, the run header, the step timeline, the output pane, the
+//! injection widget and the dry-run preview rendered Phase 17/18 journal runs.
+//! Nothing in the TUI reads those runs any more, so that renderer is gone. The
+//! launcher's own run list, header, items and LOG tail are `driver_run.rs`.
 //!
-//! **The Replit rule governs everything here (D-13).** Every status word,
-//! glyph, colour and sort key on this surface derives from `RunRecord.outcome`,
-//! `JournalEvent::RunEnded.outcome` or `ExecFinished.exit` — evidence Phase 15
-//! computes from `is_error`, `terminal_reason`, the permission-denial list, the
-//! exit code and a git/disk snapshot. **None of it is ever computed by
-//! inspecting the agent's own prose.** The agent's words may appear as content
-//! in the output pane and may carry no authority anywhere else. The incident
-//! behind the rule: an agent deleted a production database during an explicit
-//! freeze, hid it, fabricated roughly four thousand fake users and fake test
-//! results, and falsely claimed rollback was impossible. A tool that repeats an
-//! agent's account of itself as fact makes that class of failure invisible to
-//! the human who is accountable for the repository.
-//!
-//! **The injection vocabulary is a safety property, not a style choice**
-//! (D-07, D-10). An injected message has exactly four states and each has one
-//! authoritative observer: `queued` is durably in `inbox.jsonl` with nothing
-//! having read it; `delivered` means the write to the agent's stdin returned
-//! without error; `acted-on` means the agent **dequeued** it and is running it
-//! as its own turn; `missed` means it was appended after the agent's input was
-//! closed and can never be delivered.
-//!
-//! The word for the stdin write is *delivered* and nothing else. The word for
-//! the dequeue echo is *acted-on*. **The word "sent" is forbidden here, and so
-//! are "received", "read" and "acknowledged"** — the echo arrives at DEQUEUE,
-//! measured roughly fifty-five seconds after the write, so every one of those
-//! words would promise an observation the protocol cannot make. The filling
-//! shape `◦ → ◒ → ◍` is the whole design: it reads correctly across a
-//! minute-long gap. **There is no spinner, no animation and no implied
-//! imminence anywhere on this surface**, and a spinner idiom here would be
-//! actively dishonest rather than merely decorative.
-
-use std::cell::Cell;
+//! **The Replit rule governs everything here (D-13).** Every status word, glyph,
+//! colour and sort key on this surface derives from recorded evidence — the run
+//! lock, the written status, the heartbeat — and **none of it is ever computed by
+//! inspecting the agent's own prose.** The agent's words may appear as content in
+//! a pane and may carry no authority anywhere else. The incident behind the rule:
+//! an agent deleted a production database during an explicit freeze, hid it,
+//! fabricated roughly four thousand fake users and fake test results, and falsely
+//! claimed rollback was impossible. A tool that repeats an agent's account of
+//! itself as fact makes that class of failure invisible to the human who is
+//! accountable for the repository.
 
 use chrono::{DateTime, Local, Utc};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
-use super::detail::{clamp_scroll, tail_offset, ViewportMetrics};
-use super::{
-    sanitize_render_line, AppContext, DriverLineKind, DriverOutput, DriverOutputLine,
-    DryRunPreview, ProjectViewCache, DRIVER_OUTPUT_RING_LINES,
-};
-use crate::driver::reconcile::RunVerdict;
-use crate::journal::RunSummary;
+use super::{sanitize_render_line, DRIVER_OUTPUT_RING_LINES};
 
 // ── Measured layout constants (the `STATUS_COLUMN_MIN_CELLS` discipline) ────
 
@@ -95,71 +63,7 @@ pub const DRIVER_DETAIL_MIN_CELLS: u16 = PIPELINE_LINE_MAX_CELLS + 2;
 /// detail pane's block title — is what gives way.
 pub const DRIVER_TWO_PANE_MIN_CELLS: u16 = 60;
 
-/// Inner width at or above which a run-list row carries its state word.
-///
-/// Derived: the fixed row is 18 cells, the `"> "` highlight symbol is 2, and the
-/// gap before the word is 2 — so 22 cells are spoken for before a word can
-/// start, and 26 is the first width that leaves room for a short one.
-pub const RUN_LIST_WORD_MIN_CELLS: u16 = 26;
-
-/// The fixed part of a run-list row, in cells:
-/// `glyph(1) space MM-DD(5) space HH:MM(5) space suffix(4)`.
-pub const RUN_LIST_FIXED_CELLS: usize = 18;
-
-// ── Run-state glyphs (fixed `&'static str`, `\u{…}` per PATTERNS S7) ────────
-//
-// A fixed `&'static str` is the *mechanism* enforcing "no glyph is derived from
-// file content": no byte read off disk can be assigned to one of these, so agent
-// prose cannot reach a run row through its glyph (D-13). Each is an alias of a
-// `crate::ui::glyphs` registry constant, the single place the width-safety rule
-// is stated and tested (quick 261021-1id).
-
-/// `⧫` — a run this scan positively knows is running.
-const GLYPH_LIVE: &str = crate::ui::glyphs::LOZENGE_BLACK;
-/// `◊` — the platform cannot say whether the driver lives. **Never a synonym
-/// for dead**; that collapse was CR-05 and the tri-state fix must not be
-/// re-flattened at the render layer.
-const GLYPH_LIVENESS_UNKNOWN: &str = crate::ui::glyphs::LOZENGE_WHITE;
-/// `◍` — succeeded, with changes on disk.
-const GLYPH_SUCCEEDED: &str = crate::ui::glyphs::CIRCLE_FILLED;
-/// `◦` — succeeded while nothing moved on disk. Its own state, not a flavour of
-/// success: the envelope said success and the working tree disagreed.
-const GLYPH_SUCCEEDED_NO_CHANGES: &str = crate::ui::glyphs::CIRCLE_OPEN;
-/// `✗` — failed, denied, timed out, stalled, refused, crashed.
-const GLYPH_FAILED: &str = crate::ui::glyphs::BALLOT_X;
-/// `▮` — the user stopped it.
-const GLYPH_KILLED: &str = crate::ui::glyphs::BLACK_RECT;
-
-// ── Output-pane markers (fixed `&'static str`, `\u{…}` per PATTERNS S7) ─────
-//
-// A two-cell left marker column, and the same mechanism argument as the run
-// glyphs above: no byte read off disk can be assigned to one of these, so agent
-// prose cannot reach the marker column (D-13).
-
-/// The common case — assistant, user, turn-boundary and unparseable streams —
-/// gets **no** marker, so injections and diagnostics stand out against it.
-const MARKER_OUTPUT: &str = "  ";
-/// `∙ ` U+2219 — the agent's stderr: present, and deliberately secondary.
-const MARKER_STDERR: &str = "\u{2219} ";
-/// `» ` — a human-injected message. The one Cyan use in this pane.
-const MARKER_INJECTION: &str = "\u{00BB} ";
-/// `! ` — a diagnostic. **Never silently swallowed**: a pane that loses lines
-/// without saying so is exactly the "looks done but isn't" failure this phase
-/// enumerates by name.
-const MARKER_DIAGNOSTIC: &str = "! ";
-/// `= ` — the terminal record, in the terminal-state colour and BOLD. The
-/// visual full stop, and it renders last.
-const MARKER_TERMINAL: &str = "= ";
-
 // ── Copy (Copywriting Contract, exact strings) ─────────────────────────────
-
-/// The goal field for a run that was started without one.
-///
-/// **Never a fabricated or paraphrased summary** (D-13, D-23). A goal that was
-/// given is stored and shown verbatim; a goal that was not given says so.
-const GOAL_NONE_GIVEN: &str = "(none given)";
-
-const NO_JOURNAL_ENTRIES: &str = "No journal entries yet.";
 
 /// The right-aligned indicator while the pane is following a live tail.
 const INDICATOR_FOLLOWING: &str = "[following]";
@@ -185,50 +89,6 @@ const SCROLLED_DISPLAY_MAX: usize = 999;
 pub(super) fn ring_overflow_notice(dropped: u64) -> String {
     format!("\u{2026} {dropped} earlier lines dropped (buffer holds {DRIVER_OUTPUT_RING_LINES})")
 }
-
-/// The notice for a record cut at the per-record line cap.
-///
-/// One pathological record could otherwise flush the whole ring, so the cap
-/// exists — and saying that it fired is the other half of it.
-const RECORD_TRUNCATED_NOTICE: &str = "    \u{2026} record truncated";
-
-/// The pinned first row for a run this session did not spawn (Phase 17 D-11).
-///
-/// **It says the live output is gone, and that is the only thing it may say.**
-/// Once the TUI exits the child's stdout pipe is gone, so reattachment is
-/// read-only and journal-based; live re-streaming after a restart is impossible
-/// by construction. **Nothing in code, copy, status text, footer hint or doc
-/// comment may promise it** — a promise the mechanism cannot keep is the named
-/// "looks done but isn't" failure, and this sentence is what stands in its
-/// place.
-const ADOPTED_RUN_NOTICE: &str = "This run started before the current TUI session. \
-     Its live output is gone \u{2014} showing the journal on disk.";
-
-/// The mandatory honest note under the one-row step timeline.
-///
-/// **Required, not decorative.** In this phase a run executes exactly one GSD
-/// command plus whatever turns the human's own interjections add, so the
-/// timeline has one decided row — and a one-row timeline with no explanation
-/// implies a computed sequence of steps that does not exist yet. Phase 20's
-/// router is what makes the row count mean something.
-const STEPS_HONEST_NOTE: &str = "This version runs one command per run.";
-
-/// The label that makes the cost figure readable rather than misleading.
-///
-/// **Mandatory** (D-12): `total_cost_usd` accumulates across the turns of one
-/// run while `num_turns` and `duration_ms` reset per turn, so an unlabelled
-/// figure invites the reader to take a running total for a per-turn one. Any
-/// per-turn figure rendered anywhere on this surface must be labelled as such.
-const COST_CUMULATIVE: &str = "cumulative";
-
-/// What the cost line says before any `cost` record has been read for this run.
-///
-/// A run's cumulative cost is only knowable from its journal, and the run list
-/// is deliberately built from each run's small committed `run.json` without
-/// opening the journal beside it. So for a run that is not the one being tailed
-/// the figure is genuinely unknown — and saying so is the only honest option. A
-/// zero here would be a number the mechanism cannot back.
-const COST_NOT_REPORTED: &str = "not yet reported";
 
 /// The shipped async-load idiom, reused verbatim (Phase 12, UI-SPEC `## Colour`).
 ///
@@ -261,71 +121,22 @@ pub(super) fn muted_style() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
-/// The glyph, run-list word and colour for one run's state.
-///
-/// **Every arm reads evidence and nothing else** (D-13): `verdict` is
-/// [`crate::driver::reconcile::ObservedRun::verdict`], derived from the record's
-/// `ended_at` and a pid/cmdline liveness probe; `outcome` is
-/// `RunRecord.outcome`, the rendered form of Phase 15's four-source derivation
-/// over `is_error`, `terminal_reason`, the permission-denial list, the exit code
-/// and a git/disk snapshot. No agent prose is inspected, and no string
-/// comparison against agent prose decides whether a run succeeded.
-///
-/// `None` for both is **not** treated as a crash. A run with no terminal record
-/// and no observation is a run nothing can currently speak for, which is what
-/// `◊ ?` says; reporting it as dead would manufacture a crash out of an absence
-/// of evidence, which is the CR-05 defect in a new place.
-pub fn run_state_glyph(
-    verdict: Option<RunVerdict>,
-    outcome: Option<&str>,
-) -> (&'static str, &'static str, Color) {
-    match verdict {
-        Some(RunVerdict::Live) => (GLYPH_LIVE, "live", Color::Magenta),
-        Some(RunVerdict::LivenessUnknown) => (GLYPH_LIVENESS_UNKNOWN, "?", Color::Yellow),
-        Some(RunVerdict::CrashedWithoutEnding) => (GLYPH_FAILED, "crash", Color::Red),
-        Some(RunVerdict::Ended) | None => match outcome {
-            Some("succeeded_with_changes") => (GLYPH_SUCCEEDED, "ok", Color::Green),
-            Some("succeeded_no_changes") => (GLYPH_SUCCEEDED_NO_CHANGES, "no-chg", Color::Yellow),
-            Some("failed") => (GLYPH_FAILED, "fail", Color::Red),
-            Some("permission_denied") => (GLYPH_FAILED, "denied", Color::Red),
-            Some("timed_out") => (GLYPH_FAILED, "t/out", Color::Red),
-            Some("stalled") => (GLYPH_FAILED, "stall", Color::Red),
-            Some("capability_refused") => (GLYPH_FAILED, "refuse", Color::Red),
-            Some("spawn_failed") => (GLYPH_FAILED, "spawn", Color::Red),
-            Some("killed") => (GLYPH_KILLED, "killed", Color::DarkGray),
-            // A label this build has never seen, or none at all.
-            _ => (GLYPH_LIVENESS_UNKNOWN, "?", Color::Yellow),
-        },
-    }
-}
+// ── The terminal-state label vocabulary (OBS-05, D-13) ─────────────────────
 
-// ── The terminal-state table (OBS-05, D-13) ────────────────────────────────
-
-/// Every state a run can be in, as a **typed** value.
+/// The outcome states a run record's `outcome` label can name, as a **typed** value.
 ///
-/// It exists so [`terminal_state_cell`] can match exhaustively with no wildcard
-/// arm, which is what makes a future state a compile error rather than a silent
-/// fallthrough to a word that happens to be wrong. Twelve of the thirteen are a
-/// [`RunVerdict`] or a [`crate::executor::RunOutcome`]; the thirteenth is the
-/// honest answer when neither is on disk.
+/// **What is left of it (Phase 31, D-03).** The Driver tab no longer renders legacy
+/// journal runs, so the glyph/word table and the live-verdict arms that fed it are
+/// gone. What stays is the label parser, because `driver::run`'s label-vocabulary
+/// test still asserts that every word `spawn_failure_label` writes is one this
+/// parser recognises. It goes with that test when `driver::run` is retired
+/// (`[inferred — audit]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalState {
-    /// `RunVerdict::Live` — the record has no `ended_at` and the pid is still
-    /// this run's driver.
-    Live,
-    /// `RunVerdict::LivenessUnknown`. **Never a synonym for dead**: that
-    /// collapse was CR-05, and re-flattening the tri-state at the render layer
-    /// would print "your run died" about every healthy run on a platform where
-    /// the probe does not apply.
-    LivenessUnknown,
-    /// `RunVerdict::CrashedWithoutEnding` — no terminal record and the pid is
-    /// gone.
-    CrashedWithoutEnding,
     /// `RunOutcome::SucceededWithChanges`.
     Succeeded,
     /// `RunOutcome::SucceededNoChanges`. **Its own state, not a flavour of
-    /// success**: the envelope said success while nothing moved on disk, which
-    /// is exactly the disagreement TRANS-02 exists to surface.
+    /// success**: the envelope said success while nothing moved on disk.
     SucceededNoChanges,
     /// `RunOutcome::Failed`.
     Failed,
@@ -336,14 +147,6 @@ pub enum TerminalState {
     /// `RunOutcome::Stalled` — the idle cap; the stuck detector proper.
     Stalled,
     /// `RunOutcome::CapabilityRefused` — the CLI failed the capability gate.
-    ///
-    /// **Not necessarily "no turn ever started" (260908-uqq).** That held
-    /// unconditionally until the executor gained
-    /// [`crate::executor::ExecutionOptions::prompt_release_grace`]. It still
-    /// holds when the CLI announced itself inside that grace; when the CLI
-    /// announces only after reading a user message, the prompt was released
-    /// first and the refusal aborted a turn that had begun. This label carries
-    /// the refusal, never which arm produced it.
     CapabilityRefused,
     /// `RunOutcome::SpawnFailed`.
     SpawnFailed,
@@ -357,33 +160,12 @@ pub enum TerminalState {
 }
 
 impl TerminalState {
-    /// The state a derived [`crate::executor::RunOutcome`] names.
-    ///
-    /// **The match is exhaustive with no wildcard on purpose**: a new
-    /// `RunOutcome` variant must fail to compile here rather than fall through
-    /// to a word that is quietly wrong about what happened.
-    pub fn from_outcome(outcome: &crate::executor::RunOutcome) -> Self {
-        use crate::executor::RunOutcome;
-        match outcome {
-            RunOutcome::SucceededWithChanges { .. } => Self::Succeeded,
-            RunOutcome::SucceededNoChanges { .. } => Self::SucceededNoChanges,
-            RunOutcome::Failed { .. } => Self::Failed,
-            RunOutcome::PermissionDenied { .. } => Self::PermissionDenied,
-            RunOutcome::Killed { .. } => Self::Killed,
-            RunOutcome::TimedOut { .. } => Self::TimedOut,
-            RunOutcome::Stalled { .. } => Self::Stalled,
-            RunOutcome::CapabilityRefused { .. } => Self::CapabilityRefused,
-            RunOutcome::SpawnFailed { .. } => Self::SpawnFailed,
-        }
-    }
-
     /// The state an outcome **label** names.
     ///
     /// The label is what `run.json` and `JournalEvent::RunEnded` actually carry,
     /// written by `driver::run::outcome_label` from the derived outcome. A label
     /// this build has never seen is [`Unrecorded`](Self::Unrecorded) rather than
-    /// a guess: the two vocabularies are kept in agreement by a test that maps
-    /// every `RunOutcome` through the driver's own labeller and back.
+    /// a guess.
     pub fn from_label(label: Option<&str>) -> Self {
         match label {
             Some("succeeded_with_changes") => Self::Succeeded,
@@ -398,118 +180,12 @@ impl TerminalState {
             _ => Self::Unrecorded,
         }
     }
-
-    /// The state the two pieces of evidence together support.
-    ///
-    /// An observation wins while there is one, because a live or crashed run has
-    /// no terminal record to read; once the run has ended the label speaks.
-    pub fn observed(verdict: Option<RunVerdict>, outcome: Option<&str>) -> Self {
-        match verdict {
-            Some(RunVerdict::Live) => Self::Live,
-            Some(RunVerdict::LivenessUnknown) => Self::LivenessUnknown,
-            Some(RunVerdict::CrashedWithoutEnding) => Self::CrashedWithoutEnding,
-            Some(RunVerdict::Ended) | None => Self::from_label(outcome),
-        }
-    }
-}
-
-/// The glyph, the run-detail word and the colour for one terminal state (D-13).
-///
-/// **The Replit rule governs every arm.** Each state arrives from evidence and
-/// from nothing else — `RunRecord.outcome`, `JournalEvent::RunEnded.outcome` or
-/// the exec exit, which is the four-source derivation Phase 15 computes from
-/// `is_error`, `terminal_reason`, the permission-denial list, the exit code and
-/// a git/disk snapshot — and **never from inspecting the agent's own prose**.
-/// The agent's words may be displayed as content in the output pane and may
-/// carry no authority here or anywhere else. The incident behind the rule: an
-/// agent deleted a production database during an explicit freeze, hid it,
-/// fabricated roughly four thousand fake users and fake test results, and
-/// falsely claimed rollback was impossible. A tool that repeats an agent's
-/// account of itself as fact makes that class of failure invisible to the human
-/// who is accountable for the repository.
-///
-/// **The match has no wildcard arm**, so a state this table has not been taught
-/// is a compile error rather than a word that is silently wrong.
-///
-/// The word carries **no interpolated value**, and that is a fact about the
-/// evidence rather than a simplification: what is on disk for a finished run is
-/// the outcome *label*, so a reason, a denial count or a cap duration is simply
-/// not there to render. Inventing one is what D-13 forbids. The return type is
-/// an owned `String` so a later source of a sanitised, `…`-truncated detail can
-/// be added without touching a caller.
-///
-/// **D-13 in one line, so it survives a reader who starts here:** every word
-/// below comes from evidence and never from the agent's prose. The incident is a
-/// production database deleted during an explicit freeze, hidden, and papered
-/// over with fabricated users and fabricated test results.
-pub fn terminal_state_cell(state: TerminalState) -> (&'static str, String, Color) {
-    let (glyph, word, color) = match state {
-        TerminalState::Live => (GLYPH_LIVE, "live", Color::Magenta),
-        TerminalState::LivenessUnknown => {
-            (GLYPH_LIVENESS_UNKNOWN, "liveness unknown", Color::Yellow)
-        }
-        TerminalState::CrashedWithoutEnding => (
-            GLYPH_FAILED,
-            "crashed without a terminal record",
-            Color::Red,
-        ),
-        TerminalState::Succeeded => (GLYPH_SUCCEEDED, "succeeded", Color::Green),
-        TerminalState::SucceededNoChanges => (
-            GLYPH_SUCCEEDED_NO_CHANGES,
-            "succeeded, no changes on disk",
-            Color::Yellow,
-        ),
-        TerminalState::Failed => (GLYPH_FAILED, "failed", Color::Red),
-        TerminalState::PermissionDenied => (GLYPH_FAILED, "permission denied", Color::Red),
-        TerminalState::TimedOut => (GLYPH_FAILED, "timed out", Color::Red),
-        TerminalState::Stalled => (GLYPH_FAILED, "stalled", Color::Red),
-        TerminalState::CapabilityRefused => (GLYPH_FAILED, "capability refused", Color::Red),
-        TerminalState::SpawnFailed => (GLYPH_FAILED, "spawn failed", Color::Red),
-        TerminalState::Killed => (GLYPH_KILLED, "killed", Color::DarkGray),
-        TerminalState::Unrecorded => (
-            GLYPH_LIVENESS_UNKNOWN,
-            "outcome not recorded",
-            Color::Yellow,
-        ),
-    };
-    (glyph, word.to_string(), color)
-}
-
-/// How long a run has been going, or how long it took.
-///
-/// `+MM:SS` while it is still going and `ran MM:SS` once it has ended, both
-/// widening to `H:MM:SS` past an hour. An unparseable `started_at` yields
-/// `unknown` rather than a plausible-looking zero: a duration the code cannot
-/// compute is not a duration of nothing.
-pub fn elapsed_label(started_at: &str, now: DateTime<Utc>, ended_at: Option<&str>) -> String {
-    let Some(start) = parse_rfc3339(started_at) else {
-        return "unknown".to_string();
-    };
-    let ended = ended_at.and_then(parse_rfc3339);
-    let end = ended.unwrap_or(now);
-    let seconds = (end - start).num_seconds().max(0);
-    let rendered = hms(seconds);
-    match ended {
-        Some(_) => format!("ran {rendered}"),
-        None => format!("+{rendered}"),
-    }
 }
 
 fn parse_rfc3339(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
-}
-
-fn hms(seconds: i64) -> String {
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    let secs = seconds % 60;
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{secs:02}")
-    } else {
-        format!("{minutes:02}:{secs:02}")
-    }
 }
 
 /// `MM-DD` and `HH:MM` in the reader's local zone, or placeholders.
@@ -582,63 +258,6 @@ pub(super) fn shown_capped(value: &str) -> String {
     crate::text::display_identity(&sanitize_render_line(value))
 }
 
-/// The last four characters of a run id — enough to tell two runs apart in a
-/// list, since `new_run_id` puts a random tie-break suffix there.
-///
-/// Already a CHARACTER operation, unlike the session-id truncation 21-25 fixed
-/// in `detail.rs` — noted so a reader does not assume the family is everywhere.
-fn run_id_suffix(run_id: &str) -> String {
-    let chars: Vec<char> = run_id.chars().collect();
-    let start = chars.len().saturating_sub(4);
-    let mut suffix: String = chars[start..].iter().collect();
-    while suffix.chars().count() < 4 {
-        suffix.insert(0, ' ');
-    }
-    suffix
-}
-
-/// One row of the run list.
-///
-/// The fixed part is [`RUN_LIST_FIXED_CELLS`] cells at every width — one form,
-/// not a set of width variants — and the state word is appended only when the
-/// pane's inner width reaches [`RUN_LIST_WORD_MIN_CELLS`]. Glyph, word and
-/// colour travel together so no meaning is carried by colour alone.
-pub fn run_list_row(
-    summary: &RunSummary,
-    verdict: Option<RunVerdict>,
-    inner_width: u16,
-) -> Line<'static> {
-    let (glyph, word, color) = run_state_glyph(verdict, summary.outcome.as_deref());
-    let (date, time) = local_date_time(&summary.started_at);
-    let mut spans = vec![
-        Span::styled(glyph, Style::default().fg(color)),
-        // READ BY A HUMAN: the run id is generated by this build but read back
-        // out of a run directory name on disk, which any process can create.
-        Span::raw(format!(
-            " {date} {time} {}",
-            shown_capped(&run_id_suffix(&summary.run_id))
-        )),
-    ];
-    if inner_width >= RUN_LIST_WORD_MIN_CELLS {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(word, Style::default().fg(color)));
-    }
-    Line::from(spans)
-}
-
-/// The identity of the selected run, for the narrow tier's pane title.
-pub(super) fn run_list_title(summary: &RunSummary, index: usize, total: usize) -> String {
-    let (date, time) = local_date_time(&summary.started_at);
-    // READ BY A HUMAN, through `Block::title` — the family that preserves the
-    // invisible class most completely of the four measured in 21-23.
-    format!(
-        " {date} {time} {}  ({}/{}) ",
-        shown_capped(&run_id_suffix(&summary.run_id)),
-        index + 1,
-        total
-    )
-}
-
 /// Split the tab area into the run list and the run detail.
 ///
 /// The detail pane takes `Constraint::Min(DRIVER_DETAIL_MIN_CELLS)` and **never
@@ -659,214 +278,6 @@ pub(super) fn driver_panes(area: Rect) -> (Option<Rect>, Rect) {
     (Some(panes[0]), panes[1])
 }
 
-/// Wrap `text` to at most `max_rows` rows of `width` cells, ellipsing the last
-/// row when there is more.
-///
-/// Greedy word wrapping with a hard split for a word longer than the row, and
-/// `char`-based throughout: byte slicing panics on a multibyte boundary, and a
-/// goal is arbitrary user text.
-fn wrap_rows(text: &str, width: usize, max_rows: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut rows: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_cells = 0usize;
-
-    let mut push_row = |row: &mut String, cells: &mut usize| {
-        rows.push(std::mem::take(row));
-        *cells = 0;
-    };
-
-    for word in text.split_whitespace() {
-        let word_cells = word.chars().count();
-        if current_cells > 0 && current_cells + 1 + word_cells > width {
-            push_row(&mut current, &mut current_cells);
-        }
-        if word_cells > width {
-            // A single word wider than the row: hard-split it by chars.
-            for ch in word.chars() {
-                if current_cells == width {
-                    push_row(&mut current, &mut current_cells);
-                }
-                current.push(ch);
-                current_cells += 1;
-            }
-            continue;
-        }
-        if current_cells > 0 {
-            current.push(' ');
-            current_cells += 1;
-        }
-        current.push_str(word);
-        current_cells += word_cells;
-    }
-    if current_cells > 0 {
-        rows.push(current);
-    }
-
-    if rows.len() > max_rows {
-        rows.truncate(max_rows);
-        if let Some(last) = rows.last_mut() {
-            if last.chars().count() >= width {
-                let kept: String = last.chars().take(width.saturating_sub(1)).collect();
-                *last = kept;
-            }
-            last.push('\u{2026}');
-        }
-    }
-    rows
-}
-
-/// Truncate to `width` cells by `char`, with a trailing ellipsis when cut.
-fn ellipsize(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
-    out.push('\u{2026}');
-    out
-}
-
-/// Keep the tail of a path when it does not fit — the leading directories are
-/// the part a reader can reconstruct, the run id is not.
-fn left_truncate(text: &str, width: usize) -> String {
-    let cells = text.chars().count();
-    if cells <= width {
-        return text.to_string();
-    }
-    let keep = width.saturating_sub(1);
-    let skip = cells.saturating_sub(keep);
-    let mut out = String::from("\u{2026}");
-    out.extend(text.chars().skip(skip));
-    out
-}
-
-/// The goal rows: verbatim, sanitised, wrapped to at most three, then ellipsed.
-///
-/// **The goal is never fabricated, paraphrased or summarised** (D-13, D-23). It
-/// is the one field on this surface that is the human's own words, and the whole
-/// value of OBS-03 is that it comes back exactly as it was given. When no goal
-/// was given the field says [`GOAL_NONE_GIVEN`] and shows nothing else — an
-/// invented one-line summary of what the run "seems to be doing" would be the
-/// agent's account of itself wearing the user's voice.
-fn goal_lines(goal: &str, inner_width: u16) -> Vec<Line<'static>> {
-    const PREFIX: &str = "  goal: ";
-    const CONTINUATION: &str = "        ";
-
-    // The one production spelling of blankness, not a `trim` of this renderer's
-    // own. This surface renders values re-read from run records, which this
-    // build's parse boundary never saw: a goal of zero-width characters survives
-    // `str::trim` and used to render as a blank line wearing a goal's label —
-    // which reads as a goal the user simply cannot see rather than as no goal.
-    if !crate::text::carries_visible_content(goal) {
-        return vec![Line::from(vec![
-            Span::styled(PREFIX, label_style()),
-            Span::styled(GOAL_NONE_GIVEN, muted_style()),
-        ])];
-    }
-
-    // READ BY A HUMAN: the goal is re-read from a run record this build's
-    // parse boundary never saw. BOTH classes, composed — `sanitize_render_line`
-    // alone left `U+202E`, `U+00AD` and the tag block intact here.
-    let sanitised = shown_capped(goal);
-    let body_width = usize::from(inner_width).saturating_sub(PREFIX.chars().count());
-    let rows = wrap_rows(&sanitised, body_width, 3);
-    rows.into_iter()
-        .enumerate()
-        .map(|(i, row)| {
-            Line::from(vec![
-                Span::styled(if i == 0 { PREFIX } else { CONTINUATION }, label_style()),
-                Span::raw(row),
-            ])
-        })
-        .collect()
-}
-
-/// How many rows [`goal_lines`] will take, so the vertical layout can budget.
-fn goal_rows(goal: &str, inner_width: u16) -> u16 {
-    goal_lines(goal, inner_width).len() as u16
-}
-
-/// The run header: goal, command, times, cumulative cost, and the run directory.
-///
-/// **Nothing here is derived from the agent's prose** (D-13). The goal and the
-/// command are the human's own input echoed back; the timestamps come from the
-/// run record; the cost comes from a `cost` journal record's `cumulative_usd`.
-/// The agent's `ResultMessage.result` may be displayed as content in the output
-/// pane below and has no authority over any word in this header.
-///
-/// **This header renders no status word of its own, and takes no verdict**
-/// (WR-11). The state word belongs to the run list and to the step timeline;
-/// saying it three times would invite three renderings of one fact. That
-/// intention used to be spelled as a `verdict` parameter whose only statement
-/// was `let _ = verdict;`, which is a parameter the next edit will silently
-/// mis-wire — the compiler cannot tell a future change that forgot to use it
-/// from one that deliberately did not. The intent is a sentence, so it is one.
-fn render_run_header(
-    summary: &RunSummary,
-    cost_usd: Option<f64>,
-    run_dir: Option<&str>,
-    inner_width: u16,
-    now: DateTime<Utc>,
-) -> Vec<Line<'static>> {
-    let mut lines = goal_lines(&summary.goal, inner_width);
-
-    let command = ellipsize(
-        &shown_capped(&summary.gsd_command),
-        usize::from(inner_width).saturating_sub(30).max(8),
-    );
-    let (_, started) = local_date_time(&summary.started_at);
-    let mut cmd_spans = vec![
-        Span::styled("  cmd:  ", label_style()),
-        Span::raw(command),
-        Span::styled("    started ", label_style()),
-        Span::raw(started),
-        Span::styled("    ", label_style()),
-    ];
-    // While a run is live the label reads `elapsed`; once it has ended the value
-    // itself carries the `ran` verb, so a second label would read "elapsed ran".
-    if summary.ended_at.is_none() {
-        cmd_spans.push(Span::styled("elapsed ", label_style()));
-    }
-    cmd_spans.push(Span::raw(elapsed_label(
-        &summary.started_at,
-        now,
-        summary.ended_at.as_deref(),
-    )));
-    if let Some(ended_at) = summary.ended_at.as_deref() {
-        let (_, ended) = local_date_time(ended_at);
-        cmd_spans.push(Span::styled("    ended ", label_style()));
-        cmd_spans.push(Span::raw(ended));
-    }
-    lines.push(Line::from(cmd_spans));
-
-    lines.push(Line::from(match cost_usd {
-        Some(usd) => vec![
-            Span::styled("  cost  ", label_style()),
-            Span::raw(format!("${usd:.2} ")),
-            Span::styled(COST_CUMULATIVE, label_style()),
-        ],
-        None => vec![
-            Span::styled("  cost  ", label_style()),
-            Span::styled(COST_NOT_REPORTED, muted_style()),
-        ],
-    }));
-
-    if let Some(dir) = run_dir {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  {}",
-                left_truncate(
-                    &shown_capped(dir),
-                    usize::from(inner_width).saturating_sub(2).max(8),
-                )
-            ),
-            label_style(),
-        )));
-    }
-
-    lines
-}
-
 /// The Driver pane's identity title, carrying D3's EXPERIMENTAL marker.
 ///
 /// **Unconditional, and that is correct**: since quick task 260917-fko this
@@ -877,330 +288,21 @@ fn render_run_header(
 ///
 /// One constant for both title sites — the empty-runs early return and the
 /// two-pane detail block — so a project with no runs yet is marked too. The
-/// narrow tier deliberately keeps `run_list_title`: that tier exists to give
-/// the detail pane the selected run's identity, and overwriting it with this
-/// marker would cost the user the information the tier was added for.
+/// narrow tier deliberately keeps the selected run's own title (`narrow_title` in
+/// `driver_run.rs`): that tier exists to give the detail pane the selected run's
+/// identity, and overwriting it with this marker would cost the user the
+/// information the tier was added for.
 ///
 /// The em dash is written as a `\u{…}` escape, matching the `DRIVER_LIVE_MARKER`
 /// convention in `detail.rs`.
 pub(super) const DRIVER_PANE_TITLE: &str = " Driver \u{2014} EXPERIMENTAL ";
 
 /// What the Driver tab drew that the mouse can hit (quick 260926-kes,
-/// [inferred I-11]): the run list's item rows, and the run-detail pane — the
-/// latter only while the run detail, not the dry-run preview, is drawn.
+/// [inferred I-11]): the run list's item rows, and the selected run's LOG pane.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(super) struct DriverTabRegions {
     pub list: Option<crate::ui::mouse::ListRegion>,
     pub output: Option<Rect>,
-}
-
-/// Render the dry-run preview in place of the run detail (D-26).
-///
-/// **What this is.** While `DriverStartScreen` is on the stack at Step B, the
-/// body's run-detail pane shows what the run about to be confirmed would touch:
-/// the GSD command sequence, the working tree a commit would capture, and the
-/// push refspecs the current state would produce. Zero new keys and zero new
-/// modes — it is the pane the user is already looking at, and it is literally
-/// "before a start is confirmed". This is the only place in v2.0 where a user
-/// sees blast radius **before** an autonomous agent with push rights starts.
-///
-/// **The cut rule (D-26).** This is the phase's *designated cut*: it is the only
-/// surface item in Phase 18 with no requirement id, and if it ever competes for
-/// space it is the first thing to drop. If it is dropped, the body simply shows
-/// the normal run detail again and **nothing else changes** — the one call site
-/// above is a `match` arm, and the preview owns no key, no mode and no state
-/// outside `ProjectViewCache::driver_dry_run`.
-///
-/// **The fence (Phase 19).** Phase 18 *surfaces* the report and does not police
-/// it. Push allowlists, `--disallowedTools`, pre-push hooks, secret scanning and
-/// worktree isolation are **Phase 19's**, and nothing here may imply that seeing
-/// a refspec prevents pushing to it.
-///
-/// **Untrusted input.** The report interpolates paths and branch names read from
-/// the project, so every row goes through the shared
-/// [`sanitize_render_line`] before rendering — otherwise a branch named with an
-/// escape sequence could repaint the screen or forge a status line (T-18-61).
-/// Nothing on this pane is derived from an agent's prose (D-13).
-///
-/// **Loading.** Until the `spawn_blocking` build returns, the pane shows the
-/// shipped [`DRY_RUN_LOADING`] idiom in DarkGray. Keys stay inert and nothing
-/// panics; there is no spinner, because there is no honest thing for one to say.
-///
-/// ---
-///
-/// **D-26 in one paragraph, kept adjacent to the signature so it survives a
-/// skim:** this preview is the phase's *designated cut* — the only surface item
-/// with no requirement id. Drop it and the body shows the normal run detail,
-/// with nothing else changing. And the **Phase 19 fence**: Phase 18 surfaces
-/// this report, it does not police it — push allowlists, tool denial, pre-push
-/// hooks, secret scanning and worktree isolation all belong to Phase 19.
-pub(super) fn render_dry_run_preview(frame: &mut Frame, area: Rect, preview: &DryRunPreview) {
-    let mut lines: Vec<Line<'static>> = match preview.report.as_deref() {
-        // Unknown is not "nothing would happen".
-        None => vec![Line::from(Span::styled(DRY_RUN_LOADING, muted_style()))],
-        // The report interpolates paths and branch names read from the project
-        // — a repository the operator cloned, not one this build authored. Both
-        // classes, composed through `shown_capped`.
-        //
-        // **This site is held by a CALL, not by the type.** `DryRunPreview` is
-        // built in `src/app.rs`, outside this wave's fence, so `report` is
-        // still `Option<String>` and a NEW render of it would not fail to
-        // compile. What bounds that is the `Driver tab, dry-run preview` probe
-        // state, not the compiler — see LIMIT 1's residual (D-21-39).
-        Some(report) => report
-            .lines()
-            .map(|raw| Line::from(shown_capped(raw)))
-            .collect(),
-    };
-
-    // The report is longer than a short pane, and a pane that silently drops the
-    // refspec section is precisely the PITFALLS:69 failure this preview exists
-    // to prevent — so say so, with the same indicator and the same predicate the
-    // help popup uses rather than a second copy of either.
-    let total = lines.len() as u16;
-    if super::help::more_below(0, total, area.height) && area.height > 0 {
-        let last = area.height as usize - 1;
-        lines.truncate(last);
-        lines.push(Line::from(Span::styled(
-            super::help::MORE_INDICATOR,
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// The vertical layout of the run-detail pane, in three height tiers.
-///
-/// **No section is ever allocated zero rows**: a section that cannot fit is
-/// dropped by the tier rather than squeezed to nothing, because a one-row
-/// section rule with no content under it reads as a section that failed to load.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_run_detail(
-    frame: &mut Frame,
-    area: Rect,
-    ctx: &AppContext,
-    alias: &str,
-    cache: Option<&ProjectViewCache>,
-    summary: &RunSummary,
-    verdict: Option<RunVerdict>,
-    viewport: &Cell<ViewportMetrics>,
-) {
-    let now = Utc::now();
-    let tally = cache.and_then(|c| c.driver_tally.as_ref());
-    let cost_usd = tally
-        .filter(|tally| tally.run_id == summary.run_id)
-        .and_then(|tally| tally.cumulative_cost_usd);
-    let turns = tally
-        .filter(|tally| tally.run_id == summary.run_id)
-        .map(|tally| tally.turn_boundaries + 1);
-
-    let run_dir = ctx.config.projects.get(alias).and_then(|project| {
-        crate::journal::run_paths(&project.path.join(".planning"), &summary.run_id)
-            .map(|paths| paths.dir.display().to_string())
-    });
-
-    let inference = ctx
-        .project_states
-        .get(alias)
-        .and_then(|state| state.current_phase_status.as_ref());
-
-    let goal_row_count = goal_rows(&summary.goal, area.width);
-    let header_rows = goal_row_count + 3;
-    // The section rule, the one decided row this phase has (D-12), and the
-    // mandatory honest note.
-    let step_rows = 3;
-
-    let chunks: Vec<Rect> = if area.height >= 14 {
-        Layout::vertical([
-            Constraint::Length(header_rows),
-            Constraint::Length(2),
-            Constraint::Length(step_rows),
-            Constraint::Min(3),
-        ])
-        .split(area)
-        .to_vec()
-    } else if area.height >= 8 {
-        // The header and the output, and nothing between them. The pipeline row and
-        // the steps section are dropped TOGETHER (Phase 18 WR-05, folded into D-29):
-        // squeezed to one row each they were a blank pipeline row and a bare `steps`
-        // rule with no content under it, which reads as a section that failed to load.
-        Layout::vertical([Constraint::Length(2), Constraint::Min(3)])
-            .split(area)
-            .to_vec()
-    } else {
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1)])
-            .split(area)
-            .to_vec()
-    };
-
-    if area.height < 8 {
-        // The shortest tier: a one-row identity header and the output pane.
-        let (date, time) = local_date_time(&summary.started_at);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!(
-                    "  {date} {time} {}",
-                    shown_capped(&run_id_suffix(&summary.run_id))
-                ),
-                label_style(),
-            ))),
-            chunks[0],
-        );
-        render_output_section(
-            frame, chunks[1], ctx, alias, cache, summary, verdict, viewport,
-        );
-        return;
-    }
-
-    let header = render_run_header(summary, cost_usd, run_dir.as_deref(), area.width, now);
-    let header_budget = usize::from(chunks[0].height);
-    frame.render_widget(
-        Paragraph::new(header.into_iter().take(header_budget).collect::<Vec<_>>()),
-        chunks[0],
-    );
-
-    if area.height < 14 {
-        // 8..=13 rows: header (2) + output only (WR-05).
-        render_output_section(
-            frame, chunks[1], ctx, alias, cache, summary, verdict, viewport,
-        );
-        return;
-    }
-
-    render_pipeline_row(frame, chunks[1], inference);
-    render_steps(frame, chunks[2], summary, verdict, turns);
-    render_output_section(
-        frame, chunks[3], ctx, alias, cache, summary, verdict, viewport,
-    );
-}
-
-/// The D-R-P-E-V pipeline row — **called, never re-implemented** (D-17).
-///
-/// [`super::detail::derive_all_stage_statuses`] and
-/// [`super::detail::build_pipeline_line`] are free functions over
-/// `&DiskInference`, invoked here exactly as `render_pipeline_tab` invokes them,
-/// with their existing two-cell indent, their existing per-stage colours and
-/// their existing `[--]` rendering for a skipped stage. Nothing about the widget
-/// is modified, wrapped, restyled or duplicated: **a second progress display is
-/// a named anti-feature** and D-17 makes reuse mandatory.
-///
-/// `ARCHITECTURE` M5 proposes lifting those functions out of `detail.rs` into
-/// `state_reader/`. That is **explicitly declined for this phase**, and the
-/// decline is recorded at the call site so a later reader knows it was
-/// considered rather than missed: the driver process does not render, Phase 20's
-/// `decide()` is the first genuine second consumer, and moving 130 lines now
-/// would churn the largest file in the repository to buy nothing.
-///
-/// The inference is the project's **current phase**'s, which is what makes this
-/// row answer the question a driven repository raises — how far through the
-/// pipeline is the thing the agent is working on.
-fn render_pipeline_row(
-    frame: &mut Frame,
-    area: Rect,
-    inference: Option<&crate::state_reader::disk_status::DiskInference>,
-) {
-    let mut lines: Vec<Line<'static>> = vec![Line::from("")];
-    match inference {
-        Some(inf) => {
-            let statuses = super::detail::derive_all_stage_statuses(inf);
-            lines.push(super::detail::build_pipeline_line(inf, &statuses));
-        }
-        None => lines.push(Line::from(Span::styled("  No disk data", label_style()))),
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// The step timeline: **exactly one decided row in this phase**, plus the note
-/// that says so.
-///
-/// **Turns are turns, not commands** (D-12, Phase 15 D-29). A steered run emits
-/// several `system/init` and `result` pairs inside one process; the timeline
-/// shows the one command that was *decided* and the counter shows the turns. A
-/// later `system/init` is informational and is never rendered as a restart. The
-/// section carries N rows structurally so Phase 20's router needs no re-layout,
-/// while this phase supplies one — and says so, because a one-row timeline with
-/// no explanation implies a computed sequence that does not exist.
-///
-/// **The state word comes from evidence only, never from the agent's prose**
-/// (D-13). [`run_state_glyph`] reads `RunVerdict` — the record's `ended_at` plus
-/// a pid/cmdline liveness probe — and `RunRecord.outcome`, the rendered form of
-/// the four-source derivation Phase 15 computes from `is_error`,
-/// `terminal_reason`, the permission-denial list, the exit code and a git/disk
-/// snapshot. **No string comparison against what the agent said about itself
-/// decides what this row says.** The agent's own account may appear as content
-/// in the output pane below and carries no authority here.
-fn render_steps(
-    frame: &mut Frame,
-    area: Rect,
-    summary: &RunSummary,
-    verdict: Option<RunVerdict>,
-    turns: Option<u32>,
-) {
-    frame.render_widget(
-        Paragraph::new(steps_lines(summary, verdict, turns, area.width)),
-        area,
-    );
-}
-
-/// The step section's lines, as a pure function so the whole thing is assertable
-/// without a terminal (S6).
-fn steps_lines(
-    summary: &RunSummary,
-    verdict: Option<RunVerdict>,
-    turns: Option<u32>,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let live = matches!(verdict, Some(RunVerdict::Live));
-    // **The run detail's word, not the run list's.** The list row is 18 cells at
-    // every width and carries the abbreviation; this row is the one place the
-    // full evidence-derived word fits, and it is what makes a finished run
-    // reviewable after the fact rather than merely glanceable (OBS-05).
-    let (_, word, color) =
-        terminal_state_cell(TerminalState::observed(verdict, summary.outcome.as_deref()));
-    let (_, started) = local_date_time(&summary.started_at);
-
-    let command_style = if live {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-
-    let mut lines: Vec<Line<'static>> = vec![section_rule("steps", width)];
-
-    // N rows structurally, one row supplied — Phase 20's router adds the rest
-    // without re-laying-out this section.
-    let decided: [&RunSummary; 1] = [summary];
-    for step in decided {
-        let mut spans = vec![
-            Span::styled(
-                format!("  {}", shown_capped(&step.gsd_command)),
-                command_style,
-            ),
-            Span::styled(format!("   {started}   "), label_style()),
-            Span::styled(
-                if live {
-                    "running".to_string()
-                } else {
-                    word.clone()
-                },
-                Style::default().fg(color),
-            ),
-        ];
-        if live {
-            if let Some(turns) = turns {
-                spans.push(Span::styled(format!("   turn {turns}"), label_style()));
-            }
-        }
-        lines.push(Line::from(spans));
-    }
-
-    lines.push(Line::from(Span::styled(
-        format!("  {STEPS_HONEST_NOTE}"),
-        muted_style(),
-    )));
-
-    lines
 }
 
 /// The right-aligned state of the output pane, as a word and a colour.
@@ -1250,16 +352,6 @@ pub fn follow_indicator(
     }
 }
 
-/// The output pane's header: a DarkGray rule with the indicator on its right.
-///
-/// The rule is the pane's own row rather than the first line of the scrolling
-/// paragraph, so the indicator does not scroll away the moment it becomes
-/// interesting. At a width too narrow for both, the dashes give way first and
-/// the indicator is what survives.
-fn output_header_line(width: u16, indicator: &str, color: Color) -> Line<'static> {
-    pane_header_line("output", width, indicator, color)
-}
-
 /// A scrolling pane's header: a DarkGray `── {name} ───` rule with the follow
 /// indicator on its right. [`output_header_line`] is this with the name `output`;
 /// the launcher run's LOG.md pane (30-02) is the same rule with the name `log`, so
@@ -1283,266 +375,18 @@ pub(super) fn pane_header_line(
     ])
 }
 
-/// One buffered line, with its two-cell marker in its own style.
-///
-/// The four visual classes are the UI-SPEC's event-kind table. `terminal_color`
-/// is the run's terminal-state colour, which is derived from evidence and never
-/// from the agent's prose (D-13) — see [`run_state_glyph`].
-fn output_line(line: &DriverOutputLine, terminal_color: Color) -> Line<'static> {
-    let injection_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
-    let terminal_style = Style::default()
-        .fg(terminal_color)
-        .add_modifier(Modifier::BOLD);
-    let (marker, marker_style, text_style) = match line.kind {
-        DriverLineKind::Output => (MARKER_OUTPUT, Style::default(), Style::default()),
-        DriverLineKind::Stderr => (MARKER_STDERR, label_style(), label_style()),
-        DriverLineKind::Injection => (MARKER_INJECTION, injection_style, Style::default()),
-        DriverLineKind::Diagnostic => (
-            MARKER_DIAGNOSTIC,
-            Style::default().fg(Color::Yellow),
-            Style::default().fg(Color::Yellow),
-        ),
-        DriverLineKind::Terminal => (MARKER_TERMINAL, terminal_style, terminal_style),
-    };
-    Line::from(vec![
-        Span::styled(marker, marker_style),
-        // `line.text` is `crate::text::Untrusted` — the agent's own prose, read
-        // back off disk. `shown()` is not a courtesy here: it is the only way
-        // this value can reach a `Span` at all, because the carrier implements
-        // none of the string conversions (21-28 T1, CR-02).
-        Span::styled(line.text.shown(), text_style),
-    ])
-}
-
-/// The scrolling body of the output pane, as a pure function (S6).
-///
-/// Order, and every part of it is load-bearing:
-///
-/// 1. The **adopted-run notice**, when this session did not spawn the run. It
-///    is above the drop notice because it describes where every row below came
-///    from, while the drop notice describes only the buffer's own shortfall.
-/// 2. The **ring-overflow notice**, when the buffer has dropped lines. It
-///    describes what is missing from everything below it.
-/// 3. The buffered lines, in order, each with its marker — with the terminal
-///    record held back.
-/// 4. The **record-truncation notice**, when one record was cut at the
-///    per-record cap.
-/// 5. The terminal record, which renders **last**: the visual full stop.
-///
-/// A journal record of an injection kind is an ordinary buffered line here: the
-/// four-state widget that used to supersede those lines is gone with the
-/// injection path (Phase 31, D-08), so nothing is spliced or swallowed.
-///
-/// A run whose journal has no records renders the pinned no-entries copy and
-/// nothing else.
-fn output_body_lines(
-    output: Option<&DriverOutput>,
-    adopted: bool,
-    terminal_color: Color,
-) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    if adopted {
-        lines.push(Line::from(Span::styled(ADOPTED_RUN_NOTICE, muted_style())));
-    }
-
-    let Some(output) = output.filter(|output| !output.is_empty()) else {
-        lines.push(Line::from(Span::styled(
-            format!("  {NO_JOURNAL_ENTRIES}"),
-            label_style(),
-        )));
-        return lines;
-    };
-
-    if output.dropped() > 0 {
-        lines.push(Line::from(Span::styled(
-            ring_overflow_notice(output.dropped()),
-            muted_style(),
-        )));
-    }
-
-    let mut terminal: Vec<Line<'static>> = Vec::new();
-    for line in output.lines() {
-        match line.kind {
-            DriverLineKind::Terminal => terminal.push(output_line(line, terminal_color)),
-            _ => lines.push(output_line(line, terminal_color)),
-        }
-    }
-
-    if output.record_truncated() {
-        lines.push(Line::from(Span::styled(
-            RECORD_TRUNCATED_NOTICE,
-            muted_style(),
-        )));
-    }
-
-    lines.extend(terminal);
-    lines
-}
-
-/// Which buffer speaks for the selected run.
-///
-/// The live ring on `AppContext` is **per alias** and holds the run this session
-/// is tailing; `ProjectViewCache::driver_journal` is the *selected* run's
-/// journal as the scan read it whole off disk. Rendering the tailed run's ring
-/// under a run the user is reviewing from last week would attribute one run's
-/// output to another — the same error the run id inside `DriverRunTally` exists
-/// to prevent — so the choice is made by run id and by nothing else, and a
-/// journal that is about a different run is not shown at all.
-///
-/// **The ring is matched on its own run id, not on the observed-run map** (CR-02).
-/// The reconciliation map answers "which run is this session tailing", which is
-/// a different question from "which run do these lines belong to" and stops
-/// being the same answer the moment a run ends: `reconcile_one` drops an ended
-/// run from the map while its lines are still the newest thing on the surface.
-/// [`DriverOutput::run_id`] is the buffer's own account of itself and cannot go
-/// stale relative to the lines beside it.
-///
-/// **The live ring is a preference, not a short-circuit** (WR-07). An empty ring
-/// falls through to the journal rather than returning `None`, because an adopted
-/// run — or any run after a TUI restart — has an empty ring until the first
-/// watcher event fires, and short-circuiting there paints "No journal entries
-/// yet." directly under the notice saying the journal on disk is what is being
-/// shown. The scan already read that journal whole for exactly this case.
-fn output_for_run<'a>(
-    ctx: &'a AppContext,
-    alias: &str,
-    cache: Option<&'a ProjectViewCache>,
-    run_id: &str,
-) -> Option<&'a DriverOutput> {
-    let live = ctx
-        .driver_output
-        .get(alias)
-        .filter(|output| output.run_id() == run_id)
-        .filter(|output| !output.is_empty());
-    if live.is_some() {
-        return live;
-    }
-    cache
-        .and_then(|cache| cache.driver_journal.as_deref())
-        .filter(|journal| journal.run_id == run_id)
-        .map(|journal| &journal.output)
-}
-
-/// The live output pane (OBS-04, OBS-05).
-///
-/// **This function renders live output for a run this session spawned and a
-/// journal that has stopped growing for one it did not, and it never promises
-/// the first for the second.** Once the TUI exits the child's stdout pipe is
-/// gone, so reattachment is read-only and journal-based (Phase 17 D-11); the
-/// adopted run's first row says so and the indicator reads journal-only. That is
-/// a rule on this function rather than an observation about it.
-///
-/// The viewer is the Browse file viewer's shape: build the whole `Vec<Line>`,
-/// take `total_lines` from **that vector** after it is fully built, record the
-/// metrics into the shared `Cell<ViewportMetrics>` during the render pass, and
-/// render `Paragraph::new(lines).scroll((offset, 0))` with **wrapping off** —
-/// `Wrap` breaks the `total_lines` ↔ offset correspondence the clamp depends on.
-///
-/// **The follow bit is resolved here and nowhere else.** While it is set the
-/// pane shows the tail, expressed as `u16::MAX` through the one shared
-/// [`clamp_scroll`]; a second `total_lines - visible_height` written out
-/// anywhere is how UIFIX-04 would come back in a new place (D-19).
-#[allow(clippy::too_many_arguments)]
-fn render_output_section(
-    frame: &mut Frame,
-    area: Rect,
-    ctx: &AppContext,
-    alias: &str,
-    cache: Option<&ProjectViewCache>,
-    summary: &RunSummary,
-    verdict: Option<RunVerdict>,
-    viewport: &Cell<ViewportMetrics>,
-) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    let (rule_area, body_area) = (rows[0], rows[1]);
-
-    let (_, _, terminal_color) = run_state_glyph(verdict, summary.outcome.as_deref());
-    let adopted = !ctx.session_spawned_runs.contains(&summary.run_id);
-
-    let body = output_body_lines(
-        output_for_run(ctx, alias, cache, &summary.run_id),
-        adopted,
-        terminal_color,
-    );
-
-    // `total_lines` is taken **after** the vector is fully built, so the offset
-    // always clamps against what is actually rendered.
-    let total_lines = body.len() as u16;
-    let metrics = ViewportMetrics {
-        total_lines,
-        visible_height: body_area.height,
-    };
-    viewport.set(metrics);
-
-    let following = cache.is_some_and(|c| c.driver_follow);
-    // `u16::MAX` means "the tail, whatever it is"; the shared clamp resolves it.
-    let requested = if following {
-        u16::MAX
-    } else {
-        cache.map_or(0, |c| c.driver_scroll_offset)
-    };
-    let scroll = clamp_scroll(requested, total_lines, body_area.height);
-    let below = usize::from(tail_offset(metrics).saturating_sub(scroll));
-
-    let live = matches!(verdict, Some(RunVerdict::Live));
-    let (indicator, color) =
-        follow_indicator(live, following, below, summary.ended_at.as_deref(), adopted);
-    frame.render_widget(
-        Paragraph::new(output_header_line(rule_area.width, &indicator, color)),
-        rule_area,
-    );
-    frame.render_widget(Paragraph::new(body).scroll((scroll, 0)), body_area);
-}
-
-/// A DarkGray section rule: `── name ─────…` padded to the pane width.
-fn section_rule(name: &str, width: u16) -> Line<'static> {
-    let head = format!("\u{2500}\u{2500} {name} ");
-    let pad = usize::from(width).saturating_sub(head.chars().count());
-    Line::from(Span::styled(
-        format!("{head}{}", "\u{2500}".repeat(pad)),
-        label_style(),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::detail::ViewportMetrics;
+    use super::super::{DriverLineKind, DriverOutput, ProjectViewCache};
     use super::*;
+    use ratatui::Frame;
+    use std::cell::Cell;
 
-    /// Quick 261021-1id: the output-pane markers that carry a glyph are a
-    /// width-safe registry glyph plus one space (two cells), like the badges.
-    #[test]
-    fn output_markers_are_registry_glyphs_plus_one_space() {
-        for marker in [MARKER_STDERR, MARKER_INJECTION] {
-            let mut chars = marker.chars();
-            let glyph = chars.next().expect("glyph").to_string();
-            assert_eq!(chars.as_str(), " ", "{marker:?} must be glyph + one space");
-            assert!(
-                crate::ui::glyphs::ALL.iter().any(|(_, r)| *r == glyph),
-                "{glyph:?} is not a registry glyph"
-            );
-            assert_eq!(ratatui::text::Span::raw(marker).width(), 2);
-        }
-    }
-
-    /// The legacy surface through the shipped-by-Phase-30 composition: the collapsed
-    /// `legacy runs` row expanded and the highlight on the legacy run (30-01), with
-    /// the launcher listing landed so the pane does not read `Loading...`.
-    fn expand_legacy(cache: &mut ProjectViewCache) {
-        cache.legacy_expanded = true;
-        cache.legacy_row_selected = true;
-        cache.launcher_listed = true;
-    }
-
-    /// The Driver tab as the detail screen draws it. Kept under its former name so
-    /// the legacy tier tests below read as they did: it IS the same pane, now drawn
-    /// by the launcher-first composition.
+    /// The Driver tab as the detail screen draws it: the launcher-first composition.
     fn render_driver_tab(
         frame: &mut Frame,
         area: Rect,
-        ctx: &AppContext,
         alias: &str,
         cache: Option<&ProjectViewCache>,
         viewport: &Cell<ViewportMetrics>,
@@ -1551,23 +395,11 @@ mod tests {
         super::super::driver_run::render_launcher_tab(
             frame,
             area,
-            ctx,
             alias,
             cache,
             viewport,
             list_offset,
         )
-    }
-
-    fn summary(run_id: &str, outcome: Option<&str>) -> RunSummary {
-        RunSummary {
-            run_id: run_id.to_string(),
-            started_at: "2026-07-29T21:40:00Z".to_string(),
-            ended_at: None,
-            goal: "ship the driver tab".to_string(),
-            gsd_command: "/gsd:execute-phase 18".to_string(),
-            outcome: outcome.map(str::to_string),
-        }
     }
 
     /// The visible text of a `Line`, spans concatenated.
@@ -2067,6 +899,10 @@ mod tests {
         // call and the goal row's call were removed with `DriverAction::Start`
         // and `goal_row`, so `driver_confirm.rs` lost 2 units / 2 occurrences, and
         // the whole-file count lost the same 2 lines. Two sites removed, none moved.
+        //
+        // 31-03 re-measured after the legacy run renderer left this file: (2, 3, 4)
+        // UNCHANGED. That renderer carried no needle call (`shown_capped` is the one
+        // production call here), so deleting it moves none of the three numbers.
         const PRODUCTION_NEEDLE_UNITS: usize = 2;
         const PRODUCTION_NEEDLE_OCCURRENCES: usize = 3;
         const WHOLE_FILE_NEEDLE_LINES: usize = 4;
@@ -2275,103 +1111,11 @@ mod tests {
         );
     }
 
+    /// Below the two-pane floor the run list is not rendered; the selection's
+    /// identity moves into the pane title (`narrow_title` in `driver_run.rs`)
+    /// rather than vanishing.
     #[test]
-    fn a_run_list_row_is_eighteen_cells_before_the_state_word() {
-        let row = run_list_row(&summary("2026-07-29T21-40-00Z-3f2a", None), None, 0);
-        assert_eq!(
-            text(&row).chars().count(),
-            RUN_LIST_FIXED_CELLS,
-            "the fixed part of a run row must be one form at every width: {:?}",
-            text(&row)
-        );
-    }
-
-    #[test]
-    fn the_state_word_appears_at_twenty_six_cells_and_not_at_twenty_five() {
-        let run = summary("2026-07-29T21-40-00Z-3f2a", Some("succeeded_with_changes"));
-        let narrow = run_list_row(&run, None, RUN_LIST_WORD_MIN_CELLS - 1);
-        let wide = run_list_row(&run, None, RUN_LIST_WORD_MIN_CELLS);
-        assert!(!text(&narrow).contains("ok"), "{:?}", text(&narrow));
-        assert!(text(&wide).ends_with("  ok"), "{:?}", text(&wide));
-    }
-
-    #[test]
-    fn elapsed_formats_under_and_over_an_hour_and_switches_form_when_ended() {
-        let start = "2026-07-29T21:40:00Z";
-        let now = parse_rfc3339("2026-07-29T21:44:12Z").expect("fixture parses");
-        assert_eq!(elapsed_label(start, now, None), "+04:12");
-
-        let later = parse_rfc3339("2026-07-29T23:05:07Z").expect("fixture parses");
-        assert_eq!(elapsed_label(start, later, None), "+1:25:07");
-
-        // A finished run reports what it took, not what it is taking.
-        assert_eq!(
-            elapsed_label(start, later, Some("2026-07-29T21:52:41Z")),
-            "ran 12:41"
-        );
-
-        // A duration the code cannot compute is not a duration of nothing.
-        assert_eq!(elapsed_label("not a timestamp", now, None), "unknown");
-    }
-
-    /// T-18-49: an escape sequence in a goal must not reach a `Span`.
-    #[test]
-    fn a_goal_bearing_an_escape_sequence_is_sanitised_before_it_becomes_a_line() {
-        let hostile = "\u{1b}[2Jdeploy \u{1b}]0;pwned\u{7}now";
-        let rendered: String = goal_lines(hostile, 80).iter().map(text).collect();
-        assert!(
-            !rendered.contains('\u{1b}'),
-            "an ESC survived into the header: {rendered:?}"
-        );
-        // The prose itself is still shown — the rule must not pass by deleting
-        // everything.
-        assert!(rendered.contains("deploy"), "{rendered:?}");
-        assert!(rendered.contains("now"), "{rendered:?}");
-    }
-
-    #[test]
-    fn an_absent_goal_renders_the_pinned_copy_and_nothing_else() {
-        // The shared blank-shape set rather than a hand-picked list, so the
-        // zero-width shapes `str::trim` cannot see are covered here too: this
-        // surface renders values re-read from run records, which this build's
-        // parse boundary never saw, and a goal of one `U+200B` used to render as
-        // a blank line wearing a goal's label.
-        for empty in crate::test_support::DEGENERATE
-            .iter()
-            .chain(["\n\t "].iter())
-            .copied()
-        {
-            let rendered: String = goal_lines(empty, 80).iter().map(text).collect();
-            assert!(
-                rendered.contains(GOAL_NONE_GIVEN),
-                "an absent goal must say so; {empty:?} gave: {rendered:?}"
-            );
-        }
-        // A goal that WAS given is never replaced by the placeholder.
-        let given: String = goal_lines("ship the driver tab", 80)
-            .iter()
-            .map(text)
-            .collect();
-        assert!(!given.contains(GOAL_NONE_GIVEN), "{given:?}");
-        assert!(given.contains("ship the driver tab"), "{given:?}");
-    }
-
-    #[test]
-    fn a_long_goal_wraps_to_at_most_three_rows_then_ellipses() {
-        let long = "ship ".repeat(200);
-        let lines = goal_lines(&long, 60);
-        assert_eq!(lines.len(), 3);
-        assert!(
-            text(&lines[2]).ends_with('\u{2026}'),
-            "{:?}",
-            text(&lines[2])
-        );
-    }
-
-    /// Below the two-pane floor the run list is not rendered, and the selection
-    /// is still honoured — it moves into the pane title rather than vanishing.
-    #[test]
-    fn the_sub_sixty_tier_returns_a_single_pane_and_still_honours_the_selection() {
+    fn the_sub_sixty_tier_returns_a_single_pane() {
         let narrow = Rect::new(0, 0, DRIVER_TWO_PANE_MIN_CELLS - 1, 24);
         let (list, detail) = driver_panes(narrow);
         assert!(
@@ -2388,182 +1132,6 @@ mod tests {
             "the detail pane fell below its floor at 60 columns: {}",
             detail.width
         );
-
-        // The selection still identifies a run at the narrow tier.
-        let title = run_list_title(&summary("2026-07-29T21-40-00Z-3f2a", None), 1, 7);
-        assert!(title.contains("3f2a"), "{title:?}");
-        assert!(title.contains("(2/7)"), "{title:?}");
-    }
-
-    /// D-13: every state word, glyph and colour comes from evidence, and the two
-    /// "nothing is known" answers are never collapsed into "it died".
-    #[test]
-    fn every_run_state_maps_from_evidence_and_unknown_is_not_death() {
-        assert_eq!(
-            run_state_glyph(Some(RunVerdict::Live), None),
-            (GLYPH_LIVE, "live", Color::Magenta)
-        );
-        assert_eq!(
-            run_state_glyph(Some(RunVerdict::LivenessUnknown), None),
-            (GLYPH_LIVENESS_UNKNOWN, "?", Color::Yellow)
-        );
-        assert_eq!(
-            run_state_glyph(Some(RunVerdict::CrashedWithoutEnding), None),
-            (GLYPH_FAILED, "crash", Color::Red)
-        );
-        for (label, expected) in [
-            (
-                "succeeded_with_changes",
-                (GLYPH_SUCCEEDED, "ok", Color::Green),
-            ),
-            (
-                "succeeded_no_changes",
-                (GLYPH_SUCCEEDED_NO_CHANGES, "no-chg", Color::Yellow),
-            ),
-            ("failed", (GLYPH_FAILED, "fail", Color::Red)),
-            ("permission_denied", (GLYPH_FAILED, "denied", Color::Red)),
-            ("timed_out", (GLYPH_FAILED, "t/out", Color::Red)),
-            ("stalled", (GLYPH_FAILED, "stall", Color::Red)),
-            ("capability_refused", (GLYPH_FAILED, "refuse", Color::Red)),
-            ("spawn_failed", (GLYPH_FAILED, "spawn", Color::Red)),
-            ("killed", (GLYPH_KILLED, "killed", Color::DarkGray)),
-        ] {
-            assert_eq!(run_state_glyph(None, Some(label)), expected, "{label}");
-        }
-        // No terminal record and no observation: nothing is known, and that is
-        // not a crash report (CR-05).
-        assert_eq!(
-            run_state_glyph(None, None),
-            (GLYPH_LIVENESS_UNKNOWN, "?", Color::Yellow)
-        );
-        // `SucceededNoChanges` is its own state, not a flavour of success.
-        assert_ne!(
-            run_state_glyph(None, Some("succeeded_no_changes")),
-            run_state_glyph(None, Some("succeeded_with_changes"))
-        );
-    }
-
-    /// The cost figure is labelled cumulative, and an unknown cost says so
-    /// rather than rendering a zero the mechanism cannot back.
-    #[test]
-    fn the_cost_line_is_labelled_cumulative_and_never_fabricates_a_figure() {
-        let now = parse_rfc3339("2026-07-29T21:44:12Z").expect("fixture parses");
-        let run = summary("2026-07-29T21-40-00Z-3f2a", None);
-
-        let known: String = render_run_header(&run, Some(1.83), None, 80, now)
-            .iter()
-            .map(text)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(known.contains("$1.83"), "{known}");
-        assert!(known.contains(COST_CUMULATIVE), "{known}");
-
-        let unknown: String = render_run_header(&run, None, None, 80, now)
-            .iter()
-            .map(text)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(unknown.contains(COST_NOT_REPORTED), "{unknown}");
-        assert!(!unknown.contains("$0.00"), "{unknown}");
-    }
-
-    /// T-18-50: the run directory row is left-truncated, keeping the run id —
-    /// the part a reader cannot reconstruct — rather than the leading path.
-    #[test]
-    fn the_run_directory_row_keeps_its_tail_when_it_does_not_fit() {
-        let path = "/home/blk/projects/rust/gsd-meta-manager/.planning/meta-manager/runs/2026-07-29T21-40-00Z-3f2a";
-        let shown = left_truncate(path, 40);
-        assert_eq!(shown.chars().count(), 40);
-        assert!(shown.starts_with('\u{2026}'), "{shown:?}");
-        assert!(shown.ends_with("3f2a"), "{shown:?}");
-    }
-
-    // ── The live output pane (OBS-04, D-19) ────────────────────────────────
-
-    /// The body of a run this session spawned.
-    fn body(output: Option<&DriverOutput>) -> Vec<Line<'static>> {
-        output_body_lines(output, false, Color::Green)
-    }
-
-    #[test]
-    fn an_empty_journal_renders_the_no_entries_copy() {
-        let rendered: String = body(None).iter().map(text).collect();
-        assert!(rendered.contains(NO_JOURNAL_ENTRIES), "{rendered:?}");
-
-        // A buffer that exists but holds nothing is the same situation.
-        let empty = DriverOutput::default();
-        let rendered: String = body(Some(&empty)).iter().map(text).collect();
-        assert!(rendered.contains(NO_JOURNAL_ENTRIES), "{rendered:?}");
-    }
-
-    #[test]
-    fn a_buffer_that_dropped_lines_states_the_count_in_its_first_row() {
-        let mut output = DriverOutput::default();
-        for n in 0..(DRIVER_OUTPUT_RING_LINES + 5) {
-            output.push_record(DriverLineKind::Output, &format!("line {n}"));
-        }
-        assert_eq!(output.dropped(), 5, "the ring dropped what it was asked to");
-
-        let lines = body(Some(&output));
-        let first = text(&lines[0]);
-        assert!(
-            first.contains("5 earlier lines dropped"),
-            "the drop count must be the FIRST row: {first:?}"
-        );
-        assert!(
-            first.contains(&DRIVER_OUTPUT_RING_LINES.to_string()),
-            "the notice names the capacity so the count is readable: {first:?}"
-        );
-    }
-
-    #[test]
-    fn a_diagnostic_record_renders_as_a_diagnostic_row() {
-        let mut output = DriverOutput::default();
-        output.push_record(DriverLineKind::Output, "ordinary output");
-        output.push_record(DriverLineKind::Stderr, "a warning on stderr");
-        output.push_record(
-            DriverLineKind::Diagnostic,
-            "journal gap: 3 record(s) not read",
-        );
-        output.push_record(
-            DriverLineKind::Terminal,
-            "run ended: succeeded_with_changes",
-        );
-
-        let lines = body(Some(&output));
-        let rendered: Vec<String> = lines.iter().map(text).collect();
-
-        let diagnostic = lines
-            .iter()
-            .find(|line| text(line).contains("journal gap"))
-            .unwrap_or_else(|| panic!("the diagnostic was swallowed: {rendered:#?}"));
-        assert_eq!(diagnostic.spans[0].content.as_ref(), MARKER_DIAGNOSTIC);
-        assert_eq!(diagnostic.spans[0].style.fg, Some(Color::Yellow));
-        assert_eq!(diagnostic.spans[1].style.fg, Some(Color::Yellow));
-
-        // The four visual classes are actually distinct, and the terminal record
-        // is the visual full stop.
-        assert_eq!(lines[0].spans[0].content.as_ref(), MARKER_OUTPUT);
-        assert_eq!(lines[1].spans[0].content.as_ref(), MARKER_STDERR);
-        let last = lines.last().expect("a terminal row");
-        assert_eq!(last.spans[0].content.as_ref(), MARKER_TERMINAL);
-        assert!(text(last).contains("run ended"), "{:?}", text(last));
-        assert_eq!(last.spans[0].style.fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn a_truncated_record_says_so_rather_than_losing_the_lines_silently() {
-        let mut output = DriverOutput::default();
-        let giant = "row\n".repeat(super::super::DRIVER_OUTPUT_RECORD_MAX_LINES + 10);
-        output.push_record(DriverLineKind::Output, &giant);
-        assert!(output.record_truncated());
-
-        let rendered: String = body(Some(&output))
-            .iter()
-            .map(text)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("record truncated"), "{rendered}");
     }
 
     // ── The ring belongs to ONE run (CR-02, WR-07) ─────────────────────────
@@ -2621,68 +1189,6 @@ mod tests {
         );
     }
 
-    /// CR-02, at the chooser.
-    ///
-    /// The ring is matched on its **own** run id and never on the observed-run map:
-    /// the reconciliation map answers "which run is this session tailing", which
-    /// stops being the same question the moment a run ends.
-    #[test]
-    fn a_ring_filled_by_one_run_is_never_handed_to_another() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let alias = super::super::driver_confirm::tests::ALIAS;
-        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
-        ctx.driver_output
-            .insert(alias.to_string(), ring_for("run-a", &["run A said this"]));
-
-        assert!(
-            output_for_run(&ctx, alias, None, "run-a").is_some(),
-            "its own run still gets the ring"
-        );
-        assert!(
-            output_for_run(&ctx, alias, None, "run-b").is_none(),
-            "and the next run in the same project does not — with no journal on \
-             disk for it yet, the honest answer is nothing at all"
-        );
-    }
-
-    /// WR-07: a live run whose ring is empty falls back to the journal.
-    ///
-    /// After a TUI restart the ring for an adopted run is empty until the first
-    /// watcher event fires. Short-circuiting on `tailed` painted "No journal
-    /// entries yet." directly under the notice saying the journal on disk was
-    /// what was being shown — two lines that contradict each other, over a
-    /// journal the scan had already read whole.
-    #[test]
-    fn an_adopted_live_run_with_an_empty_ring_renders_the_journal_on_disk() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let alias = super::super::driver_confirm::tests::ALIAS;
-        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
-        ctx.driver_output
-            .insert(alias.to_string(), DriverOutput::for_run("run-a"));
-
-        let cache = ProjectViewCache {
-            driver_journal: Some(Box::new(super::super::DriverRunJournal {
-                run_id: "run-a".to_string(),
-                output: ring_for("run-a", &["what the journal on disk holds"]),
-            })),
-            ..ProjectViewCache::default()
-        };
-
-        let chosen = output_for_run(&ctx, alias, Some(&cache), "run-a")
-            .expect("the journal is on disk and must be shown");
-        // `as_raw_for_logic_only`: this asks WHICH BUFFER was chosen, not what
-        // it renders as, so the raw stored bytes are the right question.
-        let rendered: String = chosen
-            .lines()
-            .map(|line| line.text.as_raw_for_logic_only())
-            .collect();
-        assert!(
-            rendered.contains("what the journal on disk holds"),
-            "an empty live ring must fall THROUGH to the journal, not \
-             short-circuit to a no-entries placeholder: {rendered:?}"
-        );
-    }
-
     /// The four indicator states, each with its own word and colour — and the
     /// scrolled state deliberately does not spend the word `paused`, which
     /// already means "a non-empty HANDOFF is present" everywhere else.
@@ -2715,7 +1221,8 @@ mod tests {
     #[test]
     fn the_output_header_keeps_its_indicator_at_every_width() {
         for width in [20u16, 39, 60, 80, 120] {
-            let rendered = text(&output_header_line(
+            let rendered = text(&pane_header_line(
+                "output",
                 width,
                 INDICATOR_FOLLOWING,
                 Color::Green,
@@ -2731,70 +1238,7 @@ mod tests {
         }
     }
 
-    // ── After-the-fact review: the terminal-state table (OBS-05, D-13) ─────
-
-    /// The whole evidence-derived table, asserted as a table.
-    ///
-    /// The **exhaustiveness** half is not carried by this test — it is carried
-    /// by the two wildcard-free matches, which make a new state a compile error.
-    /// What this asserts is that no two states collapse into one cell, which a
-    /// compiler cannot see.
-    #[test]
-    fn every_terminal_state_maps_to_its_own_cell_from_evidence_alone() {
-        use std::collections::HashSet;
-
-        let all = [
-            TerminalState::Live,
-            TerminalState::LivenessUnknown,
-            TerminalState::CrashedWithoutEnding,
-            TerminalState::Succeeded,
-            TerminalState::SucceededNoChanges,
-            TerminalState::Failed,
-            TerminalState::PermissionDenied,
-            TerminalState::TimedOut,
-            TerminalState::Stalled,
-            TerminalState::CapabilityRefused,
-            TerminalState::SpawnFailed,
-            TerminalState::Killed,
-            TerminalState::Unrecorded,
-        ];
-
-        let cells: HashSet<(&str, String, Color)> =
-            all.into_iter().map(terminal_state_cell).collect();
-        assert_eq!(
-            cells.len(),
-            all.len(),
-            "two states collapsed into one cell: {cells:#?}"
-        );
-
-        // The run list's short word and this table's long one must at least
-        // agree on the glyph and the colour, or one surface says a run failed
-        // in red while the other says it succeeded in green.
-        for label in [
-            "succeeded_with_changes",
-            "succeeded_no_changes",
-            "failed",
-            "permission_denied",
-            "timed_out",
-            "stalled",
-            "capability_refused",
-            "spawn_failed",
-            "killed",
-        ] {
-            let (list_glyph, _, list_color) = run_state_glyph(None, Some(label));
-            let (glyph, word, color) = terminal_state_cell(TerminalState::from_label(Some(label)));
-            assert_eq!(glyph, list_glyph, "{label}");
-            assert_eq!(color, list_color, "{label}");
-            assert!(!word.is_empty(), "{label}");
-        }
-
-        // A label this build has never seen is not guessed at.
-        assert_eq!(
-            TerminalState::from_label(Some("a_label_from_a_later_build")),
-            TerminalState::Unrecorded
-        );
-        assert_eq!(TerminalState::from_label(None), TerminalState::Unrecorded);
-    }
+    // ── The terminal-state label vocabulary (OBS-05, D-13) ─────────────────
 
     /// The vocabulary written by the driver and the vocabulary read by the
     /// renderer are a **string protocol across a process boundary**. Spelling
@@ -2842,11 +1286,6 @@ mod tests {
 
         for outcome in &outcomes {
             let label = crate::driver::run::outcome_label(outcome);
-            assert_eq!(
-                TerminalState::from_label(Some(label)),
-                TerminalState::from_outcome(outcome),
-                "the label {label:?} does not round-trip to {outcome:?}"
-            );
             assert_ne!(
                 TerminalState::from_label(Some(label)),
                 TerminalState::Unrecorded,
@@ -2855,285 +1294,26 @@ mod tests {
         }
     }
 
-    /// CR-05, at the render layer. The tri-state fix must not be re-flattened
-    /// here: on a platform where the probe does not apply, collapsing unknown
-    /// into dead would print "your run died" about every healthy run, on every
-    /// scan, for as long as the run lasted.
-    #[test]
-    fn liveness_unknown_is_not_rendered_as_dead() {
-        let unknown = terminal_state_cell(TerminalState::LivenessUnknown);
-        let crashed = terminal_state_cell(TerminalState::CrashedWithoutEnding);
-        let killed = terminal_state_cell(TerminalState::Killed);
-        let failed = terminal_state_cell(TerminalState::Failed);
-
-        assert_ne!(unknown, crashed);
-        assert_ne!(unknown, killed);
-        assert_ne!(unknown, failed);
-        assert_ne!(
-            unknown.2, crashed.2,
-            "unknown must not even share the colour of a death report"
-        );
-        assert!(!unknown.1.contains("crash"), "{:?}", unknown.1);
-        assert!(!unknown.1.contains("died"), "{:?}", unknown.1);
-
-        // And the verdict routes there rather than to a terminal outcome, even
-        // when a stale label is sitting beside it.
-        assert_eq!(
-            TerminalState::observed(Some(RunVerdict::LivenessUnknown), Some("failed")),
-            TerminalState::LivenessUnknown
-        );
-    }
-
-    /// TRANS-02's whole point: the envelope said success while nothing moved on
-    /// disk, and that disagreement is the thing this tool exists to surface. A
-    /// flavour of success would bury it.
-    #[test]
-    fn succeeded_no_changes_is_its_own_state_and_not_a_flavour_of_success() {
-        let ok = terminal_state_cell(TerminalState::Succeeded);
-        let no_changes = terminal_state_cell(TerminalState::SucceededNoChanges);
-
-        assert_ne!(ok.0, no_changes.0, "a different glyph");
-        assert_ne!(ok.1, no_changes.1, "a different word");
-        assert_ne!(ok.2, no_changes.2, "a different colour");
-        assert!(
-            no_changes.1.contains("no changes"),
-            "the word must say what did not happen: {:?}",
-            no_changes.1
-        );
-    }
-
-    /// Phase 17 D-11: once the TUI exits the child's stdout pipe is gone, so a
-    /// run this session did not spawn can only be shown from disk — and the
-    /// pane says so in its first row rather than leaving the reader to infer it.
-    #[test]
-    fn the_adopted_notice_renders_only_for_a_run_this_session_did_not_spawn() {
-        let mut output = DriverOutput::default();
-        output.push_record(DriverLineKind::Output, "ordinary output");
-
-        let adopted = output_body_lines(Some(&output), true, Color::Green);
-        assert!(
-            text(&adopted[0]).contains(ADOPTED_RUN_NOTICE),
-            "the notice must be the FIRST row: {:?}",
-            text(&adopted[0])
-        );
-        assert!(
-            text(&adopted[0]).contains("gone"),
-            "and it must say the live output is gone, never promise it: {:?}",
-            text(&adopted[0])
-        );
-
-        let spawned_here = body(Some(&output));
-        let rendered: String = spawned_here.iter().map(text).collect();
-        assert!(
-            !rendered.contains(ADOPTED_RUN_NOTICE),
-            "a run this session spawned must not carry the notice: {rendered:?}"
-        );
-
-        // The indicator agrees with the notice rather than contradicting it.
-        let (indicator, _) = follow_indicator(false, false, 0, None, true);
-        assert_eq!(indicator, INDICATOR_JOURNAL_ONLY);
-    }
-
-    // ── The reused pipeline row and the one-row step timeline (D-17, D-12) ──
-
-    fn mid_pipeline_inference() -> crate::state_reader::disk_status::DiskInference {
-        use crate::state_reader::disk_status::{DiskInference, DiskStatus};
-        DiskInference {
-            status: DiskStatus::Partial,
-            plan_count: 3,
-            summary_count: 2,
-            has_plans: true,
-            has_summaries: true,
-            has_context: true,
-            has_research: true,
-            ..DiskInference::default()
-        }
-    }
-
-    /// D-17: the Driver tab **calls** the D-R-P-E-V widget rather than growing a
-    /// second progress display. The strongest available statement of that is
-    /// that the two produce the identical line for the same inference — a
-    /// reimplementation, however faithful at the moment it was written, would
-    /// drift the first time either side changed.
-    #[test]
-    fn the_driver_tab_pipeline_line_matches_the_pipeline_tabs() {
-        let inf = mid_pipeline_inference();
-
-        // What `render_pipeline_tab` builds, at its own call site's shape.
-        let statuses = super::super::detail::derive_all_stage_statuses(&inf);
-        let pipeline_tab_line = super::super::detail::build_pipeline_line(&inf, &statuses);
-
-        // What the Driver tab renders: the second line of the pipeline row,
-        // under its one blank spacer.
-        let mut driver_lines: Vec<Line<'static>> = vec![Line::from("")];
-        let driver_statuses = super::super::detail::derive_all_stage_statuses(&inf);
-        driver_lines.push(super::super::detail::build_pipeline_line(
-            &inf,
-            &driver_statuses,
-        ));
-
-        assert_eq!(text(&driver_lines[1]), text(&pipeline_tab_line));
-        assert_eq!(
-            driver_lines[1].spans.len(),
-            pipeline_tab_line.spans.len(),
-            "the same spans, so the same per-stage colours"
-        );
-        for (a, b) in driver_lines[1]
-            .spans
-            .iter()
-            .zip(pipeline_tab_line.spans.iter())
-        {
-            assert_eq!(a.style, b.style, "a stage was restyled: {:?}", a.content);
-        }
-    }
-
-    #[test]
-    fn the_steps_section_has_exactly_one_command_row_and_always_carries_the_note() {
-        for (verdict, outcome) in [
-            (Some(RunVerdict::Live), None),
-            (None, Some("succeeded_with_changes")),
-            (None, Some("failed")),
-            (Some(RunVerdict::CrashedWithoutEnding), None),
-        ] {
-            let run = summary("2026-07-29T21-40-00Z-3f2a", outcome);
-            let lines = steps_lines(&run, verdict, Some(3), 60);
-            assert_eq!(
-                lines.len(),
-                3,
-                "the section rule, ONE decided row and the note: {:?}",
-                lines.iter().map(text).collect::<Vec<_>>()
-            );
-            let command_rows = lines
-                .iter()
-                .filter(|line| text(line).contains("/gsd:execute-phase 18"))
-                .count();
-            assert_eq!(command_rows, 1, "one decided command row in this phase");
-            assert!(
-                text(&lines[2]).contains(STEPS_HONEST_NOTE),
-                "the honest note is mandatory whenever the section renders: {:?}",
-                text(&lines[2])
-            );
-        }
-    }
-
-    /// The turn counter is a live-run affordance: a finished run's turn count is
-    /// history that belongs to nothing on this row, and showing it beside a
-    /// terminal state word would read as "still going".
-    #[test]
-    fn the_turn_counter_appears_only_while_the_run_is_live() {
-        let run = summary("2026-07-29T21-40-00Z-3f2a", None);
-        let live: String = steps_lines(&run, Some(RunVerdict::Live), Some(3), 60)
-            .iter()
-            .map(text)
-            .collect();
-        assert!(live.contains("turn 3"), "{live:?}");
-        assert!(live.contains("running"), "{live:?}");
-
-        let ended = summary("2026-07-29T21-40-00Z-3f2a", Some("succeeded_with_changes"));
-        let finished: String = steps_lines(&ended, Some(RunVerdict::Ended), Some(3), 60)
-            .iter()
-            .map(text)
-            .collect();
-        assert!(!finished.contains("turn 3"), "{finished:?}");
-        assert!(!finished.contains("running"), "{finished:?}");
-        // The **run-detail** word, not the run list's abbreviation: this row is
-        // the one place the full evidence-derived word fits (Surface 8).
-        assert!(finished.contains("succeeded"), "{finished:?}");
-    }
-
-    /// Held-out render-buffer backstop (UI-SPEC `## UI Considerations`, the
-    /// D-R-P-E-V overflow row). **A real buffer assertion, not a width
-    /// calculation**, because this is the CR-01 / UIFIX-02 clip in a new
-    /// location and the original defect was invisible to every calculation the
-    /// code had: the trailing `[V]` fell off the right edge of a
-    /// percentage-sized pane while every number involved looked right.
-    #[test]
-    fn the_pipeline_line_keeps_its_verify_stage_at_sixty_eighty_and_one_hundred_twenty_columns() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        // The `pub(crate)` fixture the three driver screens already share,
-        // rather than a sixth full-field `AppContext` construction.
-        let dir = tempfile::tempdir().expect("temp dir");
-        let alias = super::super::driver_confirm::tests::ALIAS;
-
-        for width in [60u16, 80, 120] {
-            let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
-            ctx.project_states.insert(
-                alias.to_string(),
-                crate::state_reader::ProjectState {
-                    current_phase_status: Some(mid_pipeline_inference()),
-                    ..crate::state_reader::ProjectState::default()
-                },
-            );
-            let cache = ctx.view_cache.entry(alias.to_string()).or_default();
-            cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
-            expand_legacy(cache);
-
-            let viewport = Cell::default();
-            let mut terminal =
-                Terminal::new(TestBackend::new(width, 30)).expect("TestBackend terminal");
-            terminal
-                .draw(|frame| {
-                    let area = frame.area();
-                    render_driver_tab(
-                        frame,
-                        area,
-                        &ctx,
-                        alias,
-                        ctx.view_cache.get(alias),
-                        &viewport,
-                        &Cell::new(0),
-                    );
-                })
-                .expect("draw the driver tab");
-
-            let buffer = terminal.backend().buffer().clone();
-            let scraped: Vec<String> = (0..30)
-                .map(|y| {
-                    (0..width)
-                        .map(|x| {
-                            buffer
-                                .cell((x, y))
-                                .map(|cell| cell.symbol())
-                                .unwrap_or(" ")
-                                .to_string()
-                        })
-                        .collect::<String>()
-                })
-                .collect();
-
-            let pipeline_row = scraped
-                .iter()
-                .find(|row| row.contains("[D]"))
-                .unwrap_or_else(|| {
-                    panic!("no pipeline row rendered at {width} columns: {scraped:#?}")
-                });
-
-            assert!(
-                pipeline_row.contains("[E 2/3]"),
-                "the execute stage lost its plan fraction at {width} columns: \
-                 {pipeline_row:?}"
-            );
-            assert!(
-                pipeline_row.contains("[V]"),
-                "the trailing verify stage was clipped at {width} columns — this is \
-                 CR-01 / UIFIX-02 in a new place: {pipeline_row:?}"
-            );
-            // The note is asserted by prefix rather than whole. At exactly 60
-            // columns the detail pane is `DRIVER_DETAIL_MIN_CELLS` (39) wide and
-            // the note plus its two-cell indent is 40, so its final period is
-            // clipped — the sentence stays legible and the floor protects the
-            // element it was derived from, which is the pipeline line above.
-            let note_prefix = &STEPS_HONEST_NOTE[..30];
-            assert!(
-                scraped.iter().any(|row| row.contains(note_prefix)),
-                "the honest note is missing at {width} columns: {scraped:#?}"
-            );
-        }
-    }
-
     // ── 260917-fko group 4: the EXPERIMENTAL marker on the pane ───────────
+
+    /// A launcher row that finished (`done`), built off the spike fixture.
+    fn launcher_row(id: &str) -> crate::state_reader::driver_frontmatter::DriverRunEntry {
+        use crate::state_reader::driver_frontmatter::{
+            parse_driver_frontmatter, DerivedStatus, DriverRunView, RunStatus,
+        };
+        let mut frontmatter = parse_driver_frontmatter(include_str!(
+            "../../../tests/fixtures/driverctl/direction/s003-run1b.md"
+        ))
+        .expect("the spike fixture parses");
+        frontmatter.run_id = id.to_string();
+        (
+            id.to_string(),
+            Ok(DriverRunView {
+                frontmatter,
+                derived: DerivedStatus::AsWritten(RunStatus::Done),
+            }),
+        )
+    }
 
     /// D3's tab half, read out of a **real render buffer** rather than out of
     /// the constant.
@@ -3153,15 +1333,12 @@ mod tests {
 
         for (label, runs) in [
             ("no runs yet", Vec::new()),
-            (
-                "one finished run",
-                vec![summary("2026-07-29T21-40-00Z-3f2a", None)],
-            ),
+            ("one finished run", vec![launcher_row("20261020-a")]),
         ] {
             let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
             let cache = ctx.view_cache.entry(alias.to_string()).or_default();
-            cache.driver_runs = runs;
-            expand_legacy(cache);
+            cache.launcher_runs = runs;
+            cache.launcher_listed = true;
 
             let viewport = Cell::default();
             let mut terminal =
@@ -3172,7 +1349,6 @@ mod tests {
                     render_driver_tab(
                         frame,
                         area,
-                        &ctx,
                         alias,
                         ctx.view_cache.get(alias),
                         &viewport,
@@ -3205,300 +1381,6 @@ mod tests {
                 scraped.iter().any(|row| row.contains("Driver")),
                 "and it must still say which pane it is: {scraped:#?}"
             );
-        }
-    }
-
-    // ── The dry-run preview (D-26, the designated cut) ─────────────────────
-
-    /// Paint `preview` into a `width` x `height` frame and scrape it back.
-    ///
-    /// A real buffer rather than an inspection of the `Vec<Line>`, because the
-    /// property under test on the sanitiser row is *what reaches the terminal*.
-    fn scrape_preview(preview: &DryRunPreview, width: u16, height: u16) -> Vec<String> {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let mut terminal =
-            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_dry_run_preview(frame, area, preview);
-            })
-            .expect("draw the dry-run preview");
-
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| {
-                        buffer
-                            .cell((x, y))
-                            .map(|cell| cell.symbol())
-                            .unwrap_or(" ")
-                            .to_string()
-                    })
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
-    fn loaded(report: &str) -> DryRunPreview {
-        DryRunPreview {
-            command: "/gsd:progress".to_string(),
-            report: Some(report.to_string()),
-        }
-    }
-
-    #[test]
-    fn the_preview_pane_renders_the_loading_idiom_before_the_report_resolves() {
-        let pending = DryRunPreview {
-            command: "/gsd:progress".to_string(),
-            report: None,
-        };
-        // The whole point of the loading state is that it is reachable: the
-        // build is scheduled, returns immediately, and the report arrives a
-        // couple of `git` invocations later.
-        let scraped = scrape_preview(&pending, 60, 12);
-        assert!(
-            scraped.iter().any(|row| row.contains(DRY_RUN_LOADING)),
-            "an unresolved preview must show the shipped loading idiom, not an \
-             empty report — an empty preview of a run about to touch the user's \
-             repository is the most dangerous thing this pane could imply: \
-             {scraped:#?}"
-        );
-    }
-
-    #[test]
-    fn a_loaded_report_renders_its_three_pinned_section_headers() {
-        use crate::driver::dry_run::{
-            render, DryRunReport, SECTION_COMMANDS, SECTION_DIFFSTAT, SECTION_REFSPECS,
-        };
-        use crate::state_reader::git_ops::{PushPreview, WorkingTreeStat};
-
-        let report = render(&DryRunReport {
-            commands: vec!["/gsd:execute-phase 18".to_string()],
-            diffstat: WorkingTreeStat {
-                stat_lines: vec![" src/lib.rs | 2 +-".to_string()],
-                untracked: Vec::new(),
-            },
-            push: PushPreview {
-                remote: Some("origin".to_string()),
-                url: Some("https://example.invalid/demo.git".to_string()),
-                refspecs: vec!["refs/heads/main:refs/heads/main".to_string()],
-                note: None,
-            },
-            protection: crate::envelope::advisory::not_probed(),
-        });
-        // Tall enough that the more-indicator does not eat a header row.
-        let scraped = scrape_preview(&loaded(&report), 100, 40).join("\n");
-
-        for section in [SECTION_COMMANDS, SECTION_DIFFSTAT, SECTION_REFSPECS] {
-            // The first line of each pinned header. The refspec section is the
-            // one PITFALLS:69 names as THE warning sign when it goes missing.
-            let headline = section.lines().next().expect("a non-empty header");
-            assert!(
-                scraped.contains(headline),
-                "the preview dropped the pinned section {headline:?}:\n{scraped}"
-            );
-        }
-        assert!(
-            scraped.contains("/gsd:execute-phase 18"),
-            "the command itself must appear:\n{scraped}"
-        );
-        assert!(
-            scraped.contains("refs/heads/main:refs/heads/main"),
-            "the refspec list is the blast radius; a preview without it tells \
-             the user nothing:\n{scraped}"
-        );
-    }
-
-    #[test]
-    fn a_report_carrying_an_escape_sequence_is_sanitised_before_rendering() {
-        // A branch name or a path is project-controlled, and an OSC sequence in
-        // one would otherwise repaint the screen, forge a status line or set the
-        // window title (T-18-61).
-        let hostile = "== Push refspecs this state would produce ==\n  \
-             refs/heads/\u{1b}]0;pwned\u{7}evil:refs/heads/evil\n";
-        let scraped = scrape_preview(&loaded(hostile), 80, 10).join("");
-
-        assert!(
-            !scraped.contains('\u{1b}'),
-            "ESC must be stripped unconditionally — the single highest-value \
-             rule in the untrusted-input section: {scraped:?}"
-        );
-        assert!(
-            !scraped.contains('\u{7}'),
-            "no C0 control may reach the terminal: {scraped:?}"
-        );
-        assert!(
-            scraped.contains('\u{00B7}'),
-            "the stripped control must be replaced by the middle dot rather \
-             than silently deleted: {scraped:?}"
-        );
-        assert!(
-            scraped.contains("evil:refs/heads/evil"),
-            "sanitising must not eat the content the user needs to read: \
-             {scraped:?}"
-        );
-    }
-
-    #[test]
-    fn a_report_taller_than_the_pane_says_so_rather_than_clipping_silently() {
-        let long = (0..40)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let scraped = scrape_preview(&loaded(&long), 40, 8);
-        let last = scraped.last().expect("eight rows were painted");
-        assert!(
-            last.contains(super::super::help::MORE_INDICATOR),
-            "a pane that silently drops the refspec section is the PITFALLS:69 \
-             failure this preview exists to prevent: {scraped:#?}"
-        );
-    }
-
-    #[test]
-    fn the_preview_replaces_the_run_detail_and_restores_it_when_it_is_cleared() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let alias = super::super::driver_confirm::tests::ALIAS;
-        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
-        ctx.view_cache
-            .entry(alias.to_string())
-            .or_default()
-            .driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
-        expand_legacy(ctx.view_cache.get_mut(alias).expect("the cache entry"));
-
-        let scrape = |ctx: &AppContext| -> String {
-            let viewport = Cell::default();
-            let mut terminal =
-                Terminal::new(TestBackend::new(100, 30)).expect("TestBackend terminal");
-            terminal
-                .draw(|frame| {
-                    let area = frame.area();
-                    render_driver_tab(
-                        frame,
-                        area,
-                        ctx,
-                        alias,
-                        ctx.view_cache.get(alias),
-                        &viewport,
-                        &Cell::new(0),
-                    );
-                })
-                .expect("draw the driver tab");
-            let buffer = terminal.backend().buffer().clone();
-            (0..30)
-                .map(|y| {
-                    (0..100)
-                        .map(|x| {
-                            buffer
-                                .cell((x, y))
-                                .map(|cell| cell.symbol())
-                                .unwrap_or(" ")
-                                .to_string()
-                        })
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let before = scrape(&ctx);
-        assert!(
-            !before.contains(DRY_RUN_LOADING),
-            "with no preview open the pane is the ordinary run detail:\n{before}"
-        );
-
-        ctx.view_cache
-            .entry(alias.to_string())
-            .or_default()
-            .driver_dry_run = Some(DryRunPreview {
-            command: "/gsd:progress".to_string(),
-            report: None,
-        });
-        let during = scrape(&ctx);
-        assert!(
-            during.contains(DRY_RUN_LOADING),
-            "the preview replaces the run detail while Step B is open:\n{during}"
-        );
-
-        // The cut rule, exercised: clear the one field and the body is the
-        // normal run detail again, with nothing else changed.
-        ctx.view_cache
-            .entry(alias.to_string())
-            .or_default()
-            .driver_dry_run = None;
-        assert_eq!(
-            scrape(&ctx),
-            before,
-            "leaving Step B must restore the normal run detail exactly"
-        );
-    }
-
-    /// Phase 18 WR-05, folded into D-29 (30-03): between 8 and 13 rows the legacy run
-    /// detail draws its header (2 rows) and the output pane, and drops the pipeline
-    /// row and the steps section TOGETHER. Squeezed to one row each they were a blank
-    /// pipeline row and a bare `steps` rule with nothing under it. From 14 rows the
-    /// full stack is unchanged.
-    #[test]
-    fn legacy_wr05_orphan_free_detail_between_eight_and_thirteen_rows() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
-        let alias = super::super::driver_confirm::tests::ALIAS;
-        let run = summary("2026-07-29T21-40-00Z-3f2a", None);
-        for height in 8..=30u16 {
-            let mut terminal =
-                Terminal::new(TestBackend::new(80, height)).expect("TestBackend terminal");
-            terminal
-                .draw(|frame| {
-                    let area = frame.area();
-                    render_run_detail(frame, area, &ctx, alias, None, &run, None, &Cell::default());
-                })
-                .expect("draw the legacy run detail");
-            let buffer = terminal.backend().buffer().clone();
-            let rows: Vec<String> = (0..height)
-                .map(|y| {
-                    (0..80)
-                        .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
-                        .collect::<String>()
-                })
-                .collect();
-            let steps = rows.iter().any(|r| r.contains("\u{2500}\u{2500} steps"));
-            assert!(
-                rows.iter().any(|r| r.contains("\u{2500}\u{2500} output")),
-                "H={height}: the output pane is always drawn:\n{}",
-                rows.join("\n")
-            );
-            if height < 14 {
-                assert!(
-                    !steps,
-                    "H={height}: steps dropped with the pipeline row:\n{}",
-                    rows.join("\n")
-                );
-            } else {
-                assert!(
-                    steps,
-                    "H={height}: the full stack is unchanged:\n{}",
-                    rows.join("\n")
-                );
-            }
-            for (y, row) in rows.iter().enumerate() {
-                if row.trim_start().starts_with("\u{2500}\u{2500}") {
-                    let next = rows.get(y + 1).map(|r| r.trim());
-                    assert!(
-                        next.is_some_and(|n| !n.is_empty() && !n.starts_with("\u{2500}\u{2500}")),
-                        "H={height}: the rule at row {y} has no content under it:\n{}",
-                        rows.join("\n")
-                    );
-                }
-            }
         }
     }
 }

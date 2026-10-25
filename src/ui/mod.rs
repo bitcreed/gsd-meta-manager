@@ -393,7 +393,9 @@ mod tests {
     /// and removed one composed call from `driver.rs`: its `no_runs_lines`; 31-02
     /// deleted `driver_inject.rs` and `driver_start.rs`, two screens with no needle,
     /// and removed two composed calls from `driver_confirm.rs` with the start prompt's
-    /// command and the goal row, taking it from 4 to 2):
+    /// command and the goal row, taking it from 4 to 2; 31-03 re-measured after trimming
+    /// the legacy run renderer out of `driver.rs` and found the table UNCHANGED: the one
+    /// call left there is `shown_capped`'s own, and no file was added or removed):
     ///
     /// | File | Executable needle occurrences |
     /// |---|---|

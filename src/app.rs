@@ -982,7 +982,6 @@ impl App {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -5007,7 +5006,7 @@ mod tests {
                 "{derived:?}"
             );
         }
-        // No cache, an empty one, or a legacy row selected: nothing to age.
+        // No cache or an empty one: nothing to age.
         assert!(!launcher_heartbeat_redraw_wanted(
             DetailScreen::NAME,
             driver,
@@ -5017,22 +5016,6 @@ mod tests {
             DetailScreen::NAME,
             driver,
             Some(&ProjectViewCache::default())
-        ));
-        let mut legacy_selected = cache_with(DerivedStatus::AsWritten(RunStatus::Running));
-        legacy_selected.driver_runs = vec![crate::journal::RunSummary {
-            run_id: "2026-07-29T21-40-00Z-3f2a".to_string(),
-            started_at: "2026-07-29T21:40:00Z".to_string(),
-            ended_at: None,
-            goal: "g".to_string(),
-            gsd_command: "/gsd:execute-phase 18".to_string(),
-            outcome: None,
-        }];
-        legacy_selected.legacy_expanded = true;
-        legacy_selected.legacy_row_selected = true;
-        assert!(!launcher_heartbeat_redraw_wanted(
-            DetailScreen::NAME,
-            driver,
-            Some(&legacy_selected)
         ));
     }
 
@@ -6219,14 +6202,11 @@ mod tests {
             agent_views: _,
             agents_scan_in_flight: _,
 
-            // Not alias-keyed at all. `session_spawned_runs` is a set of run
-            // ids that grows by one per run this session starts, with
-            // `driver_max_concurrent` defaulting to one; the rest are scalars,
-            // handles and single values. `experimental` is the startup-resolved
+            // Not alias-keyed at all: scalars, handles and single values.
+            // `experimental` is the startup-resolved
             // experimental-features flag (260917-fko D1): one scalar bool, not
             // alias-keyed, never mutated after `from_config`, and therefore
             // nothing for the prune to reach.
-            session_spawned_runs: _,
             experimental: _,
             config: _,
             config_path: _,

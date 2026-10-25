@@ -365,7 +365,6 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
                 "Launch or relaunch this run (asks first, shows the spend ceiling)",
             ),
             row("x", "Kill this run's sandbox now (asks first)"),
-            row("L", "Show or hide legacy runs (read-only)"),
             // The Driver tab's `o` is the only opt-in key (the dashboard's was retired
             // in Phase 31, D-03).
             row("o", "Toggle driver opt-in for this project"),
@@ -625,7 +624,6 @@ mod tests {
                 "Launch or relaunch this run (asks first, shows the spend ceiling)",
             ),
             ("x", "Kill this run's sandbox now (asks first)"),
-            ("L", "Show or hide legacy runs (read-only)"),
             ("o", "Toggle driver opt-in for this project"),
         ] {
             let expected = row(key, description).spans[0].content.to_string();
@@ -755,6 +753,28 @@ mod tests {
                     "{meaning:?} must be unique in the body"
                 );
             }
+        }
+    }
+
+    /// Phase 31 retired the Driver tab's read-only legacy runs section (D-03): the help
+    /// names neither the section nor its `L` toggle, with the experimental features on
+    /// or off.
+    #[test]
+    fn the_help_names_no_legacy_runs_section_and_no_toggle_key() {
+        for experimental in [true, false] {
+            let text = body_with(experimental);
+            assert!(
+                !text.to_lowercase().contains("legacy runs"),
+                "experimental={experimental}:\n{text}"
+            );
+            let toggle_row = row("L", "Show or hide legacy runs (read-only)").spans[0]
+                .content
+                .to_string();
+            assert!(
+                !text.lines().any(|line| line == toggle_row),
+                "experimental={experimental}:\n{text}"
+            );
+            assert!(!text.contains("Legacy runs are"), "{text}");
         }
     }
 
@@ -957,7 +977,6 @@ mod tests {
                 "Launch or relaunch this run (asks first, shows the spend ceiling)",
             ),
             ("x", "Kill this run's sandbox now (asks first)"),
-            ("L", "Show or hide legacy runs (read-only)"),
             ("o", "Toggle driver opt-in for this project"),
         ]
         .into_iter()
