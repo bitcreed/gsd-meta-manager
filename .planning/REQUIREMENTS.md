@@ -337,10 +337,10 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | SAFE-02 | Phase 19 (superseded) | Superseded by capability removal (no push creds in sandbox, LNCH-04/06); guard retired in Phase 31 |
 | SAFE-03 | Phase 19 (superseded) | Complete in code; reused by the Phase 28 push step (LNCH-06) |
 | SAFE-04 | Phase 16: Run Journal & State Substrate | Complete |
-| SAFE-05 | Phase 19 (superseded) | Moot: sandbox holds no credentials (LNCH-04) |
+| SAFE-05 | Phase 19 (superseded) | Moot: sandbox holds no credentials (LNCH-04); guard retired in Phase 31 |
 | SAFE-06 | Phase 19 (superseded) | Complete in code; reused by the Phase 28 push step (LNCH-06) |
-| SAFE-07 | Phase 21 (superseded) | Superseded: injection contained by sandbox (LNCH-04), not prevented |
-| SAFE-08 | Phase 21 (superseded) | Superseded: blast radius bounded by sandbox + launcher caps (LNCH-03/04) |
+| SAFE-07 | Phase 21 (superseded) | Superseded: injection contained by sandbox (LNCH-04), not prevented; guard retired in Phase 31 |
+| SAFE-08 | Phase 21 (superseded) | Superseded: blast radius bounded by sandbox + launcher caps (LNCH-03/04); guard retired in Phase 31 |
 | OBS-01 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |

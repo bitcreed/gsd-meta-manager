@@ -2957,3 +2957,37 @@ instead of re-deriving the chain.
 
 **`Cargo.toml`, the crate version, `.github/` and all tags are untouched.**
 v1.7.1 is a separate step.
+
+---
+
+# Phase 31 closure (2026-10-25)
+
+Phase 31 (RETIRE-03, decision D-16) deleted the goal layer this phase hardened (`2a23d9e`, `9caf162`; 31-04) and the Phase 19 guard (`13ba5ac`; 31-05). Nothing above this heading was changed; it is the record up to round 13. Phase 21's gap loop is **not** resumed (it stopped at round 13, and 4 of 5 is the hard ceiling): a backlog todo below is an owner, not a resumption. Every `status: failed` truth in `21-VERIFICATION.md` was re-checked at HEAD.
+
+## CLOSED (superseded) — ROADMAP success criterion 4
+
+> A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes
+
+Quoted verbatim from `21-VERIFICATION.md` (ROADMAP success criterion 4 / SAFE-07). It was `PRESENT_BEHAVIOR_UNVERIFIED`, agent-unclosable, in every round.
+
+Closed as superseded. Injection is now **contained by the sandbox, not prevented**: there is no goal layer or driver-side command chooser left to steer (`tests/driver_injection_corpus.rs` and `src/driver/goal.rs` were deleted in `2a23d9e` and `9caf162`), and what an injected agent could do with a steered command is bounded by the Phase 28 and 28.1 sandbox. LNCH-04 (no push credentials, `~/.ssh` empty, `SSH_AUTH_SOCK`, `GH_TOKEN` and `ANTHROPIC_API_KEY` stripped), LNCH-09 (`--unshare-net`, egress only through the launcher-owned proxies), LNCH-10 (the `$HOME` allowlist) and LNCH-12 (the run token never enters the sandbox) are the controls. Commits leave only through the fixed-refspec push step outside the sandbox (LNCH-06).
+
+The planning-doc channel is **documented accepted residual risk**, not closed: an outside coordinator that reads `.planning/` text an untrusted agent wrote must treat it as untrusted input. That is `28.1-VERIFICATION.md` SC6 (LNCH-14, `docs/DRIVER-SANDBOX.md`, the entry "The planning-doc steering channel (cannot be closed)"); this closure cites that verification row, not the REQUIREMENTS checkbox, which still reads `[ ]` for LNCH-14.
+
+This closure is conditional on the sandbox claims above: it reopens against Phase 28.1 if the D-11 live probe fails (28.1-UAT.md test 1, the setup-token reach probe, is still pending).
+
+## NOT superseded — CR-01
+
+**CR-01** (21-VERIFICATION, `status: failed`): the parser's model of `-r` / `--resume` arity is wrong. `claude` 2.1.250 treats the `-r, --resume [value]` value as **optional**, but `src/session_detector.rs:728-734` still binds the successor argv element unconditionally, so `claude -r --model x` reads `--model` as a session id. Re-checked at HEAD: **still live** in surviving code (`session_detector.rs` and the Sessions-tab detail screen are not part of the retired goal layer). Not superseded. Owner: `.planning/todos/pending/2026-10-24-session-detector-resume-optional-arity.md`.
+
+## NOT superseded — CR-02
+
+**CR-02** (21-VERIFICATION, `status: failed`): the round-trip certificate is stated over six recognised spellings and certified over four; the `--session-id` pair is missing from `wire_forms()`. Re-checked at HEAD: `wire_forms()` in `src/ui/screens/detail.rs` still registers exactly four rows (`fused`, `split`, `short-split`, `short-attached`) while `src/session_detector.rs` still recognises `--session-id`. **Still live** in surviving code. Not superseded. Owner: `.planning/todos/pending/2026-10-25-session-detector-wire-forms-omit-session-id.md`.
+
+## Fixed — `the_screen_renders_identity_escaped` (older addendum, `head: f442881`)
+
+The earlier `status: failed` truth (the render-escape probe that fired once in about 80 runs against `DetailScreen`, GitHistory tab) is **fixed**. The cause was an unpopulated `git_entries` fixture in the probe context: `46cfdf7` made it fail RED 20 of 20, `f0d5d6a` (21-23) made the carrier unrenderable unescaped and the probe deterministic, and pass 10 re-ran it five times green. At HEAD `rtk proxy cargo test --lib -- the_screen_renders_identity_escaped` passes (1 passed, 0 failed).
+
+## Note on the recorded "shell injection"
+
+An earlier pass-10 review row (labelled CR-01 there, `detail.rs:1692-1707`, a `format!`-built `sh -c` string over `/proc`-sourced values) is **not** one of the two live gaps above. It was fixed by `4b9f18b` (21-27, "delete the command interpreter from the Sessions-tab spawn"); at HEAD `src/ui/screens/detail.rs` contains no `"sh"`, `"bash"`, `"-c"` or `/bin/sh` literal.
