@@ -650,3 +650,337 @@ fn sandbox_isolates_host_credentials_and_services() {
         "a push over https from inside the sandbox succeeded"
     );
 }
+
+// ============================================================================
+// 28.1-09, D-24: the final sweep over the COMPLETE profile (network isolation, the
+// `$HOME` allowlist, the planted-file guard). Opt-in, like the probe above.
+//
+//   cargo test --test launcher_live_isolation -- --ignored --nocapture
+//
+// Settles A1, A2, A3 and B6 with captured evidence and D-21's ro half:
+//  * the pruned `find` of RESEARCH Pitfall 8 lists EXACTLY the driverctl socket and
+//    the egress socket (both present, so the sweep is not vacuous), and
+//    `$XDG_RUNTIME_DIR` holds only `gsdmm-driverctl`, so the host's `cc-socks`, `bus`,
+//    Wayland and ssh/gpg agent sockets, whatever the host has, are absent (A1, A2);
+//  * a write to `~/.claude/daemon/dispatch` lands in the sandbox's own `~/.claude`
+//    and never reaches the host (A3);
+//  * `.git/config` and `.claude/settings.json` cannot be written, `.git` and
+//    `.claude` cannot be renamed, while a commit and new dirs under `.claude/skills`,
+//    `.claude/worktrees` and `.planning/` work (D-21).
+//
+// Concurrency (LNCH-13): the fixture is its own directory under
+// `CARGO_TARGET_TMPDIR`, with its own sockets and unit name, and every host-side plant
+// is removed by a drop guard on every path.
+// ============================================================================
+
+use gsd_meta_manager::launcher::egress::upstream::Upstream;
+use gsd_meta_manager::launcher::egress::{EgressServer, EgressSpec, TokenProvider};
+use gsd_meta_manager::launcher::sandbox::{bridged_command, egress_env_sets, BRIDGE_PORT};
+
+/// The in-sandbox probe of the final sweep. `$1` the project, `$2` the host home.
+/// Every line is `KEY=VALUE`; no host file content is printed.
+const FINAL_PROBE: &str = r#"
+project=$1; home=$2
+cd "$project" || exit 1
+# `-perm -000` (always true) comes first: it makes find lstat() each entry. Without it
+# GNU find 4.10 trusts the directory entry's d_type, and a socket bind-mounted by bwrap
+# sits on a regular-file mount point whose d_type is DT_REG, so `-type s` alone prints
+# nothing for the run's own two sockets (measured, 28.1-09): RESEARCH Pitfall 8's form is
+# vacuous for bind-mounted sockets.
+echo "sockets=$(find / \( -path /proc -o -path /sys -o -path /dev \) -prune -o -perm -000 -type s -print 2>/dev/null | sort | paste -sd, -)"
+echo "runtime_entries=$(ls -A "$XDG_RUNTIME_DIR" | tr '\n' ' ' | sed 's/ *$//')"
+for n in cc-socks bus wayland-0 gnupg ssh-agent.socket; do
+  if [ -e "$XDG_RUNTIME_DIR/$n" ]; then echo "runtime_has_$n=present"; else echo "runtime_has_$n=absent"; fi
+done
+mkdir -p "$home/.claude/daemon" 2>/dev/null && touch "$home/.claude/daemon/dispatch" 2>/dev/null; echo "daemon_write=$?"
+{ echo '[core]' >> .git/config; } 2>/dev/null; echo "git_config_append=$?"
+touch .claude/settings.json 2>/dev/null; echo "claude_settings_touch=$?"
+mv .git .gitx 2>/dev/null; echo "mv_git=$?"
+[ -d .gitx ] && mv .gitx .git
+mv .claude .claudex 2>/dev/null; echo "mv_claude=$?"
+[ -d .claudex ] && mv .claudex .claude
+git -c user.name=probe -c user.email=probe@localhost -c commit.gpgsign=false commit -q --allow-empty -m probe > /dev/null 2>&1; echo "git_commit_rc=$?"
+mkdir -p .claude/skills/probe-skill 2>/dev/null; echo "skills_mkdir_rc=$?"
+mkdir -p .claude/worktrees/probe-tree 2>/dev/null; echo "worktrees_mkdir_rc=$?"
+mkdir -p .planning 2>/dev/null && touch .planning/probe-note 2>/dev/null; echo "planning_touch_rc=$?"
+"#;
+
+/// Undoes every host-side change of the final sweep when dropped, on every path.
+struct FinalSweepGuard {
+    dispatch: PathBuf,
+    daemon_dir: PathBuf,
+    dispatch_existed: bool,
+    daemon_dir_existed: bool,
+    project: PathBuf,
+}
+
+impl Drop for FinalSweepGuard {
+    fn drop(&mut self) {
+        // A write that wrongly reached the host is removed, a pre-existing file is not.
+        if !self.dispatch_existed {
+            let _ = fs::remove_file(&self.dispatch);
+            if !self.daemon_dir_existed {
+                let _ = fs::remove_dir(&self.daemon_dir);
+            }
+        }
+        // A rename that wrongly succeeded is undone.
+        for (moved, original) in [(".gitx", ".git"), (".claudex", ".claude")] {
+            let moved = self.project.join(moved);
+            let original = self.project.join(original);
+            if moved.exists() && !original.exists() {
+                let _ = fs::rename(&moved, &original);
+            }
+        }
+    }
+}
+
+/// `(exists, mtime)` of a host path, for the before/after comparison.
+fn existence_and_mtime(path: &Path) -> (bool, Option<std::time::SystemTime>) {
+    match fs::metadata(path) {
+        Ok(meta) => (true, meta.modified().ok()),
+        Err(_) => (false, None),
+    }
+}
+
+#[test]
+#[ignore = "needs bwrap with namespaces and a user systemd; run with -- --ignored --nocapture"]
+fn the_final_profile_closes_every_audited_channel() {
+    if let Err(reason) = bwrap_runs_here() {
+        println!("SKIP: {reason}");
+        return;
+    }
+    let manager = user_manager_state();
+    if manager != "running" && manager != "degraded" {
+        println!("SKIP: the user systemd manager is not usable (is-system-running: {manager:?})");
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        println!("SKIP: no home directory");
+        return;
+    };
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
+        println!("SKIP: XDG_RUNTIME_DIR is not set");
+        return;
+    };
+
+    // Its own fixture dir (bwrap's `--tmpfs /tmp` hides /tmp), its own unit name.
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("launcher-final-sweep");
+    fs::create_dir_all(&base).unwrap();
+    let scratch = TempDir::new_in(&base).unwrap();
+    let root = scratch.path().canonicalize().unwrap();
+    let project = root.join("project");
+    let run_name = format!("final{}", std::process::id());
+    let run_dir = project
+        .join(".planning/meta-manager/drivers")
+        .join(&run_name);
+    let config_dir = root.join("config");
+    for dir in [
+        &run_dir,
+        &config_dir.join("bin"),
+        &config_dir.join("managed"),
+        &project.join(".claude/skills"),
+        &project.join(".claude/worktrees"),
+    ] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    fs::write(config_dir.join("settings.json"), "{}").unwrap();
+    fs::write(run_dir.join("launcher.lock"), "").unwrap();
+    fs::write(run_dir.join("DIRECTION.lock"), "").unwrap();
+    fs::write(project.join(".claude/settings.json"), "{\"fixture\":1}\n").unwrap();
+    git_ok(&project, &["init", "-q"]);
+    git_ok(&project, &["commit", "-q", "--allow-empty", "-m", "probe"]);
+    assert!(
+        project.join(".git/hooks").is_dir(),
+        "git init creates .git/hooks"
+    );
+
+    // Host state to compare afterwards.
+    let git_config = project.join(".git/config");
+    let claude_settings = project.join(".claude/settings.json");
+    let git_config_before = fs::read(&git_config).unwrap();
+    let claude_settings_before = fs::read(&claude_settings).unwrap();
+    let dispatch = home.join(".claude/daemon/dispatch");
+    let (dispatch_existed, dispatch_mtime) = existence_and_mtime(&dispatch);
+    let _guard = FinalSweepGuard {
+        dispatch: dispatch.clone(),
+        daemon_dir: home.join(".claude/daemon"),
+        dispatch_existed,
+        daemon_dir_existed: home.join(".claude/daemon").exists(),
+        project: project.clone(),
+    };
+
+    // A1/A2 non-vacuity control: which of those services the host really has.
+    let host_runtime: Vec<String> = {
+        let mut names: Vec<String> = fs::read_dir(&runtime)
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
+    let interesting: Vec<&String> = host_runtime
+        .iter()
+        .filter(|n| {
+            n.starts_with("cc-socks")
+                || n.as_str() == "bus"
+                || n.starts_with("wayland")
+                || n.starts_with("gnupg")
+                || n.contains("ssh-agent")
+                || n.starts_with("gcr")
+        })
+        .collect();
+    println!("LIVE host runtime-dir names (A1/A2 control): {host_runtime:?}");
+    println!("LIVE host runtime-dir agent/service entries: {interesting:?}");
+    println!(
+        "LIVE host ~/.claude/daemon/dispatch before: exists={dispatch_existed} mtime={dispatch_mtime:?}"
+    );
+
+    let home_setup = HomeSetup::for_host(
+        &home,
+        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
+        detect().overlay,
+        &root,
+    )
+    .expect("derive the $HOME setup");
+
+    // The run's two sockets: a dummy driverctl listener and a real egress server.
+    let driverctl_sock = socket_path(&run_name, &run_dir).expect("the run's driverctl socket");
+    let _ = fs::remove_file(&driverctl_sock);
+    let _driverctl = UnixListener::bind(&driverctl_sock).expect("bind the driverctl socket");
+    let egress_sock = egress_socket_path_for(&driverctl_sock, &run_dir);
+    let _ = fs::remove_file(&egress_sock);
+    let egress_listener = UnixListener::bind(&egress_sock).expect("bind the egress socket");
+    // A plain upstream nobody connects to: the sweep only needs the server on its path.
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the stub upstream");
+    let egress = EgressServer::start(
+        egress_listener,
+        EgressSpec {
+            allow_hosts: Vec::new(),
+            token: TokenProvider::Static("LIVE-FINAL-SWEEP-TOKEN-SENTINEL".to_owned()),
+            upstream: Upstream::Plain(upstream.local_addr().expect("upstream addr")),
+            log_path: root.join("egress.log"),
+        },
+    )
+    .expect("start the egress server");
+
+    let spec = SandboxSpec::from_host(
+        LaunchPaths {
+            project: project.clone(),
+            run_dir: run_dir.clone(),
+            config_dir: config_dir.clone(),
+            socket: driverctl_sock.clone(),
+            egress_socket: egress_sock.clone(),
+        },
+        &home,
+        &home_setup,
+    );
+    assert!(
+        !spec.guard_binds.is_empty(),
+        "the fixture has .git and .claude, so the guard binds exist"
+    );
+
+    let inner: Vec<OsString> = vec![
+        "sh".into(),
+        "-c".into(),
+        FINAL_PROBE.into(),
+        "probe".into(),
+        project.clone().into_os_string(),
+        home.clone().into_os_string(),
+    ];
+    let command = bridged_command(
+        Path::new(env!("CARGO_BIN_EXE_gsd-meta-manager")),
+        BRIDGE_PORT,
+        &egress_sock,
+        &inner,
+    );
+    let unit = format!("gsdmm-final-{}", std::process::id());
+    let argv = systemd_run_argv(&unit, Some(180), &bwrap_argv(&spec, &command));
+    let mut sets: Vec<(&str, OsString)> = egress_env_sets(BRIDGE_PORT);
+    sets.push(("CLAUDE_CONFIG_DIR", config_dir.clone().into_os_string()));
+    sets.push(("DRIVERCTL_SOCK", driverctl_sock.clone().into_os_string()));
+    let env = child_env(std::env::vars_os(), &sets);
+    let (program, rest) = argv.split_first().unwrap();
+    let out = Command::new(program)
+        .args(rest)
+        .env_clear()
+        .envs(&env)
+        .current_dir(&project)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run systemd-run");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    print!("{stdout}");
+    if !stderr.trim().is_empty() {
+        println!("LIVE probe stderr: {}", stderr.trim());
+    }
+    let stats = egress.stop();
+    println!("LIVE egress server stopped: {stats:?}");
+
+    // ---- host side, after the run ------------------------------------------
+    let (dispatch_exists_after, dispatch_mtime_after) = existence_and_mtime(&dispatch);
+    println!(
+        "LIVE host ~/.claude/daemon/dispatch after:  exists={dispatch_exists_after} mtime={dispatch_mtime_after:?}"
+    );
+    let git_config_after = fs::read(&git_config).unwrap();
+    let claude_settings_after = fs::read(&claude_settings).unwrap();
+
+    assert!(out.status.success(), "the probe run failed: {stderr}");
+    let kv: BTreeMap<&str, &str> = stdout.lines().filter_map(|l| l.split_once('=')).collect();
+    let get = |key: &str| -> &str {
+        kv.get(key)
+            .copied()
+            .unwrap_or_else(|| panic!("no `{key}=` line in the probe output"))
+    };
+
+    // D-24 / B6, RESEARCH Pitfall 8: exactly the run's two sockets, both present.
+    let mut expected = [
+        driverctl_sock.display().to_string(),
+        egress_sock.display().to_string(),
+    ];
+    expected.sort();
+    assert_eq!(
+        get("sockets"),
+        expected.join(","),
+        "the sweep must list exactly the driverctl socket and the egress socket"
+    );
+    // A1, A2: nothing else of the host's runtime dir is visible.
+    assert_eq!(get("runtime_entries"), "gsdmm-driverctl");
+    for name in ["cc-socks", "bus", "wayland-0", "gnupg", "ssh-agent.socket"] {
+        assert_eq!(get(&format!("runtime_has_{name}")), "absent", "{name}");
+    }
+    // A3: the write landed in the sandbox's own `~/.claude`, the host is unchanged.
+    assert_eq!(
+        (dispatch_exists_after, dispatch_mtime_after),
+        (dispatch_existed, dispatch_mtime),
+        "~/.claude/daemon/dispatch changed on the host"
+    );
+
+    // D-21: unwritable and unrenamable where present.
+    for key in [
+        "git_config_append",
+        "claude_settings_touch",
+        "mv_git",
+        "mv_claude",
+    ] {
+        assert_ne!(get(key), "0", "{key} must fail inside");
+    }
+    assert_eq!(git_config_before, git_config_after, ".git/config changed");
+    assert_eq!(
+        claude_settings_before, claude_settings_after,
+        ".claude/settings.json changed"
+    );
+    assert!(project.join(".git").is_dir() && project.join(".claude").is_dir());
+    // ... and the legitimate writes still work.
+    for key in [
+        "git_commit_rc",
+        "skills_mkdir_rc",
+        "worktrees_mkdir_rc",
+        "planning_touch_rc",
+    ] {
+        assert_eq!(get(key), "0", "{key} must succeed inside");
+    }
+}
