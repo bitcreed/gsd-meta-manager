@@ -1388,10 +1388,26 @@ guard, check which of its threats (exfiltration, credential use, network reach) 
 allowlist as the superseding mechanism, and should be closed only once 28.1 lands
 [inferred — audit].
 
-**Plans**: 0 plans
+**Plans**: 7 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 31 to break down)
+
+**Wave 1** *(31-01 and 31-02 touch disjoint files; run them concurrently only under worktree isolation)*
+- [ ] 31-01-PLAN.md — survivors rewired first: push-step child stderr through SAFE-04 redaction, the PR ledger and its bound pins off the guard, `next` and rate-limit off the drive layer (RETIRE-01)
+- [ ] 31-02-PLAN.md — injection UI and the dashboard's legacy start/stop/opt-in keys retired; confirm screen trimmed to launcher actions; truthful opt-in prompts (RETIRE-01, RETIRE-02)
+
+**Wave 2** *(blocked on 31-02)*
+- [ ] 31-03-PLAN.md — slow tick rescans launcher markers only (no reconcile); the Driver tab's legacy runs section and its feeds go; legacy run dirs ignored by the watcher (RETIRE-01, RETIRE-02)
+
+**Wave 3** *(blocked on 31-01, 31-03)*
+- [ ] 31-04-PLAN.md — `drive`, the goal layer, the inbox core, `DriveError` and the legacy kill/lock entry points deleted; dead Preferences knobs and user docs corrected (RETIRE-01, RETIRE-02)
+
+**Wave 4** *(blocked on 31-01, 31-04)*
+- [ ] 31-05-PLAN.md — the Phase 19 guard, classifier and 16 corpora deleted, `envelope scan` kept; git-version witness retired atomically with pre-tag-check; journal trimmed; container gate (RETIRE-01, RETIRE-03)
+
+**Wave 5** *(blocked on 31-05; 31-06 and 31-07 touch disjoint files)*
+- [ ] 31-06-PLAN.md — Phase 19 threat closure table, Phase 21 criterion 4 closure and CR-01 owner, SAFE rows, Phase 22 archived as superseded (RETIRE-02, RETIRE-03)
+- [ ] 31-07-PLAN.md — [droppable, D-04] the Codex executor and the in-process Claude transport removed, `process-wrap` dropped, container gate re-run on the final tree (RETIRE-01, RETIRE-03)
 
 ### Phase 32: GSD Capabilities: Visibility & Per-Project Control
 
