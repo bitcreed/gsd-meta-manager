@@ -112,7 +112,7 @@ impl RegisteredProject {
     /// drive time and the key round-trips through a load-and-save untouched
     /// `[inferred — audit]`.
     pub fn driver_egress_allowlist(&self) -> Result<Vec<String>, EgressConfigError> {
-        let Some(driver) = self.extra.get(EGRESS_KEY) else {
+        let Some(driver) = self.extra.get(DRIVER_KEY) else {
             return Ok(Vec::new());
         };
         let driver = driver
@@ -161,9 +161,9 @@ impl RegisteredProject {
 
 /// The manager-config key holding a project's driver settings (28.1, D-07):
 /// `projects.<alias>.driver.egress`.
-pub const EGRESS_KEY: &str = "driver";
+pub const DRIVER_KEY: &str = "driver";
 
-/// The key under [`EGRESS_KEY`] holding the egress allowlist.
+/// The key under [`DRIVER_KEY`] holding the egress allowlist.
 const EGRESS_SUBKEY: &str = "egress";
 
 /// The inference host: reached only through the inference proxy, never CONNECT.
@@ -951,7 +951,7 @@ mod tests {
     fn egress_project(driver: serde_json::Value) -> RegisteredProject {
         let mut extra = Map::new();
         if !driver.is_null() {
-            extra.insert(EGRESS_KEY.to_owned(), driver);
+            extra.insert(DRIVER_KEY.to_owned(), driver);
         }
         RegisteredProject {
             path: PathBuf::from("/p"),
