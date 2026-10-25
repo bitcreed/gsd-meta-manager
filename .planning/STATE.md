@@ -5,10 +5,10 @@ current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
 stopped_at: Phase 31 context gathered
-last_updated: "2026-10-25T04:29:05.870Z"
+last_updated: "2026-10-25T04:30:38.989Z"
 last_activity: 2026-10-24
-last_activity_desc: Phase 28.1 execution started
-state_head: f5090a3a48069c3df3bcbe9250f0bc4027a19ef1
+last_activity_desc: Phase 31 execution started
+state_head: c3153081ce657a6fe5c62426cb5f8b43715042e8
 progress:
   total_phases: 10
   completed_phases: 14
@@ -24,11 +24,11 @@ milestone_name: Workstream Visibility
 See: .planning/PROJECT.md (updated 2026-10-24)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 28.1 — Sandbox Egress & Agent-Channel Isolation (INSERTED)
+**Current focus:** Phase 31 — Retire Superseded Envelope & Goal-Layer Code
 
 ## Current Position
 
-Status: Ready to execute
+Status: Executing Phase 31
   Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
   261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
   regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
@@ -269,8 +269,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — READY TO EXECUTE
-Plan: 14 of 14
+Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — EXECUTING
+Plan: 1 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -304,7 +304,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-24 — Phase 28.1 execution started
+Last activity: 2026-10-24 — Phase 31 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
