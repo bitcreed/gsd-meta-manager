@@ -1185,7 +1185,7 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 12/14 plans executed (4 gap-closure plans pending)
+**Plans**: 13/14 plans executed (4 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -1213,7 +1213,7 @@ Plans:
 **Wave 7** *(gap closure from `28.1-VERIFICATION.md`, `28.1-REVIEW.md` and `28.1-UI-REVIEW.md` — blocked on Wave 6 completion; the three plans touch disjoint files and run in parallel)*
 - [x] 28.1-11-PLAN.md — close T-28.1-02 / WR-01: the egress judge refuses a body that repeats a JSON key at any depth and still forwards the bytes it judged; end-to-end regression with the audit's two bodies; IN-02 normalise-first CONNECT literal check; WR-03 `egress.log` byte cap (LNCH-09)
 - [x] 28.1-12-PLAN.md — close CR-01 / release `cross-target-check`: gate the unix-only `home.rs` tests and make the TLS crates (ring's C build) Linux-only, proven with the release.yml windows-gnu and macOS check/clippy commands run locally; WR-04 shared-bin exe bind; WR-07 BOM in planted git config (LNCH-09, LNCH-10, LNCH-11)
-- [ ] 28.1-13-PLAN.md — Driver tab header row 4 keeps PLANTED and `absent:` visible at narrow widths (importance order, separators, `absent: all 8`), full `driver auth setup` hint, `1 host`, IN-01 PLANTED count (LNCH-15, LNCH-11, LNCH-12)
+- [x] 28.1-13-PLAN.md — Driver tab header row 4 keeps PLANTED and `absent:` visible at narrow widths (importance order, separators, `absent: all 8`), full `driver auth setup` hint, `1 host`, IN-01 PLANTED count (LNCH-15, LNCH-11, LNCH-12)
 
 **Wave 8** *(blocked on Wave 7 completion; gap closure)*
 - [ ] 28.1-14-PLAN.md — merged-tree release gate: the four release.yml cross-target check/clippy commands (windows-gnu, x86_64-apple-darwin), full `--no-fail-fast` suite and host clippy with every folded finding's test by name; record CR-01, WR-01, WR-03, WR-07, IN-01, IN-02 `fixed` and WR-04 `deferred` in 28.1-REVIEW-DISPOSITION.md (LNCH-09, LNCH-10, LNCH-11, LNCH-15)

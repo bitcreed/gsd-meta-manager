@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
 status: executing
-stopped_at: Completed 28.1-12-PLAN.md
-last_updated: "2026-10-25T02:21:37.540Z"
+stopped_at: Completed 28.1-13-PLAN.md
+last_updated: "2026-10-25T02:29:55.588Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 28.1 execution started
-state_head: 89d6853476d41bd9da971916e53f2083760733c6
+state_head: 5c956498d0cddeee45aecaa3dcbc6b227b32cb4a
 progress:
   total_phases: 10
   completed_phases: 14
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 28.1 (Sandbox Egress & Agent-Channel Isolation (INSERTED)) — EXECUTING
-Plan: 13 of 14
+Plan: 14 of 14
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -556,6 +556,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P09 | 50 min | 3 tasks | 8 files |
 | Phase 28.1 P11 | 35 min | 3 tasks | 3 files |
 | Phase 28.1 P12 | 16 min | 2 tasks | 4 files |
+| Phase 28.1 P13 | 15 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -787,6 +788,7 @@ Recent decisions affecting current work:
 - [Phase 28.1]: [inferred - audit] 28.1-11: egress.log capped at LOG_MAX_BYTES = 8 MiB with one truncation marker; T-28.1-41 (case-insensitive upstream matching) accepted
 - [Phase 28.1]: [inferred - audit] 28.1-12: TLS crates (rustls, tokio-rustls, webpki-roots) are Linux-only deps; off-Linux Upstream::Tls is refused with Unsupported
 - [Phase 28.1]: [inferred - audit] 28.1-12: home.rs host_tests module placed above mod tests (spawn_seam_guard forbids column-zero items after the marker)
+- [Phase 28.1]: [28.1-13] Driver row 4 ordered PLANTED, absent, auth; absent collapses to 'all 8' only on exact vocabulary equality; vocabulary moved to ungated launcher/mod.rs with host.rs re-export [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -981,8 +983,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T02:21:36.364Z
-Stopped at: Completed 28.1-12-PLAN.md
+Last session: 2026-10-25T02:29:54.382Z
+Stopped at: Completed 28.1-13-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
