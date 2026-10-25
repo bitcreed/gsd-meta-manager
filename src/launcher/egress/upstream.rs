@@ -5,14 +5,21 @@
 //! [`Upstream::Plain`], a loopback `SocketAddr` of an in-process stub, so the whole
 //! request path runs in CI with no network. The seam is a Rust value: it is never
 //! read from the environment, so nothing the driver can set re-routes the token.
+//!
+//! The TLS upstream exists only in the Linux build: the rustls crates are a
+//! Linux-only dependency, because only the Linux bwrap posture starts the egress
+//! server. Off Linux, [`Connector::new`] refuses [`Upstream::Tls`] with
+//! `io::ErrorKind::Unsupported`; a plain upstream still works.
 
 use std::io;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+#[cfg(target_os = "linux")]
 use tokio_rustls::TlsConnector;
 
 /// How long dialling the upstream (TCP, and TLS on top of it) may take in total.
@@ -49,6 +56,7 @@ pub type UpstreamStream = Box<dyn UpstreamIo>;
 /// only pays for the handshake.
 pub struct Connector {
     upstream: Upstream,
+    #[cfg(target_os = "linux")]
     tls: Option<TlsConnector>,
 }
 
@@ -57,6 +65,7 @@ impl Connector {
     /// upstream: ring provider, the webpki root set, and ALPN pinned to
     /// `http/1.1` (RESEARCH Pitfall 5: the proxy writes HTTP/1.1, so an `h2`
     /// negotiation would be a protocol error).
+    #[cfg(target_os = "linux")]
     pub fn new(upstream: Upstream) -> io::Result<Self> {
         let tls = match &upstream {
             Upstream::Plain(_) => None,
@@ -76,6 +85,18 @@ impl Connector {
         Ok(Connector { upstream, tls })
     }
 
+    /// Prepare to dial `upstream`. Off Linux there is no TLS stack, so a
+    /// [`Upstream::Tls`] is refused outright (never downgraded or left
+    /// unverified). Unreachable at runtime: `decide` never yields
+    /// `Posture::BwrapScope` off Linux.
+    #[cfg(not(target_os = "linux"))]
+    pub fn new(upstream: Upstream) -> io::Result<Self> {
+        match upstream {
+            Upstream::Plain(_) => Ok(Connector { upstream }),
+            Upstream::Tls { .. } => Err(tls_unsupported()),
+        }
+    }
+
     /// Dial the upstream within [`CONNECT_TIMEOUT`].
     pub async fn connect(&self) -> io::Result<UpstreamStream> {
         match tokio::time::timeout(CONNECT_TIMEOUT, self.dial()).await {
@@ -87,6 +108,7 @@ impl Connector {
         }
     }
 
+    #[cfg(target_os = "linux")]
     async fn dial(&self) -> io::Result<UpstreamStream> {
         match (&self.upstream, &self.tls) {
             (Upstream::Plain(addr), _) => Ok(Box::new(TcpStream::connect(addr).await?)),
@@ -99,6 +121,22 @@ impl Connector {
             (Upstream::Tls { .. }, None) => Err(io::Error::other("TLS upstream without a config")),
         }
     }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn dial(&self) -> io::Result<UpstreamStream> {
+        match &self.upstream {
+            Upstream::Plain(addr) => Ok(Box::new(TcpStream::connect(addr).await?)),
+            Upstream::Tls { .. } => Err(tls_unsupported()),
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tls_unsupported() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the TLS upstream exists only in the Linux build",
+    )
 }
 
 #[cfg(test)]
@@ -116,6 +154,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_tls_connector_builds_with_the_ring_provider() {
         Connector::new(Upstream::anthropic()).expect("a rustls config");

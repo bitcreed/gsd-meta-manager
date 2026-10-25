@@ -540,8 +540,6 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::os::unix::fs::symlink;
 
     /// A host like the one the plan describes, every candidate existing.
     fn facts() -> HostFacts {
@@ -793,6 +791,30 @@ mod tests {
     }
 
     #[test]
+    fn the_dangling_notice_lists_ten_names_and_a_count() {
+        let home = Path::new("/home/u");
+        let setup = HomeSetup {
+            dangling: (0..12)
+                .map(|n| PathBuf::from(format!("/home/u/.claude/skills/s{n:02}")))
+                .collect(),
+            ..HomeSetup::default()
+        };
+        let line = setup.dangling_notice(home).unwrap();
+        assert!(line.starts_with("driver launch: 12 entries dangle inside the sandbox"));
+        assert!(line.contains("~/.claude/skills/s09"));
+        assert!(!line.contains("s10"));
+        assert!(line.ends_with(", and 2 more"));
+        assert_eq!(HomeSetup::default().dangling_notice(home), None);
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod host_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
     fn dangling_symlinks_reports_links_leaving_the_binds() {
         let root = tempfile::TempDir::new().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -817,26 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dangling_notice_lists_ten_names_and_a_count() {
-        let home = Path::new("/home/u");
-        let setup = HomeSetup {
-            dangling: (0..12)
-                .map(|n| PathBuf::from(format!("/home/u/.claude/skills/s{n:02}")))
-                .collect(),
-            ..HomeSetup::default()
-        };
-        let line = setup.dangling_notice(home).unwrap();
-        assert!(line.starts_with("driver launch: 12 entries dangle inside the sandbox"));
-        assert!(line.contains("~/.claude/skills/s09"));
-        assert!(!line.contains("s10"));
-        assert!(line.ends_with(", and 2 more"));
-        assert_eq!(HomeSetup::default().dangling_notice(home), None);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
     fn for_host_writes_a_private_gitconfig_and_names_only_host_entries_as_roots() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::TempDir::new().unwrap();
         let home = root.path().join("home");
         let state = root.path().join("state");
@@ -881,7 +884,6 @@ mod tests {
             .any(|root| root == &home.join(".cache")));
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn two_launches_write_separate_gitconfigs_and_leave_no_temp_file() {
         let root = tempfile::TempDir::new().unwrap();

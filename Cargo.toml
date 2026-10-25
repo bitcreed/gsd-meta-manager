@@ -137,12 +137,28 @@ icu_properties = "2.2.0"
 # which is out of scope); aws-lc-rs (rustls' default, a heavier C build).
 # Graph cost, measured by RESEARCH in a scratch copy: +12 locked packages
 # (354 -> 366), the highest declared MSRV among them 1.85 (`zeroize`), under the
-# 1.89 floor above. NOTE: `ring` compiles a C/asm component with `cc`, so a C
-# compiler is now a build requirement.
+# 1.89 floor above.
+#
+# The three TLS crates (rustls, tokio-rustls, webpki-roots) live in the
+# Linux-only target table below, not here, because only the Linux bwrap posture
+# ever starts the egress server (`run.rs` builds `Upstream::Tls` for
+# `Posture::BwrapScope` only, which is unreachable off Linux). `ring` compiles a
+# C/asm component with `cc`, so a C compiler is a build requirement on Linux
+# only. That also keeps the release workflow's `cross-target-check` green: it
+# builds the macOS and Windows targets from an ubuntu runner, where `ring`
+# cannot target either platform. Measured: for apple, gcc rejects `-arch` and
+# clang stops at `TargetConditionals.h` not found (no macOS SDK); for
+# windows-gnu there is no mingw. `cargo install` users on macOS and Windows
+# need no C compiler either.
+httparse = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# TLS upstream for the egress server (see the egress block above). The feature
+# lists are the ones plan 28.1-01 chose; `default-features = false` drops the
+# aws-lc-rs provider and `ring` is named instead.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "1"
-httparse = "1"
 
 [dev-dependencies]
 assert_fs = "1"
