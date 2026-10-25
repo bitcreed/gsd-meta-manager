@@ -845,6 +845,9 @@ mod tests {
             b"{",
             b"{\"model\": }",
             b"\xff\xfe",
+            // Trailing data after the top-level value, and a leading BOM.
+            b"{\"model\":\"m\"} {\"mcp_servers\":[]}",
+            b"\xef\xbb\xbf{\"model\":\"m\"}",
         ] {
             assert!(
                 matches!(judge_body(bytes), BodyVerdict::Deny(_)),
@@ -862,6 +865,60 @@ mod tests {
         ));
         assert_eq!(
             judge_body(br#"{"model":"m","messages":[]}"#),
+            BodyVerdict::Forward
+        );
+    }
+
+    #[test]
+    fn a_repeated_key_at_any_depth_is_denied() {
+        let reason = DUPLICATE_KEY_REASON.to_owned();
+        for body in [
+            // A repeated top-level key that is not a policy field.
+            r#"{"model":"m","model":"m","messages":[]}"#,
+            // A repeat inside a tool entry.
+            r#"{"tools":[{"type":"custom","type":"web_fetch_20250910","name":"x"}]}"#,
+            // A repeat inside `tool_use.input`, three levels down.
+            r#"{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"n","input":{"a":1,"a":2}}]}]}"#,
+            // A repeat inside `system[]`.
+            r#"{"system":[{"type":"text","text":"a","text":"b"}],"messages":[]}"#,
+            // One spelling uses a JSON escape that decodes to the same key.
+            r#"{"model":"m","tools":[],"tool\u0073":[]}"#,
+            r#"{"mo\u0064el":"m","model":"n"}"#,
+        ] {
+            assert_eq!(
+                judge_body(body.as_bytes()),
+                BodyVerdict::Deny(reason.clone()),
+                "{body}"
+            );
+        }
+        assert_eq!(reason, "body repeats a JSON key");
+        assert!(
+            !reason.contains("model") && !reason.contains("web_fetch"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn the_same_key_in_sibling_objects_is_not_a_repeat() {
+        let claude_code_shaped = r#"{
+            "model":"m","max_tokens":64,"stream":true,
+            "system":[{"type":"text","text":"a"},{"type":"text","text":"b"}],
+            "messages":[
+              {"role":"user","content":[{"type":"text","text":"x"},{"type":"text","text":"y"}]},
+              {"role":"assistant","content":[
+                {"type":"tool_use","id":"1","name":"Bash","input":{"command":"ls","timeout":1}},
+                {"type":"tool_use","id":"2","name":"Bash","input":{"command":"pwd","timeout":2}}]}],
+            "tools":[
+              {"name":"Bash","description":"d","input_schema":{"type":"object","properties":{}}},
+              {"name":"Read","description":"d","input_schema":{"type":"object","properties":{}}}]}"#;
+        assert_eq!(
+            judge_body(claude_code_shaped.as_bytes()),
+            BodyVerdict::Forward
+        );
+        // An integer past u64::MAX: the bytes are forwarded verbatim, so nothing
+        // is lost on the wire.
+        assert_eq!(
+            judge_body(br#"{"model":"m","messages":[],"seed":123456789012345678901234567890}"#),
             BodyVerdict::Forward
         );
     }
@@ -1110,5 +1167,22 @@ mod tests {
             let reason = connect_reason(host, 443, &[host]).expect("denied");
             assert!(reason.contains("IP literal"), "{host}: {reason}");
         }
+    }
+
+    #[test]
+    fn connect_refuses_a_root_dotted_ip_literal() {
+        for (host, allowed) in [
+            ("1.2.3.4.", Some("1.2.3.4")),
+            ("127.1.", Some("127.1")),
+            ("0x7f.0.0.1.", None),
+        ] {
+            let hosts: Vec<&str> = allowed.into_iter().collect();
+            assert_eq!(
+                connect_reason(host, 443, &hosts).as_deref(),
+                Some("CONNECT to an IP literal is refused"),
+                "{host}"
+            );
+        }
+        assert_eq!(connect_reason("Crates.IO.", 443, &["crates.io"]), None);
     }
 }
