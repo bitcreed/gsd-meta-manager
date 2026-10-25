@@ -533,6 +533,8 @@ fn parse_header(line: &str) -> Option<(String, Option<String>, &str)> {
 fn parse_config(text: &str) -> Vec<ConfigKey> {
     let mut keys = Vec::new();
     let mut current: Option<(String, Option<String>)> = None;
+    // git skips one leading UTF-8 BOM; without this it glues itself to `[core]`.
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     for raw in text.lines() {
         let mut line = raw.trim();
         while !line.is_empty() {

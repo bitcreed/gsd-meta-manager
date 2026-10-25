@@ -84,8 +84,18 @@ const CACHE_REL: &str = ".cache";
 /// `~/.local/share/rtk`, relative to `$HOME`.
 const RTK_REL: &str = ".local/share/rtk";
 
-/// Directories no install root may be: they hold far more than one tool.
-const REFUSED_ROOT_REL: &[&str] = &[".local", ".local/share", ".config", ".cache"];
+/// Directories no install root may be: they hold far more than one tool. `.local/bin`
+/// and `bin` are shared bin directories, where users keep pipx entry points and
+/// personal scripts, so a binary installed there is bound as a single file and its
+/// siblings stay invisible inside the sandbox.
+const REFUSED_ROOT_REL: &[&str] = &[
+    ".local",
+    ".local/share",
+    ".local/bin",
+    ".config",
+    ".cache",
+    "bin",
+];
 
 /// The most dangling names [`HomeSetup::dangling_notice`] prints.
 const NOTICE_NAMES: usize = 10;
