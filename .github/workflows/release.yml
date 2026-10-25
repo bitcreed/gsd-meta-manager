@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 # Every job pins ubuntu-24.04 rather than ubuntu-latest. The publish job's tests
-# are environment-sensitive (the git-version witness in src/envelope/policy.rs
-# is derived against the runner's ambient git), and
+# are environment-sensitive (the router-conformance oracle test fails by design
+# when the oracle is absent, as it is on a bare runner), and
 # scripts/pre-tag-check.Dockerfile is built FROM ubuntu:24.04 to mirror this
 # runner. A floating label would move the runner under a release without moving
 # that image; bump both together, deliberately.

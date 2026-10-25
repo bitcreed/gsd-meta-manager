@@ -2,11 +2,13 @@
 # `./scripts/pre-tag-check.sh --container`.
 #
 # WHY THIS IMAGE EXISTS. A bare local pre-tag run cannot certify the publish
-# job, because the developer machine differs from the runner in exactly the two
-# places that have blocked publication: GSD is installed here and absent there,
-# and the ambient git is a different version. Both of those tests therefore
-# pass locally on precisely the trees CI rejects. This image reproduces the
-# runner closely enough that a green run in here is evidence about CI.
+# job, because the developer machine differs from the runner in the place that
+# has blocked publication: GSD is installed here and absent there, so the
+# router-conformance oracle test (which fails by design when the oracle is
+# absent) passes locally on precisely the trees CI rejects. This image
+# reproduces the runner closely enough that a green run in here is evidence
+# about CI. The ambient git and gh are matched for runner fidelity, not because
+# any test pins a version.
 #
 # EVERY LINE BELOW MIRRORS A MEASURED RUNNER FACT. When one of them stops
 # matching `ubuntu-24.04`, this image starts lying, so say WHY each line is
@@ -17,12 +19,11 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # `git` from ppa:git-core/ppa rather than the Ubuntu archive, because the
-# archive's git is years behind the runner's. The PPA yields git 2.55.0 — the
-# version CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION in
-# src/envelope/policy.rs records AND the version the runner's ambient git
-# carries. That is what lets the version-witness test be validated in here the
-# way CI validates it; on a developer machine with an older git it fails, and
-# pre-tag-check.sh's reconciliation banner exists to explain that away.
+# archive's git is years behind the runner's. The PPA yields git 2.55.0, which
+# is the ambient git the ubuntu-24.04 runner image lists (the runner-images
+# readme). This is RUNNER FIDELITY: the surviving suites shell out to a real
+# git with version-sensitive flags, so the image should run the git the runner
+# runs. No test pins a git version any more (Phase 31 retired the witness).
 #
 # The rest is the ordinary build toolchain plus the small utilities the gates
 # and the test suite shell out to.
@@ -78,11 +79,12 @@ RUN chmod 0777 /home/runner
 # `gh` — PREINSTALLED ON ubuntu-24.04, from the SAME apt repo and the same
 # keyring path GitHub's own runner image uses, which yields gh 2.101.0.
 #
-# READ THIS BEFORE REMOVING THE LINE TO SAVE A LAYER. The two gh_grammar_probe
-# tests in src/envelope/policy.rs pin the grammar of `gh` invocations against
-# the gh that is actually present. An image WITHOUT gh manufactures two
-# failures that are not runner failures and sends the next investigation down a
-# false trail. It already did exactly that once.
+# READ THIS BEFORE REMOVING THE LINE TO SAVE A LAYER. The launcher's push step
+# opens pull requests through `gh`, and the suites that exercise it see the gh
+# that is actually present. An image WITHOUT gh differs from the runner in a
+# way that can manufacture failures that are not runner failures and send the
+# next investigation down a false trail. It already did exactly that once, when
+# the (since deleted) policy.rs grammar probes ran against it.
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \

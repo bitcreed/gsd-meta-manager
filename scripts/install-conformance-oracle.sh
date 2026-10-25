@@ -228,8 +228,7 @@ STATE
 # ---------------------------------------------------------------------------
 # VERSION ADVISORY, never a failure.
 #
-# Mirrors the git-version advisory at scripts/pre-tag-check.sh lines 207-235,
-# for the same reason: a developer's GSD install legitimately runs AHEAD of the
+# A developer's GSD install legitimately runs AHEAD of the
 # synced constant, and hard-failing there would paint this script red on a good
 # tree and train the operator to ignore it. Absence is expected too — the npm
 # package's gsd-core/ directory carries no VERSION file — so "unknown" is a

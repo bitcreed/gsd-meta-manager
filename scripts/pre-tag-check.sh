@@ -18,10 +18,10 @@
 # workflow disagree, the workflow is right and this script is stale.
 #
 # --container RUNS THESE SAME GATES INSIDE AN ubuntu-24.04 LOOKALIKE. A BARE
-# local run cannot certify the publish job: this machine has GSD installed and
-# a different ambient git, so the two tests that have actually blocked
-# publication — the router-conformance oracle test and the git-version witness
-# — both pass here on precisely the trees CI rejects. Container mode builds
+# local run cannot certify the publish job: this machine has GSD installed, so
+# the test that has actually blocked publication — the router-conformance oracle
+# test, which fails by design when the oracle is absent, as it is on a bare
+# runner — passes here on precisely the trees CI rejects. Container mode builds
 # scripts/pre-tag-check.Dockerfile, provisions the oracle in there with the
 # same scripts/install-conformance-oracle.sh the publish job calls, and re-runs
 # this script inside it.
@@ -292,12 +292,12 @@ if [ "$CONTAINER" -eq 1 ] || [ "$CLEAN" -eq 1 ]; then
 			echo "There is deliberately NO FALLBACK to a local run. A silent fallback" >&2
 			echo "would recreate the exact blind spot --container exists to close: a" >&2
 			echo "green local gate on the one thing CI is red on. This machine has GSD" >&2
-			echo "installed and a different ambient git, so the two tests that have" >&2
-			echo "actually blocked publication pass here on the trees CI rejects." >&2
+			echo "installed, so the router-conformance oracle test, which has actually" >&2
+			echo "blocked publication, passes here on the trees CI rejects." >&2
 			echo >&2
 			echo "Start a container runtime, or set PRE_TAG_CONTAINER_RUNTIME to one that" >&2
 			echo "works, and re-run. To knowingly run the weaker local gates instead, drop" >&2
-			echo "--container — and read the reconciliation banner it prints." >&2
+			echo "--container; a green bare run does not certify the publish job." >&2
 		fi
 		echo "$RULE" >&2
 		exit 1
@@ -569,14 +569,10 @@ fi
 	exit "$CONTAINER_RC"
 fi
 
-POLICY_FILE="src/envelope/policy.rs"
-CONST_NAME="CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION"
-WITNESS_TEST="the_config_section_constants_record_the_git_version_they_were_derived_against"
-
 # ---------------------------------------------------------------------------
 # State consumed by the summary. Everything the EXIT trap reads must be
-# initialised BEFORE the trap is installed, because the trap also fires on the
-# constant-extraction hard error and on gate 1's hard stop.
+# initialised BEFORE the trap is installed, because the trap also fires on
+# gate 1's hard stop.
 #
 # "NOT REACHED" is the honest initial value: an early exit must not report a
 # gate as skipped (a judgement) when it was simply never run.
@@ -595,10 +591,6 @@ G5_NOTE=""
 G6_NOTE=""
 
 LOG_DIR=""
-INSTALLED_GIT=""
-DERIVED_GIT_VERSION=""
-GIT_ADVISORY=0
-WITNESS_IN_FAILURES=0
 
 gate_line() {
 	# $1 = number, $2 = short name, $3 = status, $4 = note
@@ -627,115 +619,12 @@ print_summary() {
 		echo "  gate logs: none created (exited before any gate ran)"
 	fi
 
-	if [ "$GIT_ADVISORY" -eq 1 ]; then
-		echo "$THIN"
-		echo "  ADVISORY: the installed git and the derived-against constant DISAGREE."
-		echo "  ADVISORY:   installed git            : $INSTALLED_GIT"
-		echo "  ADVISORY:   derived-against constant : $DERIVED_GIT_VERSION"
-		echo "  ADVISORY:     ($CONST_NAME"
-		echo "  ADVISORY:      in $POLICY_FILE)"
-		echo "  ADVISORY: the GitHub ubuntu-24.04 runner's ambient git is the AUTHORITY"
-		echo "  ADVISORY: for that witness test. A GREEN LOCAL GATE DOES NOT GUARANTEE"
-		echo "  ADVISORY: the publish job passes."
-		if [ "$G4_STATUS" = "FAILED" ] && [ "$WITNESS_IN_FAILURES" -eq 1 ]; then
-			echo "$THIN"
-			echo "  NOTE: gate 4's failing set includes the version witness"
-			echo "        $WITNESS_TEST,"
-			echo "        which is EXPECTED to fail locally while the advisory above stands."
-			echo "        Read the gate-4 log for any OTHER failing test before concluding"
-			echo "        that something regressed."
-		fi
-	fi
 	echo "$THIN"
-	echo "  The exit code reflects GATE FAILURES ONLY. The git-version advisory, on"
-	echo "  its own, never fails this run. SKIPPED is not a failure."
+	echo "  The exit code reflects GATE FAILURES ONLY. SKIPPED is not a failure."
 	echo "$RULE"
 }
 
 trap 'rc=$?; print_summary; exit "$rc"' EXIT
-
-# ---------------------------------------------------------------------------
-# CONSTANT EXTRACTION
-#
-# The derived-against version is READ OUT OF THE SOURCE at runtime. The version
-# string must never be spelled in this script — a copy here would go stale
-# silently and the reconciliation would then compare the constant against
-# itself-from-last-year.
-#
-# Match the DECLARATION line only: the constant is also named in several doc
-# comment lines above it, and any of those would extract the wrong literal (or
-# no literal at all).
-# ---------------------------------------------------------------------------
-if [ ! -f "$POLICY_FILE" ]; then
-	echo "$RULE" >&2
-	echo "HARD ERROR: $POLICY_FILE does not exist." >&2
-	echo "This script exists to reconcile the installed git against the constant" >&2
-	echo "  $CONST_NAME" >&2
-	echo "declared in that file. Without it the script has lost its subject and" >&2
-	echo "cannot honestly report anything. Run from the repository root." >&2
-	echo "$RULE" >&2
-	exit 1
-fi
-
-CONST_DECL=$(grep -E "^[[:space:]]*pub const[[:space:]]+${CONST_NAME}[[:space:]]*:[[:space:]]*&str[[:space:]]*=" "$POLICY_FILE" | head -1)
-if [ -n "$CONST_DECL" ]; then
-	DERIVED_GIT_VERSION=$(printf '%s\n' "$CONST_DECL" | sed -E 's/.*"(.*)".*/\1/')
-	# sed leaves the line untouched when it does not match; treat that as empty.
-	if [ "$DERIVED_GIT_VERSION" = "$CONST_DECL" ]; then
-		DERIVED_GIT_VERSION=""
-	fi
-fi
-
-if [ -z "$DERIVED_GIT_VERSION" ]; then
-	echo "$RULE" >&2
-	echo "HARD ERROR: could not extract $CONST_NAME" >&2
-	echo "from $POLICY_FILE." >&2
-	if [ -z "$CONST_DECL" ]; then
-		echo "Reason: no matching 'pub const ... : &str = ...' declaration line found." >&2
-	else
-		echo "Reason: the declaration line carries no quoted literal:" >&2
-		echo "  $CONST_DECL" >&2
-	fi
-	echo "This script has lost its subject — the constant it exists to reconcile" >&2
-	echo "against — so it refuses to continue and report a reconciliation it cannot" >&2
-	echo "actually perform. Fix the declaration, or this script's matcher." >&2
-	echo "$RULE" >&2
-	exit 1
-fi
-
-INSTALLED_GIT=$(git --version 2>/dev/null)
-[ -n "$INSTALLED_GIT" ] || INSTALLED_GIT="(git not on PATH)"
-
-# ---------------------------------------------------------------------------
-# RECONCILIATION BANNER — printed on EVERY run, BEFORE gate 1, so it is still
-# on screen when gate 1 hard-stops.
-#
-# A MISMATCH HERE IS AN ADVISORY, NEVER A FAILURE. On a correctly-prepared
-# release the constant is deliberately re-derived against the git version the
-# CI runner carries, which is routinely NEWER than the one installed locally.
-# Hard-failing on that would paint this script red on a GOOD tree and train the
-# operator to ignore it — the exact outcome the banner exists to prevent. So it
-# shouts, and the exit code stays reserved for real gate failures.
-# ---------------------------------------------------------------------------
-echo "$RULE"
-echo "!!! GIT VERSION RECONCILIATION !!!"
-echo "$THIN"
-echo "  installed git (this machine) : $INSTALLED_GIT"
-echo "  derived-against constant     : $DERIVED_GIT_VERSION"
-echo "    from $POLICY_FILE"
-echo "    ($CONST_NAME)"
-echo "$THIN"
-if [ "$INSTALLED_GIT" = "$DERIVED_GIT_VERSION" ]; then
-	echo "  MATCH: this tree can validate the version witness test the way CI will."
-else
-	GIT_ADVISORY=1
-	echo "  MISMATCH — read this:"
-	echo "    1. THIS LOCAL RUN CANNOT VALIDATE THAT TEST THE WAY CI WILL."
-	echo "    2. The GitHub ubuntu-24.04 runner's ambient git is the AUTHORITY for it."
-	echo "    3. A GREEN LOCAL GATE THEREFORE DOES NOT GUARANTEE THE PUBLISH JOB PASSES."
-fi
-echo "$RULE"
-echo
 
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pre-tag-check.XXXXXXXX")
 echo "Gate logs will be written under: $LOG_DIR"
@@ -883,13 +772,6 @@ else
 	G4_STATUS="FAILED"
 	G4_NOTE="see gate4-test.log"
 fi
-# DEC-5: detect the version witness in the output so the summary can EXPLAIN it.
-# The gate's verdict is NOT touched — no filter, no skip, no carve-out. A filter
-# here could hide a real regression behind an expected failure. If the test is
-# ever renamed this hint simply goes quiet and the gate still fails correctly.
-if [ -f "$LOG_DIR/gate4-test.log" ] && grep -qF "$WITNESS_TEST" "$LOG_DIR/gate4-test.log"; then
-	WITNESS_IN_FAILURES=1
-fi
 
 # ---------------------------------------------------------------------------
 # GATE 5 — clippy (publish job's "Clippy" step)
@@ -947,9 +829,8 @@ else
 	G6_NOTE="see gate6-package.log"
 fi
 
-# DIRTY-TREE ADVISORY. Runs whatever the verdict is, and NEVER alters it — the
-# same principle as the DEC-5 comment under gate 4: a hint must not be able to
-# hide, or invent, a failure. The pathspec is exactly the packaged paths whose
+# DIRTY-TREE ADVISORY. Runs whatever the verdict is, and NEVER alters it — a
+# hint must not be able to hide, or invent, a failure. The pathspec is exactly the packaged paths whose
 # content changes what compiles.
 if DIRTY_PATHS=$(git status --porcelain --untracked-files=all -- src tests Cargo.toml Cargo.lock 2>/dev/null); then
 	if [ -n "$DIRTY_PATHS" ]; then

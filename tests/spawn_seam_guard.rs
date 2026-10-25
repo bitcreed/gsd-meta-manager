@@ -53,9 +53,6 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // probe can be pointed at a REAL live pid whose cmdline lacks the run id.
     // No agent, and nothing in the module's production surface spawns anything.
     "src/driver/liveness.rs",
-    // `git --version` inside the git-version witness test, which retires with its
-    // release tooling in the same plan (D-12). No agent.
-    "src/envelope/policy.rs",
     // `gitleaks` when a binary happens to be on PATH, as an ADDITIVE second
     // opinion on the built-in credential rules (D-11). Its absence is never a
     // reason to allow, and its output is discarded rather than reproduced. No

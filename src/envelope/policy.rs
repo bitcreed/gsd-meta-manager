@@ -263,11 +263,6 @@ impl EnvelopePolicy {
     }
 }
 
-/// The `git --version` the (since retired) config-section tables were derived
-/// against. Kept for one commit so `scripts/pre-tag-check.sh` stays runnable until
-/// the witness retires atomically with its release tooling (D-12).
-pub const CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION: &str = "git version 2.55.0";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,73 +477,5 @@ mod tests {
             classify_push_ref("refs/heads/gsd-auto/demox", &namespace),
             PushVerdict::Refuse { .. }
         ));
-    }
-
-    #[test]
-    fn the_config_section_constants_record_the_git_version_they_were_derived_against() {
-        // =======================================================================
-        // **WHAT THIS ASSERTION IS NOT, STATED BEFORE ANYTHING ELSE: IT IS A
-        // SCHEDULE, NOT A CONTROL.**
-        //
-        // It observes exactly ONE bit — that the installed `git --version` differs
-        // from the string both constants were derived against — so it can tell a
-        // human **WHEN to look**. **It cannot tell them WHAT changed.** It does
-        // NOT observe a third indirection section appearing, it does NOT observe a
-        // second re-parsed config value appearing, and it stays GREEN on a git
-        // that added one without changing its version string.
-        //
-        // **So it does not weaken, qualify or discharge the no-control claim in
-        // either `INDIRECTION_SECTIONS`'s or `REPARSED_COMMAND_SECTIONS`'s residue
-        // paragraph: there is NO automated control over any of those fail-open
-        // directions.** What this assertion adds is the SCHEDULE for the human
-        // re-audit that is the only control there is — it turns *a human
-        // remembers to read the release notes* into *a test fires*.
-        //
-        // **Its cost is stated rather than hidden: it fires on EVERY git upgrade,
-        // including harmless ones. That IS the schedule.** The correct response is
-        // to RE-DERIVE both constants against the new git and update the recorded
-        // version — never to delete this assertion.
-        //
-        // **Provenance, recorded rather than smoothed over**: an earlier draft of
-        // plan `19-25` stated the no-control claim and added this witness in the
-        // same breath, in a way that read as the witness BEING the control —
-        // `T-19-107`'s own shape arriving in the round that inherited it — and a
-        // plan-check caught it, exactly as a plan-check caught round 7's residue
-        // hidden behind a pin that could not observe it.
-        // =======================================================================
-        //
-        // **It MUST NOT skip, warn-without-failing, or pass when `git` is absent.**
-        // A skipped pin is a fail-open pin and this phase has been punished for
-        // that shape six times; git is already a hard runtime dependency of this
-        // guard.
-        let output = std::process::Command::new("git")
-            .arg("--version")
-            .output()
-            .expect(
-                "the version witness requires a real `git` on PATH. It is deliberately NOT \
-                 written to skip when git is absent: a skipped pin is a fail-open pin.",
-            );
-        let installed = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        assert_eq!(
-            installed, CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION,
-            "\n\nTHE INSTALLED GIT HAS MOVED OFF THE VERSION BOTH CONFIG-SECTION CONSTANTS \
-             WERE DERIVED AGAINST.\n\n\
-             `INDIRECTION_SECTIONS` names the sections through which this git splices \
-             configuration in from a FILE. `REPARSED_COMMAND_SECTIONS` names the sections \
-             whose VALUE this git re-parses as a COMMAND LINE. **Both are enumerations of ONE \
-             git's grammar, and both fail OPEN on a section they do not name.**\n\n\
-             **THE CORRECT RESPONSE IS TO RE-DERIVE BOTH CONSTANTS AGAINST THE NEW GIT AND \
-             UPDATE `CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION` — NEVER TO DELETE \
-             THIS ASSERTION.** Read the new git's release notes for (a) a new \
-             configuration-splicing section and (b) a new config value re-parsed as a git \
-             command line, then update the constants and this string.\n\n\
-             **This assertion is a SCHEDULE, not a CONTROL.** It has observed only that the \
-             version string moved. It has NOT observed that anything changed, and it would \
-             have stayed green on a git that added a section without changing its version \
-             string. The no-control claim in both constants' residue paragraphs is \
-             unchanged.\n\n\
-             derived against : {CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION:?}\n\
-             installed       : {installed:?}"
-        );
     }
 }
