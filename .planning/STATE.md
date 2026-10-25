@@ -5,10 +5,10 @@ current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
 stopped_at: Completed 31-06-PLAN.md
-last_updated: "2026-10-25T06:53:35.364Z"
+last_updated: "2026-10-25T07:13:24.509Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 31 execution started
-state_head: 0d6ca428939741b85207f8d35093faee88718bd1
+state_head: 98f949ab4fe3ff614cb9a34e2c1affeb14156c96
 progress:
   total_phases: 10
   completed_phases: 14
@@ -808,6 +808,7 @@ Recent decisions affecting current work:
 - [Phase 31]: 31-04: ledger FIFO test rows are Linux-only (cfg not apple) because rustix has no mknodat/mkfifoat on Apple targets [inferred — audit] — 31-01's helper broke the macOS cross-target clippy; fixed with a cfg, no new dependency, no Linux coverage lost.
 - [Phase 31]: 31-05: ParkReason pruned to {PushOutsideNamespace, SecretDetected, PrCapExceeded}; journal trimmed to is_plain_path_component, classify_change, digests, redact, tail reader; RedactedLine kept under allow(dead_code) [inferred — audit]
 - [Phase 31]: 31-06: T-19-72 and T-19-73 stay open (K class, low) with a backlog owner; Phase 19 threats_open is 0; CR-01 and CR-02 of 21-VERIFICATION are not closed as superseded
+- [Phase 31]: 31-07 (D-04: Codex executor / in-process Claude transport / process-wrap removal) HELD pending user decision; not executed. 31-07-PLAN.md left in place unexecuted; verification treats D-04 as deferred. Executor code remains callerless with a narrow dead_code allow on DrivableProject::with_runtime.
 
 ### Roadmap Evolution
 
