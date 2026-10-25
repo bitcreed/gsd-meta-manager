@@ -117,7 +117,8 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// `every_named_blocking_helper_still_exists_in_the_tree` correctly refused the
 /// stale names and they were deleted. Phase 31's guard retirement then removed
 /// `probe_protection(` and `write_settings(` the same way (their modules,
-/// `envelope::advisory` and `envelope::hooks`, are gone). The markers that remain
+/// `envelope::advisory` and `envelope::hooks`, are gone), and the journal trim
+/// removed `JournalRun::start(`. The markers that remain
 /// are the envelope and snapshot seams that the executor and the launcher still
 /// reach.
 ///
@@ -125,7 +126,6 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// going stale: a rename that emptied a marker would otherwise look exactly
 /// like a clean run.
 const BLOCKING_HELPERS: &[&str] = &[
-    "JournalRun::start(",
     "scan_worktree(",
     "record_and_check(",
     "git_read_raw(",

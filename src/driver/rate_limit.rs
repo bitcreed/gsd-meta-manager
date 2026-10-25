@@ -29,8 +29,8 @@
 //! extension of any of them: a bounds detector was a fact about *this* run's
 //! budget, while a quota rejection is a fact about a resource
 //! shared with every other Claude surface the user has. They all reach a reader
-//! through the one `JournalEvent::Parked` record and the one `parked:` terminal
-//! label.
+//! through the one `parked:` terminal label (the legacy `JournalEvent::Parked`
+//! record they once also shared was deleted in Phase 31).
 //!
 //! **A rate limit is read from the structured transport and never from the
 //! agent's prose** (D-10), and **no dollar figure is ever presented as what a run
@@ -76,7 +76,7 @@ pub const WINDOW_SEVEN_DAY_SONNET: &str = "seven_day_sonnet";
 /// The seven-day window with purchased overage folded in.
 pub const WINDOW_SEVEN_DAY_OVERAGE_INCLUDED: &str = "seven_day_overage_included";
 
-/// The stable identifier a quota park writes into `JournalEvent::Parked`.
+/// The stable identifier a quota park carries as its reason.
 pub const REASON_QUOTA_REJECTED: &str = "quota_rejected";
 
 /// What a window or a reset time is called when it could not be established.

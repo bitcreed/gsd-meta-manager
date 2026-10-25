@@ -34,24 +34,11 @@ const RESERVED_FIRST_SEGMENTS: &[&str] = &["main", "master", "HEAD"];
 /// D-24's park reason for a push whose destination is outside the namespace.
 pub const REASON_PUSH_OUTSIDE_NAMESPACE: &str = "push_outside_namespace";
 
-/// D-24's park reason for a destructive git operation the envelope refuses.
-pub const REASON_FORCE_PUSH_BLOCKED: &str = "force_push_blocked";
-
-/// D-24's park reason for a command that would make an enforcement layer
-/// unreachable.
-pub const REASON_HOOK_BYPASS_BLOCKED: &str = "hook_bypass_blocked";
-
 /// D-24's park reason for a credential found by the pre-push scan (SAFE-03).
 pub const REASON_SECRET_DETECTED: &str = "secret_detected";
 
 /// D-24's park reason for a PR attempt beyond the configured cap (SAFE-06).
 pub const REASON_PR_CAP_EXCEEDED: &str = "pr_cap_exceeded";
-
-/// D-24's park reason for a run that has no credential to push with (SAFE-05).
-pub const REASON_CREDENTIAL_UNAVAILABLE: &str = "credential_unavailable";
-
-/// D-24's park reason for an envelope input the enforcement point cannot read.
-pub const REASON_ENVELOPE_ASSERTION_FAILED: &str = "envelope_assertion_failed";
 
 /// The namespace an alias gets when the project configures none.
 ///
@@ -134,57 +121,46 @@ pub fn classify_push_ref(dest_ref: &str, namespace: &str) -> PushVerdict {
     }
 }
 
-/// The park-reason taxonomy this phase owns (D-24).
+/// The park-reason taxonomy the push step and the PR ledger produce (D-24).
 ///
-/// Modelled on [`crate::journal::JournalEvent::Diagnostic`]'s `code` field,
-/// documented there as *"a short stable identifier for the condition"* — which
-/// is exactly what a park reason is. Two conventions for one idea is how a
-/// later reader ends up grepping for the wrong string.
+/// A short stable identifier for the condition, greppable by its `REASON_*`
+/// constant. Phase 31 pruned this to the three reasons the surviving push step
+/// and ledger still produce; the four that belonged to the deleted Phase 19
+/// guard (`force_push_blocked`, `hook_bypass_blocked`, `credential_unavailable`,
+/// `envelope_assertion_failed`) went with it `[inferred - audit]`.
 ///
-/// **Phase 19 owns *producing* these reasons. Phase 20 owns what happens to a
-/// run that carries one.** No resume, retry or backoff logic belongs next to
-/// this type: a reason that also decides the recovery has to be edited every
-/// time the recovery changes, and then the identifier is no longer stable.
-///
-/// The set is closed on purpose. When a refusal does not have its own reason —
-/// `git stash`, `update-ref`, `filter-branch` — it is reported under
-/// [`ParkReason::ForcePushBlocked`] as the destructive-git family, and the
-/// specific command travels in the verdict's `detail`. That is stated here
-/// rather than left for a reader to infer from a surprising string, because
-/// inventing an eighth reason at a call site is how a taxonomy stops being one.
+/// **No resume, retry or backoff logic belongs next to this type:** a reason that
+/// also decides the recovery has to be edited every time the recovery changes,
+/// and then the identifier is no longer stable. The set is closed on purpose;
+/// inventing another reason at a call site is how a taxonomy stops being one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParkReason {
     /// A push whose destination is outside the reserved namespace (D-05).
     PushOutsideNamespace,
-    /// A destructive git operation: force push, delete, or history rewrite.
-    ForcePushBlocked,
-    /// A command that would make an enforcement layer unreachable.
-    HookBypassBlocked,
     /// The pre-push scan found a credential (SAFE-03).
     SecretDetected,
     /// A PR attempt beyond the configured cap (SAFE-06).
     PrCapExceeded,
-    /// The run has no credential configured and cannot push (SAFE-05).
-    CredentialUnavailable,
-    /// An envelope input the enforcement point could not read.
-    EnvelopeAssertionFailed,
 }
 
 impl ParkReason {
+    /// Every reason, in declaration order.
+    pub const ALL: [ParkReason; 3] = [
+        ParkReason::PushOutsideNamespace,
+        ParkReason::SecretDetected,
+        ParkReason::PrCapExceeded,
+    ];
+
     /// The stable snake_case identifier a later reader greps for.
     ///
     /// Every arm returns one of the `REASON_*` constants above rather than a
     /// fresh literal, so the constant and the enum can never disagree and
-    /// `grep REASON_FORCE_PUSH_BLOCKED` finds every producer.
+    /// `grep REASON_PR_CAP_EXCEEDED` finds every producer.
     pub fn as_str(&self) -> &'static str {
         match self {
             ParkReason::PushOutsideNamespace => REASON_PUSH_OUTSIDE_NAMESPACE,
-            ParkReason::ForcePushBlocked => REASON_FORCE_PUSH_BLOCKED,
-            ParkReason::HookBypassBlocked => REASON_HOOK_BYPASS_BLOCKED,
             ParkReason::SecretDetected => REASON_SECRET_DETECTED,
             ParkReason::PrCapExceeded => REASON_PR_CAP_EXCEEDED,
-            ParkReason::CredentialUnavailable => REASON_CREDENTIAL_UNAVAILABLE,
-            ParkReason::EnvelopeAssertionFailed => REASON_ENVELOPE_ASSERTION_FAILED,
         }
     }
 }
@@ -363,30 +339,26 @@ mod tests {
 
     #[test]
     fn every_park_reason_has_a_distinct_stable_snake_case_identifier() {
-        let all = [
-            ParkReason::PushOutsideNamespace,
-            ParkReason::ForcePushBlocked,
-            ParkReason::HookBypassBlocked,
-            ParkReason::SecretDetected,
-            ParkReason::PrCapExceeded,
-            ParkReason::CredentialUnavailable,
-            ParkReason::EnvelopeAssertionFailed,
-        ];
-        let rendered: Vec<&str> = all.iter().map(|reason| reason.as_str()).collect();
+        let rendered: Vec<&str> = ParkReason::ALL
+            .iter()
+            .map(|reason| reason.as_str())
+            .collect();
 
         assert_eq!(
             rendered,
             vec![
                 "push_outside_namespace",
-                "force_push_blocked",
-                "hook_bypass_blocked",
                 "secret_detected",
-                "pr_cap_exceeded",
-                "credential_unavailable",
-                "envelope_assertion_failed",
+                "pr_cap_exceeded"
             ],
-            "these seven strings are what Phase 20 reads out of a parked run; changing one \
-             is a wire-format change, not a rename"
+            "these three strings are what a parked run carries; changing one is a \
+             wire-format change, not a rename"
+        );
+        let distinct: std::collections::BTreeSet<&&str> = rendered.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            rendered.len(),
+            "two reasons must never share an identifier"
         );
     }
 

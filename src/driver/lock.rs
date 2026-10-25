@@ -91,7 +91,7 @@ pub fn run_lock_path(run_dir: &Path) -> PathBuf {
 /// tampering is a misleading string (T-17-08).
 ///
 /// Serialised as pretty JSON, by the same argument
-/// `journal::writer::write_run_record` makes for `run.json`: it is a document read by a
+/// the legacy journal writer made for `run.json`: it is a document read by a
 /// human at least as often as by the program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockHolder {

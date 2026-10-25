@@ -58,8 +58,6 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // reason to allow, and its output is discarded rather than reproduced. No
     // agent.
     "src/envelope/scan.rs",
-    // `git check-ignore` for the run-record ignore diagnostic. No agent.
-    "src/journal/writer.rs",
     // The TUI's blocking `$EDITOR` shell-out. No agent.
     "src/main.rs",
     // `git init` and the project-creation hook shell-out. No agent.
@@ -131,9 +129,8 @@ type SourceFile = (String, Vec<(usize, String)>);
 
 /// Every `*.rs` file under `src/`, recursively, sorted by path.
 ///
-/// The recursive `read_dir` shape follows `src/journal/writer.rs:571` and
-/// `src/archive.rs:116`. An unreadable entry is skipped rather than panicked on,
-/// exactly as those do.
+/// The recursive `read_dir` shape follows `src/archive.rs:116`. An unreadable
+/// entry is skipped rather than panicked on, exactly as that does.
 fn source_files() -> Vec<SourceFile> {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut out = Vec::new();

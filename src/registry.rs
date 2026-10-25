@@ -697,7 +697,7 @@ pub fn add_project_unchecked(config: &mut Config, alias: &Alias, path: &Path) ->
 ///
 /// The timestamp is
 /// `chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)` — the same
-/// call `JournalRun::finish` makes, deliberately not this module's older bare
+/// call the legacy journal run's `finish` made, deliberately not this module's older bare
 /// `to_rfc3339()`, so an opt-in stamp and a run's `ended_at` compare directly
 /// without normalising.
 ///
@@ -2741,7 +2741,7 @@ mod tests {
             .as_ref()
             .expect("record_opt_in constructs the record");
 
-        // Second precision, RFC3339, `Z` — the shape `JournalRun::finish` writes,
+        // Second precision, RFC3339, `Z` — the shape the legacy journal run wrote,
         // so an opt-in stamp and a run's `ended_at` compare without normalising.
         assert!(
             record.opted_in_at.ends_with('Z'),

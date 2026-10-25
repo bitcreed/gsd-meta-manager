@@ -3,7 +3,7 @@
 //! **Liveness here is a pid AND cmdline double-check, and the second half is not
 //! optional.** A recorded pid outlives the process that owned it: the kernel
 //! recycles pids, and on a busy long-lived host it recycles them within hours.
-//! A bare existence check against `RunRecord.pid` therefore answers "some
+//! A bare existence check against a recorded pid therefore answers "some
 //! process exists" and not "my driver exists" — and in this phase the difference
 //! is the difference between reporting a run live and sending SIGTERM to a
 //! stranger's process group. Requiring the pid's `/proc/<pid>/cmdline` to carry

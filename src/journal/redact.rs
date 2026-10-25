@@ -4,8 +4,10 @@
 //! `src/ui/`. A retrofit would leave every log written before it lands
 //! unredacted forever, and the user will `cat` or attach that file.
 //!
-//! The seam is held by a type, not by discipline (D-22): the journal writer
-//! accepts only [`RedactedLine`], whose sole constructor runs the redactor. The
+//! The seam was held by a type, not by discipline (D-22): the journal writer
+//! (deleted in Phase 31) accepted only [`RedactedLine`], whose sole constructor
+//! runs the redactor. What survives as a live control is [`redact`], which the
+//! launcher's push step routes captured child output through. The
 //! newtype has a private field, one crate-private accessor, and **implements no
 //! traits at all** — no conversion, no dereference, no display, and no
 //! test-only escape-hatch constructor. Each of those would reopen exactly the
@@ -425,6 +427,11 @@ fn cap_payload(v: &mut Value, max: usize) {
 /// deliberate deviation: that type carries a loudly-named test escape hatch, and
 /// this one must not, because such a constructor would reopen exactly the seam
 /// the type exists to close.
+// `dead_code` (Phase 31, `[inferred - audit]`): the journal writer was this
+// type's only consumer and is deleted with the legacy run directory. The type
+// and its tests are kept, rather than deleted in a plan about the envelope guard,
+// because they pin the redact-then-cap-then-serialise order of the redactor.
+#[allow(dead_code)]
 pub struct RedactedLine(String);
 
 impl RedactedLine {
@@ -443,6 +450,7 @@ impl RedactedLine {
     }
 
     /// The redacted line, without its newline.
+    #[allow(dead_code)]
     pub(crate) fn as_line(&self) -> &str {
         &self.0
     }

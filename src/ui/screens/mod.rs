@@ -581,7 +581,7 @@ impl DriverOutput {
     /// Sanitise one journal record's text and append it, dropping the oldest
     /// lines while over [`DRIVER_OUTPUT_RING_LINES`].
     ///
-    /// **The cap asymmetry follows `journal/writer.rs:97-118`:** the counter is
+    /// **The cap asymmetry follows the legacy journal writer's:** the counter is
     /// the mechanism, not a per-drop log. Every dropped line increments
     /// [`dropped`](DriverOutput::dropped) and nothing else happens; the render
     /// layer shows one first line naming the count. A per-drop notice would
@@ -694,7 +694,7 @@ pub struct LauncherLogTail {
 /// **Every string this phase renders that originated on disk is untrusted**, and
 /// this is the single append-time gate all of them pass through (18-UI-SPEC,
 /// `## Untrusted Input Boundary`). Agent prose lands in `ExecEvent.text`,
-/// `Diagnostic.detail`, `RunRecord.goal` on re-read and `gsd_command`.
+/// `Diagnostic.detail`, the legacy `RunRecord.goal` on re-read and `gsd_command`.
 ///
 /// **This function is now the CLASS plus the CAP, and nothing else** (D-21-9).
 /// The character-class rules moved verbatim in behaviour to
@@ -1589,8 +1589,8 @@ impl AppContext {
 
     /// Whether `alias` is waiting on a human, from the state this context holds.
     ///
-    /// The `parked` argument is `false` because nothing emits
-    /// `JournalEvent::Parked` on this path: a parked launcher run reaches the
+    /// The `parked` argument is `false` because nothing parks
+    /// a legacy journal run on this path: a parked launcher run reaches the
     /// dashboard through the launcher marker ([`needs_attention_for`](Self::needs_attention_for)),
     /// not through here.
     pub fn needs_human_for(&self, alias: &str) -> bool {

@@ -23,8 +23,8 @@
 //! maps through [`RouterReason::as_str`] to one `pub const REASON_*`, in the
 //! shape `src/envelope/policy.rs` established for `ParkReason`. Those seven
 //! safety arms are untouched: these are a **sibling** taxonomy, and both flow
-//! through the one `JournalEvent::Parked` record and the one `parked:` terminal
-//! label, so a reader greps one place for *why did this run end*.
+//! through the one `parked:` terminal label (and, until Phase 31, the legacy
+//! `JournalEvent::Parked` record), so a reader greps one place for *why did this run end*.
 //!
 //! Two prefixes ride this one enum on purpose. `router_` marks a refusal about
 //! the *table* — no rule, unverified state, an unsatisfied dependency — and
@@ -286,7 +286,7 @@ pub const RATIONALE_READY_TO_DISCUSS: &str =
 /// The rationale carried by the plan rows.
 ///
 /// A named constant rather than an inline literal because it is journalled onto
-/// `JournalEvent::Decided.rationale`, which is a durable record a later reader
+/// the (since deleted) `JournalEvent::Decided.rationale`, which was a durable record a later reader
 /// greps — and because a `&'static str` from a closed set is what keeps agent
 /// output out of that field by construction.
 pub const RATIONALE_READY_TO_PLAN: &str =

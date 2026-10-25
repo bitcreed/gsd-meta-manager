@@ -2,16 +2,14 @@
 //! D-19, D-20).
 //!
 //! One NDJSON file per alias, at `<envelope>/<alias>/pr-ledger.ndjson`, opened
-//! `create(true).append(true)` — the same discipline
-//! [`crate::journal::writer::JournalWriter::open`] uses, and for the same
-//! reason: an append-only file survives a torn write with at most the last line
+//! `create(true).append(true)` — an append-only file survives a torn write with at most the last line
 //! damaged, and no reader has to trust a writer that died mid-record.
 //!
 //! ## Where it lives, and what that placement prevents
 //!
 //! **Outside the driven repository**, under the alias's envelope directory. A
 //! cap the driven agent can reset is not a cap: a ledger inside the worktree
-//! would be removable by the very `Bash` tool call the cap exists to bound, and
+//! would be removable by the very agent shell command the cap exists to bound, and
 //! `git checkout -- .` would do it without even naming the file. The placement
 //! is asserted by a test rather than only stated here.
 //!
@@ -33,7 +31,7 @@
 //! ## The ordering is the decision (D-20)
 //!
 //! See [`record_and_check`]. The entry is appended **before** the verdict is
-//! returned, never after the tool call succeeds.
+//! returned, never after the `gh pr create` call succeeds.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -51,7 +49,8 @@ const LEDGER_FILE: &str = "pr-ledger.ndjson";
 const WINDOW_SECS: i64 = 24 * 60 * 60;
 
 /// The seconds the push step may spend establishing the count before the size bound
-/// refuses (`T-19-117`); carried over from the retired guard's registered timeout.
+/// refuses (`T-19-117`); the budget the retired Phase 19 guard allowed, kept as
+/// the push step's own bound.
 const COUNT_DEADLINE_SECS: u64 = 5;
 
 /// The largest ledger [`record_and_check_in`] will read before refusing
@@ -60,11 +59,11 @@ const COUNT_DEADLINE_SECS: u64 = 5;
 /// # WHY A BOUND AT ALL, AND WHY IT REFUSES RATHER THAN READS LESS
 ///
 /// [`record_and_check_in`] reads this file WHOLE and [`tally`] walks every line,
-/// on the push step's critical path against a [`COUNT_DEADLINE_SECS`]-second budget
-/// (the budget the retired guard registered). **The file is append-only and a command
-/// the guard PERMITS can inflate it** — an append whose target arrives after a
-/// redirection operator was exit 0 before plan 19-29, and is exit 0 still at
-/// every spelling that rule gets no rule for. Measured on this machine:
+/// on the push step's critical path against a [`COUNT_DEADLINE_SECS`]-second budget.
+/// **The file is append-only and a command the agent can run may inflate it** — an
+/// append whose target arrives after a redirection operator was exit 0 under the
+/// retired guard, and any shell the agent runs can still do it. Measured on this
+/// machine:
 ///
 /// ```text
 ///   ledger bytes     `gh pr create`     `git push --force`
@@ -76,26 +75,26 @@ const COUNT_DEADLINE_SECS: u64 = 5;
 ///
 /// **The forge/non-forge split is the shape of the finding**: the cost falls only
 /// on commands that reach this function, so the remedy belongs here and not in
-/// the guard at large.
+/// the push step at large.
 ///
 /// **IT MUST FAIL CLOSED, AND A TAIL READ IS THE WRONG SHAPE.** [`tally`]'s own
 /// doc states the invariant — *"a line this function cannot parse is COUNTED,
 /// not skipped … under-counting is the one failure this file exists to
 /// prevent"*. A tail read, a line cap and sampling all UNDER-COUNT by
 /// construction, which violates that invariant **in the direction that
-/// permits**. Refusing preserves it: the guard says it cannot establish the
+/// permits**. Refusing preserves it: the push step says it cannot establish the
 /// count rather than establishing a smaller one.
 ///
 /// **The contrast is three functions below.** [`ends_mid_line`] already refuses a
 /// whole-file read for a one-byte question, on exactly this reasoning — *"a
 /// whole-file read to answer a one-byte question is the sort of thing that turns
-/// a guard into a hang"* — and the read beneath it was unbounded until now.
+/// a push step into a hang"* — and the read beneath it was unbounded until now.
 ///
 /// # THE DERIVATION: FROM THE DEADLINE, NEVER FROM THE CAPS
 ///
 /// From the curve above, [`tally`] costs roughly **41 ms per megabyte**. At
 /// **8 MiB** that is about **340 ms**, under **7%** of a five-second deadline,
-/// which leaves the rest of the budget for the rest of the guard.
+/// which leaves the rest of the budget for the rest of the push step.
 ///
 /// **A CAP-DERIVED BOUND WOULD BE A BOUND THE AGENT STEERS.** `pr_cap_per_24h`
 /// and `pr_cap_per_run` are UNCLAMPED and are read from a file the driven agent
@@ -143,9 +142,9 @@ pub struct LedgerEntry {
     /// RFC3339 UTC at **second** precision.
     ///
     /// Produced by `chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs,
-    /// true)` — the same call `JournalRun::finish` and
-    /// [`crate::config::DriverOptIn::opted_in_at`] use, so a ledger stamp and a
-    /// run stamp compare directly without normalising.
+    /// true)` — the same call
+    /// [`crate::config::DriverOptIn::opted_in_at`] uses, so a ledger stamp and an
+    /// opt-in stamp compare directly without normalising.
     pub at: String,
     /// The run this attempt belongs to, which is what the per-run cap counts.
     pub run_id: String,
@@ -248,18 +247,17 @@ impl CapVerdict {
 ///
 /// **The ordering is the decision (D-20), and it is the reverse of the obvious
 /// one.** The entry is appended *before* the verdict is returned, not after the
-/// tool call succeeds. The guard is the only point that observes the attempt at
-/// all: a pull request opened through a path the guard never saw — a script the
-/// agent wrote, a nested shell, an evasion of the argv split — is one this
-/// ledger cannot know about. So the cap is deliberately biased to **over**
+/// `gh pr create` call succeeds. The push step is the only point that observes the
+/// attempt at all: a pull request opened through a path the push step never saw —
+/// a script the agent wrote, a nested shell — is one this ledger cannot know
+/// about. So the cap is deliberately biased to **over**
 /// count: a recorded-but-failed `gh pr create` costs one slot out of three.
 /// Under-counting is the failure that matters, which makes over-counting the
 /// correct direction to be wrong in, and [`CapVerdict::refusal_detail`] says so
 /// in the refusal itself rather than leaving it to be discovered.
 ///
-/// This is the same shape of recorded asymmetry
-/// `crate::journal::writer::JournalWriter::append` documents for its own cap:
-/// the trade is named at the function, not left in a commit message.
+/// This is a recorded asymmetry: the trade is named at the function, not left
+/// in a commit message.
 pub fn record_and_check(
     alias: &str,
     entry: &LedgerEntry,
@@ -321,7 +319,7 @@ pub fn record_and_check_in(
     // The attempt's own stamp is the window's origin. An attempt whose stamp
     // cannot be parsed is an attempt whose window cannot be computed, and the
     // only safe answer to "I cannot compute the bound" is to refuse — which is
-    // what the `Err` becomes at the guard.
+    // what the `Err` becomes at the push step.
     let now = parse_stamp(&entry.at).ok_or_else(|| {
         anyhow!(
             "the attempt's own timestamp is not RFC3339, so no rolling window can be \
@@ -331,8 +329,8 @@ pub fn record_and_check_in(
 
     // **THE SIZE BOUND, BEFORE THE APPEND AND BEFORE THE READ** (`T-19-117`).
     // A ledger this large is one whose count cannot be established inside the
-    // guard's registered deadline, so the guard says so rather than establishing
-    // a smaller count from a partial read — see `MAX_LEDGER_BYTES` for the
+    // push step's `COUNT_DEADLINE_SECS` budget, so the push step says so rather
+    // than establishing a smaller count from a partial read — see `MAX_LEDGER_BYTES` for the
     // derivation, why it refuses rather than reads less, and the over-refusal
     // disclosed from both sides. The check is a `stat`, not a read: one syscall
     // against a file that may be hundreds of megabytes, which is the same
@@ -345,7 +343,7 @@ pub fn record_and_check_in(
     // than the case it was written for: a FIFO at the ledger path STATS AT LENGTH
     // 0, passes the size comparison, and `std::fs::read` below then blocks
     // FOREVER. Measured — **exit 124 after 20.02 s under a hard 20-second
-    // timeout**, against `GUARD_TIMEOUT_SECS = 5`, and against the **18 ms** a
+    // timeout**, against the 5-second `COUNT_DEADLINE_SECS`, and against the **18 ms** a
     // 202 MB regular ledger now answers in and the **7.90 s** it answered in
     // before the size bound existed. A bound over SIZE cannot see it, because the
     // failure is over KIND.
@@ -356,7 +354,7 @@ pub fn record_and_check_in(
     //
     // **`std::fs::metadata` FOLLOWS symlinks, and the link-NON-following variant
     // beside it in `std::fs` must NOT be substituted for it here.** A ledger that
-    // is a symlink to a regular file is a ledger this guard can count; the
+    // is a symlink to a regular file is a ledger the push step can count; the
     // non-following variant would answer about the LINK — never a regular file —
     // and this check would stop counting it.
     //
@@ -381,7 +379,7 @@ pub fn record_and_check_in(
     // NAMES the forbidden API outright.**
     //
     //   * `a_symlinked_to_regular_ledger_is_permitted_and_counted_before_and_after`
-    //     drives a ledger that IS a symlink to a regular file through the guard
+    //     drives a ledger that IS a symlink to a regular file through the push step
     //     and asserts it is permitted AND that its line is counted THROUGH the
     //     link — the BEHAVIOUR this check exists for, beside FIFO, directory,
     //     symlink-to-character-device and fresh-root rows so it is not vacuous.
@@ -416,7 +414,7 @@ pub fn record_and_check_in(
             // FIRED, and this ledger was never tallied — it could not be.
             return Err(anyhow!(
                 "the pull-request ledger at {} is not a regular file — it is a {}, whose \
-                 contents this guard cannot count and may not even be able to finish reading, \
+                 contents the push step cannot count and may not even be able to finish reading, \
                  so how many pull requests this run has already opened cannot be established \
                  and the attempt is refused rather than guessed at. To proceed: remove that \
                  path or replace it with a regular file — it is the envelope's own record and \
@@ -430,13 +428,12 @@ pub fn record_and_check_in(
             // An `Err` rather than a `CapVerdict::Refuse`, and the distinction is
             // D-24: `CapVerdict::Refuse` carries `ParkReason::PrCapExceeded`,
             // which names a cap that FIRED — and this ledger was never tallied.
-            // The guard's `Err` arm parks at
-            // `ParkReason::EnvelopeAssertionFailed`, the general unresolvable
-            // identifier the sibling refusals already carry, which is the honest
-            // attribution: an error reaching a verdict is not a verdict.
+            // The caller turns an `Err` into a refusal of the push step's PR
+            // attempt, which is the honest attribution: an error reaching a
+            // verdict is not a verdict.
             return Err(anyhow!(
                 "the pull-request ledger at {} is {size} bytes, past the {MAX_LEDGER_BYTES}-byte \
-                 bound this guard can count inside its registered {}-second deadline, so how \
+                 bound the push step can count inside its {}-second deadline, so how \
                  many pull requests this run has already opened cannot be established and the \
                  attempt is refused rather than counted from a partial read. To proceed: \
                  archive or remove that file — it is the envelope's own record and no other \
@@ -513,8 +510,8 @@ fn append_entry(path: &Path, entry: &LedgerEntry) -> anyhow::Result<()> {
 /// the signature of a torn final record.
 ///
 /// Reads one byte from the end rather than the whole file: this runs on the
-/// agent's critical path inside the guard, and a whole-file read to answer a
-/// one-byte question is the sort of thing that turns a guard into a hang.
+/// push step's critical path, and a whole-file read to answer a one-byte
+/// question is the sort of thing that turns a push step into a hang.
 /// An unreadable file answers `false`, because the append that follows will
 /// report the real error with the real context rather than this probe guessing.
 fn ends_mid_line(path: &Path) -> bool {
@@ -983,7 +980,7 @@ mod tests {
         let bad = entry("not a timestamp", "run-1");
         assert!(
             record_and_check_in(root.path(), "alpha", &bad, &policy(3, 1)).is_err(),
-            "no window can be computed from an unparseable origin, and the guard turns \
+            "no window can be computed from an unparseable origin, and the push step turns \
              this error into a deny"
         );
     }
@@ -991,7 +988,7 @@ mod tests {
     // -----------------------------------------------------------------------
     // The size bound (T-19-117) and the kind bound (T-19-120), pinned over
     // `record_and_check_in` itself. They were first written against the retired
-    // PreToolUse guard; the bounds live here, so the pins do too.
+    // retired PreToolUse guard; the bounds live here, so the pins do too.
     // -----------------------------------------------------------------------
 
     /// One ledger line dated outside the 24 h window, so the cap is unaffected and a

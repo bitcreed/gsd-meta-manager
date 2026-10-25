@@ -47,7 +47,7 @@ pub struct RegisteredProject {
     pub driver_opt_in: Option<DriverOptIn>,
     /// Every field of this entry that this build does not model.
     ///
-    /// The same tolerance technique `JournalRecord.rest` uses
+    /// The same tolerance technique the (since deleted) journal record reader used
     /// (`src/journal/reader.rs:196-211`), applied to a file **two binary
     /// versions may share**. Without it, a v1.6 binary loading a config written
     /// by a v2.1 binary and then saving it would silently delete every field it
@@ -286,7 +286,7 @@ pub struct DriverOptIn {
     /// RFC3339 UTC at **second** precision.
     ///
     /// Produced by `chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs,
-    /// true)` — the same call `JournalRun::finish` uses, deliberately not
+    /// true)` — the same call the legacy journal run used, deliberately not
     /// `registry.rs`'s bare `to_rfc3339()`, so an opt-in stamp and a run's
     /// `ended_at` compare directly without normalising.
     pub opted_in_at: String,
@@ -496,7 +496,7 @@ pub struct Preferences {
     ///
     /// **The fleet dimension enters v2.0 as a count, never as a second run
     /// identity (D-18).** One driver per project is what makes the kill switch
-    /// simple — one pgid, one project, one `RunRecord` — and fleet-level driving
+    /// simple — one pgid, one project, one run record — and fleet-level driving
     /// is deferred past v2.0. What Phase 20 will actually want is a global
     /// concurrency cap, and this field is its seam.
     ///
