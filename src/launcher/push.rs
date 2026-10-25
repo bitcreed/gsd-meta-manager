@@ -280,23 +280,45 @@ fn hardened_git_args(args: Vec<OsString>) -> Vec<OsString> {
     full
 }
 
+/// The environment of the steps that touch only the launcher-owned mirror and the
+/// driver-written tip (WR-06): the host's global and system git configuration is off.
+///
+/// A tree the driver wrote can carry `.gitattributes` (`* filter=lfs`) that name a
+/// filter driver, and `git worktree add` would run whatever the host's `~/.gitconfig` or
+/// `/etc/gitconfig` defines for it (git-lfs's `smudge` and `process` programs, which
+/// also read `.lfsconfig` from the tree). With both files off, an attribute that names a
+/// driver nobody defined does nothing. The mirror's own configuration (a bare `init`
+/// plus the pinned URL) is all that applies. The fetch and the push keep the host
+/// configuration: the push needs its credential setup, the fetch reads the checkout
+/// under the host's `safe.directory`.
+const MIRROR_ONLY_ENV: &[(&str, &str)] = &[
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+    ("GIT_CONFIG_SYSTEM", "/dev/null"),
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+];
+
 /// Run `git` with `args` (they name their repository), within `budget`.
 ///
 /// `GIT_TERMINAL_PROMPT=0` so a credential prompt cannot hang the launcher, and
 /// `GIT_ALLOW_PROTOCOL` so the `ext::` transport is out of reach. Every call starts
 /// with [`GIT_HARDENING`]; this is the only path that starts a launcher `git`.
 fn git(args: Vec<OsString>, budget: Duration) -> GitRun {
+    git_with_env(args, budget, &[])
+}
+
+/// [`git`] with the host's global and system configuration off ([`MIRROR_ONLY_ENV`]).
+fn git_mirror_only(args: Vec<OsString>, budget: Duration) -> GitRun {
+    git_with_env(args, budget, MIRROR_ONLY_ENV)
+}
+
+fn git_with_env(args: Vec<OsString>, budget: Duration, more_env: &[(&str, &str)]) -> GitRun {
     let args = hardened_git_args(args);
-    match run_bounded_with_stderr(
-        "git",
-        &args,
-        None,
-        &[
-            ("GIT_TERMINAL_PROMPT", "0"),
-            ("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS),
-        ],
-        budget,
-    ) {
+    let mut env: Vec<(&str, &str)> = vec![
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS),
+    ];
+    env.extend_from_slice(more_env);
+    match run_bounded_with_stderr("git", &args, None, &env, budget) {
         Some((out, line)) => GitRun {
             success: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
@@ -441,7 +463,7 @@ fn refused(reason: &'static str, detail: impl Into<String>) -> PushOutcome {
 /// Remove a scan worktree (and the mirror's record of it), best effort.
 fn remove_scan_dir(mirror: &Path, scan_dir: &Path) {
     if scan_dir.exists() {
-        let _ = git(
+        let _ = git_mirror_only(
             vec![
                 "--git-dir".into(),
                 mirror.as_os_str().to_owned(),
@@ -456,7 +478,15 @@ fn remove_scan_dir(mirror: &Path, scan_dir: &Path) {
     if scan_dir.exists() {
         let _ = fs::remove_dir_all(scan_dir);
     }
-    let _ = git_mirror(mirror, &["worktree", "prune"], GIT_QUICK);
+    let _ = git_mirror_only(
+        vec![
+            "--git-dir".into(),
+            mirror.as_os_str().to_owned(),
+            "worktree".into(),
+            "prune".into(),
+        ],
+        GIT_QUICK,
+    );
 }
 
 /// Send the finished run's recorded branch tip to its reserved branch.
@@ -610,13 +640,14 @@ pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool)
             ),
         };
     }
-    let tip = git_mirror(
-        &mirror,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("{private_ref}^{{commit}}"),
+    let tip = git_mirror_only(
+        vec![
+            "--git-dir".into(),
+            mirror.as_os_str().to_owned(),
+            "rev-parse".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            format!("{private_ref}^{{commit}}").into(),
         ],
         GIT_QUICK,
     );
@@ -642,7 +673,9 @@ pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool)
         .unwrap_or(&ctx.driver_root)
         .join(format!("scan-{}", ctx.run_id));
     remove_scan_dir(&mirror, &scan_dir);
-    let add = git(
+    // WR-06: the checkout of driver-written content runs with the host's global and
+    // system git configuration off.
+    let add = git_mirror_only(
         vec![
             "--git-dir".into(),
             mirror.as_os_str().to_owned(),
@@ -980,6 +1013,35 @@ mod tests {
         let run = git_in(repo.path(), &["status", "--porcelain"], GIT_QUICK);
         assert!(run.success, "{}", run.last_error);
         assert!(!marker.exists(), "the planted fsmonitor ran");
+    }
+
+    #[test]
+    fn a_mirror_only_call_sees_no_global_or_system_configuration() {
+        // WR-06: whatever the host's `~/.gitconfig` and `/etc/gitconfig` define (a
+        // git-lfs filter, say) is invisible to the steps that check out driver-written
+        // content; only the repository's own and the command-line scopes remain.
+        let dir = tempfile::tempdir().expect("dir");
+        let mirror = dir.path().join("m.git");
+        git_ok(dir.path(), &["init", "--bare", "--quiet", "m.git"]);
+        let args = |scope: &str| -> Vec<OsString> {
+            vec![
+                "--git-dir".into(),
+                mirror.as_os_str().to_owned(),
+                "config".into(),
+                "--list".into(),
+                "--show-scope".into(),
+                scope.into(),
+            ]
+        };
+        let isolated = git_mirror_only(args("--includes"), GIT_QUICK);
+        assert!(isolated.success, "{}", isolated.last_error);
+        for line in isolated.stdout.lines() {
+            let scope = line.split_whitespace().next().unwrap_or_default();
+            assert!(
+                matches!(scope, "local" | "command"),
+                "a {scope:?} scope reached a mirror-only call: {line}"
+            );
+        }
     }
 
     #[test]
