@@ -66,15 +66,42 @@ pub fn line(
     )
 }
 
-/// The append-only `egress.log`, mode 0600.
+/// The most `egress.log` may grow to (8 MiB `[inferred — audit]`). The driver
+/// controls the request rate and the file sits on the host outside the cgroup, so
+/// an unbounded log is a disk-fill channel (WR-03).
+pub const LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The verdict of the one line written when the cap is reached.
+const TRUNCATED_VERDICT: &str = "log truncated: egress.log reached its size cap";
+
+/// What the log's mutex guards: the file and the cap bookkeeping, so the cap check,
+/// the write and the byte count are one critical section.
+struct Sink {
+    file: tokio::fs::File,
+    /// Bytes in the file: its length at open plus everything written since.
+    written: u64,
+    /// The cap was reached; every later record is dropped.
+    full: bool,
+}
+
+/// The append-only `egress.log`, mode 0600, capped at a byte limit.
 pub struct EgressLog {
-    file: tokio::sync::Mutex<tokio::fs::File>,
+    sink: tokio::sync::Mutex<Sink>,
+    cap: u64,
 }
 
 impl EgressLog {
-    /// Open (creating it 0600 if need be) `path` for appending. Synchronous, so it
-    /// runs before the server's runtime exists and no `async fn` blocks.
+    /// Open (creating it 0600 if need be) `path` for appending, capped at
+    /// [`LOG_MAX_BYTES`]. Synchronous, so it runs before the server's runtime
+    /// exists and no `async fn` blocks.
     pub fn open(path: &Path) -> io::Result<EgressLog> {
+        EgressLog::open_capped(path, LOG_MAX_BYTES)
+    }
+
+    /// [`EgressLog::open`] with an explicit cap (the test seam). A file already at
+    /// or past `cap` starts full, so a later launch that reopens a full log
+    /// appends nothing.
+    pub fn open_capped(path: &Path, cap: u64) -> io::Result<EgressLog> {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -82,24 +109,42 @@ impl EgressLog {
             .mode(0o600)
             .open(path)?;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        let written = file.metadata()?.len();
         Ok(EgressLog {
-            file: tokio::sync::Mutex::new(tokio::fs::File::from_std(file)),
+            sink: tokio::sync::Mutex::new(Sink {
+                file: tokio::fs::File::from_std(file),
+                written,
+                full: written >= cap,
+            }),
+            cap,
         })
     }
 
-    /// RED stub: the cap is not enforced yet.
-    pub fn open_capped(path: &Path, _cap: u64) -> io::Result<EgressLog> {
-        EgressLog::open(path)
-    }
-
     /// Append one line. A write failure is dropped: the log never stops traffic.
+    ///
+    /// At the cap, one `log truncated` line is written and every later record is
+    /// dropped. The cap check, the write and the byte count all happen under the
+    /// one lock, so concurrent records cannot push the file past the cap plus the
+    /// one marker line.
     pub async fn record(&self, kind: Kind, subject: &str, path: &str, status: u16, verdict: &str) {
         use tokio::io::AsyncWriteExt;
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let text = line(&timestamp, kind, subject, path, status, verdict);
-        let mut file = self.file.lock().await;
-        let _ = file.write_all(text.as_bytes()).await;
-        let _ = file.flush().await;
+        let mut sink = self.sink.lock().await;
+        if sink.full {
+            return;
+        }
+        if sink.written + text.len() as u64 > self.cap {
+            let marker = line(&timestamp, Kind::Refused, "-", "-", 0, TRUNCATED_VERDICT);
+            sink.full = true;
+            let _ = sink.file.write_all(marker.as_bytes()).await;
+            let _ = sink.file.flush().await;
+            return;
+        }
+        if sink.file.write_all(text.as_bytes()).await.is_ok() {
+            sink.written += text.len() as u64;
+        }
+        let _ = sink.file.flush().await;
     }
 }
 
