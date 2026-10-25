@@ -1185,7 +1185,7 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 10/10 plans executed
+**Plans**: 10/13 plans executed (3 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -1209,6 +1209,11 @@ Plans:
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [x] 28.1-09-PLAN.md — planted-file ro binds and per-launch detection record, `protections_absent` on every launch, final live sweep of sockets, runtime dir and `~/.claude` (LNCH-11, LNCH-15, LNCH-13)
+
+**Wave 7** *(gap closure from `28.1-VERIFICATION.md`, `28.1-REVIEW.md` and `28.1-UI-REVIEW.md` — blocked on Wave 6 completion; the three plans touch disjoint files and run in parallel)*
+- [ ] 28.1-11-PLAN.md — close T-28.1-02 / WR-01: the egress judge refuses a body that repeats a JSON key at any depth and still forwards the bytes it judged; end-to-end regression with the audit's two bodies; IN-02 normalise-first CONNECT literal check; WR-03 `egress.log` byte cap (LNCH-09)
+- [ ] 28.1-12-PLAN.md — close CR-01 / release `cross-target-check`: gate the unix-only `home.rs` tests and make the TLS crates (ring's C build) Linux-only, proven with the release.yml windows-gnu and macOS check/clippy commands run locally; WR-04 shared-bin exe bind; WR-07 BOM in planted git config (LNCH-09, LNCH-10, LNCH-11)
+- [ ] 28.1-13-PLAN.md — Driver tab header row 4 keeps PLANTED and `absent:` visible at narrow widths (importance order, separators, `absent: all 8`), full `driver auth setup` hint, `1 host`, IN-01 PLANTED count (LNCH-15, LNCH-11, LNCH-12)
 
 **Human UAT (non-blocking)**: D-11's setup-token half needs a browser-minted token (`gsd-meta-manager driver auth setup`); until then the reach probe records `NOT-RUN: no setup-token`.
 
