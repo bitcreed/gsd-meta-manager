@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
 status: verifying
-stopped_at: Completed 28.1-14-PLAN.md
-last_updated: "2026-10-25T02:37:13.212Z"
+stopped_at: Phase 31 context gathered
+last_updated: "2026-10-25T03:08:18.267Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 28.1 execution started
-state_head: 5d6ad78e55472e857dc0b11f4f48e520de3642a7
+state_head: 279dd6d8a063be17b31fe80c0859c9782931d76b
 progress:
   total_phases: 10
   completed_phases: 14
@@ -985,9 +985,9 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T02:37:12.039Z
-Stopped at: Completed 28.1-14-PLAN.md
-Resume file: None
+Last session: 2026-10-25T03:08:16.749Z
+Stopped at: Phase 31 context gathered
+Resume file: .planning/phases/31-retire-superseded-envelope-goal-layer-code/31-CONTEXT.md
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
 milestone stays open.
