@@ -1089,7 +1089,8 @@ fn header_row_4(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
     }
     if let Some(hosts) = fm.egress_allow.as_ref() {
         spans.push(Span::styled(HEADER_SEP, label_style()));
-        spans.push(Span::raw(format!("egress {} hosts", hosts.len())));
+        let unit = if hosts.len() == 1 { "host" } else { "hosts" };
+        spans.push(Span::raw(format!("egress {} {unit}", hosts.len())));
     }
     if let Some(requests) = fm.inference_requests {
         spans.push(Span::styled(HEADER_SEP, label_style()));
@@ -1098,19 +1099,21 @@ fn header_row_4(fm: &DriverFrontmatter, width: usize) -> Line<'static> {
     clip_line(Line::from(spans), width)
 }
 
-/// The hint shown beside a `host-token` run: the stored setup token narrows the
-/// server-side scope of the credential the agent holds (28.1, D-10).
-pub const AUTH_SETUP_HINT: &str = "run driver auth setup";
+/// The copy-pasteable command shown beside a `host-token` run: a stored setup token
+/// narrows the server-side scope of the credential the agent holds (28.1, D-10).
+pub const AUTH_SETUP_HINT: &str = "run: gsd-meta-manager driver auth setup";
 
 /// How many planted findings `planted` stands for: one per item, except a final
 /// `+N more` overflow item, which counts as N (D-22).
 fn planted_count(items: &[String]) -> usize {
+    // The writer emits exactly `+{n} more`; no trimming, so a file name that merely
+    // contains such text cannot forge the count (IN-01, T-28.1-49).
     let overflow = |item: &String| -> Option<usize> {
-        let rest = item
-            .trim()
-            .trim_start_matches(|c: char| !c.is_ascii_digit() && c != '+');
-        let rest = rest.strip_prefix('+')?.strip_suffix(" more")?;
-        rest.trim().parse::<usize>().ok()
+        let digits = item.strip_prefix('+')?.strip_suffix(" more")?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse::<usize>().ok()
     };
     match items.split_last() {
         Some((last, head)) => head.len() + overflow(last).unwrap_or(1),
@@ -4972,7 +4975,7 @@ mod tests {
         let row = header_row_4(&fm, 200);
         assert_eq!(
             text_of(&row),
-            "  sandbox bwrap  \u{B7}  PLANTED 4  \u{B7}  absent: registry-overlay  \u{B7}  auth host-token (run driver auth setup)  \u{B7}  prompt driver-prompt/1.0.0  \u{B7}  egress 2 hosts  \u{B7}  api 12"
+            "  sandbox bwrap  \u{B7}  PLANTED 4  \u{B7}  absent: registry-overlay  \u{B7}  auth host-token (run: gsd-meta-manager driver auth setup)  \u{B7}  prompt driver-prompt/1.0.0  \u{B7}  egress 2 hosts  \u{B7}  api 12"
         );
         let style_of = |needle: &str| {
             row.spans
@@ -5013,6 +5016,7 @@ mod tests {
         assert_eq!(count(&["a", "created +9999 more"]), 2);
         assert_eq!(count(&["a", "+x more"]), 2);
         assert_eq!(count(&["a", " +5 more"]), 2);
+        assert_eq!(count(&["a", "++5 more"]), 2);
         assert_eq!(count(&[]), 0);
     }
 
