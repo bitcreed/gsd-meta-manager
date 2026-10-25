@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
-status: executing
-stopped_at: Completed 28.1-08-PLAN.md
-last_updated: "2026-10-24T23:55:33.752Z"
+status: verifying
+stopped_at: Completed 28.1-09-PLAN.md
+last_updated: "2026-10-25T00:20:07.508Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 28.1 execution started
-state_head: ce24d72db36661ceb8fdd5c2f34cbe9e45b486be
+state_head: b1f6920b7ec4aae5fa696a7a6d28004ab34c7d0a
 progress:
   total_phases: 10
   completed_phases: 14
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
   261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
   regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
@@ -553,6 +553,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P10 | 12 min | 3 tasks | 6 files |
 | Phase 28.1 P07 | 22 min | 3 tasks | 12 files |
 | Phase 28.1 P08 | 25 min | 3 tasks | 10 files |
+| Phase 28.1 P09 | 50 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -778,6 +779,8 @@ Recent decisions affecting current work:
 - [Phase 28.1]: 28.1-07: live request names claude-haiku-4-5 (claude-haiku-5-5 answers 429 for the OAuth token even directly) [inferred — audit]
 - [Phase 28.1]: 28.1-07: live fixture project is git-init'ed with no remote so the run-end push cannot resolve this repo's public origin [inferred — audit]
 - [Phase 28.1]: 28.1-08: $HOME is a 256 MiB tmpfs with a host-derived ro allowlist, a three-key per-run gitconfig and a registry overlay; install-root rule, tmpfs sizes (256 MiB/1 GiB/64 MiB) and the for-probe exemption in hook_is_kept are [inferred — audit]
+- [Phase 28.1]: [inferred — audit] 28.1-09: the socket sweep forces an lstat (-perm -000 -type s) because GNU find trusts d_type and a bwrap-bound socket sits on a regular-file mount point
+- [Phase 28.1]: [inferred — audit] 28.1-09: symlinked .git/.claude and guarded children get no bind (detection only); record_planted writes/logs/prints only when the planted list changed
 
 ### Roadmap Evolution
 
@@ -972,8 +975,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-24T23:55:32.526Z
-Stopped at: Completed 28.1-08-PLAN.md
+Last session: 2026-10-25T00:20:06.277Z
+Stopped at: Completed 28.1-09-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0

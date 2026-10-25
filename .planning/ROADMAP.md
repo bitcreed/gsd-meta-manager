@@ -1185,7 +1185,7 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 9/10 plans executed
+**Plans**: 10/10 plans executed
 
 Plans:
 **Wave 1**
@@ -1208,7 +1208,7 @@ Plans:
 - [x] 28.1-08-PLAN.md — `$HOME` by allowlist (derived from the host), per-run gitconfig, registry overlay, GSD/rtk-only hooks; live D-16 probe (LNCH-10, LNCH-13)
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 28.1-09-PLAN.md — planted-file ro binds and per-launch detection record, `protections_absent` on every launch, final live sweep of sockets, runtime dir and `~/.claude` (LNCH-11, LNCH-15, LNCH-13)
+- [x] 28.1-09-PLAN.md — planted-file ro binds and per-launch detection record, `protections_absent` on every launch, final live sweep of sockets, runtime dir and `~/.claude` (LNCH-11, LNCH-15, LNCH-13)
 
 **Human UAT (non-blocking)**: D-11's setup-token half needs a browser-minted token (`gsd-meta-manager driver auth setup`); until then the reach probe records `NOT-RUN: no setup-token`.
 

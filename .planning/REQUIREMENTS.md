@@ -226,7 +226,7 @@ Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â
   is recorded, and the setup-token's reach is probed. A managed-settings policy denies agent-to-agent
   and cloud tools (`Cron*`, `RemoteTrigger`, `SendMessage`, `ListAgents`, `ScheduleWakeup`,
   `DesignSync`, `mcp__claude_ai_*`), and claude.ai connectors are disabled.
-- [ ] **LNCH-13**: Already-closed channels (runtime-dir sockets, ro `/`, push `core.hooksPath`, nested
+- [x] **LNCH-13**: Already-closed channels (runtime-dir sockets, ro `/`, push `core.hooksPath`, nested
   agents) have regression tests. The gate's hooks are delivered as managed settings, so a nested
   `claude` with another config dir or `--settings` cannot skip them.
 - [x] **LNCH-14**: Accepted residual risks are documented. The main one is planning docs read by an
@@ -394,7 +394,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-10 | Phase 28.1 | Complete |
 | LNCH-11 | Phase 28.1 | Complete |
 | LNCH-12 | Phase 28.1 | Complete |
-| LNCH-13 | Phase 28.1 | Pending |
+| LNCH-13 | Phase 28.1 | Complete |
 | LNCH-14 | Phase 28.1 | Complete |
 | LNCH-15 | Phase 28.1 | Complete |
 | PRMT-01 | Phase 29 | Complete |
