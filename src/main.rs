@@ -740,30 +740,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             app.ctx.active_sessions = initial_sessions;
             app.auto_register_new_sessions();
 
-            // Startup scan, second half: find driver runs that outlived a
-            // previous TUI session. The 20-tick block handles the same logic
-            // ongoing (every ~5s), but this closes the gap between launch and
-            // the first poll — which is the whole of "reopening the TUI shows
-            // that run still live" (CTRL-04, D-13).
-            //
-            // Synchronous for the same reason the session scan above is: the TUI
-            // is not yet in its loop, so there is no render thread to block.
-            //
-            // The scan writes nothing (D-12). A run whose driver died without an
-            // `ended_at` comes back with `live == false` and its record is left
-            // exactly as the dead driver left it.
-            app.ctx.observed_runs =
-                gsd_meta_manager::driver::reconcile::reconcile_all(&app.ctx.config.projects)
-                    .into_iter()
-                    .map(|run| (run.alias.clone(), run))
-                    .collect();
-            // Its sibling, read at the same moment and for the same reason
-            // (WR-02): D-14's finished-run arm has to be answerable on the very
-            // first frame, or a project whose last run failed shows no badge
-            // until the first 20-tick scan lands five seconds later.
-            app.ctx.last_outcomes =
-                gsd_meta_manager::driver::reconcile::last_ended_outcomes(&app.ctx.config.projects);
-
             // The launch target opens through the overview's own Enter path,
             // after every piece of startup state is in place, so the first
             // frame is the project view and Esc behaves as if drilled in (D-05).

@@ -107,49 +107,26 @@ pub enum Action {
         records: Vec<crate::journal::reader::JournalRecord>,
         cursor: crate::journal::reader::JournalCursor,
     },
-    /// One reconciliation scan completed (D-13).
+    /// One launcher-marker scan completed (30-03, D-12, D-13; renamed in Phase 31).
     ///
     /// The payload is the **whole** result, not a delta, because the scan is
-    /// authoritative: a project whose run ended, or which was unregistered
-    /// between two scans, is expressed by its absence and by nothing else. The
-    /// handler replaces rather than merges for exactly that reason.
+    /// authoritative: a project whose launcher runs ended, or which was
+    /// unregistered between two scans, is expressed by its absence and by nothing
+    /// else. The handler replaces rather than merges for exactly that reason.
     ///
-    /// Every field of every `ObservedRun` is plain data — ids, counts and
-    /// strings — so `Action` stays `Clone` and no file handle or join handle
-    /// leaks into a message type (D-20). Reconciliation is read-only, so there
-    /// is no handle to leak in the first place (D-12).
-    RunsReconciled {
-        runs: Vec<crate::driver::reconcile::ObservedRun>,
-        /// The outcome label of each project's most recent **ended** run, keyed
-        /// by alias (WR-02, D-14).
-        ///
-        /// `reconcile_all` deliberately returns nothing for an ended run —
-        /// there is nothing left to *observe* — and this is the fact that gets
-        /// dropped with it. D-14 names "a finished run whose outcome is
-        /// `PermissionDenied` / `Failed` / `Stalled` / `TimedOut`" as one of the
-        /// four sources of the needs-a-human badge, and with no reader for it
-        /// that arm could never fire in production. A badge that can never light
-        /// is worse than no badge, because it teaches the user to ignore it.
-        ///
-        /// A **label**, not a `RunOutcome`: what is on disk is the string
-        /// `run.json` recorded, and reconstructing a typed variant from it would
-        /// require inventing the payload fields the label does not carry. The
-        /// render layer's `TerminalState::from_label` is the one mapping.
-        ///
-        /// An alias whose newest run has not ended, or which has never been
-        /// driven, is simply absent — the same authoritative-by-absence rule
-        /// `runs` follows.
-        last_outcomes: std::collections::HashMap<String, String>,
+    /// Every field is plain data, so `Action` stays `Clone` and no file handle or
+    /// join handle leaks into a message type (D-20). The scan is read-only, so
+    /// there is no handle to leak in the first place (D-12).
+    LauncherMarkersRescanned {
         /// Each registered project's launcher-run marker (30-03, D-12, D-13), keyed by
         /// alias: the highest of crashed, parked, driven, stale and unknown across the
         /// project's launcher runs, and whether any holds its run lock.
         ///
-        /// Computed in the SAME blocking task as the probe above, on the same 20-tick
-        /// counter, so a launcher killed with `SIGKILL` (no file event) turns into a
-        /// crashed badge within one slow tick. Replaced wholesale for the reason `runs`
-        /// is: a project absent from the map has no marker. **Empty with the
-        /// experimental flag off**, since no launcher surface is shown then and the
-        /// scan's file reads are skipped.
+        /// Computed in a `spawn_blocking` task on the 20-tick counter, so a launcher
+        /// killed with `SIGKILL` (no file event) turns into a crashed badge within one
+        /// slow tick. Replaced wholesale: a project absent from the map has no marker.
+        /// **Empty with the experimental flag off**, since no launcher surface is shown
+        /// then and the scan's file reads are skipped.
         launcher_markers:
             std::collections::HashMap<String, crate::ui::screens::driver_run::LauncherMarker>,
     },
@@ -160,7 +137,7 @@ pub enum Action {
     /// ended, or which was unregistered between two scans, is expressed by its
     /// absence and by nothing else. The handler replaces
     /// `AppContext.agent_views` rather than merging into it for exactly that
-    /// reason — the rule [`Action::RunsReconciled`] follows.
+    /// reason — the rule [`Action::LauncherMarkersRescanned`] follows.
     ///
     /// Every field of every `ProjectAgents` is plain data — paths, counts,
     /// strings and times — never a file handle, a child process or a join
@@ -177,7 +154,7 @@ pub enum Action {
     /// STEER-02).
     ///
     /// Both payloads are **whole** rather than deltas, for the same reason
-    /// [`Action::RunsReconciled`] carries the whole scan: each read is
+    /// [`Action::LauncherMarkersRescanned`] carries the whole scan: each read is
     /// authoritative, and a run directory or a message that is no longer on
     /// disk is expressed by its absence and by nothing else.
     ///

@@ -1392,7 +1392,7 @@ fn output_body_lines(
 /// to prevent — so the choice is made by run id and by nothing else, and a
 /// journal that is about a different run is not shown at all.
 ///
-/// **The ring is matched on its own run id, not on `observed_runs`** (CR-02).
+/// **The ring is matched on its own run id, not on the observed-run map** (CR-02).
 /// The reconciliation map answers "which run is this session tailing", which is
 /// a different question from "which run do these lines belong to" and stops
 /// being the same answer the moment a run ends: `reconcile_one` drops an ended
@@ -2623,7 +2623,7 @@ mod tests {
 
     /// CR-02, at the chooser.
     ///
-    /// The ring is matched on its **own** run id and never on `observed_runs`:
+    /// The ring is matched on its **own** run id and never on the observed-run map:
     /// the reconciliation map answers "which run is this session tailing", which
     /// stops being the same question the moment a run ends.
     #[test]

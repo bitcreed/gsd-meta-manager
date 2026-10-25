@@ -170,18 +170,13 @@ pub struct AliasBadge {
     pub modifier: Modifier,
 }
 
-/// The five independent facts that select a badge, named rather than positional.
+/// The independent facts that select a badge, named rather than positional.
 ///
-/// A five-`bool` parameter list is a five-way ordering hazard at every call site
+/// A positional `bool` parameter list is an ordering hazard at every call site
 /// and in every test; a `Default`-able struct makes each fact self-labelling and
 /// lets a test state one condition and mean it.
 #[derive(Debug, Clone, Copy, Default)]
 struct BadgeInputs {
-    /// A run exists for this alias **and** `ObservedRun::is_live()` says its pid
-    /// and cmdline both still check out. `Liveness` is tri-state and
-    /// `Liveness::Unknown` is never a synonym for dead (CR-05) — `is_live()`
-    /// owns that distinction, and this flag is its answer, not a re-derivation.
-    driven_and_live: bool,
     /// 18-04's `needs_human` predicate over evidence that exists today (D-14).
     needs_human: bool,
     /// `ProjectState::paused` — a non-empty HANDOFF that is not stale.
@@ -206,9 +201,10 @@ struct BadgeInputs {
 ///
 /// 1. a launcher run crashed — `BADGE_CRASHED`, Red + BOLD
 /// 2. a launcher run parked — `BADGE_NEEDS_HUMAN`, Red + BOLD
-/// 3. driven **and** live (a launcher run holding its lock with a fresh heartbeat,
-///    or the legacy observed run) — `BADGE_DRIVEN`, Magenta + BOLD
-/// 4. needs a human (the legacy predicate alone) — `BADGE_NEEDS_HUMAN`, Red + BOLD
+/// 3. driven **and** live (a launcher run holding its lock with a fresh heartbeat)
+///    — `BADGE_DRIVEN`, Magenta + BOLD
+/// 4. needs a human (the paused / external-job predicate alone) — `BADGE_NEEDS_HUMAN`,
+///    Red + BOLD
 /// 5. a launcher run's heartbeat stale — `BADGE_STALE`, Yellow + BOLD
 /// 6. a launcher run's liveness unknown — `BADGE_UNKNOWN`, Yellow
 /// 7. paused — `BADGE_PAUSED`, Cyan
@@ -216,8 +212,8 @@ struct BadgeInputs {
 /// 9. active Claude or Codex session — `BADGE_SESSION`, Green
 /// 10. none of the above — no badge; the alias renders flush
 ///
-/// **A crash outranks everything, and driven-and-live outranks the legacy flag,
-/// and the reason is the whole point of the ranks:** the user must never be unsure
+/// **A crash outranks everything, and driven-and-live outranks the needs-a-human
+/// flag, and the reason is the whole point of the ranks:** the user must never be unsure
 /// whether something is driving their repo, nor whether a run died under them. The
 /// last three keep their v1.0/v1.4/1.8.0 order beneath the rest.
 ///
@@ -246,7 +242,6 @@ struct BadgeInputs {
 /// badge, and deleting the arm would make that impossible without noticing.
 fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
     let BadgeInputs {
-        driven_and_live,
         needs_human,
         is_paused,
         external_job_waiting,
@@ -274,7 +269,7 @@ fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
             color: Color::Red,
             modifier: bold,
         })
-    } else if driven_and_live || launcher == Some(MarkerClass::Driven) {
+    } else if launcher == Some(MarkerClass::Driven) {
         // An agent is driving this repo right now; nothing below outranks that.
         Some(AliasBadge {
             glyph: BADGE_DRIVEN,
@@ -343,21 +338,6 @@ fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
 pub(crate) fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
     let state = ctx.project_states.get(alias);
 
-    // Tri-state `Liveness` is resolved by `is_live()`, never re-derived here.
-    //
-    // **The single gate for the whole driven surface on this screen**
-    // (260917-fko D2). With the experimental surfaces off this resolves false
-    // whatever the reconciliation scan observed, which removes the driven badge,
-    // its rank-1 slot in `alias_badge`, and therefore the attention-first sort's
-    // driver-first ordering — without touching `alias_badge`, `BadgeInputs`, the
-    // rank table or any consumer. Gating each consumer instead is the version
-    // that gets half-applied.
-    let driven_and_live = ctx.experimental
-        && ctx
-            .observed_runs
-            .get(alias)
-            .is_some_and(|run| run.is_live());
-
     let has_session = ctx
         .config
         .projects
@@ -370,7 +350,6 @@ pub(crate) fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
         .unwrap_or(false);
 
     alias_badge(BadgeInputs {
-        driven_and_live,
         needs_human: ctx.needs_human_for(alias),
         // Root OR any workstream, matching the `needs_human` predicate above.
         is_paused: state
@@ -383,8 +362,12 @@ pub(crate) fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
             })
             .unwrap_or(false),
         has_session,
-        // Gated like the driven surface above: with the flag off no launcher
-        // marker reaches the badge, whatever an earlier scan cached.
+        // **The single gate for the whole driven surface on this screen**
+        // (260917-fko D2): with the flag off no launcher marker reaches the badge,
+        // whatever an earlier scan cached. That removes the driven badge, its
+        // rank-1 slot in `alias_badge`, and therefore the attention-first sort's
+        // driver-first ordering, without touching any consumer. Gating each
+        // consumer instead is the version that gets half-applied.
         launcher: ctx
             .experimental
             .then(|| ctx.view_cache.get(alias))
@@ -1184,7 +1167,7 @@ impl NormalScreen {
                     //
                     // **The worked example of the identity split (CR-01).**
                     // `row_badge(ctx, alias)` is handed the RAW key, because it
-                    // is a LOOKUP — it indexes `observed_runs`, `project_states`
+                    // is a LOOKUP — it indexes `view_cache`, `project_states`
                     // and `run_states` by that exact string, and an escaped key
                     // would miss every one of them. The cell rendered beside the
                     // badge is what a HUMAN READS, so it carries the escaped
@@ -1522,9 +1505,8 @@ fn move_selection_up(ctx: &mut AppContext) {
 mod tests {
     use super::*;
     use crate::app::DetailSubView;
-    use crate::driver::liveness::Liveness;
-    use crate::driver::reconcile::ObservedRun;
     use crate::state_reader::{parse_project_state, ProjectState};
+    use crate::ui::screens::driver_run::LauncherMarker;
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
@@ -1699,8 +1681,6 @@ mod tests {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            observed_runs: HashMap::new(),
-            last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
@@ -1723,21 +1703,16 @@ mod tests {
         ctx
     }
 
-    /// Mark `alias` as being driven right now by a live run.
+    /// Mark `alias` as being driven right now by a live launcher run: its dashboard
+    /// marker is `Driven` and holds the run lock.
     fn drive(ctx: &mut AppContext, alias: &str) {
-        ctx.observed_runs.insert(
-            alias.to_string(),
-            ObservedRun {
-                alias: alias.to_string(),
-                run_id: format!("2026-07-29T12-00-00Z-{alias}"),
-                pid: 4242,
-                pgid: 4242,
-                started_at: "2026-07-29T12:00:00Z".to_string(),
-                goal: "ship it".to_string(),
-                gsd_command: "/gsd-execute-phase".to_string(),
-                liveness: Liveness::Alive,
-            },
-        );
+        ctx.view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .launcher_marker = Some(LauncherMarker {
+            class: Some(MarkerClass::Driven),
+            any_live: true,
+        });
     }
 
     /// Mark `alias` as paused — one of `needs_human`'s four evidence sources.
@@ -1826,7 +1801,7 @@ mod tests {
         // its four sources (D-14), so the same project renders the *rank 2* red
         // flag — the stronger "waiting on you" signal OBS-02 asks for. Asserted
         // here so the supersession is a stated behaviour, not a surprise.
-        assert!(crate::ui::screens::needs_human(&state, None, None, false));
+        assert!(crate::ui::screens::needs_human(&state, false));
         assert_eq!(
             alias_badge(BadgeInputs {
                 needs_human: true,
@@ -1855,7 +1830,7 @@ mod tests {
         };
         assert!(!inputs.is_paused);
         assert_eq!(alias_badge(inputs), None);
-        assert!(!crate::ui::screens::needs_human(&state, None, None, false));
+        assert!(!crate::ui::screens::needs_human(&state, false));
     }
 
     // --- UIFIX-01: badge priority (flag -> badge) -------------------------
@@ -1931,7 +1906,7 @@ mod tests {
         let cases: [(BadgeInputs, AliasBadge); 5] = [
             (
                 BadgeInputs {
-                    driven_and_live: true,
+                    launcher: Some(MarkerClass::Driven),
                     ..Default::default()
                 },
                 DRIVEN_BADGE,
@@ -1982,7 +1957,7 @@ mod tests {
         // must still yield exactly the driven badge.
         assert_eq!(
             alias_badge(BadgeInputs {
-                driven_and_live: true,
+                launcher: Some(MarkerClass::Driven),
                 is_paused: true,
                 ..Default::default()
             }),
@@ -1991,12 +1966,11 @@ mod tests {
         );
         assert_eq!(
             alias_badge(BadgeInputs {
-                driven_and_live: true,
                 needs_human: true,
                 is_paused: true,
                 external_job_waiting: true,
                 has_session: true,
-                launcher: None,
+                launcher: Some(MarkerClass::Driven),
             }),
             Some(DRIVEN_BADGE),
             "every condition at once must still yield rank 1"
@@ -2038,7 +2012,7 @@ mod tests {
         }
 
         // The same property through the production selector, over the full
-        // 2^5 input space crossed with every launcher class (and none): no
+        // 2^4 input space crossed with every launcher class (and none): no
         // combination can produce a wider cell.
         let launchers = [
             None,
@@ -2049,13 +2023,12 @@ mod tests {
             Some(MarkerClass::Unknown),
         ];
         for launcher in launchers {
-            for bits in 0u8..32 {
+            for bits in 0u8..16 {
                 let inputs = BadgeInputs {
-                    driven_and_live: bits & 1 != 0,
-                    needs_human: bits & 2 != 0,
-                    is_paused: bits & 4 != 0,
-                    external_job_waiting: bits & 8 != 0,
-                    has_session: bits & 16 != 0,
+                    needs_human: bits & 1 != 0,
+                    is_paused: bits & 2 != 0,
+                    external_job_waiting: bits & 4 != 0,
+                    has_session: bits & 8 != 0,
                     launcher,
                 };
                 if let Some(badge) = alias_badge(inputs) {
@@ -2075,17 +2048,16 @@ mod tests {
     }
 
     /// The UI-SPEC rank table, one pair at a time: each rung beats every rung below
-    /// it, with the legacy inputs in the order the spec gives them.
+    /// it, with the shipped inputs in the order the spec gives them.
     #[test]
     fn launcher_marker_badge_ranks_follow_the_ui_spec_table() {
-        // (launcher class, legacy needs-human, expected), highest rank first.
+        // (launcher class, shipped needs-human, expected), highest rank first.
         let crashed = Some(MarkerClass::Crashed);
         let parked = Some(MarkerClass::Parked);
         let driven = Some(MarkerClass::Driven);
         let stale = Some(MarkerClass::Stale);
         let unknown = Some(MarkerClass::Unknown);
-        let all_legacy = BadgeInputs {
-            driven_and_live: true,
+        let all_shipped = BadgeInputs {
             needs_human: true,
             is_paused: true,
             external_job_waiting: true,
@@ -2093,23 +2065,23 @@ mod tests {
             launcher: None,
         };
 
-        // 1 crashed beats everything, the legacy driven badge included.
+        // 1 crashed beats everything.
         assert_eq!(
             alias_badge(BadgeInputs {
                 launcher: crashed,
-                ..all_legacy
+                ..all_shipped
             }),
             Some(CRASHED_BADGE)
         );
-        // 2 parked beats driven and the legacy flag.
+        // 2 parked beats the needs-human flag and everything below it.
         assert_eq!(
             alias_badge(BadgeInputs {
                 launcher: parked,
-                ..all_legacy
+                ..all_shipped
             }),
             Some(NEEDS_HUMAN_BADGE)
         );
-        // 3 a launcher-driven run reads as driven, with no legacy run at all...
+        // 3 a launcher-driven run reads as driven...
         assert_eq!(
             alias_badge(BadgeInputs {
                 launcher: driven,
@@ -2117,7 +2089,7 @@ mod tests {
             }),
             Some(DRIVEN_BADGE)
         );
-        // ...and outranks the legacy needs-human flag (rank 4).
+        // ...and outranks the needs-human flag (rank 4).
         assert_eq!(
             alias_badge(BadgeInputs {
                 launcher: driven,
@@ -2126,7 +2098,7 @@ mod tests {
             }),
             Some(DRIVEN_BADGE)
         );
-        // 4 the legacy needs-human flag outranks stale and unknown.
+        // 4 the needs-human flag outranks stale and unknown.
         for launcher in [stale, unknown] {
             assert_eq!(
                 alias_badge(BadgeInputs {
@@ -2205,8 +2177,12 @@ mod tests {
 
         let never_driven = ctx_with_aliases(&["alpha"]);
         assert!(
-            !never_driven.observed_runs.contains_key("alpha"),
-            "the fixture must genuinely have no observed run"
+            never_driven
+                .view_cache
+                .get("alpha")
+                .and_then(|cache| cache.launcher_marker)
+                .is_none(),
+            "the fixture must genuinely have no launcher marker"
         );
         assert!(
             row_badge(&never_driven, "alpha").is_none(),
@@ -2242,23 +2218,30 @@ mod tests {
     }
 
     #[test]
-    fn the_driven_badge_is_wired_to_liveness_not_to_the_mere_presence_of_a_run() {
+    fn the_driven_badge_is_wired_to_the_marker_class_not_to_a_marker_merely_being_present() {
         // T-18-33: a badge claiming an agent is driving the repo when the run is
-        // gone is the spoofing failure this rank exists to avoid. `is_live()`
-        // owns the tri-state; `Liveness::Unknown` is never a synonym for dead.
+        // gone is the spoofing failure this rank exists to avoid. The launcher
+        // marker's class owns that call: a marker with no class, or a crashed one,
+        // must not light the driven badge.
         let mut ctx = ctx_with_aliases(&["alpha"]);
         drive(&mut ctx, "alpha");
         assert_eq!(row_badge(&ctx, "alpha"), Some(DRIVEN_BADGE));
 
-        for (liveness, expected) in [(Liveness::Dead, None), (Liveness::Unknown, None)] {
-            ctx.observed_runs
+        for (class, expected) in [
+            (None, None),
+            (Some(MarkerClass::Crashed), Some(CRASHED_BADGE)),
+        ] {
+            ctx.view_cache
                 .get_mut("alpha")
                 .expect("driven above")
-                .liveness = liveness;
+                .launcher_marker = Some(LauncherMarker {
+                class,
+                any_live: false,
+            });
             assert_eq!(
                 row_badge(&ctx, "alpha"),
                 expected,
-                "{liveness:?} must not light the driven badge"
+                "{class:?} must not light the driven badge"
             );
         }
     }
@@ -2268,17 +2251,18 @@ mod tests {
     /// The driven badge is gated at its ONE computation site, so a genuinely
     /// live run still yields no badge with the experimental surfaces off.
     ///
-    /// This is the hostile case on purpose: the reconciliation scan really did
-    /// observe a live run (D6 keeps it running), and the dashboard still must
-    /// not disclose that a driver exists.
+    /// This is the hostile case on purpose: a marker really is cached for a
+    /// driven run, and the dashboard still must not disclose that a driver
+    /// exists.
     #[test]
     fn a_live_run_lights_no_driven_badge_when_experimental_is_off() {
         let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(false);
         drive(&mut ctx, "alpha");
         assert!(
-            ctx.observed_runs
+            ctx.view_cache
                 .get("alpha")
-                .is_some_and(|run| run.is_live()),
+                .and_then(|cache| cache.launcher_marker)
+                .is_some_and(|marker| marker.class == Some(MarkerClass::Driven)),
             "the fixture must really be driving, or this test passes by \
              accident"
         );
@@ -2298,7 +2282,7 @@ mod tests {
         assert_eq!(row_badge(&ctx, "alpha"), Some(DRIVEN_BADGE));
     }
 
-    /// Gating `driven_and_live` at its source also removes rank 1, so the
+    /// Gating the launcher marker at its source also removes rank 1, so the
     /// attention-first ordering is driver-free rather than merely un-badged.
     #[test]
     fn attention_first_does_not_float_a_driven_project_when_experimental_is_off() {
@@ -2932,7 +2916,10 @@ mod tests {
         assert_eq!(ctx.table_state.selected(), Some(0));
 
         // The run finishes and the rows are recomputed.
-        ctx.observed_runs.remove("zebra");
+        ctx.view_cache
+            .get_mut("zebra")
+            .expect("driven above")
+            .launcher_marker = None;
         ctx.recompute_filtered_aliases();
 
         assert_eq!(

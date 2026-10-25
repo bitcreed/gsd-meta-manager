@@ -774,26 +774,20 @@ fn windowed_tab_titles(
     (titles, select)
 }
 
-/// Whether the selected project has a run this scan positively knows is running.
+/// Whether the selected project has a launcher run this scan positively knows is
+/// running: the dashboard marker's `any_live`, i.e. a run of the project holds its
+/// run lock (30-03, D-12), so `D:Drive⧫` lights for it `[inferred — audit]`.
 ///
-/// `Liveness` is a tri-state and [`crate::driver::reconcile::ObservedRun::is_live`]
-/// owns the distinction; `Liveness::Unknown` is **never** a synonym for dead
-/// (CR-05) and is resolved there, never re-derived here.
-///
-/// Also true when a **launcher** run of the project holds its run lock (30-03, D-12):
-/// the dashboard marker's `any_live`, so `D:Drive⧫` lights for launcher runs
-/// `[inferred — audit]`. That half is the experimental flag's, like every launcher
-/// surface, and is false before the project's first marker scan lands.
+/// The experimental flag's, like every launcher surface, and false before the
+/// project's first marker scan lands. The legacy observed-run half went with the
+/// legacy run reader (Phase 31, D-03).
 fn driver_live_for(ctx: &AppContext, alias: &str) -> bool {
-    ctx.observed_runs
-        .get(alias)
-        .is_some_and(|run| run.is_live())
-        || (ctx.experimental
-            && ctx
-                .view_cache
-                .get(alias)
-                .and_then(|cache| cache.launcher_marker)
-                .is_some_and(|marker| marker.any_live))
+    ctx.experimental
+        && ctx
+            .view_cache
+            .get(alias)
+            .and_then(|cache| cache.launcher_marker)
+            .is_some_and(|marker| marker.any_live)
 }
 
 pub struct DetailScreen {
@@ -19686,8 +19680,6 @@ mod tests {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            observed_runs: HashMap::new(),
-            last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
@@ -20409,19 +20401,6 @@ mod tests {
         match action {
             ScreenAction::Push(pushed) => Some(pushed.name().to_string()),
             _ => None,
-        }
-    }
-
-    fn observed_live_run(run_id: &str) -> crate::driver::reconcile::ObservedRun {
-        crate::driver::reconcile::ObservedRun {
-            alias: TEST_ALIAS.to_string(),
-            run_id: run_id.to_string(),
-            pid: 4321,
-            pgid: 4321,
-            started_at: "2026-07-29T21:40:00Z".to_string(),
-            goal: "ship the driver tab".to_string(),
-            gsd_command: "/gsd:execute-phase 18".to_string(),
-            liveness: crate::driver::liveness::Liveness::Alive,
         }
     }
 
@@ -21248,18 +21227,14 @@ mod tests {
     /// keys that steer a run now. The **second** assertion is the load-bearing one
     /// (CTRL-03's shape): a binding that set the message and opened the screen anyway
     /// would pass a test that checked only the message. It holds whatever the tab
-    /// holds: a live observed run, a launcher run, a legacy row, nothing at all.
+    /// holds: the bare tab, a launcher run, a legacy row, nothing at all.
     #[test]
     fn launcher_steer_i_is_retired_opens_nothing_and_names_the_steering_keys() {
         const MESSAGE: &str = "Injection is retired: use [c]ontrol, [a]nswer, [e]dit.";
         assert_eq!(super::super::driver_run::INJECTION_RETIRED, MESSAGE);
 
-        // A live observed run, as the Phase 18 key required.
+        // The bare Driver tab, as the Phase 18 key required.
         let (mut screen, mut ctx, mut rx) = driver_action_fixture();
-        ctx.observed_runs.insert(
-            TEST_ALIAS.to_string(),
-            observed_live_run("2026-07-29T21-40-00Z-3f2a"),
-        );
         // A launcher run selected, and a legacy row selected.
         let (mut launcher, mut launcher_ctx, mut launcher_rx) = launcher_fixture(2);
         let (mut legacy, mut legacy_ctx, mut legacy_rx) = launcher_fixture(1);
@@ -21482,10 +21457,6 @@ mod tests {
                 let (mut screen, mut ctx, _rx) = driver_action_fixture();
                 ctx.detail_sub_view_per_project
                     .insert(TEST_ALIAS.to_string(), tab.clone());
-                ctx.observed_runs.insert(
-                    TEST_ALIAS.to_string(),
-                    observed_live_run("2026-07-29T21-40-00Z-3f2a"),
-                );
                 let action = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
                 let pushed = pushed_screen_name(&action);
                 assert!(

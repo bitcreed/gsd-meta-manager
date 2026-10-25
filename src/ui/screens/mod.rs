@@ -32,7 +32,6 @@ use crate::main_loop::ExecEvent;
 use crate::state_reader::backlog::BacklogItem;
 use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
 use crate::state_reader::ProjectState;
-use crate::ui::screens::driver::TerminalState;
 use crate::watcher::FileWatcher;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
@@ -342,7 +341,7 @@ pub enum ScreenAction {
     /// started a **second run**. `admit` counts live runs across all projects
     /// and does not stop a second run of the same project; the child's `flock`
     /// refusal is invisible because its stdio is `/dev/null`; and the start handler
-    /// (since retired, Phase 31) had already overwritten `observed_runs` with the
+    /// (since retired, Phase 31) had already overwritten the observed run with the
     /// second driver's pid, so for up to five seconds `x` would signal the
     /// wrong, already-dead pid while the real run kept going.
     Replace(Box<dyn Screen>),
@@ -1221,7 +1220,7 @@ pub struct ProjectViewCache {
     ///
     /// `None` until the project's first marker scan lands, so before that there is no
     /// driver-derived badge and no attention contribution, never a guessed class. Set
-    /// wholesale by `Action::RunsReconciled` (the 20-tick scan), by
+    /// wholesale by `Action::LauncherMarkersRescanned` (the 20-tick scan), by
     /// `Action::LauncherMarkerScanned` (a `DriverRun` event for a project whose Driver
     /// tab is not on top) and by the launcher-run refresh handlers (tab on top).
     pub launcher_marker: Option<driver_run::LauncherMarker>,
@@ -1523,50 +1522,11 @@ pub struct AppContext {
     ///   Before that it was inserted in exactly one place, removed in none, and
     ///   grew for the process lifetime. See `App::prune_driver_maps` (D-27).
     pub journal_cursors: HashMap<(String, String), crate::journal::reader::JournalCursor>,
-    /// Per-alias observed driver run, from the reconciliation scan (D-13, D-25).
-    ///
-    /// * A **sibling map**, shaped exactly like `run_states` and
-    ///   `journal_cursors` above. Phase 17 extends that neighbourhood rather
-    ///   than recreating it.
-    /// * It must not live on `ProjectState`: that type derives `PartialEq` and
-    ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
-    ///   status message. A driver's observed state moves every few seconds, so a
-    ///   field there would flood the status bar for an entire multi-hour run —
-    ///   defeating a deliberate v1.4 feature for the whole duration of the thing
-    ///   it is meant to report (D-25, ARCHITECTURE AP1).
-    /// * It holds ids, counts and strings — **never a file handle or a join
-    ///   handle**. `Action` derives `Clone` and a handle is not `Clone` (D-20).
-    /// * An entry is **"observed", not "reattached" and not "streaming"** (D-11).
-    ///   Once the TUI has exited, the driver's stdout pipe is gone and live
-    ///   re-streaming is physically impossible; what this map carries is a
-    ///   journal-tail handle and a pgid to signal.
-    /// * **Phase 17 closed having added no field to `ProjectState`** — the whole
-    ///   phase's driver state is this map, `run_states`, `journal_cursors` and
-    ///   `session_spawned_runs`, all siblings here. `git diff` over
-    ///   `src/state_reader/` across the phase is the checkable form of that
-    ///   claim, and plan 17-07 records it (D-25).
-    pub observed_runs: HashMap<String, crate::driver::reconcile::ObservedRun>,
-    /// The outcome label of each project's most recent **ended** run (WR-02).
-    ///
-    /// The sibling of [`observed_runs`](AppContext::observed_runs), filled by
-    /// the same reconciliation scan and pruned in the same pass. The two are
-    /// complementary rather than redundant: `observed_runs` holds runs that have
-    /// **not** ended, so the outcome of one that has cannot live there.
-    ///
-    /// Its only reader is [`needs_human_for`](AppContext::needs_human_for), and
-    /// this map is what makes D-14's finished-run arm reachable in production at
-    /// all — that method passed `None` before it existed, so `BADGE_NEEDS_HUMAN`,
-    /// `attention_rank`'s rank 0 and the `/h` filter all fired from
-    /// `state.paused` and `state.external_job_waiting` alone.
-    ///
-    /// A label rather than a `RunOutcome`, for the reason
-    /// [`crate::action::Action::RunsReconciled`] gives.
-    pub last_outcomes: HashMap<String, String>,
     /// The run ids **this TUI session spawned**, which decides D-07's reaping
     /// arm at stop time.
     ///
     /// * It is a **separate set rather than a flag on `ObservedRun`**, and that
-    ///   is the whole reason it exists. `observed_runs` is *replaced wholesale*
+    ///   is the whole reason it exists. The observed-run map was *replaced wholesale*
     ///   by every reconciliation scan, because the scan is authoritative and a
     ///   merge would keep entries the disk no longer justifies — so any flag
     ///   stored there survives at most five seconds and then silently reverts to
@@ -1585,7 +1545,7 @@ pub struct AppContext {
     /// Per-alias bounded live driver output (D-18).
     ///
     /// * A **sibling map**, shaped exactly like `run_states`, `journal_cursors`
-    ///   and `observed_runs` above. Phase 18 extends that neighbourhood rather
+    ///   and `session_spawned_runs` above. Phase 18 extends that neighbourhood rather
     ///   than recreating it.
     /// * It must not live on `ProjectState`: that type derives `PartialEq` and
     ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
@@ -1604,7 +1564,7 @@ pub struct AppContext {
     pub driver_output: HashMap<String, DriverOutput>,
     /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
     ///
-    /// * A **sibling map**, shaped like `observed_runs` above, for the same
+    /// * A **sibling map**, shaped like `driver_output` above, for the same
     ///   reason: it must not live on `ProjectState`. That type derives
     ///   `PartialEq` and `app.rs` uses the derived equality to suppress the
     ///   "Updated: {alias}" status message; agent state moves on every scan, so
@@ -1689,68 +1649,29 @@ pub enum SortMode {
 /// Whether a project is waiting on a human (D-14, OBS-02, OBS-07).
 ///
 /// **A predicate over evidence that exists today, not a fabricated state.** The
-/// four sources, each of which something already writes:
+/// sources, each of which something already writes:
 ///
 /// * `state.paused` — a non-empty HANDOFF, the existing v1.4 signal that is
 ///   already badged elsewhere. A stale HANDOFF is not `paused` (the parser
 ///   decides, quick 260926-16t), so it does not summon anyone.
 /// * `state.external_job_waiting` — an external job the project is blocked on.
-/// * The last finished run's outcome being [`TerminalState::PermissionDenied`],
-///   [`TerminalState::Failed`], [`TerminalState::Stalled`] or
-///   [`TerminalState::TimedOut`] — the four the four-source derivation produces
-///   that a human must answer. [`TerminalState::Killed`] is deliberately absent:
-///   a run the user stopped is not a run waiting on them.
+/// * `parked`, a launcher run stopped for a human.
 ///
-///   **The parameter is a [`TerminalState`] and not a `RunOutcome`** (WR-02).
-///   What is on disk is the outcome *label* `run.json` recorded; reconstructing
-///   a typed `RunOutcome` from it would mean inventing the payload fields the
-///   label does not carry. `TerminalState::from_label` is the one mapping, and
-///   [`TerminalState::from_outcome`] agrees with it by test — so this arm reads
-///   the same four states whichever side the evidence arrives from.
-/// * `parked`, fed forward-compatibly from a `JournalEvent::Parked` record if
-///   one is ever present.
-///
-/// **Do not wire this to `JournalEvent::Parked` alone. Nothing emits that until
-/// Phase 20.** The badge would never light, no test would catch it because the
-/// test would emit the event by hand, and a badge that can never light is worse
-/// than no badge because it teaches the user to ignore it (D-14). The `parked`
-/// parameter is the one arm whose producer does not exist yet, which is exactly
-/// why it is one arm of four rather than the whole predicate.
-///
-/// A **live** run suppresses only the stale-outcome arm: something is actively
-/// driving, so an outcome from an earlier run is not a summons. The paused,
-/// external-job and parked arms still fire, because those are facts about the
-/// project rather than about a finished run.
+/// The finished-run-outcome source (a legacy `drive` run that ended
+/// `PermissionDenied`, `Failed`, `Stalled` or `TimedOut`) went with the legacy
+/// run reader in Phase 31: nothing in the TUI can observe such a run any more.
+/// Launcher crashes and parked runs reach the dashboard through the launcher
+/// marker ([`AppContext::needs_attention_for`]), not through this predicate.
 ///
 /// The paused and external-job sources are read for the project's root AND for
 /// each of its workstreams: a workstream is its own planning directory with its
 /// own HANDOFF and `async-jobs/`, so a human-waiting workstream must raise the
-/// project's badge, rank and `/h` membership. Driver runs, outcomes and launcher
-/// markers are keyed by alias with no workstream identity and stay project-level.
+/// project's badge, rank and `/h` membership. Launcher markers are keyed by
+/// alias with no workstream identity and stay project-level.
 ///
-/// Pure, and that is what makes it testable at all — every arm above has a unit
-/// test, including the ones a running system reaches rarely.
-pub fn needs_human(
-    state: &ProjectState,
-    run: Option<&crate::driver::reconcile::ObservedRun>,
-    last_outcome: Option<TerminalState>,
-    parked: bool,
-) -> bool {
-    if parked || state_has_attention_evidence(state) {
-        return true;
-    }
-    if run.is_some_and(|r| r.is_live()) {
-        return false;
-    }
-    matches!(
-        last_outcome,
-        Some(
-            TerminalState::PermissionDenied
-                | TerminalState::Failed
-                | TerminalState::Stalled
-                | TerminalState::TimedOut
-        )
-    )
+/// Pure, and that is what makes it testable at all.
+pub fn needs_human(state: &ProjectState, parked: bool) -> bool {
+    parked || state_has_attention_evidence(state)
 }
 
 /// Whether the project's root, or any of its workstreams, is paused (a live,
@@ -1878,30 +1799,13 @@ impl AppContext {
     /// Whether `alias` is waiting on a human, from the state this context holds.
     ///
     /// The `parked` argument is `false` because nothing emits
-    /// `JournalEvent::Parked` before Phase 20 (D-14) — that is the one arm of
-    /// four whose producer genuinely does not exist yet.
-    ///
-    /// **The finished-run arm is wired** (WR-02). This method used to pass
-    /// `None` there, which made D-14's third evidence source unreachable in
-    /// production: `grep`ing for `Some(&outcome)` found it only inside
-    /// `#[cfg(test)]`, so `BADGE_NEEDS_HUMAN`, `attention_rank`'s rank 0 and the
-    /// `/h` filter all fired from `state.paused` and `state.external_job_waiting`
-    /// alone — the two v1.4 signals that predate the driver entirely. A project
-    /// whose run failed, was permission-denied, stalled or timed out was not
-    /// flagged, not sorted first, and did not appear under `//h`. That is the
-    /// failure 18-CONTEXT names by hand: *a badge that can never light is worse
-    /// than no badge, because it teaches the user to ignore it.*
-    ///
-    /// [`last_outcomes`](AppContext::last_outcomes) is filled by the same
-    /// reconciliation scan that fills `observed_runs`, and pruned beside it.
+    /// `JournalEvent::Parked` on this path: a parked launcher run reaches the
+    /// dashboard through the launcher marker ([`needs_attention_for`](Self::needs_attention_for)),
+    /// not through here.
     pub fn needs_human_for(&self, alias: &str) -> bool {
-        let last = self
-            .last_outcomes
-            .get(alias)
-            .map(|label| TerminalState::from_label(Some(label)));
         self.project_states
             .get(alias)
-            .is_some_and(|state| needs_human(state, self.observed_runs.get(alias), last, false))
+            .is_some_and(|state| needs_human(state, false))
     }
 
     /// Whether `alias` needs attention: the shipped needs-a-human predicate **or** a
@@ -1985,7 +1889,7 @@ impl AppContext {
     /// The inbox is read from offset zero every time, and that is deliberate:
     /// the payload is the whole inbox rather than a delta, so a message removed
     /// from the file is expressed by its absence — the same reason
-    /// `Action::RunsReconciled` carries the whole scan.
+    /// `Action::LauncherMarkersRescanned` carries the whole scan.
     ///
     /// **It lives here rather than on `App` (plan 18-09) because the Driver
     /// tab's `switch_to_tab` arm has to call it**, and a `Screen` is handed an
@@ -2336,23 +2240,23 @@ impl AppContext {
     /// This alias's [`attention_rank`], from the state this context holds.
     ///
     /// **`driven_and_live` is gated here as well as in `row_badge`, and the
-    /// duplication is deliberate** (260917-fko, deviation from the plan's
-    /// single-clause claim). Rank 1 is derived from `observed_runs` on this
-    /// path, not from the badge, so gating only the badge would have left the
-    /// attention-first sort floating driven projects to the top of the
-    /// dashboard — an ordering that discloses "something is driving this repo"
-    /// just as plainly as the badge it was supposed to replace, and does so
-    /// without painting a single glyph the flag-off tests could look for.
+    /// duplication is deliberate** (260917-fko). Rank 1 is derived from the
+    /// launcher marker on this path, not from the badge, so gating only the badge
+    /// would have left the attention-first sort floating driven projects to the
+    /// top of the dashboard — an ordering that discloses "something is driving
+    /// this repo" just as plainly as the badge it was supposed to replace, and
+    /// does so without painting a single glyph the flag-off tests could look for.
     ///
-    /// The reconciliation scan keeps running with the flag off (D6); it is
-    /// only the surfaces that display its result that are gated, and a sort
-    /// order is such a surface.
+    /// The marker scan keeps running with the flag off only as an empty map; it
+    /// is the surfaces that display its result that are gated, and a sort order
+    /// is such a surface.
     fn attention_rank_for(&self, alias: &str) -> u8 {
         let driven_and_live = self.experimental
             && self
-                .observed_runs
+                .view_cache
                 .get(alias)
-                .is_some_and(|run| run.is_live());
+                .and_then(|cache| cache.launcher_marker)
+                .is_some_and(|marker| marker.class == Some(driver_run::MarkerClass::Driven));
         attention_rank(self.needs_attention_for(alias), driven_and_live)
     }
 
@@ -2478,9 +2382,6 @@ fn workstream_text_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::liveness::Liveness;
-    use crate::driver::reconcile::ObservedRun;
-    use crate::executor::RunOutcome;
     use crate::state_reader::ProjectState;
 
     // -----------------------------------------------------------------------
@@ -2910,8 +2811,6 @@ mod tests {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            observed_runs: HashMap::new(),
-            last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
@@ -2934,21 +2833,20 @@ mod tests {
         ctx
     }
 
-    /// An `ObservedRun` with only the field these assertions read varied.
-    fn observed(alias: &str, liveness: Liveness) -> ObservedRun {
-        ObservedRun {
-            alias: alias.to_string(),
-            run_id: format!("2026-07-29T12-00-00Z-{alias}"),
-            pid: 4242,
-            pgid: 4242,
-            started_at: "2026-07-29T12:00:00Z".to_string(),
-            goal: "ship it".to_string(),
-            gsd_command: "/gsd-execute-phase".to_string(),
-            liveness,
-        }
+    /// Mark `alias` as driven by a live launcher run: its dashboard marker is
+    /// `Driven` and holds the run lock (the Phase 30 source of the driven badge and
+    /// of attention rank 1).
+    fn drive(ctx: &mut AppContext, alias: &str) {
+        ctx.view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .launcher_marker = Some(driver_run::LauncherMarker {
+            class: Some(driver_run::MarkerClass::Driven),
+            any_live: true,
+        });
     }
 
-    /// Mark `alias` as paused, which is one of the four needs-human sources.
+    /// Mark `alias` as paused, which is one of the needs-human sources.
     fn pause(ctx: &mut AppContext, alias: &str) {
         ctx.project_states
             .get_mut(alias)
@@ -3282,24 +3180,24 @@ mod tests {
             paused: true,
             ..Default::default()
         });
-        assert!(needs_human(&paused, None, None, false));
+        assert!(needs_human(&paused, false));
 
         let waiting = with_ws(ProjectState {
             external_job_waiting: true,
             ..Default::default()
         });
-        assert!(needs_human(&waiting, None, None, false));
+        assert!(needs_human(&waiting, false));
 
         let quiet = with_ws(ProjectState::default());
-        assert!(!needs_human(&quiet, None, None, false));
-        assert!(!needs_human(&ProjectState::default(), None, None, false));
+        assert!(!needs_human(&quiet, false));
+        assert!(!needs_human(&ProjectState::default(), false));
     }
 
     #[test]
-    fn needs_human_is_true_for_each_of_the_four_evidence_sources() {
+    fn needs_human_is_true_for_each_of_the_evidence_sources() {
         let quiet = ProjectState::default();
         assert!(
-            !needs_human(&quiet, None, None, false),
+            !needs_human(&quiet, false),
             "a registered project with no evidence at all is not waiting on \
              anyone — a predicate that is always true is not a predicate"
         );
@@ -3309,7 +3207,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            needs_human(&paused, None, None, false),
+            needs_human(&paused, false),
             "a non-empty HANDOFF is the existing v1.4 signal and must count"
         );
 
@@ -3318,93 +3216,14 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            needs_human(&waiting, None, None, false),
+            needs_human(&waiting, false),
             "an external job the phase is blocked on needs a human"
         );
 
         assert!(
-            needs_human(&quiet, None, None, true),
+            needs_human(&quiet, true),
             "the forward-compatible Parked arm must fire when something \
              eventually sets it (Phase 20 owns the producer)"
-        );
-
-        for outcome in [
-            RunOutcome::PermissionDenied {
-                denials: Vec::new(),
-            },
-            RunOutcome::Failed {
-                reason: "boom".to_string(),
-                subtype: None,
-                terminal_reason: None,
-                exit_code: Some(1),
-            },
-            RunOutcome::Stalled {
-                idle_for: std::time::Duration::from_secs(900),
-            },
-            RunOutcome::TimedOut {
-                after: std::time::Duration::from_secs(14_400),
-            },
-        ] {
-            assert!(
-                needs_human(
-                    &quiet,
-                    None,
-                    Some(TerminalState::from_outcome(&outcome)),
-                    false
-                ),
-                "a finished run that ended {outcome:?} is a question only a human \
-                 can answer"
-            );
-        }
-
-        assert!(
-            !needs_human(
-                &quiet,
-                None,
-                Some(TerminalState::from_outcome(&RunOutcome::Killed {
-                    turns: Vec::new()
-                })),
-                false
-            ),
-            "a run the user themselves stopped is not a run waiting on them"
-        );
-    }
-
-    #[test]
-    fn a_live_run_suppresses_the_stale_outcome_arm_but_not_the_others() {
-        let quiet = ProjectState::default();
-        let live = observed("proj", Liveness::Alive);
-        let stale = RunOutcome::Failed {
-            reason: "an earlier run".to_string(),
-            subtype: None,
-            terminal_reason: None,
-            exit_code: Some(1),
-        };
-
-        assert!(
-            !needs_human(
-                &quiet,
-                Some(&live),
-                Some(TerminalState::from_outcome(&stale)),
-                false
-            ),
-            "something is actively driving, so an earlier run's failure is not a \
-             summons"
-        );
-
-        let paused = ProjectState {
-            paused: true,
-            ..Default::default()
-        };
-        assert!(
-            needs_human(
-                &paused,
-                Some(&live),
-                Some(TerminalState::from_outcome(&stale)),
-                false
-            ),
-            "a HANDOFF is a fact about the project, not about a finished run, so \
-             a live run must not hide it"
         );
     }
 
@@ -3426,8 +3245,7 @@ mod tests {
         let mut ctx = ctx_with_aliases(&["alpha", "bravo", "charlie", "delta"]);
         pause(&mut ctx, "bravo");
         pause(&mut ctx, "delta");
-        ctx.observed_runs
-            .insert("charlie".to_string(), observed("charlie", Liveness::Alive));
+        drive(&mut ctx, "charlie");
         ctx.sort_mode = SortMode::AttentionFirst;
 
         assert_eq!(
@@ -3517,8 +3335,7 @@ mod tests {
     fn a_project_that_is_both_driven_and_needs_a_human_appears_exactly_once() {
         let mut ctx = ctx_with_aliases(&["alpha", "busy"]);
         pause(&mut ctx, "busy");
-        ctx.observed_runs
-            .insert("busy".to_string(), observed("busy", Liveness::Alive));
+        drive(&mut ctx, "busy");
 
         ctx.sort_mode = SortMode::AttentionFirst;
         let sorted = ctx.sorted_aliases();
@@ -3536,72 +3353,6 @@ mod tests {
             vec!["busy"],
             "and the filter yields it once, not twice"
         );
-    }
-
-    /// WR-02: D-14's finished-run arm reaches the badge, the sort and the
-    /// filter — all three, through the one production call site.
-    ///
-    /// The pure predicate had unit tests for this arm all along. What it did not
-    /// have was a caller: `needs_human_for` passed `None`, so the arm was
-    /// unreachable outside `#[cfg(test)]` and every one of the three surfaces
-    /// below fired from `state.paused` and `state.external_job_waiting` only. A
-    /// badge that can never light is worse than no badge, because it teaches the
-    /// user to ignore it — so this test asserts the *reachability*, which is the
-    /// half that was missing.
-    #[test]
-    fn a_project_whose_last_run_failed_is_badged_ranked_and_filterable() {
-        let mut ctx = ctx_with_aliases(&["alpha", "burnt"]);
-        ctx.last_outcomes
-            .insert("burnt".to_string(), "failed".to_string());
-
-        assert!(
-            ctx.needs_human_for("burnt"),
-            "a finished run that failed is a question only a human can answer,              and the production call site must be able to see it"
-        );
-        assert!(!ctx.needs_human_for("alpha"), "and only that project");
-        assert_eq!(ctx.attention_rank_for("burnt"), 0, "it sorts first");
-
-        ctx.sort_mode = SortMode::AttentionFirst;
-        assert_eq!(ctx.sorted_aliases(), vec!["burnt", "alpha"]);
-
-        ctx.filter_text = "/h".to_string();
-        ctx.recompute_filtered_aliases();
-        assert_eq!(
-            ctx.filtered_aliases,
-            vec!["burnt"],
-            "and //h finds it. This is the assertion that was impossible before              the outcome had a reader"
-        );
-    }
-
-    /// The other three outcome labels, and the two that must NOT summon anyone.
-    #[test]
-    fn only_the_four_named_outcomes_summon_a_human() {
-        for label in ["failed", "permission_denied", "stalled", "timed_out"] {
-            let mut ctx = ctx_with_aliases(&["proj"]);
-            ctx.last_outcomes
-                .insert("proj".to_string(), label.to_string());
-            assert!(ctx.needs_human_for("proj"), "{label} must summon a human");
-        }
-
-        for label in ["succeeded_with_changes", "succeeded_no_changes", "killed"] {
-            let mut ctx = ctx_with_aliases(&["proj"]);
-            ctx.last_outcomes
-                .insert("proj".to_string(), label.to_string());
-            assert!(
-                !ctx.needs_human_for("proj"),
-                "{label} must not: a run that succeeded needs nothing, and one \
-                 the user themselves stopped is not waiting on them"
-            );
-        }
-
-        // A live run suppresses the arm, which is what stops the badge summoning
-        // a user to a project that is busy working.
-        let mut ctx = ctx_with_aliases(&["proj"]);
-        ctx.last_outcomes
-            .insert("proj".to_string(), "failed".to_string());
-        ctx.observed_runs
-            .insert("proj".to_string(), observed("proj", Liveness::Alive));
-        assert!(!ctx.needs_human_for("proj"));
     }
 
     #[test]

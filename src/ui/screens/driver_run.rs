@@ -3202,14 +3202,10 @@ pub(super) fn render_launcher_tab(
     let tier = height_tier(area.height);
     let (list_area, detail_area) = driver_panes(area);
 
-    // The verdict applies only to the run the reconciliation scan is observing;
-    // every other legacy row is a finished run whose own `outcome` speaks for it.
-    let observed = ctx.observed_runs.get(alias);
-    let verdict_for = |run: &RunSummary| -> Option<RunVerdict> {
-        observed
-            .filter(|observed| observed.run_id == run.run_id)
-            .map(|observed| observed.verdict())
-    };
+    // The legacy rows carry no live verdict any more: nothing observes a legacy run
+    // (Phase 31, C7). Their own `outcome` speaks for them; the rows go in the next
+    // commit of this plan.
+    let verdict_for = |_run: &RunSummary| -> Option<RunVerdict> { None };
 
     // SUMMARY (D-10): no sections, so no header can be orphaned. Both panes give way
     // to one row per run across the whole width, windowed to keep the selection on

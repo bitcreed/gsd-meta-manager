@@ -283,36 +283,11 @@ pub fn journal_gap_line(gaps: usize) -> String {
     format!("journal gap: {gaps} record(s) not read")
 }
 
-/// Whether this tick should repaint for the elapsed-time counter (D-21).
-///
-/// **All three conditions are required, and the gate is the whole point.**
-/// Elapsed time is `now − started_at`, so it changes every tick forever; an
-/// unconditional per-tick redraw would make an idle fleet dashboard burn CPU for
-/// the life of the process, which is the exact opposite of this tool's pitch.
-/// The counter is only *visible* when a detail view is on top, its active
-/// sub-view is the Driver tab, and the selected project actually has a live run
-/// — a finished run's elapsed figure is frozen and needs no frame at all.
-///
-/// **No second timer.** This rides the existing 250 ms `Action::Tick`, which
-/// `App::update`'s 20-tick block forbids duplicating in as many words: two
-/// timers at slightly different phases would make "how stale can the dashboard
-/// be?" a question with two answers.
-///
-/// Pure, so the truth table is assertable without a terminal (S6).
-pub fn driver_elapsed_redraw_wanted(
-    top_screen_name: &str,
-    sub_view: Option<&DetailSubView>,
-    run: Option<&crate::driver::reconcile::ObservedRun>,
-) -> bool {
-    driver_tab_is_on_top(top_screen_name, sub_view) && run.is_some_and(|run| run.is_live())
-}
-
 /// Whether the selected launcher run's heartbeat age needs a frame this tick (D-08).
 ///
 /// The age is `now − heartbeat`, recomputed at render time, so it changes every
 /// second a live run is on screen and a frame only on a file event would freeze it
-/// (and with it the `stale` flag). Same shape as [`driver_elapsed_redraw_wanted`]:
-/// the Driver tab is on top **and** the highlighted launcher run is live, so an idle
+/// (and with it the `stale` flag). The Driver tab is on top **and** the highlighted launcher run is live, so an idle
 /// fleet, a finished run and every other tab repaint nothing. It rides the existing
 /// 250 ms tick (no new timer) and reads only the cache (no file I/O per tick).
 ///
@@ -328,17 +303,16 @@ pub fn launcher_heartbeat_redraw_wanted(
 
 /// Whether the Driver tab is the surface the user is actually looking at.
 ///
-/// Shared with [`driver_elapsed_redraw_wanted`] rather than written twice: the
-/// two questions ("should the elapsed counter repaint" and "should the run list
-/// be rescanned") have the same visibility half and differ only in whether they
-/// also require a live run.
+/// Shared by the heartbeat repaint gate and the Driver tab's rescan rather than
+/// written twice: both questions ("should the heartbeat age repaint" and "should
+/// the launcher run list be rescanned") have the same visibility half and differ
+/// only in whether they also require a live run.
 ///
 /// **The rescan must NOT require a live run** (CR-04), and that difference is
-/// the whole reason this is its own function. `reconcile_one` returns `None` for
-/// an ended run, so the alias drops out of `observed_runs` the moment the run
-/// finishes — which is precisely the moment the run list's glyph, the outcome
-/// and the journal snapshot all become stale and most need re-reading. A rescan
-/// gated on liveness would stop firing exactly when it started mattering.
+/// the whole reason this is its own function. A run that has just ended is
+/// precisely when the run list's glyph and the outcome become stale and most
+/// need re-reading; a rescan gated on liveness would stop firing exactly when
+/// it started mattering.
 ///
 /// Pure, so its truth table is assertable without a terminal.
 pub fn driver_tab_is_on_top(top_screen_name: &str, sub_view: Option<&DetailSubView>) -> bool {
@@ -1008,8 +982,6 @@ impl App {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            observed_runs: HashMap::new(),
-            last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
@@ -1268,28 +1240,6 @@ impl App {
     // **No file I/O on the render thread** — that phrase is the searchable
     // marker this file already uses for the boundary (S1).
 
-    /// Gather the three facts [`driver_elapsed_redraw_wanted`] decides on.
-    ///
-    /// The alias comes from `ctx.selected_alias()` rather than from the screen,
-    /// because the stack holds `Box<dyn Screen>` and cannot hand back a
-    /// `DetailScreen`'s field. That is not a workaround: `DetailScreen::new` is
-    /// constructed from exactly this value at `normal.rs:279`, and nothing moves
-    /// the dashboard's selection while a detail view is on top of the stack, so
-    /// the two are the same alias by construction.
-    fn driver_elapsed_redraw_due(&self) -> bool {
-        let Some(top) = self.screen_stack.last() else {
-            return false;
-        };
-        let Some(alias) = self.ctx.selected_alias() else {
-            return false;
-        };
-        driver_elapsed_redraw_wanted(
-            top.name(),
-            self.ctx.detail_sub_view_per_project.get(&alias),
-            self.ctx.observed_runs.get(&alias),
-        )
-    }
-
     /// Gather the facts [`launcher_heartbeat_redraw_wanted`] decides on (30-02, D-08).
     fn launcher_heartbeat_redraw_due(&self) -> bool {
         let Some(top) = self.screen_stack.last() else {
@@ -1324,11 +1274,10 @@ impl App {
     ///    entry only, so a message queued afterwards stayed invisible until a
     ///    rescan (the injection path itself is retired; the rescan remains for
     ///    the other two).
-    /// 3. **A run that ended while you watched lost its output.** The alias
-    ///    drops out of `observed_runs`, the pane switches to
-    ///    `cache.driver_journal` — the snapshot taken on tab entry — and every
-    ///    line since then vanished, at the exact moment an after-the-fact review
-    ///    is wanted.
+    /// 3. **A run that ended while you watched lost its output.** The pane
+    ///    kept `cache.driver_journal` — the snapshot taken on tab entry — and
+    ///    every line since then vanished, at the exact moment an after-the-fact
+    ///    review is wanted.
     ///
     /// **Gated on visibility, and deliberately so.** The scan is three blocking
     /// reads; running it for every registered project on every tick would pay a
@@ -2192,22 +2141,11 @@ impl App {
                     }
                 }
 
-                // The elapsed-time counter (D-21). It rides THIS tick and gets
-                // no interval of its own, for the same reason the reconciliation
-                // probe below does not — see the comment on that block, which
-                // forbids a second timer in as many words.
-                //
-                // **Gated, and the gate is not an optimisation.** Elapsed time
-                // is `now − started_at`, so it differs every tick forever; an
-                // unconditional redraw here would repaint an idle fleet
-                // dashboard four times a second for the life of the process.
-                // The predicate is a pure function so its truth table is
-                // assertable without a terminal.
-                if self.driver_elapsed_redraw_due() {
-                    self.needs_redraw = true;
-                }
-                // The selected launcher run's heartbeat age (30-02, D-08): the same
-                // gate shape, the same tick, no timer of its own.
+                // The selected launcher run's heartbeat age (30-02, D-08): gated on the
+                // Driver tab being on top with a live run, on this tick, with no timer of
+                // its own. The age is `now - heartbeat`, so it differs every tick forever;
+                // an unconditional redraw would repaint an idle dashboard four times a
+                // second for the life of the process.
                 if self.launcher_heartbeat_redraw_due() {
                     self.needs_redraw = true;
                 }
@@ -2224,46 +2162,33 @@ impl App {
                         });
                     }
 
-                    // The driver reconciliation probe rides THIS counter and
-                    // must never get one of its own (D-13, ARCHITECTURE §4.4(c)
-                    // are both explicit). Two timers polling `/proc` and
-                    // `run.json` at slightly different phases would double the
-                    // syscall load for no extra freshness and would make "how
-                    // stale can the dashboard be?" a question with two answers.
-                    // Do not tidy this into its own interval.
+                    // The launcher-marker scan rides THIS counter and must never
+                    // get a timer of its own (D-13, ARCHITECTURE §4.4(c) are both
+                    // explicit). Two timers reading run state at slightly
+                    // different phases would double the syscall load for no extra
+                    // freshness and would make "how stale can the dashboard be?" a
+                    // question with two answers. Do not tidy this into its own
+                    // interval.
                     //
                     // `spawn_blocking` for the same reason as the line above:
-                    // `/proc` reads and `run.json` reads are synchronous fs work
+                    // lock probes and `DIRECTION.md` reads are synchronous fs work
                     // and this file's idiom for that is unambiguous.
                     if let Some(ref tx) = self.ctx.event_tx {
                         let tx: UnboundedSender<Action> = tx.clone();
                         let projects = self.ctx.config.projects.clone();
-                        // The launcher-run markers (30-03, D-13) ride this same task:
-                        // one more `read_dir` plus bounded reads per project, on the
-                        // same counter, never a timer of their own. With the
-                        // experimental flag off no launcher surface is shown, so the
-                        // reads are skipped altogether.
+                        // The launcher-run markers (30-03, D-13): one `read_dir` plus
+                        // bounded reads per project, on the same counter, never a
+                        // timer of their own. With the experimental flag off no
+                        // launcher surface is shown, so the reads are skipped
+                        // altogether.
                         let experimental = self.ctx.experimental;
                         tokio::task::spawn_blocking(move || {
-                            let runs = crate::driver::reconcile::reconcile_all(&projects);
-                            // Read in the SAME blocking task as the probe above,
-                            // not in one of its own (WR-02). Both answers
-                            // describe the same instant and both are `read_dir`
-                            // plus small reads, so a second task would double
-                            // the scheduling for no extra freshness — the same
-                            // reasoning that forbids a second timer.
-                            let last_outcomes =
-                                crate::driver::reconcile::last_ended_outcomes(&projects);
                             let launcher_markers = if experimental {
                                 launcher_markers_for(&projects, std::time::SystemTime::now())
                             } else {
                                 HashMap::new()
                             };
-                            let _ = tx.send(Action::RunsReconciled {
-                                runs,
-                                last_outcomes,
-                                launcher_markers,
-                            });
+                            let _ = tx.send(Action::LauncherMarkersRescanned { launcher_markers });
                         });
                     }
 
@@ -2752,55 +2677,22 @@ impl App {
                 // before (D-20).
                 self.needs_redraw = true;
             }
-            // The scan is authoritative, so the map is **replaced** and never
-            // merged (D-12, D-13). A merge would keep a run in the map after its
-            // project was unregistered, or after it ended — the absence of an
-            // entry is how the scan says both of those things, and a merge
-            // discards exactly that information.
-            Action::RunsReconciled {
-                runs,
-                last_outcomes,
-                launcher_markers,
-            } => {
-                // The launcher-run markers (30-03, D-13), replaced wholesale: a project
-                // absent from the scan has no marker, and one never scanned has none
-                // either (no guessed class). The filter and the attention sort read the
-                // marker, so they are recomputed when any marker moved.
+            // The launcher-run markers (30-03, D-13), replaced wholesale: the scan is
+            // authoritative, so a project absent from it has no marker, and one never
+            // scanned has none either (no guessed class). A merge would keep a badge
+            // after its project was unregistered or its run ended; the absence of an
+            // entry is how the scan says both. The filter and the attention sort read
+            // the marker, so they are recomputed when any marker moved. The redraw is
+            // equality-guarded (`apply_launcher_markers` returns whether anything
+            // changed): a scan lands every ~5s for the life of the process.
+            Action::LauncherMarkersRescanned { launcher_markers } => {
                 if self.ctx.apply_launcher_markers(&launcher_markers) {
                     self.ctx.recompute_filtered_aliases();
                     self.needs_redraw = true;
                 }
-                let observed: HashMap<String, crate::driver::reconcile::ObservedRun> = runs
-                    .into_iter()
-                    .map(|run| (run.alias.clone(), run))
-                    .collect();
-
-                // Replaced wholesale for the reason `observed_runs` is: the scan
-                // is authoritative, and a project whose newest run is no longer
-                // an ended one says so by its absence.
-                if self.ctx.last_outcomes != last_outcomes {
-                    self.ctx.last_outcomes = last_outcomes;
-                    self.needs_redraw = true;
-                }
-
-                // Equality-guarded redraw, following this file's existing
-                // discipline: a scan lands every ~5s for the whole life of the
-                // process, and an unconditional redraw here would repaint the
-                // frame twelve times a minute forever with nothing changed.
-                if self.ctx.observed_runs != observed {
-                    // Counts only. A goal string is user content and a run id is
-                    // not worth a line every five seconds (D-28).
-                    tracing::debug!(
-                        observed = observed.len(),
-                        live = observed.values().filter(|run| run.is_live()).count(),
-                        "driver reconciliation scan applied",
-                    );
-                    self.ctx.observed_runs = observed;
-                    self.needs_redraw = true;
-                }
             }
             // The agents scan is authoritative, so `agent_views` is **replaced**
-            // and never merged — the `RunsReconciled` rule above (D-C01).
+            // and never merged — the `LauncherMarkersRescanned` rule above (D-C01).
             //
             // The wave model is derived HERE, once per scan, against the
             // already-parsed `ProjectState`, never at render time. `AgentView`
@@ -3106,7 +2998,7 @@ impl App {
             // counts only, because a body can carry agent output (S3).
 
             // Both payloads replace rather than merge, for the reason
-            // `RunsReconciled` does: each read is authoritative, and a run
+            // `LauncherMarkersRescanned` does: each read is authoritative, and a run
             // directory or a message no longer on disk is expressed by its
             // absence and by nothing else.
             Action::DriverRunsListed {
@@ -3284,10 +3176,10 @@ impl App {
     /// **The leak this closes.** `journal_cursors` is keyed `(alias, run_id)`,
     /// inserted in exactly one place — `Action::DriverJournalAppended` — and
     /// removed in none, so it grew for the whole life of the process: one entry
-    /// per run of every project ever tailed, forever. `run_states` and
-    /// `observed_runs` had the same shape for an unregistered alias, because
-    /// `registry::remove_project` touches neither (it has no access to
-    /// `AppContext`; see its doc, which names both cleanup sites).
+    /// per run of every project ever tailed, forever. `run_states` had the same
+    /// shape for an unregistered alias, because `registry::remove_project`
+    /// touches neither (it has no access to `AppContext`; see its doc, which
+    /// names the cleanup sites).
     ///
     /// Two passes:
     ///
@@ -3315,15 +3207,6 @@ impl App {
             .retain(|(alias, _), _| registered.contains_key(alias));
         self.ctx
             .run_states
-            .retain(|alias, _| registered.contains_key(alias));
-        self.ctx
-            .observed_runs
-            .retain(|alias, _| registered.contains_key(alias));
-        // Its sibling joins the pass, and for the same reason (WR-02): keyed by
-        // alias, filled by every scan, and otherwise growing for the life of the
-        // process one entry per project ever driven and then unregistered.
-        self.ctx
-            .last_outcomes
             .retain(|alias, _| registered.contains_key(alias));
         // The ring buffer joins the pass, and this line is the phase's only
         // remaining Phase 16 carry-forward — a negative one. `driver_output` is
@@ -4361,15 +4244,6 @@ mod tests {
     const OBS_ALIAS: &str = "proj";
     const OBS_RUN: &str = "2026-07-29T09-00-00Z-a3f9";
 
-    /// The two liveness answers these tests build fixtures from.
-    ///
-    /// Named locally so the assertions below read as "a live run" and "a crashed
-    /// run" rather than as a path repeated forty times, and so the third answer
-    /// — `Liveness::Unknown`, which no `App`-level assertion here depends on — is
-    /// conspicuously absent rather than silently unused.
-    const ALIVE: crate::driver::liveness::Liveness = crate::driver::liveness::Liveness::Alive;
-    const DEAD: crate::driver::liveness::Liveness = crate::driver::liveness::Liveness::Dead;
-
     /// One `App` with one registered project at `root`, and a live `event_tx`.
     ///
     /// Every OBS-06 test below builds through this one helper, so a handler
@@ -4395,16 +4269,23 @@ mod tests {
         (app, rx)
     }
 
-    /// A scan that observed `runs` and found no ended run anywhere.
-    ///
-    /// The `last_outcomes` half is exercised by its own tests below; every
-    /// assertion about `observed_runs` wants it empty, and spelling that out at
-    /// seven call sites would say nothing seven times.
-    fn reconciled(runs: Vec<crate::driver::reconcile::ObservedRun>) -> Action {
-        Action::RunsReconciled {
-            runs,
-            last_outcomes: HashMap::new(),
-            launcher_markers: HashMap::new(),
+    /// A launcher-marker scan result carrying `markers`.
+    fn rescanned(markers: Vec<(&str, crate::ui::screens::driver_run::LauncherMarker)>) -> Action {
+        Action::LauncherMarkersRescanned {
+            launcher_markers: markers
+                .into_iter()
+                .map(|(alias, marker)| (alias.to_string(), marker))
+                .collect(),
+        }
+    }
+
+    /// A marker of `class`, holding the run lock only when it is `Driven`.
+    fn marker_of(
+        class: crate::ui::screens::driver_run::MarkerClass,
+    ) -> crate::ui::screens::driver_run::LauncherMarker {
+        crate::ui::screens::driver_run::LauncherMarker {
+            class: Some(class),
+            any_live: class == crate::ui::screens::driver_run::MarkerClass::Driven,
         }
     }
 
@@ -4506,74 +4387,57 @@ mod tests {
         }
     }
 
-    /// An `ObservedRun` with only the fields these assertions read varied.
-    fn observed(
-        alias: &str,
-        run_id: &str,
-        liveness: crate::driver::liveness::Liveness,
-    ) -> crate::driver::reconcile::ObservedRun {
-        crate::driver::reconcile::ObservedRun {
-            alias: alias.to_string(),
-            run_id: run_id.to_string(),
-            pid: 4242,
-            pgid: 4242,
-            started_at: "2026-07-29T09:00:00Z".to_string(),
-            goal: "ship it".to_string(),
-            gsd_command: "/gsd-progress".to_string(),
-            liveness,
-        }
-    }
-
     #[tokio::test]
-    async fn a_reconciliation_result_replaces_the_observed_map_rather_than_merging_it() {
+    async fn a_marker_rescan_replaces_the_marker_rather_than_merging_it() {
+        use crate::ui::screens::driver_run::MarkerClass;
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
 
-        // A run the previous scan saw, whose project has since been
-        // unregistered — or whose run has since ended. Either way the new scan
-        // expresses that by NOT returning it, and a merge would keep it forever.
-        app.ctx
-            .observed_runs
-            .insert("gone".to_string(), observed("gone", "run-old", ALIVE));
-
-        app.update(reconciled(vec![observed(OBS_ALIAS, "run-new", ALIVE)]));
-
+        app.update(rescanned(vec![(
+            OBS_ALIAS,
+            marker_of(MarkerClass::Crashed),
+        )]));
         assert_eq!(
-            app.ctx.observed_runs.len(),
-            1,
-            "the scan is authoritative: a stale entry must be dropped, not merged"
+            app.ctx.view_cache[OBS_ALIAS].launcher_marker,
+            Some(marker_of(MarkerClass::Crashed))
         );
-        assert!(!app.ctx.observed_runs.contains_key("gone"));
-        assert_eq!(app.ctx.observed_runs[OBS_ALIAS].run_id, "run-new");
 
-        // An empty scan clears the map outright, which is how "every run ended"
-        // is expressed.
-        app.update(reconciled(Vec::new()));
-        assert!(app.ctx.observed_runs.is_empty());
+        // The new scan expresses "that run is gone" by NOT returning it, and a
+        // merge would keep the crashed badge forever.
+        app.update(rescanned(Vec::new()));
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS].launcher_marker, None,
+            "the scan is authoritative: a marker it no longer returns must be \
+             cleared, not merged"
+        );
     }
 
     #[tokio::test]
-    async fn an_unchanged_reconciliation_result_does_not_request_a_redraw() {
+    async fn an_unchanged_marker_rescan_does_not_request_a_redraw() {
+        use crate::ui::screens::driver_run::MarkerClass;
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
 
-        app.update(reconciled(vec![observed(OBS_ALIAS, "run-a", ALIVE)]));
+        app.update(rescanned(vec![(OBS_ALIAS, marker_of(MarkerClass::Driven))]));
 
         // The scan lands every ~5s for the whole life of the process. Without
         // the equality guard this would repaint twelve times a minute forever
         // with nothing on screen changed.
         app.needs_redraw = false;
-        app.update(reconciled(vec![observed(OBS_ALIAS, "run-a", ALIVE)]));
+        app.update(rescanned(vec![(OBS_ALIAS, marker_of(MarkerClass::Driven))]));
         assert!(
             !app.needs_redraw,
             "an identical scan result must not request a redraw"
         );
 
         // The control arm: a real change still does.
-        app.update(reconciled(vec![observed(OBS_ALIAS, "run-a", DEAD)]));
+        app.update(rescanned(vec![(
+            OBS_ALIAS,
+            marker_of(MarkerClass::Crashed),
+        )]));
         assert!(
             app.needs_redraw,
-            "a run going from live to crashed must request a redraw, or the guard \
+            "a run going from driven to crashed must request a redraw, or the guard \
              above is suppressing genuine updates too"
         );
     }
@@ -4940,69 +4804,32 @@ mod tests {
         }
     }
 
-    /// D-21's truth table: three conditions, and all three are required.
-    #[test]
-    fn the_elapsed_redraw_gate_is_true_for_exactly_one_combination() {
-        use crate::ui::screens::detail::DetailScreen;
-
-        let live = observed(OBS_ALIAS, "run-x", ALIVE);
-        let dead = observed(OBS_ALIAS, "run-x", DEAD);
-
-        // The one combination that repaints.
-        assert!(
-            driver_elapsed_redraw_wanted(
-                DetailScreen::NAME,
-                Some(&DetailSubView::Driver),
-                Some(&live)
-            ),
-            "a live run on the Driver tab is the case the counter exists for"
-        );
-
-        // The dashboard. This is the one that matters most: an idle fleet
-        // dashboard repainting four times a second forever is the exact
-        // opposite of this tool's pitch.
-        assert!(
-            !driver_elapsed_redraw_wanted("normal", Some(&DetailSubView::Driver), Some(&live)),
-            "the counter is not on screen from the dashboard"
-        );
-
-        // A detail view on another tab. The counter is not rendered there
-        // either.
-        assert!(
-            !driver_elapsed_redraw_wanted(
-                DetailScreen::NAME,
-                Some(&DetailSubView::Pipeline),
-                Some(&live)
-            ),
-            "no other tab shows an elapsed counter"
-        );
-
-        // The Driver tab with nothing running. A finished run's elapsed figure
-        // is frozen, so a frame would be identical to the one already up.
-        assert!(
-            !driver_elapsed_redraw_wanted(
-                DetailScreen::NAME,
-                Some(&DetailSubView::Driver),
-                Some(&dead)
-            ),
-            "a run that is not live has a frozen elapsed figure"
-        );
-        assert!(
-            !driver_elapsed_redraw_wanted(DetailScreen::NAME, Some(&DetailSubView::Driver), None),
-            "a project with no observed run at all has nothing to count"
-        );
-    }
-
-    /// The gate wired through a real `Action::Tick`, not just the predicate.
+    /// The heartbeat gate wired through a real `Action::Tick`, not just the predicate.
     #[tokio::test]
-    async fn a_tick_repaints_only_when_the_driver_tab_is_watching_a_live_run() {
+    async fn a_tick_repaints_only_when_the_driver_tab_is_watching_a_live_launcher_run() {
+        use crate::state_reader::driver_frontmatter::{
+            parse_driver_frontmatter, DerivedStatus, DriverRunView, RunStatus,
+        };
+
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
         app.ctx.recompute_filtered_aliases();
         app.ctx.table_state.select(Some(0));
-        app.ctx
-            .observed_runs
-            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-x", ALIVE));
+        let frontmatter = parse_driver_frontmatter(include_str!(
+            "../tests/fixtures/driverctl/direction/s003-run1b.md"
+        ))
+        .expect("the spike fixture parses");
+        {
+            let cache = app.ctx.view_cache.entry(OBS_ALIAS.to_string()).or_default();
+            cache.launcher_runs = vec![(
+                "20261020-a".to_string(),
+                Ok(DriverRunView {
+                    frontmatter,
+                    derived: DerivedStatus::AsWritten(RunStatus::Running),
+                }),
+            )];
+            cache.launcher_listed = true;
+        }
 
         // The dashboard is on top and no tab is selected: an idle tick.
         app.needs_redraw = false;
@@ -5025,7 +4852,7 @@ mod tests {
         app.update(Action::Tick);
         assert!(
             app.needs_redraw,
-            "the elapsed counter must advance where it can actually be seen"
+            "the heartbeat age must advance where it can actually be seen"
         );
     }
 
@@ -5069,11 +4896,10 @@ mod tests {
     /// The rescan gate is **visibility, not liveness**, and the difference is
     /// the whole finding.
     ///
-    /// `reconcile_one` returns `None` for an ended run, so the alias drops out
-    /// of `observed_runs` the instant the run finishes — which is exactly when
-    /// the run list's glyph, its outcome and the journal snapshot go stale and
-    /// most need re-reading. Gating the rescan on `driver_elapsed_redraw_wanted`
-    /// would stop it firing at the moment it started mattering.
+    /// A run that has just ended is exactly when the run list's glyph and its
+    /// outcome go stale and most need re-reading. Gating the rescan on
+    /// `launcher_heartbeat_redraw_wanted` would stop it firing at the moment it
+    /// started mattering.
     #[test]
     fn the_rescan_gate_is_visibility_and_deliberately_not_liveness() {
         use crate::ui::screens::detail::DetailScreen;
@@ -5092,13 +4918,13 @@ mod tests {
         ));
         assert!(!driver_tab_is_on_top(DetailScreen::NAME, None));
 
-        // And a run that has ENDED still satisfies it, where the elapsed-redraw
+        // And a tab with NO live run still satisfies it, where the heartbeat
         // gate does not.
-        let dead = observed(OBS_ALIAS, "run-x", crate::driver::liveness::Liveness::Dead);
-        assert!(!driver_elapsed_redraw_wanted(
+        let empty = crate::ui::screens::ProjectViewCache::default();
+        assert!(!launcher_heartbeat_redraw_wanted(
             DetailScreen::NAME,
             Some(&DetailSubView::Driver),
-            Some(&dead)
+            Some(&empty)
         ));
         assert!(driver_tab_is_on_top(
             DetailScreen::NAME,
@@ -6169,13 +5995,6 @@ mod tests {
         app.ctx
             .run_states
             .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
-        app.ctx
-            .observed_runs
-            .insert("gone".to_string(), observed("gone", "run-gone", ALIVE));
-        app.ctx.observed_runs.insert(
-            OBS_ALIAS.to_string(),
-            observed(OBS_ALIAS, "run-here", ALIVE),
-        );
 
         app.prune_driver_maps();
 
@@ -6187,7 +6006,6 @@ mod tests {
              life of the process — nothing can ever append to it again"
         );
         assert!(!app.ctx.run_states.contains_key("gone"));
-        assert!(!app.ctx.observed_runs.contains_key("gone"));
 
         // The control arm: a registered alias keeps everything, so the
         // assertions above are not passing because the prune emptied the maps.
@@ -6196,7 +6014,6 @@ mod tests {
             .journal_cursors
             .contains_key(&(OBS_ALIAS.to_string(), run_id_at(1))));
         assert!(app.ctx.run_states.contains_key(OBS_ALIAS));
-        assert!(app.ctx.observed_runs.contains_key(OBS_ALIAS));
     }
 
     /// D-27, second pass: the per-alias retention bound.
@@ -6281,15 +6098,6 @@ mod tests {
         app.ctx
             .run_states
             .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
-        // `DEAD`, and the choice is load-bearing since plan 17-08: the removal
-        // path now REFUSES a project whose observed run is not known to be
-        // finished (CR-06), so a live run here would make this test assert the
-        // refusal rather than the D-27 cleanup it is about. A crashed run is
-        // nothing left to abandon, so it is removable — and it still exercises
-        // the sibling-map cleanup, which is this test's actual subject.
-        app.ctx
-            .observed_runs
-            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-here", DEAD));
 
         let mut screen = DeleteConfirmScreen::new(OBS_ALIAS.to_string());
         screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut app.ctx);
@@ -6306,10 +6114,6 @@ mod tests {
         assert!(
             !app.ctx.run_states.contains_key(OBS_ALIAS),
             "run_states leaked past an interactive removal"
-        );
-        assert!(
-            !app.ctx.observed_runs.contains_key(OBS_ALIAS),
-            "observed_runs leaked past an interactive removal"
         );
         assert!(
             app.ctx
@@ -6356,13 +6160,6 @@ mod tests {
             app.ctx
                 .run_states
                 .insert(alias.to_string(), RunState::Running);
-            app.ctx.observed_runs.insert(
-                alias.to_string(),
-                observed(alias, OBS_RUN, crate::driver::liveness::Liveness::Dead),
-            );
-            app.ctx
-                .last_outcomes
-                .insert(alias.to_string(), "failed".to_string());
             app.ctx
                 .driver_output
                 .entry(alias.to_string())
@@ -6403,8 +6200,6 @@ mod tests {
             // pruned, and each is asserted below.
             journal_cursors,
             run_states,
-            observed_runs,
-            last_outcomes,
             driver_output,
             view_cache,
             last_refresh,
@@ -6459,20 +6254,16 @@ mod tests {
              for an unregistered alias"
         );
         assert!(!run_states.contains_key(GONE), "run_states leaked");
-        assert!(!observed_runs.contains_key(GONE), "observed_runs leaked");
-        assert!(!last_outcomes.contains_key(GONE), "last_outcomes leaked");
         assert!(!driver_output.contains_key(GONE), "driver_output leaked");
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
         assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
 
-        // The control arm for all seven at once: the registered alias kept
+        // The control arm for all of them at once: the registered alias kept
         // everything, so none of the assertions above passed because the prune
         // cleared the map.
         assert!(journal_cursors.keys().any(|(alias, _)| alias == OBS_ALIAS));
         assert!(run_states.contains_key(OBS_ALIAS));
-        assert!(observed_runs.contains_key(OBS_ALIAS));
-        assert!(last_outcomes.contains_key(OBS_ALIAS));
         assert!(driver_output.contains_key(OBS_ALIAS));
         assert!(last_refresh.contains_key(OBS_ALIAS));
         assert!(archive_cache.get(OBS_ALIAS, "v1.0").is_some());
@@ -7595,9 +7386,7 @@ mod tests {
         );
 
         let markers = launcher_markers_for(&app.ctx.config.projects, std::time::SystemTime::now());
-        app.update(Action::RunsReconciled {
-            runs: Vec::new(),
-            last_outcomes: HashMap::new(),
+        app.update(Action::LauncherMarkersRescanned {
             launcher_markers: markers,
         });
 
@@ -7625,8 +7414,8 @@ mod tests {
         assert!(!app.ctx.needs_attention_for("alpha"));
     }
 
-    /// The scan rides the 20-tick reconcile task: on the twentieth tick with the flag
-    /// on the `RunsReconciled` it sends carries the marker, and with the flag off no
+    /// The scan rides the 20-tick block: on the twentieth tick with the flag on the
+    /// `LauncherMarkersRescanned` it sends carries the marker, and with the flag off no
     /// launcher scan runs, so the map is empty.
     #[cfg(unix)]
     #[tokio::test]
@@ -7646,10 +7435,7 @@ mod tests {
             let mut markers = None;
             for _ in 0..300 {
                 while let Ok(action) = rx.try_recv() {
-                    if let Action::RunsReconciled {
-                        launcher_markers, ..
-                    } = action
-                    {
+                    if let Action::LauncherMarkersRescanned { launcher_markers } = action {
                         markers = Some(launcher_markers);
                     }
                 }
@@ -7658,7 +7444,7 @@ mod tests {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            let markers = markers.expect("the slow tick sends RunsReconciled");
+            let markers = markers.expect("the slow tick sends LauncherMarkersRescanned");
             if experimental {
                 assert_eq!(
                     markers.get("alpha").and_then(|m| m.class),

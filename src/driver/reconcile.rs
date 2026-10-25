@@ -317,8 +317,8 @@ pub fn reconcile_all(projects: &HashMap<String, RegisteredProject>) -> Vec<Obser
         .filter_map(|(alias, project)| reconcile_one(alias, &project.path))
         .collect();
     // A `HashMap` iterates in an unspecified order; sorting makes the result a
-    // function of the inputs alone, which is what lets the `RunsReconciled`
-    // handler compare two scans for equality and skip a redraw.
+    // function of the inputs alone, which is what lets a caller compare two scans
+    // for equality and skip a redraw.
     observed.sort_by(|a, b| a.alias.cmp(&b.alias));
     observed
 }

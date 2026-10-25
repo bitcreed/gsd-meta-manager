@@ -119,41 +119,6 @@ impl Screen for DeleteConfirmScreen {
 }
 
 fn do_remove_project(ctx: &mut AppContext, alias: &str) {
-    // **The first statement of the body, before anything is read or removed
-    // (CR-06, D-11, D-27).**
-    //
-    // *Why it lives here and not in the key handler.* Every route into removal
-    // goes through this function; a guard in the handler would be one branch's
-    // worth of protection. The failure it prevents — an autonomous agent with
-    // git and push rights left running in a project the tool has forgotten, with
-    // no path back to it in the TUI — is not a failure worth protecting one
-    // branch from.
-    //
-    // *Why `Unknown` is refused as well as `Alive`.* An undeterminable liveness
-    // is precisely the case where the tool cannot promise the agent is finished,
-    // and a removal is irreversible from inside the TUI: `reconcile_all` iterates
-    // only `config.projects`, so from the next tick the run is invisible, the `x`
-    // key refuses with "No run is being observed", and the driver keeps its
-    // `flock` for as long as it lives. Refusing on the uncertain answer costs the
-    // user one keystroke; permitting it costs them a process they cannot find.
-    // Only a positively `Dead` run is nothing left to abandon.
-    if let Some(run) = ctx.observed_runs.get(alias) {
-        if run.liveness != crate::driver::liveness::Liveness::Dead {
-            // The third human-read site in this file, and the same split: the
-            // lookup two lines above keys off the RAW `alias`, the sentence a
-            // person reads carries the escaped form.
-            ctx.error_message = Some(format!(
-                "'{}' still has a driver run ({}) that is not known to be \
-                 finished. Press 'x' to stop it first — unregistering now would \
-                 leave it running with no way back to it from here",
-                crate::text::render_for_terminal(alias),
-                run.run_id
-            ));
-            ctx.needs_redraw = true;
-            return;
-        }
-    }
-
     let project_path = ctx.config.projects.get(alias).map(|p| p.path.clone());
 
     // Wrapped at the CALL, not stored: this is a registry key being looked up
@@ -192,7 +157,6 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             // does not come through this screen. `journal_cursors` is keyed
             // `(alias, run_id)`, so it is filtered rather than removed by key.
             ctx.run_states.remove(alias);
-            ctx.observed_runs.remove(alias);
             ctx.journal_cursors
                 .retain(|(cursor_alias, _), _| cursor_alias != alias);
 
@@ -229,13 +193,10 @@ mod tests {
     use super::*;
     use crate::action::Action;
     use crate::config::{Config, RegisteredProject};
-    use crate::driver::liveness::Liveness;
-    use crate::driver::reconcile::ObservedRun;
     use std::path::Path;
     use tokio::sync::mpsc::UnboundedReceiver;
 
     const ALIAS: &str = "proj";
-    const RUN_ID: &str = "2026-07-29T12-00-00Z-aaaa";
 
     /// An `AppContext` with one registered project, a live event channel, and a
     /// config path inside `root` so `save_config` is a **real write** and the
@@ -278,8 +239,6 @@ mod tests {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
-            observed_runs: HashMap::new(),
-            last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             agent_views: HashMap::new(),
@@ -301,20 +260,6 @@ mod tests {
         (ctx, rx)
     }
 
-    /// An `ObservedRun` with only the field these assertions read varied.
-    fn observed(alias: &str, run_id: &str, liveness: Liveness) -> ObservedRun {
-        ObservedRun {
-            alias: alias.to_string(),
-            run_id: run_id.to_string(),
-            pid: 4242,
-            pgid: 4242,
-            started_at: "2026-07-29T12:00:00Z".to_string(),
-            goal: "ship it".to_string(),
-            gsd_command: "/gsd-progress".to_string(),
-            liveness,
-        }
-    }
-
     /// Press `y` on the delete-confirmation screen for [`ALIAS`].
     fn confirm_removal(ctx: &mut AppContext) -> ScreenAction {
         let mut screen = DeleteConfirmScreen::new(ALIAS.to_string());
@@ -322,70 +267,10 @@ mod tests {
     }
 
     #[test]
-    fn unregistering_a_project_with_a_live_run_is_refused_and_leaves_every_map_intact() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut ctx, _rx) = ctx_with_project(dir.path());
-        ctx.observed_runs
-            .insert(ALIAS.to_string(), observed(ALIAS, RUN_ID, Liveness::Alive));
-
-        let action = confirm_removal(&mut ctx);
-        assert!(matches!(action, ScreenAction::Pop));
-
-        assert!(
-            ctx.config.projects.contains_key(ALIAS),
-            "the registry entry must survive. Removing it here abandons a running \
-             autonomous agent with git and push rights: the next reconciliation \
-             scan iterates only config.projects, so the run becomes invisible, the \
-             stop key refuses with 'No run is being observed', and the driver \
-             keeps its flock for as long as it lives (CR-06, D-11)"
-        );
-        assert!(
-            ctx.observed_runs.contains_key(ALIAS),
-            "the sibling maps must survive too — a refusal that half-removed the \
-             project would leave the TUI in a state neither the guard nor D-27's \
-             cleanup describes"
-        );
-
-        let refusal = ctx
-            .error_message
-            .as_deref()
-            .expect("the refusal must be visible, not silent");
-        assert!(refusal.contains(ALIAS), "got: {refusal}");
-        assert!(
-            refusal.contains('x'),
-            "the refusal must name the key that fixes it, or the user is told no \
-             and not told what to do, got: {refusal}"
-        );
-    }
-
-    #[test]
-    fn unregistering_a_project_whose_liveness_is_undeterminable_is_refused_too() {
-        // The case that cannot be reached at runtime on Linux, which is exactly
-        // why it is asserted directly against the field rather than through a
-        // probe. An undeterminable liveness is where the tool CANNOT promise the
-        // agent is finished, and an irreversible removal is the wrong answer to
-        // "I do not know" (CR-05, CR-06).
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut ctx, _rx) = ctx_with_project(dir.path());
-        ctx.observed_runs.insert(
-            ALIAS.to_string(),
-            observed(ALIAS, RUN_ID, Liveness::Unknown),
-        );
-
-        confirm_removal(&mut ctx);
-
-        assert!(
-            ctx.config.projects.contains_key(ALIAS),
-            "an undeterminable liveness must be refused exactly like a live one"
-        );
-        assert!(ctx.error_message.is_some());
-    }
-
-    #[test]
-    fn unregistering_a_project_with_no_run_still_removes_it() {
-        // **The control arm, and it is not optional.** A blanket refusal would
-        // pass both tests above while breaking the feature outright, and nothing
-        // else here would notice.
+    fn unregistering_a_project_removes_it_with_no_refusal() {
+        // Phase 31: the TUI can no longer observe a legacy `drive` run, so the
+        // live-run refusal that used to guard this path has no input and is gone.
+        // This pins the plain path: removal succeeds and reports no error.
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut ctx, _rx) = ctx_with_project(dir.path());
 
@@ -393,36 +278,12 @@ mod tests {
 
         assert!(
             !ctx.config.projects.contains_key(ALIAS),
-            "a project with no observed run must still be removable"
+            "a registered project must be removable"
         );
         assert_eq!(
             ctx.error_message, None,
             "an ordinary removal reports no error, got: {:?}",
             ctx.error_message
-        );
-    }
-
-    #[test]
-    fn unregistering_a_project_whose_run_crashed_still_removes_it() {
-        // The second control arm: a crashed run is not something to abandon,
-        // because there is nothing left running. Refusing on it would leave a
-        // project permanently unremovable after one crash, with no way out but
-        // editing config.json by hand.
-        let dir = tempfile::tempdir().expect("temp dir");
-        let (mut ctx, _rx) = ctx_with_project(dir.path());
-        ctx.observed_runs
-            .insert(ALIAS.to_string(), observed(ALIAS, RUN_ID, Liveness::Dead));
-
-        confirm_removal(&mut ctx);
-
-        assert!(
-            !ctx.config.projects.contains_key(ALIAS),
-            "a crashed run must not block a removal"
-        );
-        assert_eq!(ctx.error_message, None);
-        assert!(
-            !ctx.observed_runs.contains_key(ALIAS),
-            "and the sibling maps are still cleaned on the removal path (D-27)"
         );
     }
 
