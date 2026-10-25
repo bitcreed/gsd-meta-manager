@@ -264,12 +264,114 @@ fn policy_word(text: &str) -> String {
         .collect()
 }
 
-/// Parse `bytes` as JSON and judge it: malformed JSON, a body that is not an
-/// object and JSON nested past serde_json's recursion limit are all denied, so
-/// nothing the proxy could not fully read is forwarded.
+/// The refusal text for a body that repeats a JSON key. Fixed policy text: it
+/// never names the key or its value.
+const DUPLICATE_KEY_REASON: &str = "body repeats a JSON key";
+
+/// A [`serde_json::Value`] parsed strictly: a repeated key in any object, at any
+/// depth, is an error instead of last-key-wins.
+///
+/// The visitor builds exactly the `Value` serde_json's own impl would build, so
+/// the policy judges the same reading as before. Keys arrive decoded (`next_key`
+/// as `String`), so `"tools"` and `"tool\u0073"` collide. Nesting depth stays
+/// bounded by serde_json's `Deserializer`, which owns the recursion limit.
+struct UniqueKeys(serde_json::Value);
+
+impl<'de> serde::Deserialize<'de> for UniqueKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueKeys;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any valid JSON value")
+            }
+
+            fn visit_bool<E>(self, v: bool) -> Result<UniqueKeys, E> {
+                Ok(UniqueKeys(serde_json::Value::Bool(v)))
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<UniqueKeys, E> {
+                Ok(UniqueKeys(v.into()))
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<UniqueKeys, E> {
+                Ok(UniqueKeys(v.into()))
+            }
+
+            fn visit_f64<E>(self, v: f64) -> Result<UniqueKeys, E> {
+                Ok(UniqueKeys(serde_json::Number::from_f64(v).map_or(
+                    serde_json::Value::Null,
+                    serde_json::Value::Number,
+                )))
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<UniqueKeys, E> {
+                Ok(UniqueKeys(serde_json::Value::String(v.to_owned())))
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<UniqueKeys, E> {
+                Ok(UniqueKeys(serde_json::Value::String(v)))
+            }
+
+            fn visit_unit<E>(self) -> Result<UniqueKeys, E> {
+                Ok(UniqueKeys(serde_json::Value::Null))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<UniqueKeys, A::Error> {
+                let mut items = Vec::new();
+                while let Some(UniqueKeys(item)) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(UniqueKeys(serde_json::Value::Array(items)))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<UniqueKeys, A::Error> {
+                let mut object = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let UniqueKeys(value) = map.next_value()?;
+                    if object.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom(DUPLICATE_KEY_REASON));
+                    }
+                }
+                Ok(UniqueKeys(serde_json::Value::Object(object)))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+/// Parse `bytes` as JSON and judge it: malformed JSON, trailing data, a body that
+/// is not an object, JSON nested past serde_json's recursion limit and a body
+/// that repeats a key at any depth are all denied, so nothing the proxy could not
+/// fully read is forwarded.
+///
+/// The judged reading is the only reading, and the bytes forwarded are the bytes
+/// judged (nothing is re-serialised). serde_json keeps the last value of a
+/// repeated key, but another parser may keep the first, so a body with a repeated
+/// key could carry a refused field past the policy (WR-01 / T-28.1-02). Every
+/// other ambiguity (trailing commas, comments, a BOM, invalid UTF-8, lone
+/// surrogates, trailing data) is already a parse error, so a body with unique
+/// names means the same thing to every conforming parser.
 pub fn judge_body(bytes: &[u8]) -> BodyVerdict {
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(value) => inference_body_verdict(&value),
+    use serde::Deserialize;
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let parsed = UniqueKeys::deserialize(&mut de).and_then(|v| de.end().map(|()| v));
+    match parsed {
+        Ok(UniqueKeys(value)) => inference_body_verdict(&value),
+        // The visitor's `custom` error is the only Data-category error this parse
+        // can raise (a syntax, EOF or I/O fault has its own category).
+        Err(e) if e.classify() == serde_json::error::Category::Data => {
+            BodyVerdict::Deny(DUPLICATE_KEY_REASON.to_owned())
+        }
         Err(_) => BodyVerdict::Deny("body is not valid JSON".to_owned()),
     }
 }

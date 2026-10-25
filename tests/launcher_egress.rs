@@ -420,6 +420,40 @@ fn server_side_fetch_bodies_are_refused() {
     assert_eq!(rig.stop().inference_denied, bodies.len() as u64);
 }
 
+/// 28.1-11 (WR-01 / T-28.1-02): serde_json keeps the LAST value of a repeated
+/// key, but the proxy forwards the ORIGINAL bytes, so a body could carry a refused
+/// field past the judge by repeating its key. A body that repeats any key is
+/// refused instead, so the judged reading is the only reading.
+#[test]
+fn a_body_that_repeats_a_key_is_refused_before_upstream() {
+    let stub = Stub::start();
+    let rig = Rig::with_static_token(&stub);
+    let bodies = [
+        // The audit's repeated `tools`: a server tool first, an empty list last.
+        r#"{"model":"m","messages":[],"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}],"tools":[]}"#,
+        // The audit's repeated `source.type`: `url` first, `base64` last.
+        r#"{"model":"m","messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","type":"base64","url":"https://x.example/"}}]}]}"#,
+        // Order control: the refused value last is denied today as well.
+        r#"{"model":"m","messages":[],"tools":[],"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}]}"#,
+        // The same key, the second spelling using the JSON escape `\u0073` for `s`.
+        r#"{"model":"m","messages":[],"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}],"tool\u0073":[]}"#,
+    ];
+    for body in bodies {
+        let response = rig.exchange(&with_length(body));
+        assert!(
+            status_line(&response).starts_with("HTTP/1.1 403"),
+            "{body}: {response}"
+        );
+        assert!(response.contains("permission_error"), "{body}: {response}");
+        assert!(
+            !response.contains("x.example") && !response.contains("web_fetch"),
+            "a refusal must not echo a value from the body: {response}"
+        );
+    }
+    assert_eq!(stub.connections(), 0, "a refused body dialled upstream");
+    assert_eq!(rig.stop().inference_denied, bodies.len() as u64);
+}
+
 #[test]
 fn web_search_and_client_tools_pass() {
     let stub = Stub::start();
