@@ -62,7 +62,10 @@ use rustix::process::Signal;
 use serde_json::Value;
 
 use super::auth::{host_access_token, resolve_launch_token, AuthError, TokenSource};
-use super::config_dir::{driver_root, run_state_dir_in, seed, SeedSpec, HOST_MANAGED_DIR};
+use super::config_dir::{
+    driver_root, resolve_current_exe, run_state_dir_in, seed, snapshot_exe, SeedSpec,
+    HOST_MANAGED_DIR,
+};
 use super::egress::upstream::Upstream;
 use super::egress::{
     self, EgressHandle, EgressServer, EgressSpec, EgressStats, TokenProvider, INFERENCE_HOST,
@@ -659,13 +662,17 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     let session = Session::start(&run_dir, &project, lock, &sock)?;
 
     let config_dir = state_dir.join("claude-config");
-    let binary = match std::env::current_exe() {
-        Ok(binary) => binary,
-        Err(e) => {
-            session.close();
-            return Err(io_error("locate this binary", e));
-        }
-    };
+    // IN-05: a path that no longer exists is refused here, once. WR-05: a binary that
+    // lies under the driven project is copied out of it, and the shim, the gate hooks and
+    // the bridge execute that copy (read-only inside), never the project's writable one.
+    let binary =
+        match resolve_current_exe().and_then(|exe| snapshot_exe(&exe, &project, &config_dir)) {
+            Ok(binary) => binary,
+            Err(e) => {
+                session.close();
+                return Err(io_error("locate or snapshot this binary", e));
+            }
+        };
     let egress_sock = egress::socket_path_for(&sock, &run_dir);
     // D-16, D-17: the `$HOME` allowlist and the per-run gitconfig, derived from this
     // host once per launch (every relaunch of the run reuses them).

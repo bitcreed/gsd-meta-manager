@@ -231,6 +231,74 @@ pub(super) fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> io::Resul
     Ok(())
 }
 
+/// The file name of the executable snapshot inside `<config-dir>/bin` ([`snapshot_exe`]).
+pub const EXE_SNAPSHOT_NAME: &str = "gsd-meta-manager.exe";
+
+/// The suffix Linux appends to `/proc/self/exe`'s target once the file is unlinked.
+const DELETED_SUFFIX: &str = " (deleted)";
+
+/// The path of this binary, checked to still exist (IN-05).
+///
+/// After an in-place upgrade (the file replaced while this process runs) Linux reports
+/// the old path with a ` (deleted)` suffix. The suffix is stripped when the path
+/// without it exists (the upgraded binary); otherwise the launch is refused with a
+/// message, because a shim or bridge command that names a missing file would fail
+/// every spawn with exit 127.
+pub fn resolve_current_exe() -> io::Result<PathBuf> {
+    resolve_exe_path(std::env::current_exe()?)
+}
+
+/// [`resolve_current_exe`] for a given reported path.
+fn resolve_exe_path(reported: PathBuf) -> io::Result<PathBuf> {
+    if reported.exists() {
+        return Ok(reported);
+    }
+    if let Some(stripped) = reported
+        .to_str()
+        .and_then(|text| text.strip_suffix(DELETED_SUFFIX))
+        .map(PathBuf::from)
+    {
+        if stripped.exists() {
+            return Ok(stripped);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "this binary ({}) no longer exists on disk (replaced or removed while it was starting); start the launch again",
+            reported.display()
+        ),
+    ))
+}
+
+/// The binary the shim, the gate hooks and the bridge execute (WR-05).
+///
+/// A binary that lies under the driven `project` (`target/debug/gsd-meta-manager` while
+/// the tool drives its own repository) is writable by the driver through the read-write
+/// project bind, and the host later runs it. It is copied to
+/// `<config_dir>/bin/`[`EXE_SNAPSHOT_NAME`] instead (launcher-owned, outside the project,
+/// read-only inside through the `<config_dir>/bin` bind) and that copy is returned. The
+/// project's own `target/` stays read-write, so `cargo build` keeps working, and nothing
+/// is bound read-only inside the project. Any other binary is returned unchanged.
+///
+/// `project` must be canonical. The copy goes through a temp file and a rename, so a
+/// concurrent reader never sees a half-written executable.
+pub fn snapshot_exe(exe: &Path, project: &Path, config_dir: &Path) -> io::Result<PathBuf> {
+    let real = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_owned());
+    if !real.starts_with(project) && !exe.starts_with(project) {
+        return Ok(exe.to_owned());
+    }
+    let bin = config_dir.join("bin");
+    create_private_dir(&bin)?;
+    let dest = bin.join(EXE_SNAPSHOT_NAME);
+    let mut src = fs::File::open(&real)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&bin)?;
+    io::copy(&mut src, &mut tmp)?;
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o755))?;
+    tmp.persist(&dest).map_err(|e| e.error)?;
+    Ok(dest)
+}
+
 /// Create `dir` and its missing parents, each 0700.
 fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::DirBuilder::new()
@@ -711,6 +779,61 @@ mod tests {
             dir,
             Path::new("/r").join(hash8(Path::new("/proj"))).join("r1")
         );
+    }
+
+    #[test]
+    fn a_binary_under_the_project_is_copied_out_and_any_other_is_left_alone() {
+        // WR-05
+        let root = TempDir::new().unwrap();
+        let base = fs::canonicalize(root.path()).unwrap();
+        let project = base.join("proj");
+        let target = project.join("target/debug");
+        fs::create_dir_all(&target).unwrap();
+        let exe = target.join("gsd-meta-manager");
+        fs::write(&exe, b"#!/bin/sh\necho built\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let cfg = base.join("state/claude-config");
+        let snap = snapshot_exe(&exe, &project, &cfg).unwrap();
+        assert_eq!(snap, cfg.join("bin").join(EXE_SNAPSHOT_NAME));
+        assert!(!snap.starts_with(&project));
+        assert_eq!(fs::read(&snap).unwrap(), fs::read(&exe).unwrap());
+        assert_eq!(
+            fs::metadata(&snap).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        // The project's own copy is writable and replaceable (cargo build), the
+        // snapshot does not follow it, and a second snapshot replaces the first.
+        fs::write(&exe, b"rebuilt").unwrap();
+        assert_ne!(fs::read(&snap).unwrap(), b"rebuilt");
+        assert_eq!(snapshot_exe(&exe, &project, &cfg).unwrap(), snap);
+        assert_eq!(fs::read(&snap).unwrap(), b"rebuilt");
+        // A symlink outside the project that points into it is also copied.
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&exe, &link).unwrap();
+        assert_eq!(snapshot_exe(&link, &project, &cfg).unwrap(), snap);
+        // A binary outside the project is returned unchanged and nothing is copied.
+        let outside = base.join("installed/gsd-meta-manager");
+        fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        fs::write(&outside, b"x").unwrap();
+        let cfg2 = base.join("state2/claude-config");
+        assert_eq!(snapshot_exe(&outside, &project, &cfg2).unwrap(), outside);
+        assert!(!cfg2.exists());
+    }
+
+    #[test]
+    fn a_deleted_suffix_is_stripped_when_the_file_exists_and_refused_otherwise() {
+        // IN-05
+        let root = TempDir::new().unwrap();
+        let exe = root.path().join("gsd-meta-manager");
+        fs::write(&exe, b"x").unwrap();
+        let reported = PathBuf::from(format!("{} (deleted)", exe.display()));
+        assert_eq!(resolve_exe_path(reported).unwrap(), exe);
+        assert_eq!(resolve_exe_path(exe.clone()).unwrap(), exe);
+        fs::remove_file(&exe).unwrap();
+        let gone = PathBuf::from(format!("{} (deleted)", exe.display()));
+        let err = resolve_exe_path(gone).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("no longer exists"), "{err}");
     }
 
     #[test]

@@ -453,6 +453,50 @@ fn os(s: &str) -> OsString {
     OsString::from(s)
 }
 
+/// The entries of the `$HOME` phase whose path `select` accepts: the allowlist binds,
+/// the per-run gitconfig at `~/.gitconfig` and the `/dev/null` credential masks, in that
+/// order. [`bwrap_argv`] calls it twice, so an entry under the project path follows the
+/// project bind (WR-05).
+fn push_home_entries(argv: &mut Vec<OsString>, spec: &SandboxSpec, select: impl Fn(&Path) -> bool) {
+    for entry in spec.home_binds.iter().filter(|entry| select(entry.path())) {
+        match entry {
+            HomeBind::Ro(path) => {
+                argv.push(os("--ro-bind"));
+                argv.push(path.as_os_str().to_owned());
+                argv.push(path.as_os_str().to_owned());
+            }
+            // The upper layer lives in RAM and vanishes with the sandbox: a crate
+            // planted here is never seen by the host (D-15, T-28.1-34).
+            HomeBind::Overlay(path) => {
+                argv.push(os("--overlay-src"));
+                argv.push(path.as_os_str().to_owned());
+                argv.push(os("--tmp-overlay"));
+                argv.push(path.as_os_str().to_owned());
+            }
+            HomeBind::Tmpfs { path, size } => {
+                argv.push(os("--size"));
+                argv.push(OsString::from(size.to_string()));
+                argv.push(os("--tmpfs"));
+                argv.push(path.as_os_str().to_owned());
+            }
+        }
+    }
+    // D-17: the per-run gitconfig, never the host's.
+    if let Some(gitconfig) = &spec.gitconfig {
+        let target = spec.home.join(".gitconfig");
+        if select(&target) {
+            argv.push(os("--ro-bind"));
+            argv.push(gitconfig.as_os_str().to_owned());
+            argv.push(target.into_os_string());
+        }
+    }
+    for file in spec.null_masks.iter().filter(|file| select(file)) {
+        argv.push(os("--ro-bind"));
+        argv.push(os("/dev/null"));
+        argv.push(file.as_os_str().to_owned());
+    }
+}
+
 /// The `bwrap` command line that runs `command` in the sandbox, in a fixed
 /// order (the order is the contract: a later bind covers an earlier one).
 ///
@@ -506,46 +550,21 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
     argv.push(OsString::from(HOME_TMPFS_SIZE.to_string()));
     argv.push(os("--tmpfs"));
     argv.push(spec.home.as_os_str().to_owned());
-    for entry in &spec.home_binds {
-        match entry {
-            HomeBind::Ro(path) => {
-                argv.push(os("--ro-bind"));
-                argv.push(path.as_os_str().to_owned());
-                argv.push(path.as_os_str().to_owned());
-            }
-            // The upper layer lives in RAM and vanishes with the sandbox: a crate
-            // planted here is never seen by the host (D-15, T-28.1-34).
-            HomeBind::Overlay(path) => {
-                argv.push(os("--overlay-src"));
-                argv.push(path.as_os_str().to_owned());
-                argv.push(os("--tmp-overlay"));
-                argv.push(path.as_os_str().to_owned());
-            }
-            HomeBind::Tmpfs { path, size } => {
-                argv.push(os("--size"));
-                argv.push(OsString::from(size.to_string()));
-                argv.push(os("--tmpfs"));
-                argv.push(path.as_os_str().to_owned());
-            }
-        }
-    }
-    // D-17: the per-run gitconfig, never the host's.
-    if let Some(gitconfig) = &spec.gitconfig {
-        argv.push(os("--ro-bind"));
-        argv.push(gitconfig.as_os_str().to_owned());
-        argv.push(spec.home.join(".gitconfig").into_os_string());
-    }
-    for file in &spec.null_masks {
-        argv.push(os("--ro-bind"));
-        argv.push(os("/dev/null"));
-        argv.push(file.as_os_str().to_owned());
-    }
+    // WR-05: an entry that lies under the project is emitted after the project bind
+    // (below), because a later bind covers an earlier one.
+    push_home_entries(&mut argv, spec, |path| !path.starts_with(&paths.project));
     let bind = |argv: &mut Vec<OsString>, flag: &str, path: &Path| {
         argv.push(os(flag));
         argv.push(path.as_os_str().to_owned());
         argv.push(path.as_os_str().to_owned());
     };
     bind(&mut argv, "--bind", &paths.project);
+    // WR-05: the `$HOME` entries inside the project are re-established on top of the
+    // writable project bind, so they are not silently covered by it. A binary of the
+    // launcher is never one of them (it is snapshotted out of the project,
+    // `config_dir::snapshot_exe`): a read-only bind of the file `cargo build` replaces
+    // would make that build fail with `EBUSY`.
+    push_home_entries(&mut argv, spec, |path| path.starts_with(&paths.project));
     // D-21: the planted-file guard follows the project bind (a later bind covers an
     // earlier one) and precedes the drivers tmpfs; each self-bind precedes its children.
     for guard in &spec.guard_binds {
@@ -1063,6 +1082,51 @@ mod tests {
         assert_eq!(run_bind, tmpfs + 2, "the run-dir ro-bind follows the tmpfs");
         assert!(run_bind < lock && lock < direction && direction < cfg);
         assert!(cfg < settings && settings < bin && bin < runtime && runtime < sock);
+    }
+
+    #[test]
+    fn home_entries_under_the_project_follow_the_project_bind() {
+        // WR-05: a later bind covers an earlier one, so a read-only, overlay or tmpfs
+        // entry (and the gitconfig and the credential masks) that lies under the
+        // project must be emitted after `--bind project project`.
+        let mut s = spec();
+        s.home = PathBuf::from("/work");
+        s.home_binds = vec![
+            HomeBind::Ro(PathBuf::from("/work/tools")),
+            HomeBind::Ro(PathBuf::from("/work/proj/tools/bin")),
+            HomeBind::Overlay(PathBuf::from("/work/proj/vendor/cache")),
+            HomeBind::Tmpfs {
+                path: PathBuf::from("/work/proj/scratch"),
+                size: 4096,
+            },
+        ];
+        s.gitconfig = Some(PathBuf::from("/data/gitconfig"));
+        s.null_masks = vec![
+            PathBuf::from("/work/.npmrc"),
+            PathBuf::from("/work/proj/.npmrc"),
+        ];
+        let argv = strings(&bwrap_argv(&s, &[OsString::from("claude")]));
+        let project = pos(&argv, "--bind", "/work/proj");
+        let before = |i: usize| i < project;
+        // Outside the project: before the project bind.
+        assert!(before(pos(&argv, "--ro-bind", "/work/tools")));
+        assert!(before(pos(&argv, "--ro-bind", "/data/gitconfig")));
+        let masks: Vec<usize> = (0..argv.len())
+            .filter(|&i| argv[i] == "/dev/null" && argv[i - 1] == "--ro-bind")
+            .filter(|&i| argv[i + 1].ends_with(".npmrc"))
+            .collect();
+        assert_eq!(masks.len(), 2);
+        assert!(before(masks[0]) && argv[masks[0] + 1] == "/work/.npmrc");
+        // Under the project: after it.
+        assert!(pos(&argv, "--ro-bind", "/work/proj/tools/bin") > project);
+        assert!(pos(&argv, "--overlay-src", "/work/proj/vendor/cache") > project);
+        assert!(pos(&argv, "--tmpfs", "/work/proj/scratch") > project);
+        assert!(masks[1] > project && argv[masks[1] + 1] == "/work/proj/.npmrc");
+        // Every entry appears once, none is dropped.
+        assert_eq!(
+            argv.iter().filter(|a| *a == "/work/proj/tools/bin").count(),
+            2
+        );
     }
 
     #[test]
