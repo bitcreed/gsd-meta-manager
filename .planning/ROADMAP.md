@@ -1185,7 +1185,7 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 13/14 plans executed (4 gap-closure plans pending)
+**Plans**: 14/14 plans executed (4 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -1216,7 +1216,7 @@ Plans:
 - [x] 28.1-13-PLAN.md — Driver tab header row 4 keeps PLANTED and `absent:` visible at narrow widths (importance order, separators, `absent: all 8`), full `driver auth setup` hint, `1 host`, IN-01 PLANTED count (LNCH-15, LNCH-11, LNCH-12)
 
 **Wave 8** *(blocked on Wave 7 completion; gap closure)*
-- [ ] 28.1-14-PLAN.md — merged-tree release gate: the four release.yml cross-target check/clippy commands (windows-gnu, x86_64-apple-darwin), full `--no-fail-fast` suite and host clippy with every folded finding's test by name; record CR-01, WR-01, WR-03, WR-07, IN-01, IN-02 `fixed` and WR-04 `deferred` in 28.1-REVIEW-DISPOSITION.md (LNCH-09, LNCH-10, LNCH-11, LNCH-15)
+- [x] 28.1-14-PLAN.md — merged-tree release gate: the four release.yml cross-target check/clippy commands (windows-gnu, x86_64-apple-darwin), full `--no-fail-fast` suite and host clippy with every folded finding's test by name; record CR-01, WR-01, WR-03, WR-07, IN-01, IN-02 `fixed` and WR-04 `deferred` in 28.1-REVIEW-DISPOSITION.md (LNCH-09, LNCH-10, LNCH-11, LNCH-15)
 
 **Human UAT (non-blocking)**: D-11's setup-token half needs a browser-minted token (`gsd-meta-manager driver auth setup`); until then the reach probe records `NOT-RUN: no setup-token`.
 

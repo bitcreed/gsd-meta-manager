@@ -3,12 +3,12 @@ gsd_state_version: "1.0"
 milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
-status: executing
-stopped_at: Completed 28.1-13-PLAN.md
-last_updated: "2026-10-25T02:29:55.588Z"
+status: verifying
+stopped_at: Completed 28.1-14-PLAN.md
+last_updated: "2026-10-25T02:37:13.212Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 28.1 execution started
-state_head: 5c956498d0cddeee45aecaa3dcbc6b227b32cb4a
+state_head: 5d6ad78e55472e857dc0b11f4f48e520de3642a7
 progress:
   total_phases: 10
   completed_phases: 14
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
   261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
   regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
@@ -557,6 +557,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P11 | 35 min | 3 tasks | 3 files |
 | Phase 28.1 P12 | 16 min | 2 tasks | 4 files |
 | Phase 28.1 P13 | 15 min | 2 tasks | 3 files |
+| Phase 28.1 P14 | 20 min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -789,6 +790,7 @@ Recent decisions affecting current work:
 - [Phase 28.1]: [inferred - audit] 28.1-12: TLS crates (rustls, tokio-rustls, webpki-roots) are Linux-only deps; off-Linux Upstream::Tls is refused with Unsupported
 - [Phase 28.1]: [inferred - audit] 28.1-12: home.rs host_tests module placed above mod tests (spawn_seam_guard forbids column-zero items after the marker)
 - [Phase 28.1]: [28.1-13] Driver row 4 ordered PLANTED, absent, auth; absent collapses to 'all 8' only on exact vocabulary equality; vocabulary moved to ungated launcher/mod.rs with host.rs re-export [inferred - audit]
+- [Phase 28.1]: 28.1-14: aarch64-apple-darwin run for real (rustup target add); merged tree green on all six cross-target commands [inferred — audit]
 
 ### Roadmap Evolution
 
@@ -983,8 +985,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T02:29:54.382Z
-Stopped at: Completed 28.1-13-PLAN.md
+Last session: 2026-10-25T02:37:12.039Z
+Stopped at: Completed 28.1-14-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
