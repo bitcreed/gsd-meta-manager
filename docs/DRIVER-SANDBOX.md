@@ -205,6 +205,13 @@ keep the driver usable on arbitrary projects. Each is its own entry.
 - **Hosts that need an upstream HTTPS proxy are unsupported.** If the launcher's environment sets
   `HTTPS_PROXY` or `https_proxy`, the launcher cannot chain through it: the allowlisted hosts and
   the API may be unreachable from the sandbox. The launch warns once and carries on.
+- **Gateway and alternative-provider setups are unsupported.** `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `ALL_PROXY` and the Bedrock, Vertex and Foundry switches
+  (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`) are removed from the
+  driver's environment in both postures. A sandboxed run reaches `api.anthropic.com` through the
+  inference proxy and nothing else; an `--unsandboxed` run talks to the public API directly. If you
+  route through a corporate gateway or a cloud provider, inference from the driver either fails or
+  goes to the public API. The launch prints one line naming any of these variables it finds set.
 - **Remote server-managed settings are not applied inside.** Behind the inference proxy the agent
   does not fetch an organisation's server-managed settings, so policy that only exists there (a
   model allowlist, for example) does not apply to driver runs. The sandbox policy is stricter on

@@ -146,6 +146,44 @@ const EGRESS_LOG: &str = "egress.log";
 /// through a proxy: the egress server connects directly (RESEARCH Open Question 2).
 const HOST_PROXY_WARNING: &str = "driver launch: this host routes HTTPS through a proxy (HTTPS_PROXY); the sandbox's egress proxy connects directly and does not chain through it, see docs/DRIVER-SANDBOX.md";
 
+/// The variables that route Claude Code to a gateway or another provider. The driver does
+/// not get them in either posture (`sandbox::ROUTING_STRIP_ENV`), so a launch that finds one
+/// set says so (IN-06). The `bool` marks the on/off switches, where `0` and `false` mean off.
+const GATEWAY_ENV: &[(&str, bool)] = &[
+    ("ANTHROPIC_BASE_URL", false),
+    ("ANTHROPIC_CUSTOM_HEADERS", false),
+    ("ALL_PROXY", false),
+    ("all_proxy", false),
+    ("CLAUDE_CODE_USE_BEDROCK", true),
+    ("CLAUDE_CODE_USE_VERTEX", true),
+    ("CLAUDE_CODE_USE_FOUNDRY", true),
+];
+
+/// The names in [`GATEWAY_ENV`] that `get` reports as set to a value that is in effect.
+fn gateway_vars_set(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<&'static str> {
+    GATEWAY_ENV
+        .iter()
+        .filter(|(name, switch)| {
+            get(name).is_some_and(|value| {
+                let value = value.to_string_lossy();
+                let value = value.trim();
+                !value.is_empty()
+                    && !(*switch && matches!(value.to_ascii_lowercase().as_str(), "0" | "false"))
+            })
+        })
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// The one-line launch warning for [`gateway_vars_set`] (IN-06): inference from the sandbox
+/// goes to the public Anthropic API only.
+fn gateway_warning(names: &[&str]) -> String {
+    format!(
+        "driver launch: {} set in this environment; the driver does not get it, and its inference goes to api.anthropic.com only (a gateway, Bedrock, Vertex or Foundry setup is unsupported), see docs/DRIVER-SANDBOX.md",
+        names.join(", ")
+    )
+}
+
 /// The `state.json` key counting auth relaunches (D-23).
 const EXTRA_AUTH_RELAUNCHES: &str = "auth_relaunches";
 
@@ -615,6 +653,10 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     if matches!(posture, Posture::BwrapScope) && host_routes_https_through_a_proxy() {
         // RESEARCH Open Question 2 [inferred — audit]: warn, do not chain.
         eprintln!("{HOST_PROXY_WARNING}");
+    }
+    let gateway = gateway_vars_set(|name| std::env::var_os(name));
+    if !gateway.is_empty() {
+        eprintln!("{}", gateway_warning(&gateway));
     }
     // D-13: a run whose active wall clock is used up is refused before anything is
     // written, the lock file included.
@@ -1859,6 +1901,33 @@ mod tests {
         let path = dir.path().join("launch-1.jsonl");
         fs::write(&path, lines.join("\n")).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn a_gateway_variable_in_effect_is_named_in_the_launch_warning() {
+        // IN-06
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            gateway_vars_set(move |name| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| std::ffi::OsString::from(value))
+            })
+        };
+        assert!(env(&[]).is_empty());
+        assert_eq!(
+            env(&[
+                ("ANTHROPIC_BASE_URL", "https://gw.example"),
+                ("CLAUDE_CODE_USE_BEDROCK", "1"),
+                ("CLAUDE_CODE_USE_VERTEX", "0"),
+                ("CLAUDE_CODE_USE_FOUNDRY", "false"),
+                ("ALL_PROXY", ""),
+            ]),
+            ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK"]
+        );
+        let line = gateway_warning(&["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK"]);
+        assert!(line.starts_with("driver launch: ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_BEDROCK set"));
+        assert!(line.contains("docs/DRIVER-SANDBOX.md") && !line.contains('\n'));
     }
 
     #[test]
