@@ -1505,3 +1505,70 @@ fn a_plant_during_the_launch_is_recorded_and_stops_the_push() {
 
     assert_eq!(state["status_reason"], "push-refused:planted_git_config");
 }
+
+// ---------------------------------------------------------------- protections_absent (28.1-09, D-26, D-27)
+
+#[test]
+fn a_bwrap_launch_without_overlay_records_registry_overlay_absent() {
+    // The fake bwrap answers `--version` with nothing, so the fake host has no overlay.
+    let fx = Fixture::new();
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    assert_eq!(
+        fx.state_json()["protections_absent"],
+        serde_json::json!(["registry-overlay"])
+    );
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(
+        view.frontmatter.protections_absent,
+        Some(vec!["registry-overlay".to_owned()])
+    );
+    let direction = fx.run_file("DIRECTION.md");
+    assert!(
+        direction.contains("\nprotections_absent: [\"registry-overlay\"]\n"),
+        "{direction}"
+    );
+}
+
+#[test]
+fn protections_absent_is_rewritten_per_launch() {
+    // Each launch looks at the run's state while it is running: the posture of THIS
+    // launch is on the record before the driver exists, on the first and on the second.
+    let fx = Fixture::new();
+    fx.write_scenario(
+        r#"
+n=$(cat "$FAKE_CLAUDE_DIR/count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$FAKE_CLAUDE_DIR/count"
+cp .planning/meta-manager/drivers/r28/state.json "$FAKE_CLAUDE_DIR/state-at-launch-$n.json"
+driverctl log start --mode headless --loop-mode fresh-per-item
+if [ "$n" = 1 ]; then
+  driverctl log end --reason fresh-exit
+else
+  driverctl log end --reason all-done
+fi
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#,
+    );
+    let child = fx.spawn_launch(&["--loop-mode", "fresh-per-item"]);
+    let out = finish(child, Duration::from_secs(30));
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    for n in [1, 2] {
+        let text = fx.recorded(&format!("state-at-launch-{n}.json"));
+        let state: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("launch {n} state ({e}): {text}"));
+        assert_eq!(
+            state["protections_absent"],
+            serde_json::json!(["registry-overlay"]),
+            "launch {n}: {text}"
+        );
+    }
+    assert_eq!(
+        fx.state_json()["protections_absent"],
+        serde_json::json!(["registry-overlay"])
+    );
+}

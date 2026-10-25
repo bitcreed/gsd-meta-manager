@@ -513,3 +513,49 @@ fn sandboxed_launch_records_bwrap_scope_posture() {
     assert!(!direction.contains("sandbox_missing"), "{direction}");
     assert_eq!(fx.state_json()["sandbox"], "bwrap-scope");
 }
+
+// ---------------------------------------------------------------- protections_absent (28.1-09, D-26, D-27)
+
+/// A driver that plants an `.envrc` in the checkout and ends well.
+const PLANT_ENVRC_SCENARIO: &str = r#"
+driverctl log start --mode headless --loop-mode loop
+echo 'echo planted' > .envrc
+driverctl log end --reason stop
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#;
+
+#[test]
+fn degraded_runs_record_every_absent_protection_and_still_detect_plants() {
+    use gsd_meta_manager::launcher::host::PROTECTIONS;
+
+    let fx = Fixture::new();
+    fx.write_scenario(PLANT_ENVRC_SCENARIO);
+
+    let out = fx.launch(&["--unsandboxed"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let all: Vec<String> = PROTECTIONS.iter().map(|w| (*w).to_owned()).collect();
+    assert_eq!(all.len(), 8, "the vocabulary is the eight words");
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    assert_eq!(view.frontmatter.protections_absent, Some(all.clone()));
+    assert_eq!(
+        fx.state_json()["protections_absent"],
+        serde_json::json!(all)
+    );
+    let direction = fx.run_file("DIRECTION.md");
+    assert!(direction.contains("\nprotections_absent: ["), "{direction}");
+
+    // `sandbox` / `sandbox_missing` are exactly as before this plan.
+    assert_eq!(view.frontmatter.sandbox.as_deref(), Some("degraded"));
+    assert_eq!(view.frontmatter.sandbox_missing, None);
+
+    // Detection is host side: no bwrap needed.
+    let planted = view.frontmatter.planted.expect("planted is recorded");
+    assert!(planted.iter().any(|l| l == "created .envrc"), "{planted:?}");
+    assert!(fx.log().contains("RUN | planted |"), "{}", fx.log());
+    assert!(
+        stderr(&out).contains("planted finding(s) in the checkout"),
+        "{}",
+        stderr(&out)
+    );
+}
