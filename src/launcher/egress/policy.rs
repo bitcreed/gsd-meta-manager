@@ -570,18 +570,20 @@ fn looks_like_ip_literal(host: &str) -> bool {
 
 /// May a `CONNECT` to `host:port` be tunnelled, given the run's allowlist (D-06)?
 ///
-/// Deny by default. Refused: any IP literal, even an allowlisted one (the
-/// allowlist is names only); `api.anthropic.com`, even allowlisted (inference
+/// Deny by default. The host is normalised first (ASCII-lowercase, one root dot
+/// removed), so the IP-literal test sees the name every later step compares.
+/// Refused: any IP literal, even an allowlisted one (the allowlist is names
+/// only); `api.anthropic.com`, even allowlisted (inference
 /// goes only through the reverse proxy, which holds the token and judges the
 /// body); any port but 443; any name not in `allow_hosts` (exact,
 /// ASCII-case-insensitive, root dot ignored). Every refusal is a
 /// [`Denial::Forbidden`] whose reason is policy text.
 pub fn connect_verdict(host: &str, port: u16, allow_hosts: &[String]) -> Result<(), Denial> {
     let no = |reason: &str| Err(Denial::Forbidden(reason.to_owned()));
-    if looks_like_ip_literal(host) {
+    let host = normalize_host(host);
+    if looks_like_ip_literal(&host) {
         return no("CONNECT to an IP literal is refused");
     }
-    let host = normalize_host(host);
     if host == super::INFERENCE_HOST {
         return no("the inference host is reachable only through the inference proxy");
     }
