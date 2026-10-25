@@ -12,7 +12,8 @@
 //!   that lives under `$HOME`, `$CARGO_HOME/{bin,env,config.toml,config}` and
 //!   `$RUSTUP_HOME`, so `~/.cargo/credentials.toml` is out by construction;
 //! * GSD and rtk: [`HOME_RO_REL`];
-//! * the directory of this binary (the `driverctl` shim and the bridge run it);
+//! * this binary (the `driverctl` shim and the bridge run it): its tool root when it has
+//!   a `bin/` or `versions/` layout, else only the file;
 //! * `$CARGO_HOME/{registry,git}` as a throw-away overlay when bwrap can build one,
 //!   else read-only, never read-write: a crate planted there would be compiled later
 //!   on the host (T-28.1-34);
@@ -182,13 +183,20 @@ fn root_refused(root: &Path, facts: &HostFacts) -> bool {
 }
 
 /// The directory to bind for a tool whose resolved binary is `real`: the grandparent
-/// when the parent is `bin` or `versions`, else the parent. `None` when that root is
-/// refused ([`root_refused`]); the caller then binds only the binary file.
+/// when the parent is `bin` or `versions` (a tool directory with a layout of its own),
+/// else `None`. `None` also when that root is refused ([`root_refused`]); the caller
+/// then binds only the binary file.
+///
+/// A binary whose parent is any other directory (`~/Downloads/node`, `~/tools/x/node`)
+/// gets no directory bind: the parent is not known to hold only this product, and its
+/// siblings (scripts, wrappers with embedded tokens, other installers' state) must stay
+/// invisible inside the sandbox (WR-04). A tool that needs siblings next to its binary
+/// has to be installed under a `bin/` or `versions/` layout `[inferred — audit]`.
 pub fn install_root(real: &Path, facts: &HostFacts) -> Option<PathBuf> {
     let parent = real.parent()?;
     let root = match parent.file_name().and_then(|n| n.to_str()) {
         Some("bin" | "versions") => parent.parent()?,
-        _ => parent,
+        _ => return None,
     };
     (!root_refused(root, facts)).then(|| root.to_owned())
 }
@@ -232,13 +240,12 @@ fn candidates(facts: &HostFacts, overlay: bool) -> Vec<HomeBind> {
     for rel in HOME_RO_REL {
         ro(home.join(rel), &mut out);
     }
-    if let Some(dir) = facts.exe.parent() {
-        if root_refused(dir, facts) {
-            ro(facts.exe.clone(), &mut out);
-        } else {
-            ro(dir.to_owned(), &mut out);
-        }
-    }
+    // The shim and the bridge execute one file: bind its tool root when it has a
+    // `bin/` or `versions/` layout, else only the file (WR-04).
+    ro(
+        install_root(&facts.exe, facts).unwrap_or_else(|| facts.exe.clone()),
+        &mut out,
+    );
     out.push(HomeBind::Tmpfs {
         path: home.join(CACHE_REL),
         size: CACHE_TMPFS_SIZE,
@@ -804,10 +811,34 @@ mod tests {
             install_root(Path::new("/home/u/.nvm/versions/node/v24/bin/node"), &f),
             Some(PathBuf::from("/home/u/.nvm/versions/node/v24"))
         );
+        // WR-04: any other parent is not known to hold only this product.
         assert_eq!(
             install_root(Path::new("/home/u/tools/x/launcher"), &f),
-            Some(PathBuf::from("/home/u/tools/x"))
+            None
         );
+    }
+
+    #[test]
+    fn a_binary_in_an_arbitrary_directory_binds_only_the_file() {
+        // WR-04: `~/Downloads/node` must not expose the rest of `~/Downloads`.
+        let mut f = facts();
+        f.tools = vec![ToolHit {
+            name: "node".to_owned(),
+            hit: PathBuf::from("/home/u/Downloads/node"),
+            real: PathBuf::from("/home/u/Downloads/node"),
+        }];
+        f.exe = PathBuf::from("/home/u/tools/x/gsd-meta-manager");
+        f.existing = candidates(&f, true)
+            .iter()
+            .map(|bind| bind.path().to_owned())
+            .collect();
+        let got = paths(&home_allowlist(&f, true));
+        for file in ["/home/u/Downloads/node", "/home/u/tools/x/gsd-meta-manager"] {
+            assert!(got.contains(&format!("ro {file}")), "{got:?}");
+        }
+        for dir in ["/home/u/Downloads", "/home/u/tools/x", "/home/u/tools"] {
+            assert!(!got.contains(&format!("ro {dir}")), "{got:?}");
+        }
     }
 
     #[test]
@@ -896,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn the_exe_directory_is_bound_unless_it_is_a_shared_directory() {
+    fn an_exe_outside_a_bin_layout_binds_only_the_file() {
         let mut f = facts();
         f.tools.clear();
         f.exe = PathBuf::from("/home/u/.local/gsd-meta-manager");
