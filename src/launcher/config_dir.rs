@@ -99,6 +99,11 @@ pub const DENY_TOOLS: &[&str] = &[
 
 /// Managed-settings keys the launcher pins; a host value never replaces them. Each
 /// is a lock whose launcher value is already the strictest one.
+///
+/// `disableAllHooks` is deliberately NOT here (IN-03): a host administrator's value for
+/// it stays in force, as every other host managed key does, and is never hidden. A host
+/// that sets it to `true` therefore switches the gate hooks off for driver runs too; the
+/// launcher's own caps (wall clock, gap rounds, the scope limits) do not depend on them.
 const LOCK_KEYS: &[&str] = &[
     "skipWebFetchPreflight",
     "disableClaudeAiConnectors",
@@ -596,8 +601,11 @@ pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
                     for (list, entries) in lists {
                         match entries {
                             Value::Array(entries) => append_unique(ours, list, entries),
+                            // IN-03: a host value that is not an array never replaces a
+                            // list the launcher already holds (`deny`); the safety list
+                            // must not depend on Claude Code refusing such a file.
                             other => {
-                                ours.insert(list.clone(), other.clone());
+                                ours.entry(list.clone()).or_insert_with(|| other.clone());
                             }
                         }
                     }
@@ -834,6 +842,22 @@ mod tests {
         let err = resolve_exe_path(gone).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
         assert!(err.to_string().contains("no longer exists"), "{err}");
+    }
+
+    #[test]
+    fn a_non_array_host_deny_list_does_not_replace_the_launchers() {
+        // IN-03
+        let gate = GateCommands {
+            hook: "h".to_owned(),
+            stop_guard: "s".to_owned(),
+        };
+        let host = vec![json!({"permissions": {"deny": "x", "ask": "y"}})];
+        let managed = managed_settings(&gate, &host);
+        let deny = managed["permissions"]["deny"].as_array().expect("array");
+        assert_eq!(deny.len(), DENY_TOOLS.len());
+        assert!(deny.iter().any(|v| v == "RemoteTrigger"));
+        // A list the launcher does not hold is passed through, as before.
+        assert_eq!(managed["permissions"]["ask"], "y");
     }
 
     #[test]
