@@ -1058,16 +1058,18 @@ mod tests {
         )
     }
 
+    /// A FIFO at `path`, made without spawning a process: the spawn-seam census
+    /// (`tests/spawn_seam_guard.rs`) admits no new spawn site in `src/`.
     #[cfg(unix)]
     fn make_fifo(path: &Path) {
-        let made = std::process::Command::new("mkfifo")
-            .arg(path)
-            .status()
-            .expect("mkfifo is on PATH");
-        assert!(
-            made.success(),
-            "the fixture creates a FIFO at the ledger path"
-        );
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .expect("the fixture creates a FIFO at the ledger path");
     }
 
     #[cfg(unix)]
