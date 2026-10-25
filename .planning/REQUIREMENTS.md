@@ -205,7 +205,7 @@ with what supersedes it. Inferred calls are marked `[inferred]`.
 
 Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â€” audit]`.
 
-- [x] **LNCH-09**: The sandbox runs with `--unshare-net --unshare-ipc --unshare-uts` and a tmpfs over
+- [ ] **LNCH-09**: The sandbox runs with `--unshare-net --unshare-ipc --unshare-uts` and a tmpfs over
   `/run`. Its only egress is through launcher-owned proxies outside the sandbox, reached via unix
   sockets:
   - inference goes through a token-injecting reverse proxy that forwards only `/v1/messages`
@@ -215,23 +215,23 @@ Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â
 
   Localhost/LAN services, abstract sockets and host filesystem sockets (e.g. `/run/docker.sock`) are
   unreachable.
-- [x] **LNCH-10**: `$HOME` is exposed by allowlist (tmpfs plus ro re-binds of toolchains, GSD files and
+- [ ] **LNCH-10**: `$HOME` is exposed by allowlist (tmpfs plus ro re-binds of toolchains, GSD files and
   a per-run gitconfig). An unlisted credential file in `$HOME` is unreadable inside.
-- [x] **LNCH-11**: Project files that the operator's later unsandboxed tools execute are ro inside the
+- [ ] **LNCH-11**: Project files that the operator's later unsandboxed tools execute are ro inside the
   sandbox where present, and detected after the run. Covered: `.git/config`, hooks, worktree pointers,
   nested `.git`, `.claude/` settings/hooks/agents/commands/skills, `CLAUDE.md`, `.envrc`,
   `.vscode/tasks.json`, `.mcp.json` and attributes. Findings are flagged on the run, and the push step
   refuses on git-relevant findings.
-- [x] **LNCH-12**: The run token never enters the sandbox. Auth posture (`setup-token` | `host-token`)
+- [ ] **LNCH-12**: The run token never enters the sandbox. Auth posture (`setup-token` | `host-token`)
   is recorded, and the setup-token's reach is probed. A managed-settings policy denies agent-to-agent
   and cloud tools (`Cron*`, `RemoteTrigger`, `SendMessage`, `ListAgents`, `ScheduleWakeup`,
   `DesignSync`, `mcp__claude_ai_*`), and claude.ai connectors are disabled.
-- [x] **LNCH-13**: Already-closed channels (runtime-dir sockets, ro `/`, push `core.hooksPath`, nested
+- [ ] **LNCH-13**: Already-closed channels (runtime-dir sockets, ro `/`, push `core.hooksPath`, nested
   agents) have regression tests. The gate's hooks are delivered as managed settings, so a nested
   `claude` with another config dir or `--settings` cannot skip them.
-- [x] **LNCH-14**: Accepted residual risks are documented. The main one is planning docs read by an
+- [ ] **LNCH-14**: Accepted residual risks are documented. The main one is planning docs read by an
   outside coordinator, which are untrusted input.
-- [x] **LNCH-15**: Every run records `protections_absent: [...]`, and degraded, unsandboxed or
+- [ ] **LNCH-15**: Every run records `protections_absent: [...]`, and degraded, unsandboxed or
   old-bwrap runs show it in the TUI (Driver tab, launch form, degraded confirm).
 
 ### Master Prompt & Templates (PRMT): Phase 29
@@ -390,13 +390,13 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | LNCH-06 | Phase 28 | Complete |
 | LNCH-07 | Phase 28 | Complete |
 | LNCH-08 | Phase 28 | Complete |
-| LNCH-09 | Phase 28.1 | Complete |
-| LNCH-10 | Phase 28.1 | Complete |
-| LNCH-11 | Phase 28.1 | Complete |
-| LNCH-12 | Phase 28.1 | Complete |
-| LNCH-13 | Phase 28.1 | Complete |
-| LNCH-14 | Phase 28.1 | Complete |
-| LNCH-15 | Phase 28.1 | Complete |
+| LNCH-09 | Phase 28.1 | Gaps Found |
+| LNCH-10 | Phase 28.1 | Gaps Found |
+| LNCH-11 | Phase 28.1 | Gaps Found |
+| LNCH-12 | Phase 28.1 | Gaps Found |
+| LNCH-13 | Phase 28.1 | Gaps Found |
+| LNCH-14 | Phase 28.1 | Gaps Found |
+| LNCH-15 | Phase 28.1 | Gaps Found |
 | PRMT-01 | Phase 29 | Complete |
 | PRMT-02 | Phase 29 | Complete |
 | PRMT-03 | Phase 29 | Complete |
