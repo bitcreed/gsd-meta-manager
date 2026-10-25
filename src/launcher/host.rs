@@ -51,30 +51,14 @@ pub const MISSING_BWRAP: &str = "bwrap";
 pub const MISSING_SYSTEMD_RUN: &str = "systemd-run";
 pub const MISSING_USER_MANAGER: &str = "user-systemd";
 
-/// The protection words [`protections_absent`] reports (D-27, corrected by RESEARCH
-/// Q2). Each names an EFFECT the sandbox profile provides, not a host tool piece:
-/// `sandbox_missing` keeps naming the pieces (`bwrap`, `systemd-run`, ...).
-pub const ABSENT_NET_ISOLATION: &str = "net-isolation";
-pub const ABSENT_EGRESS_PROXY: &str = "egress-proxy";
-pub const ABSENT_TOKEN_INJECTION: &str = "token-injection";
-pub const ABSENT_HOME_ALLOWLIST: &str = "home-allowlist";
-pub const ABSENT_RUN_TMPFS: &str = "run-tmpfs";
-pub const ABSENT_PLANTED_FILE_RO: &str = "planted-file-ro";
-pub const ABSENT_MANAGED_SETTINGS: &str = "managed-settings";
-pub const ABSENT_REGISTRY_OVERLAY: &str = "registry-overlay";
-
-/// Every protection, in the fixed vocabulary order [`protections_absent`] returns
-/// its words in.
-pub const PROTECTIONS: [&str; 8] = [
-    ABSENT_NET_ISOLATION,
-    ABSENT_EGRESS_PROXY,
-    ABSENT_TOKEN_INJECTION,
-    ABSENT_HOME_ALLOWLIST,
-    ABSENT_RUN_TMPFS,
-    ABSENT_PLANTED_FILE_RO,
-    ABSENT_MANAGED_SETTINGS,
-    ABSENT_REGISTRY_OVERLAY,
-];
+// The protection vocabulary lives in the ungated `launcher` module root so the TUI,
+// which also builds on Windows, can compare against it. Re-exported so every
+// `host::PROTECTIONS` / `host::ABSENT_*` path keeps resolving.
+pub use super::{
+    ABSENT_EGRESS_PROXY, ABSENT_HOME_ALLOWLIST, ABSENT_MANAGED_SETTINGS, ABSENT_NET_ISOLATION,
+    ABSENT_PLANTED_FILE_RO, ABSENT_REGISTRY_OVERLAY, ABSENT_RUN_TMPFS, ABSENT_TOKEN_INJECTION,
+    PROTECTIONS,
+};
 
 /// Whether this build can ever contain a launch in a sandbox.
 ///

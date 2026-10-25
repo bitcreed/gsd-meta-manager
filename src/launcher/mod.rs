@@ -97,6 +97,31 @@ pub mod run;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod stop;
 
+/// The protection words `host::protections_absent` reports (D-27, corrected by RESEARCH
+/// Q2). Each names an EFFECT the sandbox profile provides, not a host tool piece:
+/// `sandbox_missing` keeps naming the pieces (`bwrap`, `systemd-run`, ...).
+pub const ABSENT_NET_ISOLATION: &str = "net-isolation";
+pub const ABSENT_EGRESS_PROXY: &str = "egress-proxy";
+pub const ABSENT_TOKEN_INJECTION: &str = "token-injection";
+pub const ABSENT_HOME_ALLOWLIST: &str = "home-allowlist";
+pub const ABSENT_RUN_TMPFS: &str = "run-tmpfs";
+pub const ABSENT_PLANTED_FILE_RO: &str = "planted-file-ro";
+pub const ABSENT_MANAGED_SETTINGS: &str = "managed-settings";
+pub const ABSENT_REGISTRY_OVERLAY: &str = "registry-overlay";
+
+/// Every protection, in the fixed vocabulary order `host::protections_absent` returns
+/// its words in.
+pub const PROTECTIONS: [&str; 8] = [
+    ABSENT_NET_ISOLATION,
+    ABSENT_EGRESS_PROXY,
+    ABSENT_TOKEN_INJECTION,
+    ABSENT_HOME_ALLOWLIST,
+    ABSENT_RUN_TMPFS,
+    ABSENT_PLANTED_FILE_RO,
+    ABSENT_MANAGED_SETTINGS,
+    ABSENT_REGISTRY_OVERLAY,
+];
+
 /// Why a launch did not run (or could not continue).
 ///
 /// Every variant but [`UnsupportedPlatform`](Self::UnsupportedPlatform) carries

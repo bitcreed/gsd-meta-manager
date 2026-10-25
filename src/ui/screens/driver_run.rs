@@ -1118,30 +1118,50 @@ fn planted_count(items: &[String]) -> usize {
     }
 }
 
-/// The 28.1 posture words of header row 4, each only when the run recorded it:
-/// ` PLANTED <n>` (Yellow, BOLD), ` absent: <a, b>` (Yellow) and ` auth <word>` with
-/// the [`AUTH_SETUP_HINT`] for `host-token` (D-10, D-22, D-27). Every value goes
-/// through `shown_capped`.
+/// Whether `absent` is exactly the protections vocabulary: the same length and every
+/// vocabulary word present once. Any other list (a repeat, an unknown word, a missing
+/// word) is not a summary candidate and is shown verbatim (T-28.1-50).
+fn is_whole_vocabulary(absent: &[String]) -> bool {
+    let vocabulary = crate::launcher::PROTECTIONS;
+    absent.len() == vocabulary.len()
+        && vocabulary
+            .iter()
+            .all(|word| absent.iter().filter(|item| item.as_str() == *word).count() == 1)
+}
+
+/// The 28.1 posture groups of header row 4, in importance order so that `clip_line`
+/// removes the least important text first (SC7, T-28.1-48): `PLANTED <n>` (Yellow,
+/// BOLD), `absent: <a, b>` or `absent: all <n>` (Yellow), then `auth <word>` with the
+/// [`AUTH_SETUP_HINT`] for `host-token` (D-10, D-22, D-27). Each group present starts
+/// with a [`HEADER_SEP`]; a missing or empty one adds neither text nor separator.
+/// Every value goes through `shown_capped`.
 fn push_posture_28_1(spans: &mut Vec<Span<'static>>, fm: &DriverFrontmatter) {
     let warn = Style::default().fg(Color::Yellow);
     if let Some(planted) = fm.planted.as_ref().filter(|p| !p.is_empty()) {
+        spans.push(Span::styled(HEADER_SEP, label_style()));
         spans.push(Span::styled(
-            format!(" PLANTED {}", planted_count(planted)),
+            format!("PLANTED {}", planted_count(planted)),
             warn.add_modifier(Modifier::BOLD),
         ));
     }
     if let Some(absent) = fm.protections_absent.as_ref().filter(|a| !a.is_empty()) {
-        let list = absent
-            .iter()
-            .map(|item| shown_capped(item))
-            .collect::<Vec<_>>()
-            .join(", ");
-        spans.push(Span::styled(format!(" absent: {list}"), warn));
+        let list = if is_whole_vocabulary(absent) {
+            format!("all {}", crate::launcher::PROTECTIONS.len())
+        } else {
+            absent
+                .iter()
+                .map(|item| shown_capped(item))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        spans.push(Span::styled(HEADER_SEP, label_style()));
+        spans.push(Span::styled(format!("absent: {list}"), warn));
     }
     if let Some(auth) = fm.auth.as_deref() {
-        spans.push(Span::raw(format!(" auth {}", shown_capped(auth))));
+        spans.push(Span::styled(HEADER_SEP, label_style()));
+        spans.push(Span::raw(format!("auth {}", shown_capped(auth))));
         if auth == "host-token" {
-            spans.push(Span::styled(format!(" {AUTH_SETUP_HINT}"), warn));
+            spans.push(Span::styled(format!(" ({AUTH_SETUP_HINT})"), warn));
         }
     }
 }
@@ -4952,7 +4972,7 @@ mod tests {
         let row = header_row_4(&fm, 200);
         assert_eq!(
             text_of(&row),
-            "  sandbox bwrap PLANTED 4 absent: registry-overlay auth host-token run driver auth setup  \u{B7}  prompt driver-prompt/1.0.0  \u{B7}  egress 2 hosts  \u{B7}  api 12"
+            "  sandbox bwrap  \u{B7}  PLANTED 4  \u{B7}  absent: registry-overlay  \u{B7}  auth host-token (run driver auth setup)  \u{B7}  prompt driver-prompt/1.0.0  \u{B7}  egress 2 hosts  \u{B7}  api 12"
         );
         let style_of = |needle: &str| {
             row.spans
@@ -4988,6 +5008,77 @@ mod tests {
             !text.contains("PLANTED") && !text.contains("absent:"),
             "{text}"
         );
+        let doubled = format!("{HEADER_SEP}{HEADER_SEP}");
+        assert!(!text.contains(&doubled), "{text}");
+        assert!(!text.contains(&format!("{HEADER_SEP}  ")), "{text}");
+    }
+
+    /// A degraded fixture: `sandbox: degraded` with `bwrap, systemd-run` missing and
+    /// `absent` recorded as given.
+    fn degraded_fm(absent: &[&str], planted: Option<&[&str]>) -> DriverFrontmatter {
+        let mut fm = parse_driver_frontmatter(FIXTURE).expect("fixture");
+        fm.sandbox = Some("degraded".into());
+        fm.sandbox_missing = Some(vec!["bwrap".into(), "systemd-run".into()]);
+        fm.protections_absent = Some(absent.iter().map(|w| (*w).to_owned()).collect());
+        fm.planted = planted.map(|p| p.iter().map(|w| (*w).to_owned()).collect());
+        fm
+    }
+
+    #[test]
+    fn posture_row_keeps_the_security_groups_visible_at_narrow_widths() {
+        for width in [72, 80, 100] {
+            let text = text_of(&header_row_4(&posture_fm("host-token"), width));
+            assert!(text.contains("PLANTED 4"), "{width}: {text}");
+            assert!(text.contains("absent: registry-overlay"), "{width}: {text}");
+        }
+        let text = text_of(&header_row_4(&posture_fm("host-token"), 100));
+        assert!(text.contains("auth host-token"), "{text}");
+        for width in [72, 80, 100] {
+            let fm = degraded_fm(&crate::launcher::PROTECTIONS, None);
+            let text = text_of(&header_row_4(&fm, width));
+            assert!(text.contains("UNSANDBOXED"), "{width}: {text}");
+            assert!(text.contains("absent: all 8"), "{width}: {text}");
+        }
+        let fm = degraded_fm(&crate::launcher::PROTECTIONS, Some(&[".git/config"]));
+        let text = text_of(&header_row_4(&fm, 100));
+        assert!(text.contains("PLANTED"), "{text}");
+        assert!(text.contains("absent: all 8"), "{text}");
+    }
+
+    #[test]
+    fn the_whole_vocabulary_collapses_to_all_8_and_nothing_else_does() {
+        let row = |absent: &[&str]| text_of(&header_row_4(&degraded_fm(absent, None), 200));
+        let mut reversed = crate::launcher::PROTECTIONS;
+        reversed.reverse();
+        assert!(row(&reversed).contains("absent: all 8"));
+        let seven = &crate::launcher::PROTECTIONS[..7];
+        let text = row(seven);
+        assert!(
+            text.contains(&format!("absent: {}", seven.join(", "))),
+            "{text}"
+        );
+        assert!(!text.contains("absent: all"), "{text}");
+        let mut repeated = crate::launcher::PROTECTIONS;
+        repeated[7] = repeated[0];
+        let text = row(&repeated);
+        assert!(
+            text.contains(&format!("absent: {}", repeated.join(", "))),
+            "{text}"
+        );
+        let mut unknown = crate::launcher::PROTECTIONS;
+        unknown[3] = "made-up-word";
+        let text = row(&unknown);
+        assert!(
+            text.contains(&format!("absent: {}", unknown.join(", "))),
+            "{text}"
+        );
+        let text = row(&["registry-overlay", "net-isolation"]);
+        assert!(
+            text.contains("absent: registry-overlay, net-isolation"),
+            "{text}"
+        );
+        let text = row(&["net-isolation"]);
+        assert!(text.contains("absent: net-isolation"), "{text}");
     }
 
     #[test]
